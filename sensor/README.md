@@ -141,11 +141,50 @@ is imported) only if your application imports it. `unpatch()` (and
 | --- | --- | --- |
 | Anthropic SDK — every client class (`Anthropic`, `AnthropicBedrock`, `AnthropicVertex`, `AnthropicFoundry`, `AnthropicAWS`, `AnthropicBedrockMantle`, `AnthropicGoogleCloud` and their async forms), direct or via a framework that constructs one internally (LangChain, LlamaIndex, CrewAI native) | `patch_anthropic_classes` | `messages.create` (including `stream=True`), `.stream`, `.parse`, async + sync, beta resources, the raw view (`with_raw_response`) and the streaming view (`with_streaming_response`, metered at `parse()`); streamed calls are metered from the in-stream usage events, and a raw stream (`create(stream=True)`) is assembled with the SDK's own accumulator, so it stores its response under `capture_prompts` and emits its `tool_call` events like a non-streamed call; every `post_call` carries `provider_metadata.platform` (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `google-cloud`, `foundry`, or a gateway's host) |
 | OpenAI SDK (direct or via a framework that constructs `OpenAI()` internally — LangChain, LlamaIndex, CrewAI native) | `patch_openai_classes` | `OpenAI.chat.completions.create` / `.parse` / `.stream` (and `OpenAI.beta.chat.completions.parse` / `.stream`), `.responses.create` / `.parse` / `.stream`, `.embeddings.create`, async + sync, and the raw and streaming views of each (`with_raw_response` / `with_streaming_response`, on the resource or the client; a streamed view call is metered when its response is parsed, and one whose stream is never read is reported as an aborted stream with no chunks); streamed calls are metered from the chat usage chunk and `response.completed` and assembled with the SDK's own stream state, so they store their response under `capture_prompts` and emit their `tool_call` events; a Responses call stores its `instructions` and `input`, and an `mcp_call` names its server as `server_name` |
-| litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.embedding`, `litellm.aembedding` |
+| litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.text_completion`, `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses` (each with `stream=True`), `litellm.embedding`, `litellm.aembedding` |
 | MCP (official Python `mcp` SDK, reached transitively by `langchain-mcp-adapters`, `llama-index-tools-mcp` and `mcpadapt`) | `patch_mcp_classes` | `mcp.client.session.ClientSession.initialize` on mcp 1.x / `.adopt` on mcp 2.x (server fingerprint capture, every 2.x handshake path), `.list_tools`, `.call_tool`, `.list_resources`, `.read_resource`, `.list_prompts`, `.get_prompt` (one `mcp_*` event type each), plus the stdio / SSE / streamable-HTTP / websocket transport client factories and mcp 2.x's `Client._build_session` for transport attribution. `call_tool` also enforces the MCP Protection Policy. Supported SDK range: `mcp>=1.28,<3`. |
 | CrewAI (sub-agent sessions) | `patch_crewai_classes` | `crewai.Agent.execute_task` / `.aexecute_task` — each Crew member's turn lands as a child session (`session_start` / `session_end`) with `parent_session_id`, `agent_role` taken from `Agent.role`, and incoming / outgoing message capture gated on `capture_prompts` |
-| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)` |
+| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)`. Only a node whose action is a plain callable is wrapped: Runnable, `ToolNode` and compiled-subgraph nodes are not |
 | Claude Agent SDK (`claude-agent-sdk>=0.2.168,<0.3`) | `patch_claude_agent_sdk` | `query()` (however it was imported) and `ClaudeSDKClient` — each run lands as its own `claude_agent_sdk` session keyed by the Claude Code session id, with a `post_call` per assistant message (tokens, cache split, billing mode) and a `tool_call` per tool use, read from the SDK's message stream; a Claude Code plugin loaded into the run stays silent. `PreToolUse` and `UserPromptSubmit` callbacks added after the caller's hooks apply the run's directives (a stop denies the next tool call and blocks prompts; budget warnings reach the run) and the MCP Protection Policy. Install with `pip install flightdeck-sensor[claude-agent-sdk]`. |
+
+### Coverage beyond these interceptors
+
+Any framework that calls a model through the Anthropic or OpenAI SDK or
+litellm is metered and enforced through the interceptors above, with no
+wrap of its own: LlamaIndex, Deep Agents, Microsoft Agent Framework,
+Google ADK (on `LiteLlm`, Anthropic or OpenAI models), the OpenAI Agents
+SDK, Pydantic AI and Strands Agents (on their Anthropic, OpenAI and
+LiteLLM models), Agno, Haystack, smolagents, Semantic Kernel, AutoGen,
+AG2 and DSPy on its litellm engine. Each event names the framework in
+`framework` (see "Framework attribution" in ARCHITECTURE.md).
+
+- **Sub-agent sessions planned**
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): Google
+  ADK, the OpenAI Agents SDK, Microsoft Agent Framework, LlamaIndex and
+  Deep Agents (each agent and each `task` sub-agent).
+- **LLM calls planned**
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): a DSPy
+  callback adapter for its default engine, which has its own HTTP
+  transport and bypasses the SDKs and litellm.
+- **No sub-agent sessions from `create_agent`**: the LangGraph
+  interceptor wraps only nodes whose action is a plain callable.
+  LangChain's `create_agent`, and Deep Agents built on it, register
+  Runnable and `ToolNode` nodes, so their runs are one session (their LLM
+  calls are still metered).
+- **Structure through OpenTelemetry instead**: Pydantic AI and Strands
+  Agents export GenAI spans that Flightdeck's OTLP receiver maps into
+  observe-only child sessions. The sensor does not wrap them. Report a
+  run one way: a run the sensor and an exporter both report counts twice
+  ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
+- **Labelled, structure on the roadmap**: Agno, Haystack and smolagents
+  ([#278](https://github.com/flightdeckhq/flightdeck/issues/278)).
+- **Not supported**: Gemini through `google-genai`, Google ADK's default
+  model included ([#276](https://github.com/flightdeckhq/flightdeck/issues/276));
+  boto3 `bedrock-runtime` Converse, Strands' default model included
+  ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)); BAML,
+  Letta, MetaGPT and CAMEL.
+
+ARCHITECTURE.md ("Framework support") has the full matrix.
 
 ### litellm example
 

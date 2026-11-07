@@ -730,6 +730,22 @@ nginx deny (one routing slip exposes it); raw paths as the label (a
 series per session id); prometheus/client_golang (a dependency for one
 family).
 
+## D256 -- The sensor wraps a framework natively only where control or uncovered structure is at stake; OTLP covers observation
+
+**Date:** 2026-11-07
+**Decision:** a framework gets a native sensor wrap when it adds what the
+OTLP GenAI path cannot: in-band enforcement per child, live events and no
+exporter setup, or structure no mapped dialect reports. Native wraps: Google
+ADK, OpenAI Agents SDK, Microsoft Agent Framework, LlamaIndex, Deep Agents.
+Pydantic AI and Strands keep OTLP for structure (their SDK calls are metered
+natively). Agno, Haystack, smolagents: labels only, demand-ranked (#278).
+Gemini (google-genai) and Bedrock Converse are deferred (#276, #277; D178
+stands); their PromptViewer branches are approved for that work.
+**Why:** OTLP sessions are observe-only and appear after the run ends; the
+SDK patches already meter every framework on Anthropic, OpenAI or litellm.
+**Rejected alternative:** native wraps for every framework (patching risk
+where OTLP already gives structure); OTLP only (no control, no live view).
+
 ## D257 -- The sensor's framework labels are the GenAI dialect's, `autogen` is Microsoft's line, and a framework imported after init() is detected later
 
 **Date:** 2026-11-07

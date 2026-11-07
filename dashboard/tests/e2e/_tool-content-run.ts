@@ -1,6 +1,8 @@
 /**
- * A run that T162 and T163 post through ingestion in the sensor's own
- * wire shape: a session_start declaring the capture posture, then tool
+ * A run that T162, T163 and T165 post through ingestion in the sensor's
+ * own wire shape: a session_start declaring the capture posture, then
+ * calls whose captured content travels in the event_content envelope
+ * (T165: OpenAI Responses and litellm text_completion post_calls). T162 and T163 post tool
  * calls whose captured arguments and result travel in the event_content
  * envelope the sensor builds (interceptor/base.py and interceptor/mcp.py,
  * ``_build_tool_capture_content``): ``tool_input`` / ``tool_output``,
@@ -137,6 +139,22 @@ export const mcpPromptGet = (run: Run) =>
     duration_ms: 9,
     has_content: true,
     content: toolContent(run, "mcp", MCP_SERVER, PROMPT_ARGS, PROMPT_RENDERED),
+  });
+
+/** A post_call carrying the content envelope the sensor stores for it.
+ *  T165 posts OpenAI Responses calls (instructions in ``system``,
+ *  ``input`` verbatim, ``messages`` empty) and a litellm
+ *  ``text_completion`` (its ``prompt`` in ``input``). */
+export const contentPostCall = (run: Run, offsetSeconds: number, content: Record<string, unknown>) =>
+  event(run, "post_call", offsetSeconds, {
+    model: "gpt-4o-mini",
+    provider: "openai",
+    tokens_input: 40,
+    tokens_output: 8,
+    tokens_total: 48,
+    latency_ms: 900,
+    has_content: true,
+    content: { ...content, session_id: run.sessionId, event_id: "" },
   });
 
 /** An MCP tool call with nothing captured: what a capture-off run sends,

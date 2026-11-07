@@ -31,10 +31,13 @@ function roleChip(token: string): { bg: string; color: string; border: string } 
 
 const roleBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
   system: roleChip("var(--text-muted)"),
+  instructions: roleChip("var(--text-muted)"),
   user: roleChip("var(--event-llm)"),
   assistant: roleChip("var(--accent)"),
   tool: roleChip("var(--event-tool)"),
   tool_result: roleChip("var(--event-tool)"),
+  function_call: roleChip("var(--event-tool)"),
+  function_call_output: roleChip("var(--event-tool)"),
 };
 
 const defaultRoleBadge = roleChip("var(--text-muted)");
@@ -345,6 +348,13 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
   const hasToolOutput = content.tool_output != null;
   const responseIsToolPlaceholder =
     (hasToolInput || hasToolOutput) && isPlainObject(content.response) && Object.keys(content.response).length === 0;
+  // A Responses call keeps its request as the API's own parameters:
+  // ``instructions`` in the system slot and ``input`` verbatim, with no
+  // ``messages``. Both are shown under the API's names.
+  const responses = isResponsesContent(content);
+  // A legacy completion (litellm ``text_completion``) keeps its
+  // ``prompt`` verbatim in ``input``, with no ``messages``.
+  const textCompletion = !responses && isTextCompletionContent(content);
 
   return (
     <div className="flex flex-col px-3 py-2">
@@ -360,8 +370,21 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
         )}
       </div>
 
+      {/* A Responses call's instructions and input */}
+      {responses && content.system_prompt != null && (
+        <Section title="Instructions">
+          <ViewBox key={`${eventId}-instructions`} raw={content.system_prompt} name="the instructions" testId="prompt-box-instructions" label={<RoleBadge role="instructions" />}>
+            <MessageContent content={content.system_prompt} />
+          </ViewBox>
+        </Section>
+      )}
+
+      {responses && content.input != null && <ResponsesInput input={content.input} eventId={eventId} />}
+
+      {textCompletion && content.input != null && <CompletionPrompt prompt={content.input} eventId={eventId} />}
+
       {/* System prompt */}
-      {content.system_prompt != null && (
+      {!responses && content.system_prompt != null && (
         <Section title="System">
           <ViewBox key={`${eventId}-system`} raw={content.system_prompt} name="the system prompt" testId="prompt-box-system" label={<RoleBadge role="system" />}>
             <MessageContent content={content.system_prompt} />
@@ -395,7 +418,13 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
           <div className="space-y-1.5">
             {content.tools.map((entry: unknown, i: number) => {
               const tool: Record<string, unknown> = isPlainObject(entry) ? entry : {};
-              const name = (tool.name as string) ?? ((tool.function as Record<string, unknown>)?.name as string) ?? `tool_${i}`;
+              // A Responses tool is flat ({type, name, description,
+              // parameters}); a hosted one (web_search_preview, ...)
+              // carries only its type, which names it.
+              const name =
+                (tool.name as string) ??
+                ((tool.function as Record<string, unknown>)?.name as string) ??
+                (responses && typeof tool.type === "string" ? tool.type : `tool_${i}`);
               // Plugin-captured tool_use calls carry { type, name, input }.
               // Prefer rendering the call (actual input values) when input
               // is present; otherwise fall back to the declaration path
@@ -405,7 +434,9 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
                 ? ((tool.description as string) ?? ((tool.function as Record<string, unknown>)?.description as string) ?? null)
                 : null;
               const schema = input == null
-                ? ((tool.input_schema as Record<string, unknown>) ?? ((tool.function as Record<string, unknown>)?.parameters as Record<string, unknown>) ?? null)
+                ? ((tool.input_schema as Record<string, unknown>) ??
+                  ((tool.function as Record<string, unknown>)?.parameters as Record<string, unknown>) ??
+                  (responses && isPlainObject(tool.parameters) ? tool.parameters : null))
                 : null;
               const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? null;
 
@@ -504,6 +535,280 @@ function ToolValue({ value }: { value: unknown }) {
     );
   }
   return <JsonBox data={value} />;
+}
+
+/* ---- OpenAI Responses request ----
+ *
+ * The Responses API takes ``instructions`` (top-level system text) and
+ * ``input``: a string, or a list of input items (messages with content
+ * parts, ``function_call`` and ``function_call_output`` items,
+ * ``reasoning`` items and the hosted tools' own items). The sensor
+ * stores both verbatim, so they render here in the API's own terms,
+ * never rewritten into a chat ``messages`` list (CLAUDE.md rule 20). An
+ * item type this renderer does not know shows labelled by its ``type``
+ * with its JSON. A legacy completion's ``prompt``, also stored in
+ * ``input``, renders under its own name the same way.
+ */
+
+/** The ``object`` the Responses API sets on every response object. */
+export const RESPONSES_OBJECT = "response";
+
+/** Whether the content is an OpenAI Responses call: its stored response
+ *  is the API's response object. Neither the event nor the content
+ *  names the API a call used, and the content's shape alone (no
+ *  ``messages``, an ``input``) is also an embeddings call's and a
+ *  litellm ``text_completion``'s. */
+export function isResponsesContent(content: EventContent): boolean {
+  return isPlainObject(content.response) && content.response.object === RESPONSES_OBJECT;
+}
+
+/** The ``object`` a legacy completion response carries (litellm's
+ *  ``TextCompletionResponse``, OpenAI's ``completions`` API). */
+export const TEXT_COMPLETION_OBJECT = "text_completion";
+
+/** Whether the content is a legacy completion call, whose ``input``
+ *  holds the request's ``prompt``: its stored response is a
+ *  ``text_completion`` object. */
+export function isTextCompletionContent(content: EventContent): boolean {
+  return isPlainObject(content.response) && content.response.object === TEXT_COMPLETION_OBJECT;
+}
+
+/** A legacy completion's ``prompt`` as sent: a string, a list of
+ *  prompts (one box each), or token ids (as their JSON). */
+function CompletionPrompt({ prompt, eventId }: { prompt: unknown; eventId: string }) {
+  if (Array.isArray(prompt) && prompt.length > 0 && prompt.every((p) => typeof p === "string")) {
+    return (
+      <Section title="Prompt" count={prompt.length}>
+        <div className="space-y-2">
+          {prompt.map((text, i) => (
+            <ViewBox key={`${eventId}-prompt-${i}`} raw={text} name={`prompt ${i + 1}`} testId={`prompt-box-prompt-${i}`}>
+              {text.length > 0 ? <TextOrJson text={text} /> : <Muted>(empty)</Muted>}
+            </ViewBox>
+          ))}
+        </div>
+      </Section>
+    );
+  }
+  return (
+    <Section title="Prompt">
+      <ViewBox key={`${eventId}-prompt`} raw={prompt} name="the prompt" testId="prompt-box-prompt">
+        {typeof prompt === "string" ? (
+          prompt.length > 0 ? <TextOrJson text={prompt} /> : <Muted>(empty)</Muted>
+        ) : (
+          <JsonBox data={prompt} />
+        )}
+      </ViewBox>
+    </Section>
+  );
+}
+
+function ResponsesInput({ input, eventId }: { input: unknown; eventId: string }) {
+  if (!Array.isArray(input)) {
+    return (
+      <Section title="Input">
+        <ViewBox key={`${eventId}-input`} raw={input} name="the input" testId="prompt-box-input">
+          {typeof input === "string" ? (
+            input.length > 0 ? <TextOrJson text={input} /> : <Muted>(empty)</Muted>
+          ) : (
+            <JsonBox data={input} />
+          )}
+        </ViewBox>
+      </Section>
+    );
+  }
+  return (
+    <Section title="Input" count={input.length}>
+      {input.length === 0 ? (
+        <Muted>(empty)</Muted>
+      ) : (
+        <div className="space-y-2">
+          {input.map((item, i) => (
+            <ResponsesInputItem key={`${eventId}-input-${i}`} item={item} index={i} />
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** One input item in its own box, labelled by its role (a message) or
+ *  its ``type`` (every other item). */
+function ResponsesInputItem({ item, index }: { item: unknown; index: number }) {
+  const obj = isPlainObject(item) ? item : null;
+  const type = obj && typeof obj.type === "string" && obj.type ? obj.type : null;
+  const role = obj && typeof obj.role === "string" && obj.role ? obj.role : null;
+  // A message item's ``type`` is optional: ``{role, content}`` is one.
+  const isMessage = role !== null && (type === null || type === "message");
+  const kind = isMessage ? "message" : (type ?? (obj ? "item" : "value"));
+  const badge = isMessage ? role : kind;
+
+  let body: React.ReactNode;
+  if (!obj) {
+    body = typeof item === "string" ? <TextOrJson text={item} /> : <JsonBox data={item} />;
+  } else if (isMessage) {
+    body = <ResponsesMessageContent content={obj.content} />;
+  } else if (type === "function_call") {
+    body = <ResponsesFunctionCall item={obj} />;
+  } else if (type === "function_call_output") {
+    body = <ResponsesFunctionCallOutput item={obj} />;
+  } else if (type === "reasoning" && Array.isArray(obj.summary) && obj.summary.length > 0) {
+    body = <ResponsesReasoning summary={obj.summary} />;
+  } else {
+    body = <JsonBox data={obj} />;
+  }
+
+  return (
+    <div data-testid={`responses-input-item-${index}`} data-item-type={kind}>
+      <ViewBox
+        raw={item}
+        name={`input item ${index + 1} (${badge})`}
+        testId={`prompt-box-input-${index}`}
+        label={<RoleBadge role={badge} />}
+      >
+        {body}
+      </ViewBox>
+    </div>
+  );
+}
+
+/** A message item's content: a string, or a list of content parts. */
+function ResponsesMessageContent({ content }: { content: unknown }) {
+  if (typeof content === "string") {
+    return content.length > 0 ? <TextOrJson text={content} /> : <Muted>(empty)</Muted>;
+  }
+  if (Array.isArray(content)) {
+    if (content.length === 0) return <Muted>(empty)</Muted>;
+    return (
+      <div className="space-y-2">
+        {content.map((part, i) => (
+          <ResponsesContentPart key={i} part={part} />
+        ))}
+      </div>
+    );
+  }
+  if (content == null) return <Muted>(empty)</Muted>;
+  return <JsonBox data={content} />;
+}
+
+/** What an image, file or audio part points at, without inlining a
+ *  data URL's bytes. */
+function partReference(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return value.startsWith("data:") ? "data URL" : value;
+}
+
+/** One content part of a message item, in the Responses API's terms. */
+function ResponsesContentPart({ part }: { part: unknown }) {
+  if (typeof part === "string") return <TextOrJson text={part} />;
+  if (!isPlainObject(part)) return <JsonBox data={part} />;
+  const type = typeof part.type === "string" ? part.type : "";
+  if ((type === "input_text" || type === "output_text") && typeof part.text === "string") {
+    return <TextOrJson text={part.text} />;
+  }
+  if (type === "refusal" && typeof part.refusal === "string") {
+    return (
+      <div data-testid="responses-part-refusal">
+        <BlockLabel>refusal</BlockLabel>
+        <TextOrJson text={part.refusal} />
+      </div>
+    );
+  }
+  if (type === "input_image" || type === "input_file" || type === "input_audio") {
+    const audio = isPlainObject(part.input_audio) ? part.input_audio : null;
+    const detail = [
+      part.filename,
+      part.detail,
+      audio?.format,
+      partReference(part.image_url),
+      partReference(part.file_url),
+      part.file_id,
+    ]
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+      .join(" · ");
+    return (
+      <Muted testId="responses-part-media">
+        [{type}
+        {detail ? ` · ${detail}` : ""}]
+      </Muted>
+    );
+  }
+  return <JsonBox data={part} />;
+}
+
+/** A call the model made: the function's name, its ``call_id`` and its
+ *  arguments (a JSON string, shown as fields when it parses). */
+function ResponsesFunctionCall({ item }: { item: Record<string, unknown> }) {
+  const args = item.arguments;
+  const parsed = typeof args === "string" ? (parseJsonContainer(args) ?? args) : args;
+  return (
+    <div
+      data-testid="responses-function-call"
+      className="rounded-md p-2.5"
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+          {typeof item.name === "string" && item.name ? item.name : "function"}
+        </span>
+        <CallId value={item.call_id} />
+      </div>
+      <div className="mt-2">
+        {isPlainObject(parsed) && Object.keys(parsed).length > 0 ? (
+          <KeyValueList data={parsed} />
+        ) : parsed == null || parsed === "" || (isPlainObject(parsed) && Object.keys(parsed).length === 0) ? (
+          <Muted>(no arguments)</Muted>
+        ) : (
+          <BlockValue value={parsed} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The result handed back for a call: its ``call_id`` and its output (a
+ *  string, or a list of content parts). */
+function ResponsesFunctionCallOutput({ item }: { item: Record<string, unknown> }) {
+  const output = item.output;
+  return (
+    <div data-testid="responses-function-call-output" className="space-y-1">
+      <CallId value={item.call_id} />
+      {typeof output === "string" ? (
+        output.length > 0 ? <TextOrJson text={output} /> : <Muted>(empty)</Muted>
+      ) : Array.isArray(output) ? (
+        <ResponsesMessageContent content={output} />
+      ) : output == null ? (
+        <Muted>(no output)</Muted>
+      ) : (
+        <JsonBox data={output} />
+      )}
+    </div>
+  );
+}
+
+/** A reasoning item's summary text. */
+function ResponsesReasoning({ summary }: { summary: unknown[] }) {
+  return (
+    <div data-testid="responses-reasoning" className="space-y-2">
+      {summary.map((entry, i) =>
+        isPlainObject(entry) && typeof entry.text === "string" ? (
+          <div key={i} className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>
+            {entry.text}
+          </div>
+        ) : (
+          <JsonBox key={i} data={entry} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function CallId({ value }: { value: unknown }) {
+  if (typeof value !== "string" || !value) return null;
+  return (
+    <span data-testid="responses-call-id" className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={value}>
+      {value}
+    </span>
+  );
 }
 
 /* ---- OpenTelemetry GenAI content ----

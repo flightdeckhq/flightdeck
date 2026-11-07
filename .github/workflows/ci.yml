@@ -759,11 +759,12 @@ jobs:
         # for targeted runs.
         run: make test-integration
 
-      - name: Go tests that need Postgres
+      - name: Go tests that need Postgres or NATS
         # The Go tests that read TEST_POSTGRES_URL or
         # TEST_ASSEMBLER_POSTGRES_URL skip in the Go job, which has no
         # database. This step runs them against this stack's Postgres,
-        # so they run on both majors the matrix covers.
+        # so they run on both majors the matrix covers, and runs the
+        # TEST_NATS_URL tests against this stack's NATS.
         # scripts/go-db-tests.sh gives each package a fresh database
         # (init.sql seed, then the workers' migrate-only mode up to the
         # newest migration), fails on any skipped test in those
@@ -1101,6 +1102,58 @@ jobs:
           render dashboard --set podSecurityContext=null \
             | grep -qE '^ +runAsUser: 101$' \
             || { echo "FAIL: podSecurityContext=null must still render the dashboard's own context"; exit 1; }
+
+      - name: helm template sets the FLIGHTDECK stream's limits and replicas
+        # Ingestion applies these to the stream at startup. Replicas
+        # default to 3 on a NATS cluster of 3 or more servers and to 1
+        # below that, and a count the cluster cannot place, or a limit
+        # ingestion would refuse, fails the render.
+        run: |
+          set -e
+          render() {
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only templates/configmap.yaml "$@"
+          }
+          expect() {
+            local want="$1"; shift
+            grep -qE "^ +$want$" <<<"$(render "$@")" \
+              || { echo "FAIL: want $want for $*"; render "$@" | grep STREAM; exit 1; }
+          }
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS: "72"'
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "5120"'
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"'
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' --set nats.replicas=1
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' --set nats.replicas=2
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"' --set nats.replicas=5
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "5"' --set nats.replicas=5 --set nats.jetstream.stream.replicas=5
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "30720"' -f helm/values.prod.yaml
+          refuse() {
+            local msg="$1"; shift
+            if render "$@" > /tmp/helm-out 2> /tmp/helm-err; then
+              echo "EXPECTED FAILURE for $*"; exit 1
+            fi
+            grep -q "$msg" /tmp/helm-err \
+              || { echo "Expected '$msg' for $*; got:"; cat /tmp/helm-err; exit 1; }
+          }
+          refuse "must not exceed nats.replicas" --set nats.replicas=1 --set nats.jetstream.stream.replicas=3
+          refuse "must be between 1 and 5" --set nats.replicas=7 --set nats.jetstream.stream.replicas=6
+          refuse "maxAgeHours must be at least 1" --set nats.jetstream.stream.maxAgeHours=0
+          refuse "maxSizeMiB must be at least 64" --set nats.jetstream.stream.maxSizeMiB=10
+          refuse "must not be 2" --set nats.jetstream.stream.replicas=2
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.stream.maxSizeMiB=7681
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.fileStore.size=50Gi --set nats.jetstream.stream.maxSizeMiB=38401
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "7680"' --set nats.jetstream.stream.maxSizeMiB=7680
+          # A change to the settings rolls the ingestion pods, which
+          # apply them at startup.
+          sum() {
+            helm template flightdeck helm/ --set postgres.password=ci-test-password \
+              --set api.env=development --show-only templates/ingestion/deployment.yaml "$@" \
+              | grep 'checksum/nats-stream'
+          }
+          [ "$(sum)" != "$(sum --set nats.jetstream.stream.maxAgeHours=24)" ] \
+            || { echo "FAIL: the ingestion pod annotation must change with the stream settings"; exit 1; }
 
       - name: helm template in development mode renders with defaults
         run: |

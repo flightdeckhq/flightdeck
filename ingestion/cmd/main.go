@@ -75,7 +75,11 @@ func main() {
 	}
 	defer nc.Close()
 
-	publisher, err := inats.NewPublisher(nc)
+	publisher, err := inats.NewPublisher(nc, inats.StreamSettings{
+		MaxAge:   cfg.StreamMaxAge,
+		MaxBytes: cfg.StreamMaxBytes,
+		Replicas: cfg.StreamReplicas,
+	})
 	if err != nil {
 		slog.Error("NATS publisher setup failed", "err", err)
 		os.Exit(1)

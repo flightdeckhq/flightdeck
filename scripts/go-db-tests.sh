@@ -19,6 +19,11 @@
 # outside the list opens Postgres or reads a Postgres DSN variable (a
 # new DB-gated package must be added to DB_PACKAGES).
 #
+# The Go tests that need a real NATS server (gated on TEST_NATS_URL) run
+# here too, against the stack's NATS, under the same rules with
+# NATS_PACKAGES. They create streams of their own and delete them; the
+# FLIGHTDECK stream is never touched.
+#
 # Requires: the dev stack running (`make dev`), Go, docker.
 # Usage: make test-go-db   (or scripts/go-db-tests.sh)
 #
@@ -27,11 +32,14 @@
 #   PG_BASE_URL    DSN prefix the tests connect through, without the
 #                  database name (default
 #                  postgres://flightdeck:flightdeck_dev@127.0.0.1:5432)
+#   NATS_TEST_URL  NATS server the TEST_NATS_URL tests use (default
+#                  nats://127.0.0.1:4222, the dev stack's loopback port)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_CONTAINER="${PG_CONTAINER:-docker-postgres-1}"
 PG_BASE_URL="${PG_BASE_URL:-postgres://flightdeck:flightdeck_dev@127.0.0.1:5432}"
+NATS_TEST_URL="${NATS_TEST_URL:-nats://127.0.0.1:4222}"
 MIGRATIONS_DIR="$ROOT/docker/postgres/migrations"
 
 # Every Go test package with a test that opens Postgres through a DSN
@@ -46,6 +54,12 @@ DB_PACKAGES=(
   ingestion/internal/session
   workers/internal/processor
   workers/internal/writer
+)
+
+# Every Go test package with a test that reads TEST_NATS_URL, as
+# <module>/<package dir>.
+NATS_PACKAGES=(
+  ingestion/internal/nats
 )
 
 # How long to wait for Postgres to accept connections. The stack's own
@@ -83,6 +97,21 @@ done
 for pkg in "${DB_PACKAGES[@]}"; do
   if [[ ! " ${found[*]-} " == *" $pkg "* ]]; then
     fail "$pkg is in DB_PACKAGES but no test there opens Postgres or reads a Postgres DSN; remove it from scripts/go-db-tests.sh"
+  fi
+done
+found_nats=()
+while IFS= read -r pkg; do found_nats+=("$pkg"); done < <(
+  grep -rn 'TEST_NATS_URL' --include='*_test.go' api ingestion workers |
+    cut -d: -f1 | xargs -r -n1 dirname | sort -u
+)
+for pkg in ${found_nats[@]+"${found_nats[@]}"}; do
+  if [[ ! " ${NATS_PACKAGES[*]} " == *" $pkg "* ]]; then
+    fail "$pkg has a test that reads TEST_NATS_URL but is not in NATS_PACKAGES in scripts/go-db-tests.sh"
+  fi
+done
+for pkg in "${NATS_PACKAGES[@]}"; do
+  if [[ ! " ${found_nats[*]-} " == *" $pkg "* ]]; then
+    fail "$pkg is in NATS_PACKAGES but no test there reads TEST_NATS_URL; remove it from scripts/go-db-tests.sh"
   fi
 done
 
@@ -191,8 +220,41 @@ for pkg in "${DB_PACKAGES[@]}"; do
   summary+=("$line")
 done
 
+# --- Run each NATS-gated package against the stack's NATS -----------------
+for pkg in "${NATS_PACKAGES[@]}"; do
+  module="${pkg%%/*}"
+  log="$workdir/test-nats-$(echo "$pkg" | tr '/' '_').log"
+  group "go test ./${pkg#*/}/ ($module) on NATS $NATS_TEST_URL"
+  start=$SECONDS
+  set +e
+  (
+    cd "$module" &&
+      TEST_NATS_URL="$NATS_TEST_URL" go test -count=1 -v "./${pkg#*/}/"
+  ) 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  set -e
+  endgroup
+  passed="$(grep -cE '^\s*--- PASS' "$log" || true)"
+  skipped="$(grep -cE '^\s*--- SKIP' "$log" || true)"
+  line="$pkg (NATS): $passed passed, $skipped skipped, $((SECONDS - start))s"
+  if [ "$rc" -ne 0 ]; then
+    line="$line, FAILED (exit $rc)"
+    status=1
+  fi
+  if [ "$skipped" -ne 0 ]; then
+    line="$line, FAILED (a test skipped)"
+    grep -E -A1 '^\s*--- SKIP' "$log" || true
+    status=1
+  fi
+  if [ "$passed" -eq 0 ]; then
+    line="$line, FAILED (no test passed)"
+    status=1
+  fi
+  summary+=("$line")
+done
+
 echo
-echo "Go DB tests on Postgres $pg_version:"
+echo "Go DB and NATS tests on Postgres $pg_version:"
 printf '  %s\n' "${summary[@]}"
 if [ "$status" -ne 0 ]; then
   fail "Go DB tests failed; see the package groups above"

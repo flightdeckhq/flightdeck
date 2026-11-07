@@ -88,6 +88,83 @@ routes can form).
 {{- end -}}
 
 {{/*
+Replica count of the FLIGHTDECK JetStream stream. Unset, it is 3 when
+the NATS cluster has at least 3 servers and 1 otherwise: 3 replicas keep
+a quorum through the loss of one server, while 2 need both servers for
+a quorum, so they would stop the stream on either server's loss. Set,
+it must be between 1 and 5 (JetStream's maximum), not 2 for that
+reason, and at most nats.replicas, since JetStream places each replica
+on its own server.
+*/}}
+{{- define "flightdeck.natsStreamReplicas" -}}
+{{- $servers := int .Values.nats.replicas -}}
+{{- $set := .Values.nats.jetstream.stream.replicas -}}
+{{- $replicas := 1 -}}
+{{- if not (kindIs "invalid" $set) -}}
+{{- $replicas = int $set -}}
+{{- else if ge $servers 3 -}}
+{{- $replicas = 3 -}}
+{{- end -}}
+{{- if or (lt $replicas 1) (gt $replicas 5) -}}
+{{- fail (printf "nats.jetstream.stream.replicas must be between 1 and 5, got %d" $replicas) -}}
+{{- end -}}
+{{- if eq $replicas 2 -}}
+{{- fail "nats.jetstream.stream.replicas must not be 2: two replicas need both servers for a quorum, so losing either one stops the stream; use 1 or 3" -}}
+{{- end -}}
+{{- if gt $replicas $servers -}}
+{{- fail (printf "nats.jetstream.stream.replicas (%d) must not exceed nats.replicas (%d): JetStream places each stream replica on its own server" $replicas $servers) -}}
+{{- end -}}
+{{- $replicas -}}
+{{- end -}}
+
+{{/*
+The FLIGHTDECK stream's age and size limits, validated so a bad value
+fails the render instead of the ingestion pods' startup (which refuses
+the same values).
+*/}}
+{{- define "flightdeck.natsStreamMaxAgeHours" -}}
+{{- $hours := int .Values.nats.jetstream.stream.maxAgeHours -}}
+{{- if lt $hours 1 -}}
+{{- fail (printf "nats.jetstream.stream.maxAgeHours must be at least 1, got %d" $hours) -}}
+{{- end -}}
+{{- $hours -}}
+{{- end -}}
+
+{{- define "flightdeck.natsStreamMaxSizeMiB" -}}
+{{- $mib := int .Values.nats.jetstream.stream.maxSizeMiB -}}
+{{- if lt $mib 64 -}}
+{{- fail (printf "nats.jetstream.stream.maxSizeMiB must be at least 64, got %d" $mib) -}}
+{{- end -}}
+{{- $volume := include "flightdeck.natsFileStoreMiB" . -}}
+{{- if and $volume (gt (mul $mib 4) (mul (int $volume) 3)) -}}
+{{- fail (printf "nats.jetstream.stream.maxSizeMiB (%d) must be at most 75%% of nats.jetstream.fileStore.size (%s, %s MiB): a NATS server reserves at most 75%% of its volume's free space, so it would refuse the stream" $mib .Values.nats.jetstream.fileStore.size $volume) -}}
+{{- end -}}
+{{- $mib -}}
+{{- end -}}
+
+{{/*
+nats.jetstream.fileStore.size in MiB, for the size check above. Only
+the plain forms are read (Ki, Mi, Gi, Ti and K, M, G, T, with an
+integer); anything else renders empty and skips the check.
+*/}}
+{{- define "flightdeck.natsFileStoreMiB" -}}
+{{- $size := toString .Values.nats.jetstream.fileStore.size -}}
+{{- if regexMatch "^[0-9]+(Ki|Mi|Gi|Ti|K|M|G|T)$" $size -}}
+{{- $n := int64 (regexFind "^[0-9]+" $size) -}}
+{{- $unit := trimPrefix (toString $n) $size -}}
+{{- if eq $unit "Ki" -}}{{ div $n 1024 }}
+{{- else if eq $unit "Mi" -}}{{ $n }}
+{{- else if eq $unit "Gi" -}}{{ mul $n 1024 }}
+{{- else if eq $unit "Ti" -}}{{ mul $n 1048576 }}
+{{- else if eq $unit "K" -}}{{ div (mul $n 1000) 1048576 }}
+{{- else if eq $unit "M" -}}{{ div (mul $n 1000000) 1048576 }}
+{{- else if eq $unit "G" -}}{{ div (mul $n 1000000000) 1048576 }}
+{{- else if eq $unit "T" -}}{{ div (mul $n 1000000000000) 1048576 }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Bundled Postgres password. Fails the render when postgres.externalUrl is
 empty AND postgres.password is unset — prior releases silently defaulted
 to the literal "flightdeck", which left every bundled-Postgres install

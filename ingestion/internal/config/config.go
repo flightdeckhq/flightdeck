@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -31,7 +32,62 @@ type Config struct {
 	// an integration run can claim faster; it is not a tuning knob, and
 	// the Helm chart does not set it.
 	GenAIClaimInterval time.Duration
+	// StreamMaxAge, StreamMaxBytes and StreamReplicas are the limits
+	// and the replica count ingestion keeps the FLIGHTDECK JetStream
+	// stream at (see the nats package), from
+	// FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS,
+	// FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB and
+	// FLIGHTDECK_NATS_STREAM_REPLICAS. Load() panics on a value outside
+	// the bounds the constants below state.
+	StreamMaxAge   time.Duration
+	StreamMaxBytes int64
+	StreamReplicas int
 }
+
+// DefaultStreamMaxAgeHours is how long the FLIGHTDECK stream keeps a
+// message. The stream's retention is by limits, so this is also how
+// long the workers can be down before the events published at the
+// start of the outage are removed unprocessed. 72 hours covers a
+// workers outage that starts on a Friday evening and is fixed on
+// Monday morning (about 64 hours). A processed message is never read
+// again, so keeping messages longer only costs disk.
+const DefaultStreamMaxAgeHours = 72
+
+// MinStreamMaxAgeHours is the shortest max age the stream may be
+// given. A workers restart or deploy takes minutes; an age limit below
+// an hour would let a routine outage, or a backlog after one, remove
+// events before they are processed.
+const MinStreamMaxAgeHours = 1
+
+// DefaultStreamMaxSizeMiB is the most the FLIGHTDECK stream stores on
+// each NATS server, in MiB (5 GiB). Events average about 2 KiB on the
+// wire (the dev stack's stream held 691,171 events in 1.4 GB), so
+// 5 GiB holds about 2.6 million events: 72 hours of a sustained 10
+// events a second, the age limit's window for a busy fleet. It bounds
+// the NATS store on a single compose host, where the stream shares the
+// disk with Postgres, to a size any host running the stack can spare.
+// The Helm chart sets its own value to fit its NATS volume.
+const DefaultStreamMaxSizeMiB = 5120
+
+// MinStreamMaxSizeMiB is the smallest max size the stream may be
+// given, in MiB. 64 MiB holds about 30,000 events of the typical 2 KiB,
+// but only 64 events of NATS's 1 MiB maximum. Anything smaller reads as
+// a unit mistake (a size in GiB typed into a MiB setting) and would
+// leave room for a handful of large events.
+const MinStreamMaxSizeMiB = 64
+
+// MaxStreamReplicas is the most replicas JetStream allows a stream.
+const MaxStreamReplicas = 5
+
+// mib is the number of bytes in a MiB.
+const mib = 1 << 20
+
+// maxStreamMaxSizeMiB and maxStreamMaxAgeHours keep the conversions to
+// bytes and to a time.Duration from overflowing int64.
+const (
+	maxStreamMaxSizeMiB  = math.MaxInt64 / mib
+	maxStreamMaxAgeHours = math.MaxInt64 / int64(time.Hour)
+)
 
 // MinGenAIClaimInterval is the shortest claim interval
 // FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS may set. Every replica claims on
@@ -53,10 +109,29 @@ func Load() Config {
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		RateLimitPerMinute:  envIntOrDefault("FLIGHTDECK_RATE_LIMIT_PER_MINUTE", 1000),
 		GenAIClaimInterval:  time.Duration(envIntOrDefault("FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS", 0)) * time.Millisecond,
+		StreamReplicas:      envIntOrDefault("FLIGHTDECK_NATS_STREAM_REPLICAS", 1),
 	}
 	if cfg.GenAIClaimInterval != 0 && cfg.GenAIClaimInterval < MinGenAIClaimInterval {
 		panic(fmt.Sprintf("environment variable FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS must be 0 (the default) or at least %d",
 			MinGenAIClaimInterval.Milliseconds()))
+	}
+	ageHours := envIntOrDefault("FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS", DefaultStreamMaxAgeHours)
+	if ageHours < MinStreamMaxAgeHours || int64(ageHours) > maxStreamMaxAgeHours {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS must be between %d and %d, got %d -- "+
+			"a shorter age limit would remove events a routine workers restart left unprocessed",
+			MinStreamMaxAgeHours, maxStreamMaxAgeHours, ageHours))
+	}
+	cfg.StreamMaxAge = time.Duration(ageHours) * time.Hour
+	sizeMiB := envIntOrDefault("FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB", DefaultStreamMaxSizeMiB)
+	if sizeMiB < MinStreamMaxSizeMiB || int64(sizeMiB) > maxStreamMaxSizeMiB {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB must be between %d and %d (MiB), got %d -- "+
+			"a smaller value reads as a unit mistake and would hold only a handful of events",
+			MinStreamMaxSizeMiB, maxStreamMaxSizeMiB, sizeMiB))
+	}
+	cfg.StreamMaxBytes = int64(sizeMiB) * mib
+	if cfg.StreamReplicas < 1 || cfg.StreamReplicas > MaxStreamReplicas {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_NATS_STREAM_REPLICAS must be between 1 and %d, got %d",
+			MaxStreamReplicas, cfg.StreamReplicas))
 	}
 	return cfg
 }

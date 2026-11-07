@@ -46,6 +46,11 @@ class Provider(StrEnum):
     * ``Provider.CLAUDE_AGENT_SDK`` — wrap around
       ``claude_agent_sdk.query`` and ``ClaudeSDKClient``, reporting each
       Agent SDK run as its own session from the SDK's message stream.
+    * ``Provider.OPENAI_AGENTS`` — wrap around the OpenAI Agents SDK's
+      ``AgentRunner.run`` / ``run_streamed`` and its guardrails: a child
+      session per agent and per agent used as a tool, hand-offs and
+      guardrail tripwires. Patched only when ``agents`` comes from the
+      ``openai-agents`` distribution.
 
     Each member's ``.value`` is the canonical string name. The string
     name is what ``patch()`` matches against internally, so passing
@@ -59,3 +64,4 @@ class Provider(StrEnum):
     CREWAI = "crewai"
     LANGGRAPH = "langgraph"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
+    OPENAI_AGENTS = "openai_agents"

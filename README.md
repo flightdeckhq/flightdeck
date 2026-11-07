@@ -135,7 +135,7 @@ Not supported yet: Gemini through `google-genai` ([#276](https://github.com/flig
 
 ### Frameworks
 
-Flightdeck reaches a framework two ways. The sensor meters and enforces every LLM call the framework makes through the Anthropic or OpenAI SDK or litellm, live, and for the frameworks it wraps opens a child session per sub-agent. The [OpenTelemetry receiver](#agent-frameworks-over-opentelemetry) maps the GenAI spans some frameworks export: their agents, model calls and tool calls, from any language, but observe only and once the run has ended. A framework gets a native wrap where that adds enforcement per sub-agent, live events or structure OpenTelemetry does not report.
+Flightdeck reaches a framework two ways. The sensor meters and enforces every LLM call the framework makes through the Anthropic or OpenAI SDK or litellm, live, and for the frameworks it wraps opens a child session per sub-agent. The [OpenTelemetry receiver](#agent-frameworks-over-opentelemetry) maps the GenAI spans some frameworks export: their agents, model calls and tool calls, from any language, but observe only and once the run has ended. A framework gets a native wrap where that adds enforcement inside the run, live events or structure OpenTelemetry does not report; its model calls stay on the sensor's session, so a Stop or a budget covers the whole run.
 
 | Framework | Sensor: LLM calls | Sensor: sub-agents | OpenTelemetry |
 |---|---|---|---|
@@ -144,7 +144,7 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; not on its Gemini, Azure or Bedrock providers | yes | no |
 | Claude Agent SDK (Python) | yes | its own session per run | no |
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
-| OpenAI Agents SDK | yes | planned | yes |
+| OpenAI Agents SDK 0.6+ | yes (not over its Responses WebSocket transport) | yes: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires (`pip install flightdeck-sensor[openai-agents]`) | yes |
 | Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
 | LlamaIndex | yes | planned | no |
 | Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |

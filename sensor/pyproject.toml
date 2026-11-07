@@ -68,6 +68,13 @@ mcp = ["mcp>=1.28,<3"]
 # ``ClaudeSDKClient`` and reads the SDK's message types; 0.2.168 is the
 # release it was built and tested against, and 0.3 may change them.
 claude-agent-sdk = ["claude-agent-sdk>=0.2.168,<0.3"]
+# OpenAI Agents SDK. The interceptor wraps ``AgentRunner.run`` and
+# ``run_streamed`` and adds run hooks; 0.6 is the oldest release whose
+# runner, hook and streamed-result names it reads (CI's SDK-floors lane
+# runs the unit suite against 0.6.0, and a canary test pins the private
+# names). No upper bound: a release that renames them fails the canary
+# in the SDK-majors lane instead of being held back here.
+openai-agents = ["openai-agents>=0.6"]
 # Test tooling without the frameworks. The CI lane that runs the unit
 # suite against the newest SDK majors installs this, because the
 # framework packages in ``dev`` pin the SDKs below their current majors.
@@ -137,6 +144,11 @@ dev = [
     "langchain-mcp-adapters>=0.3,<0.4",
     # Drives the Claude Agent SDK interceptor tests.
     "claude-agent-sdk>=0.2.168,<0.3",
+    # Drives the OpenAI Agents SDK interceptor tests and playground 39.
+    # 0.21 and later require openai 3, which langchain-openai and CrewAI
+    # hold back, so this lane stays on 0.20.x; the SDK-majors lane tests
+    # the newest release.
+    "openai-agents>=0.20,<0.21",
     "langgraph>=1,<2",
     "llama-index-tools-mcp>=0.1",
     "mcpadapt>=0.0.6",
@@ -171,6 +183,7 @@ sdk-majors = [
     "openai>=3",
     "litellm>=1.83.0",
     "mcp>=2,<3",
+    "openai-agents>=0.21",
 ]
 # The oldest openai release the sensor supports, the openai extra's
 # floor. CI's OpenAI-floor lane installs this group with the test extra
@@ -196,6 +209,7 @@ sdk-floors = [
     "openai==2.8.0",
     "litellm==1.83.0",
     "mcp==1.28.0",
+    "openai-agents==0.6.0",
 ]
 
 [tool.uv]
@@ -212,6 +226,8 @@ conflicts = [
     ],
     # Every litellm release the litellm extra admits needs a newer openai.
     [{ extra = "litellm" }, { group = "openai-floor" }],
+    # Every openai-agents release needs openai 2.8 or newer.
+    [{ extra = "openai-agents" }, { group = "openai-floor" }],
 ]
 # Every `uv lock` resolves to releases at least 14 days old: brand-new
 # releases are where hijacked or broken versions are caught and yanked

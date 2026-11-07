@@ -43,6 +43,7 @@ SDK_MODULES = (
     "crewai",
     "langgraph.graph",
     "claude_agent_sdk",
+    "agents",
 )
 # Bound for the in-process waits on another thread.
 THREAD_WAIT_SECS = 10.0
@@ -103,13 +104,18 @@ def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> 
     elif sdk == "mcp":
         calls = [e for e in events if e["event_type"] == "mcp_tool_call"]
         assert [c["tool_name"] for c in calls] == ["echo"], events
-    elif sdk == "langgraph.graph":
+    elif sdk in ("langgraph.graph", "agents"):
         children = [
             e
             for e in events
             if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
         ]
         assert [c.get("agent_role") for c in children] == ["worker"], events
+        if sdk == "agents":
+            # The agent's model call, metered by the OpenAI patch on the
+            # sensor's own session.
+            post_calls = [e for e in events if e["event_type"] == "post_call"]
+            assert [p["session_id"] for p in post_calls] == [session_id], events
 
 
 # ----------------------------------------------------------------------

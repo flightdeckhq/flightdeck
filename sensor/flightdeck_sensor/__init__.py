@@ -94,6 +94,12 @@ if TYPE_CHECKING:
     from flightdeck_sensor.interceptor.openai import (
         unpatch_openai_classes as unpatch_openai_classes,
     )
+    from flightdeck_sensor.interceptor.openai_agents import (
+        patch_openai_agents as patch_openai_agents,
+    )
+    from flightdeck_sensor.interceptor.openai_agents import (
+        unpatch_openai_agents as unpatch_openai_agents,
+    )
 
 Parameter = DirectiveParameter
 
@@ -235,6 +241,15 @@ _SDK_TARGETS: tuple[_SDKTarget, ...] = (
         "claude_agent_sdk",
         "patch_claude_agent_sdk",
         "unpatch_claude_agent_sdk",
+    ),
+    # ``agents`` is a generic import name: the interceptor patches it only
+    # when the openai-agents distribution is installed.
+    _SDKTarget(
+        Provider.OPENAI_AGENTS,
+        "agents",
+        "openai_agents",
+        "patch_openai_agents",
+        "unpatch_openai_agents",
     ),
 )
 
@@ -811,7 +826,10 @@ def patch(
             lands as a child session) and ``CLAUDE_AGENT_SDK`` (wraps
             the SDK's ``query()`` path and ``ClaudeSDKClient`` so each
             Agent SDK run lands as its own ``claude_agent_sdk``
-            session). Silent no-op when a target's
+            session) and ``OPENAI_AGENTS`` (wraps the OpenAI Agents SDK's
+            runner and guardrails so each agent, and each agent used as
+            a tool, lands as a child session, with its hand-offs and
+            guardrail tripwires). Silent no-op when a target's
             SDK is not installed; raw strings outside the canonical
             set are silently ignored to preserve backward compat.
 

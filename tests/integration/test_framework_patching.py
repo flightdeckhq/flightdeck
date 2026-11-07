@@ -70,6 +70,7 @@ from .conftest import (
     TOKEN,
     delete_flavor_data,
     get_session,
+    wait_until,
 )
 from .test_sensor_e2e import (
     ANTHROPIC_RESPONSE,
@@ -971,3 +972,74 @@ def test_openai_embeddings_intercepted(
         )
 
         _assert_session_in_fleet_with_context(flavor)
+
+
+# ======================================================================
+# A framework imported after init()
+# ======================================================================
+
+
+@pytest.fixture
+def only_agno_classifier(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The sensor's classifiers reduced to Agno's, with no ``agno`` module
+    loaded, so the framework is unknown at init() whatever this process
+    imported before; the test loads a stand-in ``agno`` afterwards."""
+    import sys
+
+    from flightdeck_sensor.core import context
+
+    monkeypatch.setattr(
+        context.FrameworkCollector, "CLASSIFIERS", [context.AgnoClassifier()]
+    )
+    monkeypatch.delitem(sys.modules, "agno", raising=False)
+    yield
+    sys.modules.pop("agno", None)
+
+
+def test_a_framework_imported_after_init_lands_on_the_session(
+    sensor_reset: None,
+    unique_flavor: str,
+    only_agno_classifier: None,
+) -> None:
+    """init() and patch() load no framework, so one the application
+    imports afterwards is unknown at session_start. The next call carries
+    its label, and the worker fills the session's null framework and adds
+    the label to context.frameworks, which the analytics framework
+    dimension groups by."""
+    import sys
+    import types
+
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_with_latency(rmock)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch()
+        _wait_for_event_type(flavor, "session_start", timeout=10)
+        started = _query_session_for_flavor(flavor)
+        assert started is not None
+        assert started["framework"] is None
+        assert "frameworks" not in (started.get("context") or {})
+
+        # The application imports its framework now.
+        agno = types.ModuleType("agno")
+        agno.__version__ = "2.1.0"  # type: ignore[attr-defined]
+        sys.modules["agno"] = agno
+
+        client = anthropic.Anthropic(api_key="test-key")
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+        _wait_for_event_type(flavor, "post_call", timeout=15)
+
+    def labelled() -> bool:
+        sess = _query_session_for_flavor(flavor)
+        return bool(sess and sess.get("framework") == "agno")
+
+    wait_until(labelled, timeout=15, msg=f"session of {flavor} never got framework=agno")
+    sess = _query_session_for_flavor(flavor)
+    assert sess is not None
+    assert sess["context"]["frameworks"] == ["agno"]
+    assert sess["context"].get("hostname"), "the rest of the context is kept"

@@ -799,21 +799,41 @@ func insertEventContent(ctx context.Context, q querier, eventID, sessionID strin
 	return nil
 }
 
-// UpdateSessionModel updates the session's model field. Idempotent and
-// backward-compatible: when *model* is empty, the existing value is
-// preserved (NULLIF maps "" to NULL, and COALESCE keeps the prior value).
-// Sessions with no post_call event keep model = NULL.
-func (w *Writer) UpdateSessionModel(ctx context.Context, sessionID, model string) error {
-	if model == "" {
+// UpdateSessionFromCall records the model and framework of an event on
+// HandlePostCall's path (a call, tool call, error or signal) on its
+// session. Idempotent and backward-compatible: an empty *model* keeps the
+// stored one (NULLIF maps "" to NULL, and COALESCE keeps the prior value),
+// so sessions with no post_call keep model = NULL.
+//
+// *framework* fills sessions.framework only while it is NULL: the
+// session_start carried none because the sensor detected the framework
+// after init(), on a later event. That fill also appends the bare label
+// to context.frameworks, which the analytics framework dimension groups
+// by, unless the context is still NULL or '{}' (a lazily created row,
+// whose real context a later event's UpgradeSessionContext writes) or
+// already lists it. A stored framework is never replaced. Nothing is
+// written when the call brings neither a model nor a framework to fill.
+func (w *Writer) UpdateSessionFromCall(ctx context.Context, sessionID, model, framework string) error {
+	if model == "" && framework == "" {
 		return nil
 	}
 	_, err := w.pool.Exec(ctx, `
 		UPDATE sessions
-		SET model = COALESCE(NULLIF($2, ''), model)
+		SET model = COALESCE(NULLIF($2, ''), model),
+		    framework = COALESCE(framework, NULLIF($3, '')),
+		    context = CASE
+		        WHEN framework IS NULL AND $3 <> ''
+		             AND context IS NOT NULL AND context <> '{}'::jsonb
+		             AND COALESCE(jsonb_typeof(context->'frameworks'), 'array') = 'array'
+		             AND NOT COALESCE(context->'frameworks', '[]'::jsonb) ? $3
+		        THEN jsonb_set(context, '{frameworks}',
+		                       COALESCE(context->'frameworks', '[]'::jsonb) || to_jsonb($3::text))
+		        ELSE context END
 		WHERE session_id = $1::uuid
-	`, sessionID, model)
+		  AND ($2 <> '' OR (framework IS NULL AND $3 <> ''))
+	`, sessionID, model, framework)
 	if err != nil {
-		return fmt.Errorf("update model for %s: %w", sessionID, err)
+		return fmt.Errorf("update model and framework for %s: %w", sessionID, err)
 	}
 	return nil
 }

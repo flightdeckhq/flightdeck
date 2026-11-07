@@ -25,6 +25,7 @@ from flightdeck_sensor import config as _env
 from flightdeck_sensor.core import import_hook as _import_hook
 from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.context import collect as _collect_context
+from flightdeck_sensor.core.context import framework_label as _framework_label
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
     ConfigurationError,
@@ -661,11 +662,12 @@ def init(
         # the call. A LangChain pipeline routing through litellm
         # routing through OpenAI reports ``framework="langchain"``
         # because that's the user's mental model. MCP and every
-        # later interceptor inherit this rule.
+        # later interceptor inherit this rule. A framework imported
+        # after this point is picked up by the session when it builds
+        # a later event (Session._detect_late_framework).
         frameworks = runtime_ctx.get("frameworks") or []
         if frameworks:
-            first = frameworks[0]
-            bare = first.split("/", 1)[0] if isinstance(first, str) else None
+            bare = _framework_label(frameworks[0])
             if bare:
                 _session.record_framework(bare)
 

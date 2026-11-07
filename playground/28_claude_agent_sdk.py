@@ -139,11 +139,19 @@ def _check_session(
             f"no Bash tool_call (tools: {[t.get('tool_name') for t in tools]})"
         )
     billing = {c.get("billing_mode") for c in calls}
+    # The bare framework label, with the SDK's version in context.frameworks.
+    row = _api("GET", f"/v1/sessions/{sdk_session}").get("session") or {}
+    frameworks = (row.get("context") or {}).get("frameworks") or []
+    if row.get("framework") != "claude_agent_sdk":
+        problems.append(f"framework={row.get('framework')!r}, want 'claude_agent_sdk'")
+    if not frameworks or frameworks[0] != f"claude_agent_sdk/{sdk.__version__}":
+        problems.append(f"context.frameworks={frameworks}, want claude_agent_sdk/<version> first")
     print_result(
         label,
         not problems,
         int((time.monotonic() - started) * 1000),
-        f"session={sdk_session} events={kinds} billing={sorted(b or '' for b in billing)}",
+        f"session={sdk_session} events={kinds} billing={sorted(b or '' for b in billing)} "
+        f"framework={row.get('framework')} frameworks={frameworks}",
     )
     if problems:
         raise AssertionError(f"{label}: {problems}")

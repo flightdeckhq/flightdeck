@@ -229,6 +229,11 @@ def test_an_sdk_run_lands_as_its_own_claude_agent_sdk_session(
     assert session["state"] == "closed"
     assert session["context"]["supports_directives"] is True
     assert session["context"]["claude_code_version"] == "2.1.316"
+    # The bare classifier label, with the version in context.frameworks.
+    assert session["framework"] == "claude_agent_sdk"
+    assert session["context"]["frameworks"][0] == (
+        f"claude_agent_sdk/{claude_agent_sdk.__version__}"
+    )
 
 
 @pytest.mark.usefixtures("sensor_reset")

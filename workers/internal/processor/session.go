@@ -611,7 +611,9 @@ func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.
 // model field. The model column on sessions is not populated at
 // session_start (the sensor doesn't know it yet); it is updated here
 // from each post_call event so the API can return a non-null model
-// for sessions that have made LLM calls. Failures in the model update
+// for sessions that have made LLM calls. The call's framework fills a
+// session whose session_start carried none (a framework the sensor
+// detected after init()). Failures in the model and framework update
 // are logged but do not abort processing -- the token update is
 // load-bearing.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
@@ -624,10 +626,8 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 	if skip {
 		return sp.addTokensBeforeEnd(ctx, e)
 	}
-	if e.Model != "" {
-		if err := sp.w.UpdateSessionModel(ctx, e.SessionID, e.Model); err != nil {
-			slog.Warn("update session model failed", "session_id", e.SessionID, "err", logcap.Err(err))
-		}
+	if err := sp.w.UpdateSessionFromCall(ctx, e.SessionID, e.Model, e.Framework); err != nil {
+		slog.Warn("update session model and framework failed", "session_id", e.SessionID, "err", logcap.Err(err))
 	}
 	delta := 0
 	if e.TokensTotal != nil {

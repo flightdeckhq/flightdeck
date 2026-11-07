@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from flightdeck_sensor.core import context as _runtime_context
 from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
@@ -354,6 +355,13 @@ class Session:
         # SensorConfig directly without going through init().
         self._host = config.hostname or socket.gethostname()
         self._framework: str | None = None
+        # How many modules were loaded when the framework classifiers
+        # last ran for an unknown framework (-1: not yet). An application
+        # that imports its framework after init() has none loaded when
+        # init() runs them; while the framework is unknown, building an
+        # event runs them again when this number has changed (see
+        # _detect_late_framework).
+        self._framework_scan_modules = -1
         self._model: str | None = None
 
         # Set by _post_event on the first response envelope where the
@@ -655,6 +663,39 @@ class Session:
         """Record the framework if detected."""
         with self._lock:
             self._framework = framework
+
+    def _detect_late_framework(self) -> None:
+        """Pick up a framework the application imported after init().
+
+        Runs the framework classifiers again while the session's
+        framework is unknown, and only when more modules are loaded than
+        at the last run, so once the label resolves (or while nothing is
+        imported) an event costs one attribute read and one ``len``. The
+        first label found becomes the session's ``framework``, and the
+        versioned entries replace ``context.frameworks`` for the
+        sub-agent ``session_start`` events that inherit the context.
+        Skipped once a signal's shutdown has begun, since nothing on that
+        path may load a module and a distribution-metadata lookup can.
+        Never raises: attribution is best-effort.
+        """
+        if self._framework is not None or self._signal_shutdown is not None:
+            return
+        try:
+            loaded = _runtime_context.module_count()
+            if loaded == self._framework_scan_modules:
+                return
+            self._framework_scan_modules = loaded
+            found = _runtime_context.detect_frameworks()
+            label = _runtime_context.framework_label(found[0]) if found else None
+            if label is None:
+                return
+            with self._lock:
+                if self._framework is not None:
+                    return
+                self._framework = label
+                self._context = {**self._context, "frameworks": found}
+        except Exception:
+            _log.debug("late framework detection failed", exc_info=True)
 
     def record_mcp_server(self, fingerprint: MCPServerFingerprint) -> bool:
         """Append an MCP server fingerprint captured at initialize time.
@@ -966,6 +1007,7 @@ class Session:
         ``incoming_message``, ``outgoing_message``, ``state``,
         ``error``) are added by the caller after this returns.
         """
+        self._detect_late_framework()
         out: dict[str, Any] = {
             "session_id": child_session_id,
             "parent_session_id": self.config.session_id,
@@ -1410,6 +1452,10 @@ class Session:
         """The event's payload. ``lock_wait`` bounds the wait for the
         session's lock (see :meth:`_counters`); a signal's shutdown passes
         it."""
+        if lock_wait is None:
+            # Only a signal's shutdown passes lock_wait, and nothing on
+            # that path may load a module.
+            self._detect_late_framework()
         tokens_used_session, framework, model = self._counters(lock_wait)
 
         is_mcp = event_type.value.startswith("mcp_")

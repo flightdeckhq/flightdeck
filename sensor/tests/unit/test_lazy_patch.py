@@ -44,6 +44,7 @@ SDK_MODULES = (
     "langgraph.graph",
     "llama_index.core",
     "claude_agent_sdk",
+    "agents",
 )
 # Bound for the in-process waits on another thread.
 THREAD_WAIT_SECS = 10.0
@@ -104,23 +105,17 @@ def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> 
     elif sdk == "mcp":
         calls = [e for e in events if e["event_type"] == "mcp_tool_call"]
         assert [c["tool_name"] for c in calls] == ["echo"], events
-    elif sdk == "langgraph.graph":
+    elif sdk in ("langgraph.graph", "llama_index.core", "agents"):
         children = [
             e
             for e in events
             if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
         ]
         assert [c.get("agent_role") for c in children] == ["worker"], events
-    elif sdk == "llama_index.core":
-        children = [
-            e
-            for e in events
-            if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
-        ]
-        assert [c.get("agent_role") for c in children] == ["worker"], events
-        # The agent's model call stays on the sensor's session.
-        calls = [e for e in events if e["event_type"] == "post_call"]
-        assert [c["session_id"] for c in calls] == [session_id], events
+        if sdk != "langgraph.graph":
+            # The agent's model call stays on the sensor's session.
+            calls = [e for e in events if e["event_type"] == "post_call"]
+            assert [c["session_id"] for c in calls] == [session_id], events
 
 
 # ----------------------------------------------------------------------

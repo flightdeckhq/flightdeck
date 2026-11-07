@@ -55,6 +55,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.session import (
+    SUBAGENT_STATE_CLOSED,
+    SUBAGENT_STATE_ERROR,
+    subagent_error,
+)
 from flightdeck_sensor.core.tool_capture import build_tool_capture_content
 from flightdeck_sensor.core.types import EventType, SubagentMessage, SubagentScope
 
@@ -152,11 +157,6 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
-def _error_block(err: BaseException) -> dict[str, Any]:
-    """A child ``session_end``'s error block, as the other wraps build it."""
-    return {"type": type(err).__name__, "message": str(err)}
-
-
 def _subagent_message(body: Any) -> SubagentMessage | None:
     if body is None:
         return None
@@ -241,9 +241,9 @@ class _Tracker:
             self._forget_steps(run)
             failed = run.step_error
             if failed is not None:
-                self._end_child(run, state="error", error=_error_block(failed))
+                self._end_child(run, state=SUBAGENT_STATE_ERROR, error=subagent_error(failed))
             else:
-                self._end_child(run, state="closed", error=None)
+                self._end_child(run, state=SUBAGENT_STATE_CLOSED, error=None)
             return
         if step is not None:
             with self._lock:
@@ -262,8 +262,8 @@ class _Tracker:
         if run is not None:
             self._forget_steps(run)
             failed = err if err is not None else run.step_error
-            error = _error_block(failed) if failed is not None else None
-            self._end_child(run, state="error", error=error)
+            error = subagent_error(failed) if failed is not None else None
+            self._end_child(run, state=SUBAGENT_STATE_ERROR, error=error)
             return
         if step is None:
             return
@@ -282,7 +282,7 @@ class _Tracker:
             self._runs.clear()
         for run in runs:
             self._forget_steps(run)
-            self._end_child(run, state="closed", error=None)
+            self._end_child(run, state=SUBAGENT_STATE_CLOSED, error=None)
 
     def _forget_steps(self, run: _Run) -> None:
         """Drop the run's step spans that never exited (a cancelled run's
@@ -357,7 +357,7 @@ class _Tracker:
                 )
             except Exception:  # noqa: BLE001 -- fail-open per Rule 28
                 _log.debug("emit_agent_handoff failed", exc_info=True)
-            self._emit_end(session, previous, state="closed", error=None)
+            self._emit_end(session, previous, state=SUBAGENT_STATE_CLOSED, error=None)
         try:
             session.emit_subagent_session_start(
                 child_session_id=scope.child_session_id,

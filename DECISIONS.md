@@ -783,3 +783,21 @@ receiver stores, so one hand-off reads the same from either source.
 shape for one fact); carrying the handed-over input as content (it is
 already on the transfer's `tool_call` and the next call); posting through
 the event queue (a child's synchronous `session_end` can overtake it).
+
+## D259 -- The OpenAI Agents SDK wrap opens a child per agent, keeps model calls on the sensor's session, and reports guardrails as `guardrail_tripwire`
+
+**Date:** 2026-11-07
+**Decision:** corrects D256's "enforcement per child": the CrewAI,
+LangGraph and OpenAI Agents wraps keep model, tool and MCP events on the
+sensor's session, so enforcement is per session. The OpenAI Agents wrap
+(`AgentRunner.run` / `run_streamed`, composite run hooks, the guardrails'
+`run`) opens a child per agent, nests an agent used as a tool under its
+caller's child, and stores the conversation id as
+`context.gen_ai_conversation_id`. A fired guardrail posts the
+`guardrail_tripwire` session_signal, `signal_data` `{guardrail, kind,
+agent}`, names only, as D258's hand-off is posted.
+**Why:** directives are delivered on the event's session id; moving model
+calls to children needs an ingestion fallback first.
+**Rejected alternative:** a tracing processor (silent with tracing off,
+swallows exceptions); `llm_error` or `policy_block` for a guardrail (not a
+model failure or a Flightdeck policy); per-child attribution now.

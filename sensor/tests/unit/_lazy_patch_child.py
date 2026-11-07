@@ -46,6 +46,7 @@ PATCHABLE = (
     "langgraph.graph",
     "llama_index.core",
     "claude_agent_sdk",
+    "agents",
 )
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 # The host litellm downloads its price list from when it is imported.
@@ -130,6 +131,19 @@ def _use(sdk: str, server: str) -> bool:
         import claude_agent_sdk
 
         return getattr(claude_agent_sdk.ClaudeSDKClient, "_flightdeck_patched", False) is True
+    if sdk == "agents":
+        import openai
+        from agents import Agent, OpenAIChatCompletionsModel, Runner, set_tracing_disabled
+        from agents.run import AgentRunner
+
+        # Tracing would export the run to OpenAI.
+        set_tracing_disabled(True)
+        model = OpenAIChatCompletionsModel(
+            model="gpt-4o-mini",
+            openai_client=openai.AsyncOpenAI(base_url=f"{server}/v1", api_key="test-key"),
+        )
+        Runner.run_sync(Agent(name="worker", model=model), "hi")
+        return AgentRunner.__dict__.get("_flightdeck_openai_agents_patched", False) is True
     raise ValueError(sdk)
 
 

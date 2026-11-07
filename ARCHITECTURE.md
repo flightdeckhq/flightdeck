@@ -1285,6 +1285,7 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
 | A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed is reported on the pre-call estimate (as an aborted stream with no chunks when its body was never read) only when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that call a provider over raw HTTP (httpx, requests) | No SDK class to patch. |
+| The OpenAI Agents SDK's Responses WebSocket transport (`use_responses_websocket`, `responses_websocket_session`) | Its model calls go over a WebSocket, not through `responses.create`, so they are not metered; the run's child sessions, hand-offs and guardrails are still reported. |
 | boto3 `bedrock-runtime` (Converse, ConverseStream) | Not supported yet. botocore's event system gives a seam for it ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)); until then, Strands on its default Bedrock model and any framework on Bedrock through boto3 are not metered. |
 | `google-genai` (Gemini API and Vertex AI) | Not supported yet. One class-level patch on its `Models` / `AsyncModels` would cover it ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); until then, Gemini calls, Google ADK's default model included, are not metered. |
 
@@ -1302,7 +1303,10 @@ Flightdeck reaches an agent framework two ways.
   sensor also wraps the framework, each sub-agent run opens a child
   session (see Sub-agent framework coverage). Enforcement (kill switch,
   token budget, MCP policy, directives) acts inside the run, and the
-  run is a `flightdeck_sensor` session of the sensor's agent.
+  run is a `flightdeck_sensor` session of the sensor's agent. The model,
+  tool and MCP events of every wrapped framework stay on that session,
+  not on the child sessions, so enforcement is per session: a Stop or a
+  budget applies to the whole run.
 - **OTLP GenAI.** The ingestion API maps the OpenTelemetry GenAI spans
   of the frameworks its GenAI dialect names (see OTLP ingest > GenAI
   dialect): agents as child sessions, model calls with tokens and
@@ -1313,12 +1317,15 @@ Flightdeck reaches an agent framework two ways.
   ends, already closed.
 
 A framework gets a native wrap where it adds what the OTLP path cannot:
-enforcement per child, live events and no exporter setup, or structure
-no mapped dialect reports. Where OTLP already reports a framework's
-structure and the wrap would add little, the sensor meters its calls and
-OTLP carries its structure. An agent reports one way: a run reported by
-both the sensor and an OTLP exporter is counted twice, and nothing
-detects it yet ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
+enforcement inside the run, live events and no exporter setup, or
+structure no mapped dialect reports. Where OTLP already reports a
+framework's structure and the wrap would add little, the sensor meters
+its calls and OTLP carries its structure. An agent reports one way: a
+run reported by both the sensor and an OTLP exporter is counted twice,
+and nothing removes the duplicate
+([#279](https://github.com/flightdeckhq/flightdeck/issues/279)). The
+OpenAI Agents SDK wrap logs a warning when it can see the run going to
+both (see Sub-agent framework coverage).
 
 "Planned" below is work in [#185](https://github.com/flightdeckhq/flightdeck/issues/185).
 
@@ -1328,8 +1335,8 @@ detects it yet ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
 | LangGraph | yes | yes, for plain-callable nodes | no | Native: a child session per agent-bearing node whose action is a plain callable, role from the node name; Runnable, `ToolNode` and compiled-subgraph nodes are not wrapped |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
-| Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per child; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
-| OpenAI Agents SDK | yes (Responses tool items become `tool_call` events) | planned | yes, through `opentelemetry-instrumentation-openai-agents-v2` | OTLP: agents, hand-offs, model and tool calls, observe only. Native (planned): a child session per agent and per agent used as a tool, hand-offs, enforced per child |
+| Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per session; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
+| OpenAI Agents SDK 0.6+ | yes (Responses tool items become `tool_call` events); not over the Responses WebSocket transport | yes | yes, through `opentelemetry-instrumentation-openai-agents-v2` | Native: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires, enforced per session (see Sub-agent framework coverage). OTLP: agents, hand-offs, model and tool calls, observe only |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
 | LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
 | Deep Agents | yes through LangChain | planned | no | Native: none (it is built on `create_agent`, whose nodes the LangGraph wrap leaves alone). Planned: a child session per agent and per sub-agent its `task` tool starts |
@@ -1477,6 +1484,7 @@ sub-agent execution. Each child session carries
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (every node whose action is a plain callable is wrapped, unless `init(langgraph_agent_node_pattern=...)` narrows it to matching node names; Runnable, `ToolNode` and compiled-subgraph nodes, and with them `create_agent` and Deep Agents, open no child sessions) |
 | LlamaIndex agent workflow run | the sensor's session | the agent's `name` | `sensor/.../interceptor/llama_index.py` (a span handler on LlamaIndex's root instrumentation dispatcher; see LlamaIndex agent workflows) |
+| OpenAI Agents SDK agent run | the sensor's session; for an agent used as a tool, the child session of the agent that called the tool | `Agent.name` | `sensor/.../interceptor/openai_agents.py` (`AgentRunner.run` / `run_streamed`, run hooks, and the four guardrail classes' `run`) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
@@ -1519,7 +1527,11 @@ receives it once wrapped. The CrewAI wrappers keep `execute_task` /
 Sub-agent emission failure (the framework's `Agent.execute` or
 equivalent raises an exception inside the interceptor's context
 manager) emits child `session_end` with `state=error` plus a
-structured error block following the `llm_error` taxonomy. The
+structured error block following the `llm_error` taxonomy: the
+exception's `type`, and its `message` only while `capture_prompts` is
+on, because an exception's text can quote a tool's arguments or a
+model's reply (`Session.emit_subagent_session_end` drops the message
+otherwise, for every wrap). The
 dashboard surfaces failures via the row-level red-dot pattern on
 the child session row on the Events page and the child agent's
 swimlane row left panel on Fleet —
@@ -1528,8 +1540,8 @@ mirroring the existing `error_types` (`llm_error`) and
 
 A framework hand-off, one agent passing the conversation to another,
 is reported with `Session.emit_agent_handoff(from_agent=, to_agent=)`,
-which the LlamaIndex wrap calls and the planned Google ADK and OpenAI
-Agents SDK wraps will. It
+which the LlamaIndex and OpenAI Agents SDK wraps call and the planned
+Google ADK wrap will. It
 emits the `agent_handoff`
 `session_signal` the GenAI dialect emits (see Event Types >
 `session_signal`), so a hand-off reads the same whether the sensor or
@@ -1546,8 +1558,9 @@ next model call). The signal goes on the session of the agent handing
 off: the sensor's own session, or, when the wrap passes
 `child_session_id`, `child_agent_id`, `child_agent_name` and
 `agent_role` as it does for `emit_subagent_session_start`, that child
-session, with `parent_session_id` set to the sensor's session. A child
-identity given in part is a wrap bug: the signal is dropped with a
+session, with `parent_session_id` set to the sensor's session (or to
+the `parent_session_id` the wrap gave the child, for a grandchild). A
+child identity given in part is a wrap bug: the signal is dropped with a
 warning rather than sent on the wrong session. The event is posted
 synchronously, as the child `session_start` and `session_end` are, so
 it reaches ingestion before the child's `session_end`, after which the
@@ -1562,16 +1575,28 @@ session and discarded on a child's, as the child `session_start` and
 ended or is shutting down (`end()`, a SIGTERM / SIGINT shutdown, or a
 shutdown directive).
 
+A guardrail that fires is reported the same way with
+`Session.emit_guardrail_tripwire(guardrail=, kind=, agent=)`: the
+`guardrail_tripwire` `session_signal`, whose `signal_data` holds
+`guardrail` (its name), `kind` (`input`, `output`, `tool_input` or
+`tool_output`; any other value is left out) and `agent` (the guarded
+agent's name), each bounded and left out as a hand-off's names are. It
+carries names only, whatever `capture_prompts` says: never the
+guardrail's verdict, its output info or the text it checked. It goes on
+the guarded agent's session, child identity and `parent_session_id`
+given as for a hand-off, and is posted, bounded and skipped after the
+end exactly as a hand-off is.
+
 **Which session a sub-agent's calls land on.** A wrap's child
 sessions carry the run's structure: their `session_start`, their
 `session_end` and the hand-off signals. The model calls, `tool_call`,
 `llm_error`, MCP and `policy_*` events made during a child's turn stay
-on the sensor's own session, for the CrewAI, LangGraph and LlamaIndex
-wraps alike, so that session's row counts every token of the run.
+on the sensor's own session, for the CrewAI, LangGraph, LlamaIndex
+and OpenAI Agents SDK wraps alike, so that session's row counts every token of the run.
 Enforcement is therefore per session: the sensor's session's token
 policy, and a Stop on that session, act on every agent of the run (the
 next model call raises `DirectiveError`). A child session posts only its
-start, end and hand-off synchronously and drops a directive returned for
+start, end and framework signals (hand-off, guardrail) synchronously and drops a directive returned for
 it, so a directive addressed to a child is not acted on. Attributing
 each agent's calls to its child, with a Stop on a child halting that
 child only, is planned for every wrap together
@@ -1607,10 +1632,11 @@ that carry it (`AgentInput`, `AgentSetup`, `AgentOutput`):
   hand-off's `reason` as `incoming_message`. An agent handed back to
   opens a new child session.
 - The run span's exit ends the open child; its drop (the run raised)
-  ends it with `state=error` and the exception's type and message. A
-  run whose last failed step no later step followed also ends in error,
-  with that step's exception: early llama-index-workflows 2 releases
-  exit the run span of a failed run instead of dropping it. Cancelling
+  ends it with `state=error` and the exception's type (and message,
+  with capture on). A run whose last failed step no later step
+  followed also ends in error, with that step's exception: early
+  llama-index-workflows 2 releases exit the run span of a failed run
+  instead of dropping it. Cancelling
   the run's task (`handler.cancel()`) drops the run span, so its child
   ends with `state=error`; `handler.cancel_run()` stops the run with
   LlamaIndex's own `WorkflowCancelledByUser`, so its child ends with
@@ -1648,6 +1674,76 @@ the release line whose step spans it reads; on an older release `patch()`
 logs a warning and leaves LlamaIndex unwrapped, and its model calls are
 still metered on the sensor's session. A query or chat engine, or a
 workflow that is not an agent workflow, opens no child session.
+
+#### OpenAI Agents SDK
+
+`patch()` (`Provider.OPENAI_AGENTS`) wraps the OpenAI Agents SDK 0.6 and
+later when its `agents` module comes from the `openai-agents`
+distribution (the import name is generic, so another `agents` package
+is left alone). It patches `AgentRunner.run` and `AgentRunner.run_streamed`
+on the class (`Runner.run`, `Runner.run_streamed` and `Runner.run_sync`
+go through them), and the `run` method of `InputGuardrail`,
+`OutputGuardrail`, `ToolInputGuardrail` and `ToolOutputGuardrail`.
+
+- **Child sessions.** Each agent that runs opens a child session when it
+  starts (the SDK's `on_agent_start` run hook): `agent_role` is
+  `Agent.name`, `agent_name` is `<sensor agent name>/<Agent.name>`, the
+  agent id is derived from the role. It closes when the agent hands off
+  or when the run ends; it ends with `state=error` and the exception's
+  type (and message, with capture on) when the run raises (an
+  exception, a cancellation, `MaxTurnsExceeded`, a guardrail tripwire,
+  a `DirectiveError`) or a guardrail tripwire stops it. With capture on, the first agent's
+  `incoming_message` is the run's input (a string or a list of input
+  items) and the final agent's `outgoing_message` its final output.
+- **Hand-offs.** The agent handing off posts `agent_handoff` on its
+  child and closes it; the agent handed to opens its own child when it
+  starts, so the two are siblings, as the GenAI dialect stores them.
+- **Agents used as tools.** `Agent.as_tool` runs a nested run, whose
+  agents open children with `parent_session_id` set to the child of the
+  agent that called the tool.
+- **Guardrails.** An input or output guardrail whose tripwire triggered,
+  and a tool guardrail whose behaviour is `reject_content` or
+  `raise_exception`, post `guardrail_tripwire` on the guarded agent's
+  child. A `reject_content` lets the run go on, so the child closes
+  normally.
+- **Conversation id.** The child's `session_start` `context` carries
+  `gen_ai_conversation_id`, the key the GenAI dialect uses: the run's
+  `conversation_id`, else its SDK memory session's `session_id`, else
+  `run_config.group_id`, else that of the run it is nested in.
+- **Model, tool and MCP calls** go through the patched OpenAI client and
+  the MCP patch and stay on the sensor's own session, as the CrewAI and
+  LangGraph wraps leave them. A function tool adds no event of its own:
+  the model's `function_call` item is already its `tool_call`.
+- **Enforcement** is per session. A model call's `pre_call` raises
+  `DirectiveError` or `BudgetExceededError` out of `Runner.run` (or out
+  of a streamed result's `stream_events()`). Once a shutdown directive
+  has arrived, the wrap also raises `DirectiveError` when an agent
+  starts or hands off. Inside an agent used as a tool the SDK turns the
+  exception into the tool's error for the model; the shutdown stays set,
+  so the calling agent's next model call raises. A `retry_policy` that
+  retries every exception retries a `DirectiveError` too.
+
+The SDK runs its hooks in tasks of their own, so the wrap keeps a run's
+state in an object a context variable points to, set before the run;
+the run's tasks and nested runs inherit it. The caller's own run hooks
+still run, each after the sensor's work, and their exceptions propagate.
+The posts the hooks and guardrails make run in a worker thread
+(`asyncio.to_thread`), so the event loop is not held. A streamed run's
+open children are closed from the done callback of the task its loop
+runs in (`run_loop_task`, or `_run_impl_task` in older releases such
+as 0.6). The callback cannot await, so it hands the closing posts to
+the loop's executor and registers them with the session, whose `end()`
+waits for them (up to 2 seconds) before its own `session_end`; only
+when the loop can no longer run them does it post in place.
+
+The first run whose traces also go to the OpenTelemetry instrumentation's
+processor (`opentelemetry.instrumentation.openai_agents`, with tracing
+on) logs one warning that the run may be counted twice, naming
+[#279](https://github.com/flightdeckhq/flightdeck/issues/279), when the
+exporter's endpoint (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
+`OTEL_EXPORTER_OTLP_ENDPOINT`) is this sensor's server host and port or
+is not set; an endpoint on another host logs at debug level. Nothing is
+deduplicated.
 
 ### Claude Agent SDK
 
@@ -8826,17 +8922,24 @@ plugin emits it from its hooks.
 | `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |
 | `elicitation_responded` | `ElicitationResult` | `mcp_server`, `mode`, `elicitation_id`, `action` (`accept`, `decline`, `cancel`) | `content`, the user's answer (as JSON text) |
 
-One signal comes from a framework rather than a hook: `agent_handoff`,
+Two signals come from a framework rather than a hook. `agent_handoff`,
 on the agent that hands off, with `signal_data` `from` and `to` (the
 two agents' names, either left out when not known) and no content,
 whatever the capture setting. Ingestion's GenAI dialect emits it for
 an OpenTelemetry GenAI run (see OTLP ingest > GenAI dialect >
 Sessions), and the Python sensor emits it through
-`Session.emit_agent_handoff`, which the LlamaIndex wrap calls (see
-Sensor > Sub-agent framework coverage),
-with the same names, bounds and stored shape, so the worker
-and the dashboard do not tell the two apart. The dashboard's feed line
-reads `hand-off · <from> → <to>`.
+`Session.emit_agent_handoff`, which the LlamaIndex and OpenAI Agents
+SDK wraps call
+(see Sensor > Sub-agent framework coverage), with the same names,
+bounds and stored shape, so the worker and the dashboard do not tell
+the two apart. The dashboard's feed line reads
+`hand-off · <from> → <to>`. `guardrail_tripwire`, on the guarded
+agent, from the sensor's OpenAI Agents SDK wrap through
+`Session.emit_guardrail_tripwire`: `signal_data` `guardrail`, `kind`
+(`input`, `output`, `tool_input`, `tool_output`) and `agent`, names
+only and no content, whatever the capture setting. The dashboard's feed
+line reads `guardrail tripped · <guardrail> · <kind>`, with the kind's
+underscore as a space.
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content

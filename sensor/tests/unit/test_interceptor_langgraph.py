@@ -177,6 +177,23 @@ def test_exception_emits_state_error(patched_langgraph: Any) -> None:
     assert end_p["error"] == {"type": "ValueError", "message": "graph node crashed"}
 
 
+def test_capture_off_sends_the_error_type_without_its_message(patched_langgraph: Any) -> None:
+    """An exception's text can quote the node's state, so with capture
+    off the child's error block carries its type alone (rule 18)."""
+    session, client, StateGraph = patched_langgraph
+    session.config.capture_prompts = False
+    inner = MagicMock(side_effect=ValueError("the secret state"))
+    graph = _build_graph_with_node(StateGraph, "researcher", inner)
+
+    with pytest.raises(ValueError):
+        graph.nodes["researcher"].runnable.func({"text": "in"})
+
+    end_p = _post_event_calls(client)[-1]
+    assert end_p["state"] == "error"
+    assert end_p["error"] == {"type": "ValueError"}
+    assert "the secret state" not in str(_post_event_calls(client))
+
+
 # ----------------------------------------------------------------------
 # Agent-bearing predicate
 # ----------------------------------------------------------------------

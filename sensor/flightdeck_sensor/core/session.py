@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import concurrent.futures
 import dataclasses
 import json
 import logging
@@ -22,6 +23,7 @@ import uuid
 import weakref
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -240,17 +242,63 @@ SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent"
 # OTLP GenAI receiver gives the same fact, so a hand-off reads the same
 # whichever of the two reported it.
 SIGNAL_AGENT_HANDOFF = "agent_handoff"
-# The bound on each agent name in a hand-off's signal_data, in UTF-8
-# bytes: the receiver's bound on the same names, and the ingestion
-# API's limit on a signal_data string, which would refuse the whole
-# event over it.
+# The session_signal a framework guardrail that fired is reported as: an
+# input or output guardrail whose tripwire triggered, or a tool guardrail
+# that refused a tool call's input or output.
+SIGNAL_GUARDRAIL_TRIPWIRE = "guardrail_tripwire"
+
+
+class GuardrailKind(StrEnum):
+    """The ``kind`` a guardrail_tripwire signal names: which of the
+    framework's guardrail families fired."""
+
+    INPUT = "input"
+    OUTPUT = "output"
+    TOOL_INPUT = "tool_input"
+    TOOL_OUTPUT = "tool_output"
+
+
+# Every kind a guardrail_tripwire signal may name; any other is left out.
+GUARDRAIL_KINDS = frozenset(GuardrailKind)
+
+# The ``state`` a child sub-agent's session_end carries: closed when its
+# work finished, error when it raised or was stopped.
+SUBAGENT_STATE_CLOSED = "closed"
+SUBAGENT_STATE_ERROR = "error"
+# The keys of a child session_end's ``error`` block. The message is the
+# exception's text, which can quote what the agent was working on (a
+# tool's arguments, a model's reply), so it is sent only with
+# capture_prompts on; the type is metadata and always sent.
+SUBAGENT_ERROR_TYPE_KEY = "type"
+SUBAGENT_ERROR_MESSAGE_KEY = "message"
+# How long end() waits, in seconds, for child-session posts a framework
+# wrap handed to a worker thread (a streamed run's last children closing)
+# before it sends the session's own session_end: those posts are each one
+# HTTP round trip, milliseconds on a healthy control plane, and a post
+# still running when the client closes would be lost. 2 s matches the
+# framework signals' post bound (HANDOFF_POST_TIMEOUT_SECS).
+PENDING_CHILD_POSTS_WAIT_SECS = 2.0
+
+
+def subagent_error(exc: BaseException) -> dict[str, str]:
+    """A child sub-agent session_end's ``error`` block for ``exc``: its type
+    and its message. :meth:`Session.emit_subagent_session_end` drops the
+    message unless capture_prompts is on."""
+    return {SUBAGENT_ERROR_TYPE_KEY: type(exc).__name__, SUBAGENT_ERROR_MESSAGE_KEY: str(exc)}
+
+
+# The bound on each name in a framework signal's signal_data (an agent's
+# or a guardrail's), in UTF-8 bytes: the receiver's bound on the same
+# names, and the ingestion API's limit on a signal_data string, which
+# would refuse the whole event over it.
 HANDOFF_AGENT_NAME_MAX_BYTES = 256
-# The bound on a hand-off's synchronous post, in seconds, for its one
-# attempt: a hand-off happens mid-run, between two agents' turns, so a
-# slow or unreachable control plane must not hold the agent there for the
-# transport's 10 s timeout and retries. 2 s is the heartbeat poll's bound,
-# well above a healthy round trip; a hand-off it cuts short is lost, as
-# any event is when the control plane is unreachable.
+# The bound on a framework signal's synchronous post, in seconds, for its
+# one attempt: a hand-off or a guardrail fires mid-run, between two of an
+# agent's steps, so a slow or unreachable control plane must not hold the
+# agent there for the transport's 10 s timeout and retries. 2 s is the
+# heartbeat poll's bound, well above a healthy round trip; a signal it
+# cuts short is lost, as any event is when the control plane is
+# unreachable.
 HANDOFF_POST_TIMEOUT_SECS = 2.0
 
 
@@ -379,6 +427,12 @@ class Session:
         self.open_stream_guards: weakref.WeakSet[Any] = weakref.WeakSet()
         self.open_stream_guards_lock = threading.Lock()
         self.queued_stream_settles: collections.deque[Any] = collections.deque()
+
+        # Child-session posts a framework wrap handed to a worker thread
+        # (see track_child_post); end() waits for them before its own
+        # session_end, bounded by PENDING_CHILD_POSTS_WAIT_SECS.
+        self._pending_child_posts: set[concurrent.futures.Future[Any]] = set()
+        self._pending_child_posts_lock = threading.Lock()
 
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
@@ -520,6 +574,11 @@ class Session:
         self._ending_thread = threading.get_ident()
         self._state = SessionState.CLOSED
         try:
+            # A framework wrap's last child posts, still running in a worker
+            # thread, go out before this session's end and before the client
+            # closes under them. Inside the try, so an interrupt during the
+            # wait still sets _ended.
+            self.wait_child_posts(PENDING_CHILD_POSTS_WAIT_SECS)
             # Streams still open on this session settle now and their events
             # are flushed before session_end goes out, so the workers see the
             # post_call on an open session and roll its tokens up; a guard
@@ -541,6 +600,42 @@ class Session:
                 self.config.session_id,
                 self._tokens_used,
             )
+
+    def track_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        """Register a child-session post a framework wrap runs in a worker
+        thread, so :meth:`end` waits for it (see :meth:`wait_child_posts`)."""
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.add(future)
+        future.add_done_callback(self._forget_child_post)
+
+    def _forget_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.discard(future)
+
+    def wait_child_posts(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for the child-session posts
+        registered with :meth:`track_child_post`; True when none is left
+        running. Never raises."""
+        with self._pending_child_posts_lock:
+            pending = set(self._pending_child_posts)
+        if not pending:
+            return True
+        try:
+            _, not_done = concurrent.futures.wait(pending, timeout=timeout)
+        except Exception:
+            _log.debug("waiting for child-session posts failed", exc_info=True)
+            return False
+        return not not_done
+
+    def raise_if_shutdown(self) -> None:
+        """Raise the :class:`DirectiveError` a model call's pre_call raises
+        once a shutdown directive has arrived; a framework wrap calls it at
+        an agent boundary so a stopped run stops there too."""
+        with self._lock:
+            shutdown = self._shutdown_requested
+            reason = self._shutdown_reason
+        if shutdown:
+            raise DirectiveError("shutdown", reason)
 
     def _settle_open_streams(self, lock_wait: float | None = None) -> None:
         """Settle the streams still open on this session, queuing their
@@ -1011,12 +1106,20 @@ class Session:
         child_agent_name: str,
         agent_role: str,
         incoming_message: SubagentMessage | None = None,
+        parent_session_id: str | None = None,
+        context_extra: dict[str, Any] | None = None,
     ) -> None:
         """Emit a ``session_start`` event for a child sub-agent.
 
         Called by the framework interceptors at child-context entry.
         ``parent_session_id`` on the wire is this Session's
-        ``session_id``. ``child_agent_id`` is what
+        ``session_id``, or the ``parent_session_id`` given: a wrap whose
+        sub-agent starts sub-agents of its own (an OpenAI Agents agent
+        used as a tool) names the child session it runs under, so the
+        grandchild nests under that child. ``context_extra`` adds keys to
+        the child's ``context`` (this Session's, inherited) on its
+        ``session_start``, such as the framework's conversation id.
+        ``child_agent_id`` is what
         :meth:`derive_subagent_id` returns for the same role; the
         caller passes it explicitly so the interceptor controls the
         identity end-to-end (and so tests can assert against a known
@@ -1035,7 +1138,10 @@ class Session:
             child_agent_id=child_agent_id,
             child_agent_name=child_agent_name,
             agent_role=agent_role,
+            parent_session_id=parent_session_id,
         )
+        if context_extra:
+            payload["context"] = {**payload.get("context", {}), **context_extra}
         stub_or_inline, content_envelope = self._route_subagent_message(
             incoming_message,
             "incoming",
@@ -1054,17 +1160,25 @@ class Session:
         child_agent_id: str,
         child_agent_name: str,
         agent_role: str,
-        state: str = "closed",
+        state: str = SUBAGENT_STATE_CLOSED,
         outgoing_message: SubagentMessage | None = None,
         error: dict[str, Any] | None = None,
+        parent_session_id: str | None = None,
     ) -> None:
         """Emit a ``session_end`` event for a child sub-agent.
+
+        ``parent_session_id`` is the one the child's ``session_start``
+        named (this Session's ``session_id`` when not given).
 
         ``state`` defaults to ``"closed"`` for the success path; the
         framework interceptors pass ``state="error"`` when the
         child's execution raised, alongside an ``error`` dict
         carrying ``type`` (exception class name) and ``message``
-        (exception string). The L8 row-level failure cue on the
+        (exception string; :func:`subagent_error` builds it). The
+        message is the exception's text, which can quote a tool's
+        arguments or a model's reply, so it is sent only with
+        ``capture_prompts`` on; with capture off the block carries the
+        type alone. The L8 row-level failure cue on the
         dashboard reads ``state=error`` to render the red dot on
         Investigate / Fleet AgentTable / swimlane left panel.
 
@@ -1078,15 +1192,20 @@ class Session:
             child_agent_id=child_agent_id,
             child_agent_name=child_agent_name,
             agent_role=agent_role,
+            parent_session_id=parent_session_id,
         )
         # Default state="closed" matches the worker's existing
         # session_end → state=closed projection. Only emit the
         # explicit "state" key when the child ended in an error so
         # the wire shape stays unchanged for the success path.
-        if state != "closed":
+        if state != SUBAGENT_STATE_CLOSED:
             payload["state"] = state
         if error is not None:
-            payload["error"] = error
+            payload["error"] = (
+                error
+                if self.config.capture_prompts
+                else {k: v for k, v in error.items() if k != SUBAGENT_ERROR_MESSAGE_KEY}
+            )
         stub_or_inline, content_envelope = self._route_subagent_message(
             outgoing_message,
             "outgoing",
@@ -1107,6 +1226,7 @@ class Session:
         child_agent_id: str | None = None,
         child_agent_name: str | None = None,
         agent_role: str | None = None,
+        parent_session_id: str | None = None,
     ) -> None:
         """Report a framework hand-off: one agent passing the conversation
         to another.
@@ -1128,10 +1248,11 @@ class Session:
         Session by default, or the child session the wrap names with
         ``child_session_id``, ``child_agent_id``, ``child_agent_name``
         and ``agent_role`` (the identity it passed to
-        :meth:`emit_subagent_session_start`). A child identity given in
-        part is dropped with a warning rather than sent on the wrong
-        session. A directive in the response is applied on the sensor's
-        own session and discarded on a child's, as the child
+        :meth:`emit_subagent_session_start`, and the
+        ``parent_session_id`` it named there, if any). A child identity
+        given in part is dropped with a warning rather than sent on the
+        wrong session. A directive in the response is applied on the
+        sensor's own session and discarded on a child's, as the child
         ``session_start`` and ``session_end`` discard theirs.
 
         Nothing is sent once the session has ended or is shutting down
@@ -1148,6 +1269,73 @@ class Session:
         raises, except the :class:`DirectiveError` the ``halt`` policy
         raises when the control plane is unreachable.
         """
+        self._post_framework_signal(
+            SIGNAL_AGENT_HANDOFF,
+            (("from", from_agent), ("to", to_agent)),
+            child=(child_session_id, child_agent_id, child_agent_name, agent_role),
+            parent_session_id=parent_session_id,
+        )
+
+    def emit_guardrail_tripwire(
+        self,
+        *,
+        guardrail: str | None,
+        kind: str,
+        agent: str | None,
+        child_session_id: str | None = None,
+        child_agent_id: str | None = None,
+        child_agent_name: str | None = None,
+        agent_role: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> None:
+        """Report a framework guardrail that fired: an input or output
+        guardrail whose tripwire triggered, or a tool guardrail that
+        refused a tool call's input or output.
+
+        Emits the ``guardrail_tripwire`` ``session_signal``, whose
+        ``signal_data`` holds ``guardrail`` (the guardrail's name),
+        ``kind`` (one of :data:`GUARDRAIL_KINDS`) and ``agent`` (the
+        agent it guarded). The names are cut and left out as
+        :meth:`emit_agent_handoff`'s are; a ``kind`` outside
+        :data:`GUARDRAIL_KINDS` is left out. The guardrail's verdict,
+        its output info and the text it checked are never read: the
+        signal carries names only, whatever ``capture_prompts`` says,
+        and no model, tokens or content.
+
+        It goes on the session of the guarded agent, the sensor's own or
+        the child the wrap names, and is posted, bounded and skipped
+        after the session ends exactly as a hand-off is (see
+        :meth:`emit_agent_handoff`). Never raises, except the
+        :class:`DirectiveError` the ``halt`` policy raises when the
+        control plane is unreachable.
+        """
+        self._post_framework_signal(
+            SIGNAL_GUARDRAIL_TRIPWIRE,
+            (
+                ("guardrail", guardrail),
+                ("kind", kind if kind in GUARDRAIL_KINDS else None),
+                ("agent", agent),
+            ),
+            child=(child_session_id, child_agent_id, child_agent_name, agent_role),
+            parent_session_id=parent_session_id,
+        )
+
+    def _post_framework_signal(
+        self,
+        signal: str,
+        names: tuple[tuple[str, object], ...],
+        *,
+        child: tuple[str | None, str | None, str | None, str | None],
+        parent_session_id: str | None,
+    ) -> None:
+        """Post a framework wrap's ``session_signal`` (a hand-off, a
+        guardrail) whose ``signal_data`` is the given names, on this
+        Session or on the child session ``child`` names (its session id,
+        agent id, agent name and role), synchronously, in one attempt
+        bounded by :data:`HANDOFF_POST_TIMEOUT_SECS`. Each name is
+        labelled by :func:`_handoff_agent_label` and left out when that
+        leaves nothing. See :meth:`emit_agent_handoff` for when nothing
+        is sent and what a failure does."""
         try:
             if (
                 self._state is SessionState.CLOSED
@@ -1155,21 +1343,21 @@ class Session:
                 or self._shutdown_requested
             ):
                 return
-            child = (child_session_id, child_agent_id, child_agent_name, agent_role)
+            child_session_id, child_agent_id, child_agent_name, agent_role = child
             if any(v is not None for v in child) and not all(child):
                 _log.warning(
-                    "agent_handoff names part of a child session's identity; "
-                    "the hand-off was not reported"
+                    "%s names part of a child session's identity; the signal was not reported",
+                    signal,
                 )
                 return
             data: dict[str, Any] = {}
-            for key, name in (("from", from_agent), ("to", to_agent)):
+            for key, name in names:
                 label = _handoff_agent_label(name)
                 if label:
                     data[key] = label
             payload = self._build_payload(
                 EventType.SESSION_SIGNAL,
-                signal=SIGNAL_AGENT_HANDOFF,
+                signal=signal,
                 signal_data=data,
                 # A signal names no model: the worker would take one as
                 # the session's model.
@@ -1179,7 +1367,7 @@ class Session:
                 payload.update(
                     {
                         "session_id": child_session_id,
-                        "parent_session_id": self.config.session_id,
+                        "parent_session_id": parent_session_id or self.config.session_id,
                         "agent_role": agent_role,
                         "agent_id": child_agent_id,
                         "agent_name": child_agent_name,
@@ -1197,7 +1385,7 @@ class Session:
         except DirectiveError:
             raise
         except Exception:
-            _log.warning("agent_handoff was not reported", exc_info=True)
+            _log.warning("%s was not reported", signal, exc_info=True)
 
     def _build_subagent_payload(
         self,
@@ -1207,6 +1395,7 @@ class Session:
         child_agent_id: str,
         child_agent_name: str,
         agent_role: str,
+        parent_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Build a child sub-agent ``session_start`` / ``session_end``
         payload.
@@ -1216,7 +1405,8 @@ class Session:
         inherit from this Session because a sub-agent shares its
         parent's deployment scope, framework attribution, and
         hostname. ``parent_session_id`` is this Session's
-        ``session_id``.
+        ``session_id`` unless the caller names another (a grandchild's
+        parent child session).
 
         The payload includes the LLM-baseline null fields so the
         worker's existing ``EventPayload`` projection (which
@@ -1229,7 +1419,7 @@ class Session:
         self._detect_late_framework()
         out: dict[str, Any] = {
             "session_id": child_session_id,
-            "parent_session_id": self.config.session_id,
+            "parent_session_id": parent_session_id or self.config.session_id,
             "agent_role": agent_role,
             # Identity overridden for the child.
             "agent_id": child_agent_id,

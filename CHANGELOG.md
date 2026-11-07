@@ -194,6 +194,13 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A failed sub-agent's error text stays out of its session with
+  capture off.** The CrewAI, LangGraph and LlamaIndex wraps sent the
+  exception's message on a failed child's `session_end` whatever
+  `capture_prompts` said, and an exception's text can quote a tool's
+  arguments or a model's reply. The child's error block now carries the
+  exception's type alone unless capture is on; the OpenAI Agents SDK
+  wrap does the same.
 - **A framework imported after `init()` labels its session.** `patch()`
   imports no SDK, so an application that imports its framework after
   `init()` reported `framework=null` on every event and on its session.

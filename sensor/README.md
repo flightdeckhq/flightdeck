@@ -132,7 +132,7 @@ imported, before the `import` statement returns, so the order of
 `import openai` and `flightdeck_sensor.patch()` does not matter, and an
 SDK the application never imports is never loaded. `import
 flightdeck_sensor`, `init()` and `patch()` therefore load none of
-anthropic, openai, litellm, mcp, crewai, langgraph or claude-agent-sdk,
+anthropic, openai, litellm, mcp, crewai, langgraph, claude-agent-sdk or openai-agents,
 and litellm downloads its price list from GitHub (which it does when it
 is imported) only if your application imports it. `unpatch()` (and
 `teardown()`) stops patching SDKs as they are imported.
@@ -147,22 +147,23 @@ is imported) only if your application imports it. `unpatch()` (and
 | LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)`. Only a node whose action is a plain callable is wrapped: Runnable, `ToolNode` and compiled-subgraph nodes are not |
 | LlamaIndex agent workflows (sub-agent sessions, `llama-index-core>=0.14`) | `patch_llama_index` | A span handler on LlamaIndex's root instrumentation dispatcher (no LlamaIndex method is replaced): each agent of a `FunctionAgent`, `ReActAgent`, `CodeActAgent` or `AgentWorkflow` run lands as a child session with `agent_role` the agent's name (the agent's model, tool and MCP calls stay on the sensor's session, as for CrewAI and LangGraph); an `AgentWorkflow` hand-off ends one child, records an `agent_handoff` signal on it and opens the next; a tool call the model wrote as text (ReAct, CodeAct) is reported once as a `tool_call`, its arguments and output under `capture_prompts` |
 | Claude Agent SDK (`claude-agent-sdk>=0.2.168,<0.3`) | `patch_claude_agent_sdk` | `query()` (however it was imported) and `ClaudeSDKClient` — each run lands as its own `claude_agent_sdk` session keyed by the Claude Code session id, with a `post_call` per assistant message (tokens, cache split, billing mode) and a `tool_call` per tool use, read from the SDK's message stream; a Claude Code plugin loaded into the run stays silent. `PreToolUse` and `UserPromptSubmit` callbacks added after the caller's hooks apply the run's directives (a stop denies the next tool call and blocks prompts; budget warnings reach the run) and the MCP Protection Policy. Install with `pip install flightdeck-sensor[claude-agent-sdk]`. |
+| OpenAI Agents SDK (`openai-agents>=0.6`, sub-agent sessions) | `patch_openai_agents` | `AgentRunner.run` / `.run_streamed` (so `Runner.run`, `run_sync` and `run_streamed`) and the `run` of the four guardrail classes — each agent that runs lands as a child session with `agent_role` taken from `Agent.name`, an agent used as a tool nests under the agent that called it, a hand-off posts `agent_handoff` on the agent handing off, a guardrail that fires posts `guardrail_tripwire` (names only), and the run's conversation id lands in the child's context as `gen_ai_conversation_id`. Model, tool and MCP calls stay on the sensor's session (the OpenAI and MCP interceptors meter them); a shutdown also stops the run when the next agent starts or hands off. Patched only when `agents` comes from the `openai-agents` distribution. Install with `pip install flightdeck-sensor[openai-agents]`. |
 
 ### Coverage beyond these interceptors
 
 Any framework that calls a model through the Anthropic or OpenAI SDK or
 litellm is metered and enforced through the interceptors above, with no
 wrap of its own: Deep Agents, Microsoft Agent Framework,
-Google ADK (on `LiteLlm`, Anthropic or OpenAI models), the OpenAI Agents
-SDK, Pydantic AI and Strands Agents (on their Anthropic, OpenAI and
-LiteLLM models), Agno, Haystack, smolagents, Semantic Kernel, AutoGen,
-AG2 and DSPy on its litellm engine. Each event names the framework in
+Google ADK (on `LiteLlm`, Anthropic or OpenAI models), Pydantic AI and
+Strands Agents (on their Anthropic, OpenAI and LiteLLM models), Agno,
+Haystack, smolagents, Semantic Kernel, AutoGen, AG2 and DSPy on its
+litellm engine. Each event names the framework in
 `framework` (see "Framework attribution" in ARCHITECTURE.md).
 
 - **Sub-agent sessions planned**
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): Google
-  ADK, the OpenAI Agents SDK, Microsoft Agent Framework and Deep Agents
-  (each agent and each `task` sub-agent).
+  ADK, Microsoft Agent Framework and Deep Agents (each agent and each
+  `task` sub-agent).
 - **LLM calls planned**
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): a DSPy
   callback adapter for its default engine, which has its own HTTP

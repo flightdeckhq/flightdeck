@@ -13,9 +13,10 @@ the child's context, and the model calls on the sensor's own session.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +24,16 @@ import pytest
 
 import flightdeck_sensor
 
-from .conftest import INGESTION_URL, TOKEN, delete_flavor_data, exec_sql, wait_until
+from .conftest import (
+    API_URL,
+    INGESTION_URL,
+    TOKEN,
+    auth_headers,
+    delete_flavor_data,
+    exec_sql,
+    wait_until,
+)
+from .test_sensor_e2e import _force_reset_sensor
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -37,6 +47,12 @@ MODEL = "gpt-4.1-nano"
 BASE_URL = "https://api.openai.com/v1"
 # Time for the sensor's posts to be written by the worker.
 STORED_TIMEOUT_SECS = 20.0
+# One content fetch never blocks longer than this; a healthy API answers
+# in milliseconds.
+CONTENT_FETCH_TIMEOUT_SECS = 10.0
+# GET /v1/events/:id/content: stored content, and none (rule 37).
+CONTENT_FOUND = 200
+CONTENT_ABSENT = 404
 
 
 # ---- the mocked Responses endpoint ---------------------------------------
@@ -152,15 +168,13 @@ def _events(flavor: str) -> list[dict[str, Any]]:
 @pytest.fixture
 def flavor() -> Iterator[str]:
     name = f"test-openai-agents-{uuid.uuid4().hex[:10]}"
+    _force_reset_sensor()
     os.environ["AGENT_FLAVOR"] = name
     try:
         yield name
     finally:
         os.environ.pop("AGENT_FLAVOR", None)
-        with contextlib.suppress(Exception):
-            flightdeck_sensor.teardown()
-        flightdeck_sensor._session = None
-        flightdeck_sensor._client = None
+        _force_reset_sensor()
         delete_flavor_data(name)
 
 
@@ -187,6 +201,27 @@ def _ended(flavor: str, count: int) -> list[dict[str, Any]]:
 
     wait_until(done, timeout=STORED_TIMEOUT_SECS, msg=f"{flavor}: {count} sessions ended")
     return _sessions(flavor)
+
+
+def _content_status(event_id: str) -> int:
+    """``GET /v1/events/{id}/content``'s status, through urllib so no
+    respx mock sees it."""
+    req = urllib.request.Request(f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=CONTENT_FETCH_TIMEOUT_SECS) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def _content_rows(event_ids: list[str]) -> int:
+    return int(
+        exec_sql(
+            "SELECT count(*) FROM event_content"
+            " WHERE event_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            ids=",".join(event_ids),
+        )
+    )
 
 
 def _signal(events: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
@@ -218,6 +253,21 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
             )
         ],
     )
+    from agents.tool_guardrails import ToolGuardrailFunctionOutput, tool_input_guardrail
+
+    @tool_input_guardrail
+    def block_secrets(data: Any) -> Any:
+        return ToolGuardrailFunctionOutput.reject_content("no secrets")
+
+    @agents.function_tool
+    def read_file(path: str) -> str:
+        """Read a file."""
+        raise AssertionError("the guardrail rejects the call before the tool runs")
+
+    # Set on the tool: function_tool takes the guardrails as arguments
+    # not in 0.6.
+    read_file.tool_input_guardrails = [block_secrets]
+    reader = _agent("reader_agent", tools=[read_file])
     with respx.mock(base_url=BASE_URL, assert_all_called=False) as router:
         _serve(
             router,
@@ -226,6 +276,8 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
             [_call("transfer_to_weather_agent", {}, "c2")],
             [_message("sunny")],
             [_message("4")],
+            [_call("read_file", {"path": "/etc/shadow"}, "c3")],
+            [_message("I cannot read that.")],
         )
         result = agents.Runner.run_sync(
             triage, "weather?", run_config=agents.RunConfig(group_id="g-1")
@@ -233,11 +285,19 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
         assert result.final_output == "sunny"
         with pytest.raises(agents.InputGuardrailTripwireTriggered):
             agents.Runner.run_sync(guarded, "2+2?")
+        reader_result = agents.Runner.run_sync(reader, "read it")
+        assert reader_result.final_output == "I cannot read that."
     flightdeck_sensor.teardown()
 
-    rows = _ended(flavor, 5)
+    rows = _ended(flavor, 6)
     by_role = {r["agent_role"]: r for r in rows if r["agent_role"]}
-    assert set(by_role) == {"triage_agent", "expert_agent", "weather_agent", "tutor_agent"}
+    assert set(by_role) == {
+        "triage_agent",
+        "expert_agent",
+        "weather_agent",
+        "tutor_agent",
+        "reader_agent",
+    }
     triage_id = by_role["triage_agent"]["session_id"]
     # Siblings under the sensor's session; the expert nests under triage.
     assert by_role["triage_agent"]["parent_session_id"] == root
@@ -249,8 +309,9 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
 
     def signals_stored() -> bool:
         events = _events(flavor)
-        return bool(_signal(events, "agent_handoff")) and bool(
-            _signal(events, "guardrail_tripwire")
+        return (
+            len(_signal(events, "agent_handoff")) == 1
+            and len(_signal(events, "guardrail_tripwire")) == 2
         )
 
     wait_until(signals_stored, timeout=STORED_TIMEOUT_SECS, msg="signals stored")
@@ -258,8 +319,9 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
     (handoff,) = _signal(events, "agent_handoff")
     assert handoff["session_id"] == triage_id
     assert handoff["payload"]["signal_data"] == {"from": "triage_agent", "to": "weather_agent"}
-    (trip,) = _signal(events, "guardrail_tripwire")
-    assert trip["session_id"] == by_role["tutor_agent"]["session_id"]
+    trips = {t["session_id"]: t for t in _signal(events, "guardrail_tripwire")}
+    assert len(trips) == 2
+    trip = trips[by_role["tutor_agent"]["session_id"]]
     assert trip["payload"] == {
         "signal": "guardrail_tripwire",
         "signal_data": {"guardrail": "no_math", "kind": "input", "agent": "tutor_agent"},
@@ -269,6 +331,24 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
     assert trip["model"] is None
     assert trip["has_content"] is False
     assert "the checked text" not in json.dumps(events)
+    # The tool guardrail's reject_content, on the reader's child, names
+    # its kind; nothing the tool was called with rides on it, and the
+    # run went on, so the child closed normally.
+    reject = trips[by_role["reader_agent"]["session_id"]]
+    assert reject["payload"]["signal_data"] == {
+        "guardrail": "block_secrets",
+        "kind": "tool_input",
+        "agent": "reader_agent",
+    }
+    assert "/etc/shadow" not in json.dumps(reject)
+    reader_end = [
+        e
+        for e in events
+        if e["session_id"] == by_role["reader_agent"]["session_id"]
+        and e["event_type"] == "session_end"
+    ]
+    assert len(reader_end) == 1
+    assert "state" not in reader_end[0]["payload"]
     # The tutor's child ended in error; the model calls are the sensor's.
     tutor_end = [
         e
@@ -276,14 +356,28 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
         if e["session_id"] == by_role["tutor_agent"]["session_id"]
         and e["event_type"] == "session_end"
     ]
-    assert tutor_end and tutor_end[0]["payload"].get("state") == "error"
+    assert len(tutor_end) == 1
+    assert tutor_end[0]["payload"].get("state") == "error"
     posts = [e for e in events if e["event_type"] == "post_call"]
     assert posts and {p["session_id"] for p in posts} == {root}
+    # Capture is on: the model calls stored their content, and the
+    # signals stored none.
+    assert all(p["has_content"] for p in posts)
+    wait_until(
+        lambda: _content_status(posts[0]["id"]) == CONTENT_FOUND,
+        timeout=STORED_TIMEOUT_SECS,
+        msg="post_call content stored",
+    )
+    signals = _signal(events, "agent_handoff") + _signal(events, "guardrail_tripwire")
+    assert not any(s["has_content"] for s in signals)
+    assert _content_rows([s["id"] for s in signals]) == 0
+    assert {_content_status(s["id"]) for s in signals} == {CONTENT_ABSENT}
     # One tool_call per function_call item the model returned, on the
     # sensor's session; the wrap adds none of its own.
     tool_calls = [e for e in events if e["event_type"] == "tool_call"]
     assert sorted(e["tool_name"] for e in tool_calls) == [
         "ask_expert",
+        "read_file",
         "transfer_to_weather_agent",
     ]
     assert {e["session_id"] for e in tool_calls} == {root}
@@ -309,7 +403,9 @@ def test_a_streamed_run_closes_its_child(flavor: str) -> None:
     flightdeck_sensor.teardown()
 
     rows = _ended(flavor, 2)
-    (child,) = [r for r in rows if r["agent_role"] == "streaming_agent"]
+    children = [r for r in rows if r["agent_role"] == "streaming_agent"]
+    assert len(children) == 1
+    child = children[0]
     assert child["parent_session_id"] == root
     assert child["context"]["gen_ai_conversation_id"] == "g-stream"
     wait_until(
@@ -317,6 +413,11 @@ def test_a_streamed_run_closes_its_child(flavor: str) -> None:
         timeout=STORED_TIMEOUT_SECS,
         msg="streamed post_call stored",
     )
-    (post,) = [e for e in _events(flavor) if e["event_type"] == "post_call"]
+    posts = [e for e in _events(flavor) if e["event_type"] == "post_call"]
+    assert len(posts) == 1
+    post = posts[0]
     assert post["session_id"] == root
-    assert post["payload"]["streaming"]["final_outcome"] == "completed"
+    streaming = post["payload"]["streaming"]
+    assert streaming["final_outcome"] == "completed"
+    assert isinstance(streaming["ttft_ms"], int)
+    assert streaming["ttft_ms"] >= 0

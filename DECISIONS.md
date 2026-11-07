@@ -702,20 +702,14 @@ reconciling (they fight over settings across a version skew).
 ## D254 -- An omitted `to` leaves the sessions and events listings without an upper bound
 
 **Date:** 2026-11-07
-**Decision:** `GET /v1/sessions` and `GET /v1/events` bound `started_at`
-or `occurred_at` from above only when the request carries `to`. Omitted,
-the range is open-ended; it no longer ends at the API's clock. A `to`
-that parses to the zero time is refused with 400. The agent summary and
-`GET /v1/analytics` keep their API-clock end on purpose: they are
-windowed aggregates the dashboard polls, so a row a skewed clock dated
-ahead lands on the next poll.
-**Why:** neither column is stamped by the API's clock. Postgres stamps
-`started_at`, and `occurred_at` is the client's timestamp, which
-ingestion accepts up to five minutes ahead. Whenever the API's clock read
-behind, a just-started session or a just-sent event fell outside the
-default range: a dev box whose clock is stepped back about two seconds
-every few minutes emptied the state-sort integration test's listing.
-**Rejected alternative:** defaulting `to` to Postgres's `NOW()` (still a
-clock that can read behind the client's, and a stepped-back database
-clock drops its own rows); a grace margin on the API's clock (a guessed
-bound that a larger skew still breaks).
+**Decision:** `GET /v1/sessions` and `GET /v1/events` bound `started_at` or
+`occurred_at` from above only when the request carries `to`; a zero-time `to`
+is a 400. The agent summary and `/v1/analytics` keep the API-clock end: they
+are polled windowed aggregates, so a row dated ahead lands on the next poll.
+**Why:** Postgres stamps `started_at`; `occurred_at` is the client's time,
+accepted up to five minutes ahead. When the API's clock read behind, a fresh
+session or event fell outside the range; a dev clock stepped back ~2 s every
+few minutes emptied the state-sort integration test's listing.
+**Rejected alternative:** defaulting `to` to Postgres's `NOW()` (it can still
+read behind the client, and a stepped-back database drops its own rows); a
+grace margin on the API's clock (a guessed bound a larger skew breaks).

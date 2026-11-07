@@ -164,11 +164,13 @@ All notable changes to Flightdeck are documented here.
   Claude Code's OpenTelemetry store a failed tool call as a `tool_call`
   with an `error` block. It now counts in the session listing's
   `error_types[]` and its `error_type` filter, in the agent summary's
-  `errors` (and the Agents table's live count), and in the agent
-  drawer's Runs-tab errors column. In the run drawer the failed row
-  carries the red error indicator, reads `<tool> · failed`, and lists the
-  error's type, class and message when expanded. A failed MCP call keeps
-  its own `mcp_error_types[]` indicator. The `/v1/events` `mcp_server`
+  `errors` (and the Agents table's live count), and as one of the error
+  kinds the agent drawer's Runs-tab errors column counts for a run (the
+  column shows a run's distinct error kinds, not its failures). In the
+  run drawer the failed row carries the red error indicator, reads
+  `<tool> · failed`, and lists the error's type, class and message when
+  expanded. A failed MCP call keeps its own `mcp_error_types[]`
+  indicator. The `/v1/events` `mcp_server`
   facet reads a plugin-bundled server's `plugin_<plugin>_<server>` key,
   stored by plugin releases before v0.6.0, as `plugin:<plugin>:<server>`,
   so one server is one value, and filtering on the colon key matches both

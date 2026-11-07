@@ -21,8 +21,9 @@ const errorEventFilter = "(e.event_type = 'llm_error' OR " +
 // flattened tool-name form `plugin_<plugin>_<server>` instead. The
 // expression rebuilds the colon key from the flattened one exactly as
 // the plugin does (the plugin name runs up to the first underscore and
-// neither part is empty; the flattened form holds no colon), so one server is one facet value across the
-// upgrade. Any other server name is returned unchanged.
+// neither part is empty; the flattened form holds no colon), so one
+// server is one facet value across the upgrade. Any other server name
+// is returned unchanged.
 const mcpServerFacetExpr = `regexp_replace(payload->>'server_name', ` +
 	`'^plugin_([^_:]+)_([^:]+)$', 'plugin:\1:\2')`
 

@@ -649,21 +649,17 @@ releases from May 2024 to May 2025, when the hook is small and tested in
 CI); keeping 1.0 and skipping `stream_options` there (streamed calls
 would report no usage, so they could not be metered).
 
-## D251 -- A failed tool_call is an error on every surface, and a plugin MCP server's flattened key is read as its colon key
+## D251 -- A failed tool_call counts on every per-session and per-agent error count, and a plugin MCP server's flattened key reads as its colon key
 
 **Date:** 2026-11-07
 **Decision:** an error event is an `llm_error` or a `tool_call` whose
-`payload.error` is an object. The session listing's `error_types[]` and
-`error_type` filter, the agent summary's `errors` and the dashboard's
-live patch of it all use that one predicate; a failed `mcp_tool_call`
-stays on `mcp_error_types[]`. The `/v1/events` `mcp_server` facet reads
-a `plugin_<plugin>_<server>` key (plugin releases before v0.6.0) as
-`plugin:<plugin>:<server>`, and a filter on the colon key matches both.
-Extends D190.
+`payload.error` is an object, one predicate for `error_types[]`, the
+`error_type` filter and the agent summary's `errors`; a failed
+`mcp_tool_call` stays on `mcp_error_types[]`. The `mcp_server` facet
+reads `plugin_<plugin>_<server>` as `plugin:<plugin>:<server>`, and a
+filter on the colon key matches both. Extends D190.
 **Why:** a plugin tool failure is stored as a `tool_call` with an error
-block (D190), so counting only `llm_error` hid it from every per-session
-and per-agent count.
-**Rejected alternative:** a migration rewriting the old rows' key (it
-edits stored events the server only reads, and an older plugin still
-posting would recreate them), and counting MCP failures in `errors`
-(their JSON-RPC taxonomy is not the LLM one).
+block (D190), so counting only `llm_error` hid it from those counts.
+**Rejected alternative:** a migration rewriting the old key (it edits
+stored events, and an older plugin still posting recreates them);
+counting MCP failures in `errors` (JSON-RPC taxonomy, not the LLM one).

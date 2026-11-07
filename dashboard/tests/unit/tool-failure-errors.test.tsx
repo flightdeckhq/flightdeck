@@ -5,6 +5,7 @@ import {
   getEventDetail,
   getSummaryRows,
   isErrorEvent,
+  REDACTED_ERROR_MESSAGE,
   toolFailure,
 } from "@/lib/events";
 import type { AgentEvent, AgentSummaryResponse } from "@/lib/types";
@@ -157,6 +158,30 @@ describe("EventErrorIndicator", () => {
     const { getByTestId } = render(<EventErrorIndicator event={ev} />);
     expect(getByTestId(`tool-error-indicator-${ev.id}`).getAttribute("aria-label")).toBe(
       "Tool call failed: PluginToolError",
+    );
+  });
+
+  it("shows the error class, not the redaction marker, when capture is off", () => {
+    const ev = makeEvent("tool_call", {
+      error: {
+        error_type: "other",
+        error_class: "ClaudeCodeToolError",
+        message: REDACTED_ERROR_MESSAGE,
+      },
+    });
+    const { getByTestId } = render(<EventErrorIndicator event={ev} />);
+    expect(getByTestId(`tool-error-indicator-${ev.id}`).getAttribute("aria-label")).toBe(
+      "Tool call failed: ClaudeCodeToolError",
+    );
+  });
+
+  it("shows the error type when a redacted failure has no class", () => {
+    const ev = makeEvent("tool_call", {
+      error: { error_type: "other", message: REDACTED_ERROR_MESSAGE },
+    });
+    const { getByTestId } = render(<EventErrorIndicator event={ev} />);
+    expect(getByTestId(`tool-error-indicator-${ev.id}`).getAttribute("aria-label")).toBe(
+      "Tool call failed: other",
     );
   });
 

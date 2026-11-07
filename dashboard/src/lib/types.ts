@@ -1191,7 +1191,8 @@ export interface SessionListItem {
   token_name?: string | null;
   /**
    * Every distinct ``payload->'error'->>'error_type'``
-   * observed across the session's ``llm_error`` events. Always
+   * observed across the session's ``llm_error`` and failed
+   * ``tool_call`` events. Always
    * present on the wire (empty array when the session has no
    * errors) so the dashboard can read ``error_types.length > 0``
    * directly without a null check. Drives the Investigate ERROR
@@ -1240,7 +1241,7 @@ export interface SessionListItem {
    * (empty array when no MCP event in the session failed). Drives the
    * red MCP-error session-row indicator on Investigate, parallel to
    * the existing ``error_types`` indicator that covers ``llm_error``
-   * rows.
+   * and failed ``tool_call`` events.
    */
   mcp_error_types?: string[];
   /**

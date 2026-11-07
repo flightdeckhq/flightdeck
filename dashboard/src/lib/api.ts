@@ -541,8 +541,8 @@ export interface SessionsParams {
   git_repo?: string[];
   orchestration?: string[];
   /**
-   * Filter to sessions that emitted an llm_error event of
-   * one of the listed taxonomy values (rate_limit, authentication,
+   * Filter to sessions that emitted an llm_error or failed
+   * tool_call event of one of the listed taxonomy values (rate_limit, authentication,
    * etc.). Repeatable; OR within the dimension, AND with every
    * other filter. Backed by an EXISTS subquery over the events
    * table on the API side.

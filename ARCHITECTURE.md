@@ -2052,14 +2052,19 @@ success with one extra field.
 
 A failed `tool_call` (one whose `payload.error` is an object, from the
 plugin's hook or from Claude Code's OTLP `tool_result`) counts as an
-error everywhere an `llm_error` does: in the session listing's
-`error_types[]` aggregate and its `error_type` filter, in the agent
-summary's `errors` count, and in the dashboard's live patch of that
-count. The api defines the predicate once (`errorEventFilter` in
+error on every per-session and per-agent error count: in the session
+listing's `error_types[]` aggregate and its `error_type` filter, in the
+agent summary's `errors` count, and in the dashboard's live patch of
+that count. The api defines the predicate once (`errorEventFilter` in
 `api/internal/store`) and the dashboard once (`isErrorEvent` in
-`lib/events.ts`). A failed `mcp_tool_call` keeps its own
-`mcp_error_types[]` indicator and is not an `errors` count: MCP failures
-carry the JSON-RPC taxonomy, not the LLM one. In the session drawer a
+`lib/events.ts`). These surfaces still read `llm_error` only: the Fleet
+"Errors" event-type filter pill, the `/v1/search` `error` category, the
+swimlane's red `llm_error` node colour, and `has_terminal_error`. A
+failed `mcp_tool_call` keeps its own `mcp_error_types[]` indicator and
+is not an `errors` count: MCP failures carry the JSON-RPC taxonomy, not
+the LLM one. Without `OTEL_LOG_TOOL_DETAILS=1`, though, an MCP failure
+reported over OTLP is stored as a `tool_call` named `mcp_tool`, so it
+does count in `errors`. In the session drawer a
 failed `tool_call` row carries the same red error indicator as a failed
 MCP row, its detail reads `<tool> · failed`, and the expanded row lists
 the error's type, class and message.
@@ -6645,9 +6650,9 @@ client-type pill disambiguating same-named agents), `event_type`,
 `close_reason` (gated to `session_end` events), `estimated_via`,
 `matched_entry_id`, `originating_call_context`, `mcp_server` (the
 MCP event's `payload.server_name`, with a Claude Code plugin-bundled
-server's flattened `plugin_<plugin>_<server>` key, which plugin
-releases before v0.6.0 stored, read as `plugin:<plugin>:<server>` so
-one server is one value; filtering on the colon key matches both
+server's flattened `plugin_<plugin>_<server>` key, which some stored
+rows carry, read as `plugin:<plugin>:<server>` so one server is one
+value; filtering on the colon key matches both
 spellings), `terminal` (toggle), plus 9
 runtime-context dims sourced from `sessions.context`: `os`,
 `arch`, `hostname` (URL param `host`), `user`, `git_branch`,

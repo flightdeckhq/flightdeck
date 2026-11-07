@@ -12,6 +12,7 @@ import {
   getBadge,
   getEventDetail,
   getSummaryRows,
+  REDACTED_ERROR_MESSAGE,
   toolFailure,
 } from "@/lib/events";
 import { getProvider } from "@/lib/models";
@@ -175,11 +176,14 @@ export function EventErrorIndicator({ event }: { event: AgentEvent }) {
   const err: unknown = mcp ? event.payload?.error : toolFailure(event);
   if (err == null) return null;
   const fallback = mcp ? "MCP call failed" : "Tool call failed";
+  // With capture off the stored message is the redaction marker, which
+  // tells the operator nothing; the error class (or type) still does.
+  const errMessage = (err as { message?: string }).message;
   const message =
     typeof err === "string"
       ? err
       : typeof err === "object"
-        ? (err as { message?: string }).message ||
+        ? (errMessage !== REDACTED_ERROR_MESSAGE && errMessage) ||
           (err as { error_class?: string }).error_class ||
           (err as { error_type?: string }).error_type ||
           fallback

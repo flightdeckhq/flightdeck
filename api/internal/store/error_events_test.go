@@ -44,8 +44,9 @@ func TestExpandMCPServerFilter(t *testing.T) {
 // errorEventsScenario is one agent with three sessions:
 //
 //   - mixed: an llm_error (rate_limit), a failed tool_call (other), a
-//     successful tool_call, a tool_call whose error is a plain string,
-//     and a failed mcp_tool_call (invalid_params);
+//     successful tool_call, tool_calls whose error is a plain string,
+//     a JSON null and an array (none of them an object, so none is an
+//     error), and a failed mcp_tool_call (invalid_params);
 //   - toolOnly: one failed tool_call (other) and nothing else;
 //   - mcpOnly: one failed mcp_tool_call carrying error_type=other, as
 //     the plugin stores an MCP tool failure.
@@ -80,6 +81,8 @@ func seedErrorEventsScenario(t *testing.T, s *Store) errorEventsScenario {
 		{sc.mixed, "tool_call", toolErr},
 		{sc.mixed, "tool_call", `{"tool_use_id":"toolu_ok"}`},
 		{sc.mixed, "tool_call", `{"error":"not a structured block"}`},
+		{sc.mixed, "tool_call", `{"error":null}`},
+		{sc.mixed, "tool_call", `{"error":[{"error_type":"other"}]}`},
 		{sc.mixed, "mcp_tool_call", `{"server_name":"github","error":{"error_type":"invalid_params","error_class":"McpError"}}`},
 		{sc.toolOnly, "tool_call", toolErr},
 		{sc.mcpOnly, "mcp_tool_call", `{"server_name":"github","error":{"error_type":"other","error_class":"PluginToolError"}}`},

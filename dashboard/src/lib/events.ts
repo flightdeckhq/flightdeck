@@ -287,11 +287,16 @@ export function attachmentStartIds(
 
 /* ---- Error events ---- */
 
+/** The message a failed tool call's error block carries while prompt
+ *  capture is off: the plugin and the OTLP receiver keep the block but
+ *  replace the tool's error text with this marker. */
+export const REDACTED_ERROR_MESSAGE = "<redacted>";
+
 /** The ``error`` block of a failed ``tool_call``: the Claude Code
  *  plugin's hook and its OpenTelemetry ``tool_result`` store a tool
  *  failure as a ``tool_call`` carrying this object rather than as an
- *  event type of its own. ``message`` reads ``<redacted>`` when capture
- *  is off. */
+ *  event type of its own. ``message`` reads ``REDACTED_ERROR_MESSAGE``
+ *  when capture is off. */
 export interface ToolFailure {
   error_type: string;
   error_class?: string;

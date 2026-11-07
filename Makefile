@@ -39,6 +39,7 @@ build: ## Build all components
 
 test: ## Run all unit tests
 	$(MAKE) -C sensor test
+	$(MAKE) -C storage test
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
@@ -238,6 +239,7 @@ seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint
+	$(MAKE) -C storage lint
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint
 	$(MAKE) -C api lint

@@ -159,10 +159,10 @@ test.describe("T25 — MCP observability rendering", () => {
   }) => {
     await openMCPSession(page);
     const drawer = page.locator('[data-testid="session-drawer"]');
-    // Scope to a SUCCESSFUL mcp_tool_call ROW (no MCPErrorIndicator
+    // Scope to a SUCCESSFUL mcp_tool_call ROW (no EventErrorIndicator
     // child). The seeded fixture emits both a success row (echo
     // tool with phase5-fixture arguments) and a failure row (the
-    // MCPErrorIndicator anchor for T25-16). Without the negation,
+    // EventErrorIndicator anchor for T25-16). Without the negation,
     // .first() may resolve to the failure row whose arguments
     // payload differs and would fail the contains() assertion
     // below.
@@ -171,7 +171,7 @@ test.describe("T25 — MCP observability rendering", () => {
     // to the row container. `data-event-type` is carried by BOTH
     // the row container AND the inner EventTypePill span, so a bare
     // `[data-event-type="mcp_tool_call"]` matches the pill too —
-    // and a pill never contains the MCPErrorIndicator (a sibling),
+    // and a pill never contains the EventErrorIndicator (a sibling),
     // so `:not(:has(...))` fails to exclude the failure row's pill
     // and `.first()` would resolve to it. Scoping to the row testid
     // makes the negation operate on the element that actually owns
@@ -431,10 +431,10 @@ test.describe("T25 — MCP observability rendering", () => {
     ).toBeVisible();
   });
 
-  // T25-16 — MCPErrorIndicator on a failed mcp_tool_call row.
+  // T25-16 — EventErrorIndicator on a failed mcp_tool_call row.
   // The canonical seed includes one mcp_tool_call_failed extras tag on
   // the mcp-active session that emits an mcp_tool_call event with a
-  // structured payload.error. The dashboard's MCPErrorIndicator
+  // structured payload.error. The dashboard's EventErrorIndicator
   // component renders a red AlertCircle inline immediately after the
   // badge whenever event_type is MCP and payload.error is populated.
   //
@@ -442,7 +442,7 @@ test.describe("T25 — MCP observability rendering", () => {
   // not colour. Indicator MUST render on the failed row, MUST NOT
   // render on a successful mcp_tool_call row (regression guard
   // against the indicator spilling onto every MCP row).
-  test("T25-16: MCPErrorIndicator decorates only the failed mcp_tool_call row", async ({
+  test("T25-16: EventErrorIndicator decorates only the failed mcp_tool_call row", async ({
     page,
   }) => {
     await openMCPSession(page);
@@ -474,7 +474,7 @@ test.describe("T25 — MCP observability rendering", () => {
     // `:has` / `:not(:has(...))` operate on the row container, not
     // the inner EventTypePill span (which also carries
     // `data-event-type` but never owns the sibling
-    // MCPErrorIndicator — see T25-7's note).
+    // EventErrorIndicator — see T25-7's note).
     const decoratedRow = drawer.locator(
       '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
     );

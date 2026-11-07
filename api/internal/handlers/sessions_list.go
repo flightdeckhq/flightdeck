@@ -128,7 +128,7 @@ var validEstimatedVias = map[string]bool{
 // @Param        git_branch query  string  false  "Filter by context.git_branch (repeatable)"
 // @Param        git_repo   query  string  false  "Filter by context.git_repo (repeatable)"
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
-// @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
+// @Param        error_type query  string  false  "Filter to sessions that emitted an error event (an llm_error, or a tool_call whose payload carries an error object: a failed tool call, error_type other) of one of the listed taxonomy values (repeatable/comma). Matches the error_types[] aggregate each row carries. 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed, mcp_policy_user_remembered."
 // @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma); backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
 // @Param        parent_session_id query string false "Filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
@@ -237,8 +237,9 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
-		// Filter sessions to those that emitted an
-		// llm_error event of one of the listed taxonomy values. The
+		// Filter sessions to those that emitted an error event (an
+		// llm_error or a failed tool_call) of one of the listed
+		// taxonomy values. The
 		// 14-entry taxonomy lives in the sensor's core/errors.py;
 		// the API accepts every taxonomy value plus any future
 		// value (free-form) -- the EXISTS subquery on events just

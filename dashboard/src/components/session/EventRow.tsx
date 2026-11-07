@@ -12,6 +12,8 @@ import {
   getBadge,
   getEventDetail,
   getSummaryRows,
+  REDACTED_ERROR_MESSAGE,
+  toolFailure,
 } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { SyntaxJson } from "@/components/ui/syntax-json";
@@ -26,7 +28,7 @@ import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
  * Per-event row used by both the SessionDrawer's Timeline tab AND
  * the Sub-agents tab's inline expansion. Lifted from SessionDrawer
  * so the two surfaces render with byte-identical fidelity — same
- * type-coloured badge, same MCP-error indicator, same streaming
+ * type-coloured badge, same error indicator, same streaming
  * pill, same provider-logo + detail string, same expand-into-
  * ExpandedEvent on click.
  *
@@ -121,7 +123,7 @@ export function EventRow({
         ) : (
           <EventTypePill eventType={event.event_type} />
         )}
-        <MCPErrorIndicator event={event} />
+        <EventErrorIndicator event={event} />
         <span
           className="flex-1 truncate text-[13px] flex items-center gap-1"
           style={{ color: "var(--text)" }}
@@ -160,35 +162,42 @@ export function EventRow({
 }
 
 /**
- * Small inline error indicator rendered between the badge
- * and the detail text on MCP event rows whose ``payload.error`` is
- * populated. Without this, an operator scanning the event feed cannot
- * distinguish a successful ``mcp_tool_call`` from a failed one
- * without expanding the row.
+ * Small inline error indicator rendered between the badge and the
+ * detail text on a failed row: an MCP event whose ``payload.error`` is
+ * populated, or a failed ``tool_call`` (``toolFailure``). Without it an
+ * operator scanning the event feed cannot tell a failed call from a
+ * successful one without expanding the row.
  *
- * Renders nothing when the event isn't MCP, when there's no error
- * field, or when ``payload`` is missing.
+ * Renders nothing for any other event, when there's no error field, or
+ * when ``payload`` is missing.
  */
-export function MCPErrorIndicator({ event }: { event: AgentEvent }) {
-  if (!isMCPEvent(event.event_type)) return null;
-  const err = event.payload?.error;
+export function EventErrorIndicator({ event }: { event: AgentEvent }) {
+  const mcp = isMCPEvent(event.event_type);
+  const err: unknown = mcp ? event.payload?.error : toolFailure(event);
   if (err == null) return null;
+  const fallback = mcp ? "MCP call failed" : "Tool call failed";
+  // With capture off the stored message is the redaction marker, which
+  // tells the operator nothing; the error class (or type) still does.
+  const errMessage = (err as { message?: string }).message;
   const message =
     typeof err === "string"
       ? err
-      : err && typeof err === "object"
-        ? (err as { message?: string }).message ||
+      : typeof err === "object"
+        ? (errMessage !== REDACTED_ERROR_MESSAGE && errMessage) ||
           (err as { error_class?: string }).error_class ||
           (err as { error_type?: string }).error_type ||
-          "MCP call failed"
-        : "MCP call failed";
+          fallback
+        : fallback;
+  const testId = mcp
+    ? `mcp-error-indicator-${event.id}`
+    : `tool-error-indicator-${event.id}`;
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
           <span
-            data-testid={`mcp-error-indicator-${event.id}`}
-            aria-label={`MCP call failed: ${message}`}
+            data-testid={testId}
+            aria-label={`${mcp ? "MCP" : "Tool"} call failed: ${message}`}
             className="inline-flex shrink-0 items-center justify-center"
             style={{ color: "var(--event-error)" }}
           >

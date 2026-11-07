@@ -1542,7 +1542,7 @@ describe("SessionDrawer pagination", () => {
 // family colour (cyan / green / purple) regardless of success vs.
 // failure. An operator scanning the list could not tell a successful
 // mcp_tool_call from a failed one without expanding the row to read
-// MCPEventDetails. The MCPErrorIndicator component restores parity
+// MCPEventDetails. The EventErrorIndicator component restores parity
 // with the Investigate session-row dot for llm_error: a small
 // AlertCircle inline immediately after the badge whenever
 // payload.error is populated.

@@ -2031,7 +2031,7 @@ function EventFeed({
   );
 }
 
-// ``MCPErrorIndicator`` and ``StreamingPill`` moved to ./EventRow
+// ``EventErrorIndicator`` and ``StreamingPill`` moved to ./EventRow
 // alongside the per-event row component (the Sub-agents tab
 // inline mini-timeline shares rendering with the Timeline tab).
 

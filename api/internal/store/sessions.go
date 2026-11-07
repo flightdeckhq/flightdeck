@@ -31,7 +31,8 @@ type SessionsParams struct {
 	// value 400s rather than silently matching nothing.
 	ClientTypes []string
 	// ErrorTypes filters sessions to those that emitted at
-	// least one ``llm_error`` event whose structured ``error_type``
+	// least one error event (an ``llm_error`` or a failed
+	// ``tool_call``, errorEventFilter) whose structured ``error_type``
 	// matches one of the listed values. Multi-value OR within. Backed
 	// by an EXISTS subquery over the events table, keyed on
 	// ``payload->'error'->>'error_type'``. An empty slice means "no
@@ -272,7 +273,8 @@ type SessionListItem struct {
 	TokenID   *string `json:"token_id"`
 	TokenName *string `json:"token_name"`
 	// ErrorTypes lists every distinct ``payload->'error'->>'error_type''
-	// observed across the session's ``llm_error`` events. Always
+	// observed across the session's error events: its ``llm_error``
+	// events and its failed ``tool_call`` events (errorEventFilter). Always
 	// present on the wire (empty array when the session has no
 	// errors) so dashboard code can treat the slice as
 	// non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
@@ -415,7 +417,7 @@ const sessionListProjection = `
 					SELECT DISTINCT e.payload->'error'->>'error_type'
 					FROM events e
 					WHERE e.session_id = s.session_id
-					AND e.event_type = 'llm_error'
+					AND ` + errorEventFilter + `
 					AND e.payload->'error'->>'error_type' IS NOT NULL
 				),
 				ARRAY[]::text[]
@@ -615,9 +617,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	// Error-type filter. Uses an EXISTS subquery over the
 	// events table so "sessions that had a rate_limit error" is the
 	// correct predicate, not "sessions whose most-recent event was a
-	// rate_limit error". The events table carries one llm_error row
-	// per error occurrence; the classification lives at
-	// payload->'error'->>'error_type'.
+	// rate_limit error". The events table carries one error event
+	// (an llm_error or a failed tool_call, errorEventFilter) per
+	// error occurrence; the classification lives at
+	// payload->'error'->>'error_type'. Matches the error_types
+	// aggregate, so a facet value read off it filters to its sessions.
 	if len(params.ErrorTypes) > 0 {
 		placeholders := make([]string, len(params.ErrorTypes))
 		for i, et := range params.ErrorTypes {
@@ -628,7 +632,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf(
 			"EXISTS (SELECT 1 FROM events e "+
 				"WHERE e.session_id = s.session_id "+
-				"AND e.event_type = 'llm_error' "+
+				"AND "+errorEventFilter+" "+
 				"AND e.payload->'error'->>'error_type' IN (%s))",
 			strings.Join(placeholders, ", "),
 		))

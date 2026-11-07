@@ -601,7 +601,10 @@ All notable changes to Flightdeck are documented here.
   Flightdeck. They now say plainly that Gemini (`google-genai`) and boto3
   Bedrock Converse are not supported (both on the roadmap), and that
   BAML, Letta, MetaGPT and CAMEL are not supported; an earlier sentence
-  claiming the sensor counts Gemini's thinking tokens is corrected.
+  claiming the sensor counts Gemini's thinking tokens is corrected. They
+  also say that LangGraph child sessions come only from nodes whose
+  action is a plain callable, so LangChain's `create_agent` and Deep
+  Agents, whose nodes are Runnables and a `ToolNode`, open none.
 - **The sensor's framework labels match the OpenTelemetry receiver's,
   and it recognises more frameworks.** Google ADK (`google_adk`), the
   OpenAI Agents SDK (`openai_agents`), Strands (`strands`) and Pydantic

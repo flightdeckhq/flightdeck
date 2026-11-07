@@ -144,7 +144,7 @@ is imported) only if your application imports it. `unpatch()` (and
 | litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.text_completion`, `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses` (each with `stream=True`), `litellm.embedding`, `litellm.aembedding` |
 | MCP (official Python `mcp` SDK, reached transitively by `langchain-mcp-adapters`, `llama-index-tools-mcp` and `mcpadapt`) | `patch_mcp_classes` | `mcp.client.session.ClientSession.initialize` on mcp 1.x / `.adopt` on mcp 2.x (server fingerprint capture, every 2.x handshake path), `.list_tools`, `.call_tool`, `.list_resources`, `.read_resource`, `.list_prompts`, `.get_prompt` (one `mcp_*` event type each), plus the stdio / SSE / streamable-HTTP / websocket transport client factories and mcp 2.x's `Client._build_session` for transport attribution. `call_tool` also enforces the MCP Protection Policy. Supported SDK range: `mcp>=1.28,<3`. |
 | CrewAI (sub-agent sessions) | `patch_crewai_classes` | `crewai.Agent.execute_task` / `.aexecute_task` — each Crew member's turn lands as a child session (`session_start` / `session_end`) with `parent_session_id`, `agent_role` taken from `Agent.role`, and incoming / outgoing message capture gated on `capture_prompts` |
-| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)` |
+| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)`. Only a node whose action is a plain callable is wrapped: Runnable, `ToolNode` and compiled-subgraph nodes are not |
 | Claude Agent SDK (`claude-agent-sdk>=0.2.168,<0.3`) | `patch_claude_agent_sdk` | `query()` (however it was imported) and `ClaudeSDKClient` — each run lands as its own `claude_agent_sdk` session keyed by the Claude Code session id, with a `post_call` per assistant message (tokens, cache split, billing mode) and a `tool_call` per tool use, read from the SDK's message stream; a Claude Code plugin loaded into the run stays silent. `PreToolUse` and `UserPromptSubmit` callbacks added after the caller's hooks apply the run's directives (a stop denies the next tool call and blocks prompts; budget warnings reach the run) and the MCP Protection Policy. Install with `pip install flightdeck-sensor[claude-agent-sdk]`. |
 
 ### Coverage beyond these interceptors
@@ -161,8 +161,16 @@ AG2 and DSPy on its litellm engine. Each event names the framework in
 - **Sub-agent sessions planned**
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): Google
   ADK, the OpenAI Agents SDK, Microsoft Agent Framework, LlamaIndex and
-  Deep Agents' `task` sub-agents, plus a DSPy callback adapter for its
-  default engine, which has its own HTTP transport.
+  Deep Agents (each agent and each `task` sub-agent).
+- **LLM calls planned**
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): a DSPy
+  callback adapter for its default engine, which has its own HTTP
+  transport and bypasses the SDKs and litellm.
+- **No sub-agent sessions from `create_agent`**: the LangGraph
+  interceptor wraps only nodes whose action is a plain callable.
+  LangChain's `create_agent`, and Deep Agents built on it, register
+  Runnable and `ToolNode` nodes, so their runs are one session (their LLM
+  calls are still metered).
 - **Structure through OpenTelemetry instead**: Pydantic AI and Strands
   Agents export GenAI spans that Flightdeck's OTLP receiver maps into
   observe-only child sessions. The sensor does not wrap them. Report a

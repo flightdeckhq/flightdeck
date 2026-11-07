@@ -43,6 +43,9 @@ class Provider(StrEnum):
       agent-bearing predicate is default-on per node, narrowable
       via the optional regex override
       ``init(langgraph_agent_node_pattern=…)``.
+    * ``Provider.LLAMA_INDEX`` — a span handler on LlamaIndex's root
+      instrumentation dispatcher that reports each agent of an agent
+      workflow run as a child session carrying its own calls.
     * ``Provider.CLAUDE_AGENT_SDK`` — wrap around
       ``claude_agent_sdk.query`` and ``ClaudeSDKClient``, reporting each
       Agent SDK run as its own session from the SDK's message stream.
@@ -58,4 +61,5 @@ class Provider(StrEnum):
     MCP = "mcp"
     CREWAI = "crewai"
     LANGGRAPH = "langgraph"
+    LLAMA_INDEX = "llama_index"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"

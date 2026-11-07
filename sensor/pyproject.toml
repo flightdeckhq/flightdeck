@@ -197,6 +197,18 @@ sdk-floors = [
     "litellm==1.83.0",
     "mcp==1.28.0",
 ]
+# The oldest LlamaIndex the agent-workflow wrap supports
+# (interceptor/llama_index.py LLAMA_INDEX_CORE_FLOOR): llama-index-core
+# 0.14.0 on the first llama-index-workflows 2 release, whose step spans
+# the wrap reads, and the llama-index-llms-openai release that imports
+# cleanly on core 0.14.0. CI's LlamaIndex-floor lane installs this group
+# with the test and openai extras and runs the wrap's tests against it;
+# the framework lane tests the newest releases.
+llama-index-floor = [
+    "llama-index-core==0.14.0",
+    "llama-index-workflows==2.0.0",
+    "llama-index-llms-openai==0.5.6",
+]
 
 [tool.uv]
 # uv.lock resolves every CI lane in one file; the framework lane (dev
@@ -209,9 +221,13 @@ conflicts = [
         { group = "sdk-majors" },
         { group = "openai-floor" },
         { group = "sdk-floors" },
+        { group = "llama-index-floor" },
     ],
     # Every litellm release the litellm extra admits needs a newer openai.
     [{ extra = "litellm" }, { group = "openai-floor" }],
+    # llama-index-llms-openai 0.5.6 holds openai below 2, which litellm
+    # does not admit either.
+    [{ extra = "litellm" }, { group = "llama-index-floor" }],
 ]
 # Every `uv lock` resolves to releases at least 14 days old: brand-new
 # releases are where hijacked or broken versions are caught and yanked
@@ -243,6 +259,12 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = ["crewai", "crewai.*"]
 ignore_missing_imports = true
+
+# The LlamaIndex span handler subclasses LlamaIndex's BaseSpanHandler,
+# which is Any in the lanes that do not install LlamaIndex.
+[[tool.mypy.overrides]]
+module = ["flightdeck_sensor.interceptor.llama_index"]
+disallow_subclassing_any = false
 
 [tool.ruff]
 # No target-version: ruff reads the minimum Python from requires-python.

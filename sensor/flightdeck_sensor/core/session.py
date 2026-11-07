@@ -20,6 +20,7 @@ import time
 import urllib.request
 import uuid
 import weakref
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,7 @@ from flightdeck_sensor.core.types import (
     SessionState,
     StatusResponse,
     SubagentMessage,
+    SubagentScope,
     TokenUsage,
 )
 
@@ -53,10 +55,23 @@ from flightdeck_sensor.interceptor import base as _interceptor_base
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextvars import Token
 
     from flightdeck_sensor.transport.client import ControlPlaneClient, DrainShutdown, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
+
+# The child session whose work is running in this context, set by a
+# framework wrap around the child's steps (Session.enter_subagent_scope).
+# A context variable, so it follows the child's asyncio tasks and any
+# thread started with a copied context, and nothing else.
+_ACTIVE_SUBAGENT_SCOPE: ContextVar[SubagentScope | None] = ContextVar(
+    "flightdeck_subagent_scope", default=None
+)
+
+# The event types that describe the sensor's own session whichever scope
+# builds them: its start and end are never a child's.
+_SESSION_OWN_EVENT_TYPES = frozenset({EventType.SESSION_START, EventType.SESSION_END})
 
 
 # Operator-actionable session_start enrichment.
@@ -638,8 +653,11 @@ class Session:
         otherwise let another thread's increment leak into this
         thread's reported ``tokens_used_session``.
         """
+        scope = self.active_subagent_scope()
         with self._lock:
             self._tokens_used += usage.total
+            if scope is not None:
+                scope.tokens_used += usage.total
             return self._tokens_used
 
     def record_model(self, model: str) -> None:
@@ -801,6 +819,76 @@ class Session:
     # The methods POST through the same control-plane client as every
     # other event so back-pressure / unavailability / capture_prompts
     # behaviour is uniform with the rest of the sensor.
+
+    def new_subagent_scope(
+        self,
+        *,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+    ) -> SubagentScope:
+        """A scope for a child session of this Session, to enter around
+        the child's work with :meth:`enter_subagent_scope`."""
+        return SubagentScope(
+            owner_session_id=self.config.session_id,
+            child_session_id=child_session_id,
+            child_agent_id=child_agent_id,
+            child_agent_name=child_agent_name,
+            agent_role=agent_role,
+        )
+
+    @staticmethod
+    def enter_subagent_scope(scope: SubagentScope | None) -> Token[SubagentScope | None]:
+        """Run the current context's work as ``scope``'s child (``None``:
+        as the sensor's own session) until :meth:`exit_subagent_scope`
+        with the returned token. Every event the owning Session builds in
+        the meantime goes on the child (see :meth:`_build_payload`)."""
+        return _ACTIVE_SUBAGENT_SCOPE.set(scope)
+
+    @staticmethod
+    def exit_subagent_scope(token: Token[SubagentScope | None]) -> None:
+        """Restore the scope that was active before the
+        :meth:`enter_subagent_scope` that returned ``token``. A token
+        from another context (a framework that ends a step elsewhere than
+        it started it) is ignored: that context's scope ends with it."""
+        try:
+            _ACTIVE_SUBAGENT_SCOPE.reset(token)
+        except ValueError:
+            _log.debug("sub-agent scope exited in another context", exc_info=True)
+
+    def active_subagent_scope(self) -> SubagentScope | None:
+        """The child of this Session whose work runs in the current
+        context, if any. A scope another Session opened (one ended by
+        teardown before a new init) is not this Session's."""
+        scope = _ACTIVE_SUBAGENT_SCOPE.get()
+        if scope is None or scope.owner_session_id != self.config.session_id:
+            return None
+        return scope
+
+    def current_session_id(self) -> str:
+        """The session the events built in the current context go on:
+        the active child's, else this Session's."""
+        scope = self.active_subagent_scope()
+        return scope.child_session_id if scope is not None else self.config.session_id
+
+    def note_reported_tool_call(self, tool_id: str | None) -> None:
+        """Record that a model response reported the tool call
+        ``tool_id`` as a ``tool_call`` event in the active child, so the
+        wrap that runs the tool does not report it again."""
+        scope = self.active_subagent_scope()
+        if scope is None or not tool_id:
+            return
+        with self._lock:
+            scope.reported_tool_ids.add(tool_id)
+
+    def tool_call_reported(self, scope: SubagentScope, tool_id: str | None) -> bool:
+        """Whether a model response in ``scope``'s child already reported
+        the tool call ``tool_id``."""
+        if not tool_id:
+            return False
+        with self._lock:
+            return tool_id in scope.reported_tool_ids
 
     def derive_subagent_id(self, agent_role: str) -> str:
         """Return the deterministic ``agent_id`` for a sub-agent of
@@ -978,6 +1066,7 @@ class Session:
         state: str = "closed",
         outgoing_message: SubagentMessage | None = None,
         error: dict[str, Any] | None = None,
+        queued: bool = False,
     ) -> None:
         """Emit a ``session_end`` event for a child sub-agent.
 
@@ -992,6 +1081,12 @@ class Session:
         ``outgoing_message`` carries the child's response back to
         the parent. Same capture_prompts gating as
         ``incoming_message``.
+
+        ``queued=True`` sends it through the event queue instead of
+        posting it at once. A wrap whose child ran in a scope (see
+        :meth:`enter_subagent_scope`) passes it: the child's own events
+        are queued, and an end posted ahead of them would close the
+        session before they arrive, where the worker drops them.
         """
         payload = self._build_subagent_payload(
             event_type=EventType.SESSION_END,
@@ -1017,6 +1112,9 @@ class Session:
         if content_envelope is not None:
             payload["has_content"] = True
             payload["content"] = content_envelope
+        if queued:
+            self.event_queue.enqueue(payload)
+            return
         self.client.post_event(payload)
 
     def emit_agent_handoff(
@@ -1738,6 +1836,16 @@ class Session:
                 payload["close_reason"] = reason
 
         payload.update(extra)
+        if event_type not in _SESSION_OWN_EVENT_TYPES:
+            scope = self.active_subagent_scope()
+            if scope is not None:
+                # The child whose work is running owns the event.
+                payload["session_id"] = scope.child_session_id
+                payload["agent_id"] = scope.child_agent_id
+                payload["agent_name"] = scope.child_agent_name
+                payload["parent_session_id"] = self.config.session_id
+                payload["agent_role"] = scope.agent_role
+                payload["tokens_used_session"] = scope.tokens_used
         return payload
 
     def _sensor_close_reason(self, lock_wait: float | None = None) -> str | None:

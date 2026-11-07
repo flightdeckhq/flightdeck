@@ -27,7 +27,7 @@ var upgrader = websocket.Upgrader{
 // NewForTesting.
 //
 // @Summary      Real-time fleet stream
-// @Description  WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR “?token=“ query parameter (browsers cannot set headers on the WS upgrade).
+// @Description  WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR `?token=` query parameter (browsers cannot set headers on the WS upgrade).
 // @Tags         stream
 // @Param        token  query  string  false  "Bearer token, alternative to Authorization header"
 // @Success      101  {string}  string

@@ -35,7 +35,7 @@ type SessionResponse struct {
 // SessionsHandler handles GET /v1/sessions/{id}.
 //
 // @Summary      Get session detail
-// @Description  Returns session metadata (including effective policy thresholds and “capture_prompts“, the stored capture posture: true, false, or null before a session_start declared it) and events in chronological order. When “events_limit“ is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.
+// @Description  Returns session metadata (including effective policy thresholds and `capture_prompts`, the stored capture posture: true, false, or null before a session_start declared it) and events in chronological order. When `events_limit` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.
 // @Tags         sessions
 // @Produce      json
 // @Param        id            path      string  true   "Session UUID"

@@ -561,6 +561,10 @@ def test_responses_capture_on_stores_instructions_input_and_response(
     assert content["system"] == INSTRUCTIONS
     assert content["input"] == PROMPT
     assert content["messages"] == []
+    # A full stream stores the terminal event's response, not the
+    # ``response.created`` snapshot that preceded it.
+    assert content["response"]["object"] == "response"
+    assert content["response"]["status"] == "completed"
     assert content["response"]["output"][0]["content"][0]["text"] == "hello"
 
 
@@ -580,6 +584,111 @@ def test_responses_capture_off_stores_nothing(session: Session, stream: bool) ->
         list(result)
     assert len(_post_calls(session)) == 1
     _assert_nothing_captured(session)
+
+
+def _read_until_first_delta(stream: Any) -> list[str]:
+    """Read a Responses stream until its first text delta, then leave."""
+    kinds: list[str] = []
+    for event in stream:
+        kinds.append(str(event.type))
+        if event.type == "response.output_text.delta":
+            break
+    return kinds
+
+
+async def _aread_until_first_delta(stream: Any) -> list[str]:
+    kinds: list[str] = []
+    async for event in stream:
+        kinds.append(str(event.type))
+        if event.type == "response.output_text.delta":
+            break
+    return kinds
+
+
+@requires_litellm_responses
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_responses_stream_left_early_stores_the_in_progress_response(
+    capture_session: Session, is_async: bool
+) -> None:
+    """A stream the caller leaves before its terminal event stores the
+    ``response.created`` snapshot, so the stored response is still a
+    Responses object (``object: "response"``) the dashboard renders as
+    one, beside the request's ``instructions`` and ``input``."""
+    routes = _HttpRoutes()
+    kwargs: dict[str, Any] = {
+        "model": "gpt-4o-mini",
+        "input": PROMPT,
+        "instructions": INSTRUCTIONS,
+        "stream": True,
+        "api_key": "k",
+    }
+    if is_async:
+
+        async def _read() -> list[str]:
+            stream = await litellm.aresponses(client=_async_handler(routes), **kwargs)
+            try:
+                return await _aread_until_first_delta(stream)
+            finally:
+                await stream.close()
+
+        kinds = asyncio.run(_read())
+    else:
+        stream = litellm.responses(client=_handler(routes), **kwargs)
+        try:
+            kinds = _read_until_first_delta(stream)
+        finally:
+            stream.close()
+    assert "response.completed" not in kinds
+    (pc,) = _post_calls(capture_session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    content = pc["content"]
+    assert content["response"]["object"] == "response"
+    assert content["response"]["status"] == "in_progress"
+    assert content["response"]["output"] == []
+    assert content["system"] == INSTRUCTIONS
+    assert content["input"] == PROMPT
+    assert _events_of(capture_session, "tool_call") == []
+
+
+@requires_litellm_responses
+def test_responses_stream_left_early_without_capture_stores_nothing(session: Session) -> None:
+    routes = _HttpRoutes(tool=True)
+    stream = litellm.responses(
+        model="gpt-4o-mini",
+        input=PROMPT,
+        instructions=INSTRUCTIONS,
+        stream=True,
+        client=_handler(routes),
+        api_key="k",
+    )
+    try:
+        _read_until_first_delta(stream)
+    finally:
+        stream.close()
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    _assert_nothing_captured(session)
+
+
+def test_responses_accumulator_prefers_the_terminal_response_over_snapshots() -> None:
+    """The latest in-progress snapshot stands in until a terminal event
+    arrives; once one has, nothing after it replaces it."""
+    created = {"object": "response", "status": "in_progress", "id": "created"}
+    in_progress = {"object": "response", "status": "in_progress", "id": "in_progress"}
+    completed = {"object": "response", "status": "completed", "id": "completed"}
+    acc = LitellmResponsesProvider(capture_prompts=True).stream_accumulator(None, {})
+    assert acc is not None
+    assert acc.message() is None
+    acc.add({"type": "response.created", "response": created})
+    assert acc.message() is created
+    acc.add({"type": "response.output_text.delta", "delta": "hi"})
+    assert acc.message() is created
+    acc.add({"type": "response.in_progress", "response": in_progress})
+    assert acc.message() is in_progress
+    acc.add({"type": "response.completed", "response": completed})
+    assert acc.message() is completed
+    acc.add({"type": "response.in_progress", "response": in_progress})
+    assert acc.message() is completed
 
 
 # ----- nested litellm calls: only the bridge passes through --------------------

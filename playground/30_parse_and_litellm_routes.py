@@ -4,7 +4,9 @@ closed with its stream parsed but never read, and litellm's
 ``text_completion`` / ``atext_completion`` and ``responses`` /
 ``aresponses`` on every route kind -- one litellm serves through the
 OpenAI SDK, its own httpx routes (Anthropic, the native Responses API),
-and a Responses call it bridges through its own ``completion``.
+and a Responses call it bridges through its own ``completion``. A
+streamed Responses call left before its terminal event must still store
+a Responses object (the ``response.created`` snapshot) as its content.
 
 The sensor patches the OpenAI SDK and litellm together, and litellm
 calls both underneath (``text_completion`` reaches the OpenAI SDK through
@@ -56,6 +58,11 @@ PARSE_MAX_TOKENS = 40
 PROMPT = "Say hi in one word."
 # The input of the captured Responses call, looked up in its stored content.
 CAPTURED_INPUT = "Reply with the single word: flightdeck-route-check"
+# The early-exit Responses stream: its instructions, looked up in its
+# stored content, and how many events it reads before leaving (past
+# ``response.created`` and ``response.in_progress``, short of the end).
+EARLY_EXIT_INSTRUCTIONS = "Answer in one word."
+EARLY_EXIT_EVENTS = 3
 # A duplicate post_call could land after the expected ones (the workers
 # write in batches), so the count is read until it has not changed over
 # this many consecutive polls -- a 1.5 s quiet window at the poll gap
@@ -193,8 +200,8 @@ def main() -> None:
     )
     labels.append("atext_completion anthropic")
 
-    # 7-9. litellm responses: native (OpenAI), streamed async, and
-    # bridged through litellm.completion (Anthropic).
+    # 7-10. litellm responses: native (OpenAI), streamed async, streamed
+    # and left early, and bridged through litellm.completion (Anthropic).
     native = timed(
         "litellm.responses (OpenAI, native)",
         lambda: litellm.responses(
@@ -225,6 +232,36 @@ def main() -> None:
             f"aresponses stream ended without response.completed: {kinds!r}"
         )
     labels.append("aresponses openai stream")
+
+    # 9. A streamed Responses call the caller leaves before its terminal
+    # event: the post_call is aborted and the stored response is the
+    # ``response.created`` snapshot, still a Responses object.
+    def _responses_left_early() -> list[str]:
+        stream = litellm.responses(
+            model=OPENAI_MODEL,
+            instructions=EARLY_EXIT_INSTRUCTIONS,
+            input=PROMPT,
+            max_output_tokens=RESPONSES_MAX_OUTPUT_TOKENS,
+            stream=True,
+        )
+        read: list[str] = []
+        try:
+            for event in stream:
+                read.append(str(getattr(event, "type", "?")))
+                if len(read) >= EARLY_EXIT_EVENTS:
+                    break
+        finally:
+            stream.close()
+        return read
+
+    early_kinds = timed(
+        "litellm.responses(stream=True) left early (OpenAI)",
+        _responses_left_early,
+        lambda k: f"{len(k)} events read",
+    )
+    if "response.completed" in early_kinds:
+        raise AssertionError(f"the early-exit stream reached its end: {early_kinds!r}")
+    labels.append("responses openai left early")
     timed(
         "litellm.responses (Anthropic, bridged)",
         lambda: litellm.responses(
@@ -236,7 +273,7 @@ def main() -> None:
     )
     labels.append("responses anthropic bridged")
 
-    # 10. A call with fallbacks whose model does not exist: litellm's
+    # 11. A call with fallbacks whose model does not exist: litellm's
     # fallback loop retries it on the fallback, through the patched
     # litellm.acompletion; one post_call, naming the model that answered.
     timed(
@@ -287,6 +324,12 @@ def main() -> None:
                 and event.get("model_requested") == MISSING_OPENAI_MODEL
                 and str(event.get("model_served") or "").startswith(OPENAI_MODEL)
             )
+        elif label == "responses openai left early":
+            ok = (
+                streaming is not None
+                and streaming.get("final_outcome") == "aborted"
+                and (tokens[0] or 0) > 0
+            )
         elif label == "unread view":
             ok = (
                 streaming is not None
@@ -321,6 +364,28 @@ def main() -> None:
     if not content_ok:
         raise AssertionError(
             f"content of the native responses call: {status} {content!r}"
+        )
+    # The early-exit call stores the in-progress snapshot, which the
+    # dashboard recognises as a Responses call by its ``object``.
+    early_event = post_calls[labels.index("responses openai left early")]
+    status, content = event_content(early_event["id"])
+    stored = content.get("response") or {}
+    early_ok = (
+        status == 200
+        and stored.get("object") == "response"
+        and stored.get("status") == "in_progress"
+        and content.get("system_prompt") == EARLY_EXIT_INSTRUCTIONS
+    )
+    print_result(
+        "early-exit responses content stored",
+        early_ok,
+        0,
+        f"status={status} object={stored.get('object')!r} "
+        f"response status={stored.get('status')!r}",
+    )
+    if not early_ok:
+        raise AssertionError(
+            f"content of the early-exit responses call: {status} {content!r}"
         )
     print(
         f"[playground:30_parse_and_litellm_routes] native responses id={native.id} "

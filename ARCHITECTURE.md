@@ -1231,7 +1231,13 @@ is not zero. `responses(stream=True)` returns the guard around litellm's
 Responses streaming iterator; the terminal event (`response.completed` /
 `.incomplete` / `.failed`) carries the whole response and its usage, so
 nothing is added to the request and nothing is hidden, and the guard
-keeps that response for content capture and the tool calls. litellm's
+keeps that response for content capture and the tool calls. Until it
+arrives the guard keeps the latest response a `response.created` /
+`response.in_progress` event carries, so a stream left before its
+terminal event stores that in-progress response (`object: "response"`,
+`status: "in_progress"`, no output) as its content only; its usage,
+model and stop reason still come from the events, and it emits no tool
+call. litellm's
 stream wrappers are not context managers and have no `close()`, so the
 guard is used as a plain iterator; a loop left early is reported once the
 guard is collected.
@@ -6770,12 +6776,13 @@ every response object: `"response"` for a Responses call and
 has none). Neither the event nor the content names the API a call
 used, and the content's shape alone (no `messages`, an `input`) is the
 same for a Responses call, a legacy completion and an embeddings call.
-A call whose stored response carries no `object` (a stream that stored
-no response snapshot) shows no Input or Prompt, and its stored `system`
-text under System: a litellm Responses
-stream the caller leaves before its terminal event keeps no snapshot,
-while an OpenAI SDK one stores the `ResponseStreamState` snapshot, which
-carries `object` from `response.created` on. An embeddings
+A call whose stored response carries no `object` shows no Input or
+Prompt, and its stored `system` text under System. A Responses stream
+the caller leaves before its terminal event still stores a response
+that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
+built from `response.created` on, and for litellm the latest response a
+`response.created` / `response.in_progress` event carried
+(`status: "in_progress"`, no output). An embeddings
 call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its

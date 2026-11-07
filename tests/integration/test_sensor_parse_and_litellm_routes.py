@@ -290,6 +290,49 @@ def test_litellm_responses_content_round_trip_honours_capture(
         assert status == 404
 
 
+@pytest.mark.parametrize("capture", [True, False], ids=["capture-on", "capture-off"])
+def test_litellm_responses_stream_left_early_stores_the_in_progress_response(
+    sensor_reset: None, unique_flavor: str, capture: bool
+) -> None:
+    """A streamed Responses call left before its terminal event lands an
+    aborted post_call whose stored response is the ``response.created``
+    snapshot, a Responses object the dashboard renders as one; with
+    capture off nothing is stored."""
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/responses").mock(
+            return_value=_openai_responses_sse()
+        )
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, capture_prompts=capture
+        )
+        flightdeck_sensor.patch(quiet=True)
+        stream = litellm.responses(
+            model="gpt-4o", input=PROMPT, stream=True, api_key="test-key"
+        )
+        try:
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    break
+        finally:
+            stream.close()
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert post_call["payload"]["streaming"]["final_outcome"] == "aborted"
+    assert post_call["has_content"] is capture
+    assert PROMPT not in json.dumps(post_call, default=str)
+
+    status, body = _content_status(post_call["id"])
+    if capture:
+        assert status == 200
+        content = json.loads(body)
+        assert content["input"] == PROMPT
+        assert content["response"]["object"] == "response"
+        assert content["response"]["status"] == "in_progress"
+        assert content["response"]["output"] == []
+    else:
+        assert status == 404
+
+
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_litellm_call_a_fallback_answers_lands_one_post_call_naming_the_answering_model(
     sensor_reset: None, unique_flavor: str, is_async: bool

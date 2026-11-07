@@ -622,6 +622,41 @@ func TestQueryAnalytics_FrameworkDimensionGroupsByLabel(t *testing.T) {
 			t.Errorf("series %q total = %v, want %v (all series: %v)", dim, got[dim], total, got)
 		}
 	}
+
+	// The same labels on the secondary axis, which needs the framework
+	// unnest in its FROM clause whatever the primary is: a sessions
+	// metric (flavor x framework) and an events metric (model x
+	// framework, the events joined to their sessions).
+	for _, primary := range []string{"flavor", "model"} {
+		metric := "sessions"
+		if primary == "model" {
+			metric = "tokens"
+		}
+		two, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: metric, GroupBy: primary, GroupBySecondary: "framework",
+			Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("%s grouped by %s x framework: %v", metric, primary, err)
+		}
+		if primary != "flavor" {
+			continue // no events were seeded; the query must only run
+		}
+		keys := map[string]float64{}
+		for _, series := range two.Series {
+			for _, point := range series.Data {
+				for _, bucket := range point.Breakdown {
+					keys[bucket.Key] += bucket.Value
+				}
+			}
+		}
+		for dim, total := range want {
+			if keys[dim] != total {
+				t.Errorf("%s x framework: bucket %q = %v, want %v (all: %v)", primary, dim, keys[dim], total, keys)
+			}
+		}
+	}
 }
 
 // TestQueryAnalytics_SubagentLatencySkipsChildlessParents pins the

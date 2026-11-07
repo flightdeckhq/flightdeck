@@ -595,6 +595,13 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		} else {
 			secDimExpr = secDim.exprSessions
 		}
+		// The secondary's FROM-clause extras (the framework LATERAL
+		// unnest), unless the primary already added the same fragment.
+		// Without them a framework secondary axis projects an alias no
+		// FROM item defines.
+		if secDim.fromExtras != "" && secDim.fromExtras != dim.fromExtras {
+			fromClause = fromClause + " " + secDim.fromExtras
+		}
 	}
 
 	// Main series query. Time bucket rounds down to the chosen

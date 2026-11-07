@@ -807,12 +807,23 @@ func insertEventContent(ctx context.Context, q querier, eventID, sessionID strin
 //
 // *framework* fills sessions.framework only while it is NULL: the
 // session_start carried none because the sensor detected the framework
-// after init(), on a later event. That fill also appends the bare label
-// to context.frameworks, which the analytics framework dimension groups
-// by, unless the context is still NULL or '{}' (a lazily created row,
-// whose real context a later event's UpgradeSessionContext writes) or
-// already lists it. A stored framework is never replaced. Nothing is
-// written when the call brings neither a model nor a framework to fill.
+// after init(), on a later event. A stored framework is never replaced.
+// The bare label is also appended to context.frameworks, which the
+// analytics framework dimension groups by, whenever it is the session's
+// own label and no entry of the array has that label, versioned or
+// bare. The session's own label is the column while NULL, or, on a
+// sensor session (the only client that detects a framework late),
+// the column's value. The check is on the array, not on the column: a
+// call can fill the column of a lazily created row whose context is
+// still NULL, and the session_start that then writes the context has no
+// framework, so the next call appends it. A NULL or '{}' context is left
+// to the session_start or UpgradeSessionContext. A session whose array
+// lists its label (the plugin's claude-code/<v>, the Agent SDK's, one
+// detected at init) is unchanged, and so is any other client's session
+// with a framework, such as an OpenTelemetry Claude Code session, which
+// carries its version as context.claude_code_version and no frameworks
+// entry. Nothing is written when the call brings neither a model nor a
+// framework to fill.
 func (w *Writer) UpdateSessionFromCall(ctx context.Context, sessionID, model, framework string) error {
 	if model == "" && framework == "" {
 		return nil
@@ -822,10 +833,16 @@ func (w *Writer) UpdateSessionFromCall(ctx context.Context, sessionID, model, fr
 		SET model = COALESCE(NULLIF($2, ''), model),
 		    framework = COALESCE(framework, NULLIF($3, '')),
 		    context = CASE
-		        WHEN framework IS NULL AND $3 <> ''
+		        WHEN $3 <> ''
+		             AND (framework IS NULL
+		                  OR (framework = $3 AND client_type = 'flightdeck_sensor'))
 		             AND context IS NOT NULL AND context <> '{}'::jsonb
 		             AND COALESCE(jsonb_typeof(context->'frameworks'), 'array') = 'array'
-		             AND NOT COALESCE(context->'frameworks', '[]'::jsonb) ? $3
+		             AND NOT EXISTS (
+		                 SELECT 1
+		                 FROM jsonb_array_elements_text(COALESCE(context->'frameworks', '[]'::jsonb)) AS f
+		                 WHERE split_part(f, '/', 1) = $3
+		             )
 		        THEN jsonb_set(context, '{frameworks}',
 		                       COALESCE(context->'frameworks', '[]'::jsonb) || to_jsonb($3::text))
 		        ELSE context END

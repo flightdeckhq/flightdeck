@@ -674,11 +674,17 @@ class Session:
         first label found becomes the session's ``framework``, and the
         versioned entries replace ``context.frameworks`` for the
         sub-agent ``session_start`` events that inherit the context.
-        Skipped once a signal's shutdown has begun, since nothing on that
-        path may load a module and a distribution-metadata lookup can.
+        Skipped once the session is ending: a signal's shutdown marks the
+        session closed before it wakes the drain thread (and records
+        ``_signal_shutdown`` only after), and nothing on that path may
+        load a module, which a distribution-metadata lookup can.
         Never raises: attribution is best-effort.
         """
-        if self._framework is not None or self._signal_shutdown is not None:
+        if (
+            self._framework is not None
+            or self._state is SessionState.CLOSED
+            or self._signal_shutdown is not None
+        ):
             return
         try:
             loaded = _runtime_context.module_count()

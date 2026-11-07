@@ -733,10 +733,10 @@ family).
 ## D257 -- The sensor's framework labels are the GenAI dialect's, `autogen` is Microsoft's line, and a framework imported after init() is detected later
 
 **Date:** 2026-11-07
-**Decision:** sensor framework labels match the OTLP GenAI dialect's
-(`google_adk`, `openai_agents`, `strands`, `pydantic_ai`); the Agent SDK
-interceptor sends the bare `claude_agent_sdk`. The `autogen` import name
-reports `ag2`; `autogen` means `autogen_agentchat` / `autogen_core`. While a
+**Decision:** sensor framework labels match the OTLP GenAI dialect's; the
+Agent SDK interceptor sends the bare `claude_agent_sdk`. The `autogen` import name
+reports `ag2`; `autogen` means `autogen_agentchat` / `autogen_core`, or
+AutoGen 0.2 (`pyautogen` < 0.3, `autogen-agentchat` < 0.4). While a
 session's framework is unknown the sensor re-runs the classifiers when it
 builds an event and `sys.modules` has grown; the worker fills a null
 `sessions.framework` from a later event and appends the label to

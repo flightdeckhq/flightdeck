@@ -364,6 +364,34 @@ def test_late_detection_is_skipped_on_a_signals_shutdown_path(
     assert session._build_payload(EventType.POST_CALL)["framework"] == "dspy"
 
 
+def test_late_detection_is_skipped_once_the_session_is_closing(
+    frameworks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal's handler marks the session closed before it wakes the
+    drain thread, and records the shutdown only after: in that window the
+    drain thread settles open streams through _build_payload with no lock
+    wait. The closed state alone must stop the scan, which could import
+    the email package through a distribution-metadata lookup."""
+    from flightdeck_sensor.core import context
+    from flightdeck_sensor.core.types import EventType, SessionState
+
+    _reset_sensor()
+    session = _init()
+    calls: list[int] = []
+
+    def counting() -> list[str]:
+        calls.append(1)
+        return ["dspy/3.4.0"]
+
+    monkeypatch.setattr(context, "detect_frameworks", counting)
+    frameworks["dspy"] = _fake_module("dspy", "3.4.0")
+    session._state = SessionState.CLOSED
+    assert session._signal_shutdown is None
+
+    assert session._build_payload(EventType.POST_CALL)["framework"] is None
+    assert calls == []
+
+
 def test_a_failing_late_scan_leaves_the_event_unlabelled(
     frameworks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

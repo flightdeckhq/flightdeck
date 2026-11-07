@@ -116,10 +116,11 @@ type AnalyticsResponse struct {
 // no team column yet.
 //
 // “fromExtras“ is appended verbatim to the FROM clause when non-
-// empty. Used by “framework“ to add a LEFT JOIN LATERAL
-// “jsonb_array_elements_text“ so each string in
-// “sessions.context->'frameworks'“ becomes its own row and sessions
-// with no frameworks still appear under “'unknown'“ via COALESCE.
+// empty. Used by “framework“ to add a LEFT JOIN LATERAL over
+// “jsonb_array_elements_text“ so each label in
+// “sessions.context->'frameworks'“ (an entry's part before the “/“,
+// once per session) becomes its own row, and sessions with no
+// frameworks still appear under “'unknown'“ via COALESCE.
 type dimensionSource struct {
 	// exprEvents is the SQL expression for the dimension when the
 	// metric's base table is events (with ``sessions s`` joined in

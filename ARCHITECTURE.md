@@ -1320,7 +1320,8 @@ diagnostic detail; the bare name lives on the per-event `framework` field.
 The labels are one vocabulary with the OTLP receiver's GenAI dialect
 (`google_adk`, `openai_agents`, `strands`, `pydantic_ai`), so the analytics
 `framework` dimension counts a framework's sensor and OTLP sessions
-together. The classifiers, in the order the per-event label is taken
+together. `claude-code` is the Claude Code client's label (the plugin's
+and the OTLP receiver's), outside this classifier vocabulary. The classifiers, in the order the per-event label is taken
 (the first match wins, and a framework comes before the ones it is built
 on or commonly embeds):
 
@@ -1333,7 +1334,7 @@ on or commonly embeds):
 | `agent_framework` | `agent_framework` (Microsoft Agent Framework) | `__version__`, else `agent-framework-core`, `agent-framework` |
 | `semantic_kernel` | `semantic_kernel` | `__version__`, else `semantic-kernel` |
 | `autogen` | `autogen_agentchat`, `autogen_core` (Microsoft AutoGen 0.4+) | `__version__`, else `autogen-agentchat`, `autogen-core` |
-| `ag2` | `autogen` (AG2 owns the import name; see below) | `__version__`, else `ag2`, `pyautogen`, `autogen` |
+| `ag2` | `autogen` (AG2 owns the import name; Microsoft's AutoGen 0.2 reports `autogen`, see below) | `__version__`, else `ag2`, `pyautogen`, `autogen` |
 | `agno` | `agno` | `__version__`, else `agno` |
 | `strands` | `strands` | `__version__`, else `strands-agents` |
 | `pydantic_ai` | `pydantic_ai` | `__version__`, else `pydantic-ai-slim`, `pydantic-ai` |
@@ -1354,13 +1355,15 @@ version from the installed distribution's metadata
 is cached for the process and a missing distribution leaves the bare
 label.
 
-The `autogen` import name is AG2's: the `ag2`, `pyautogen` and `autogen`
-distributions all install AG2 under it, so a loaded `autogen` reports
-`ag2`. The one exception is Microsoft's 0.2 maintenance line,
-`autogen-agentchat` below 0.4, which also installs `autogen`: when that
-distribution provides it and no AG2 distribution is installed, it
-reports `autogen`. Microsoft's current AutoGen (`autogen_agentchat`,
-`autogen_core`) reports `autogen`.
+The `autogen` import name is AG2's: the `ag2`, `pyautogen` (from 0.3)
+and `autogen` distributions all install AG2 under it, so a loaded
+`autogen` reports `ag2`. The exception is Microsoft's AutoGen 0.2, which
+installed `autogen` too, as `pyautogen` below 0.3 (before AG2 took the
+name over) and as its 0.2 maintenance line `autogen-agentchat` below
+0.4: the first AG2 distribution found being `pyautogen` below 0.3, or no
+AG2 distribution and `autogen-agentchat` below 0.4, reports `autogen`.
+Microsoft's current AutoGen (`autogen_agentchat`, `autogen_core`)
+reports `autogen`.
 
 **A framework imported after `init`.** `patch()` imports no SDK and
 `init` imports no framework, so an application that imports its
@@ -4713,11 +4716,18 @@ dimension groups by; the session listing's `framework` filter matches
 either.
 `session_start` writes both. When it carried no framework, the first
 later event that carries one (a call, tool call, error or signal: the
-events the worker's `post_call` path handles) fills `framework` and
-appends that bare
-label to `context.frameworks[]` (a framework the sensor detected after
-`init`); a row whose context is still NULL or `{}` gets the column only,
-so the context upgrade from a later event is not blocked.
+events the worker's `post_call` path handles) fills `framework` (a
+framework the sensor detected after `init`). Such an event also appends
+the bare label to `context.frameworks[]` whenever the session's own
+label (the column still NULL, or, on a `flightdeck_sensor` session, equal
+to the event's) has no entry there, versioned or bare; a row whose
+context is still NULL or `{}` is left for its `session_start` or the
+context upgrade to fill, and the next event appends the label then. A
+stored framework is never replaced, and a session whose array already
+lists its label (the plugin's `claude-code/<version>`, the Agent SDK's,
+one detected at `init`) is left as it is, as is any other client's
+session with a framework (an OpenTelemetry Claude Code session carries
+`context.claude_code_version` and no `frameworks` entry).
 
 `parent_session_id` and `agent_role` are paired sub-agent columns.
 Both nullable, both populated only on sub-agent sessions

@@ -378,6 +378,28 @@ def test_the_autogen_import_name_is_ag2(monkeypatch: pytest.MonkeyPatch, dist: s
     assert FrameworkCollector().collect() == {"frameworks": ["ag2/0.10.2"]}
 
 
+@pytest.mark.parametrize(
+    ("version", "entry"),
+    [("0.2.35", "autogen/0.2.35"), ("0.1.14", "autogen/0.1.14"), ("0.3.0", "ag2/0.3.0")],
+)
+def test_pyautogen_below_03_is_microsofts_autogen(
+    monkeypatch: pytest.MonkeyPatch, version: str, entry: str
+) -> None:
+    """pyautogen was Microsoft's AutoGen until 0.2; AG2 publishes it from
+    0.3 on."""
+    _only(monkeypatch, {"autogen": _fake("autogen", version)}, {"pyautogen": version})
+    assert FrameworkCollector().collect() == {"frameworks": [entry]}
+
+
+def test_an_ag2_distribution_outranks_an_old_pyautogen(monkeypatch: pytest.MonkeyPatch) -> None:
+    _only(
+        monkeypatch,
+        {"autogen": _fake("autogen", "0.10.2")},
+        {"ag2": "0.10.2", "pyautogen": "0.2.35"},
+    )
+    assert FrameworkCollector().collect() == {"frameworks": ["ag2/0.10.2"]}
+
+
 def test_microsofts_autogen_02_line_is_autogen(monkeypatch: pytest.MonkeyPatch) -> None:
     """autogen-agentchat below 0.4 installs ``autogen`` too; with no AG2
     distribution that is Microsoft's AutoGen."""

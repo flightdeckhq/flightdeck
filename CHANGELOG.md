@@ -600,8 +600,9 @@ All notable changes to Flightdeck are documented here.
   Framework (`agent_framework`), Semantic Kernel and the Claude Agent SDK
   are recognised. The `autogen` import name, which AG2 owns, now reports
   `ag2`; `autogen` means Microsoft's `autogen_agentchat` /
-  `autogen_core` (or its 0.2 line when only `autogen-agentchat` below
-  0.4 installed `autogen`). A framework is listed before the ones it is
+  `autogen_core`, or AutoGen 0.2 when `pyautogen` below 0.3 or (with no
+  AG2 distribution) `autogen-agentchat` below 0.4 installed `autogen`.
+  A framework is listed before the ones it is
   built on, so a LangGraph application reports `langgraph` where it
   reported `langchain`. A version missing from a module is read from its
   installed distribution. Sessions recorded before the upgrade keep

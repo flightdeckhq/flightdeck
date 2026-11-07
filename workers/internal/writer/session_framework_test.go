@@ -3,7 +3,9 @@ package writer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 )
 
 // These tests pin how a call's model and framework land on its session
@@ -122,6 +124,99 @@ func TestUpdateSessionFromCall_LeavesAnUnwrittenContextForItsUpgrade(t *testing.
 				t.Errorf("context = %v, want it left unwritten", r.context)
 			}
 		})
+	}
+}
+
+// A call can reach the worker before its session_start: the row is
+// lazily created with the call's framework and a NULL context, so that
+// call cannot append to context.frameworks; the session_start then
+// writes the init-time context, which has no framework, and keeps the
+// column. The next call appends the label, once.
+func TestUpdateSessionFromCall_AppendsTheLabelAfterALateSessionStart(t *testing.T) {
+	pool := testPool(t)
+	w := New(pool)
+	ctx := context.Background()
+	id := testAgent(t, w, pool, "framework-test")
+	sessionID := newUUID(t)
+	trackSession(t, pool, sessionID)
+
+	if _, err := w.ReviveOrCreateSession(ctx, sessionID, "writer-test", id.AgentType,
+		"writer-test-host", "langchain", "gpt-4o-mini", id, time.Now().UTC(), "", ""); err != nil {
+		t.Fatalf("lazy create: %v", err)
+	}
+	updateFromCall(t, w, sessionID, "gpt-4o-mini", "langchain")
+	if r := readFrameworkRow(t, w, sessionID); r.context != nil {
+		t.Fatalf("a call wrote the lazy row's NULL context: %v", r.context)
+	}
+
+	if _, err := w.UpsertSession(ctx, sessionID, "writer-test", id.AgentType,
+		"writer-test-host", "", "", "active",
+		id.AgentID, id.ClientType, id.AgentName,
+		[]byte(`{"os":"Linux","hostname":"writer-test-host"}`), "", "", "", "", true, 0, time.Time{},
+	); err != nil {
+		t.Fatalf("session_start: %v", err)
+	}
+	updateFromCall(t, w, sessionID, "gpt-4o-mini", "langchain")
+	updateFromCall(t, w, sessionID, "gpt-4o-mini", "langchain")
+
+	r := readFrameworkRow(t, w, sessionID)
+	if r.framework == nil || *r.framework != "langchain" {
+		t.Fatalf("framework = %v, want langchain", r.framework)
+	}
+	if got := frameworksOf(r); len(got) != 1 || got[0] != "langchain" {
+		t.Errorf("context.frameworks = %v, want [langchain] exactly once", got)
+	}
+	if r.context["os"] != "Linux" {
+		t.Errorf("the session_start's context was not kept: %v", r.context)
+	}
+}
+
+// A session whose array already lists its own label, versioned or bare,
+// is unchanged by its calls: the plugin's sessions, the Agent SDK's and
+// those whose framework the sensor found at init().
+func TestUpdateSessionFromCall_LeavesASessionThatListsItsLabel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		framework, context string
+	}{
+		"claude code plugin": {"claude-code", `{"frameworks": ["claude-code/2.1.316"]}`},
+		"agent sdk":          {"claude_agent_sdk", `{"frameworks": ["claude_agent_sdk/0.2.168", "langchain/1.4.4"]}`},
+		"detected at init":   {"langchain", `{"frameworks": ["langchain/1.6.10"]}`},
+		"bare entry":         {"agno", `{"frameworks": ["agno"]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, sessionID := frameworkSession(t, tc.framework, []byte(tc.context))
+			before := readFrameworkRow(t, w, sessionID)
+
+			updateFromCall(t, w, sessionID, "some-model", tc.framework)
+
+			after := readFrameworkRow(t, w, sessionID)
+			if after.framework == nil || *after.framework != tc.framework {
+				t.Errorf("framework = %v, want %q", after.framework, tc.framework)
+			}
+			if fmt.Sprint(frameworksOf(after)) != fmt.Sprint(frameworksOf(before)) {
+				t.Errorf("context.frameworks = %v, want %v unchanged", frameworksOf(after), frameworksOf(before))
+			}
+		})
+	}
+}
+
+// An OpenTelemetry Claude Code session carries framework=claude-code and
+// its version as context.claude_code_version, with no frameworks entry;
+// only a sensor session gets its own label appended, so its context is
+// unchanged.
+func TestUpdateSessionFromCall_LeavesAnotherClientsContext(t *testing.T) {
+	w, sessionID := frameworkSession(t, "claude-code",
+		[]byte(`{"telemetry":"otlp","claude_code_version":"2.1.319"}`))
+	if _, err := w.pool.Exec(context.Background(),
+		`UPDATE sessions SET client_type = 'claude_code' WHERE session_id = $1::uuid`, sessionID); err != nil {
+		t.Fatalf("set client_type: %v", err)
+	}
+
+	updateFromCall(t, w, sessionID, "claude-opus-5-5", "claude-code")
+
+	r := readFrameworkRow(t, w, sessionID)
+	if _, ok := r.context["frameworks"]; ok {
+		t.Errorf("an OpenTelemetry Claude Code session gained frameworks: %v", r.context)
 	}
 }
 

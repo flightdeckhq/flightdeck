@@ -394,6 +394,10 @@ class AutoGenClassifier(BaseClassifier):
 
 # The distributions that install AG2 under the ``autogen`` import name.
 _AG2_DISTRIBUTIONS = ("ag2", "pyautogen", "autogen")
+# The distribution Microsoft published AutoGen under until 0.2; AG2 took
+# it over from 0.3 on.
+_PYAUTOGEN_DISTRIBUTION = "pyautogen"
+_PYAUTOGEN_AG2_RELEASE = (0, 3)
 # Microsoft's distribution whose 0.2 maintenance line also installs the
 # ``autogen`` import name; from 0.4 on it installs ``autogen_agentchat``.
 _AUTOGEN_LEGACY_DISTRIBUTION = "autogen-agentchat"
@@ -412,26 +416,39 @@ def _version_below(version: str, bound: tuple[int, int]) -> bool:
 
 
 class AG2Classifier(BaseClassifier):
-    # AG2 owns the ``autogen`` import name: the ag2, pyautogen and autogen
-    # distributions all install it. Microsoft's autogen-agentchat below
-    # 0.4 installs it too; with no AG2 distribution present that is
-    # Microsoft's AutoGen 0.2 and reports ``autogen``.
+    # AG2 owns the ``autogen`` import name: the ag2, pyautogen (from 0.3)
+    # and autogen distributions all install it. Microsoft's AutoGen 0.2
+    # installed it too, as pyautogen below 0.3 and as autogen-agentchat
+    # below 0.4; either of those, with no AG2 distribution ahead of it,
+    # reports ``autogen``.
     name = "ag2"
     module = "autogen"
     distributions = _AG2_DISTRIBUTIONS
+
+    def _installed(self) -> tuple[str, str] | None:
+        """The first AG2 distribution installed, with its version."""
+        for dist in self.distributions:
+            version = _distribution_version(dist)
+            if version:
+                return dist, version
+        return None
 
     def detect(self) -> str | None:
         mod = self._loaded()
         if mod is None:
             return None
-        ag2_version = self._installed_version()
-        if ag2_version is None:
+        installed = self._installed()
+        if installed is None:
             legacy = _distribution_version(_AUTOGEN_LEGACY_DISTRIBUTION)
             if legacy is not None and _version_below(legacy, _AUTOGEN_AGENTCHAT_MODULE_RELEASE):
                 return self._entry(AutoGenClassifier.name, legacy)
+        elif installed[0] == _PYAUTOGEN_DISTRIBUTION and _version_below(
+            installed[1], _PYAUTOGEN_AG2_RELEASE
+        ):
+            return self._entry(AutoGenClassifier.name, installed[1])
         version = getattr(mod, "__version__", None)
         if not isinstance(version, str) or not version:
-            version = ag2_version
+            version = installed[1] if installed else None
         return self._entry(self.name, version)
 
 

@@ -2765,7 +2765,7 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 	}
 }
 
-// An omitted ``to`` reaches the store as the zero time, which the
+// An omitted to parameter reaches the store as the zero time, which the
 // store reads as no upper bound: occurred_at is the emitting client's
 // timestamp, and ending the range at the API's clock hid the events
 // of a client whose clock runs ahead.
@@ -2795,6 +2795,23 @@ func TestGetEvents_FromAfterTo_Returns400(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for from after to, got %d", w.Code)
+	}
+}
+
+// A to parameter that parses to the zero time would reach the store as
+// "no upper bound", so the handler refuses it instead.
+func TestGetEvents_ZeroTo_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/events?from=0001-01-01T00:00:00Z&to=0001-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for a zero-time to, got %d", w.Code)
+	}
+	if s.lastEventsParams != nil {
+		t.Error("GetEvents must not be called for a zero-time to")
 	}
 }
 
@@ -2954,7 +2971,7 @@ func TestSessionsListHandler_DefaultParams(t *testing.T) {
 	}
 }
 
-// An omitted ``to`` reaches the store as the zero time, which the
+// An omitted to parameter reaches the store as the zero time, which the
 // store reads as no upper bound. Ending the range at the API's clock
 // instead dropped a session whose started_at, stamped by Postgres,
 // read ahead of that clock.
@@ -2975,7 +2992,7 @@ func TestSessionsListHandler_OmittedTo_IsOpenEnded(t *testing.T) {
 	}
 }
 
-// With no ``to`` there is no end for ``from`` to pass, so a ``from``
+// With no to parameter there is no end for from to pass, so a from
 // ahead of the API's clock is a valid, open-ended range.
 func TestSessionsListHandler_FutureFromWithoutTo_Returns200(t *testing.T) {
 	s := &mockStore{}
@@ -3016,6 +3033,23 @@ func TestSessionsListHandler_FromAfterTo_Returns400(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for from after to, got %d", w.Code)
+	}
+}
+
+// A to parameter that parses to the zero time would reach the store as
+// "no upper bound", so the handler refuses it instead.
+func TestSessionsListHandler_ZeroTo_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/sessions?from=0001-01-01T00:00:00Z&to=0001-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for a zero-time to, got %d", w.Code)
+	}
+	if s.lastSessionsParams != nil {
+		t.Error("GetSessions must not be called for a zero-time to")
 	}
 }
 

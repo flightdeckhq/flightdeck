@@ -172,15 +172,16 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 			from = parsed
 		}
+		hasTo := false
 		if toStr := q.Get("to"); toStr != "" {
-			parsed, err := time.Parse(time.RFC3339, toStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "to must be ISO 8601 format")
+			parsed, msg := parseRangeEnd(toStr)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
-			to = parsed
+			to, hasTo = parsed, true
 		}
-		if !to.IsZero() && from.After(to) {
+		if hasTo && from.After(to) {
 			writeError(w, http.StatusBadRequest, "from must be before to")
 			return
 		}

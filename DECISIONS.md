@@ -704,7 +704,11 @@ reconciling (they fight over settings across a version skew).
 **Date:** 2026-11-07
 **Decision:** `GET /v1/sessions` and `GET /v1/events` bound `started_at`
 or `occurred_at` from above only when the request carries `to`. Omitted,
-the range is open-ended; it no longer ends at the API's clock.
+the range is open-ended; it no longer ends at the API's clock. A `to`
+that parses to the zero time is refused with 400. The agent summary and
+`GET /v1/analytics` keep their API-clock end on purpose: they are
+windowed aggregates the dashboard polls, so a row a skewed clock dated
+ahead lands on the next poll.
 **Why:** neither column is stamped by the API's clock. Postgres stamps
 `started_at`, and `occurred_at` is the client's timestamp, which
 ingestion accepts up to five minutes ahead. Whenever the API's clock read

@@ -34,6 +34,23 @@ const (
 	eventsMaxQueryLen = 256
 )
 
+// parseRangeEnd parses the "to" query value of GET /v1/events and
+// GET /v1/sessions. The stores read a zero To as "no upper bound", so
+// a "to" that parses to the zero time (0001-01-01T00:00:00Z) is refused
+// rather than silently widening the range it was meant to close.
+// Returns the parsed time, or the 400 message when the value is
+// refused.
+func parseRangeEnd(raw string) (time.Time, string) {
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, "to must be ISO 8601 format"
+	}
+	if parsed.IsZero() {
+		return time.Time{}, "to must be later than 0001-01-01T00:00:00Z"
+	}
+	return parsed, ""
+}
+
 // EventsListHandler handles GET /v1/events.
 //
 // @Summary      List events with filters
@@ -98,16 +115,17 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 		// timestamp, and a client clock that runs ahead of this one
 		// would hide events that have already arrived.
 		var to time.Time
+		hasTo := false
 		if toStr := q.Get("to"); toStr != "" {
-			parsed, err := time.Parse(time.RFC3339, toStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "to must be ISO 8601 format")
+			parsed, msg := parseRangeEnd(toStr)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
-			to = parsed
+			to, hasTo = parsed, true
 		}
 
-		if !to.IsZero() && from.After(to) {
+		if hasTo && from.After(to) {
 			writeError(w, http.StatusBadRequest, "from must be before to")
 			return
 		}

@@ -34,6 +34,23 @@ const (
 	eventsMaxQueryLen = 256
 )
 
+// parseRangeEnd parses the "to" query value of GET /v1/events and
+// GET /v1/sessions. The stores read a zero To as "no upper bound", so
+// a "to" that parses to the zero time (0001-01-01T00:00:00Z) is refused
+// rather than silently widening the range it was meant to close.
+// Returns the parsed time, or the 400 message when the value is
+// refused.
+func parseRangeEnd(raw string) (time.Time, string) {
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, "to must be ISO 8601 format"
+	}
+	if parsed.IsZero() {
+		return time.Time{}, "to must be later than 0001-01-01T00:00:00Z"
+	}
+	return parsed, ""
+}
+
 // EventsListHandler handles GET /v1/events.
 //
 // @Summary      List events with filters
@@ -41,7 +58,7 @@ const (
 // @Tags         events
 // @Produce      json
 // @Param        from                     query  string  true   "Start time (ISO 8601)"
-// @Param        to                       query  string  false  "End time (ISO 8601, defaults to now)"
+// @Param        to                       query  string  false  "End time (ISO 8601; omitted, the range has no upper bound)"
 // @Param        flavor                   query  string  false  "Filter by flavor"
 // @Param        event_type               query  []string false "Filter by event type (repeatable; OR within)"
 // @Param        session_id               query  string  false  "Filter by session ID"
@@ -92,18 +109,23 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
-		// Parse optional "to" param (defaults to now)
-		to := time.Now().UTC()
+		// Parse the optional "to" param. Omitted, the range has no
+		// upper bound (the zero time) instead of ending at this
+		// process's clock: occurred_at is the emitting client's
+		// timestamp, and a client clock that runs ahead of this one
+		// would hide events that have already arrived.
+		var to time.Time
+		hasTo := false
 		if toStr := q.Get("to"); toStr != "" {
-			parsed, err := time.Parse(time.RFC3339, toStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "to must be ISO 8601 format")
+			parsed, msg := parseRangeEnd(toStr)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
-			to = parsed
+			to, hasTo = parsed, true
 		}
 
-		if from.After(to) {
+		if hasTo && from.After(to) {
 			writeError(w, http.StatusBadRequest, "from must be before to")
 			return
 		}

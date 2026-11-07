@@ -188,6 +188,16 @@ All notable changes to Flightdeck are documented here.
   the caller's process; it now tests the stream's class instead. A new CI
   lane runs the sensor's unit suite against the oldest anthropic, litellm
   and mcp releases the extras admit.
+- **Session and event listings no longer drop rows dated ahead of the
+  API's clock.** Without a `to` parameter, `GET /v1/sessions` and
+  `GET /v1/events` ended the range at the API's own clock, but Postgres
+  stamps a session's `started_at` and the client stamps an event's
+  `occurred_at`. Whenever the API's clock read behind, a session that had
+  just started or an event that had just arrived was left out of the
+  listing. A dev box whose clock is stepped back about two seconds every
+  few minutes emptied the state-sort integration test's listing this
+  way. An omitted `to` now leaves the range without an upper bound
+  (D254).
 - **The sensor meters MCP calls when an LLM tool call is what first
   imports `mcp`.** With prompt capture on, the first tool call an
   Anthropic, OpenAI or litellm response carried imported the sensor's MCP

@@ -26,6 +26,7 @@ from typing import Any
 from .conftest import (
     API_URL,
     auth_headers,
+    exec_sql,
     get_session,
     make_event,
     post_event,
@@ -121,6 +122,35 @@ def test_state_sort_descending_reverses_severity_ordinal() -> None:
     states = [r["state"] for r in rows if r["session_id"] in {sid_active, sid_closed}]
     assert states.index("closed") < states.index("active"), (
         f"expected closed before active in descending state sort; got {states!r}"
+    )
+
+
+def test_listing_without_to_includes_session_started_ahead_of_api_clock() -> None:
+    """A listing without ``to`` has no upper bound on started_at.
+
+    Postgres stamps started_at; the API used to end an open range at
+    its own clock. When that clock read behind Postgres's (the dev
+    box's clock is stepped back by about two seconds every few
+    minutes), a session that had just started fell outside the range
+    and the state-sort tests above saw an empty list. Dating the row a
+    minute ahead reproduces that gap deterministically.
+    """
+    sid, flavor = _seed_session("ahead")
+    exec_sql(
+        "UPDATE sessions SET started_at = NOW() + INTERVAL '1 minute' "
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    )
+    rows = _list_sessions(
+        {
+            "from": "1970-01-01T00:00:00Z",
+            "flavor": flavor,
+            "sort": "state",
+            "order": "asc",
+        }
+    )
+    assert [r["session_id"] for r in rows] == [sid], (
+        f"a session started ahead of the API's clock must be listed; got {rows!r}"
     )
 
 

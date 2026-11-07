@@ -113,7 +113,7 @@ var validEstimatedVias = map[string]bool{
 // @Produce      json
 // @Param        q          query  string  false  "Full-text search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, frameworks"
 // @Param        from       query  string  false  "Start time (ISO 8601, default: 7 days ago)"
-// @Param        to         query  string  false  "End time (ISO 8601, default: now)"
+// @Param        to         query  string  false  "End time (ISO 8601; omitted, the range has no upper bound)"
 // @Param        state      query  string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
 // @Param        flavor     query  string  false  "Filter by flavor (repeatable)"
 // @Param        agent_id   query  string  false  "Filter to a single agent (agent UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
@@ -155,10 +155,14 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 
-		// Parse time range (defaults to last 7 days)
-		now := time.Now().UTC()
-		from := now.AddDate(0, 0, -7)
-		to := now
+		// Parse the time range. from defaults to 7 days ago. An omitted
+		// to leaves the range without an upper bound (the zero time)
+		// instead of ending it at this process's clock: Postgres stamps
+		// started_at, and a clock that reads behind Postgres's (another
+		// host, or a host whose clock was just stepped back) would drop
+		// a session that has just started.
+		from := time.Now().UTC().AddDate(0, 0, -7)
+		var to time.Time
 
 		if fromStr := q.Get("from"); fromStr != "" {
 			parsed, err := time.Parse(time.RFC3339, fromStr)
@@ -168,15 +172,16 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 			from = parsed
 		}
+		hasTo := false
 		if toStr := q.Get("to"); toStr != "" {
-			parsed, err := time.Parse(time.RFC3339, toStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "to must be ISO 8601 format")
+			parsed, msg := parseRangeEnd(toStr)
+			if msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
-			to = parsed
+			to, hasTo = parsed, true
 		}
-		if from.After(to) {
+		if hasTo && from.After(to) {
 			writeError(w, http.StatusBadRequest, "from must be before to")
 			return
 		}

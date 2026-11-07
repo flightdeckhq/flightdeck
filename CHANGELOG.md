@@ -223,6 +223,17 @@ All notable changes to Flightdeck are documented here.
   tool shows its parameters. A litellm `text_completion` call shows its
   prompt under Prompt (D252,
   [#222](https://github.com/flightdeckhq/flightdeck/issues/222)).
+- **A litellm Responses stream left early stores a Responses
+  response.** With capture on, a `litellm.responses(stream=True)` or
+  `aresponses(stream=True)` call the caller left before its terminal
+  event stored a response with no `object`, so the Prompts tab labelled
+  its `instructions` as System and showed no Input. The sensor now
+  keeps the response the `response.created` / `response.in_progress`
+  events carry and stores it (`object: "response"`,
+  `status: "in_progress"`, no output) when no terminal event arrived,
+  as an OpenAI SDK Responses stream already did. Usage, model and stop
+  reason still come from the streamed events
+  ([#268](https://github.com/flightdeckhq/flightdeck/pull/268)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

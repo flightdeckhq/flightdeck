@@ -330,6 +330,23 @@ def test_exception_in_execute_task_emits_state_error(patched_crewai: Any) -> Non
     assert "outgoing_message" not in end_p
 
 
+def test_capture_off_sends_the_error_type_without_its_message(patched_crewai: Any) -> None:
+    """An exception's text can quote the agent's work, so with capture
+    off the child's error block carries its type alone (rule 18)."""
+    session, client, stub, _CrewAIAgent = patched_crewai
+    session.config.capture_prompts = False
+    stub.side_effect = RuntimeError("the secret task text")
+    agent = _make_agent_with_role("Researcher")
+
+    with pytest.raises(RuntimeError):
+        agent.execute_task(_make_task("x"))
+
+    end_p = _post_event_calls(client)[-1]
+    assert end_p["state"] == "error"
+    assert end_p["error"] == {"type": "RuntimeError"}
+    assert "the secret task text" not in str(_post_event_calls(client))
+
+
 # ----------------------------------------------------------------------
 # Sentinel behaviour
 # ----------------------------------------------------------------------

@@ -1017,6 +1017,8 @@ function signalValue(key: string, value: string | number | boolean | null): stri
   if (value === null) return "—";
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (key === "estimated_cache_write_usd" && typeof value === "number") return `$${value.toFixed(4)}`;
+  // A guardrail's kind reads as words, as its feed line does: tool_input -> tool input.
+  if (key === "kind" && typeof value === "string") return signalWords(value);
   if (typeof value === "number") return value.toLocaleString();
   return value;
 }

@@ -684,6 +684,24 @@ def test_a_failed_step_ends_the_run_in_error_unless_a_later_step_completes(
         assert end["error"] == {"type": "RuntimeError", "message": "model down"}
 
 
+def test_capture_off_sends_the_error_type_without_its_message(llama: Any) -> None:
+    """An exception's text can quote the agent's work, so with capture
+    off the child's error block carries its type alone (rule 18)."""
+    prior = flightdeck_sensor._session
+    rec = _Recorder(capture_prompts=False)
+    try:
+        tracker, run_id = _followed_run(llama, rec)
+        tracker.enter("BaseWorkflowAgent.run_agent_step-1", _Bound(ev=None), None, run_id)
+        tracker.drop("BaseWorkflowAgent.run_agent_step-1", RuntimeError("the secret prompt"))
+        tracker.exit(run_id, None)
+    finally:
+        flightdeck_sensor._session = prior
+    (end,) = rec.of("session_end")
+    assert end.get("state") == "error"
+    assert end["error"] == {"type": "RuntimeError"}
+    assert "the secret prompt" not in str(rec.timeline)
+
+
 def test_control_flow_step_drops_are_not_failures(llama: Any) -> None:
     prior = flightdeck_sensor._session
     rec = _Recorder()

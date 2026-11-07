@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.session import subagent_error
 from flightdeck_sensor.core.tool_capture import build_tool_capture_content
 from flightdeck_sensor.core.types import EventType, SubagentMessage, SubagentScope
 
@@ -152,11 +153,6 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
-def _error_block(err: BaseException) -> dict[str, Any]:
-    """A child ``session_end``'s error block, as the other wraps build it."""
-    return {"type": type(err).__name__, "message": str(err)}
-
-
 def _subagent_message(body: Any) -> SubagentMessage | None:
     if body is None:
         return None
@@ -241,7 +237,7 @@ class _Tracker:
             self._forget_steps(run)
             failed = run.step_error
             if failed is not None:
-                self._end_child(run, state="error", error=_error_block(failed))
+                self._end_child(run, state="error", error=subagent_error(failed))
             else:
                 self._end_child(run, state="closed", error=None)
             return
@@ -262,7 +258,7 @@ class _Tracker:
         if run is not None:
             self._forget_steps(run)
             failed = err if err is not None else run.step_error
-            error = _error_block(failed) if failed is not None else None
+            error = subagent_error(failed) if failed is not None else None
             self._end_child(run, state="error", error=error)
             return
         if step is None:

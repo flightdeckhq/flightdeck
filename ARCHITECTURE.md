@@ -1527,7 +1527,11 @@ receives it once wrapped. The CrewAI wrappers keep `execute_task` /
 Sub-agent emission failure (the framework's `Agent.execute` or
 equivalent raises an exception inside the interceptor's context
 manager) emits child `session_end` with `state=error` plus a
-structured error block following the `llm_error` taxonomy. The
+structured error block following the `llm_error` taxonomy: the
+exception's `type`, and its `message` only while `capture_prompts` is
+on, because an exception's text can quote a tool's arguments or a
+model's reply (`Session.emit_subagent_session_end` drops the message
+otherwise, for every wrap). The
 dashboard surfaces failures via the row-level red-dot pattern on
 the child session row on the Events page and the child agent's
 swimlane row left panel on Fleet —
@@ -1628,10 +1632,11 @@ that carry it (`AgentInput`, `AgentSetup`, `AgentOutput`):
   hand-off's `reason` as `incoming_message`. An agent handed back to
   opens a new child session.
 - The run span's exit ends the open child; its drop (the run raised)
-  ends it with `state=error` and the exception's type and message. A
-  run whose last failed step no later step followed also ends in error,
-  with that step's exception: early llama-index-workflows 2 releases
-  exit the run span of a failed run instead of dropping it. Cancelling
+  ends it with `state=error` and the exception's type (and message,
+  with capture on). A run whose last failed step no later step
+  followed also ends in error, with that step's exception: early
+  llama-index-workflows 2 releases exit the run span of a failed run
+  instead of dropping it. Cancelling
   the run's task (`handler.cancel()`) drops the run span, so its child
   ends with `state=error`; `handler.cancel_run()` stops the run with
   LlamaIndex's own `WorkflowCancelledByUser`, so its child ends with
@@ -1685,9 +1690,9 @@ go through them), and the `run` method of `InputGuardrail`,
   `Agent.name`, `agent_name` is `<sensor agent name>/<Agent.name>`, the
   agent id is derived from the role. It closes when the agent hands off
   or when the run ends; it ends with `state=error` and the exception's
-  type and message when the run raises (an exception, a cancellation,
-  `MaxTurnsExceeded`, a guardrail tripwire, a `DirectiveError`) or a
-  guardrail tripwire stops it. With capture on, the first agent's
+  type (and message, with capture on) when the run raises (an
+  exception, a cancellation, `MaxTurnsExceeded`, a guardrail tripwire,
+  a `DirectiveError`) or a guardrail tripwire stops it. With capture on, the first agent's
   `incoming_message` is the run's input (a string or a list of input
   items) and the final agent's `outgoing_message` its final output.
 - **Hand-offs.** The agent handing off posts `agent_handoff` on its
@@ -1725,8 +1730,11 @@ still run, each after the sensor's work, and their exceptions propagate.
 The posts the hooks and guardrails make run in a worker thread
 (`asyncio.to_thread`), so the event loop is not held. A streamed run's
 open children are closed from the done callback of the task its loop
-runs in (`run_loop_task`, `_run_impl_task` in older releases such as 0.6), which posts in
-place.
+runs in (`run_loop_task`, or `_run_impl_task` in older releases such
+as 0.6). The callback cannot await, so it hands the closing posts to
+the loop's executor and registers them with the session, whose `end()`
+waits for them (up to 2 seconds) before its own `session_end`; only
+when the loop can no longer run them does it post in place.
 
 The first run whose traces also go to the OpenTelemetry instrumentation's
 processor (`opentelemetry.instrumentation.openai_agents`, with tracing

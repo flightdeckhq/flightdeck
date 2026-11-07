@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import concurrent.futures
 import dataclasses
 import json
 import logging
@@ -22,6 +23,7 @@ import uuid
 import weakref
 from contextvars import ContextVar
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -244,9 +246,47 @@ SIGNAL_AGENT_HANDOFF = "agent_handoff"
 # input or output guardrail whose tripwire triggered, or a tool guardrail
 # that refused a tool call's input or output.
 SIGNAL_GUARDRAIL_TRIPWIRE = "guardrail_tripwire"
-# The ``kind`` values a guardrail_tripwire signal names: which of the
-# framework's guardrail families fired.
-GUARDRAIL_KINDS = frozenset({"input", "output", "tool_input", "tool_output"})
+
+
+class GuardrailKind(StrEnum):
+    """The ``kind`` a guardrail_tripwire signal names: which of the
+    framework's guardrail families fired."""
+
+    INPUT = "input"
+    OUTPUT = "output"
+    TOOL_INPUT = "tool_input"
+    TOOL_OUTPUT = "tool_output"
+
+
+# Every kind a guardrail_tripwire signal may name; any other is left out.
+GUARDRAIL_KINDS = frozenset(GuardrailKind)
+
+# The ``state`` a child sub-agent's session_end carries: closed when its
+# work finished, error when it raised or was stopped.
+SUBAGENT_STATE_CLOSED = "closed"
+SUBAGENT_STATE_ERROR = "error"
+# The keys of a child session_end's ``error`` block. The message is the
+# exception's text, which can quote what the agent was working on (a
+# tool's arguments, a model's reply), so it is sent only with
+# capture_prompts on; the type is metadata and always sent.
+SUBAGENT_ERROR_TYPE_KEY = "type"
+SUBAGENT_ERROR_MESSAGE_KEY = "message"
+# How long end() waits, in seconds, for child-session posts a framework
+# wrap handed to a worker thread (a streamed run's last children closing)
+# before it sends the session's own session_end: those posts are each one
+# HTTP round trip, milliseconds on a healthy control plane, and a post
+# still running when the client closes would be lost. 2 s matches the
+# framework signals' post bound (HANDOFF_POST_TIMEOUT_SECS).
+PENDING_CHILD_POSTS_WAIT_SECS = 2.0
+
+
+def subagent_error(exc: BaseException) -> dict[str, str]:
+    """A child sub-agent session_end's ``error`` block for ``exc``: its type
+    and its message. :meth:`Session.emit_subagent_session_end` drops the
+    message unless capture_prompts is on."""
+    return {SUBAGENT_ERROR_TYPE_KEY: type(exc).__name__, SUBAGENT_ERROR_MESSAGE_KEY: str(exc)}
+
+
 # The bound on each name in a framework signal's signal_data (an agent's
 # or a guardrail's), in UTF-8 bytes: the receiver's bound on the same
 # names, and the ingestion API's limit on a signal_data string, which
@@ -388,6 +428,12 @@ class Session:
         self.open_stream_guards_lock = threading.Lock()
         self.queued_stream_settles: collections.deque[Any] = collections.deque()
 
+        # Child-session posts a framework wrap handed to a worker thread
+        # (see track_child_post); end() waits for them before its own
+        # session_end, bounded by PENDING_CHILD_POSTS_WAIT_SECS.
+        self._pending_child_posts: set[concurrent.futures.Future[Any]] = set()
+        self._pending_child_posts_lock = threading.Lock()
+
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
 
@@ -527,6 +573,10 @@ class Session:
             return
         self._ending_thread = threading.get_ident()
         self._state = SessionState.CLOSED
+        # A framework wrap's last child posts, still running in a worker
+        # thread, go out before this session's end and before the client
+        # closes under them.
+        self.wait_child_posts(PENDING_CHILD_POSTS_WAIT_SECS)
         try:
             # Streams still open on this session settle now and their events
             # are flushed before session_end goes out, so the workers see the
@@ -549,6 +599,42 @@ class Session:
                 self.config.session_id,
                 self._tokens_used,
             )
+
+    def track_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        """Register a child-session post a framework wrap runs in a worker
+        thread, so :meth:`end` waits for it (see :meth:`wait_child_posts`)."""
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.add(future)
+        future.add_done_callback(self._forget_child_post)
+
+    def _forget_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.discard(future)
+
+    def wait_child_posts(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for the child-session posts
+        registered with :meth:`track_child_post`; True when none is left
+        running. Never raises."""
+        with self._pending_child_posts_lock:
+            pending = set(self._pending_child_posts)
+        if not pending:
+            return True
+        try:
+            _, not_done = concurrent.futures.wait(pending, timeout=timeout)
+        except Exception:
+            _log.debug("waiting for child-session posts failed", exc_info=True)
+            return False
+        return not not_done
+
+    def raise_if_shutdown(self) -> None:
+        """Raise the :class:`DirectiveError` a model call's pre_call raises
+        once a shutdown directive has arrived; a framework wrap calls it at
+        an agent boundary so a stopped run stops there too."""
+        with self._lock:
+            shutdown = self._shutdown_requested
+            reason = self._shutdown_reason
+        if shutdown:
+            raise DirectiveError("shutdown", reason)
 
     def _settle_open_streams(self, lock_wait: float | None = None) -> None:
         """Settle the streams still open on this session, queuing their
@@ -1073,7 +1159,7 @@ class Session:
         child_agent_id: str,
         child_agent_name: str,
         agent_role: str,
-        state: str = "closed",
+        state: str = SUBAGENT_STATE_CLOSED,
         outgoing_message: SubagentMessage | None = None,
         error: dict[str, Any] | None = None,
         parent_session_id: str | None = None,
@@ -1087,7 +1173,11 @@ class Session:
         framework interceptors pass ``state="error"`` when the
         child's execution raised, alongside an ``error`` dict
         carrying ``type`` (exception class name) and ``message``
-        (exception string). The L8 row-level failure cue on the
+        (exception string; :func:`subagent_error` builds it). The
+        message is the exception's text, which can quote a tool's
+        arguments or a model's reply, so it is sent only with
+        ``capture_prompts`` on; with capture off the block carries the
+        type alone. The L8 row-level failure cue on the
         dashboard reads ``state=error`` to render the red dot on
         Investigate / Fleet AgentTable / swimlane left panel.
 
@@ -1107,10 +1197,14 @@ class Session:
         # session_end → state=closed projection. Only emit the
         # explicit "state" key when the child ended in an error so
         # the wire shape stays unchanged for the success path.
-        if state != "closed":
+        if state != SUBAGENT_STATE_CLOSED:
             payload["state"] = state
         if error is not None:
-            payload["error"] = error
+            payload["error"] = (
+                error
+                if self.config.capture_prompts
+                else {k: v for k, v in error.items() if k != SUBAGENT_ERROR_MESSAGE_KEY}
+            )
         stub_or_inline, content_envelope = self._route_subagent_message(
             outgoing_message,
             "outgoing",

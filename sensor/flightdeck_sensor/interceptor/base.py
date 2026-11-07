@@ -1829,6 +1829,9 @@ def _post_call(
                     tool_payload["has_content"] = True
                     tool_payload["content"] = capture_content
             session.event_queue.enqueue(tool_payload)
+            # A framework wrap that runs the tool itself checks this, so
+            # the call is not reported a second time.
+            session.note_reported_tool_call(inv.tool_id)
         except Exception:
             _log.debug("failed to enqueue tool_call event", exc_info=True)
 

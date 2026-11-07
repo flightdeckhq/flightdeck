@@ -59,15 +59,15 @@ def _reset_sensor() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_provider_has_exactly_seven_members() -> None:
+def test_provider_has_exactly_eight_members() -> None:
     """Adding a new interceptor target requires editing the enum AND
     its entry in ``_SDK_TARGETS``; this test ensures one doesn't drift
     without the other (the test in
     ``test_provider_values_match_patch_branches`` catches the
     value-side drift; this one catches the count-side).
 
-    Sub-agent observability added two targets (CREWAI, LANGGRAPH), and
-    the Claude Agent SDK one (CLAUDE_AGENT_SDK). AutoGen is archived
+    Sub-agent observability added three targets (CREWAI, LANGGRAPH,
+    LLAMA_INDEX), and the Claude Agent SDK one (CLAUDE_AGENT_SDK). AutoGen is archived
     upstream and not planned; its successor, Microsoft Agent Framework,
     is roadmap issue #185.
     """
@@ -78,9 +78,10 @@ def test_provider_has_exactly_seven_members() -> None:
         Provider.MCP,
         Provider.CREWAI,
         Provider.LANGGRAPH,
+        Provider.LLAMA_INDEX,
         Provider.CLAUDE_AGENT_SDK,
     }
-    assert len(Provider) == 7
+    assert len(Provider) == 8
 
 
 def test_provider_values_match_patch_branches() -> None:
@@ -95,6 +96,7 @@ def test_provider_values_match_patch_branches() -> None:
     # Sub-agent targets.
     assert Provider.CREWAI.value == "crewai"
     assert Provider.LANGGRAPH.value == "langgraph"
+    assert Provider.LLAMA_INDEX.value == "llama_index"
     assert Provider.CLAUDE_AGENT_SDK.value == "claude_agent_sdk"
 
 

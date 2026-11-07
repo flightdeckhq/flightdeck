@@ -85,6 +85,12 @@ if TYPE_CHECKING:
     from flightdeck_sensor.interceptor.litellm import (
         unpatch_litellm_functions as unpatch_litellm_functions,
     )
+    from flightdeck_sensor.interceptor.llama_index import (
+        patch_llama_index as patch_llama_index,
+    )
+    from flightdeck_sensor.interceptor.llama_index import (
+        unpatch_llama_index as unpatch_llama_index,
+    )
     from flightdeck_sensor.interceptor.mcp import patch_mcp_classes as patch_mcp_classes
     from flightdeck_sensor.interceptor.mcp import unpatch_mcp_classes as unpatch_mcp_classes
     from flightdeck_sensor.interceptor.openai import SensorOpenAI as SensorOpenAI
@@ -196,6 +202,8 @@ class _SDKTarget:
 # keyed on ``langgraph.graph``, the package StateGraph comes from:
 # ``langgraph`` itself is a namespace package shared with LangGraph's other
 # distributions, and a namespace package runs no code for the hook to see.
+# LlamaIndex is keyed on ``llama_index.core`` for the same reason
+# (``llama_index`` is a namespace package).
 _SDK_TARGETS: tuple[_SDKTarget, ...] = (
     _SDKTarget(
         Provider.ANTHROPIC,
@@ -228,6 +236,13 @@ _SDK_TARGETS: tuple[_SDKTarget, ...] = (
         "langgraph",
         "patch_langgraph_classes",
         "unpatch_langgraph_classes",
+    ),
+    _SDKTarget(
+        Provider.LLAMA_INDEX,
+        "llama_index.core",
+        "llama_index",
+        "patch_llama_index",
+        "unpatch_llama_index",
     ),
     _SDKTarget(
         Provider.CLAUDE_AGENT_SDK,
@@ -808,7 +823,11 @@ def patch(
             Crew member's turn lands as a child session) and
             ``LANGGRAPH`` (wraps the callable registered via
             ``StateGraph.add_node`` so each agent-bearing node run
-            lands as a child session) and ``CLAUDE_AGENT_SDK`` (wraps
+            lands as a child session), ``LLAMA_INDEX`` (a span handler on
+            LlamaIndex's instrumentation dispatcher, so each agent of an
+            agent workflow run lands as a child session with its start,
+            end and hand-offs; the calls stay on the sensor's session)
+            and ``CLAUDE_AGENT_SDK`` (wraps
             the SDK's ``query()`` path and ``ClaudeSDKClient`` so each
             Agent SDK run lands as its own ``claude_agent_sdk``
             session). Silent no-op when a target's

@@ -497,6 +497,29 @@ class SubagentMessage:
     captured_at: str
 
 
+@dataclass
+class SubagentScope:
+    """A child session whose work the sensor is running right now.
+
+    A framework wrap builds one per child session it opens and enters it
+    around the child's work with :meth:`Session.enter_subagent_scope`.
+    The child's model, tool and MCP calls are still reported on the
+    session named by ``owner_session_id``; the scope only keeps, in
+    ``reported_tool_ids``, the call ids of the tool calls a model
+    response made during the child's work already reported as
+    ``tool_call`` events, so a wrap that also sees the tool run can tell
+    whether it is reported. The set changes under the owning session's
+    lock.
+    """
+
+    owner_session_id: str
+    child_session_id: str
+    child_agent_id: str
+    child_agent_name: str
+    agent_role: str
+    reported_tool_ids: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class MCPServerFingerprint:
     """Identity record for an MCP server a session connected to.

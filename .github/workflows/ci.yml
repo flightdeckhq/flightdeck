@@ -250,6 +250,43 @@ jobs:
       - name: Unit tests
         run: pytest tests/unit -q -n auto
 
+  sensor-llama-index-floor:
+    name: Sensor (Python 3.11, LlamaIndex floor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The oldest LlamaIndex the agent-workflow wrap supports (the lock's
+    # llama-index-floor group: llama-index-core 0.14.0 on
+    # llama-index-workflows 2.0.0). The framework lane installs the newest
+    # releases, so a span the wrap reads differently on an older release
+    # passes there and fails here. Only the wrap's tests run: the rest of
+    # the suite is the other lanes'.
+    defaults:
+      run:
+        working-directory: sensor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
+      - name: Install the sensor with the oldest supported LlamaIndex
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra test --extra openai --group llama-index-floor
+
+      - name: Installed LlamaIndex versions
+        run: pip list | grep -iE "^(llama-index-core|llama-index-workflows|llama-index-llms-openai|openai) "
+
+      - name: LlamaIndex wrap tests
+        run: pytest tests/unit/test_interceptor_llama_index.py -q
+
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04

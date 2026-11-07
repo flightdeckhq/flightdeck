@@ -20,6 +20,7 @@ import time
 import urllib.request
 import uuid
 import weakref
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,7 @@ from flightdeck_sensor.core.types import (
     SessionState,
     StatusResponse,
     SubagentMessage,
+    SubagentScope,
     TokenUsage,
 )
 
@@ -53,10 +55,21 @@ from flightdeck_sensor.interceptor import base as _interceptor_base
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextvars import Token
 
     from flightdeck_sensor.transport.client import ControlPlaneClient, DrainShutdown, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
+
+# The child session whose work is running in this context, set by a
+# framework wrap around the child's steps (Session.enter_subagent_scope).
+# A context variable, so it follows the child's asyncio tasks and any
+# thread started with a copied context, and nothing else. It records
+# which child a model response's tool calls belong to; the events
+# themselves stay on the sensor's session.
+_ACTIVE_SUBAGENT_SCOPE: ContextVar[SubagentScope | None] = ContextVar(
+    "flightdeck_subagent_scope", default=None
+)
 
 
 # Operator-actionable session_start enrichment.
@@ -801,6 +814,72 @@ class Session:
     # The methods POST through the same control-plane client as every
     # other event so back-pressure / unavailability / capture_prompts
     # behaviour is uniform with the rest of the sensor.
+
+    def new_subagent_scope(
+        self,
+        *,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+    ) -> SubagentScope:
+        """A scope for a child session of this Session, to enter around
+        the child's work with :meth:`enter_subagent_scope`."""
+        return SubagentScope(
+            owner_session_id=self.config.session_id,
+            child_session_id=child_session_id,
+            child_agent_id=child_agent_id,
+            child_agent_name=child_agent_name,
+            agent_role=agent_role,
+        )
+
+    @staticmethod
+    def enter_subagent_scope(scope: SubagentScope | None) -> Token[SubagentScope | None]:
+        """Run the current context's work as ``scope``'s child (``None``:
+        as the sensor's own session) until :meth:`exit_subagent_scope`
+        with the returned token. The events the owning Session builds in
+        the meantime stay on the sensor's session; the scope only tells
+        which child a model response's tool calls belong to (see
+        :meth:`note_reported_tool_call`)."""
+        return _ACTIVE_SUBAGENT_SCOPE.set(scope)
+
+    @staticmethod
+    def exit_subagent_scope(token: Token[SubagentScope | None]) -> None:
+        """Restore the scope that was active before the
+        :meth:`enter_subagent_scope` that returned ``token``. A token
+        from another context (a framework that ends a step elsewhere than
+        it started it) is ignored: that context's scope ends with it."""
+        try:
+            _ACTIVE_SUBAGENT_SCOPE.reset(token)
+        except ValueError:
+            _log.debug("sub-agent scope exited in another context", exc_info=True)
+
+    def active_subagent_scope(self) -> SubagentScope | None:
+        """The child of this Session whose work runs in the current
+        context, if any. A scope another Session opened (one ended by
+        teardown before a new init) is not this Session's."""
+        scope = _ACTIVE_SUBAGENT_SCOPE.get()
+        if scope is None or scope.owner_session_id != self.config.session_id:
+            return None
+        return scope
+
+    def note_reported_tool_call(self, tool_id: str | None) -> None:
+        """Record that a model response reported the tool call
+        ``tool_id`` as a ``tool_call`` event in the active child, so the
+        wrap that runs the tool does not report it again."""
+        scope = self.active_subagent_scope()
+        if scope is None or not tool_id:
+            return
+        with self._lock:
+            scope.reported_tool_ids.add(tool_id)
+
+    def tool_call_reported(self, scope: SubagentScope, tool_id: str | None) -> bool:
+        """Whether a model response in ``scope``'s child already reported
+        the tool call ``tool_id``."""
+        if not tool_id:
+            return False
+        with self._lock:
+            return tool_id in scope.reported_tool_ids
 
     def derive_subagent_id(self, agent_role: str) -> str:
         """Return the deterministic ``agent_id`` for a sub-agent of

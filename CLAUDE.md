@@ -295,8 +295,9 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
      - Sensor / playground / tests (Python): ``ruff check .`` and
        ``ruff format --check .`` from the component root. ``mypy
        --strict`` on sensor.
-     - Ingestion / workers / api (Go): ``golangci-lint run`` from
-       the component root. The binary lives at
+     - Ingestion / workers / api (Go): ``gofmt -l .`` (the gofmt of
+       the toolchain ``go.mod`` selects; ``make lint`` runs it) and
+       ``golangci-lint run`` from the component root. The binary lives at
        ``/home/omria/go/bin/golangci-lint`` on the dev box (PATH may
        not include it). ``go test ./...`` alone misses ``unused``
        and other lints CI enforces.

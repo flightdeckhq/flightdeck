@@ -9,6 +9,11 @@ import (
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
+// HeartbeatRequest documents the POST /v1/heartbeat body: a JSON object
+// carrying session_id. It exists for the API docs, where a named type
+// makes the body application/json only.
+type HeartbeatRequest map[string]any
+
 // HeartbeatHandler handles POST /v1/heartbeat.
 //
 // @Summary      Agent heartbeat
@@ -17,7 +22,7 @@ import (
 // @Accept       json
 // @Produce      json
 // @Param        Authorization  header    string  true  "Bearer token"
-// @Param        heartbeat      body      object  true  "Heartbeat payload with session_id"
+// @Param        heartbeat      body      HeartbeatRequest  true  "Heartbeat payload with session_id"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse

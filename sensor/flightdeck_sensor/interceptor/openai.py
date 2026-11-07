@@ -24,6 +24,14 @@ interceptor):
    sentinel keeps the historical attribute name for backward
    compatibility with :func:`flightdeck_sensor.wrap` which checks it
    to decide whether a client is already patched.
+
+   On openai before 1.78 the client builds each resource in its
+   constructor (``self.chat = resources.Chat(self)``) instead, so there
+   is no ``cached_property`` to replace; each resource the client class
+   declares gets a :class:`_OpenAIConstructedResourceDescriptor`, a data
+   descriptor that keeps the SDK's resource in the instance ``__dict__``
+   and hands out the same sensor proxy over it while a session is active.
+   Below openai 1.26 (:data:`_MIN_SDK_VERSION`) nothing is patched.
 2. **Per-instance wrapping** via :class:`SensorOpenAI` and the public
    ``flightdeck_sensor.wrap()`` API.
 
@@ -110,6 +118,25 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
 # checks below survive any later mutation. See the matching block in
 # interceptor/anthropic.py for the rationale.
 
+# The lowest SDK release the sensor supports: the first whose chat
+# ``create`` takes ``stream_options``, which the sensor adds to every
+# streamed chat call so the last chunk carries the usage. On an older SDK
+# that call would raise ``TypeError`` in the caller's code, so the sensor
+# leaves the SDK alone there and says so once, at import, rather than
+# break streaming. CI runs the OpenAI tests against this release.
+_MIN_SDK_VERSION = "1.26"
+
+
+def _chat_create_takes_stream_options(module: Any) -> bool:
+    """Whether the installed SDK's chat ``create`` accepts
+    ``stream_options`` (openai 1.26 and later)."""
+    try:
+        completions = module.resources.chat.Completions
+        return "stream_options" in inspect.signature(completions.create).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 try:
     import openai as _openai_module
 
@@ -118,6 +145,17 @@ try:
     _OPENAI_AVAILABLE = True
 except ImportError:
     _openai_module = None  # type: ignore[assignment]
+    _OrigOpenAI = None
+    _OrigAsyncOpenAI = None
+    _OPENAI_AVAILABLE = False
+
+if _OPENAI_AVAILABLE and not _chat_create_takes_stream_options(_openai_module):
+    _log.warning(
+        "openai %s is older than the sensor supports (needs openai>=%s): "
+        "OpenAI calls are not metered",
+        getattr(_openai_module, "__version__", "?"),
+        _MIN_SDK_VERSION,
+    )
     _OrigOpenAI = None
     _OrigAsyncOpenAI = None
     _OPENAI_AVAILABLE = False
@@ -1359,6 +1397,91 @@ class _OpenAIEmbeddingsDescriptor:
         return wrapped
 
 
+# The instance attribute holding the proxies an
+# :class:`_OpenAIConstructedResourceDescriptor` has handed out, keyed by
+# resource name.
+_CONSTRUCTED_PROXIES_ATTR = "_flightdeck_resource_proxies"
+
+
+class _OpenAIConstructedResourceDescriptor:
+    """The sensor's hook for a resource the client builds in its
+    constructor (``self.chat = resources.Chat(self)``), the layout of
+    openai before 1.78; from 1.78 the resources are ``cached_property``
+    descriptors, which :class:`_OpenAIChatDescriptor` and its siblings
+    replace.
+
+    An instance attribute shadows a plain descriptor, so this is a data
+    descriptor (it defines ``__set__``), which Python consults before the
+    instance ``__dict__``. ``__set__`` stores the SDK's resource in the
+    instance ``__dict__`` as the constructor intended; ``__get__`` reads it
+    from there and, while a session is active, hands out the sensor proxy
+    (``wrapper_cls``) over it. The proxy is kept per instance and reused
+    while the resource and the session are the ones it was built for, so
+    ``client.chat is client.chat`` holds; with no session active the
+    resource itself is returned and nothing is kept. Because the resource
+    always lives in the instance ``__dict__``, a client built before
+    :func:`patch_openai_classes` is metered from its next access, and
+    :func:`unpatch_openai_classes` (which deletes this descriptor) leaves
+    every client with its own resource again.
+    """
+
+    def __init__(self, wrapper_cls: type, *, is_async: bool, attr_name: str) -> None:
+        self._wrapper_cls = wrapper_cls
+        self._is_async = is_async
+        # Set here as well as by ``__set_name__``, which Python does not
+        # call for a descriptor assigned to a class after it is created.
+        self._attr_name = attr_name
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._attr_name = name
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        instance.__dict__[self._attr_name] = value
+
+    def __delete__(self, instance: Any) -> None:
+        try:
+            del instance.__dict__[self._attr_name]
+        except KeyError:
+            raise AttributeError(self._attr_name) from None
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        try:
+            raw = instance.__dict__[self._attr_name]
+        except KeyError:
+            raise AttributeError(self._attr_name) from None
+
+        session = _current_session()
+        if session is None:
+            return raw
+
+        proxies = instance.__dict__.setdefault(_CONSTRUCTED_PROXIES_ATTR, {})
+        kept = proxies.get(self._attr_name)
+        if kept is not None and kept._real is raw and kept._session is session:
+            return kept
+        wrapped = self._wrapper_cls(
+            raw,
+            session,
+            _provider_for(instance, session),
+            is_async=self._is_async,
+        )
+        proxies[self._attr_name] = wrapped
+        return wrapped
+
+
+def _built_in_constructor(cls: Any, attr_name: str) -> bool:
+    """Whether ``cls`` declares ``attr_name`` as an instance attribute its
+    constructor assigns (openai before 1.78 annotates each resource on the
+    client class and builds it in ``__init__``) rather than as a
+    class-level descriptor."""
+    try:
+        annotations = inspect.get_annotations(cls)
+    except (TypeError, ValueError):
+        return False
+    return attr_name in annotations
+
+
 # ----------------------------------------------------------------------
 # Resource patch table
 # ----------------------------------------------------------------------
@@ -1375,12 +1498,26 @@ class _OpenAIEmbeddingsDescriptor:
 # to decide whether a client is already covered by the class-level
 # patch. The two new entries use per-resource sentinels so multiple
 # resources can coexist on the same class.
+#
+# The last element is the sensor proxy for the resource, which
+# :class:`_OpenAIConstructedResourceDescriptor` hands out on an SDK whose
+# client builds the resource in its constructor.
 
-_OPENAI_PATCH_RESOURCES: tuple[tuple[str, str, type], ...] = (
-    ("chat", "_flightdeck_patched", _OpenAIChatDescriptor),
-    ("responses", "_flightdeck_patched_responses", _OpenAIResponsesDescriptor),
-    ("embeddings", "_flightdeck_patched_embeddings", _OpenAIEmbeddingsDescriptor),
+_OPENAI_PATCH_RESOURCES: tuple[tuple[str, str, type, type], ...] = (
+    ("chat", "_flightdeck_patched", _OpenAIChatDescriptor, SensorChat),
+    ("responses", "_flightdeck_patched_responses", _OpenAIResponsesDescriptor, SensorResponses),
+    (
+        "embeddings",
+        "_flightdeck_patched_embeddings",
+        _OpenAIEmbeddingsDescriptor,
+        SensorEmbeddings,
+    ),
 )
+
+# The sentinel value of a resource patched with
+# :class:`_OpenAIConstructedResourceDescriptor`: there is no class-level
+# original to restore, so unpatching deletes the descriptor instead.
+_CONSTRUCTED_RESOURCE = "constructed-resource"
 
 # The ``chat`` resource on ``Beta`` / ``AsyncBeta`` (``client.beta.chat``)
 # and the sentinel holding its original cached_property. Patched on the
@@ -1405,18 +1542,23 @@ def patch_openai_classes(quiet: bool = False) -> None:
     4. Replace ``cls.<resource>`` with a fresh descriptor instance.
 
     The three resources patched are ``chat``, ``responses`` and
-    ``embeddings``. See :data:`_OPENAI_PATCH_RESOURCES`. The ``chat``
+    ``embeddings``. See :data:`_OPENAI_PATCH_RESOURCES`. On openai
+    before 1.78, whose clients build each resource in the constructor, step 2
+    finds no descriptor and a
+    :class:`_OpenAIConstructedResourceDescriptor` is installed instead,
+    for each resource the client class declares. The ``chat``
     resource of ``client.beta`` is patched on the SDK's ``Beta`` /
     ``AsyncBeta`` classes the same way, where the SDK has it.
 
-    If ``openai`` is not installed this is a silent no-op.
+    If ``openai`` is not installed, or is older than
+    :data:`_MIN_SDK_VERSION`, this is a no-op.
     """
     if not _OPENAI_AVAILABLE:
         if not quiet:
-            _log.debug("openai not installed; skipping patch")
+            _log.debug("openai not installed or unsupported; skipping patch")
         return
 
-    for attr_name, sentinel_attr, descriptor_cls in _OPENAI_PATCH_RESOURCES:
+    for attr_name, sentinel_attr, descriptor_cls, wrapper_cls in _OPENAI_PATCH_RESOURCES:
         _patch_one_resource(
             _OrigOpenAI,
             attr_name=attr_name,
@@ -1424,6 +1566,7 @@ def patch_openai_classes(quiet: bool = False) -> None:
             descriptor_cls=descriptor_cls,
             is_async=False,
             quiet=quiet,
+            wrapper_cls=wrapper_cls,
         )
         _patch_one_resource(
             _OrigAsyncOpenAI,
@@ -1432,6 +1575,7 @@ def patch_openai_classes(quiet: bool = False) -> None:
             descriptor_cls=descriptor_cls,
             is_async=True,
             quiet=quiet,
+            wrapper_cls=wrapper_cls,
         )
     for beta_cls, is_async in ((_OrigBeta, False), (_OrigAsyncBeta, True)):
         # Only where the installed SDK's beta resource has a ``chat``.
@@ -1454,6 +1598,7 @@ def _patch_one_resource(
     descriptor_cls: type,
     is_async: bool,
     quiet: bool,
+    wrapper_cls: type | None = None,
 ) -> None:
     """Patch one resource attribute on one OpenAI / AsyncOpenAI class.
 
@@ -1462,11 +1607,29 @@ def _patch_one_resource(
     helper instead of three copy-pasted variants. Each resource has
     its own idempotency sentinel attribute so multiple patched
     resources coexist on the same class.
+
+    A class with no descriptor for the resource that declares it as an
+    instance attribute its constructor builds (openai before 1.78) gets a
+    :class:`_OpenAIConstructedResourceDescriptor` handing out
+    ``wrapper_cls``. A class that has neither (a resource the installed
+    SDK predates, such as ``responses`` before 1.66) is left alone.
     """
     if hasattr(cls, sentinel_attr):
         return  # already patched, idempotent no-op
 
     orig_descriptor = cls.__dict__.get(attr_name)
+    if orig_descriptor is None and wrapper_cls is not None:
+        if _built_in_constructor(cls, attr_name):
+            constructed = _OpenAIConstructedResourceDescriptor(
+                wrapper_cls, is_async=is_async, attr_name=attr_name
+            )
+            setattr(cls, sentinel_attr, _CONSTRUCTED_RESOURCE)
+            setattr(cls, attr_name, constructed)
+            if not quiet:
+                _log.info("Patched %s.%s (built in the constructor)", cls.__name__, attr_name)
+        else:
+            _log.debug("patch: %s has no %r resource; skipping", cls.__name__, attr_name)
+        return
     if orig_descriptor is None:
         if not quiet:
             _log.warning(
@@ -1501,7 +1664,7 @@ def unpatch_openai_classes() -> None:
     """
     if not _OPENAI_AVAILABLE:
         return
-    for attr_name, sentinel_attr, _descriptor_cls in _OPENAI_PATCH_RESOURCES:
+    for attr_name, sentinel_attr, _descriptor_cls, _wrapper_cls in _OPENAI_PATCH_RESOURCES:
         _unpatch_one_resource(
             _OrigOpenAI,
             attr_name=attr_name,
@@ -1525,9 +1688,15 @@ def _unpatch_one_resource(
     attr_name: str,
     sentinel_attr: str,
 ) -> None:
-    """Unpatch one resource on one OpenAI / AsyncOpenAI class."""
+    """Unpatch one resource on one OpenAI / AsyncOpenAI class. A resource
+    the client builds in its constructor had no class-level original, so
+    its descriptor is deleted and every instance reads its own resource
+    again."""
     orig_descriptor = getattr(cls, sentinel_attr, None)
     if orig_descriptor is None:
         return  # not patched, idempotent no-op
-    setattr(cls, attr_name, orig_descriptor)
+    if orig_descriptor is _CONSTRUCTED_RESOURCE:
+        delattr(cls, attr_name)
+    else:
+        setattr(cls, attr_name, orig_descriptor)
     delattr(cls, sentinel_attr)

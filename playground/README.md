@@ -43,6 +43,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `33_genai_strands.py` | Strands Agents over OpenTelemetry, no sensor | The same run and checks through `StrandsTelemetry().setup_otlp_exporter()`, on Strands' OpenAI provider (`gpt-4o-mini`) in place of its Bedrock default |
 | `34_genai_openai_agents.py` | OpenAI Agents SDK + `opentelemetry-instrumentation-openai-agents-v2`, no sensor | The same run and checks with `Agent.as_tool` (`gpt-4o-mini`); the SDK's own trace exporter is removed so the run reaches Flightdeck only |
 | `35_genai_google_adk.py` | Google ADK over OpenTelemetry, no sensor | The same run through `AgentTool` with `maybe_set_otel_providers()`, which also exports each call's content as a log record to `/ingest/v1/logs`; OpenAI `gpt-4o-mini` through ADK's LiteLLM wrapper in place of its Gemini default. ADK records tool arguments only inside model messages, so its tool calls and child carry no content of their own and only the calls' content is checked |
+| `36_openai_floor.py` | openai 1.26 to 1.77, from the OpenAI floor venv | On the client layout of openai before 1.78, which builds `chat` and `embeddings` in its constructor: sync and async chat, a sync and an async chat stream, embeddings (single + list input), and a chat call on a client built and touched before `patch()`; asserts five `post_call`s with input and output tokens (two of them streamed), two `embeddings` events with tokens, and stored content on all. SKIPs on a newer openai |
 | `policy_demo_warn.py` | anthropic + flavor-scoped policy | server WARN directive emits `policy_warn` with `source=server` |
 | `policy_demo_block.py` | anthropic + flavor-scoped policy | server BLOCK pre-flight emits `policy_block` + `BudgetExceededError`; `intended_model` + `token_limit` round-trip |
 | `policy_demo_degrade.py` | anthropic + flavor-scoped policy | server DEGRADE swaps the model on threshold cross; `to_model` lands and post_calls show the swap |
@@ -92,6 +93,25 @@ uv pip install --python ~/.cache/fd-genai-capture-adk-venv/bin/python \
 without running it. Run directly under an interpreter without the
 framework, a script SKIPs; one whose framework is installed but does
 not import (a broken venv) fails.
+
+## OpenAI floor venv
+
+`36_openai_floor.py` runs the sensor against openai 1.26.0, the oldest
+release it supports (ARCHITECTURE.md, SDK class patching). Its
+client builds its resources in the constructor, a layout the project
+venv's openai never shows, so it runs from a venv of its own; openai
+before 1.55.3 needs httpx below 0.28. Keep it on a Linux filesystem:
+
+```bash
+uv venv --python 3.12 ~/.cache/fd-openai-floor-venv
+uv pip install --python ~/.cache/fd-openai-floor-venv/bin/python \
+  -e ./sensor "openai==1.26.0" "httpx<0.28" tiktoken
+```
+
+`make playground-openai-floor` runs it (`OPENAI_FLOOR_PYTHON` overrides
+the path), and `run_all.py` runs it under `FD_OPENAI_FLOOR_PYTHON` (the
+same default), tagging it SKIP when the venv is missing. Any release
+from 1.26 to 1.77 exercises the same layout.
 
 ## Running
 

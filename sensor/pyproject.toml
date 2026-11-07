@@ -38,7 +38,11 @@ Repository = "https://github.com/flightdeckhq/flightdeck"
 # layout canary test pins those paths and the matrix runs against
 # 0.94.0. Keep in step with the floor in [project] dependencies below.
 anthropic = ["anthropic>=0.86"]
-openai = ["openai>=1.0", "tiktoken>=0.5"]
+# Floor 1.26: the first release whose chat ``create`` takes
+# ``stream_options``, which the sensor adds to every streamed chat call
+# for its usage chunk; the interceptor leaves an older SDK unpatched with
+# a warning. CI's OpenAI-floor lane runs the OpenAI tests against it.
+openai = ["openai>=1.26", "tiktoken>=0.5"]
 # litellm is a framework-level router that aggregates multiple
 # underlying providers. Installing the extra pulls in litellm; the
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
@@ -93,7 +97,8 @@ dev = [
     "respx>=0.20",
     # Same floor as the [project.optional-dependencies] anthropic extra.
     "anthropic>=0.86",
-    "openai>=1.0",
+    # Same floor as the openai extra.
+    "openai>=1.26",
     # Unit-test-time litellm so tests/unit/test_patch.py and
     # tests/unit/test_providers.py can import litellm and exercise the
     # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
@@ -166,13 +171,25 @@ sdk-majors = [
     "litellm>=1.83.0",
     "mcp>=2,<3",
 ]
+# The oldest openai release the sensor supports, the openai extra's
+# floor. CI's OpenAI-floor lane installs this group with the test extra
+# and runs the OpenAI tests against it: before 1.78 the client builds its
+# resources in the constructor, a layout the newer SDKs in the other
+# lanes never show. Releases before 1.55.3 pass httpx the ``proxies``
+# argument httpx 0.28 removed, so httpx is held below 0.28 with it.
+openai-floor = [
+    "openai==1.26.0",
+    "httpx<0.28",
+]
 
 [tool.uv]
-# uv.lock resolves both CI lanes in one file; the framework lane (dev
-# extra) and the SDK-majors lane need different majors of the same
-# packages, so they are declared as alternatives.
+# uv.lock resolves every CI lane in one file; the framework lane (dev
+# extra), the SDK-majors lane and the OpenAI-floor lane need different
+# releases of the same packages, so they are declared as alternatives.
 conflicts = [
-    [{ extra = "dev" }, { group = "sdk-majors" }],
+    [{ extra = "dev" }, { group = "sdk-majors" }, { group = "openai-floor" }],
+    # Every litellm release the litellm extra admits needs a newer openai.
+    [{ extra = "litellm" }, { group = "openai-floor" }],
 ]
 # Every `uv lock` resolves to releases at least 14 days old: brand-new
 # releases are where hijacked or broken versions are caught and yanked

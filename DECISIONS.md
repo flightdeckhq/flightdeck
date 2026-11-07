@@ -748,3 +748,21 @@ Under D240 an app importing its framework after `init()` was null.
 **Rejected alternative:** importing frameworks at `init()` (D240's cost); a
 scan per event; a second `session_start` (a re-attachment); a versioned
 list on the wire (a payload change); a backfill (AG2/AutoGen is not stored).
+
+## D258 -- The sensor reports a framework hand-off as the GenAI dialect's `agent_handoff` session_signal
+
+**Date:** 2026-11-07
+**Decision:** extends D218 and D246 to the sensor.
+`Session.emit_agent_handoff` posts a `session_signal` with
+`signal=agent_handoff` and `signal_data` `{from, to}` (agent names,
+trimmed, cut to 256 bytes at a UTF-8 boundary, left out when unknown) on
+the session of the agent handing off, with no model, tokens or content
+under any capture setting. It posts synchronously so it reaches ingestion
+before a child's `session_end`. Ingestion, the worker and the dashboard
+are unchanged.
+**Why:** the ADK and OpenAI Agents wraps should store what the OTLP
+receiver stores, so one hand-off reads the same from either source.
+**Rejected alternative:** a dedicated `agent_handoff` event type (a second
+shape for one fact); carrying the handed-over input as content (it is
+already on the transfer's `tool_call` and the next call); posting through
+the event queue (a child's synchronous `session_end` can overtake it).

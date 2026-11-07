@@ -1447,6 +1447,30 @@ swimlane row left panel on Fleet —
 mirroring the existing `error_types` (`llm_error`) and
 `mcp_error_types` indicators.
 
+A framework hand-off, one agent passing the conversation to another,
+is reported with `Session.emit_agent_handoff(from_agent=, to_agent=)`,
+the call the framework wraps make. It emits the `agent_handoff`
+`session_signal` the GenAI dialect emits (see Event Types >
+`session_signal`), so a hand-off reads the same whether the sensor or
+an OpenTelemetry exporter reported it: `signal_data` holds `from` and
+`to`, the two agents' names, each trimmed of white space, cut to 256
+bytes at a UTF-8 boundary and left out when empty or not given. The
+event carries no `model`, no token counts and no content. The names
+are metadata and are sent whatever `capture_prompts` says; what was
+handed over (the transfer tool's arguments, the conversation) is
+content, is never read for the signal, and is captured only on the
+events that already carry it (the transfer's `tool_call`, the
+next model call). The signal goes on the session of the agent handing
+off: the sensor's own session, or, when the wrap passes
+`child_session_id`, `child_agent_id`, `child_agent_name` and
+`agent_role` as it does for `emit_subagent_session_start`, that child
+session, with `parent_session_id` set to the sensor's session. A child
+identity given in part is a wrap bug: the signal is dropped with a
+warning rather than sent on the wrong session. The event is posted
+synchronously, as the child `session_start` and `session_end` are, so
+it reaches ingestion before the child's `session_end`, after which the
+worker would drop it as a straggler on a closed session.
+
 ### Claude Agent SDK
 
 `patch()` (`Provider.CLAUDE_AGENT_SDK`) wraps the Python Claude Agent
@@ -7796,17 +7820,19 @@ arrive in the response envelope of `POST /v1/events` (see Directives
 section); the sensor's acknowledgement is the `DIRECTIVE_RESULT`
 event.
 
-21 emitted event types:
+22 emitted event types:
 
 `SESSION_START`, `SESSION_END`, `PRE_CALL`, `POST_CALL`, `TOOL_CALL`,
 `EMBEDDINGS`, `LLM_ERROR`, `POLICY_WARN`, `POLICY_DEGRADE`,
 `POLICY_BLOCK`, `POLICY_MCP_WARN`, `POLICY_MCP_BLOCK`,
 `DIRECTIVE_RESULT`, `MCP_TOOL_LIST`, `MCP_TOOL_CALL`,
 `MCP_RESOURCE_LIST`, `MCP_RESOURCE_READ`, `MCP_PROMPT_LIST`,
-`MCP_PROMPT_GET`, `MCP_SERVER_NAME_CHANGED`, `MCP_SERVER_ATTACHED`.
+`MCP_PROMPT_GET`, `MCP_SERVER_NAME_CHANGED`, `MCP_SERVER_ATTACHED`,
+`SESSION_SIGNAL` (only the `agent_handoff` signal; see below).
 
-Hook-based clients add two more: `mcp_policy_user_remembered` (see
-MCP Protection Policy, Event taxonomy) and `session_signal` (below).
+Hook-based clients add `mcp_policy_user_remembered` (see MCP
+Protection Policy, Event taxonomy) and the rest of the
+`session_signal` vocabulary (below).
 
 ### `session_start`
 
@@ -8617,12 +8643,16 @@ plugin emits it from its hooks.
 | `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |
 | `elicitation_responded` | `ElicitationResult` | `mcp_server`, `mode`, `elicitation_id`, `action` (`accept`, `decline`, `cancel`) | `content`, the user's answer (as JSON text) |
 
-One signal comes from ingestion rather than a hook: `agent_handoff`,
-on the agent that hands off in an OpenTelemetry GenAI run (see OTLP
-ingest > GenAI dialect > Sessions), with `signal_data` `from` and `to`
-(the two agents' names, either left out when the spans do not give it)
-and no content. The dashboard's feed line reads `hand-off · <from> →
-<to>`.
+One signal comes from a framework rather than a hook: `agent_handoff`,
+on the agent that hands off, with `signal_data` `from` and `to` (the
+two agents' names, either left out when not known) and no content,
+whatever the capture setting. Ingestion's GenAI dialect emits it for
+an OpenTelemetry GenAI run (see OTLP ingest > GenAI dialect >
+Sessions), and the Python sensor's framework wraps emit it through
+`Session.emit_agent_handoff` (see Sensor > Sub-agent framework
+coverage), with the same names, bounds and stored shape, so the worker
+and the dashboard do not tell the two apart. The dashboard's feed line
+reads `hand-off · <from> → <to>`.
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content

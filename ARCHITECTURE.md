@@ -6770,8 +6770,12 @@ every response object: `"response"` for a Responses call and
 has none). Neither the event nor the content names the API a call
 used, and the content's shape alone (no `messages`, an `input`) is the
 same for a Responses call, a legacy completion and an embeddings call.
-A call whose stored response carries no `object` (a stream that ended
-before its terminal event) shows no Input or Prompt. An embeddings
+A call whose stored response carries no `object` (a stream that stored
+no response snapshot) shows no Input or Prompt, and its stored `system`
+text under System: a litellm Responses
+stream the caller leaves before its terminal event keeps no snapshot,
+while an OpenAI SDK one stores the `ResponseStreamState` snapshot, which
+carries `object` from `response.created` on. An embeddings
 call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its

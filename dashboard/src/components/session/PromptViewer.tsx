@@ -573,6 +573,14 @@ export function isTextCompletionContent(content: EventContent): boolean {
   return isPlainObject(content.response) && content.response.object === TEXT_COMPLETION_OBJECT;
 }
 
+/** A stored request value as sent: text as written (pretty-printed
+ *  when it holds JSON), ``(empty)`` for an empty string, anything else
+ *  as its JSON. */
+function StoredValue({ value }: { value: unknown }) {
+  if (typeof value !== "string") return <JsonBox data={value} />;
+  return value.length > 0 ? <TextOrJson text={value} /> : <Muted>(empty)</Muted>;
+}
+
 /** A legacy completion's ``prompt`` as sent: a string, a list of
  *  prompts (one box each), or token ids (as their JSON). */
 function CompletionPrompt({ prompt, eventId }: { prompt: unknown; eventId: string }) {
@@ -582,7 +590,7 @@ function CompletionPrompt({ prompt, eventId }: { prompt: unknown; eventId: strin
         <div className="space-y-2">
           {prompt.map((text, i) => (
             <ViewBox key={`${eventId}-prompt-${i}`} raw={text} name={`prompt ${i + 1}`} testId={`prompt-box-prompt-${i}`}>
-              {text.length > 0 ? <TextOrJson text={text} /> : <Muted>(empty)</Muted>}
+              <StoredValue value={text} />
             </ViewBox>
           ))}
         </div>
@@ -592,11 +600,7 @@ function CompletionPrompt({ prompt, eventId }: { prompt: unknown; eventId: strin
   return (
     <Section title="Prompt">
       <ViewBox key={`${eventId}-prompt`} raw={prompt} name="the prompt" testId="prompt-box-prompt">
-        {typeof prompt === "string" ? (
-          prompt.length > 0 ? <TextOrJson text={prompt} /> : <Muted>(empty)</Muted>
-        ) : (
-          <JsonBox data={prompt} />
-        )}
+        <StoredValue value={prompt} />
       </ViewBox>
     </Section>
   );
@@ -607,11 +611,7 @@ function ResponsesInput({ input, eventId }: { input: unknown; eventId: string })
     return (
       <Section title="Input">
         <ViewBox key={`${eventId}-input`} raw={input} name="the input" testId="prompt-box-input">
-          {typeof input === "string" ? (
-            input.length > 0 ? <TextOrJson text={input} /> : <Muted>(empty)</Muted>
-          ) : (
-            <JsonBox data={input} />
-          )}
+          <StoredValue value={input} />
         </ViewBox>
       </Section>
     );
@@ -674,7 +674,7 @@ function ResponsesInputItem({ item, index }: { item: unknown; index: number }) {
 /** A message item's content: a string, or a list of content parts. */
 function ResponsesMessageContent({ content }: { content: unknown }) {
   if (typeof content === "string") {
-    return content.length > 0 ? <TextOrJson text={content} /> : <Muted>(empty)</Muted>;
+    return <StoredValue value={content} />;
   }
   if (Array.isArray(content)) {
     if (content.length === 0) return <Muted>(empty)</Muted>;
@@ -726,10 +726,16 @@ function ResponsesContentPart({ part }: { part: unknown }) {
       .filter((v): v is string => typeof v === "string" && v.length > 0)
       .join(" · ");
     return (
-      <Muted testId="responses-part-media">
+      // A signed URL is one unbroken token: let it wrap anywhere so it
+      // stays inside the box.
+      <div
+        data-testid="responses-part-media"
+        className="text-xs"
+        style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}
+      >
         [{type}
         {detail ? ` · ${detail}` : ""}]
-      </Muted>
+      </div>
     );
   }
   return <JsonBox data={part} />;
@@ -773,7 +779,7 @@ function ResponsesFunctionCallOutput({ item }: { item: Record<string, unknown> }
     <div data-testid="responses-function-call-output" className="space-y-1">
       <CallId value={item.call_id} />
       {typeof output === "string" ? (
-        output.length > 0 ? <TextOrJson text={output} /> : <Muted>(empty)</Muted>
+        <StoredValue value={output} />
       ) : Array.isArray(output) ? (
         <ResponsesMessageContent content={output} />
       ) : output == null ? (

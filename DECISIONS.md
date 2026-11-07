@@ -655,7 +655,8 @@ would report no usage, so they could not be metered).
 **Decision:** `PromptViewer` renders a call's stored `input` as a
 Responses request (`instructions`, input items) when the stored response's
 `object` is `"response"`, and as a legacy completion's `prompt` when it is
-`"text_completion"`. Without either, the input is not shown there.
+`"text_completion"`. Without either (a stream that stored no response
+snapshot), the input is not shown there.
 **Why:** the provider sets `object` on every response it returns, so the
 marker is already in every stored row. The content's shape alone (no
 `messages`, an `input`) is shared with embeddings calls, and the viewer

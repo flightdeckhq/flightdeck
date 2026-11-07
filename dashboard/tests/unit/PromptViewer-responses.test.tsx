@@ -187,6 +187,31 @@ describe("PromptViewer: an OpenAI Responses call", () => {
     expect(item(0)).not.toHaveTextContent("base64");
   });
 
+  it("a long signed media URL wraps inside its box", async () => {
+    const signed =
+      "https://files.example-cdn.com/uploads/2026/11/07/report-final-v3.png?X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+      "&X-Amz-Credential=AKIAEXAMPLE%2F20261107%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=" +
+      "a".repeat(256);
+    await renderContent(
+      withItems([
+        {
+          role: "user",
+          content: [
+            { type: "input_image", detail: "high", image_url: signed },
+            { type: "input_file", file_url: signed },
+          ],
+        },
+      ]),
+    );
+    const parts = within(item(0)).getAllByTestId("responses-part-media");
+    expect(parts).toHaveLength(2);
+    for (const part of parts) {
+      // The URL is shown whole, and the box may break it anywhere.
+      expect(part).toHaveTextContent(signed);
+      expect(part.style.overflowWrap).toBe("anywhere");
+    }
+  });
+
   it("a reasoning item shows its summary text", async () => {
     await renderContent(
       withItems([

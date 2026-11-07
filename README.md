@@ -241,7 +241,7 @@ Direct SDK calls outside a multi-agent framework emit root sessions; identity is
 
 Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`) emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK is observed: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK.
 
-The sensor supports the official `mcp` SDK 1.x (from 1.20) and 2.x; on 2.x it also covers the high-level `mcp.Client`.
+The sensor supports the official `mcp` SDK 1.x (from 1.28) and 2.x; on 2.x it also covers the high-level `mcp.Client`.
 
 The Claude Code plugin's MCP coverage is limited to tool calls; resource reads and prompt fetches are below the plugin hook layer.
 

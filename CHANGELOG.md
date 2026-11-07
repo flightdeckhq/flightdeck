@@ -176,6 +176,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The sensor reads every Anthropic usage breakdown on anthropic 0.x.**
+  An SDK release that does not declare a usage field, such as
+  `output_tokens_details` on 0.91, keeps it as a plain dict, which the
+  sensor did not read, so calls with extended thinking landed without
+  `tokens_reasoning`. The sensor now reads the thinking tokens, the
+  one-hour cache writes and the server-tool counters in either shape. On
+  the same releases, a `messages.stream()` helper passed the SDK's
+  backward-compatible `isinstance` check for a raw stream, so the sensor
+  gave it a raw-stream accumulator and raised a `DeprecationWarning` in
+  the caller's process; it now tests the stream's class instead. A new CI
+  lane runs the sensor's unit suite against the oldest anthropic, litellm
+  and mcp releases the extras admit.
 - **The sensor meters MCP calls when an LLM tool call is what first
   imports `mcp`.** With prompt capture on, the first tool call an
   Anthropic, OpenAI or litellm response carried imported the sensor's MCP

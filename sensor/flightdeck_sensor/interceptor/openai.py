@@ -102,6 +102,7 @@ from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor import base, raw_views
 from flightdeck_sensor.interceptor.platform import PLATFORM_OPENAI, endpoint_of
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
 
 if TYPE_CHECKING:
@@ -424,7 +425,7 @@ def _is_sdk_stream(obj: Any) -> bool:
     """Whether a parsed view response is the SDK's event stream."""
     if _openai_module is None:
         return False
-    return isinstance(obj, (_openai_module.Stream, _openai_module.AsyncStream))
+    return is_raw_stream(obj, (_openai_module.Stream, _openai_module.AsyncStream))
 
 
 def _given(kwargs: dict[str, Any]) -> dict[str, Any]:

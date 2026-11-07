@@ -435,8 +435,8 @@ func TestUpdateMissingPolicyReturnsNotFound(t *testing.T) {
 }
 
 // TestMigration000020DroppedVersioningSchema asserts the no-version-history
-// invariants: ``mcp_policy_versions`` table doesn't exist and
-// ``mcp_policies`` has no ``version`` column. Mirrors the global-policy seed-
+// invariants: “mcp_policy_versions“ table doesn't exist and
+// “mcp_policies“ has no “version“ column. Mirrors the global-policy seed-
 // migration regression test pattern. Guards against a future
 // rollback or accidental migration revert.
 func TestMigration000020DroppedVersioningSchema(t *testing.T) {
@@ -466,7 +466,6 @@ func TestMigration000020DroppedVersioningSchema(t *testing.T) {
 		t.Errorf("mcp_policies.version column still exists post-migration 000020")
 	}
 }
-
 
 func TestResolveMCPPolicyMatchesOnURLAndPicksTheStrictestEntry(t *testing.T) {
 	store, cleanup := newTestStore(t)

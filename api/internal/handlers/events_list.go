@@ -54,7 +54,7 @@ func parseRangeEnd(raw string) (time.Time, string) {
 // EventsListHandler handles GET /v1/events.
 //
 // @Summary      List events with filters
-// @Description  Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Rows are ordered by occurred_at, then id, both in the requested direction, so offset pages never skip or repeat rows that share a timestamp. Supports an optional “before“ keyset cursor (with “before_id“ for rows that share the cursor's timestamp) and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.
+// @Description  Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Rows are ordered by occurred_at, then id, both in the requested direction, so offset pages never skip or repeat rows that share a timestamp. Supports an optional `before` keyset cursor (with `before_id` for rows that share the cursor's timestamp) and `order` direction for newest-first drawer pagination. When `facets=true` the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.
 // @Tags         events
 // @Produce      json
 // @Param        from                     query  string  true   "Start time (ISO 8601)"

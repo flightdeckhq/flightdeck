@@ -12,7 +12,8 @@ run: ## Run the workers locally
 test: ## Run unit tests
 	go test ./... -v
 
-lint: ## Run golangci-lint
+lint: ## Run gofmt and golangci-lint
+	@test -z "$$(gofmt -l .)" || { echo "gofmt reports unformatted files (run gofmt -w .):"; gofmt -l .; exit 1; }
 	golangci-lint run ./...
 
 clean: ## Remove build artifacts

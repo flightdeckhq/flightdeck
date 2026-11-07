@@ -129,8 +129,14 @@ make lint
 
 This runs:
 - `mypy --strict` and `ruff check` on the sensor
-- `golangci-lint run ./...` on ingestion, workers, and api
+- `gofmt -l .` then `golangci-lint run ./...` on ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
+
+`make lint` and CI both fail when `gofmt -l .` lists any file in ingestion,
+workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
+toolchain the module's `go.mod` requires (`$(go env GOROOT)/bin/gofmt`, run from
+inside the module): gofmt from another Go release can format doc comments
+differently, so CI and your machine would disagree.
 
 ## Dependency vulnerability scans
 

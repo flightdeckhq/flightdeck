@@ -11,7 +11,7 @@ import (
 // event batches; the query API is for human-issued admin actions
 // (creating policies, directives, tokens, custom directives) where
 // 256 KiB is generously above any real payload. Without it
-// these handlers would use unbounded ``json.NewDecoder(r.Body)``
+// these handlers would use unbounded “json.NewDecoder(r.Body)“
 // which would happily allocate as much memory as a slow-loris client
 // could send in a single request.
 const MaxRequestBodyBytes = 256 * 1024

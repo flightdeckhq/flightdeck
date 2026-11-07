@@ -354,4 +354,3 @@ func TestBuildEventExtra_SignalFieldsOnlyOnSessionSignal(t *testing.T) {
 		}
 	}
 }
-

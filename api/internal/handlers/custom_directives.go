@@ -10,7 +10,7 @@ import (
 
 // SyncDirectivesRequest is the request body for POST /v1/directives/sync.
 type SyncDirectivesRequest struct {
-	Flavor     string   `json:"flavor"`
+	Flavor     string `json:"flavor"`
 	Directives []struct {
 		Name        string `json:"name"`
 		Fingerprint string `json:"fingerprint"`
@@ -24,7 +24,7 @@ type SyncDirectivesResponse struct {
 
 // RegisterDirectivesRequest is the request body for POST /v1/directives/register.
 type RegisterDirectivesRequest struct {
-	Flavor     string                 `json:"flavor"`
+	Flavor     string                  `json:"flavor"`
 	Directives []store.CustomDirective `json:"directives"`
 }
 
@@ -40,7 +40,7 @@ type CustomDirectivesListResponse struct {
 
 // SyncDirectivesHandler handles POST /v1/directives/sync.
 //
-// Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
+// Mounted behind “auth.Middleware“ in “server.New“ -- requests
 // without a valid bearer token are rejected with 401 before this
 // handler is called.
 //
@@ -97,7 +97,7 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 
 // RegisterDirectivesHandler handles POST /v1/directives/register.
 //
-// Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
+// Mounted behind “auth.Middleware“ in “server.New“ -- requests
 // without a valid bearer token are rejected with 401 before this
 // handler is called.
 //
@@ -165,7 +165,7 @@ type DeleteCustomDirectivesResponse struct {
 // DeleteCustomDirectivesHandler handles DELETE /v1/directives/custom.
 //
 // Dev/test utility. Deletes all custom_directives rows whose name starts
-// with the ``name_prefix`` query parameter. Used by the smoke test suite
+// with the “name_prefix“ query parameter. Used by the smoke test suite
 // to reset state between runs on a shared Postgres volume.
 //
 // @Summary      Delete custom directives by name prefix (dev/test only)

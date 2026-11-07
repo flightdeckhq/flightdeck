@@ -27,7 +27,7 @@ const notifyReconnectDelay = 3 * time.Second
 const broadcastChannelBuffer = 256
 
 // Fleet update message types broadcast to dashboard WebSocket clients.
-// These appear in the ``type`` field of fleetUpdate / directivesChanged
+// These appear in the “type“ field of fleetUpdate / directivesChanged
 // payloads and are the wire contract with dashboard/src/store/fleet.ts.
 const (
 	msgTypeSessionStart     = "session_start"
@@ -66,7 +66,7 @@ func NewHub(s store.Querier) *Hub {
 // closeAndRemove closes the client's send channel and removes it
 // from the hub map. A shared helper so every close
 // path follows the same map-presence-then-close pattern. Caller
-// MUST hold ``h.mu`` (write lock) -- the helper does not acquire
+// MUST hold “h.mu“ (write lock) -- the helper does not acquire
 // the lock so it composes cleanly with multi-client iteration in
 // the broadcast branch.
 func (h *Hub) closeAndRemove(c *Client) {

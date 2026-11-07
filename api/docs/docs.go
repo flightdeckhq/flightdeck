@@ -299,7 +299,7 @@ const docTemplate = `{
         },
         "/v1/agents": {
             "get": {
-                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at \u003e= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. ` + "`" + `search` + "`" + ` is a case-insensitive substring match against ` + "`" + `agent_name` + "`" + ` and ` + "`" + `hostname` + "`" + `. ` + "`" + `updated_since` + "`" + ` filters on ` + "`" + `last_seen_at \u003e= ts` + "`" + `. State is computed via LATERAL subquery against the most-recent session. Each row also carries sub-agent rollup fields (` + "`" + `agent_role` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `topology` + "`" + ` — one of ` + "`" + `lone` + "`" + ` / ` + "`" + `parent` + "`" + ` / ` + "`" + `child` + "`" + `, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
                 "produces": [
                     "application/json"
                 ],
@@ -417,7 +417,7 @@ const docTemplate = `{
         },
         "/v1/agents/{agent_id}/summary": {
             "get": {
-                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum “tokens_total“ over “post_call“ and “embeddings“ events and over the “llm_error“ events of streams that failed after the provider billed tokens, the events the session totals and cost count. Errors count “llm_error“ events and failed “tool_call“ events (a payload error object) — policy events are enforcement decisions, not failures, and MCP failures have their own mcp_error_types indicator. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
+                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. ` + "`" + `period` + "`" + ` is one of ` + "`" + `1h` + "`" + `, ` + "`" + `24h` + "`" + `, ` + "`" + `7d` + "`" + `, ` + "`" + `30d` + "`" + ` (default ` + "`" + `7d` + "`" + `). ` + "`" + `bucket` + "`" + ` is one of ` + "`" + `hour` + "`" + `, ` + "`" + `day` + "`" + `, ` + "`" + `week` + "`" + `; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum ` + "`" + `tokens_total` + "`" + ` over ` + "`" + `post_call` + "`" + ` and ` + "`" + `embeddings` + "`" + ` events and over the ` + "`" + `llm_error` + "`" + ` events of streams that failed after the provider billed tokens, the events the session totals and cost count. Errors count ` + "`" + `llm_error` + "`" + ` events and failed ` + "`" + `tool_call` + "`" + ` events (a payload error object) — policy events are enforcement decisions, not failures, and MCP failures have their own mcp_error_types indicator. Sessions is ` + "`" + `COUNT(DISTINCT session_id)` + "`" + ` across events in the window. Latency percentiles use ` + "`" + `event_type = 'post_call'` + "`" + ` rows only, matching the analytics endpoint convention.",
                 "produces": [
                     "application/json"
                 ],
@@ -499,7 +499,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated: ?group_by=dim1 keeps the single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role groups by the framework-supplied sub-agent role string and parent_session_id groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint “breakdown[]“ segments (key+value); single-dim payloads keep the flat “value“ shape exactly.",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated: ?group_by=dim1 keeps the single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role groups by the framework-supplied sub-agent role string and parent_session_id groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint ` + "`" + `breakdown[]` + "`" + ` segments (key+value); single-dim payloads keep the flat ` + "`" + `value` + "`" + ` shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -879,7 +879,7 @@ const docTemplate = `{
         },
         "/v1/events": {
             "get": {
-                "description": "Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Rows are ordered by occurred_at, then id, both in the requested direction, so offset pages never skip or repeat rows that share a timestamp. Supports an optional “before“ keyset cursor (with “before_id“ for rows that share the cursor's timestamp) and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.",
+                "description": "Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Rows are ordered by occurred_at, then id, both in the requested direction, so offset pages never skip or repeat rows that share a timestamp. Supports an optional ` + "`" + `before` + "`" + ` keyset cursor (with ` + "`" + `before_id` + "`" + ` for rows that share the cursor's timestamp) and ` + "`" + `order` + "`" + ` direction for newest-first drawer pagination. When ` + "`" + `facets=true` + "`" + ` the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.",
                 "produces": [
                     "application/json"
                 ],
@@ -1231,7 +1231,7 @@ const docTemplate = `{
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns agents with aggregated state rollup and pagination. Each row also carries sub-agent rollup fields (` + "`" + `` + "`" + `agent_role` + "`" + `` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `` + "`" + `topology` + "`" + `` + "`" + ` — one of ` + "`" + `` + "`" + `lone` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `parent` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `child` + "`" + `` + "`" + `). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
+                "description": "Returns agents with aggregated state rollup and pagination. Each row also carries sub-agent rollup fields (` + "`" + `agent_role` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `topology` + "`" + ` — one of ` + "`" + `lone` + "`" + ` / ` + "`" + `parent` + "`" + ` / ` + "`" + `child` + "`" + `). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
@@ -2280,7 +2280,7 @@ const docTemplate = `{
         },
         "/v1/sessions": {
             "get": {
-                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. “q“ is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
+                "description": "Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. ` + "`" + `q` + "`" + ` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.",
                 "produces": [
                     "application/json"
                 ],
@@ -2530,7 +2530,7 @@ const docTemplate = `{
         },
         "/v1/sessions/{id}": {
             "get": {
-                "description": "Returns session metadata (including effective policy thresholds and ` + "`" + `` + "`" + `capture_prompts` + "`" + `` + "`" + `, the stored capture posture: true, false, or null before a session_start declared it) and events in chronological order. When ` + "`" + `` + "`" + `events_limit` + "`" + `` + "`" + ` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.",
+                "description": "Returns session metadata (including effective policy thresholds and ` + "`" + `capture_prompts` + "`" + `, the stored capture posture: true, false, or null before a session_start declared it) and events in chronological order. When ` + "`" + `events_limit` + "`" + ` is provided, the N newest events are returned (still sorted ASC); the drawer uses this to cap the initial fetch on long-running stable sessions.",
                 "produces": [
                     "application/json"
                 ],
@@ -2589,7 +2589,7 @@ const docTemplate = `{
         },
         "/v1/stream": {
             "get": {
-                "description": "WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR ` + "`" + `` + "`" + `?token=` + "`" + `` + "`" + ` query parameter (browsers cannot set headers on the WS upgrade).",
+                "description": "WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR ` + "`" + `?token=` + "`" + ` query parameter (browsers cannot set headers on the WS upgrade).",
                 "tags": [
                     "stream"
                 ],

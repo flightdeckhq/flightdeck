@@ -28,10 +28,10 @@ type fixtureVector struct {
 }
 
 type fixtureDoc struct {
-	Version       int                `json:"version"`
-	Namespace     string             `json:"namespace"`
-	EnvOverrides  map[string]string  `json:"env_overrides"`
-	Vectors       []fixtureVector    `json:"vectors"`
+	Version      int               `json:"version"`
+	Namespace    string            `json:"namespace"`
+	EnvOverrides map[string]string `json:"env_overrides"`
+	Vectors      []fixtureVector   `json:"vectors"`
 }
 
 // fixturePath resolves tests/fixtures/mcp_identity_vectors.json from

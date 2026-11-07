@@ -76,13 +76,13 @@ const DefaultOrphanDeleteThreshold = 30 * 24 * time.Hour
 // first_seen_at / last_seen_at are NOT touched (overwriting those
 // with NULL via MIN/MAX over an empty set would lose the original
 // UpsertAgent timestamps). After the per-agent reconcile pass,
-// orphan rows whose ``total_sessions`` is now 0 AND whose
-// ``last_seen_at`` is older than ``orphanThreshold`` ago are
+// orphan rows whose “total_sessions“ is now 0 AND whose
+// “last_seen_at“ is older than “orphanThreshold“ ago are
 // physically deleted. The two-clause predicate keeps the operation
-// safe: ``total_sessions = 0`` rules out any agent that had a real
+// safe: “total_sessions = 0“ rules out any agent that had a real
 // session, and the staleness clause rules out a freshly upserted
 // agent that the worker has not yet wired up to a session_start.
-// Pass ``orphanThreshold <= 0`` to skip the delete step (counters-
+// Pass “orphanThreshold <= 0“ to skip the delete step (counters-
 // only).
 //
 // **Concurrency note**. ReconcileAgents is NOT atomic against

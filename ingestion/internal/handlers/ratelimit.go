@@ -40,7 +40,7 @@ type RateLimiter struct {
 	max     int
 }
 
-// NewRateLimiter creates a RateLimiter capped at ``max`` requests per
+// NewRateLimiter creates a RateLimiter capped at “max“ requests per
 // minute per token and starts the cleanup goroutine. Pass
 // DefaultRateLimitPerMinute (1000) for production semantics, or a
 // higher value in dev / test environments where the integration

@@ -161,7 +161,7 @@ func (pe *PolicyEvaluator) cachePolicy(key string, p *CachedPolicy) {
 //
 // Deprecated for production use. This + MarkFired form a TOCTOU
 // pair — if two goroutines run HasFired/MarkFired concurrently they
-// can both observe ``false`` and both fire. Use [CheckAndMarkFired]
+// can both observe “false“ and both fire. Use [CheckAndMarkFired]
 // for atomic check-and-set. Retained as exported only for tests
 // that legitimately need to inspect or seed firing state without
 // triggering the atomic semantics.

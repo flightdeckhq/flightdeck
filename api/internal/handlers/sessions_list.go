@@ -108,7 +108,7 @@ var validEstimatedVias = map[string]bool{
 // SessionsListHandler handles GET /v1/sessions.
 //
 // @Summary      List sessions with filters, search, and pagination
-// @Description  Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. “q“ is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.
+// @Description  Returns sessions matching time range, state, flavor, client_type, agent_type, model, framework, agent_id, context-scalar (user/os/hostname/git_branch/orchestration/...), and search filters with pagination and sort support. Multi-value filters (state, flavor, client_type, framework, agent_type, context-scalar) accept repeated query params and comma-separated values; values within a dimension are OR, values across dimensions are AND. `q` is a case-insensitive substring search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, and the frameworks array.
 // @Tags         sessions
 // @Produce      json
 // @Param        q          query  string  false  "Full-text search across agent_name, flavor, host, model, session_id, context.hostname, context.os, context.git_branch, context.python_version, frameworks"

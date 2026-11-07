@@ -81,20 +81,28 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 // round-trip test (12 total once the per-field subtests are added to
 // the test count, counted as 11 here since git_commit is in the
 // whitelist alongside the other ten).
-func TestBuildContextFilterClause_User(t *testing.T)          { runFilterRoundTripTest(t, "user") }
-func TestBuildContextFilterClause_OS(t *testing.T)            { runFilterRoundTripTest(t, "os") }
-func TestBuildContextFilterClause_Arch(t *testing.T)          { runFilterRoundTripTest(t, "arch") }
-func TestBuildContextFilterClause_Hostname(t *testing.T)      { runFilterRoundTripTest(t, "hostname") }
-func TestBuildContextFilterClause_ProcessName(t *testing.T)   { runFilterRoundTripTest(t, "process_name") }
-func TestBuildContextFilterClause_NodeVersion(t *testing.T)   { runFilterRoundTripTest(t, "node_version") }
-func TestBuildContextFilterClause_PythonVersion(t *testing.T) { runFilterRoundTripTest(t, "python_version") }
-func TestBuildContextFilterClause_GitBranch(t *testing.T)     { runFilterRoundTripTest(t, "git_branch") }
-func TestBuildContextFilterClause_GitCommit(t *testing.T)     { runFilterRoundTripTest(t, "git_commit") }
-func TestBuildContextFilterClause_GitRepo(t *testing.T)       { runFilterRoundTripTest(t, "git_repo") }
-func TestBuildContextFilterClause_Orchestration(t *testing.T) { runFilterRoundTripTest(t, "orchestration") }
+func TestBuildContextFilterClause_User(t *testing.T)     { runFilterRoundTripTest(t, "user") }
+func TestBuildContextFilterClause_OS(t *testing.T)       { runFilterRoundTripTest(t, "os") }
+func TestBuildContextFilterClause_Arch(t *testing.T)     { runFilterRoundTripTest(t, "arch") }
+func TestBuildContextFilterClause_Hostname(t *testing.T) { runFilterRoundTripTest(t, "hostname") }
+func TestBuildContextFilterClause_ProcessName(t *testing.T) {
+	runFilterRoundTripTest(t, "process_name")
+}
+func TestBuildContextFilterClause_NodeVersion(t *testing.T) {
+	runFilterRoundTripTest(t, "node_version")
+}
+func TestBuildContextFilterClause_PythonVersion(t *testing.T) {
+	runFilterRoundTripTest(t, "python_version")
+}
+func TestBuildContextFilterClause_GitBranch(t *testing.T) { runFilterRoundTripTest(t, "git_branch") }
+func TestBuildContextFilterClause_GitCommit(t *testing.T) { runFilterRoundTripTest(t, "git_commit") }
+func TestBuildContextFilterClause_GitRepo(t *testing.T)   { runFilterRoundTripTest(t, "git_repo") }
+func TestBuildContextFilterClause_Orchestration(t *testing.T) {
+	runFilterRoundTripTest(t, "orchestration")
+}
 
 // TestIsAllowedContextFilterKey_Rejection guards the handler's
-// unknown-key drop path. A request with ``?foo=bar`` where foo is
+// unknown-key drop path. A request with “?foo=bar“ where foo is
 // outside the whitelist must not reach the store helper.
 func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 	for _, key := range AllowedContextFilterKeys {

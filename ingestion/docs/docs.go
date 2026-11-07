@@ -39,6 +39,10 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "handlers.EventRequest": {
+                "additionalProperties": {},
+                "type": "object"
+            },
             "handlers.EventResponse": {
                 "properties": {
                     "attached": {
@@ -53,6 +57,23 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "handlers.HeartbeatRequest": {
+                "additionalProperties": {},
+                "type": "object"
+            },
+            "handlers.OTLPExportLogsRequest": {
+                "properties": {
+                    "resourceLogs": {
+                        "items": {
+                            "additionalProperties": {},
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "handlers.OTLPExportLogsResponse": {
                 "properties": {
                     "partialSuccess": {
@@ -61,10 +82,36 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "handlers.OTLPExportMetricsRequest": {
+                "properties": {
+                    "resourceMetrics": {
+                        "items": {
+                            "additionalProperties": {},
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "handlers.OTLPExportMetricsResponse": {
                 "properties": {
                     "partialSuccess": {
                         "$ref": "#/components/schemas/handlers.OTLPMetricsPartialSuccess"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPExportTraceRequest": {
+                "properties": {
+                    "resourceSpans": {
+                        "items": {
+                            "additionalProperties": {},
+                            "type": "object"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -178,13 +225,9 @@ const docTemplate = `{
                     "content": {
                         "application/json": {
                             "schema": {
-                                "type": "object"
-                            }
-                        },
-                        "text/plain": {
-                            "schema": {
-                                "title": "event",
-                                "type": "object"
+                                "$ref": "#/components/schemas/handlers.EventRequest",
+                                "summary": "event",
+                                "description": "Event payload"
                             }
                         }
                     },
@@ -267,13 +310,9 @@ const docTemplate = `{
                     "content": {
                         "application/json": {
                             "schema": {
-                                "type": "object"
-                            }
-                        },
-                        "text/plain": {
-                            "schema": {
-                                "title": "heartbeat",
-                                "type": "object"
+                                "$ref": "#/components/schemas/handlers.HeartbeatRequest",
+                                "summary": "heartbeat",
+                                "description": "Heartbeat payload with session_id"
                             }
                         }
                     },
@@ -331,7 +370,7 @@ const docTemplate = `{
         },
         "/v1/logs": {
             "post": {
-                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
+                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -343,7 +382,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "gzip, or absent for an uncompressed body",
+                        "description": "gzip, identity or none (absent) for an uncompressed body",
                         "in": "header",
                         "name": "Content-Encoding",
                         "schema": {
@@ -355,18 +394,14 @@ const docTemplate = `{
                     "content": {
                         "application/json": {
                             "schema": {
-                                "type": "object"
+                                "$ref": "#/components/schemas/handlers.OTLPExportLogsRequest",
+                                "summary": "request",
+                                "description": "OTLP ExportLogsServiceRequest"
                             }
                         },
                         "application/x-protobuf": {
                             "schema": {
                                 "type": "string"
-                            }
-                        },
-                        "text/plain": {
-                            "schema": {
-                                "title": "request",
-                                "type": "object"
                             }
                         }
                     },
@@ -519,7 +554,7 @@ const docTemplate = `{
         },
         "/v1/metrics": {
             "post": {
-                "description": "OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
+                "description": "OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; Flightdeck maps no metrics into events, because they repeat what the usage spans and logs report, so partialSuccess counts every data point as rejected, with a message naming why, and nothing is published or charged. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -531,7 +566,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "gzip, or absent for an uncompressed body",
+                        "description": "gzip, identity or none (absent) for an uncompressed body",
                         "in": "header",
                         "name": "Content-Encoding",
                         "schema": {
@@ -543,18 +578,14 @@ const docTemplate = `{
                     "content": {
                         "application/json": {
                             "schema": {
-                                "type": "object"
+                                "$ref": "#/components/schemas/handlers.OTLPExportMetricsRequest",
+                                "summary": "request",
+                                "description": "OTLP ExportMetricsServiceRequest"
                             }
                         },
                         "application/x-protobuf": {
                             "schema": {
                                 "type": "string"
-                            }
-                        },
-                        "text/plain": {
-                            "schema": {
-                                "title": "request",
-                                "type": "object"
                             }
                         }
                     },
@@ -620,7 +651,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
+                        "description": "body over 4 MiB, over 16 MiB decompressed, or past the decode memory limit"
                     },
                     "415": {
                         "content": {
@@ -650,7 +681,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "token's minute budget spent, or too little of it left for the request's events; see Retry-After",
+                        "description": "token's minute budget spent before the body is read; see Retry-After",
                         "headers": {
                             "Retry-After": {
                                 "description": "seconds until the token's minute budget has room",
@@ -688,7 +719,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "description": "no decode slot free; see Retry-After",
                         "headers": {
                             "Retry-After": {
                                 "description": "seconds to wait when no decode slot was free",
@@ -707,7 +738,7 @@ const docTemplate = `{
         },
         "/v1/traces": {
             "post": {
-                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
+                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -719,7 +750,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "gzip, or absent for an uncompressed body",
+                        "description": "gzip, identity or none (absent) for an uncompressed body",
                         "in": "header",
                         "name": "Content-Encoding",
                         "schema": {
@@ -731,18 +762,14 @@ const docTemplate = `{
                     "content": {
                         "application/json": {
                             "schema": {
-                                "type": "object"
+                                "$ref": "#/components/schemas/handlers.OTLPExportTraceRequest",
+                                "summary": "request",
+                                "description": "OTLP ExportTraceServiceRequest"
                             }
                         },
                         "application/x-protobuf": {
                             "schema": {
                                 "type": "string"
-                            }
-                        },
-                        "text/plain": {
-                            "schema": {
-                                "title": "request",
-                                "type": "object"
                             }
                         }
                     },

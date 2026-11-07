@@ -268,22 +268,31 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 39 files
+│       └── unit/               # 50 test files, plus the child-process helpers some of them run
+│           ├── _child_process.py
+│           ├── _lazy_patch_child.py
+│           ├── _signal_child.py
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_anthropic_resource_patch.py
+│           ├── test_body_limit.py
 │           ├── test_compat_crewai_mcp.py
 │           ├── test_context.py
 │           ├── test_cross_agent_messages.py
 │           ├── test_custom_directives.py
-│           ├── test_tool_capture_destination.py
+│           ├── test_deferred_stream_unread.py
 │           ├── test_egress_url_validation.py
 │           ├── test_errors.py
 │           ├── test_framework_attribution.py
+│           ├── test_identity_vectors.py
+│           ├── test_import_hook.py
 │           ├── test_interceptor.py
+│           ├── test_interceptor_claude_agent_sdk.py
 │           ├── test_interceptor_crewai.py
 │           ├── test_interceptor_langgraph.py
 │           ├── test_interceptor_litellm.py
+│           ├── test_interceptor_litellm_routes.py
+│           ├── test_lazy_patch.py
 │           ├── test_llm_event_enrichment.py
 │           ├── test_mcp_2x_paths.py
 │           ├── test_mcp_availability.py
@@ -292,6 +301,7 @@ flightdeck/
 │           ├── test_mcp_policy_emission_enriched.py
 │           ├── test_mcp_policy_enforcement.py
 │           ├── test_mcp_policy_enforcement_all_paths.py
+│           ├── test_openai_beta_chat.py
 │           ├── test_openai_parse_responses.py
 │           ├── test_originating_event_id.py
 │           ├── test_patch.py
@@ -303,10 +313,14 @@ flightdeck/
 │           ├── test_prompt_capture.py
 │           ├── test_provider_enum.py
 │           ├── test_providers.py
+│           ├── test_raw_stream_capture.py
 │           ├── test_session.py
 │           ├── test_session_lifecycle_enrichment.py
+│           ├── test_signal_shutdown.py
 │           ├── test_stop_reason_errors.py
 │           ├── test_streaming_usage.py
+│           ├── test_token_cost_fields.py
+│           ├── test_tool_capture_destination.py
 │           └── test_transport.py
 │
 ├── ingestion/                  # Ingestion API (Go)
@@ -319,6 +333,8 @@ flightdeck/
 │   │   ├── server/server.go    # HTTP server, routes, recovery middleware, request logging
 │   │   ├── handlers/
 │   │   │   ├── events.go       # POST /v1/events: validate, publish NATS, return directive
+│   │   │   ├── event_fields.go # Exact-case field-name check on every event key (the worker's decoder ignores case)
+│   │   │   ├── streaming_fields.go # Streaming and llm_error sub-object validation; out-of-vocabulary diagnostic values kept as a catch-all
 │   │   │   ├── token_cost.go   # Validation of the token, model and cost fields
 │   │   │   ├── heartbeat.go    # POST /v1/heartbeat
 │   │   │   ├── health.go       # GET /health
@@ -326,16 +342,21 @@ flightdeck/
 │   │   │   ├── otlp_decode.go  # OTLP limits: exact gzip inflate, decode-cost estimate, decode slots
 │   │   │   ├── otlp_json.go    # OTLP JSON decoding (streaming in-place hex id rewrite)
 │   │   │   ├── otlp_dialect.go # OTLPDialect: decoded export request → events to publish + rejected count
+│   │   │   ├── otlp_attrs.go   # OTLP attribute reads whatever the value's sent type
+│   │   │   ├── otlp_claude_code.go # Claude Code dialect: log records → events, content bounds, event ids
+│   │   │   ├── otlp_claude_code_session.go # Session reads the Claude Code dialect makes before it publishes
 │   │   │   ├── otlp_publish.go # The receiver's publish path (token stamp, attachment check, start sequence), shared with the GenAI assembler
 │   │   │   ├── otlp_router.go  # OTLPRouter: each resource to its dialect by scope (Claude Code, GenAI staging), everything else rejected with its scope named
 │   │   │   ├── otlp_genai_stage.go # A request's GenAI records grouped by trace for the staging write; the units it is charged
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
+│   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
 │   │   ├── otlpstage/store.go  # OTLP GenAI staging: stage records, claim due traces under a lease, load, mark assembled, sweeps
 │   │   ├── genai/              # OTLP GenAI mapping, pure (no I/O): scope table, span/log record → content-free fact, trace index, identity, Resolve (trace → events)
+│   │   ├── pgtext/pgtext.go    # Text and JSON Postgres can store (U+0000 and lone surrogates → U+FFFD); database errors described without their data
 │   │   ├── assembler/assembler.go # OTLP GenAI assembler: claim due traces, completeness, chunked publish under lease renewal, mark, sweeps
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/
@@ -357,10 +378,13 @@ flightdeck/
 │   │   ├── billing/billing.go    # Billing-mode defaults for LLM events
 │   │   ├── processor/
 │   │   │   ├── event.go        # Route incoming event to session, writer, policy evaluator
+│   │   │   ├── model_fields.go # Write-path model rules: billing-mode default, model_requested / model_served, canonical id
+│   │   │   ├── failed_stream.go # A failed stream's delivered and billed tokens on its llm_error, counted like a post_call
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
 │   │   │   └── policy.go       # Threshold evaluation, directive emission
 │   │   ├── writer/
 │   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
+│   │   │   ├── pool.go         # pgx pool: statement lock timeout under the processing deadline
 │   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
 │   │   │   └── notify.go       # Postgres NOTIFY after each event write and session state change (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
@@ -380,6 +404,7 @@ flightdeck/
 │   │   ├── config/config.go
 │   │   ├── server/server.go    # Router, CORS, auth middleware, withRESTTimeout
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens (same rules as ingestion's)
+│   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
 │   │   ├── mcp_identity/identity.go  # MCP server identity canonicalisation + fingerprint (Go twin of the sensor / plugin helpers)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation (twin of workers/internal/modelid, same test vectors)
 │   │   ├── handlers/
@@ -509,8 +534,10 @@ flightdeck/
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
 │   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, teammate, cwd, config and elicitation hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
+│   │       │   ├── tool_events.mjs       # Tool event delivery: owed record kept until the POST is answered, rebuild of a failed POST
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
+│   │       │   ├── control.mjs           # Enforcement: directive control state, PreToolUse / UserPromptSubmit gates, budget notices
 │   │       │   ├── subagent.mjs          # SubagentStart/Stop child sessions, interior-hook routing
 │   │       │   └── session_end.mjs       # SessionEnd hand-off to the detached worker, worker log
 │   │       ├── agent_id.mjs              # agent_id derivation (Node twin of sensor core/agent_id.py)
@@ -2764,8 +2791,8 @@ without a `response`), the worker stores the event alone with
 `has_content=false` and logs a warning, rather than retrying a write
 that would fail the same way on every delivery. Ingestion replaces the
 text Postgres cannot store before an event reaches the bus (see
-Validation rules), so a NUL byte no longer reaches this fallback; it
-stays as the backstop for a content row nothing upstream caught. A
+Validation rules), so a NUL byte never reaches this fallback; it is
+the backstop for a content row nothing upstream caught. A
 transient failure (a dropped connection, a timeout) writes nothing and
 the event is redelivered whole. An event that sets
 `has_content` without a `content` blob is stored with
@@ -3100,7 +3127,8 @@ the OTLP/HTTP paths, so an exporter pointed at `https://<host>/ingest`
 reaches them through the edge proxy. Each accepts the OTLP protobuf
 encoding (`application/x-protobuf`) and the OTLP JSON encoding
 (`application/json`), either optionally gzip-compressed
-(`Content-Encoding: gzip`). Authentication is the bearer token every
+(`Content-Encoding: gzip`; `identity`, or no header, for an
+uncompressed body). Authentication is the bearer token every
 ingestion route takes; an exporter sends it with
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ftd_..."`.
 
@@ -3175,7 +3203,7 @@ happens for a request whose records cannot fit the token's budget
 
 A request is checked in this order: bearer token (401), the token's
 minute budget (429), media type and `Content-Encoding` (415 for anything
-but `gzip` or none), the size as sent (413), then, holding a decode slot
+but `gzip`, `identity` or none), the size as sent (413), then, holding a decode slot
 (503), the inflated size and the decode estimate (413) and decoding
 (400), the budget check before any session read (413 or 429, below), a
 failed or late session read (503), then the charge for its events (413
@@ -3254,7 +3282,7 @@ counts as no content, as does the `[REDACTED]` other exporters send.
 | `claude_code.user_prompt` | `pre_call` |
 | `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), a `streaming` block holding only `ttft_ms` and `final_outcome=completed` (Claude Code reports neither chunk counts nor gaps, and the dashboard renders a block without them), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
 | `claude_code.api_error` | `llm_error`: `model`, `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message as the sensor classifies Anthropic's errors (400 `invalid_request`, or `context_overflow` / `quota_exceeded` when the text says so; 401 `authentication`, 402 `quota_exceeded`, 403 `permission`, 404 `not_found`, 408 and 504 `timeout`, 413 `request_too_large`, 429 `rate_limit` or `quota_exceeded`, 529 `overloaded`, other 5xx `api_error`); `error.error_message` is `Claude Code API error (HTTP <status>)`, with the record's text cut to 200 characters appended only when capture is on; `terminal` is not set, since Claude Code reports each failed attempt |
-| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` (also as `latency_ms`, as the plugin sends it) and, when `success=false`, the error block `{error_type: other, error_class: ClaudeCodeToolError, message}`, whose message is `<redacted>` while capture is off. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`). Nothing else of `tool_parameters` is read: for other tools it holds their input |
+| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` (also as `latency_ms`, as the plugin sends it) and, when `success=false`, the error block `{error_type: other, error_class: ClaudeCodeToolError, message}`. With capture on, the message is the record's `error` text, line breaks kept, cut to its first 1000 characters with `…` appended when longer (enough for a multi-line shell error; `tool failed (Claude Code reported no error detail)` when the record carries none); while capture is off it is `<redacted>`. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`). Nothing else of `tool_parameters` is read: for other tools it holds their input |
 | `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server` (with `tool_name` the MCP tool's name), and never the tool's input |
 | `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`), one per run of the sub-agent (Sub-agent resumes, below) |
 | any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
@@ -3519,8 +3547,8 @@ created its row, and later resources only AND into its capture
 posture, so every assembly of a trace derives the same identity. A
 trace that spans two services (one service's agent calling another's
 over instrumented HTTP) therefore gives every agent in it the flavor,
-user and host of the service whose record arrived first; reading the
-resource per record is a later option.
+user and host of the service whose record arrived first: the resource
+is read once per trace, not per record.
 
 **Assembly.** Every ingestion process runs an assembler. Once a second
 it claims due traces under a two-minute lease (`FOR UPDATE SKIP
@@ -6633,9 +6661,19 @@ the agent drawer (entry point 3) the optional `backLabel` /
 returns to the agent drawer; the other four entry points omit
 them.
 
-The Prompts tab loads `PromptViewer` for chat events with
-`event.has_content`, `EmbeddingsContentViewer` for embeddings events
-with content, otherwise the capture-disabled message. The run
+An event's Prompts tab (the run drawer's event detail view and the
+event detail drawer) loads `PromptViewer` for an event with
+`event.has_content`, which shows the capture-disabled message when
+`GET /v1/events/:id/content` fails for any reason (a 404, or any other
+error, since the client reads every failed fetch as no content); an
+event without content
+shows one of the empty states below. A `session_signal` event's
+Prompts tab shows its captured text instead, and without it the
+capture-disabled message for a signal whose text the plugin always
+sends while capture is on (`context_compacted`, `notification`,
+`task_created`, `task_completed`, `elicitation_requested`), otherwise
+"This event carries no captured text." An embeddings event's input is
+shown by `EmbeddingsContentViewer` in its expanded event row. The run
 drawer's Prompts tab lists the run's events that stored content of
 the types `post_call`, `tool_call`, `mcp_tool_call` and
 `mcp_prompt_get`, each opening in `PromptViewer`. The viewer's
@@ -6716,8 +6754,9 @@ retry_attempt + terminal, close_reason, policy_actions_summary,
 policy_entries_orphaned, sensor_version + interceptor_versions,
 policy_snapshot, originating-event jump link), and the JSON
 payload via the shared `<SyntaxJson>` component. The Prompts tab
-loads `PromptViewer` / `EmbeddingsContentViewer` if
-`event.has_content`. The Neighbors tab renders
+is the event Prompts tab described under Session drawer (it loads
+the event's run to pick its empty state, and its empty state shows
+nothing until the run has loaded). The Neighbors tab renders
 `<SurroundingEventsList>` — ±5 events from the same session,
 clickable to swap the drawer's displayed event. It brackets the open
 event's `occurred_at` with two `GET /v1/events` calls, the events up to
@@ -8625,8 +8664,8 @@ The dashboard hides the Stop Agent button for observer sessions and
 gates the Fleet Stop All control on at least one directive-capable live
 session of the agent. Custom directives need more: a session runs them
 when it is directive-capable and its `client_type` runs custom
-directives (the registry's `runs_custom_directives`, only the sensor
-today; a row with no `client_type` falls back as above). The run
+directives (the registry's `runs_custom_directives`, `true` only for
+the sensor; a row with no `client_type` falls back as above). The run
 drawer's Directives tab and the Fleet sidebar's directive trigger
 appear only for such sessions, so neither an observer session nor an
 enforcement-on Claude Code plugin session or Agent SDK run, which

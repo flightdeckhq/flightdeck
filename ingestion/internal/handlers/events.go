@@ -195,6 +195,11 @@ type EventResponse struct {
 	Attached  bool               `json:"attached"`
 }
 
+// EventRequest documents the POST /v1/events body: one event as a JSON
+// object, validated field by field at the boundary. It exists for the
+// API docs, where a named type makes the body application/json only.
+type EventRequest map[string]any
+
 // EventsHandler handles POST /v1/events.
 //
 // @Summary      Submit agent event
@@ -203,7 +208,7 @@ type EventResponse struct {
 // @Accept       json
 // @Produce      json
 // @Param        Authorization  header    string  true  "Bearer token"
-// @Param        event          body      object  true  "Event payload"
+// @Param        event          body      EventRequest  true  "Event payload"
 // @Success      200  {object}  EventResponse
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse

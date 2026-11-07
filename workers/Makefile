@@ -12,8 +12,15 @@ run: ## Run the workers locally
 test: ## Run unit tests
 	go test ./... -v
 
+# gofmt from the toolchain this module's go.mod selects. make runs from the
+# module directory, so go env GOROOT resolves that toolchain, the same Go
+# release CI's setup-go installs. A gofmt from another release on PATH can
+# format doc comments differently and disagree with CI.
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
 lint: ## Run gofmt and golangci-lint
-	@test -z "$$(gofmt -l .)" || { echo "gofmt reports unformatted files (run gofmt -w .):"; gofmt -l .; exit 1; }
+	@test -x "$(GOFMT)" || { echo "gofmt not found at $(GOFMT)"; exit 1; }
+	@test -z "$$($(GOFMT) -l .)" || { echo "gofmt reports unformatted files (run gofmt -w .):"; $(GOFMT) -l .; exit 1; }
 	golangci-lint run ./...
 
 clean: ## Remove build artifacts

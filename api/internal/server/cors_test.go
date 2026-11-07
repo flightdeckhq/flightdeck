@@ -14,7 +14,7 @@ import (
 // it in Access-Control-Expose-Headers, on the preflight and on the
 // request itself.
 func TestCORSExposesDirectiveCount(t *testing.T) {
-	srv := NewForTesting(":0", nil, nil, "https://dashboard.example.com")
+	srv := NewForTesting(":0", nil, nil, "https://dashboard.example.com", nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

@@ -18,7 +18,27 @@ type Config struct {
 	AdminPassword       string
 	ShutdownTimeoutSecs int
 	CORSOrigin          string
+	// MetricsPort is the port of the metrics listener, which serves the
+	// request-latency histogram at /metrics. Zero turns the listener
+	// off.
+	//
+	// Env: FLIGHTDECK_METRICS_PORT (default DefaultMetricsPort). Load()
+	// panics on a value outside 0..maxPort. The listener binds every
+	// interface and carries no auth: outside compose or Kubernetes,
+	// firewall the port or set it to 0.
+	MetricsPort int
 }
+
+// DefaultMetricsPort is where the query API serves /metrics. It is a
+// listener of its own, never the API port, because the endpoint carries
+// no auth and the API port is the one the edge publishes. 9104 follows
+// the workers' 9102 and the ingestion API's 9103 in the range
+// Prometheus exporters use, so the services can share one host's
+// network without a clash.
+const DefaultMetricsPort = 9104
+
+// maxPort is the highest TCP port number.
+const maxPort = 65535
 
 // Load reads configuration from environment variables.
 // Panics on missing required values -- fail fast on misconfiguration.
@@ -44,6 +64,11 @@ func Load() Config {
 		AdminPassword:       os.Getenv("FLIGHTDECK_ADMIN_PASSWORD"),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		CORSOrigin:          envOrDefault("FLIGHTDECK_CORS_ORIGIN", "*"),
+		MetricsPort:         envIntOrDefault("FLIGHTDECK_METRICS_PORT", DefaultMetricsPort),
+	}
+	if cfg.MetricsPort < 0 || cfg.MetricsPort > maxPort {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_METRICS_PORT must be between 0 (listener off) and %d, got %d",
+			maxPort, cfg.MetricsPort))
 	}
 	return cfg
 }

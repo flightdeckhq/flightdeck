@@ -713,3 +713,19 @@ few minutes emptied the state-sort integration test's listing.
 **Rejected alternative:** defaulting `to` to Postgres's `NOW()` (it can still
 read behind the client, and a stepped-back database drops its own rows); a
 grace margin on the API's clock (a guessed bound a larger skew breaks).
+
+## D255 -- The ingestion and query APIs time requests by route pattern and serve the histogram on a listener of their own
+
+**Date:** 2026-11-07
+**Decision:** (extends D198) both APIs record
+`flightdeck_http_request_duration_seconds` by route pattern, bounded
+method and status class, served at `GET /metrics` on an unauthenticated
+port of their own (9103, 9104) that compose does not publish, nginx does
+not route and Helm lists only on headless `-metrics` Services.
+**Why:** the pattern keeps ids out of label values; a separate port keeps
+an auth-free endpoint off the public edge, and the services stay free of
+the Prometheus client library, as the workers are.
+**Rejected alternative:** `/metrics` on the API port behind a token or an
+nginx deny (one routing slip exposes it); raw paths as the label (a
+series per session id); prometheus/client_golang (a dependency for one
+family).

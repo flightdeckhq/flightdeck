@@ -40,6 +40,11 @@ ingestion:
   env: "production"
   shutdownTimeoutSecs: 30
   rateLimitPerMinute: 1000
+  # Port of the metrics listener (the request-latency histogram at
+  # /metrics, in the Prometheus text format). It carries no auth, so it
+  # is listed only on the headless <release>-ingestion-metrics Service,
+  # never on the Service the Ingress routes to. 0 turns it off.
+  metricsPort: 9103
   resources:
     requests:
       cpu: 100m
@@ -93,6 +98,11 @@ api:
   env: "production"
   shutdownTimeoutSecs: 30
   corsOrigin: "*"
+  # Port of the metrics listener (the request-latency histogram at
+  # /metrics, in the Prometheus text format). It carries no auth, so it
+  # is listed only on the headless <release>-api-metrics Service, never
+  # on the Service the Ingress routes to. 0 turns it off.
+  metricsPort: 9104
   auth:
     # JWT bootstrap is evaluated at api startup when env == "production".
     # jwtSecret must be set; adminEmail + adminPassword create the initial

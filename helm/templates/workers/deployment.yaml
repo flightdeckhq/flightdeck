@@ -34,6 +34,12 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            # Set per deployment, not in the shared ConfigMap: the
+            # ingestion and query APIs read the same variable for their
+            # own metrics listeners.
+            - name: FLIGHTDECK_METRICS_PORT
+              value: {{ .Values.workers.metricsPort | quote }}
           envFrom:
             - configMapRef:
                 name: {{ include "flightdeck.configMapName" . }}

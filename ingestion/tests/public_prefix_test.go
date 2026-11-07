@@ -15,7 +15,7 @@ import (
 // Ingress, which forwards the path as sent).
 func TestIngestionServesRoutesUnderPublicPrefix(t *testing.T) {
 	srv := server.New(":0", &mockValidator{valid: true}, &mockPublisher{}, &mockDirStore{}, nil,
-		&panickingDialect{}, handlers.DefaultRateLimitPerMinute)
+		&panickingDialect{}, handlers.DefaultRateLimitPerMinute, nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -59,7 +59,7 @@ func TestIngestionServesRoutesUnderPublicPrefix(t *testing.T) {
 // Token validation applies under the prefix exactly as on the bare path.
 func TestIngestionAuthAppliesUnderPublicPrefix(t *testing.T) {
 	srv := server.New(":0", &mockValidator{valid: false}, &mockPublisher{}, &mockDirStore{}, nil,
-		&panickingDialect{}, handlers.DefaultRateLimitPerMinute)
+		&panickingDialect{}, handlers.DefaultRateLimitPerMinute, nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -86,7 +86,7 @@ func TestIngestionAuthAppliesUnderPublicPrefix(t *testing.T) {
 // page under both forms, with the prefix appearing once.
 func TestIngestionSwaggerUIRedirectsUnderPublicPrefix(t *testing.T) {
 	srv := server.New(":0", &mockValidator{valid: true}, &mockPublisher{}, &mockDirStore{}, nil,
-		&panickingDialect{}, handlers.DefaultRateLimitPerMinute)
+		&panickingDialect{}, handlers.DefaultRateLimitPerMinute, nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

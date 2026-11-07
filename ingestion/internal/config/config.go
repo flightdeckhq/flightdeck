@@ -42,7 +42,27 @@ type Config struct {
 	StreamMaxAge   time.Duration
 	StreamMaxBytes int64
 	StreamReplicas int
+	// MetricsPort is the port of the metrics listener, which serves the
+	// request-latency histogram at /metrics. Zero turns the listener
+	// off.
+	//
+	// Env: FLIGHTDECK_METRICS_PORT (default DefaultMetricsPort). Load()
+	// panics on a value outside 0..maxPort. The listener binds every
+	// interface and carries no auth: outside compose or Kubernetes,
+	// firewall the port or set it to 0.
+	MetricsPort int
 }
+
+// DefaultMetricsPort is where the ingestion API serves /metrics. It is
+// a listener of its own, never the API port, because the endpoint
+// carries no auth and the API port is the one the edge publishes. 9103
+// follows the workers' 9102 in the range Prometheus exporters use, so
+// the services can share one host's network without a clash; the query
+// API takes 9104.
+const DefaultMetricsPort = 9103
+
+// maxPort is the highest TCP port number.
+const maxPort = 65535
 
 // DefaultStreamMaxAgeHours is how long the FLIGHTDECK stream keeps a
 // message. The stream's retention is by limits, so this is also how
@@ -110,6 +130,11 @@ func Load() Config {
 		RateLimitPerMinute:  envIntOrDefault("FLIGHTDECK_RATE_LIMIT_PER_MINUTE", 1000),
 		GenAIClaimInterval:  time.Duration(envIntOrDefault("FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS", 0)) * time.Millisecond,
 		StreamReplicas:      envIntOrDefault("FLIGHTDECK_NATS_STREAM_REPLICAS", 1),
+		MetricsPort:         envIntOrDefault("FLIGHTDECK_METRICS_PORT", DefaultMetricsPort),
+	}
+	if cfg.MetricsPort < 0 || cfg.MetricsPort > maxPort {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_METRICS_PORT must be between 0 (listener off) and %d, got %d",
+			maxPort, cfg.MetricsPort))
 	}
 	if cfg.GenAIClaimInterval != 0 && cfg.GenAIClaimInterval < MinGenAIClaimInterval {
 		panic(fmt.Sprintf("environment variable FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS must be 0 (the default) or at least %d",

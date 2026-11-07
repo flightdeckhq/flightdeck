@@ -20,8 +20,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.session import (
     HANDOFF_AGENT_NAME_MAX_BYTES,
+    HANDOFF_POST_TIMEOUT_SECS,
     SIGNAL_AGENT_HANDOFF,
     Session,
 )
@@ -32,7 +34,8 @@ ROOT_SESSION = "11111111-1111-4111-8111-111111111111"
 CHILD_SESSION = "22222222-2222-4222-8222-222222222222"
 CHILD_AGENT = "33333333-3333-4333-8333-333333333333"
 
-GENAI = Path(__file__).resolve().parents[3] / "ingestion" / "internal" / "genai"
+INGESTION = Path(__file__).resolve().parents[3] / "ingestion" / "internal"
+GENAI = INGESTION / "genai"
 
 # Fields minted per event, which two otherwise equal payloads differ in.
 PER_EVENT = ("id", "timestamp")
@@ -218,6 +221,40 @@ def test_a_long_name_is_cut_at_a_utf8_boundary() -> None:
     assert len(to.encode("utf-8")) == HANDOFF_AGENT_NAME_MAX_BYTES
 
 
+def test_a_cut_that_ends_on_white_space_is_trimmed_again() -> None:
+    """The receiver trims after the cut too (TrimRole(cut(TrimRole)))."""
+    session, client = _session(capture_prompts=False)
+
+    session.emit_agent_handoff(from_agent="a" * 255 + " " + "b" * 10, to_agent="c")
+
+    (p,) = _posted(client)
+    assert p["signal_data"]["from"] == "a" * 255
+
+
+def test_trim_matches_go_trim_role_on_the_separator_controls() -> None:
+    """Go's identity.TrimRole trims Unicode white space and
+    U+001C..U+001F; str.strip trims the same."""
+    session, client = _session(capture_prompts=False)
+
+    session.emit_agent_handoff(
+        from_agent="\x1c\x1d triage_agent \x1e\x1f", to_agent="\u00a0\u2003weather\u3000"
+    )
+
+    (p,) = _posted(client)
+    assert p["signal_data"] == {"from": "triage_agent", "to": "weather"}
+
+
+def test_a_lone_surrogate_does_not_drop_the_handoff() -> None:
+    """UTF-8 cannot encode a lone surrogate; it becomes "?" rather than
+    failing the whole hand-off."""
+    session, client = _session(capture_prompts=False)
+
+    session.emit_agent_handoff(from_agent="tri\ud800age", to_agent="weather_agent")
+
+    (p,) = _posted(client)
+    assert p["signal_data"] == {"from": "tri?age", "to": "weather_agent"}
+
+
 def test_the_sessions_model_is_not_stamped_on_the_signal() -> None:
     """The worker makes a signal's model the session's model, so the
     hand-off carries none even after the session has seen a call."""
@@ -267,6 +304,72 @@ def test_a_root_handoff_applies_a_returned_directive() -> None:
     session._apply_directive.assert_called_once_with(directive)
 
 
+def test_the_post_is_one_short_attempt() -> None:
+    """A hand-off happens mid-run: its post is one attempt with a short
+    timeout, not the transport's 10 s timeout and retries."""
+    session, client = _session(capture_prompts=False)
+
+    session.emit_agent_handoff(from_agent="a", to_agent="b")
+    session.emit_agent_handoff(from_agent="a", to_agent="b", **_child_identity())
+
+    assert HANDOFF_POST_TIMEOUT_SECS <= 2
+    for call in client.post_event.call_args_list:
+        assert call.kwargs == {"timeout": HANDOFF_POST_TIMEOUT_SECS, "max_attempts": 1}
+
+
+def test_a_child_handoff_discards_a_returned_directive() -> None:
+    session, client = _session(capture_prompts=False)
+    client.post_event.return_value = (MagicMock(), False)
+    session._apply_directive = MagicMock()  # type: ignore[method-assign]
+
+    session.emit_agent_handoff(from_agent="a", to_agent="b", **_child_identity())
+
+    session._apply_directive.assert_not_called()
+
+
+def test_halt_policy_raises_through_the_handoff() -> None:
+    """Under unavailable_policy="halt" the client raises DirectiveError
+    when the control plane is unreachable; the hand-off lets it through,
+    as the child session_start and session_end do."""
+    session, client = _session(capture_prompts=False)
+    client.post_event.side_effect = DirectiveError(action="halt", reason="unreachable")
+
+    with pytest.raises(DirectiveError):
+        session.emit_agent_handoff(from_agent="a", to_agent="b")
+    with pytest.raises(DirectiveError):
+        session.emit_agent_handoff(from_agent="a", to_agent="b", **_child_identity())
+
+
+def test_nothing_is_sent_after_end() -> None:
+    session, client = _session(capture_prompts=False)
+    session.event_queue = MagicMock()
+    session.end()
+    client.post_event.reset_mock()
+
+    session.emit_agent_handoff(from_agent="a", to_agent="b")
+    session.emit_agent_handoff(from_agent="a", to_agent="b", **_child_identity())
+
+    client.post_event.assert_not_called()
+
+
+def test_nothing_is_sent_during_a_signal_shutdown() -> None:
+    session, client = _session(capture_prompts=False)
+    session._signal_shutdown = MagicMock()
+
+    session.emit_agent_handoff(from_agent="a", to_agent="b")
+
+    client.post_event.assert_not_called()
+
+
+def test_nothing_is_sent_after_a_shutdown_directive() -> None:
+    session, client = _session(capture_prompts=False)
+    session._shutdown_requested = True
+
+    session.emit_agent_handoff(from_agent="a", to_agent="b")
+
+    client.post_event.assert_not_called()
+
+
 def test_a_failed_post_never_raises(caplog: pytest.LogCaptureFixture) -> None:
     session, client = _session(capture_prompts=False)
     client.post_event.side_effect = RuntimeError("transport broke")
@@ -284,8 +387,13 @@ def test_signal_name_and_bound_match_the_receiver() -> None:
     shape."""
     normalize = (GENAI / "normalize.go").read_text()
     identity = (GENAI / "identity.go").read_text()
+    events = (INGESTION / "handlers" / "events.go").read_text()
     name = re.search(r'signalHandoff\s*=\s*"([a-z_]+)"', normalize)
     bound = re.search(r"const maxIdentityBytes\s*=\s*(\d+)", identity)
-    assert name is not None and bound is not None
+    # Ingestion's limit on a signal_data string: a longer name would get
+    # the whole event refused.
+    value_len = re.search(r"maxSignalDataValueLen\s*=\s*(\d+)", events)
+    assert name is not None and bound is not None and value_len is not None
     assert name.group(1) == SIGNAL_AGENT_HANDOFF
     assert int(bound.group(1)) == HANDOFF_AGENT_NAME_MAX_BYTES
+    assert int(value_len.group(1)) >= HANDOFF_AGENT_NAME_MAX_BYTES

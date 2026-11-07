@@ -40,16 +40,28 @@ from _helpers import (
 )
 
 import flightdeck_sensor
+from flightdeck_sensor.core.session import SIGNAL_AGENT_HANDOFF
 
 FLAVOR = "playground-agent-handoff"
 CHILD_ROLE = "weather_agent"
 # Time for the events to land: the hand-offs post synchronously, and the
 # worker writes within a second or two on an idle stack.
 EVENT_LANDED_S = 15.0
+# One content fetch never blocks longer than this; a healthy API answers
+# in milliseconds.
+CONTENT_FETCH_TIMEOUT_S = 5.0
+# What GET /v1/events/:id/content answers for an event with no stored
+# content (rule 37): the resource does not exist.
+CONTENT_ABSENT_STATUS = 404
+# How much of the fetched events a failure message quotes: enough to see
+# every event of this short run, short enough to read in a terminal.
+FAILURE_DUMP_CHARS = 2000
+MS_PER_S = 1000
+SESSION_SIGNAL = "session_signal"
 
 
 def _signals(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [e for e in events if e.get("event_type") == "session_signal"]
+    return [e for e in events if e.get("event_type") == SESSION_SIGNAL]
 
 
 def _content_status(event_id: str) -> int:
@@ -58,7 +70,7 @@ def _content_status(event_id: str) -> int:
         headers={"Authorization": f"Bearer {API_TOKEN}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=CONTENT_FETCH_TIMEOUT_S) as r:
             return int(r.status)
     except urllib.error.HTTPError as err:
         return int(err.code)
@@ -74,16 +86,18 @@ def _check(
     events = fetch_events_for_session(
         session_id,
         timeout_s=EVENT_LANDED_S,
-        expect_event_types=["session_signal"],
+        expect_event_types=[SESSION_SIGNAL],
     )
     signals = _signals(events)
     if len(signals) != 1:
-        raise AssertionError(f"{label}: want one session_signal, got {json.dumps(events)[:2000]}")
+        raise AssertionError(
+            f"{label}: want one {SESSION_SIGNAL}, got {json.dumps(events)[:FAILURE_DUMP_CHARS]}"
+        )
     e = signals[0]
     payload = e.get("payload") or {}
     status = _content_status(e["id"])
     problems = []
-    if payload.get("signal") != "agent_handoff":
+    if payload.get("signal") != SIGNAL_AGENT_HANDOFF:
         problems.append(f"signal={payload.get('signal')!r}")
     if payload.get("signal_data") != want_data:
         problems.append(f"signal_data={payload.get('signal_data')!r}")
@@ -91,14 +105,14 @@ def _check(
         problems.append(f"model={e.get('model')!r}")
     if e.get("has_content"):
         problems.append("has_content=true")
-    if status != 404:
+    if status != CONTENT_ABSENT_STATUS:
         problems.append(f"content endpoint answered {status}")
     if want_parent is not None and payload.get("parent_session_id") != want_parent:
         problems.append(f"parent_session_id={payload.get('parent_session_id')!r}")
     print_result(
         label,
         not problems,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"event={e['id']} signal_data={payload.get('signal_data')} content={status}",
     )
     if problems:

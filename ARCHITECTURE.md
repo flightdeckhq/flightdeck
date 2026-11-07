@@ -1449,12 +1449,14 @@ mirroring the existing `error_types` (`llm_error`) and
 
 A framework hand-off, one agent passing the conversation to another,
 is reported with `Session.emit_agent_handoff(from_agent=, to_agent=)`,
-the call the framework wraps make. It emits the `agent_handoff`
+available to the framework wraps (Google ADK, OpenAI Agents SDK). It
+emits the `agent_handoff`
 `session_signal` the GenAI dialect emits (see Event Types >
 `session_signal`), so a hand-off reads the same whether the sensor or
 an OpenTelemetry exporter reported it: `signal_data` holds `from` and
 `to`, the two agents' names, each trimmed of white space, cut to 256
-bytes at a UTF-8 boundary and left out when empty or not given. The
+bytes at a UTF-8 boundary (a lone surrogate becomes `?`) and left out
+when empty or not given. The
 event carries no `model`, no token counts and no content. The names
 are metadata and are sent whatever `capture_prompts` says; what was
 handed over (the transfer tool's arguments, the conversation) is
@@ -1469,7 +1471,16 @@ identity given in part is a wrap bug: the signal is dropped with a
 warning rather than sent on the wrong session. The event is posted
 synchronously, as the child `session_start` and `session_end` are, so
 it reaches ingestion before the child's `session_end`, after which the
-worker would drop it as a straggler on a closed session.
+worker would drop it as a straggler on a closed session. The post is
+one attempt with a 2-second timeout, because a hand-off happens mid-run
+and the transport's own 10-second timeout and retries would hold the
+agent between two turns; a failed post then follows the
+unavailability policy (`halt` raises `DirectiveError`, `continue` drops
+the signal). A directive in the response is applied on the sensor's own
+session and discarded on a child's, as the child `session_start` and
+`session_end` discard theirs. Nothing is sent once the session has
+ended or is shutting down (`end()`, a SIGTERM / SIGINT shutdown, or a
+shutdown directive).
 
 ### Claude Agent SDK
 
@@ -8648,9 +8659,10 @@ on the agent that hands off, with `signal_data` `from` and `to` (the
 two agents' names, either left out when not known) and no content,
 whatever the capture setting. Ingestion's GenAI dialect emits it for
 an OpenTelemetry GenAI run (see OTLP ingest > GenAI dialect >
-Sessions), and the Python sensor's framework wraps emit it through
-`Session.emit_agent_handoff` (see Sensor > Sub-agent framework
-coverage), with the same names, bounds and stored shape, so the worker
+Sessions), and the Python sensor emits it through
+`Session.emit_agent_handoff`, available to the framework wraps (Google
+ADK, OpenAI Agents SDK; see Sensor > Sub-agent framework coverage),
+with the same names, bounds and stored shape, so the worker
 and the dashboard do not tell the two apart. The dashboard's feed line
 reads `hand-off · <from> → <to>`.
 

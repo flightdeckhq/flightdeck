@@ -757,9 +757,10 @@ list on the wire (a payload change); a backfill (AG2/AutoGen is not stored).
 `signal=agent_handoff` and `signal_data` `{from, to}` (agent names,
 trimmed, cut to 256 bytes at a UTF-8 boundary, left out when unknown) on
 the session of the agent handing off, with no model, tokens or content
-under any capture setting. It posts synchronously so it reaches ingestion
-before a child's `session_end`. Ingestion, the worker and the dashboard
-are unchanged.
+under any capture setting. It posts synchronously, in one 2-second
+attempt, so it reaches ingestion before a child's `session_end` without
+holding the agent long. Ingestion, the worker and the dashboard are
+unchanged.
 **Why:** the ADK and OpenAI Agents wraps should store what the OTLP
 receiver stores, so one hand-off reads the same from either source.
 **Rejected alternative:** a dedicated `agent_handoff` event type (a second

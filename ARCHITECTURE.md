@@ -4708,8 +4708,9 @@ treats NULL as capture-off.
 
 `framework` is the bare name (`langchain`). The full
 `context.frameworks[]` JSONB array carries versioned strings
-(`langchain/0.3.27`), and is what the analytics `framework` dimension
-groups by; the session listing's `framework` filter matches either.
+(`langchain/0.3.27`), and its labels are what the analytics `framework`
+dimension groups by; the session listing's `framework` filter matches
+either.
 `session_start` writes both. When it carried no framework, the first
 later event that carries one (a call, tool call, error or signal: the
 events the worker's `post_call` path handles) fills `framework` and
@@ -5477,8 +5478,8 @@ that does not know it ignores it.
 - `range` (optional): `7d`, `30d`, `90d`, or `custom`.
 - `from` / `to` (ISO 8601, used when `range=custom`).
 - `granularity`: `hour`, `day`, `week`.
-- `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_framework`,
-  `filter_host` (optional).
+- `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_provider`
+  (optional).
 - `filter_agent_id` (optional, UUID). Scopes the analytics window to
   events from sessions owned by a single agent. Composes with the
   other filters via AND. Joins `sessions` when the metric's base
@@ -5501,13 +5502,14 @@ plugin `tool_call` carries (the tool's own duration) is not included.
 Dimensions that live on `sessions` (`framework`, `host`, `agent_type`,
 `agent_role`) are accessed via a JOIN against `sessions` when the
 metric's base table is `events`, so event-based metrics can group by
-session-level attributes. `framework` groups by each entry of the
-session's `context.frameworks[]` (versioned strings such as
-`langchain/0.3.27` or `pydantic_ai/2.64.0`, or the bare label of a
-framework detected after `init` or reported without a version), so a
-session with several counts under each and one with none under
-`unknown`; the bare
-`sessions.framework` column is not read. The `framework` filter of
+session-level attributes. `framework` groups by the label of each
+entry of the session's `context.frameworks[]`, the part before the `/`:
+an entry is versioned (`langchain/0.3.27`, `pydantic_ai/2.64.0`) or bare
+(a framework detected after `init`, or one reported without a
+version), and both forms of one framework are one series, whatever the
+version. A session counts once under each label it lists, so one with
+several frameworks counts under each and one with none under
+`unknown`; the bare `sessions.framework` column is not read. The `framework` filter of
 `GET /v1/sessions` and `GET /v1/events` matches either.
 
 Latency aggregates use `events.latency_ms` and fall back to 0 via

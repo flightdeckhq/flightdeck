@@ -740,9 +740,11 @@ reports `ag2`; `autogen` means `autogen_agentchat` / `autogen_core`. While a
 session's framework is unknown the sensor re-runs the classifiers when it
 builds an event and `sys.modules` has grown; the worker fills a null
 `sessions.framework` from a later event and appends the label to
-`context.frameworks[]`. Existing rows are not backfilled.
+`context.frameworks[]`. The analytics `framework` dimension groups by the
+label before the `/`. Existing rows are not backfilled.
 **Why:** the analytics dimension merges sensor and OTLP rows only on equal
-labels. Under D240 an app importing its framework after `init()` was null.
+labels, and one framework must not split by version or import order.
+Under D240 an app importing its framework after `init()` was null.
 **Rejected alternative:** importing frameworks at `init()` (D240's cost); a
-scan per event (cost after resolution); a second `session_start` (reads as
-a re-attachment); a backfill (the AG2/AutoGen split is not in stored rows).
+scan per event; a second `session_start` (a re-attachment); a versioned
+list on the wire (a payload change); a backfill (AG2/AutoGen is not stored).

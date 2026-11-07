@@ -602,6 +602,13 @@ All notable changes to Flightdeck are documented here.
   reported `langchain`. A version missing from a module is read from its
   installed distribution. Sessions recorded before the upgrade keep
   their labels; they are not backfilled.
+- **The analytics `framework` dimension groups by framework, not by
+  version.** `GET /v1/analytics?group_by=framework` returned one series
+  per versioned `context.frameworks` entry (`langchain/0.3.27`,
+  `langchain/1.6.10`); it now returns one per label (`langchain`), so a
+  framework is one series across versions and whether the sensor found
+  it at `init()` or later. The OpenTelemetry and sensor sessions of a
+  framework share it too.
 - **The `FLIGHTDECK` NATS stream is bounded, and replicated under
   Helm.** It used to keep every event ever published. Ingestion now
   applies a 72-hour age limit and a 5 GiB size limit at startup

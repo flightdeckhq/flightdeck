@@ -203,3 +203,31 @@ describe("agent_handoff (an OpenTelemetry GenAI hand-off)", () => {
     ]);
   });
 });
+
+describe("guardrail_tripwire (a framework guardrail that fired)", () => {
+  it("names the guardrail and its kind", () => {
+    expect(
+      getEventDetail(signal("guardrail_tripwire", { guardrail: "no_math", kind: "input", agent: "tutor" })),
+    ).toBe("guardrail tripped · no_math · input");
+    expect(getEventDetail(signal("guardrail_tripwire", { guardrail: "block_secrets", kind: "tool_input" }))).toBe(
+      "guardrail tripped · block_secrets · tool input",
+    );
+  });
+
+  it("names only what the sensor gave", () => {
+    expect(getEventDetail(signal("guardrail_tripwire", { kind: "output" }))).toBe("guardrail tripped · output");
+    expect(getEventDetail(signal("guardrail_tripwire", { guardrail: "tone" }))).toBe("guardrail tripped · tone");
+    expect(getEventDetail(signal("guardrail_tripwire"))).toBe("guardrail tripped");
+  });
+
+  it("labels its guardrail, kind and agent in the summary rows", () => {
+    expect(
+      getSummaryRows(signal("guardrail_tripwire", { guardrail: "no_math", kind: "input", agent: "tutor" })),
+    ).toEqual([
+      ["Signal", "guardrail tripwire"],
+      ["Guardrail", "no_math"],
+      ["Kind", "input"],
+      ["Agent", "tutor"],
+    ]);
+  });
+});

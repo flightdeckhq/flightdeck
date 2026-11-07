@@ -952,6 +952,14 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       if (from) return `hand-off · ${from}`;
       return "hand-off";
     }
+    case "guardrail_tripwire": {
+      // A framework guardrail that fired, from the sensor's OpenAI
+      // Agents SDK wrap: names only. The guarded agent is the session's
+      // own, so the line names the guardrail and its kind.
+      const guardrail = typeof data?.guardrail === "string" ? ` · ${data.guardrail}` : "";
+      const kind = typeof data?.kind === "string" ? ` · ${signalWords(data.kind)}` : "";
+      return `guardrail tripped${guardrail}${kind}`;
+    }
     case "elicitation_requested":
     case "elicitation_responded": {
       const server = typeof data?.mcp_server === "string" ? ` · ${data.mcp_server}` : "";
@@ -1000,6 +1008,9 @@ const SIGNAL_DATA_LABELS: Record<string, string> = {
   prompt: "Prompt",
   from: "From agent",
   to: "To agent",
+  guardrail: "Guardrail",
+  kind: "Kind",
+  agent: "Agent",
 };
 
 function signalValue(key: string, value: string | number | boolean | null): string {

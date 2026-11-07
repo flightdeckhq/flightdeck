@@ -386,7 +386,7 @@ export function buildMcpToolCallPayload({
 
   // Tool args + result live in event_content's dedicated tool_input /
   // tool_output columns, not inline on the payload. Plugin parity
-  // with the sensor's _build_tool_capture_content envelope — wire
+  // with the sensor's build_tool_capture_content envelope — wire
   // shape is byte-identical so the worker's InsertEventContent
   // consumes both surfaces uniformly. captureToolInputs gates
   // whether they are captured, not where they land.
@@ -406,7 +406,7 @@ export function buildMcpToolCallPayload({
 /**
  * Build the event_content envelope for tool capture using the
  * dedicated ``tool_input`` / ``tool_output`` columns (migration
- * 000021). Mirrors the sensor's ``_build_tool_capture_content``
+ * 000021). Mirrors the sensor's ``build_tool_capture_content``
  * wire shape byte-for-byte so the worker's ``InsertEventContent``
  * consumes both surfaces uniformly.
  *

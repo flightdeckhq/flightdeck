@@ -12,16 +12,14 @@ test_mcp_interceptor.py.
 
 from __future__ import annotations
 
-from flightdeck_sensor.interceptor.mcp import (
-    _build_tool_capture_content,
-)
+from flightdeck_sensor.core.tool_capture import build_tool_capture_content
 
 
 def test_capture_content_includes_tool_input_and_tool_output_keys() -> None:
     """The wire envelope uses the dedicated tool_input / tool_output
     column names — NOT the LLM-prompt-style input / response columns
     that _build_overflow_event_content repurposes for resource bodies."""
-    content = _build_tool_capture_content(
+    content = build_tool_capture_content(
         tool_input={"a": 1},
         tool_output={"r": 2},
         server_name="srv",
@@ -46,7 +44,7 @@ def test_capture_content_returns_none_when_both_fields_empty() -> None:
     has_content/content envelope entirely. Returning None lets
     the caller short-circuit cleanly."""
     assert (
-        _build_tool_capture_content(
+        build_tool_capture_content(
             tool_input=None,
             tool_output=None,
             server_name="srv",
@@ -61,7 +59,7 @@ def test_capture_content_emits_when_only_input_present() -> None:
     invocation; tool_output populates retroactively when the
     next assistant turn shows the result. Single-field
     populations must produce a content envelope."""
-    content = _build_tool_capture_content(
+    content = build_tool_capture_content(
         tool_input={"q": "hello"},
         tool_output=None,
         server_name="claude-opus-4-7",
@@ -75,7 +73,7 @@ def test_capture_content_emits_when_only_input_present() -> None:
 def test_capture_content_emits_when_only_output_present() -> None:
     """Symmetric — output without input is valid (rare; would
     happen on a result-only post-hoc capture)."""
-    content = _build_tool_capture_content(
+    content = build_tool_capture_content(
         tool_input=None,
         tool_output={"r": "ok"},
         server_name="srv",
@@ -89,7 +87,7 @@ def test_capture_content_session_id_round_trips() -> None:
     """Worker's InsertEventContent uses session_id from the
     payload to satisfy the FK constraint. The envelope must
     carry it verbatim."""
-    content = _build_tool_capture_content(
+    content = build_tool_capture_content(
         tool_input={},
         tool_output={},
         server_name="srv",

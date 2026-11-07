@@ -145,7 +145,7 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 | Claude Agent SDK (Python) | yes | its own session per run | no |
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
 | OpenAI Agents SDK | yes | planned | yes |
-| Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI and Anthropic clients; not on its Foundry / Azure AI agent clients | planned | no |
+| Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
 | LlamaIndex | yes | planned | no |
 | Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |
 | Pydantic AI | yes on Anthropic and OpenAI models; not on `GoogleModel` or `BedrockConverseModel` | no: use OpenTelemetry | yes |
@@ -265,7 +265,7 @@ Then turn on the framework's tracing:
 
 - **Pydantic AI:** a global `TracerProvider` with an OTLP span exporter, and `Agent.instrument_all()`.
 - **Strands Agents:** `StrandsTelemetry().setup_otlp_exporter()`.
-- **OpenAI Agents SDK:** a global `TracerProvider` with an OTLP span exporter, and `OpenAIAgentsInstrumentor().instrument()` from `opentelemetry-instrumentation-openai-agents-v2`. The SDK also exports its traces to OpenAI by default; `set_trace_processors([...])` replaces its processors to turn that off, as playground script 34 does.
+- **OpenAI Agents SDK:** a global `TracerProvider` with an OTLP span exporter, and `OpenAIAgentsInstrumentor().instrument()` from `opentelemetry-instrumentation-openai-agents-v2`. The SDK also exports its traces to OpenAI by default; call `set_trace_processors([])` before `instrument()` to turn that off, as playground script 34 does (the instrumentor adds its processor to the existing ones, so calling it afterwards drops the Flightdeck export too).
 - **Google ADK:** `adk web` and `adk api_server` set it up, or call `maybe_set_otel_providers()` from `google.adk.telemetry.setup`. ADK sends each model call's content as a log record on `/v1/logs`, so a setup of your own needs a logs exporter as well as a span exporter.
 
 `flightdeck.capture_prompts=true` keeps message content, and `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` makes the OpenAI Agents instrumentation and ADK send it (Pydantic AI and Strands send it by default). `flightdeck.agent_type` (`coding` or `production`, default `production`) and `flightdeck.billing_mode` are read as for Claude Code, but the billing default here is `metered`, not Claude Code's `subscription`. Playground scripts 32 to 35 show the setup per framework. When the sensor already reports the same run, leave the exporter off: both paths count it ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).

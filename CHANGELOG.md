@@ -160,6 +160,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The worker refuses a malformed `session_id` and keeps its log lines
+  small.** Anything that can publish to NATS reaches the worker without
+  passing ingestion's validator. An event whose `session_id` is not a
+  canonical UUID is now dropped on its first delivery, counted as
+  `dropped_events_total{reason="invalid_session_id"}` and logged once,
+  instead of failing its database write three times. Ids, names,
+  timestamps and error text the worker logs are capped (64 bytes for an
+  id, 1 KiB for an error), so a megabyte field no longer makes a
+  megabyte log line
+  ([#180](https://github.com/flightdeckhq/flightdeck/issues/180)).
 - **The Prompts tab shows a tool call's captured arguments and
   result.** A sensor `tool_call`, an `mcp_tool_call` or `mcp_prompt_get`
   and a Claude Code `tool_call` reported over OpenTelemetry keep their

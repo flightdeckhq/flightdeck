@@ -9,6 +9,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/billing"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 )
 
 // The keys of an llm_error's error object that report the tokens a stream
@@ -52,7 +53,7 @@ func applyFailedStreamTokens(e *consumer.EventPayload) bool {
 		// ingestion), or a sum past the INTEGER column, is not counted
 		// rather than failing the event's insert.
 		slog.Warn("llm_error partial tokens not a count the token columns hold; not counted",
-			"session_id", e.SessionID, "event_id", e.ID)
+			"session_id", e.SessionID, "event_id", logcap.ID(e.ID))
 		return false
 	}
 	total := in + out

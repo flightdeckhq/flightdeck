@@ -35,6 +35,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+
 from _helpers import (
     API_TOKEN,
     API_URL,
@@ -78,8 +79,9 @@ class CityAnswer(BaseModel):
 
 
 def settled_post_calls(session_id: str) -> list[dict]:
-    """The session's post_calls, oldest first, once their count has
-    stopped changing."""
+    """The session's post_calls, once their count has stopped changing.
+    Their order is not used: each call's post_call is found by its id
+    (see ``CallLog``)."""
     deadline = time.monotonic() + POST_CALL_SETTLE_DEADLINE_S
     post_calls: list[dict] = []
     stable, last = 0, -1
@@ -91,7 +93,33 @@ def settled_post_calls(session_id: str) -> list[dict]:
         stable = stable + 1 if len(post_calls) == last else 0
         last = len(post_calls)
         time.sleep(POST_CALL_SETTLE_POLL_S)
-    return sorted(post_calls, key=lambda e: e.get("occurred_at") or "")
+    return post_calls
+
+
+class CallLog:
+    """Each call's label and the id of the post_call it emitted.
+
+    The sensor mints every event's id itself (``payload.id``, which the
+    worker stores as the ``events`` row id) and, as it emits a post_call,
+    records that id as the session's current call event id. The calls
+    here run one after another and each settles before it returns, so
+    the id read right after a call is that call's post_call. Pairing by
+    id, not by ``occurred_at``, keeps the check independent of the wall
+    clock, which the sensor stamps ``timestamp`` from and which can step
+    backwards (WSL time sync has moved it by seconds mid-run).
+    """
+
+    def __init__(self) -> None:
+        self.labels: list[str] = []
+        self.event_ids: list[str | None] = []
+
+    def record(self, label: str) -> None:
+        session = flightdeck_sensor._session
+        event_id = session.get_current_call_event_id() if session else None
+        if event_id is not None and event_id in self.event_ids:
+            raise AssertionError(f"{label}: emitted no post_call of its own")
+        self.labels.append(label)
+        self.event_ids.append(event_id)
 
 
 def event_content(event_id: str) -> tuple[int, dict]:
@@ -120,7 +148,8 @@ def main() -> None:
     init_sensor(session_id, flavor="playground-parse-and-litellm-routes")
     flightdeck_sensor.patch(quiet=True)  # the OpenAI SDK and litellm, both live
     print(f"[playground:30_parse_and_litellm_routes] session_id={session_id}")
-    labels: list[str] = []
+    calls = CallLog()
+    labels = calls.labels
 
     # 1. Structured output on the SDK's beta resource.
     parsed = timed(
@@ -137,7 +166,7 @@ def main() -> None:
     )
     if parsed.choices[0].message.parsed is None:
         raise AssertionError("beta.chat.completions.parse returned no parsed object")
-    labels.append("beta parse")
+    calls.record("beta parse")
 
     # 2. An async streaming view left with its stream parsed, never read.
     async def _unread_view() -> None:
@@ -158,7 +187,7 @@ def main() -> None:
         "AsyncOpenAI streaming view, stream never read",
         lambda: asyncio.run(_unread_view()),
     )
-    labels.append("unread view")
+    calls.record("unread view")
 
     # 3-6. litellm text_completion: through the OpenAI SDK and on
     # litellm's own Anthropic route, plain, streamed and async.
@@ -169,7 +198,7 @@ def main() -> None:
         ),
         lambda r: f"text={r.choices[0].text!r}",
     )
-    labels.append("text_completion openai")
+    calls.record("text_completion openai")
     timed(
         "litellm.text_completion(stream=True) (OpenAI)",
         lambda: "".join(
@@ -180,7 +209,7 @@ def main() -> None:
         ),
         lambda text: f"text={text!r}",
     )
-    labels.append("text_completion openai stream")
+    calls.record("text_completion openai stream")
     timed(
         "litellm.text_completion (Anthropic, litellm httpx)",
         lambda: litellm.text_completion(
@@ -188,7 +217,7 @@ def main() -> None:
         ),
         lambda r: f"text={r.choices[0].text!r}",
     )
-    labels.append("text_completion anthropic")
+    calls.record("text_completion anthropic")
     timed(
         "litellm.atext_completion (Anthropic)",
         lambda: asyncio.run(
@@ -198,7 +227,7 @@ def main() -> None:
         ),
         lambda r: f"text={r.choices[0].text!r}",
     )
-    labels.append("atext_completion anthropic")
+    calls.record("atext_completion anthropic")
 
     # 7-10. litellm responses: native (OpenAI), streamed async, streamed
     # and left early, and bridged through litellm.completion (Anthropic).
@@ -211,7 +240,7 @@ def main() -> None:
         ),
         lambda r: f"usage={r.usage.input_tokens}/{r.usage.output_tokens}",
     )
-    labels.append("responses openai")
+    calls.record("responses openai")
 
     async def _aresponses_stream() -> list[str]:
         stream = await litellm.aresponses(
@@ -231,7 +260,7 @@ def main() -> None:
         raise AssertionError(
             f"aresponses stream ended without response.completed: {kinds!r}"
         )
-    labels.append("aresponses openai stream")
+    calls.record("aresponses openai stream")
 
     # 9. A streamed Responses call the caller leaves before its terminal
     # event: the post_call is aborted and the stored response is the
@@ -263,7 +292,7 @@ def main() -> None:
     )
     if "response.completed" in early_kinds:
         raise AssertionError(f"the early-exit stream reached its end: {early_kinds!r}")
-    labels.append("responses openai left early")
+    calls.record("responses openai left early")
     timed(
         "litellm.responses (Anthropic, bridged)",
         lambda: litellm.responses(
@@ -273,7 +302,7 @@ def main() -> None:
         ),
         lambda r: f"usage={r.usage.input_tokens}/{r.usage.output_tokens}",
     )
-    labels.append("responses anthropic bridged")
+    calls.record("responses anthropic bridged")
 
     # 11. A call with fallbacks whose model does not exist: litellm's
     # fallback loop retries it on the fallback, through the patched
@@ -288,7 +317,7 @@ def main() -> None:
         ),
         lambda r: f"answered by {r.model}",
     )
-    labels.append("completion fallback")
+    calls.record("completion fallback")
 
     flightdeck_sensor.teardown()
 
@@ -306,7 +335,19 @@ def main() -> None:
             f"expected {len(labels)} post_calls, got {len(post_calls)}"
         )
 
-    for label, event in zip(labels, post_calls, strict=True):
+    by_id = {e.get("id"): e for e in post_calls}
+    paired = [by_id.get(event_id) for event_id in calls.event_ids]
+    missing = [label for label, e in zip(labels, paired, strict=True) if e is None]
+    print_result(
+        "each call's post_call found by its id",
+        not missing,
+        0,
+        f"missing={missing}" if missing else "",
+    )
+    if missing:
+        raise AssertionError(f"no post_call with the id these calls emitted: {missing}")
+
+    for label, event in zip(labels, paired, strict=True):
         streaming = (event.get("payload") or {}).get("streaming")
         tokens = (event.get("tokens_input"), event.get("tokens_output"))
         detail = f"model={event.get('model')} tokens={tokens[0]}/{tokens[1]}"
@@ -353,7 +394,7 @@ def main() -> None:
             raise AssertionError(f"{label}: unexpected post_call {event!r}")
 
     # Content capture (on in the playground) stores the Responses input.
-    native_event = post_calls[labels.index("responses openai")]
+    native_event = paired[labels.index("responses openai")]
     status, content = event_content(native_event["id"])
     stored_input = content.get("input")
     content_ok = status == 200 and stored_input == CAPTURED_INPUT
@@ -369,7 +410,7 @@ def main() -> None:
         )
     # The early-exit call stores the in-progress snapshot, which the
     # dashboard recognises as a Responses call by its ``object``.
-    early_event = post_calls[labels.index("responses openai left early")]
+    early_event = paired[labels.index("responses openai left early")]
     status, content = event_content(early_event["id"])
     stored = content.get("response") or {}
     early_ok = (

@@ -1206,6 +1206,33 @@ def test_a_close_off_a_closed_loop_posts_in_place(sdk: Any) -> None:
     assert session.wait_child_posts(0) is True
 
 
+def test_a_failed_close_off_the_loop_is_retrieved(
+    sdk: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A close that raises in the executor never leaves asyncio an
+    exception to report as never retrieved."""
+    import gc
+
+    session, _ = _session()
+    scope = wrap._RunScope(session, parent_session_id=None, conversation_id=None, run_input="x")
+
+    def boom(error: BaseException | None) -> None:
+        raise RuntimeError("close failed")
+
+    scope.close_all = boom  # type: ignore[method-assign]
+
+    async def go() -> None:
+        wrap._close_off_loop(scope, None, asyncio.get_running_loop())
+        await asyncio.to_thread(session.wait_child_posts, 5)
+        await asyncio.sleep(0)
+
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(go())
+        gc.collect()
+    assert "never retrieved" not in caplog.text
+    assert "closing a run's child sessions failed" in caplog.text
+
+
 def test_wait_child_posts_reports_what_is_still_running() -> None:
     import concurrent.futures
 

@@ -630,3 +630,22 @@ times, logging the whole id (up to NATS's 1 MiB payload) each time.
 worker (two copies of the contract that drift apart), and a log handler
 that truncates every attribute (it replaces slog's default output format,
 which the integration tests and operators read).
+
+## D251 -- A failed tool_call is an error on every surface, and a plugin MCP server's flattened key is read as its colon key
+
+**Date:** 2026-11-07
+**Decision:** an error event is an `llm_error` or a `tool_call` whose
+`payload.error` is an object. The session listing's `error_types[]` and
+`error_type` filter, the agent summary's `errors` and the dashboard's
+live patch of it all use that one predicate; a failed `mcp_tool_call`
+stays on `mcp_error_types[]`. The `/v1/events` `mcp_server` facet reads
+a `plugin_<plugin>_<server>` key (plugin releases before v0.6.0) as
+`plugin:<plugin>:<server>`, and a filter on the colon key matches both.
+Extends D190.
+**Why:** a plugin tool failure is stored as a `tool_call` with an error
+block (D190), so counting only `llm_error` hid it from every per-session
+and per-agent count.
+**Rejected alternative:** a migration rewriting the old rows' key (it
+edits stored events the server only reads, and an older plugin still
+posting would recreate them), and counting MCP failures in `errors`
+(their JSON-RPC taxonomy is not the LLM one).

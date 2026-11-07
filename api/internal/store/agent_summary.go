@@ -28,7 +28,8 @@ type AgentSummaryParams struct {
 
 // AgentSummaryTotals carries the across-the-window aggregates the
 // per-agent landing page renders in its summary tiles. “Errors“
-// counts events of type “llm_error“ only — policy events
+// counts “llm_error“ events and failed “tool_call“ events
+// (errorEventFilter) only — policy events
 // (policy_block / policy_warn / policy_degrade / policy_mcp_*)
 // are enforcement decisions, not failures, and live on a separate
 // dashboard surface. “Sessions“ is distinct session_id across
@@ -105,8 +106,9 @@ func agentSummaryPeriodToDuration(period string) (time.Duration, bool) {
 //
 // Latency percentiles use “event_type = 'post_call'“ only —
 // matching the existing analytics convention for “latency_p50“
-// / “latency_p95“ in analytics.go. Errors count events of type
-// “llm_error“; policy events are excluded.
+// / “latency_p95“ in analytics.go. Errors count the error events
+// errorEventFilter matches (“llm_error“ and failed “tool_call“);
+// policy events are excluded.
 func (s *Store) AgentSummary(
 	ctx context.Context, params AgentSummaryParams,
 ) (*AgentSummaryResponse, error) {
@@ -146,7 +148,7 @@ func (s *Store) AgentSummary(
 		SELECT
 			COALESCE(SUM(e.tokens_total)
 				FILTER (WHERE ` + tokenEventFilter + `), 0) AS tokens,
-			COUNT(*) FILTER (WHERE e.event_type = 'llm_error') AS errors,
+			COUNT(*) FILTER (WHERE ` + errorEventFilter + `) AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
 			COALESCE(` + costExpr + `, 0) AS cost_usd,
 			COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY e.latency_ms)
@@ -210,7 +212,7 @@ func (s *Store) AgentSummary(
 			date_trunc('%s', e.occurred_at) AS bucket,
 			COALESCE(SUM(e.tokens_total)
 				FILTER (WHERE %s), 0) AS tokens,
-			COUNT(*) FILTER (WHERE e.event_type = 'llm_error') AS errors,
+			COUNT(*) FILTER (WHERE %s) AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
 			COALESCE(%s, 0) AS cost_usd,
 			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY e.latency_ms)
@@ -223,7 +225,7 @@ func (s *Store) AgentSummary(
 		  AND e.occurred_at < $3
 		GROUP BY bucket
 		ORDER BY bucket
-	`, params.Bucket, tokenEventFilter, costExpr, priceJoin)
+	`, params.Bucket, tokenEventFilter, errorEventFilter, costExpr, priceJoin)
 
 	rows, err := s.pool.Query(ctx, seriesSQL,
 		params.AgentID, start, end)

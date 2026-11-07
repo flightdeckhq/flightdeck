@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { fetchAgentSummary } from "@/lib/api";
+import { isErrorEvent } from "@/lib/events";
 import type {
   AgentEvent,
   AgentSummaryBucket,
@@ -127,7 +128,8 @@ function ensureAgentSummary(
  * cells reflect the live state without a re-fetch.
  *
  * Conservative: only the `tokens_total`, `latency_ms`, and
- * `event_type === "llm_error"` paths produce non-trivial deltas
+ * error-event (`isErrorEvent`: an `llm_error` or a failed `tool_call`)
+ * paths produce non-trivial deltas
  * here; everything else (mcp_*, policy_*, directive_*) leaves the
  * KPI cells alone. This matches the backend `/v1/agents/:id/summary`
  * shape exactly so the in-place patch can never drift from a
@@ -148,9 +150,13 @@ function patchAgentSummaryFromEvent(
   // 7d/day default the most-recent bucket IS today, and a fresh
   // page load on tomorrow's date refetches naturally.
   const isPostCall = event.event_type === "post_call";
-  const isError = event.event_type === "llm_error";
+  // A failed tool_call counts as an error (isErrorEvent) but carries
+  // no billed tokens; only an llm_error's tokens count.
+  const isError = isErrorEvent(event);
   const countsTokens =
-    isPostCall || isError || event.event_type === "embeddings";
+    isPostCall ||
+    event.event_type === "llm_error" ||
+    event.event_type === "embeddings";
   for (const [key, summary] of agentSummaryCache.entries()) {
     const [keyAgentId] = key.split("|");
     if (keyAgentId !== agentId) continue;

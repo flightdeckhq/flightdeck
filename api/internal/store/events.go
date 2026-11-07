@@ -49,7 +49,9 @@ type EventsParams struct {
 	OriginatingCallContexts []string
 	// MCPServers matches an MCP event's payload `server_name` —
 	// the event-grain analogue of the session-grain MCP SERVER
-	// facet.
+	// facet. A colon-form plugin server key also matches the
+	// flattened key older plugin releases stored
+	// (expandMCPServerFilter).
 	MCPServers []string
 	// Terminal filters on the boolean `payload->>'terminal'`; nil
 	// means no terminal filter.
@@ -150,7 +152,7 @@ var facetExprAllowlist = map[string]bool{
 	"payload->>'close_reason'":                        true,
 	"payload->>'estimated_via'":                       true,
 	"payload->>'originating_call_context'":            true,
-	"payload->>'server_name'":                         true,
+	mcpServerFacetExpr:                                true,
 	"payload->>'terminal'":                            true,
 	"payload->'policy_decision'->>'matched_entry_id'": true,
 	"s.agent_id::text":                                true,
@@ -221,7 +223,7 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 		params.MatchedEntryIDs)
 	addText("payload->>'originating_call_context'",
 		params.OriginatingCallContexts)
-	addText("payload->>'server_name'", params.MCPServers)
+	addText("payload->>'server_name'", expandMCPServerFilter(params.MCPServers))
 	if params.Terminal != nil {
 		// Compare as text against the partial index on
 		// payload->>'terminal'. A ::boolean cast predicate cannot use
@@ -544,8 +546,7 @@ func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*Event
 		"payload->>'originating_call_context'"); err2 != nil {
 		return nil, err2
 	}
-	if facets.MCPServer, err2 = groupBy(
-		"payload->>'server_name'"); err2 != nil {
+	if facets.MCPServer, err2 = groupBy(mcpServerFacetExpr); err2 != nil {
 		return nil, err2
 	}
 	if facets.Terminal, err2 = groupBy(

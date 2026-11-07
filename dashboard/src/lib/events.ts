@@ -285,6 +285,42 @@ export function attachmentStartIds(
   return matched;
 }
 
+/* ---- Error events ---- */
+
+/** The ``error`` block of a failed ``tool_call``: the Claude Code
+ *  plugin's hook and its OpenTelemetry ``tool_result`` store a tool
+ *  failure as a ``tool_call`` carrying this object rather than as an
+ *  event type of its own. ``message`` reads ``<redacted>`` when capture
+ *  is off. */
+export interface ToolFailure {
+  error_type: string;
+  error_class?: string;
+  message?: string;
+  interrupted?: boolean;
+}
+
+/** The error block of a failed ``tool_call``, or null for any other
+ *  event (a successful tool call, a string error, another type). */
+export function toolFailure(event: AgentEvent): ToolFailure | null {
+  if (event.event_type !== "tool_call") return null;
+  const err: unknown = event.payload?.error;
+  if (err === null || typeof err !== "object" || Array.isArray(err)) return null;
+  return err as ToolFailure;
+}
+
+/**
+ * Whether an event counts as an error: an ``llm_error``, or a failed
+ * ``tool_call`` (one whose ``payload.error`` is an object). The one
+ * definition the dashboard uses wherever it counts errors; it mirrors
+ * the api's ``errorEventFilter``, which the session ``error_types[]``
+ * aggregate and the agent summary's ``errors`` use. A failed MCP call
+ * is not one: MCP failures carry the JSON-RPC taxonomy and have their
+ * own ``mcp_error_types[]`` indicator.
+ */
+export function isErrorEvent(event: AgentEvent): boolean {
+  return event.event_type === "llm_error" || toolFailure(event) !== null;
+}
+
 /* ---- Event detail text ---- */
 
 /** What a missing value reads as in a detail line or a summary row. */
@@ -372,8 +408,10 @@ export function getEventDetail(event: AgentEvent): string {
       if (event.payload?.terminal) parts.push("terminal");
       return parts.join(" · ");
     }
-    case "tool_call":
-      return event.tool_name ?? "unknown tool";
+    case "tool_call": {
+      const tool = event.tool_name ?? "unknown tool";
+      return toolFailure(event) ? `${tool} · failed` : tool;
+    }
     case "policy_warn": {
       const p = event.payload;
       if (p && p.threshold_pct != null && p.tokens_used != null && p.token_limit != null) {
@@ -630,8 +668,19 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
     }
     case "pre_call":
       return [["Model", event.model || NO_VALUE]];
-    case "tool_call":
-      return [["Tool", event.tool_name ?? "unknown"]];
+    case "tool_call": {
+      const rows: [string, string][] = [["Tool", event.tool_name ?? "unknown"]];
+      const failure = toolFailure(event);
+      if (failure) {
+        rows.push(["Error type", failure.error_type || NO_VALUE]);
+        if (failure.error_class) rows.push(["Error class", failure.error_class]);
+        if (failure.message) rows.push(["Error", failure.message]);
+        if (failure.interrupted != null) {
+          rows.push(["Interrupted", failure.interrupted ? "yes" : "no"]);
+        }
+      }
+      return rows;
+    }
     case "policy_warn":
     case "policy_block":
     case "policy_degrade": {

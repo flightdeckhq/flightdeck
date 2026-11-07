@@ -46,6 +46,11 @@ _MARKER = "_flightdeck_import_hook"
 # so the finder reads it without a lock on every import in the process.
 _callbacks: Mapping[str, Callable[[str], None]] = {}
 
+# Names of the modules whose code has finished and whose callback is
+# running, so not yet marked imported by the import system (see
+# executed()). set.add and set.discard are atomic.
+_executed: set[str] = set()
+
 # Serialises watch() and unwatch(). Held only while the mapping and
 # sys.meta_path are updated, never during an import.
 _state_lock = threading.Lock()
@@ -101,6 +106,32 @@ def imported(name: str) -> ModuleType | None:
     if module is None or _initializing(module):
         return None
     return module
+
+
+def wait_for(name: str) -> None:
+    """Wait until no other thread is importing the module ``name``,
+    including one that has taken its import lock but not yet put it in
+    ``sys.modules``. Never imports it. Returns at once when no thread is
+    importing it, or when this thread is (the lock is re-entrant for its
+    owner). Must not be called from a callback, which runs inside an
+    import and may not wait for another thread."""
+    bootstrap: Any = sys.modules.get("importlib._bootstrap")
+    if getattr(bootstrap, "_lock_unlock_module", None) is not None:
+        _wait_for_import(name)
+    else:
+        imported(name)  # waits only once the module is in sys.modules
+
+
+def executed(name: str) -> bool:
+    """Whether the module ``name`` is imported and its code has run to
+    the end, in any thread: its import has finished, or it is running the
+    callback that ends its import (the import system still marks it as
+    importing then). A module still executing is not. Never waits and
+    never imports, so a callback may call it."""
+    if name in _executed:
+        return True
+    module = sys.modules.get(name)
+    return module is not None and not _initializing(module)
 
 
 # ----------------------------------------------------------------------
@@ -177,6 +208,7 @@ def _notify(name: str) -> None:
     callback = _callbacks.get(name)
     if callback is None:
         return  # unwatched while the module was importing
+    _executed.add(name)
     try:
         callback(name)
     except Exception:
@@ -185,6 +217,8 @@ def _notify(name: str) -> None:
             name,
             exc_info=True,
         )
+    finally:
+        _executed.discard(name)
 
 
 def _restore_loader(module: ModuleType, wrapper: _Loader, loader: Any) -> None:

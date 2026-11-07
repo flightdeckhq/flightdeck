@@ -3010,7 +3010,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     // Tool args + result land in event_content's dedicated
     // tool_input / tool_output columns, not inline on the payload.
     // Plugin emits has_content=true + the event_content envelope
-    // (byte-identical to sensor's _build_tool_capture_content
+    // (byte-identical to sensor's build_tool_capture_content
     // output).
     assert.equal(mcpEvent.has_content, true);
     assert.equal(mcpEvent.arguments, undefined);

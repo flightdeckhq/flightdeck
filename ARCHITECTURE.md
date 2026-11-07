@@ -1283,13 +1283,88 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
 | A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed is reported on the pre-call estimate (as an aborted stream with no chunks when its body was never read) only when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
-| Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
+| Frameworks that call a provider over raw HTTP (httpx, requests) | No SDK class to patch. |
+| boto3 `bedrock-runtime` (Converse, ConverseStream) | Not supported yet. botocore's event system gives a seam for it ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)); until then, Strands on its default Bedrock model and any framework on Bedrock through boto3 are not metered. |
+| `google-genai` (Gemini API and Vertex AI) | Not supported yet. One class-level patch on its `Models` / `AsyncModels` would cover it ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); until then, Gemini calls, Google ADK's default model included, are not metered. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
 in the OpenAI resource table, or one entry in `_resource_targets()` in the
 Anthropic interceptor.
 
 ### Framework support
+
+Flightdeck reaches an agent framework two ways.
+
+- **Native sensor** (`init` + `patch`). Every LLM call the framework
+  makes through a patched SDK (Anthropic, OpenAI, litellm) is metered
+  and enforced as it happens, with no per-framework setup. Where the
+  sensor also wraps the framework, each sub-agent run opens a child
+  session (see Sub-agent framework coverage). Enforcement (kill switch,
+  token budget, MCP policy, directives) acts inside the run, and the
+  run is a `flightdeck_sensor` session of the sensor's agent.
+- **OTLP GenAI.** The ingestion API maps the OpenTelemetry GenAI spans
+  of the frameworks its GenAI dialect names (see OTLP ingest > GenAI
+  dialect): agents as child sessions, model calls with tokens and
+  content, tool calls and hand-offs, from any runtime, Python or not.
+  The sessions observe only (no Stop, no budget), belong to a separate
+  `otlp` agent, need the framework's OpenTelemetry exporter configured,
+  and reach the dashboard 3 to 30 seconds after the run's root span
+  ends, already closed.
+
+A framework gets a native wrap where it adds what the OTLP path cannot:
+enforcement per child, live events and no exporter setup, or structure
+no mapped dialect reports. Where OTLP already reports a framework's
+structure and the wrap would add little, the sensor meters its calls and
+OTLP carries its structure. An agent reports one way: a run reported by
+both the sensor and an OTLP exporter is counted twice, and nothing
+detects it yet ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
+
+"Planned" below is work in [#185](https://github.com/flightdeckhq/flightdeck/issues/185).
+
+| Framework | Native: LLM calls | Native: structure | OTLP GenAI | What each path gives |
+|---|---|---|---|---|
+| LangChain | yes | no | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph but opens no child sessions: its nodes are Runnables and a `ToolNode`, which the LangGraph wrap leaves alone |
+| LangGraph | yes | yes, for plain-callable nodes | no | Native: a child session per agent-bearing node whose action is a plain callable, role from the node name; Runnable, `ToolNode` and compiled-subgraph nodes are not wrapped |
+| CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
+| Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
+| Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per child; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
+| OpenAI Agents SDK | yes (Responses tool items become `tool_call` events) | planned | yes, through `opentelemetry-instrumentation-openai-agents-v2` | OTLP: agents, hand-offs, model and tool calls, observe only. Native (planned): a child session per agent and per agent used as a tool, hand-offs, enforced per child |
+| Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
+| LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | planned | no | Native (planned): a child session per agent of an agent workflow, with its hand-offs |
+| Deep Agents | yes through LangChain | planned | no | Native: none (it is built on `create_agent`, whose nodes the LangGraph wrap leaves alone). Planned: a child session per agent and per sub-agent its `task` tool starts |
+| Pydantic AI | yes on Anthropic and OpenAI models; no on `GoogleModel` or `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
+| Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; no on its default Bedrock model or on Gemini | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
+| Agno, Haystack, smolagents | yes when they call a model through the Anthropic or OpenAI SDK or litellm | no ([#278](https://github.com/flightdeckhq/flightdeck/issues/278)) | no | Native: the framework label and metering and enforcement of those calls; a multi-agent run is one session |
+| Semantic Kernel | yes when it calls a model through the Anthropic or OpenAI SDK | no | no | Native: the framework label and those calls |
+| AutoGen, AG2 | yes when they call a model through the Anthropic or OpenAI SDK | not planned | no | Native: the framework label and those calls; Microsoft Agent Framework is AutoGen's successor |
+| DSPy | yes on its litellm engine; no on its default engine, which has its own HTTP transport | n/a | no | Planned: a DSPy callback adapter that meters the default engine |
+
+**Providers.**
+
+| Provider SDK | Native sensor | OTLP GenAI |
+|---|---|---|
+| Anthropic (every client class, including Bedrock, Vertex AI and Foundry) | yes | only as a mapped framework's model calls |
+| OpenAI (including Azure OpenAI and any OpenAI-compatible endpoint the SDK is pointed at) | yes | only as a mapped framework's model calls |
+| litellm | yes | only as a mapped framework's model calls |
+| Google Gemini (`google-genai`, Gemini API and Vertex AI) | no: not supported ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); Gemini reached through litellm is metered as a litellm call | only as a mapped framework's model calls; no Gemini run has been recorded |
+| boto3 `bedrock-runtime` (Converse, ConverseStream) | no: not supported ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)) | only as a mapped framework's model calls; no Bedrock run has been recorded |
+| Voyage, Mistral, Cohere and other native SDKs | no, and not planned: their OpenAI-compatible endpoints go through the OpenAI SDK, and litellm reaches many of them | no |
+
+**Not supported.** The sensor has no in-process seam, or no realistic
+user base on current SDK majors, for these:
+
+- BAML: its Rust runtime makes the model calls.
+- Letta: agents run in the Letta server, out of the application's
+  process.
+- MetaGPT: unmaintained, and pins SDK majors long superseded.
+- CAMEL: its pins conflict with current SDK majors.
+- DSPy's default engine, until the callback adapter lands (above).
+
+Frameworks not listed whose calls go through the Anthropic or OpenAI SDK
+or litellm are metered and enforced, with `framework=null` unless a
+classifier names them (see Framework attribution).
+
+#### LLM call paths
 
 After `init` + `patch`, frameworks that build Anthropic or OpenAI
 clients internally are intercepted without user-side wrapping.
@@ -1399,19 +1474,21 @@ sub-agent execution. Each child session carries
 |---|---|---|---|
 | Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
-| LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
+| LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (every node whose action is a plain callable is wrapped, unless `init(langgraph_agent_node_pattern=...)` narrows it to matching node names; Runnable, `ToolNode` and compiled-subgraph nodes, and with them `create_agent` and Deep Agents, open no child sessions) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
 `parent_session_id=null` and `agent_role=null`; the existing 5-tuple
 identity is unchanged for those paths.
 
-Sub-agent coverage tracks the LLM-interception coverage matrix above
-— a framework lands here only after Flightdeck observes its plain
-LLM calls. AutoGen (`autogen`) and AG2 (`ag2`) runs are labelled (see
-Framework attribution) and their LLM calls are metered through the SDK
-patches, with no sub-agent structure; that structure is planned for
-Microsoft Agent Framework, AutoGen's successor
+Sub-agent coverage tracks the LLM-interception coverage in Framework
+support above — a framework lands here only after Flightdeck observes
+its plain LLM calls. The "Native: structure" column there says which
+frameworks are wrapped, planned or left to the OTLP GenAI path.
+AutoGen (`autogen`) and AG2 (`ag2`) runs are labelled (see Framework
+attribution) and their LLM calls are metered through the SDK patches,
+with no sub-agent structure; that structure is planned for Microsoft
+Agent Framework, AutoGen's successor
 ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)), not for
 AutoGen or AG2.
 
@@ -4043,7 +4120,8 @@ second, an index probe of the empty set of pending traces, and the two
 sweeps. The staging tables answer what is waiting: the pending
 traces, the oldest pending trace's age, and the reasons traces were
 assembled. A sensor and an OTLP exporter reporting the same run report
-it twice, and nothing detects it, so an agent should report one way.
+it twice, and nothing detects it, so an agent should report one way
+(detection: [#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
 
 ---
 
@@ -5855,9 +5933,12 @@ Ingestion rejects counts that break the subset rules (below), and the
 `GREATEST` clamps keep a row stored before that check from producing a
 negative term.
 
-Reasoning tokens are a subset of `tokens_output` on every provider; the
-sensor adds Gemini's separately reported thinking tokens into
-`tokens_output` so the subset rule holds. A provider that reports no
+Reasoning tokens are a subset of `tokens_output` on every provider. A
+client reporting a provider that counts reasoning apart from its output
+(Gemini's thinking tokens) must add it into `tokens_output` so the
+subset rule holds; litellm does so before the sensor reads its usage,
+and the sensor has no `google-genai` path of its own (see Sensor >
+Framework support). A provider that reports no
 cache or reasoning split leaves those terms at 0 and the formula
 collapses to `t_in * input + t_out * output`.
 

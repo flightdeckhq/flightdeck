@@ -131,9 +131,33 @@ The Anthropic row applies to every `anthropic` client class — first-party, Bed
 
 Streamed calls report the token counts the provider sends inside the stream, whether you iterate inside a `with` block or without one (a loop left with `break` and never closed is reported at the next LLM call the sensor intercepts after the stream object is collected, or when the session ends). Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`; `final_outcome` is `aborted` when you leave a stream before the event that ends the response, and `completed` otherwise. A mid-stream failure, inside a `with` block or while iterating without one, emits `llm_error{error_type="stream_error"}` with the chunks and tokens delivered before the failure.
 
+Not supported yet: Gemini through `google-genai` ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)) and boto3 Bedrock Converse ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)). Claude on Bedrock or Vertex AI through the `anthropic` SDK is covered (above).
+
 ### Frameworks
 
-After `init()` + `patch()`, frameworks that build Anthropic or OpenAI clients internally are intercepted with no user-side wrapping.
+Flightdeck reaches a framework two ways. The sensor meters and enforces every LLM call the framework makes through the Anthropic or OpenAI SDK or litellm, live, and for the frameworks it wraps opens a child session per sub-agent. The [OpenTelemetry receiver](#agent-frameworks-over-opentelemetry) maps the GenAI spans some frameworks export: their agents, model calls and tool calls, from any language, but observe only and once the run has ended. A framework gets a native wrap where that adds enforcement per sub-agent, live events or structure OpenTelemetry does not report.
+
+| Framework | Sensor: LLM calls | Sensor: sub-agents | OpenTelemetry |
+|---|---|---|---|
+| LangChain | yes | no (`create_agent` builds Runnable and `ToolNode` nodes, which are not wrapped) | no |
+| LangGraph | yes | yes, for nodes whose action is a plain callable (not Runnable, `ToolNode` or compiled-subgraph nodes) | no |
+| CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; not on its Gemini, Azure or Bedrock providers | yes | no |
+| Claude Agent SDK (Python) | yes | its own session per run | no |
+| Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
+| OpenAI Agents SDK | yes | planned | yes |
+| Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
+| LlamaIndex | yes | planned | no |
+| Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |
+| Pydantic AI | yes on Anthropic and OpenAI models; not on `GoogleModel` or `BedrockConverseModel` | no: use OpenTelemetry | yes |
+| Strands Agents | yes on its OpenAI, Anthropic and LiteLLM providers; not on Bedrock | no: use OpenTelemetry | yes |
+| Agno, Haystack, smolagents | yes on the Anthropic / OpenAI SDKs or litellm | on the [roadmap](https://github.com/flightdeckhq/flightdeck/issues/278) | no |
+| AutoGen, AG2 | yes on the Anthropic / OpenAI SDKs | not planned | no |
+| Semantic Kernel | yes on the Anthropic / OpenAI SDKs | no | no |
+| DSPy | on its litellm engine; its default engine is planned | n/a | no |
+
+"Planned" is tracked in [#185](https://github.com/flightdeckhq/flightdeck/issues/185). Report a run one way: the sensor and an OpenTelemetry exporter on the same run count it twice. Not supported: BAML (its Rust runtime makes the calls), Letta (its server runs the agents), MetaGPT and CAMEL (they pin SDK majors long superseded or conflicting). [ARCHITECTURE.md](ARCHITECTURE.md) ("Framework support") has what each path gives per framework.
+
+The sensor reaches a framework's LLM calls through the clients it builds:
 
 | Framework        | Chat | Embeddings |
 |------------------|------|------------|
@@ -159,7 +183,7 @@ The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev pat
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. By default the plugin only observes and the Stop Agent button is hidden for these sessions; with its `enforcement` option on, a stop or a token budget denies the session's next tool call and blocks its prompts (see [plugin/README.md](plugin/README.md#enforcement-opt-in)). Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
 
-`client_type` names the client that produced a session. Flightdeck accepts nine values (`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor`, `otlp`), each with a display label, an expected agent type, a billing-mode default and whether the client can act on directives; see "Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md). The plugin sends `claude_code`, the sensor sends `flightdeck_sensor`, and the sensor's Claude Agent SDK interceptor sends `claude_agent_sdk`. A session reported over OpenTelemetry takes the type of the tool that produced it, so Claude Code's own telemetry, the one source the receiver maps, also lands as `claude_code` (see [Claude Code over OpenTelemetry](#claude-code-over-opentelemetry)). The other values are reserved for the integrations on the [Roadmap](#roadmap), `otlp` for an OpenTelemetry source no other value names.
+`client_type` names the client that produced a session. Flightdeck accepts nine values (`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor`, `otlp`), each with a display label, an expected agent type, a billing-mode default and whether the client can act on directives; see "Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md). The plugin sends `claude_code`, the sensor sends `flightdeck_sensor`, and the sensor's Claude Agent SDK interceptor sends `claude_agent_sdk`. A session reported over OpenTelemetry takes the type of the tool that produced it, so Claude Code's own telemetry also lands as `claude_code` (see [Claude Code over OpenTelemetry](#claude-code-over-opentelemetry)), and the agent frameworks the receiver maps, which no other value names, land as `otlp` (see [Agent frameworks over OpenTelemetry](#agent-frameworks-over-opentelemetry)). The other values are reserved for the integrations on the [Roadmap](#roadmap).
 
 ### Claude Code over OpenTelemetry
 
@@ -225,6 +249,27 @@ Rolling it out:
 
 A proxy in front of ingestion must accept 4 MiB request bodies on `/ingest/`; the bundled nginx does, and so does the Helm chart's `values.prod.yaml` for ingress-nginx. The limit applies to the body as sent, and a gzip body may inflate to 16 MiB. With content logging on, a batch carries prompts, responses (each cut at 60 KB by default) and tool parameters, so a backlog can pass 4 MiB; the receiver then answers 413 and the exporter drops the whole batch. Add `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` when capture is on.
 
+### Agent frameworks over OpenTelemetry
+
+Pydantic AI, Strands Agents, the OpenAI Agents SDK (through `opentelemetry-instrumentation-openai-agents-v2`) and Google ADK export OpenTelemetry GenAI spans, and the ingestion API maps them: each agent becomes a session (a sub-agent a child session), with its model calls, tokens, tool calls and hand-offs. These sessions observe only (no Stop, no token budget), land as `client_type=otlp`, and appear 3 to 30 seconds after the run ends. Set the exporter environment before the framework is imported:
+
+```bash
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://flightdeck.example.com/ingest
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20ftd_..."
+export OTEL_RESOURCE_ATTRIBUTES="flightdeck.flavor=my-app,host.name=$(hostname),flightdeck.capture_prompts=true"
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
+```
+
+Then turn on the framework's tracing:
+
+- **Pydantic AI:** a global `TracerProvider` with an OTLP span exporter, and `Agent.instrument_all()`.
+- **Strands Agents:** `StrandsTelemetry().setup_otlp_exporter()`.
+- **OpenAI Agents SDK:** a global `TracerProvider` with an OTLP span exporter, and `OpenAIAgentsInstrumentor().instrument()` from `opentelemetry-instrumentation-openai-agents-v2`. The SDK also exports its traces to OpenAI by default; call `set_trace_processors([])` before `instrument()` to turn that off, as playground script 34 does (the instrumentor adds its processor to the existing ones, so calling it afterwards drops the Flightdeck export too).
+- **Google ADK:** `adk web` and `adk api_server` set it up, or call `maybe_set_otel_providers()` from `google.adk.telemetry.setup`. ADK sends each model call's content as a log record on `/v1/logs`, so a setup of your own needs a logs exporter as well as a span exporter.
+
+`flightdeck.capture_prompts=true` keeps message content, and `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` makes the OpenAI Agents instrumentation and ADK send it (Pydantic AI and Strands send it by default). `flightdeck.agent_type` (`coding` or `production`, default `production`) and `flightdeck.billing_mode` are read as for Claude Code, but the billing default here is `metered`, not Claude Code's `subscription`. Playground scripts 32 to 35 show the setup per framework. When the sensor already reports the same run, leave the exporter off: both paths count it ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
+
 ### Sub-agent observability
 
 Multi-agent frameworks render as a tree: a parent session for the orchestrator and a separate child session per sub-agent execution, linked by `parent_session_id` and labeled with `agent_role`.
@@ -233,7 +278,7 @@ Multi-agent frameworks render as a tree: a parent session for the orchestrator a
 |---|---|---|
 | Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute |
-| LangGraph agent-bearing node | parent runner's session | node name |
+| LangGraph agent-bearing node whose action is a plain callable | parent runner's session | node name |
 
 Direct SDK calls outside a multi-agent framework emit root sessions; identity is unchanged. When `capture_prompts=True`, each child session carries the parent's input as `incoming_message` and the child's response back as `outgoing_message`, visible in the run drawer's Sub-agents tab.
 
@@ -530,7 +575,7 @@ The chart is at `version` 0.8.0 with `appVersion` 0.8.0; the default `image.tag`
 
 Planned work is tracked as [GitHub issues labelled `roadmap`](https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap), grouped by release milestone. React with :+1: on the ones you need; that is how they get prioritised.
 
-Not planned: Antigravity CLI (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only) and sub-agent structure for AutoGen and AG2 (their runs are labelled `autogen` and `ag2` and their LLM calls are metered; AutoGen's successor, Microsoft Agent Framework, is on the roadmap).
+Not planned: Antigravity CLI (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only) and sub-agent structure for AutoGen and AG2 (their runs are labelled `autogen` and `ag2` and their LLM calls are metered; AutoGen's successor, Microsoft Agent Framework, is on the roadmap), sub-agent structure in the sensor for Pydantic AI and Strands Agents (their OpenTelemetry export reports it, and the sensor meters their calls), and BAML, Letta, MetaGPT and CAMEL (no in-process seam, or SDK pins too old for current providers).
 
 ---
 

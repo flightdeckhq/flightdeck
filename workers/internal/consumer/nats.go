@@ -797,7 +797,7 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload
 				"worker", id, "event_type", logcap.EventType(event.EventType),
 				"session_id", event.SessionID)
 		}
-		_ = msg.Term()
+		c.terminate(msg)
 	default:
 		_ = msg.Ack()
 	}

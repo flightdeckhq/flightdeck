@@ -288,6 +288,8 @@ func (pe *PolicyEvaluator) writeDirective(
 		return err
 	}
 
+	// Uncapped: action and reason are literals Evaluate picks, and the
+	// session_id passed the consumer's check; none is payload text.
 	slog.Info("policy directive issued", "session_id", sessionID, "action", action, "reason", reason)
 	return nil
 }

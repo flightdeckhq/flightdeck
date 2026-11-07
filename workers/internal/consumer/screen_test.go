@@ -257,13 +257,17 @@ func (panickingProcessor) StreamReady(context.Context, uint64) error { return ni
 func TestHandle_CapsPayloadStringsOnItsLogLines(t *testing.T) {
 	logs := captureLogs(t)
 	huge := strings.Repeat("z", hugeLen)
-	c := &Consumer{processor: panickingProcessor{huge: huge}}
+	terms := 0
+	c := &Consumer{processor: panickingProcessor{huge: huge}, term: func(*nats.Msg) error { terms++; return nil }}
 	hugeType := strings.Repeat("t", hugeLen)
 	sid := testSessionID(7)
 	// A message with no JetStream metadata counts as its final delivery,
 	// so each is terminated after one attempt.
 	c.handle(context.Background(), &nats.Msg{}, EventPayload{SessionID: sid, EventType: hugeType, ID: "error"}, 0)
 	c.handle(context.Background(), &nats.Msg{}, EventPayload{SessionID: sid, EventType: hugeType, ID: "panic"}, 0)
+	if terms != 2 {
+		t.Fatalf("terminated %d of the 2 final-delivery failures", terms)
+	}
 
 	// The longest line holds a 1 KiB error, a 64-byte event type and a
 	// few short keys.

@@ -62,6 +62,10 @@ nats:
     enabled: true
     fileStore:
       size: "50Gi"
+    stream:
+      # 30 GiB of the 50Gi volume, under the 75% of free space a NATS
+      # server reserves at most when it starts.
+      maxSizeMiB: 30720
   resources:
     requests:
       cpu: 250m

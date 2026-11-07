@@ -160,6 +160,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Session and event listings no longer drop rows dated ahead of the
+  API's clock.** Without a `to` parameter, `GET /v1/sessions` and
+  `GET /v1/events` ended the range at the API's own clock, but Postgres
+  stamps a session's `started_at` and the client stamps an event's
+  `occurred_at`. Whenever the API's clock read behind, a session that had
+  just started or an event that had just arrived was left out of the
+  listing. A dev box whose clock is stepped back about two seconds every
+  few minutes emptied the state-sort integration test's listing this
+  way. An omitted `to` now leaves the range without an upper bound
+  (D254).
 - **The sensor meters MCP calls when an LLM tool call is what first
   imports `mcp`.** With prompt capture on, the first tool call an
   Anthropic, OpenAI or litellm response carried imported the sensor's MCP
@@ -533,6 +543,30 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The `FLIGHTDECK` NATS stream is bounded, and replicated under
+  Helm.** It used to keep every event ever published. Ingestion now
+  applies a 72-hour age limit and a 5 GiB size limit at startup
+  (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`,
+  `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB`; Helm
+  `nats.jetstream.stream.*`, 30 GiB in `values.prod.yaml`), to an
+  existing stream in place, and the Helm chart keeps 3 copies of it on a
+  NATS cluster of 3 or more servers. The first start after upgrading
+  removes the events older than 72 hours, or beyond 5 GiB, from the
+  stream; they were processed long ago and Postgres keeps them. At a
+  limit the stream removes its oldest events, processed or not: events
+  the workers have not processed are lost when the workers are down
+  longer than 72 hours or fall more than 5 GiB behind, and the workers
+  log how many at their next start. Ingestion now owns the stream and
+  the workers wait for it rather than create it; upgrade both together,
+  since a worker or ingestion of an earlier release restarted against
+  the updated stream fails its own stream setup until it is upgraded
+  (D253; [#169](https://github.com/flightdeckhq/flightdeck/issues/169),
+  part of [#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
+  **Rolling back:** an earlier ingestion or worker cannot start on the
+  updated stream. Reset it first with the NATS CLI, `nats stream edit
+  FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old --replicas=1
+  --force` (add `-s <your NATS URL>`), which restores unbounded
+  retention and a single replica, then start the earlier release.
 - **The analytics `tokens` metric and the per-agent summary count
   embeddings calls**, which the session and agent totals and the cost
   already did, so every token total agrees

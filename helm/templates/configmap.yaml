@@ -15,6 +15,10 @@ data:
   FLIGHTDECK_METRICS_PORT: {{ .Values.workers.metricsPort | quote }}
   FLIGHTDECK_MIGRATIONS_DIR: {{ .Values.workers.migrationsDir | quote }}
   FLIGHTDECK_RATE_LIMIT_PER_MINUTE: {{ .Values.ingestion.rateLimitPerMinute | quote }}
+  # The FLIGHTDECK stream's settings; ingestion applies them at startup.
+  FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS: {{ include "flightdeck.natsStreamMaxAgeHours" . | quote }}
+  FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: {{ include "flightdeck.natsStreamMaxSizeMiB" . | quote }}
+  FLIGHTDECK_NATS_STREAM_REPLICAS: {{ include "flightdeck.natsStreamReplicas" . | quote }}
   {{- if and (eq .Values.api.env "production") (eq .Values.api.corsOrigin "*") }}
   {{- required "api.corsOrigin must not be \"*\" for a production install: set it to your dashboard origin (e.g. https://flightdeck.example.com). A wildcard CORS origin on the bearer-token API is unsafe." "" }}
   {{- end }}

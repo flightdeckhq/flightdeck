@@ -217,7 +217,8 @@ All notable changes to Flightdeck are documented here.
   events carry and stores it (`object: "response"`,
   `status: "in_progress"`, no output) when no terminal event arrived,
   as an OpenAI SDK Responses stream already did. Usage, model and stop
-  reason still come from the streamed events.
+  reason still come from the streamed events
+  ([#268](https://github.com/flightdeckhq/flightdeck/pull/268)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

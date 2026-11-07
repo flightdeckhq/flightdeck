@@ -44,6 +44,7 @@ PATCHABLE = (
     "mcp",
     "crewai",
     "langgraph.graph",
+    "llama_index.core",
     "claude_agent_sdk",
     "agents",
 )
@@ -124,6 +125,8 @@ def _use(sdk: str, server: str) -> bool:
         from crewai import Agent
 
         return getattr(Agent, "_flightdeck_subagent_patched", False) is True
+    if sdk == "llama_index.core":
+        return asyncio.run(_run_llama_index_agent(server))
     if sdk == "claude_agent_sdk":
         import claude_agent_sdk
 
@@ -142,6 +145,18 @@ def _use(sdk: str, server: str) -> bool:
         Runner.run_sync(Agent(name="worker", model=model), "hi")
         return AgentRunner.__dict__.get("_flightdeck_openai_agents_patched", False) is True
     raise ValueError(sdk)
+
+
+async def _run_llama_index_agent(server: str) -> bool:
+    """Run a LlamaIndex agent once and return whether the sensor's span
+    handler is on the root dispatcher."""
+    from llama_index.core.agent.workflow import FunctionAgent
+    from llama_index.core.instrumentation import get_dispatcher
+    from llama_index.llms.openai import OpenAI
+
+    llm = OpenAI(model="gpt-4o-mini", api_base=f"{server}/v1", api_key="test-key")
+    await FunctionAgent(name="worker", llm=llm, streaming=False).run(user_msg="hi")
+    return any(type(h).__name__ == "FlightdeckSpanHandler" for h in get_dispatcher().span_handlers)
 
 
 def _tool_call(server: str) -> bool:

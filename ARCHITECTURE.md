@@ -261,6 +261,7 @@ flightdeck/
 │   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
 │   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   ├── llama_index.py  # LlamaIndex instrumentation span handler → one child session per agent of an agent workflow run
 │   │   │   └── claude_agent_sdk.py # Claude Agent SDK query() / ClaudeSDKClient patch → one session per run
 │   │   ├── providers/
 │   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), call details, endpoint vendor / locality, content extraction
@@ -1330,7 +1331,7 @@ detects it yet ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
 | Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per child; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
 | OpenAI Agents SDK | yes (Responses tool items become `tool_call` events) | planned | yes, through `opentelemetry-instrumentation-openai-agents-v2` | OTLP: agents, hand-offs, model and tool calls, observe only. Native (planned): a child session per agent and per agent used as a tool, hand-offs, enforced per child |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
-| LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | planned | no | Native (planned): a child session per agent of an agent workflow, with its hand-offs |
+| LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, carrying that agent's model calls and tool calls, with its hand-offs (see LlamaIndex agent workflows) |
 | Deep Agents | yes through LangChain | planned | no | Native: none (it is built on `create_agent`, whose nodes the LangGraph wrap leaves alone). Planned: a child session per agent and per sub-agent its `task` tool starts |
 | Pydantic AI | yes on Anthropic and OpenAI models; no on `GoogleModel` or `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; no on its default Bedrock model or on Gemini | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
@@ -1468,13 +1469,14 @@ The sensor opens a child session for every framework-recognised
 sub-agent execution. Each child session carries
 `parent_session_id` pointing back to the outer session and
 `agent_role` set to the framework-supplied role label
-(see Identity model above). Three mechanisms are covered:
+(see Identity model above). Four mechanisms are covered:
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
 | Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (every node whose action is a plain callable is wrapped, unless `init(langgraph_agent_node_pattern=...)` narrows it to matching node names; Runnable, `ToolNode` and compiled-subgraph nodes, and with them `create_agent` and Deep Agents, open no child sessions) |
+| LlamaIndex agent workflow run | the sensor's session | the agent's `name` | `sensor/.../interceptor/llama_index.py` (a span handler on LlamaIndex's root instrumentation dispatcher; see LlamaIndex agent workflows) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
@@ -1526,7 +1528,8 @@ mirroring the existing `error_types` (`llm_error`) and
 
 A framework hand-off, one agent passing the conversation to another,
 is reported with `Session.emit_agent_handoff(from_agent=, to_agent=)`,
-available to the framework wraps (Google ADK, OpenAI Agents SDK). It
+which the LlamaIndex wrap calls and the planned Google ADK and OpenAI
+Agents SDK wraps will. It
 emits the `agent_handoff`
 `session_signal` the GenAI dialect emits (see Event Types >
 `session_signal`), so a hand-off reads the same whether the sensor or
@@ -1558,6 +1561,88 @@ session and discarded on a child's, as the child `session_start` and
 `session_end` discard theirs. Nothing is sent once the session has
 ended or is shutting down (`end()`, a SIGTERM / SIGINT shutdown, or a
 shutdown directive).
+
+**Which session a sub-agent's calls land on.** A wrap can run a child's
+work inside the child's scope (`Session.enter_subagent_scope`, a
+context variable, so it follows the child's asyncio tasks and threads
+started with a copied context and nothing else). Every event the sensor
+builds for its own session while that scope is active goes on the child
+instead: model calls, `pre_call`, `tool_call`, `llm_error`, the MCP
+events and the `policy_*` events, each carrying the child's
+`session_id`, `agent_id` and `agent_name` with `parent_session_id` and
+`agent_role`, and `tokens_used_session` as the child's running total.
+The child's `session_end` then goes through the event queue behind those
+events, so it never overtakes them (the worker drops an event that
+arrives for a closed session). The LlamaIndex wrap uses the scope. The
+CrewAI and LangGraph wraps do not: their children carry `session_start`
+and `session_end` only, and the model calls made during a child's turn
+stay on the sensor's own session.
+
+Enforcement with a scope active: the worker counts a child's tokens on
+the child's session row, so a server token policy is evaluated per child
+session; the sensor's own counter (the `init(limit=...)` warning and the
+pre-call check against the policy it cached) keeps counting every call
+of the process. A directive in the response to a child's event is the
+sensor's (its `parent_session_id` is the sensor's session) and is
+applied as for the sensor's own session: a Stop on a child, or a token
+budget `shutdown` for a child, makes the next model call anywhere in the
+process raise `DirectiveError` before it is sent, and a `degrade` swaps
+the model of every later call.
+
+#### LlamaIndex agent workflows
+
+`patch()` (`Provider.LLAMA_INDEX`) adds a span handler to LlamaIndex's
+root instrumentation dispatcher (`llama_index.core.instrumentation`); no
+LlamaIndex class or method is replaced. An agent workflow run
+(`FunctionAgent`, `ReActAgent`, `CodeActAgent` or a multi-agent
+`AgentWorkflow`, run with `.run()`) opens a run span whose instance is
+the agent or workflow, and each of its steps opens a span parented on
+it, in the step's own task, with the step's input event in its
+arguments. The handler reads the current agent's name from the events
+that carry it (`AgentInput`, `AgentSetup`, `AgentOutput`):
+
+- The first step that names an agent opens that agent's child session
+  (`agent_role` and the `agent_name` suffix are the agent's `name`),
+  with the run's `user_msg` as `incoming_message`.
+- A step that names another agent is a hand-off (`AgentWorkflow`'s
+  `handoff` tool): the handler emits `agent_handoff` on the agent
+  handing off, ends its child with its last response as
+  `outgoing_message`, and opens the next agent's child with the
+  hand-off's `reason` as `incoming_message`. An agent handed back to
+  opens a new child session.
+- The run span's exit ends the open child; its drop (the run raised)
+  ends it with `state=error` and the exception's type and message. A
+  run whose last failed step no later step followed also ends in error,
+  with that step's exception: early llama-index-workflows 2 releases
+  exit the run span of a failed run instead of dropping it.
+- Each step of the run runs inside the open child's scope, so the
+  agent's model calls, the tools it runs and the model and MCP calls a
+  tool makes land on the child. An agent run started inside a tool opens
+  its own child, also parented on the sensor's session.
+
+Tool calls: a tool the model asked for in a structured tool call is
+already a `tool_call` event from the model's response (see LLM call
+paths). The handler adds a `tool_call` only for a tool whose call id no
+model response in that child reported, as `ReActAgent` and
+`CodeActAgent` parse their tool calls from the model's text; it carries
+`tool_name` and the run's `latency_ms`, and under `capture_prompts` the
+tool's arguments and output as `tool_input` / `tool_output`. A tool call
+is never reported twice.
+
+Enforcement stops a run at its next model call: the `DirectiveError` or
+`BudgetExceededError` the patched SDK raises fails the agent's step,
+LlamaIndex ends the run with it (awaiting the handler raises it), and
+the open child ends with `state=error`. The dispatcher discards anything
+a span handler raises, so the handler never stops a run itself. A run
+that never ends (its handler is dropped unawaited) leaves its child
+open until the worker's orphan detection closes it.
+
+The wrap needs llama-index-core 0.14 or later (llama-index-workflows 2),
+the release line whose step spans it reads; on an older release `patch()`
+logs a warning and leaves LlamaIndex unwrapped, and its model calls are
+still metered on the sensor's session. A query or chat engine, or a
+workflow that is not an agent workflow, opens no child session; its
+model calls are metered on the session whose scope it runs in.
 
 ### Claude Agent SDK
 
@@ -2874,7 +2959,8 @@ connectors). The contract is pinned by
 ### Sub-agent sessions
 
 Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
-LangGraph agent-bearing nodes) carry two paired columns on
+LangGraph agent-bearing nodes, the agents of a LlamaIndex agent workflow
+run) carry two paired columns on
 `sessions`:
 
 - `parent_session_id uuid` — references `sessions(session_id)`, set to
@@ -8741,8 +8827,8 @@ two agents' names, either left out when not known) and no content,
 whatever the capture setting. Ingestion's GenAI dialect emits it for
 an OpenTelemetry GenAI run (see OTLP ingest > GenAI dialect >
 Sessions), and the Python sensor emits it through
-`Session.emit_agent_handoff`, available to the framework wraps (Google
-ADK, OpenAI Agents SDK; see Sensor > Sub-agent framework coverage),
+`Session.emit_agent_handoff`, which the LlamaIndex wrap calls (see
+Sensor > Sub-agent framework coverage),
 with the same names, bounds and stored shape, so the worker
 and the dashboard do not tell the two apart. The dashboard's feed line
 reads `hand-off · <from> → <to>`.
@@ -10254,6 +10340,7 @@ on any box.
 | `make playground-langchain` | `playground/03_langchain.py` |
 | `make playground-langgraph` | `playground/04_langgraph.py` |
 | `make playground-llamaindex` | `playground/05_llamaindex.py` |
+| `make playground-llamaindex-agents` | `playground/39_llamaindex_agents.py` |
 | `make playground-crewai` | `playground/06_crewai.py` |
 | `make playground-litellm` | `playground/12_litellm.py` |
 | `make playground-mcp` | `playground/13_mcp.py` |

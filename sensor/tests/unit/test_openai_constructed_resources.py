@@ -56,7 +56,9 @@ EAGER_SDK = "chat" not in openai.OpenAI.__dict__
 MODEL = "gpt-4o-mini"
 USAGE = {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
 OPENAI_URL = "https://api.openai.com/v1"
-MESSAGES = [{"role": "user", "content": "hello"}]
+PROMPT = "SECRET-PROMPT-eager-4f1a"
+EMBEDDING_INPUT = "SECRET-EMBEDDING-INPUT-eager-9c2d"
+MESSAGES = [{"role": "user", "content": PROMPT}]
 
 
 # Self-contained rather than shared with the other OpenAI test modules:
@@ -469,6 +471,89 @@ def test_a_client_built_before_the_patch_is_metered(monkeypatch: pytest.MonkeyPa
         _assert_one_metered_call(session)
     finally:
         unpatch_openai_classes()
+
+
+def _embeddings_body() -> dict[str, Any]:
+    return {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 4, "total_tokens": 4},
+    }
+
+
+@pytest.mark.parametrize("capture", [True, False], ids=["capture-on", "capture-off"])
+def test_chat_and_embeddings_keep_the_capture_posture(
+    patched: None, monkeypatch: pytest.MonkeyPatch, capture: bool
+) -> None:
+    """With capture off, a chat and an embeddings call through the
+    patched resources carry token counts and no content; with it on,
+    both store their content. On the floor lane this is the
+    constructed-resource path."""
+    session = _activate(monkeypatch, capture)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=httpx.Response(200, json=_completion()))
+        router.post("/embeddings").mock(return_value=httpx.Response(200, json=_embeddings_body()))
+        client = _client(False)
+        client.chat.completions.create(model=MODEL, messages=MESSAGES)
+        client.embeddings.create(model="text-embedding-3-small", input=EMBEDDING_INPUT)
+
+    post_calls = _events_of(session, "post_call")
+    embeddings = _events_of(session, "embeddings")
+    assert len(post_calls) == 1
+    assert len(embeddings) == 1
+    assert post_calls[0]["tokens_input"] == USAGE["prompt_tokens"]
+    assert embeddings[0]["tokens_input"] == 4
+    for event in post_calls + embeddings:
+        if capture:
+            assert event.get("has_content")
+            assert event.get("content") is not None
+        else:
+            assert not event.get("has_content")
+            assert event.get("content") is None
+    wire = json.dumps(post_calls + embeddings, default=str)
+    if capture:
+        assert PROMPT in wire
+        assert EMBEDDING_INPUT in wire
+    else:
+        assert PROMPT not in wire
+        assert EMBEDDING_INPUT not in wire
+
+
+def _raw_view_call(client: Any) -> None:
+    raw = client.with_raw_response.chat.completions.create(model=MODEL, messages=MESSAGES)
+    assert raw.parse().choices[0].message.content == "hi"
+
+
+@pytest.mark.skipif(not EAGER_SDK, reason="the installed openai builds its views lazily")
+def test_the_client_raw_view_follows_the_session_the_client_was_built_in(
+    patched: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before 1.78 the constructor builds the client-level raw view over
+    whatever ``client.chat`` returned at that moment. Pins what follows:
+    a client built with a session active has a metered view, bound to
+    that session even once another starts; a client built with no
+    session active has an unmetered one."""
+    building_session = _activate(monkeypatch)
+    built_in_session = _client(False)
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    built_without_session = _client(False)
+    later_session = _activate(monkeypatch)
+
+    with respx.mock(base_url=OPENAI_URL) as router:
+        route = router.post("/chat/completions").mock(
+            return_value=httpx.Response(200, json=_completion())
+        )
+        _raw_view_call(built_in_session)
+        _raw_view_call(built_without_session)
+
+    assert route.call_count == 2
+    # The view built in the first session reports to it.
+    _assert_one_metered_call(building_session)
+    # The view built with no session is the SDK's own, so it is not metered.
+    assert _events_of(later_session, "post_call") == []
+    # The resources themselves follow the current session.
+    assert built_without_session.chat._session is later_session
 
 
 def test_every_client_resource_the_sdk_has_is_patched(patched: None) -> None:

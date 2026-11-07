@@ -1477,7 +1477,7 @@ def _built_in_constructor(cls: Any, attr_name: str) -> bool:
     class-level descriptor."""
     try:
         annotations = inspect.get_annotations(cls)
-    except Exception:
+    except (TypeError, ValueError):
         return False
     return attr_name in annotations
 

@@ -655,9 +655,9 @@ def patch(
     responses / embeddings cached_property descriptors on OpenAI and
     AsyncOpenAI (on openai before 1.78, which builds them in the client
     constructor, a data descriptor per resource instead; openai below
-    1.26 is left unpatched with a warning). Works with frameworks that build their own clients
-    internally; isinstance checks and captured class references keep
-    working. Never imports an SDK: one the application has imported is
+    1.26 is left unpatched with a warning). Works with frameworks that
+    build their own clients internally; isinstance checks and captured
+    class references keep working. Never imports an SDK: one the application has imported is
     patched at once, one it imports later is patched as it is imported.
     Idempotent."""
 
@@ -981,9 +981,13 @@ different levels:
   access, and `unpatch` deletes the descriptor (its sentinel holds a
   marker, not an original) so every client reads its own resource again.
   The one exception is that SDK's client-level `with_raw_response` /
-  `with_streaming_response` view, which the constructor builds over the
-  resources it has at that moment: on a client built before `patch` it
-  holds the SDK's own resources and is not metered. A resource the
+  `with_streaming_response` view, which the constructor builds over
+  whatever `client.chat` (and its siblings) returned at that moment. On
+  a client built before `patch`, or built with no session active, the
+  view holds the SDK's own resources and is not metered. On a client
+  built while a session was active, the view holds proxies bound to that
+  session, so its calls are reported to that session even after another
+  one starts. A resource the
   client class has neither as a descriptor nor as an annotation
   (`responses` before 1.66)
   is left alone. CI's `openai floor` lane runs the OpenAI tests against
@@ -1017,7 +1021,8 @@ that accessed `.chat` / `.responses` / `.embeddings` BEFORE `patch` have
 the raw resource cached in `instance.__dict__` and bypass the descriptor
 permanently. New instances and new accesses are wrapped correctly. On
 openai before 1.78 such instances are metered from their next access,
-except through their client-level raw and streaming views.
+except through their client-level raw and streaming views (see the
+OpenAI floor paragraph above).
 Anthropic clients have no such limitation beyond the raw and streaming
 views described above. The practical advice is the same for both: call
 `init` + `patch` at the top of the entrypoint, before any framework or

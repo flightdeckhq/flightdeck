@@ -26,6 +26,7 @@ from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
+from flightdeck_sensor.providers._access import field as _field
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -126,9 +127,9 @@ def _cache_breakdown(usage: Any) -> tuple[int, int]:
     """``(cache_read, cache_creation)`` from a litellm ``Usage``: the
     ``prompt_tokens_details`` wrapper first, then the Anthropic-named
     attributes litellm sets on older shapes. Zeros when absent."""
-    details = getattr(usage, "prompt_tokens_details", None)
-    cache_read = _count(getattr(details, "cached_tokens", None))
-    cache_creation = _count(getattr(details, "cache_creation_tokens", None))
+    details = _field(usage, "prompt_tokens_details")
+    cache_read = _count(_field(details, "cached_tokens"))
+    cache_creation = _count(_field(details, "cache_creation_tokens"))
     if cache_read is None:
         cache_read = _count(getattr(usage, "cache_read_input_tokens", None))
     if cache_creation is None:
@@ -284,11 +285,7 @@ class LitellmProvider:
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_creation,
                 reasoning_tokens=_count(
-                    getattr(
-                        getattr(usage, "completion_tokens_details", None),
-                        "reasoning_tokens",
-                        None,
-                    )
+                    _field(_field(usage, "completion_tokens_details"), "reasoning_tokens")
                 ),
             )
         except Exception:
@@ -561,14 +558,6 @@ def _litellm_details(obj: Any) -> CallDetails | None:
 # ----------------------------------------------------------------------
 # litellm.text_completion / litellm.responses
 # ----------------------------------------------------------------------
-
-
-def _field(obj: Any, name: str) -> Any:
-    """``obj.name`` or ``obj[name]``: litellm hands back pydantic objects
-    and plain dicts for the same Responses items."""
-    if isinstance(obj, dict):
-        return obj.get(name)
-    return getattr(obj, name, None)
 
 
 def _as_json(value: Any) -> Any:

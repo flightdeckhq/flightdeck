@@ -13,6 +13,8 @@ from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
+from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -402,8 +404,7 @@ class AnthropicProvider:
         snapshot. The accumulator runs with capture on or off: it is how
         a streamed ``tool_use`` block becomes a ``tool_call`` event, and
         folding an event into the snapshot is a string append."""
-        classes = _raw_stream_classes()
-        if not classes or not isinstance(stream, classes):
+        if not is_raw_stream(stream, _raw_stream_classes()):
             return None
         return _MessageStreamAccumulator(_request_headers_of(stream))
 
@@ -608,15 +609,13 @@ def _count(value: Any) -> int | None:
 def _thinking_tokens(usage: Any) -> int | None:
     """The thinking share of the output (``output_tokens_details
     .thinking_tokens``), or ``None`` when the response reports none."""
-    return _count(getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None))
+    return _count(_field(_field(usage, "output_tokens_details"), "thinking_tokens"))
 
 
 def _cache_creation_1h(usage: Any) -> int | None:
     """The one-hour share of the cache writes (``cache_creation
     .ephemeral_1h_input_tokens``), or ``None`` when not reported."""
-    return _count(
-        getattr(getattr(usage, "cache_creation", None), "ephemeral_1h_input_tokens", None)
-    )
+    return _count(_field(_field(usage, "cache_creation"), "ephemeral_1h_input_tokens"))
 
 
 def _text(value: Any) -> str | None:
@@ -627,9 +626,9 @@ def _details(model: Any, usage: Any) -> CallDetails | None:
     """The call details a message's model id and usage object carry, or
     ``None`` when they carry none."""
     tools: dict[str, int] = {}
-    server_tool_use = getattr(usage, "server_tool_use", None) if usage is not None else None
+    server_tool_use = _field(usage, "server_tool_use") if usage is not None else None
     for field in ("web_search_requests", "web_fetch_requests"):
-        count = _count(getattr(server_tool_use, field, None))
+        count = _count(_field(server_tool_use, field))
         if count:
             tools[field] = count
     details = CallDetails(

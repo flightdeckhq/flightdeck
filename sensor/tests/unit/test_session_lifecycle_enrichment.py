@@ -4,6 +4,7 @@ operator-actionable enrichment contract tests."""
 from __future__ import annotations
 
 import uuid
+from importlib.metadata import PackageNotFoundError, version
 from unittest.mock import MagicMock
 
 from flightdeck_sensor.core.session import (
@@ -48,14 +49,21 @@ def test_session_start_stamps_sensor_version() -> None:
 
 
 def test_session_start_stamps_interceptor_versions() -> None:
-    """At least the sensor's own deps installed in the test venv
-    should surface — anthropic, openai, mcp are pinned by the
-    sensor's pyproject.toml."""
+    """Every SDK the sensor intercepts that is installed in the test venv
+    surfaces with its installed version. The SDKs are optional extras, so
+    a lane installs some of them: anthropic and openai are in every lane
+    that runs this file, mcp and litellm in most."""
     s = _make_session()
     payload = s._build_payload(EventType.SESSION_START)
     iv = payload.get("interceptor_versions") or {}
-    # mcp is a hard dep per pyproject.toml; assert it lands.
-    assert "mcp" in iv, f"interceptor_versions missing 'mcp': {iv}"
+    for dep in ("anthropic", "openai", "litellm", "mcp"):
+        try:
+            installed = version(dep)
+        except PackageNotFoundError:
+            assert dep not in iv, f"{dep} is not installed but reported: {iv}"
+            continue
+        assert iv.get(dep) == installed, f"interceptor_versions {dep}: {iv}"
+    assert "anthropic" in iv and "openai" in iv, iv
     # Each version is a non-empty string.
     for dep, ver in iv.items():
         assert isinstance(ver, str) and ver, f"{dep} version empty"

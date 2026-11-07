@@ -28,6 +28,7 @@ import httpx
 import pytest
 from anthropic._base_client import AsyncAPIClient, BaseClient
 from anthropic._streaming import SSEDecoder
+from anthropic.lib.bedrock import _auth as bedrock_auth
 from anthropic.lib.bedrock._client import AnthropicBedrock, AsyncAnthropicBedrock
 from pydantic import BaseModel
 
@@ -253,7 +254,12 @@ def _build(name: str, transport: _Transport) -> Any:
     else:
         http_client = httpx.Client(transport=httpx.MockTransport(transport))
     kwargs: dict[str, Any] = {"http_client": http_client, "max_retries": 0}
-    if name.endswith("BedrockMantle") or name.endswith("Bedrock"):
+    if name.endswith("Bedrock") and "api_key" not in inspect.signature(cls).parameters:
+        # Bedrock takes a bearer key from anthropic 0.88; before that it
+        # signs every request with AWS credentials, which the autouse
+        # fixture stubs so the request still builds offline.
+        kwargs.update(aws_access_key="key", aws_secret_key="secret", aws_region="us-east-1")
+    elif name.endswith("BedrockMantle") or name.endswith("Bedrock"):
         kwargs.update(api_key="bearer", aws_region="us-east-1")
     elif name.endswith("Vertex"):
         kwargs.update(access_token="token", project_id="proj", region="us-east5")
@@ -285,6 +291,10 @@ def _bedrock_streams_as_sse(monkeypatch: pytest.MonkeyPatch) -> None:
     as SSE and the Bedrock decoder stubbed to the SDK's SSE decoder."""
     for cls in (AnthropicBedrock, AsyncAnthropicBedrock):
         monkeypatch.setattr(cls, "_make_sse_decoder", lambda self: SSEDecoder())
+    # A Bedrock client built from AWS credentials (the only kind before
+    # anthropic 0.88) signs its requests with botocore; the stub stands in
+    # for the signature, which no mock transport checks.
+    monkeypatch.setattr(bedrock_auth, "get_auth_headers", lambda **_: {"authorization": "AWS4"})
 
 
 def _make_session(capture_prompts: bool = False) -> Session:

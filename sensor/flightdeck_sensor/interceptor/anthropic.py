@@ -103,6 +103,7 @@ from flightdeck_sensor.interceptor.platform import (
     PLATFORM_VERTEX,
     endpoint_of,
 )
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 
 if TYPE_CHECKING:
@@ -283,7 +284,7 @@ def _vertex_scope(client: Any, platform: str) -> str | None:
 def _is_sdk_stream(obj: Any) -> bool:
     if _anthropic_module is None:
         return False
-    return isinstance(obj, (_anthropic_module.Stream, _anthropic_module.AsyncStream))
+    return is_raw_stream(obj, (_anthropic_module.Stream, _anthropic_module.AsyncStream))
 
 
 # ----------------------------------------------------------------------

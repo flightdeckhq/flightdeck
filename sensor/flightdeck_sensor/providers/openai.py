@@ -13,6 +13,8 @@ from typing import Any
 
 from flightdeck_sensor.core.errors import REQUEST_ID_MAX_LEN
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
+from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -296,13 +298,6 @@ def _jsonable(value: Any) -> Any:
         return _json.loads(_json.dumps(value, default=_json_default))
     except Exception:
         return None
-
-
-def _field(obj: Any, name: str) -> Any:
-    """Attribute or dict key ``name`` of ``obj``; ``None`` when absent."""
-    if isinstance(obj, dict):
-        return obj.get(name)
-    return getattr(obj, name, None)
 
 
 # The platforms where the OpenAI SDK reaches OpenAI's own models.
@@ -793,8 +788,7 @@ class OpenAIProvider:
         Responses stream is assembled always: its terminal event already
         carries the whole response."""
         try:
-            classes = _raw_stream_classes()
-            if not classes or not isinstance(stream, classes):
+            if not is_raw_stream(stream, _raw_stream_classes()):
                 return None
             if _is_helper_request(request_kwargs):
                 return None

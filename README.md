@@ -530,7 +530,7 @@ The chart is at `version` 0.8.0 with `appVersion` 0.8.0; the default `image.tag`
 
 Planned work is tracked as [GitHub issues labelled `roadmap`](https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap), grouped by release milestone. React with :+1: on the ones you need; that is how they get prioritised.
 
-Not planned: Antigravity CLI (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only) and AutoGen (archived; its successor, Microsoft Agent Framework, is on the roadmap).
+Not planned: Antigravity CLI (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only) and sub-agent structure for AutoGen and AG2 (their runs are labelled `autogen` and `ag2` and their LLM calls are metered; AutoGen's successor, Microsoft Agent Framework, is on the roadmap).
 
 ---
 

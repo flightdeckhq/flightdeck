@@ -10,8 +10,11 @@ at most one ``orchestration`` field.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any
+import types
+from typing import Any
 from unittest.mock import patch
+
+import pytest
 
 from flightdeck_sensor.core import context
 from flightdeck_sensor.core.context import (
@@ -29,9 +32,6 @@ from flightdeck_sensor.core.context import (
     UserCollector,
     collect,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 # ----------------------------------------------------------------------
 # Top-level collect()
@@ -256,23 +256,11 @@ def test_langgraph_detected(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_frameworks_never_imports() -> None:
     """If no framework is in sys.modules, the result is empty -- the
     classifier MUST NOT import anything new."""
-    # Snapshot, drop every known framework module, run, then restore.
+    # Snapshot, drop every known framework module (every alias a
+    # classifier accepts, e.g. ``langchain_core`` for LangChain's split
+    # packages), run, then restore.
     snapshot = {}
-    targets = [
-        "crewai",
-        "langchain",
-        # ``LangChainClassifier`` accepts ``langchain_core`` as an
-        # alias for split-package installs, so the no-framework
-        # invariant requires popping both forms.
-        "langchain_core",
-        "langgraph",
-        "llama_index",
-        "autogen",
-        "haystack",
-        "dspy",
-        "smolagents",
-        "pydantic_ai",
-    ]
+    targets = _classifier_modules()
     for name in targets:
         if name in sys.modules:
             snapshot[name] = sys.modules.pop(name)
@@ -285,6 +273,222 @@ def test_frameworks_never_imports() -> None:
             assert name not in sys.modules
     finally:
         sys.modules.update(snapshot)
+
+
+def _classifier_modules() -> list[str]:
+    names: list[str] = []
+    for classifier in FrameworkCollector.CLASSIFIERS:
+        module = classifier.module
+        names.extend((module,) if isinstance(module, str) else module)
+    return names
+
+
+def _fake(name: str, version: str | None = None) -> types.ModuleType:
+    mod = types.ModuleType(name)
+    if version is not None:
+        mod.__version__ = version  # type: ignore[attr-defined]
+    return mod
+
+
+def _only(
+    monkeypatch: pytest.MonkeyPatch,
+    modules: dict[str, Any],
+    dists: dict[str, str] | None = None,
+) -> None:
+    """The classifiers see exactly ``modules`` loaded and ``dists``
+    installed, whatever the test process has imported or installed."""
+    monkeypatch.setattr(context, "sys", types.SimpleNamespace(argv=sys.argv, modules=modules))
+    installed = dists or {}
+    monkeypatch.setattr(context, "_distribution_version", installed.get)
+
+
+# Each classifier: the module that loads it, and its label. The labels of
+# the four frameworks the OTLP GenAI dialect maps are the dialect's
+# (ingestion/internal/genai/source.go), so sensor and OTLP rows share an
+# analytics bucket.
+_CLASSIFIER_CASES = [
+    ("deepagents", "deepagents"),
+    ("crewai", "crewai"),
+    ("google.adk", "google_adk"),
+    ("agent_framework", "agent_framework"),
+    ("semantic_kernel", "semantic_kernel"),
+    ("autogen_agentchat", "autogen"),
+    ("autogen_core", "autogen"),
+    ("autogen", "ag2"),
+    ("agno", "agno"),
+    ("strands", "strands"),
+    ("pydantic_ai", "pydantic_ai"),
+    ("smolagents", "smolagents"),
+    ("claude_agent_sdk", "claude_agent_sdk"),
+    ("llama_index", "llama_index"),
+    ("haystack", "haystack"),
+    ("dspy", "dspy"),
+    ("langgraph", "langgraph"),
+    ("langchain", "langchain"),
+    ("langchain_core", "langchain"),
+]
+
+
+@pytest.mark.parametrize(("module", "label"), _CLASSIFIER_CASES)
+def test_each_classifier_reports_its_label_and_version(
+    monkeypatch: pytest.MonkeyPatch, module: str, label: str
+) -> None:
+    _only(monkeypatch, {module: _fake(module, "9.1.0")})
+    assert FrameworkCollector().collect() == {"frameworks": [f"{label}/9.1.0"]}
+
+
+def test_the_genai_dialect_labels_are_the_sensors() -> None:
+    """The four labels the OTLP GenAI receiver stamps are classifier
+    labels too."""
+    labels = {c.name for c in FrameworkCollector.CLASSIFIERS}
+    assert {"google_adk", "openai_agents", "strands", "pydantic_ai"} <= labels
+
+
+def test_a_module_without_a_version_takes_its_distributions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strands has no ``__version__``: the strands-agents distribution's
+    version is reported."""
+    _only(monkeypatch, {"strands": _fake("strands")}, {"strands-agents": "1.63.0"})
+    assert FrameworkCollector().collect() == {"frameworks": ["strands/1.63.0"]}
+
+
+def test_a_module_with_neither_version_reports_the_bare_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _only(monkeypatch, {"agno": _fake("agno")})
+    assert FrameworkCollector().collect() == {"frameworks": ["agno"]}
+
+
+def test_openai_agents_counts_only_with_its_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``agents`` is a generic import name; an application's own
+    ``agents`` package is not the OpenAI Agents SDK."""
+    _only(monkeypatch, {"agents": _fake("agents", "0.24.0")})
+    assert FrameworkCollector().collect() == {}
+    _only(monkeypatch, {"agents": _fake("agents", "0.24.0")}, {"openai-agents": "0.24.0"})
+    assert FrameworkCollector().collect() == {"frameworks": ["openai_agents/0.24.0"]}
+
+
+@pytest.mark.parametrize("dist", ["ag2", "pyautogen", "autogen"])
+def test_the_autogen_import_name_is_ag2(monkeypatch: pytest.MonkeyPatch, dist: str) -> None:
+    """Every AG2 distribution installs the ``autogen`` import name."""
+    _only(monkeypatch, {"autogen": _fake("autogen")}, {dist: "0.10.2"})
+    assert FrameworkCollector().collect() == {"frameworks": ["ag2/0.10.2"]}
+
+
+@pytest.mark.parametrize(
+    ("version", "entry"),
+    [("0.2.35", "autogen/0.2.35"), ("0.1.14", "autogen/0.1.14"), ("0.3.0", "ag2/0.3.0")],
+)
+def test_pyautogen_below_03_is_microsofts_autogen(
+    monkeypatch: pytest.MonkeyPatch, version: str, entry: str
+) -> None:
+    """pyautogen was Microsoft's AutoGen until 0.2; AG2 publishes it from
+    0.3 on."""
+    _only(monkeypatch, {"autogen": _fake("autogen", version)}, {"pyautogen": version})
+    assert FrameworkCollector().collect() == {"frameworks": [entry]}
+
+
+def test_an_ag2_distribution_outranks_an_old_pyautogen(monkeypatch: pytest.MonkeyPatch) -> None:
+    _only(
+        monkeypatch,
+        {"autogen": _fake("autogen", "0.10.2")},
+        {"ag2": "0.10.2", "pyautogen": "0.2.35"},
+    )
+    assert FrameworkCollector().collect() == {"frameworks": ["ag2/0.10.2"]}
+
+
+def test_microsofts_autogen_02_line_is_autogen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """autogen-agentchat below 0.4 installs ``autogen`` too; with no AG2
+    distribution that is Microsoft's AutoGen."""
+    _only(monkeypatch, {"autogen": _fake("autogen")}, {"autogen-agentchat": "0.2.40"})
+    assert FrameworkCollector().collect() == {"frameworks": ["autogen/0.2.40"]}
+
+
+def test_ag2_wins_the_autogen_import_name_when_both_are_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With Microsoft's 0.4+ AutoGen and AG2 side by side, each is its own
+    entry, and an AG2 distribution keeps ``autogen`` as AG2."""
+    _only(
+        monkeypatch,
+        {
+            "autogen": _fake("autogen", "0.10.2"),
+            "autogen_agentchat": _fake("autogen_agentchat", "0.7.5"),
+        },
+        {"ag2": "0.10.2", "autogen-agentchat": "0.7.5"},
+    )
+    assert FrameworkCollector().collect() == {"frameworks": ["autogen/0.7.5", "ag2/0.10.2"]}
+
+
+def test_autogen_without_any_metadata_is_ag2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AG2 owns the import name, so an ``autogen`` with no distribution
+    metadata at all is AG2."""
+    _only(monkeypatch, {"autogen": _fake("autogen")})
+    assert FrameworkCollector().collect() == {"frameworks": ["ag2"]}
+
+
+@pytest.mark.parametrize(
+    ("loaded", "first"),
+    [
+        # Deep Agents is built on LangGraph, which is built on LangChain.
+        (["langchain_core", "langgraph", "deepagents"], "deepagents"),
+        (["langchain_core", "langgraph"], "langgraph"),
+        # ADK, not the google-genai transport it calls models through.
+        (["google.adk", "google.genai"], "google_adk"),
+        # An agent framework before the libraries it embeds.
+        (["llama_index", "crewai"], "crewai"),
+        (["langchain_core", "pydantic_ai"], "pydantic_ai"),
+        (["semantic_kernel", "agent_framework"], "agent_framework"),
+    ],
+)
+def test_a_framework_comes_before_the_ones_it_builds_on(
+    monkeypatch: pytest.MonkeyPatch, loaded: list[str], first: str
+) -> None:
+    _only(monkeypatch, {name: _fake(name) for name in loaded})
+    found = FrameworkCollector().collect()["frameworks"]
+    assert found[0] == first
+
+
+def test_a_broken_classifier_does_not_hide_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Broken(context.BaseClassifier):
+        def detect(self) -> str | None:
+            raise RuntimeError("boom")
+
+    _only(monkeypatch, {"dspy": _fake("dspy", "3.4.0")})
+    monkeypatch.setattr(
+        FrameworkCollector, "CLASSIFIERS", [Broken(), *FrameworkCollector.CLASSIFIERS]
+    )
+    assert FrameworkCollector().collect() == {"frameworks": ["dspy/3.4.0"]}
+
+
+def test_distribution_versions_are_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A metadata lookup reads dist-info files; each name is read once per
+    process, a missing distribution included."""
+    calls: list[str] = []
+
+    def fake_version(name: str) -> str:
+        calls.append(name)
+        if name == "missing-dist":
+            raise context.importlib.metadata.PackageNotFoundError(name)
+        return "1.2.3"
+
+    monkeypatch.setattr(context, "_DIST_VERSIONS", {})
+    monkeypatch.setattr(context.importlib.metadata, "version", fake_version)
+    assert context._distribution_version("some-dist") == "1.2.3"
+    assert context._distribution_version("some-dist") == "1.2.3"
+    assert context._distribution_version("missing-dist") is None
+    assert context._distribution_version("missing-dist") is None
+    assert calls == ["some-dist", "missing-dist"]
+
+
+def test_framework_label_strips_the_version() -> None:
+    assert context.framework_label("langchain/0.3.27") == "langchain"
+    assert context.framework_label("agno") == "agno"
+    assert context.framework_label("") is None
+    assert context.framework_label(None) is None
 
 
 # ----------------------------------------------------------------------

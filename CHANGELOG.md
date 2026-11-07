@@ -176,6 +176,26 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A framework imported after `init()` labels its session.** `patch()`
+  imports no SDK, so an application that imports its framework after
+  `init()` reported `framework=null` on every event and on its session.
+  The sensor now runs its framework classifiers again while the
+  framework is unknown, when it builds an event and more modules are
+  loaded than at the last run (never again once a label is found), and
+  the worker fills a session's empty `framework` from the next call and
+  adds the label to `context.frameworks`. Sessions recorded before the
+  upgrade are not backfilled.
+- **Analytics accepts `framework` as the second `group_by` axis.**
+  `GET /v1/analytics?group_by=model,framework` (any dimension, then
+  `framework`) failed with a 500; it now returns the per-framework
+  breakdown.
+- **Claude Agent SDK runs carry the bare `claude_agent_sdk` framework
+  label.** The interceptor sent `claude-agent-sdk/<version>` as the
+  per-event `framework`; it now sends `claude_agent_sdk`, with
+  `claude_agent_sdk/<version>` first in the run's `context.frameworks`,
+  so the analytics `framework` dimension counts Agent SDK runs. Rows
+  recorded before the upgrade keep the old value; they are not
+  backfilled.
 - **The sensor reads every Anthropic usage breakdown on anthropic 0.x.**
   An SDK release that does not declare a usage field, such as
   `output_tokens_details` on 0.91, keeps it as a plain dict, which the
@@ -571,6 +591,29 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The sensor's framework labels match the OpenTelemetry receiver's,
+  and it recognises more frameworks.** Google ADK (`google_adk`), the
+  OpenAI Agents SDK (`openai_agents`), Strands (`strands`) and Pydantic
+  AI (`pydantic_ai`) get the labels the GenAI dialect stamps, so the
+  analytics `framework` dimension counts a framework's sensor and
+  OpenTelemetry sessions together. Deep Agents, Agno, Microsoft Agent
+  Framework (`agent_framework`), Semantic Kernel and the Claude Agent SDK
+  are recognised. The `autogen` import name, which AG2 owns, now reports
+  `ag2`; `autogen` means Microsoft's `autogen_agentchat` /
+  `autogen_core`, or AutoGen 0.2 when `pyautogen` below 0.3 or (with no
+  AG2 distribution) `autogen-agentchat` below 0.4 installed `autogen`.
+  A framework is listed before the ones it is
+  built on, so a LangGraph application reports `langgraph` where it
+  reported `langchain`. A version missing from a module is read from its
+  installed distribution. Sessions recorded before the upgrade keep
+  their labels; they are not backfilled.
+- **The analytics `framework` dimension groups by framework, not by
+  version.** `GET /v1/analytics?group_by=framework` returned one series
+  per versioned `context.frameworks` entry (`langchain/0.3.27`,
+  `langchain/1.6.10`); it now returns one per label (`langchain`), so a
+  framework is one series across versions and whether the sensor found
+  it at `init()` or later. The OpenTelemetry and sensor sessions of a
+  framework share it too.
 - **The `FLIGHTDECK` NATS stream is bounded, and replicated under
   Helm.** It used to keep every event ever published. Ingestion now
   applies a 72-hour age limit and a 5 GiB size limit at startup

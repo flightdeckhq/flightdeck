@@ -116,10 +116,11 @@ type AnalyticsResponse struct {
 // no team column yet.
 //
 // “fromExtras“ is appended verbatim to the FROM clause when non-
-// empty. Used by “framework“ to add a LEFT JOIN LATERAL
-// “jsonb_array_elements_text“ so each string in
-// “sessions.context->'frameworks'“ becomes its own row and sessions
-// with no frameworks still appear under “'unknown'“ via COALESCE.
+// empty. Used by “framework“ to add a LEFT JOIN LATERAL over
+// “jsonb_array_elements_text“ so each label in
+// “sessions.context->'frameworks'“ (an entry's part before the “/“,
+// once per session) becomes its own row, and sessions with no
+// frameworks still appear under “'unknown'“ via COALESCE.
 type dimensionSource struct {
 	// exprEvents is the SQL expression for the dimension when the
 	// metric's base table is events (with ``sessions s`` joined in
@@ -139,20 +140,25 @@ type dimensionSource struct {
 }
 
 // frameworkUnnest is the LATERAL unnest used by the “framework“
-// dimension. The sensor stores multiple framework versions per
-// session as a JSONB array under “sessions.context->'frameworks'“
-// (e.g. “["langchain/0.1.12","crewai/0.42.0"]“). A plain GROUP BY
-// on “s.framework“ (a legacy unused scalar column) collapsed every
-// row into “'unknown'“. LEFT JOIN LATERAL so sessions with an
-// empty or missing array still produce one “NULL“ row that
-// COALESCEs to “'unknown'“ instead of being dropped. A session
-// tagged “["crewai","langchain"]“ legitimately counts once under
-// each framework -- totals across frameworks can therefore exceed
-// distinct sessions, which is the honest answer for a multi-valued
-// dimension.
-const frameworkUnnest = `LEFT JOIN LATERAL jsonb_array_elements_text(
-		COALESCE(s.context->'frameworks', '[]'::jsonb)
-	) AS fw ON TRUE`
+// dimension. Every framework a session ran with is an entry of the
+// JSONB array “sessions.context->'frameworks'“, versioned
+// (“["langchain/0.1.12","crewai/0.42.0"]“) or bare (“["langchain"]“:
+// a framework the sensor detected after init(), or one reported
+// without a version). The dimension groups by the label before the
+// “/“, so one framework is one series whatever its version and
+// whichever way it was detected; each label counts once per session.
+// LEFT JOIN LATERAL so sessions with an empty or missing array still
+// produce one “NULL“ row that COALESCEs to “'unknown'“ instead of
+// being dropped. A session tagged “["crewai","langchain"]“
+// legitimately counts once under each framework -- totals across
+// frameworks can therefore exceed distinct sessions, which is the
+// honest answer for a multi-valued dimension.
+const frameworkUnnest = `LEFT JOIN LATERAL (
+		SELECT DISTINCT NULLIF(split_part(entry, '/', 1), '') AS fw
+		FROM jsonb_array_elements_text(
+			COALESCE(s.context->'frameworks', '[]'::jsonb)
+		) AS entry
+	) AS framework_labels ON TRUE`
 
 // dimensions maps group_by param values to their SQL projection. The
 // provider entry uses the shared ProviderCaseSQL from pricing.go so
@@ -589,6 +595,13 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 			}
 		} else {
 			secDimExpr = secDim.exprSessions
+		}
+		// The secondary's FROM-clause extras (the framework LATERAL
+		// unnest), unless the primary already added the same fragment.
+		// Without them a framework secondary axis projects an alias no
+		// FROM item defines.
+		if secDim.fromExtras != "" && secDim.fromExtras != dim.fromExtras {
+			fromClause = fromClause + " " + secDim.fromExtras
 		}
 	}
 

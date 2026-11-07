@@ -185,6 +185,34 @@ def test_a_query_run_is_its_own_claude_agent_sdk_session(
     assert start["capture_prompts"] is True
 
 
+def test_a_run_carries_the_bare_framework_label_and_the_version_in_context(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every event of a run says ``framework=claude_agent_sdk``, the
+    classifier's label, never a versioned or hyphenated form; the version
+    leads the session_start's context.frameworks, ahead of the process's
+    other frameworks, with the SDK's own classifier entry not repeated."""
+    sdk, seen = patched
+    session, queue = _session()
+    session.set_context(
+        {"os": "Linux", "frameworks": ["claude_agent_sdk/0.0.1", "langchain/1.4.4"]}
+    )
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = _messages(sdk)
+
+    _run_query(sdk)
+
+    assert queue.events
+    for event in queue.events:
+        assert event["framework"] == "claude_agent_sdk"
+    start = queue.events[0]
+    assert start["context"]["frameworks"] == [
+        f"claude_agent_sdk/{sdk.__version__}",
+        "langchain/1.4.4",
+    ]
+    assert start["context"]["os"] == "Linux"
+
+
 def test_a_streamed_assistant_message_is_one_post_call_with_its_tool_calls(
     patched: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

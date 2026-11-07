@@ -1645,7 +1645,7 @@ def _post_call(
             event_type=event_type,
         )
         if pc is not None:
-            pc.session_id = session.current_session_id()
+            pc.session_id = session.config.session_id
             has_content = True
             content_dict = {
                 "system": pc.system,
@@ -1818,7 +1818,7 @@ def _post_call(
                     tool_input=inv.tool_input,
                     tool_output=None,
                     server_name=resp_model or "",
-                    session_id=session.current_session_id(),
+                    session_id=session.config.session_id,
                 )
                 if capture_content is not None:
                     # Override the provider field — this is an LLM

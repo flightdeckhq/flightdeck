@@ -219,7 +219,7 @@ def _llm(llama: Any) -> Any:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_function_agent_run_is_a_child_session_with_its_calls(
+async def test_function_agent_run_is_a_child_session_its_calls_stay_on_the_root(
     llama: Any, sensor: Any, streaming: bool
 ) -> None:
     workflow, _ = llama
@@ -245,27 +245,29 @@ async def test_function_agent_run_is_a_child_session_with_its_calls(
     assert child["incoming_message"]["body"] == "What is 6 times 7?"
 
     # Both model calls, and the one tool call the first response asked
-    # for, are on the child, linked to the sensor's session.
-    calls = rec.of("post_call", child_id)
+    # for, are on the sensor's session; the child carries the structure.
+    calls = rec.of("post_call", rec.session_id)
     assert len(calls) == 2
-    for event in [*calls, *rec.of("pre_call", child_id)]:
-        assert event["parent_session_id"] == rec.session_id
-        assert event["agent_role"] == "calculator"
-        assert event["agent_name"] == f"{PARENT_AGENT_NAME}/calculator"
+    for event in [*calls, *rec.of("pre_call")]:
+        assert event["session_id"] == rec.session_id
+        assert "parent_session_id" not in event
+        assert "agent_role" not in event
     assert [c["tokens_used_session"] for c in calls] == [60, 138]
     (tool,) = rec.of("tool_call")
-    assert tool["session_id"] == child_id
+    assert tool["session_id"] == rec.session_id
     assert tool["tool_name"] == "multiply"
-    # Nothing landed on the sensor's own session.
-    assert rec.of("post_call", rec.session_id) == []
+    assert {e["event_type"] for e in rec.timeline if e["session_id"] == child_id} == {
+        "session_start",
+        "session_end",
+    }
 
     (end,) = rec.of("session_end", child_id)
     assert "state" not in end
     assert end["outgoing_message"]["body"] == "6 times 7 is 42."
-    # The end follows the child's own calls.
-    assert rec.timeline.index(end) > rec.timeline.index(calls[-1])
-    rec.client.post_event.assert_any_call(child)
-    assert end not in [c.args[0] for c in rec.client.post_event.call_args_list]
+    # The child's start and end are posted at once, as the other wraps'.
+    posted = [c.args[0] for c in rec.client.post_event.call_args_list]
+    assert child in posted
+    assert end in posted
 
 
 async def test_react_agent_tool_run_is_reported_once_by_the_wrap(llama: Any, sensor: Any) -> None:
@@ -290,20 +292,22 @@ async def test_react_agent_tool_run_is_reported_once_by_the_wrap(llama: Any, sen
         result = await agent.run(user_msg="What is 6 times 7?")
     assert "42" in str(result)
 
-    child_id = rec.children()["reactor"]["session_id"]
-    assert len(rec.of("post_call", child_id)) == 2
+    assert "reactor" in rec.children()
+    calls = rec.of("post_call", rec.session_id)
+    assert len(calls) == 2
     # The model asked in text, so no response reported the tool call; the
-    # wrap reports it, with its arguments and output under capture.
+    # wrap reports it, once, on the sensor's session, with its arguments
+    # and output under capture.
     (tool,) = rec.of("tool_call")
-    assert tool["session_id"] == child_id
-    assert tool["agent_role"] == "reactor"
+    assert tool["session_id"] == rec.session_id
+    assert "agent_role" not in tool
     assert tool["tool_name"] == "multiply"
     assert isinstance(tool["latency_ms"], int)
     assert tool["has_content"] is True
     assert tool["content"]["tool_input"] == {"a": 6, "b": 7}
     assert tool["content"]["tool_output"] == "42"
-    assert tool["content"]["session_id"] == child_id
-    assert tool["originating_event_id"] == rec.of("post_call", child_id)[0]["id"]
+    assert tool["content"]["session_id"] == rec.session_id
+    assert tool["originating_event_id"] == calls[0]["id"]
 
 
 async def test_react_tool_run_carries_no_content_with_capture_off(llama: Any, sensor: Any) -> None:
@@ -335,7 +339,7 @@ async def test_react_tool_run_carries_no_content_with_capture_off(llama: Any, se
 # ----- multi-agent hand-off ------------------------------------------------------
 
 
-async def test_agent_workflow_hand_off_moves_the_calls_to_the_next_child(
+async def test_agent_workflow_hand_off_ends_one_child_and_opens_the_next(
     llama: Any, sensor: Any
 ) -> None:
     workflow, _ = llama
@@ -375,11 +379,13 @@ async def test_agent_workflow_hand_off_moves_the_calls_to_the_next_child(
     children = rec.children()
     calc_id = children["calculator"]["session_id"]
     writer_id = children["writer"]["session_id"]
-    assert len(rec.of("post_call", calc_id)) == 2
-    assert len(rec.of("post_call", writer_id)) == 1
+    # Every call of both agents is on the sensor's session, each tool call
+    # once.
+    assert len(rec.of("post_call", rec.session_id)) == 3
+    assert len(rec.of("post_call")) == 3
     assert {t["tool_name"]: t["session_id"] for t in rec.of("tool_call")} == {
-        "multiply": calc_id,
-        "handoff": calc_id,
+        "multiply": rec.session_id,
+        "handoff": rec.session_id,
     }
     assert children["writer"]["incoming_message"]["body"] == "State the product, 42."
 
@@ -391,10 +397,7 @@ async def test_agent_workflow_hand_off_moves_the_calls_to_the_next_child(
     (writer_end,) = rec.of("session_end", writer_id)
     order = rec.timeline.index
     assert order(signal) < order(calc_end) < order(children["writer"])
-    assert order(calc_end) > max(order(e) for e in rec.of("post_call", calc_id))
     assert writer_end["outgoing_message"]["body"] == "The answer is 42."
-    # Each child's running total is its own.
-    assert rec.of("post_call", writer_id)[0]["tokens_used_session"] == 60
 
 
 async def test_agent_handed_back_to_opens_a_new_child(llama: Any, sensor: Any) -> None:
@@ -463,7 +466,7 @@ async def test_a_provider_error_ends_the_child_in_error(llama: Any, sensor: Any)
             await agent.run(user_msg="hi")
     child_id = rec.children()["calculator"]["session_id"]
     (err,) = rec.of("llm_error")
-    assert err["session_id"] == child_id
+    assert err["session_id"] == rec.session_id
     (end,) = rec.of("session_end", child_id)
     assert end["state"] == "error"
 
@@ -576,13 +579,14 @@ async def test_an_agent_run_inside_a_tool_opens_its_own_child(llama: Any, sensor
         await lead.run(user_msg="Ask the expert why.")
 
     children = rec.children()
-    lead_id = children["lead"]["session_id"]
+    assert set(children) == {"lead", "expert"}
     expert_id = children["expert"]["session_id"]
-    # Both children hang off the sensor's session.
+    # Both children hang off the sensor's session, which has every call.
     assert children["expert"]["parent_session_id"] == rec.session_id
     assert children["expert"]["incoming_message"]["body"] == "why?"
-    assert len(rec.of("post_call", lead_id)) == 2
-    assert len(rec.of("post_call", expert_id)) == 1
+    assert len(rec.of("post_call", rec.session_id)) == 3
+    (tool,) = rec.of("tool_call")
+    assert tool["tool_name"] == "ask_expert"
     (expert_end,) = rec.of("session_end", expert_id)
     assert expert_end["outgoing_message"]["body"] == "because"
 
@@ -590,17 +594,16 @@ async def test_an_agent_run_inside_a_tool_opens_its_own_child(llama: Any, sensor
 # ----- scope and lifecycle -------------------------------------------------------
 
 
-async def test_calls_after_the_run_go_back_to_the_sensors_session(llama: Any, sensor: Any) -> None:
+async def test_no_scope_is_left_behind_after_the_run(llama: Any, sensor: Any) -> None:
     workflow, _ = llama
     rec = sensor()
     llm = _llm(llama)
     with respx.mock(base_url=BASE_URL) as router:
         router.post("/chat/completions").mock(return_value=_completion(content="ok"))
         await workflow.FunctionAgent(name="solo", llm=llm, streaming=False).run(user_msg="hi")
+        assert rec.session.active_subagent_scope() is None
         await llm.acomplete("plain call")
-    root_calls = rec.of("post_call", rec.session_id)
-    assert len(root_calls) == 1
-    assert "parent_session_id" not in root_calls[0]
+    assert len(rec.of("post_call", rec.session_id)) == 2
 
 
 async def test_no_session_leaves_the_run_alone(llama: Any) -> None:
@@ -679,30 +682,21 @@ def _scoped() -> tuple[_Recorder, Any]:
     return rec, scope
 
 
-def test_an_event_built_in_a_scope_goes_on_the_child() -> None:
+def test_an_event_built_in_a_scope_stays_on_the_sensors_session() -> None:
     rec, scope = _scoped()
     token = Session.enter_subagent_scope(scope)
     try:
-        rec.session.record_usage(TokenUsage(input_tokens=10, output_tokens=5))
+        assert rec.session.active_subagent_scope() is scope
+        total = rec.session.record_usage(TokenUsage(input_tokens=10, output_tokens=5))
         payload = rec.session._build_payload(EventType.TOOL_CALL, tool_name="t")
-        start = rec.session._build_payload(EventType.SESSION_START)
-        assert rec.session.current_session_id() == scope.child_session_id
     finally:
         Session.exit_subagent_scope(token)
-    assert payload["session_id"] == scope.child_session_id
-    assert payload["agent_id"] == scope.child_agent_id
-    assert payload["agent_name"] == "parent-agent/child"
-    assert payload["parent_session_id"] == rec.session_id
-    assert payload["agent_role"] == "child"
-    assert payload["tokens_used_session"] == 15
-    # The sensor's own start is never a child's.
-    assert start["session_id"] == rec.session_id
-    assert "parent_session_id" not in start
-    # Out of the scope, events are the sensor's again.
-    after = rec.session._build_payload(EventType.TOOL_CALL)
-    assert after["session_id"] == rec.session_id
-    assert after["tokens_used_session"] == 15
-    assert rec.session.current_session_id() == rec.session_id
+    assert payload["session_id"] == rec.session_id
+    assert payload["agent_id"] == rec.session.config.agent_id
+    assert "parent_session_id" not in payload
+    assert "agent_role" not in payload
+    assert total == 15
+    assert rec.session.active_subagent_scope() is None
 
 
 def test_another_sessions_scope_is_ignored() -> None:
@@ -710,11 +704,11 @@ def test_another_sessions_scope_is_ignored() -> None:
     other = _Recorder()
     token = Session.enter_subagent_scope(scope)
     try:
-        payload = other.session._build_payload(EventType.POST_CALL)
+        assert other.session.active_subagent_scope() is None
+        other.session.note_reported_tool_call("call_1")
     finally:
         Session.exit_subagent_scope(token)
-    assert payload["session_id"] == other.session_id
-    assert other.session.active_subagent_scope() is None
+    assert not rec.session.tool_call_reported(scope, "call_1")
 
 
 def test_exiting_a_scope_from_another_context_is_ignored() -> None:
@@ -740,25 +734,11 @@ def test_reported_tool_calls_are_kept_per_child() -> None:
     assert not rec.session.tool_call_reported(scope, None)
 
 
-def test_a_queued_child_end_goes_through_the_event_queue() -> None:
-    rec, scope = _scoped()
-    rec.session.emit_subagent_session_end(
-        child_session_id=scope.child_session_id,
-        child_agent_id=scope.child_agent_id,
-        child_agent_name=scope.child_agent_name,
-        agent_role=scope.agent_role,
-        queued=True,
-    )
-    rec.client.post_event.assert_not_called()
-    (end,) = rec.of("session_end")
-    assert end["session_id"] == scope.child_session_id
-
-
 async def test_a_scope_follows_the_tasks_started_inside_it() -> None:
     rec, scope = _scoped()
 
-    async def _inner() -> str:
-        return rec.session.current_session_id()
+    async def _inner() -> Any:
+        return rec.session.active_subagent_scope()
 
     token = Session.enter_subagent_scope(scope)
     try:
@@ -766,5 +746,5 @@ async def test_a_scope_follows_the_tasks_started_inside_it() -> None:
     finally:
         Session.exit_subagent_scope(token)
     outside = await asyncio.create_task(_inner())
-    assert inside == scope.child_session_id
-    assert outside == rec.session_id
+    assert inside is scope
+    assert outside is None

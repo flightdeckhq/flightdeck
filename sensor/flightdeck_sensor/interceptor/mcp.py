@@ -1208,7 +1208,7 @@ def _make_async_wrapper(
                 latency_ms=latency_ms,
                 error=error,
                 capture_prompts=sensor_session.config.capture_prompts,
-                session_id=sensor_session.current_session_id(),
+                session_id=sensor_session.config.session_id,
             )
             payload = sensor_session._build_payload(event_type, **extras)
             sensor_session.event_queue.enqueue(payload)

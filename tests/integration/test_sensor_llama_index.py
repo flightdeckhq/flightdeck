@@ -1,16 +1,17 @@
-"""LlamaIndex agent workflows land as child sessions with their own calls.
+"""LlamaIndex agent workflows land as child sessions; their calls stay on the root.
 
 The real sensor (``flightdeck_sensor.init`` + ``patch``) runs real
 LlamaIndex agents on llama-index's OpenAI LLM, with the OpenAI API mocked
 at the network boundary (respx), against the dev stack. The test reads
 the stored ``sessions``, ``events`` and ``event_content`` rows:
 
-* a multi-agent ``AgentWorkflow`` hand-off: one child per agent under the
-  sensor's session, each agent's model calls and tool calls on its own
-  child and counted on its row, the ``agent_handoff`` signal on the agent
-  handing off, both children closed, nothing on the sensor's session;
+* a multi-agent ``AgentWorkflow`` hand-off: one closed child per agent
+  under the sensor's session, carrying only its start, end and (on the
+  agent handing off) the ``agent_handoff`` signal; every model call and
+  tool call, each once, on the sensor's session and counted on its row;
 * a ``ReActAgent``: the tool call it parses from the model's text is
-  stored once, on the child, with its arguments and output captured.
+  stored once, on the sensor's session, with its arguments and output
+  captured.
 """
 
 from __future__ import annotations
@@ -200,32 +201,40 @@ def test_agent_workflow_hand_off_lands_per_agent(
             e for e in events if e["event_type"] == event_type and e["session_id"] == session_id
         ]
 
-    assert len(_of("post_call", calc_id)) == 2
-    assert len(_of("post_call", writer_id)) == 1
-    assert _of("post_call", root_id) == []
-    # The worker counts each agent's tokens on its own row.
-    assert by_role["calculator"]["tokens_used"] == 120
-    assert by_role["writer"]["tokens_used"] == 60
+    # The agents' calls are the sensor's session's, counted on its row.
+    assert len(_of("post_call", root_id)) == 3
+    (root,) = [s for s in _sessions(sensor_flavor) if s["session_id"] == root_id]
+    assert root["tokens_used"] == 180
+    assert by_role["calculator"]["tokens_used"] == 0
+    assert by_role["writer"]["tokens_used"] == 0
     tool_calls = [e for e in events if e["event_type"] == "tool_call"]
     assert sorted((e["tool_name"], e["session_id"]) for e in tool_calls) == sorted(
-        [("multiply", calc_id), ("handoff", calc_id)]
+        [("multiply", root_id), ("handoff", root_id)]
     )
+    # The children carry the structure only.
+    assert {e["event_type"] for e in events if e["session_id"] == calc_id} == {
+        "session_start",
+        "session_signal",
+        "session_end",
+    }
+    assert {e["event_type"] for e in events if e["session_id"] == writer_id} == {
+        "session_start",
+        "session_end",
+    }
     (signal,) = [e for e in events if e["event_type"] == "session_signal"]
     assert signal["session_id"] == calc_id
     assert signal["payload"]["signal_data"] == {"from": "calculator", "to": "writer"}
-    # A child's model call keeps its captured content.
-    writer_call = _of("post_call", writer_id)[0]
-    assert writer_call["has_content"] is True
+    # A model call keeps its captured content.
+    last_call = _of("post_call", root_id)[-1]
+    assert last_call["has_content"] is True
     stored = exec_sql(
         "SELECT session_id::text FROM event_content WHERE event_id = :'id'",
-        id=writer_call["id"],
+        id=last_call["id"],
     )
-    assert stored.strip() == writer_id
+    assert stored.strip() == root_id
 
 
-def test_react_agent_tool_call_is_stored_once_on_the_child(
-    sensor_flavor: str, llama: tuple[Any, Any]
-) -> None:
+def test_react_agent_tool_call_is_stored_once(sensor_flavor: str, llama: tuple[Any, Any]) -> None:
     workflow, openai_llm = llama
     root_id = str(uuid.uuid4())
     llm = _init(root_id, openai_llm)
@@ -256,7 +265,7 @@ def test_react_agent_tool_call_is_stored_once_on_the_child(
     assert child["agent_role"] == "reactor"
     assert child["state"] == "closed"
     (tool,) = [e for e in _events(sensor_flavor) if e["event_type"] == "tool_call"]
-    assert tool["session_id"] == child["session_id"]
+    assert tool["session_id"] == root_id
     assert tool["tool_name"] == "multiply"
     assert tool["has_content"] is True
     content = _rows(

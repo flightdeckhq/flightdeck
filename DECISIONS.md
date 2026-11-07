@@ -783,20 +783,3 @@ receiver stores, so one hand-off reads the same from either source.
 shape for one fact); carrying the handed-over input as content (it is
 already on the transfer's `tool_call` and the next call); posting through
 the event queue (a child's synchronous `session_end` can overtake it).
-
-## D259 -- A wrapped sub-agent's calls land on its child session, whose end follows them through the event queue
-
-**Date:** 2026-11-07
-**Decision:** a wrap may run a child's work in the child's scope (a
-context variable on the sensor's Session). Every event the sensor builds
-for its own session in that scope goes on the child (its identity,
-`parent_session_id`, `agent_role`, the child's `tokens_used_session`),
-and the child's `session_end` is enqueued behind them. The LlamaIndex
-wrap uses it; CrewAI and LangGraph children keep start and end only.
-**Why:** a child with no calls shows no work and gets no token policy of
-its own; the worker drops events reaching a closed session, so a
-synchronous end must not overtake the queued calls.
-**Rejected alternative:** calls on the parent session (no per-agent view
-or budget); a Session per child (two queues and policy caches, and the
-drain's directive routing keys on the sensor's session); flushing the
-queue before a synchronous end (holds the agent up to 3 s per hand-off).

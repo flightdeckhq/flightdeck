@@ -503,16 +503,13 @@ class SubagentScope:
 
     A framework wrap builds one per child session it opens and enters it
     around the child's work with :meth:`Session.enter_subagent_scope`.
-    While it is entered, every event the sensor builds for the session
-    named by ``owner_session_id`` goes on the child instead (see
-    :meth:`Session._build_payload`).
-
-    ``tokens_used`` is the child's running total, reported as the
-    ``tokens_used_session`` of its events; ``reported_tool_ids`` holds
-    the call ids of the tool calls a model response in this child
-    already reported as ``tool_call`` events, so a wrap that also sees
-    the tool run can tell whether it is reported. Both change under the
-    owning session's lock.
+    The child's model, tool and MCP calls are still reported on the
+    session named by ``owner_session_id``; the scope only keeps, in
+    ``reported_tool_ids``, the call ids of the tool calls a model
+    response made during the child's work already reported as
+    ``tool_call`` events, so a wrap that also sees the tool run can tell
+    whether it is reported. The set changes under the owning session's
+    lock.
     """
 
     owner_session_id: str
@@ -520,7 +517,6 @@ class SubagentScope:
     child_agent_id: str
     child_agent_name: str
     agent_role: str
-    tokens_used: int = 0
     reported_tool_ids: set[str] = field(default_factory=set)
 
 

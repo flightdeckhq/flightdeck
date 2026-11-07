@@ -184,14 +184,12 @@ All notable changes to Flightdeck are documented here.
 - **LlamaIndex agent workflows open a child session per agent.** With
   `patch()`, each agent of a `FunctionAgent`, `ReActAgent`,
   `CodeActAgent` or `AgentWorkflow` run (llama-index-core 0.14+) is a
-  child session named after the agent, and that agent's model calls,
-  tool calls and MCP calls land on it, so each agent's tokens count and
-  are budgeted on its own row, and a Stop on any agent stops the run at
-  its next model call. A multi-agent hand-off ends one child, opens the next and
-  records an `agent_handoff` signal. Tool calls ReActAgent parses from
-  the model's text are reported too, and a tool call is never reported
-  twice. CrewAI and LangGraph children are unchanged: their model calls
-  stay on the sensor's session
+  child session named after the agent, and a multi-agent hand-off ends
+  one child, opens the next and records an `agent_handoff` signal. As
+  for CrewAI and LangGraph, the agents' model, tool and MCP calls stay
+  on the sensor's session, whose budget and Stop act on the whole run.
+  Tool calls ReActAgent parses from the model's text are reported too,
+  and a tool call is never reported twice
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed

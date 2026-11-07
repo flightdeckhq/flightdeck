@@ -147,7 +147,7 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
 | OpenAI Agents SDK | yes | planned | yes |
 | Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
-| LlamaIndex | yes | yes on llama-index-core 0.14+: a child session per agent of an agent workflow run, carrying its calls, with hand-offs | no |
+| LlamaIndex | yes | yes on llama-index-core 0.14+: a child session per agent of an agent workflow run, with hand-offs (its calls stay on the sensor's session) | no |
 | Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |
 | Pydantic AI | yes on Anthropic and OpenAI models; not on `GoogleModel` or `BedrockConverseModel` | no: use OpenTelemetry | yes |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM providers; not on Bedrock | no: use OpenTelemetry | yes |

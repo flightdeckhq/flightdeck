@@ -1331,7 +1331,7 @@ detects it yet ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
 | Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per child; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
 | OpenAI Agents SDK | yes (Responses tool items become `tool_call` events) | planned | yes, through `opentelemetry-instrumentation-openai-agents-v2` | OTLP: agents, hand-offs, model and tool calls, observe only. Native (planned): a child session per agent and per agent used as a tool, hand-offs, enforced per child |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
-| LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, carrying that agent's model calls and tool calls, with its hand-offs (see LlamaIndex agent workflows) |
+| LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
 | Deep Agents | yes through LangChain | planned | no | Native: none (it is built on `create_agent`, whose nodes the LangGraph wrap leaves alone). Planned: a child session per agent and per sub-agent its `task` tool starts |
 | Pydantic AI | yes on Anthropic and OpenAI models; no on `GoogleModel` or `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; no on its default Bedrock model or on Gemini | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
@@ -1562,32 +1562,28 @@ session and discarded on a child's, as the child `session_start` and
 ended or is shutting down (`end()`, a SIGTERM / SIGINT shutdown, or a
 shutdown directive).
 
-**Which session a sub-agent's calls land on.** A wrap can run a child's
-work inside the child's scope (`Session.enter_subagent_scope`, a
-context variable, so it follows the child's asyncio tasks and threads
-started with a copied context and nothing else). Every event the sensor
-builds for its own session while that scope is active goes on the child
-instead: model calls, `pre_call`, `tool_call`, `llm_error`, the MCP
-events and the `policy_*` events, each carrying the child's
-`session_id`, `agent_id` and `agent_name` with `parent_session_id` and
-`agent_role`, and `tokens_used_session` as the child's running total.
-The child's `session_end` then goes through the event queue behind those
-events, so it never overtakes them (the worker drops an event that
-arrives for a closed session). The LlamaIndex wrap uses the scope. The
-CrewAI and LangGraph wraps do not: their children carry `session_start`
-and `session_end` only, and the model calls made during a child's turn
-stay on the sensor's own session.
+**Which session a sub-agent's calls land on.** A wrap's child
+sessions carry the run's structure: their `session_start`, their
+`session_end` and the hand-off signals. The model calls, `tool_call`,
+`llm_error`, MCP and `policy_*` events made during a child's turn stay
+on the sensor's own session, for the CrewAI, LangGraph and LlamaIndex
+wraps alike, so that session's row counts every token of the run.
+Enforcement is therefore per session: the sensor's session's token
+policy, and a Stop on that session, act on every agent of the run (the
+next model call raises `DirectiveError`). A child session posts only its
+start, end and hand-off synchronously and drops a directive returned for
+it, so a directive addressed to a child is not acted on. Attributing
+each agent's calls to its child, with a Stop on a child halting that
+child only, is planned for every wrap together
+([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
-Enforcement with a scope active: the worker counts a child's tokens on
-the child's session row, so a server token policy is evaluated per child
-session; the sensor's own counter (the `init(limit=...)` warning and the
-pre-call check against the policy it cached) keeps counting every call
-of the process. A directive in the response to a child's event is the
-sensor's (its `parent_session_id` is the sensor's session) and is
-applied as for the sensor's own session: a Stop on a child, or a token
-budget `shutdown` for a child, makes the next model call anywhere in the
-process raise `DirectiveError` before it is sent, and a `degrade` swaps
-the model of every later call.
+A wrap may also enter a child's scope around the child's work
+(`Session.enter_subagent_scope`, a context variable, so it follows the
+child's asyncio tasks and threads started with a copied context and
+nothing else). The scope changes no event: it records the call ids of
+the tool calls a model response made during the child's work, so a wrap
+that also sees the tool run can tell whether it is already reported. The
+LlamaIndex wrap uses it.
 
 #### LlamaIndex agent workflows
 
@@ -1615,22 +1611,25 @@ that carry it (`AgentInput`, `AgentSetup`, `AgentOutput`):
   run whose last failed step no later step followed also ends in error,
   with that step's exception: early llama-index-workflows 2 releases
   exit the run span of a failed run instead of dropping it.
-- Each step of the run runs inside the open child's scope, so the
-  agent's model calls, the tools it runs and the model and MCP calls a
-  tool makes land on the child. An agent run started inside a tool opens
-  its own child, also parented on the sensor's session.
+- The agent's model calls, the tools it runs and the model and MCP
+  calls a tool makes are reported on the sensor's session, as for the
+  other wraps. An agent run started inside a tool opens its own child,
+  also parented on the sensor's session.
 
 Tool calls: a tool the model asked for in a structured tool call is
 already a `tool_call` event from the model's response (see LLM call
-paths). The handler adds a `tool_call` only for a tool whose call id no
-model response in that child reported, as `ReActAgent` and
-`CodeActAgent` parse their tool calls from the model's text; it carries
-`tool_name` and the run's `latency_ms`, and under `capture_prompts` the
-tool's arguments and output as `tool_input` / `tool_output`. A tool call
-is never reported twice.
+paths). Each step of a run runs inside the open child's scope, so the
+handler knows which call ids the agent's responses reported, and adds a
+`tool_call`, on the sensor's session, only for a tool whose call id no
+response of that agent reported, as `ReActAgent` and `CodeActAgent`
+parse their tool calls from the model's text; it carries `tool_name` and
+the run's `latency_ms`, and under `capture_prompts` the tool's arguments
+and output as `tool_input` / `tool_output`. A tool call is never
+reported twice.
 
-Enforcement stops a run at its next model call: the `DirectiveError` or
-`BudgetExceededError` the patched SDK raises fails the agent's step,
+Enforcement acts on the sensor's session and stops a run at its next
+model call: the `DirectiveError` or `BudgetExceededError` the patched
+SDK raises fails the agent's step,
 LlamaIndex ends the run with it (awaiting the handler raises it), and
 the open child ends with `state=error`. The dispatcher discards anything
 a span handler raises, so the handler never stops a run itself. A run
@@ -1641,8 +1640,7 @@ The wrap needs llama-index-core 0.14 or later (llama-index-workflows 2),
 the release line whose step spans it reads; on an older release `patch()`
 logs a warning and leaves LlamaIndex unwrapped, and its model calls are
 still metered on the sensor's session. A query or chat engine, or a
-workflow that is not an agent workflow, opens no child session; its
-model calls are metered on the session whose scope it runs in.
+workflow that is not an agent workflow, opens no child session.
 
 ### Claude Agent SDK
 

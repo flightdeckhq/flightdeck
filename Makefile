@@ -123,7 +123,7 @@ playground-lazy-patch-signals: ## Rule 40a playground: patch() before the SDK im
 playground-agent-handoff: ## Rule 40a playground: the sensor's agent_handoff signal on its own session and on a child session lands as the OTLP receiver's does, with no content. Needs only the dev stack.
 	$(PYTHON) playground/37_agent_handoff.py
 
-playground-llamaindex-agents: ## Rule 40d playground: LlamaIndex FunctionAgent, AgentWorkflow hand-off and ReActAgent runs land as one child session per agent, with each agent's model and tool calls on its child. Requires OPENAI_API_KEY.
+playground-llamaindex-agents: ## Rule 40d playground: LlamaIndex FunctionAgent, AgentWorkflow hand-off and ReActAgent runs land as one child session per agent with the hand-off signal, their model and tool calls on the sensor's session. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/39_llamaindex_agents.py
 
 playground-genai-pydantic-ai: ## Rule 40a playground: Pydantic AI over OpenTelemetry, an agent running a sub-agent as a tool lands as two otlp sessions. Requires the GenAI venv + ANTHROPIC_API_KEY.

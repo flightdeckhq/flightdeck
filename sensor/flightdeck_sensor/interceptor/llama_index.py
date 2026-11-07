@@ -2,8 +2,10 @@
 
 Reports each agent of a LlamaIndex agent workflow run (``FunctionAgent``,
 ``ReActAgent``, ``CodeActAgent``, a multi-agent ``AgentWorkflow``) as a
-child session of the sensor's session, with that agent's model calls,
-tool calls and hand-offs on it.
+child session of the sensor's session, with its hand-offs. The child
+sessions carry the run's structure (start, end, hand-off signals); the
+agents' model calls, tool calls and MCP calls are reported on the
+sensor's session, as for the CrewAI and LangGraph wraps.
 
 Seam. LlamaIndex's instrumentation dispatcher calls every span handler
 attached to the root dispatcher when a span enters, exits or is dropped.
@@ -26,17 +28,15 @@ Per run the handler keeps the agent whose child session is open:
 * the run span's exit ends the open child, and its drop (the run raised)
   ends it with ``state=error``.
 
-Every step of a run runs inside its open child's scope
-(:meth:`Session.enter_subagent_scope`), entered when the step's span
-enters and left when it exits, so the model calls the step makes through
-a patched SDK, and the tools it runs, land on the child.
-
 Tool calls. A tool the model asked for in a structured tool call is
-already a ``tool_call`` event from the model's response, and the
-interceptor base records its call id in the child's scope. The handler
-reports a ``tool_call`` for a tool run only when no response in the child
-reported its id: ``ReActAgent`` and ``CodeActAgent`` parse their tool
-calls from the model's text and give them fresh ids.
+already a ``tool_call`` event from the model's response. Every step of a
+run runs inside its open child's scope (:meth:`Session.enter_subagent_scope`),
+entered when the step's span enters and left when it exits, and the
+interceptor base records the call ids of a response's tool calls in that
+scope. The handler reports a ``tool_call`` for a tool run only when no
+response in the child reported its id: ``ReActAgent`` and
+``CodeActAgent`` parse their tool calls from the model's text and give
+them fresh ids.
 
 Fail-open per Rule 28: the dispatcher discards whatever a span handler
 raises, and the handler also catches its own failures, so LlamaIndex
@@ -363,7 +363,6 @@ class _Tracker:
                 state=state,
                 error=error,
                 outgoing_message=_subagent_message(child.last_output),
-                queued=True,
             )
         except Exception:  # noqa: BLE001
             _log.debug("emit_subagent_session_end failed", exc_info=True)
@@ -389,7 +388,7 @@ class _Tracker:
                         _json_safe(_event_field(output, "content")) if output is not None else None
                     ),
                     server_name=None,
-                    session_id=session.current_session_id(),
+                    session_id=session.config.session_id,
                 )
                 if content is not None:
                     content["provider"] = _TOOL_CONTENT_PROVIDER

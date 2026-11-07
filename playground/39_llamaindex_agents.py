@@ -2,9 +2,10 @@
 
 The sensor's LlamaIndex wrap (``patch()``, ``Provider.LLAMA_INDEX``)
 reports each agent of an agent workflow run as a child session of the
-sensor's session, with that agent's model calls and tool calls on it.
-This script runs three real runs on ``gpt-4o-mini`` (streaming, the
-agents' default) under one sensor session:
+sensor's session; the agents' model calls and tool calls stay on the
+sensor's session, as for the CrewAI and LangGraph wraps. This script
+runs three real runs on ``gpt-4o-mini`` (streaming, the agents'
+default) under one sensor session:
 
 1. a single ``FunctionAgent`` (``solo_calculator``) with a ``multiply``
    tool;
@@ -16,17 +17,18 @@ agents' default) under one sensor session:
 It asserts, through the query API:
 
 * one child per agent, parented on the sensor's session, closed, with
-  the agent's name as ``agent_role``;
-* every model call on the child of the agent that made it, none on the
-  sensor's session, and each child's ``tokens_used`` equal to its calls'
-  tokens;
-* exactly one ``multiply`` ``tool_call`` per run, on the right child:
-  from the model's response for the FunctionAgents, from the wrap for
-  the ReActAgent (with its arguments and output captured);
+  the agent's name as ``agent_role``, carrying only its start and end
+  (and, on ``calculator``, the hand-off signal) and no tokens;
 * the hand-off: an ``agent_handoff`` signal on ``calculator`` naming
   ``writer``, and ``writer``'s ``incoming_message``;
-* stored content (200 from ``GET /v1/events/:id/content``) for a child's
-  model call and for the ReAct tool call.
+* every model call on the sensor's session, their tokens equal to its
+  row's ``tokens_used``;
+* exactly one ``multiply`` ``tool_call`` per run, all on the sensor's
+  session: from the model's response for the two FunctionAgent runs,
+  from the wrap for the ReActAgent (the only one with a captured tool
+  output);
+* stored content (200 from ``GET /v1/events/:id/content``) for a model
+  call.
 
 Requires OPENAI_API_KEY and llama-index-core 0.14+ with
 llama-index-llms-openai. Prints the session ids, so the run can be found
@@ -64,6 +66,12 @@ EVENTS_LANDED_S = 25.0
 POLL_S = 0.5
 HTTP_TIMEOUT_S = 5.0
 CONTENT_PRESENT_STATUS = 200
+# The runs below, and the fewest model calls they make: two per
+# FunctionAgent or ReActAgent turn that calls a tool (the call that
+# asks for it, the call that answers), the calculator's two and the
+# writer's one in the workflow.
+RUNS = 3
+MIN_MODEL_CALLS = 7
 # How much of the fetched events a failure message quotes.
 FAILURE_DUMP_CHARS = 2000
 MS_PER_S = 1000
@@ -129,36 +137,32 @@ def _check(label: str, ok: bool, t0: float, details: str, dump: Any = None) -> N
         raise AssertionError(f"{label}: {details} {json.dumps(dump)[:FAILURE_DUMP_CHARS]}")
 
 
-def _check_child(
-    label: str,
-    child: dict[str, Any],
-    root_id: str,
-    *,
-    min_calls: int,
-    tool_calls: int,
-    t0: float,
+def _check_structure_only(
+    label: str, child: dict[str, Any], root_id: str, want: set[str], t0: float
 ) -> list[dict[str, Any]]:
-    """A child's calls are its own: on its session, linked to the root,
-    summing to its row's tokens, with ``tool_calls`` multiply calls."""
-    events = _events(child["session_id"], ["session_start", "post_call", "session_end"])
-    calls = _of(events, "post_call")
-    tokens = sum(int(c.get("tokens_total") or 0) for c in calls)
-    multiplies = [t for t in _of(events, "tool_call") if t.get("tool_name") == "multiply"]
+    """A child carries the run's structure: its start, its end and, on an
+    agent handing off, the hand-off signal; no calls, no tokens."""
+    events = _events(child["session_id"], ["session_start", "session_end"])
+    types = {e.get("event_type") for e in events}
     ok = (
         child.get("parent_session_id") == root_id
-        and len(calls) >= min_calls
-        and tokens == child.get("tokens_used")
-        and len(multiplies) == tool_calls
+        and types == want
+        and int(child.get("tokens_used") or 0) == 0
     )
     _check(
         label,
         ok,
         t0,
-        f"session={child['session_id']} post_calls={len(calls)} tokens={tokens}"
-        f"/{child.get('tokens_used')} multiply_tool_calls={len(multiplies)}",
+        f"session={child['session_id']} events={sorted(t for t in types if t)}"
+        f" tokens={child.get('tokens_used')}",
         events,
     )
     return events
+
+
+def _tool_output(event_id: str) -> Any:
+    """The stored ``tool_output`` of a tool call's content."""
+    return _get(f"/v1/events/{event_id}/content").get("tool_output")
 
 
 async def _runs() -> None:
@@ -234,35 +238,31 @@ def main() -> None:
         children,
     )
 
-    root_calls = _of(_events(root_id, ["session_start"]), "post_call")
-    _check("no model call on the sensor's own session", not root_calls, t0, f"{len(root_calls)}")
-
-    _check_child(
-        "solo FunctionAgent: its calls and its one tool call on its child",
+    structure = {"session_start", "session_end"}
+    _check_structure_only(
+        "solo FunctionAgent child: structure only",
         children["solo_calculator"],
         root_id,
-        min_calls=2,
-        tool_calls=1,
-        t0=t0,
+        structure,
+        t0,
     )
-    calc_events = _check_child(
-        "workflow calculator: its calls and its multiply on its child",
+    calc_events = _check_structure_only(
+        "workflow calculator child: structure and the hand-off",
         children["calculator"],
         root_id,
-        min_calls=2,
-        tool_calls=1,
-        t0=t0,
+        structure | {"session_signal"},
+        t0,
     )
-    writer_events = _check_child(
-        "workflow writer: its calls on its child",
-        children["writer"],
-        root_id,
-        min_calls=1,
-        tool_calls=0,
-        t0=t0,
+    writer_events = _check_structure_only(
+        "workflow writer child: structure only", children["writer"], root_id, structure, t0
     )
-    signals = _of(calc_events, "session_signal")
-    signal_data = [(s.get("payload") or {}).get("signal_data") for s in signals]
+    _check_structure_only(
+        "ReActAgent child: structure only", children["react_calculator"], root_id, structure, t0
+    )
+
+    signal_data = [
+        (s.get("payload") or {}).get("signal_data") for s in _of(calc_events, "session_signal")
+    ]
     _check(
         "hand-off signal on the agent handing off",
         signal_data == [{"from": "calculator", "to": "writer"}],
@@ -278,30 +278,35 @@ def main() -> None:
         t0,
         f"incoming={incoming!r}",
     )
-    writer_call = _of(writer_events, "post_call")[0]
-    status = _content_status(writer_call["id"])
+
+    # Every model call and tool call is on the sensor's session.
+    root_events = _events(root_id, ["session_start", "post_call", "tool_call", "session_end"])
+    calls = _of(root_events, "post_call")
+    tokens = sum(int(c.get("tokens_total") or 0) for c in calls)
+    root_row = _get(f"/v1/sessions/{root_id}")["session"]
     _check(
-        "a child's model call has its content stored",
+        "every model call on the sensor's session, counted on its row",
+        len(calls) >= MIN_MODEL_CALLS and tokens == root_row.get("tokens_used"),
+        t0,
+        f"post_calls={len(calls)} tokens={tokens}/{root_row.get('tokens_used')}",
+        root_events,
+    )
+    multiplies = [t for t in _of(root_events, "tool_call") if t.get("tool_name") == "multiply"]
+    outputs = [_tool_output(t["id"]) for t in multiplies]
+    from_wrap = [o for o in outputs if o is not None]
+    _check(
+        "one multiply tool_call per run: two from responses, the ReAct one from the wrap",
+        len(multiplies) == RUNS and len(from_wrap) == 1,
+        t0,
+        f"multiply_tool_calls={len(multiplies)} with_output={from_wrap}",
+        multiplies,
+    )
+    status = _content_status(calls[-1]["id"])
+    _check(
+        "a model call has its content stored",
         status == CONTENT_PRESENT_STATUS,
         t0,
-        f"event={writer_call['id']} content={status}",
-    )
-
-    react_events = _check_child(
-        "ReActAgent: the tool call the wrap reports, once, on its child",
-        children["react_calculator"],
-        root_id,
-        min_calls=2,
-        tool_calls=1,
-        t0=t0,
-    )
-    (tool,) = [t for t in _of(react_events, "tool_call") if t.get("tool_name") == "multiply"]
-    status = _content_status(tool["id"])
-    _check(
-        "the ReAct tool call has its arguments and output stored",
-        status == CONTENT_PRESENT_STATUS and bool(tool.get("has_content")),
-        t0,
-        f"event={tool['id']} content={status}",
+        f"event={calls[-1]['id']} content={status}",
     )
 
 

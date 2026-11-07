@@ -1,0 +1,464 @@
+{
+  "_source": "Bodies GET /v1/events/:id/content served for three OpenAI Responses calls made through the sensor (openai 2.54.0, gpt-4o-mini, capture_prompts on) against the dev stack on 2026-11-07: a string input with instructions, an item-list input the model answered with a function_call, and the follow-up whose input carries that function_call and its function_call_output.",
+  "responses_string_input": {
+    "event_id": "eecffa88-8ddd-4821-8e43-1570996d80f9",
+    "session_id": "b2db5f45-442c-456f-be6a-446cfc0dab6b",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": "You are terse. Answer in five words or fewer.",
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794037450,
+      "conversation": null,
+      "created_at": 1794037449,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_001f1a674b99a0ff006aeed6c9bf6c87d29d0b30d5df10131d",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "instructions": "You are terse. Answer in five words or fewer.",
+      "max_output_tokens": 32,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Paris.",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_001f1a674b99a0ff006aeed6ca89fc87d2bf032e5009c18641",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 28,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 3,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 31
+      },
+      "user": null
+    },
+    "input": "Name the capital of France.",
+    "captured_at": "2026-11-07T07:44:11.445155Z"
+  },
+  "responses_item_list": {
+    "event_id": "1d9ba5da-ce64-47aa-b3b4-5ff08954dd34",
+    "session_id": "b2db5f45-442c-456f-be6a-446cfc0dab6b",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": "You are a weather assistant.",
+    "messages": [],
+    "tools": [
+      {
+        "description": "Current weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794037451,
+      "conversation": null,
+      "created_at": 1794037451,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_0837429fc5bf4865006aeed6cb595c87d2a0aac6b4a236da5d",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "instructions": "You are a weather assistant.",
+      "max_output_tokens": 64,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "arguments": "{\"city\":\"Paris\"}",
+          "call_id": "call_9IQorB7WiLKDYNXtObQMBB75",
+          "caller": null,
+          "id": "fc_0837429fc5bf4865006aeed6cbb84887d2a53c2f8cb8c9c7c6",
+          "name": "get_weather",
+          "namespace": null,
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "required",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [
+        {
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "output_schema": null,
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "function"
+        }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 75,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 81
+      },
+      "user": null
+    },
+    "input": [
+      {
+        "content": "Use the weather tool for weather questions.",
+        "role": "developer"
+      },
+      {
+        "content": [
+          {
+            "text": "What is the weather in Paris?",
+            "type": "input_text"
+          }
+        ],
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "captured_at": "2026-11-07T07:44:12.620486Z"
+  },
+  "responses_function_call_round_trip": {
+    "event_id": "94c3c8f2-5e12-409e-810e-f5c1737438b4",
+    "session_id": "b2db5f45-442c-456f-be6a-446cfc0dab6b",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": "You are a weather assistant.",
+    "messages": [],
+    "tools": [
+      {
+        "description": "Current weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794037453,
+      "conversation": null,
+      "created_at": 1794037453,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_0837429fc5bf4865006aeed6ccf58c87d28eff452d91ab93e9",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "instructions": "You are a weather assistant.",
+      "max_output_tokens": 64,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "The weather in Paris is clear with a temperature of 18\u00b0C.",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_0837429fc5bf4865006aeed6cd520c87d2a1a0a85a11ca2379",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [
+        {
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "output_schema": null,
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "function"
+        }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 105,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 16,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 121
+      },
+      "user": null
+    },
+    "input": [
+      {
+        "content": "Use the weather tool for weather questions.",
+        "role": "developer"
+      },
+      {
+        "content": [
+          {
+            "text": "What is the weather in Paris?",
+            "type": "input_text"
+          }
+        ],
+        "role": "user",
+        "type": "message"
+      },
+      {
+        "arguments": "{\"city\":\"Paris\"}",
+        "call_id": "call_9IQorB7WiLKDYNXtObQMBB75",
+        "caller": null,
+        "id": "fc_0837429fc5bf4865006aeed6cbb84887d2a53c2f8cb8c9c7c6",
+        "name": "get_weather",
+        "namespace": null,
+        "status": "completed",
+        "type": "function_call"
+      },
+      {
+        "call_id": "call_9IQorB7WiLKDYNXtObQMBB75",
+        "output": "{\"city\": \"Paris\", \"temp_c\": 18, \"sky\": \"clear\"}",
+        "type": "function_call_output"
+      }
+    ],
+    "captured_at": "2026-11-07T07:44:14.437193Z"
+  }
+}

@@ -1056,12 +1056,21 @@ export interface EventContent {
   // ``input`` is overloaded across event-content sources:
   //   * ``embeddings``: string (single-input embed) or string[]
   //     (batch embed) — the OpenAI / litellm input parameter.
+  //   * an OpenAI Responses ``post_call`` (OpenAI SDK or litellm):
+  //     the request's ``input`` verbatim, a string or a list of input
+  //     items; its ``instructions`` are in ``system_prompt``. The
+  //     PromptViewer knows the call by ``response.object ===
+  //     "response"``.
+  //   * a litellm ``text_completion`` ``post_call``: the request's
+  //     ``prompt`` verbatim (a string, strings, or token ids). The
+  //     PromptViewer knows the call by ``response.object ===
+  //     "text_completion"``.
   //   * ``mcp_tool_call`` / ``mcp_prompt_get`` overflow:
   //     dict carrying the call's full ``arguments`` when the inline
   //     payload field overflowed the 8 KiB threshold.
   // Components branch on the parent event's event_type to render
   // appropriately.
-  input?: string | string[] | Record<string, unknown> | null;
+  input?: string | string[] | unknown[] | Record<string, unknown> | null;
   /**
    * A tool call's arguments and result (the ``event_content``
    * ``tool_input`` / ``tool_output`` columns), present when captured.

@@ -211,6 +211,18 @@ All notable changes to Flightdeck are documented here.
   claiming capture is off, and a call of a capture-on run that recorded
   nothing says so. The Claude Code plugin's hook tool calls render as
   before ([#260](https://github.com/flightdeckhq/flightdeck/pull/260)).
+- **The Prompts tab shows an OpenAI Responses call's input.** A
+  Responses call (the OpenAI SDK's or litellm's) stores its request as
+  `instructions` and `input`, with no `messages`, so the Prompts tab
+  showed no request at all. It now shows the input in the Responses
+  API's terms: a string as written, or one box per input item (a message
+  with its role and content parts, a `function_call` with its arguments,
+  a `function_call_output` with its result, a `reasoning` summary, and
+  any other item labelled by its type with its JSON). The system text
+  is labelled `instructions`, not System, and a Responses function
+  tool shows its parameters. A litellm `text_completion` call shows its
+  prompt under Prompt (D252,
+  [#222](https://github.com/flightdeckhq/flightdeck/issues/222)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

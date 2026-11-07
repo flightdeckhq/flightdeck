@@ -613,3 +613,20 @@ whether content exists told the operator capture was off when it was on.
 **Rejected alternative:** inferring the posture from `capture_enabled`
 (whether any event stored content), which cannot tell capture-off from
 capture-on-but-empty.
+
+## D249 -- The worker refuses a malformed session_id at the consumer and caps payload strings in its logs
+
+**Date:** 2026-11-05
+**Decision:** the worker's fetch loop terminates, on its first delivery,
+an event whose `session_id` is not a canonical UUID, counts it as
+`invalid_session_id` and logs it once with the id capped at 64 bytes.
+Payload strings in the worker's log lines go through named caps
+(`workers/internal/logcap`): ids and the event type at 64 bytes, names at
+256, error text at 1 KiB.
+**Why:** NATS is a trust boundary of its own; a direct publisher skips
+ingestion's validator, and a bad id then failed its `::uuid` cast three
+times, logging the whole id (up to NATS's 1 MiB payload) each time.
+**Rejected alternative:** re-running ingestion's full validator in the
+worker (two copies of the contract that drift apart), and a log handler
+that truncates every attribute (it replaces slog's default output format,
+which the integration tests and operators read).

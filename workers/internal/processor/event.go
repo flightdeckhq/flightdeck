@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -559,7 +560,7 @@ func storeEvent(ctx context.Context, w eventInserter, e consumer.EventPayload, r
 	eventID, err := w.InsertEventWithContent(ctx, row, e.Content)
 	if errors.Is(err, writer.ErrEventContent) {
 		slog.Warn("event content could not be stored; storing the event without it",
-			"err", err, "event_type", e.EventType, "session_id", e.SessionID)
+			"err", logcap.Err(err), "event_type", logcap.EventType(e.EventType), "session_id", e.SessionID)
 		row.HasContent = false
 		return w.InsertEvent(ctx, row)
 	}
@@ -667,7 +668,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		}
 		if dup {
 			metrics.IncrDropped(metrics.ReasonDuplicateEvent)
-			slog.Debug("dropping duplicate event", "event_id", e.ID, "event_type", e.EventType, "session_id", e.SessionID)
+			slog.Debug("dropping duplicate event", "event_id", logcap.ID(e.ID), "event_type", logcap.EventType(e.EventType), "session_id", e.SessionID)
 			return nil
 		}
 	}
@@ -806,13 +807,13 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	ts, err := time.Parse(time.RFC3339, e.Timestamp)
 	if err != nil {
 		slog.Warn("event timestamp not RFC3339; using receive time",
-			"event_type", e.EventType, "raw_timestamp", e.Timestamp)
+			"event_type", logcap.EventType(e.EventType), "raw_timestamp", logcap.Timestamp(e.Timestamp))
 		ts = time.Now().UTC()
 	}
 	extra, extraErr := BuildEventExtra(e)
 	if extraErr != nil {
 		// Non-fatal: log and proceed without payload metadata.
-		slog.Warn("build event extra error", "err", extraErr, "event_type", e.EventType)
+		slog.Warn("build event extra error", "err", logcap.Err(extraErr), "event_type", logcap.EventType(e.EventType))
 	}
 	// Server-authoritative capture gate. Prompt/MCP content may be
 	// persisted only when the session's stored capture posture permits
@@ -869,14 +870,14 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// tight paired writes.
 	if err := writer.NotifyFleetChange(ctx, p.pool, e.SessionID, e.EventType, eventID); err != nil {
 		// Non-fatal: log but don't fail the event
-		slog.Warn("notify error", "err", err)
+		slog.Warn("notify error", "err", logcap.Err(err))
 	}
 
 	// Evaluate policy after post_call events
 	if e.EventType == "post_call" {
 		if err := p.policy.Evaluate(ctx, e.SessionID); err != nil {
 			// Non-fatal: log but don't fail the event
-			slog.Warn("policy eval error", "err", err)
+			slog.Warn("policy eval error", "err", logcap.Err(err))
 		}
 	}
 
@@ -908,7 +909,7 @@ func (p *Processor) enrichSessionEnd(
 	if len(extra) > 0 {
 		if err := json.Unmarshal(extra, &merged); err != nil {
 			slog.Warn("enrichSessionEnd: parse extra error",
-				"err", err, "session_id", e.SessionID)
+				"err", logcap.Err(err), "session_id", e.SessionID)
 			return extra
 		}
 	}
@@ -937,7 +938,7 @@ func (p *Processor) enrichSessionEnd(
 		}
 	} else {
 		slog.Warn("enrichSessionEnd: policy_actions_summary query error",
-			"err", err, "session_id", e.SessionID)
+			"err", logcap.Err(err), "session_id", e.SessionID)
 	}
 	// last_event_id — the immediately-prior event's UUID for the
 	// dashboard's "what fired right before close" triage chip.
@@ -953,7 +954,7 @@ func (p *Processor) enrichSessionEnd(
 	out, err := json.Marshal(merged)
 	if err != nil {
 		slog.Warn("enrichSessionEnd: re-marshal error",
-			"err", err, "session_id", e.SessionID)
+			"err", logcap.Err(err), "session_id", e.SessionID)
 		return extra
 	}
 	return out

@@ -349,8 +349,9 @@ flightdeck/
 │   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
 │   ├── internal/
 │   │   ├── config/config.go
-│   │   ├── consumer/nats.go    # JetStream consumer: fetch loop, ack handling
+│   │   ├── consumer/nats.go    # JetStream consumer: fetch loop, session_id check, ack handling
 │   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
+│   │   ├── logcap/logcap.go    # Named caps for payload strings written to log lines
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
@@ -3884,12 +3885,39 @@ message to one of `WorkerPoolSize` lanes (below). A message has three outcomes: 
 the processor returns nil (including the orphan `session_end` path, which
 inserts nothing); a delayed NAK when the processor cannot act yet or
 fails and the delivery budget is not spent; and Term for a payload that
-does not parse or a processing failure on the last delivery. A NAK
+does not parse, a payload whose `session_id` is not a canonical UUID, or
+a processing failure on the last delivery. A NAK
 redelivers after one second times the number of deliveries so far;
 `MaxDeliver` is three deliveries in total and there is no dead-letter
 stream (the worker counts a message that fails its last delivery as
 `max_retries_exhausted`). Each delivery hands the processor the message's
 stream sequence and whether it is the last delivery the budget allows.
+
+The worker does not trust the stream. Ingestion refuses a malformed
+`session_id`, but anything that can publish to NATS reaches the worker
+without passing ingestion, so the fetching goroutine checks each decoded
+event's `session_id` against the form ingestion enforces (8-4-4-4-12
+hex digits, either case) before it picks the event's lane. An event that
+fails is terminated on its first delivery, counted as
+`invalid_session_id`, and logged once at WARN (`dropped event with
+malformed session_id`) with its event type, stream sequence, the id's
+length in bytes and at most the id's first 64 bytes. The processor never
+sees it, so it holds no lane and costs no database round trip; unchecked,
+it would fail at Postgres's `::uuid` cast on each of its three
+deliveries. The check covers `session_id` alone, because it keys the
+lanes and every session-row write; the other UUID fields (`id`,
+`agent_id`, `parent_session_id`) still fail at their casts and are
+retried and terminated as any processing failure is.
+
+Payload strings that reach the worker's log lines are capped
+(`workers/internal/logcap`): ids at 64 bytes (a canonical UUID is 36),
+the event type and timestamp at 64, names such as the flavor and the MCP
+server name at 256 (ingestion's own cap for names), and error text and a
+recovered panic's value at 1 KiB, since Postgres quotes the offending
+input in a cast error. A capped value keeps its leading bytes, cut on a
+UTF-8 boundary, and ends with its full length (`…(4096 bytes)`). A
+`session_id` needs no cap once it has passed the check above. The log
+lines carry ids, names and counts only, never prompt content.
 
 The consumer processes a session's events in stream order. The fetching
 goroutine asks for up to 64 messages at a time and appends each to the
@@ -9406,8 +9434,9 @@ The workers keep an in-process, reason-labelled counter registry
 (`workers/internal/metrics`):
 
 - `dropped_events_total{reason}` — events the worker did not apply:
-  `unmarshal_error`, `process_panic`, `max_retries_exhausted`,
-  `closed_session_skip`, `orphan_session_end`,
+  `unmarshal_error`, `invalid_session_id` (a `session_id` that is not a
+  canonical UUID; see NATS consumer), `process_panic`,
+  `max_retries_exhausted`, `closed_session_skip`, `orphan_session_end`,
   `superseded_session_end` (a `session_end` published before the run of
   a still-open session began; on a closed row the same end counts as
   `closed_session_skip`), and `duplicate_event` (an event whose

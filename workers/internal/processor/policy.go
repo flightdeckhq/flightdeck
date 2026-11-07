@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -143,7 +144,7 @@ func (pe *PolicyEvaluator) queryPolicy(ctx context.Context, scope, scopeValue st
 		return nil
 	}
 	if err != nil {
-		slog.Error("policy query error", "scope", scope, "scope_value", scopeValue, "err", err)
+		slog.Error("policy query error", "scope", scope, "scope_value", logcap.Name(scopeValue), "err", logcap.Err(err))
 		return nil
 	}
 	cp.LoadedAt = time.Now()

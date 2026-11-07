@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/nats-io/nats.go"
 )
@@ -538,6 +539,7 @@ type Consumer struct {
 	processTimeout    time.Duration
 	keepaliveInterval time.Duration
 	inProgress        func(*nats.Msg) error
+	term              func(*nats.Msg) error
 }
 
 // New creates a Consumer.
@@ -681,7 +683,8 @@ const fetchBatch = 64
 const fetchErrorBackoff = time.Second
 
 // dispatch fetches messages and hands each to its session's lane until
-// ctx is cancelled. A message that does not decode is terminated here.
+// ctx is cancelled. A message that does not decode, or whose session_id
+// is not a canonical UUID, is terminated here and never takes a lane.
 func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, error), lanes []*lane) {
 	for {
 		if ctx.Err() != nil {
@@ -708,8 +711,12 @@ func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, erro
 			var event EventPayload
 			if err := json.Unmarshal(msg.Data, &event); err != nil {
 				metrics.IncrDropped(metrics.ReasonUnmarshalError)
-				slog.Error("unmarshal error", "err", err)
-				_ = msg.Term()
+				slog.Error("unmarshal error", "err", logcap.Err(err))
+				c.terminate(msg)
+				continue
+			}
+			if !validSessionID(event.SessionID) {
+				c.dropInvalidSessionID(msg, event)
 				continue
 			}
 			lanes[laneFor(event.SessionID, len(lanes))].push(&laneEntry{msg: msg, event: event, since: now})
@@ -717,7 +724,9 @@ func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, erro
 	}
 }
 
-// handle processes one message on lane id and answers NATS for it.
+// handle processes one message on lane id and answers NATS for it. The
+// event's session_id passed validSessionID in dispatch, so its log lines
+// carry it as is; every other payload string they carry is capped.
 func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload, id int) {
 	// Delivery metadata: the stream position orders a session's
 	// events and the delivery count tells the processor when the
@@ -743,7 +752,8 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload
 			if r := recover(); r != nil {
 				metrics.IncrDropped(metrics.ReasonProcessPanic)
 				slog.Error("recovered panic processing message",
-					"worker", id, "event_type", event.EventType, "panic", r)
+					"worker", id, "event_type", logcap.EventType(event.EventType),
+					"session_id", event.SessionID, "panic", logcap.Value(r))
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
@@ -753,8 +763,8 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload
 	retryRequested := errors.Is(procErr, ErrRetryLater)
 	if procErr != nil && !retryRequested {
 		slog.Error("process error",
-			"worker", id, "event_type", event.EventType,
-			"session_id", event.SessionID, "err", procErr)
+			"worker", id, "event_type", logcap.EventType(event.EventType),
+			"session_id", event.SessionID, "err", logcap.Err(procErr))
 	}
 	switch outcome {
 	case outcomeRetry:
@@ -763,7 +773,7 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload
 			// been written yet (the event reached the worker
 			// before its session_start); not a processing error.
 			slog.Info("event redelivery scheduled",
-				"worker", id, "event_type", event.EventType,
+				"worker", id, "event_type", logcap.EventType(event.EventType),
 				"session_id", event.SessionID,
 				"delivery", deliveries, "delay", delay)
 		}
@@ -784,7 +794,7 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload
 		metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
 		if retryRequested {
 			slog.Warn("retry requested on the final delivery; dropping",
-				"worker", id, "event_type", event.EventType,
+				"worker", id, "event_type", logcap.EventType(event.EventType),
 				"session_id", event.SessionID)
 		}
 		_ = msg.Term()

@@ -941,9 +941,10 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
     case "config_changed":
       return typeof data?.source === "string" ? `settings changed · ${signalWords(data.source)}` : "settings changed";
     case "agent_handoff": {
-      // An OpenTelemetry GenAI hand-off: the agent handing off names
-      // the agent it handed to. Either name is left out when the spans
-      // do not give it, so the line names only what is known.
+      // A framework hand-off, from the OpenTelemetry GenAI receiver or
+      // the sensor's framework wraps: the agent handing off names the
+      // agent it handed to. Either name is left out when the source
+      // does not give it, so the line names only what is known.
       const from = typeof data?.from === "string" ? data.from : null;
       const to = typeof data?.to === "string" ? data.to : null;
       if (from && to) return `hand-off · ${from} → ${to}`;

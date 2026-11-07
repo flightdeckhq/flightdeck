@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from flightdeck_sensor.core import context as _runtime_context
 from flightdeck_sensor.core.agent_id import derive_agent_id
+from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.types import (
     Directive,
@@ -221,6 +222,38 @@ SUBAGENT_HARD_CAP_BYTES = 2 * 1024 * 1024
 # Discriminator the dashboard's content-fetch consumer reads to pick
 # the sub-agent renderer over the LLM PromptViewer.
 SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent"
+
+# The session_signal a framework hand-off is reported as: the name the
+# OTLP GenAI receiver gives the same fact, so a hand-off reads the same
+# whichever of the two reported it.
+SIGNAL_AGENT_HANDOFF = "agent_handoff"
+# The bound on each agent name in a hand-off's signal_data, in UTF-8
+# bytes: the receiver's bound on the same names, and the ingestion
+# API's limit on a signal_data string, which would refuse the whole
+# event over it.
+HANDOFF_AGENT_NAME_MAX_BYTES = 256
+# The bound on a hand-off's synchronous post, in seconds, for its one
+# attempt: a hand-off happens mid-run, between two agents' turns, so a
+# slow or unreachable control plane must not hold the agent there for the
+# transport's 10 s timeout and retries. 2 s is the heartbeat poll's bound,
+# well above a healthy round trip; a hand-off it cuts short is lost, as
+# any event is when the control plane is unreachable.
+HANDOFF_POST_TIMEOUT_SECS = 2.0
+
+
+def _handoff_agent_label(name: object) -> str:
+    """An agent name as a hand-off's ``signal_data`` carries it: trimmed,
+    cut to :data:`HANDOFF_AGENT_NAME_MAX_BYTES` at a UTF-8 boundary and
+    trimmed again, as the OTLP GenAI receiver labels the same names; ""
+    for a name that is not a string or is empty. ``str.strip`` removes
+    what Go's ``identity.TrimRole`` does: Unicode white space and the
+    U+001C..U+001F separators."""
+    if not isinstance(name, str):
+        return ""
+    # "replace" turns a lone surrogate, which UTF-8 cannot encode, into
+    # "?"; "ignore" drops the partial character a cut leaves at the end.
+    encoded = name.strip().encode("utf-8", "replace")[:HANDOFF_AGENT_NAME_MAX_BYTES]
+    return encoded.decode("utf-8", "ignore").strip()
 
 
 def _json_default(value: Any) -> Any:
@@ -985,6 +1018,107 @@ class Session:
             payload["has_content"] = True
             payload["content"] = content_envelope
         self.client.post_event(payload)
+
+    def emit_agent_handoff(
+        self,
+        *,
+        from_agent: str | None,
+        to_agent: str | None,
+        child_session_id: str | None = None,
+        child_agent_id: str | None = None,
+        child_agent_name: str | None = None,
+        agent_role: str | None = None,
+    ) -> None:
+        """Report a framework hand-off: one agent passing the conversation
+        to another.
+
+        Emits the ``agent_handoff`` ``session_signal`` the OTLP GenAI
+        receiver emits for the same fact, so the worker and the dashboard
+        store and show a hand-off the same way whichever reported it.
+        ``signal_data`` holds ``from`` and ``to``, the agents' names,
+        each trimmed, cut to :data:`HANDOFF_AGENT_NAME_MAX_BYTES` at a
+        UTF-8 boundary and left out when empty or not a string (a lone
+        surrogate in a name becomes ``?``).
+
+        The names are metadata and are sent whatever ``capture_prompts``
+        says. What was handed over is content and is never taken here:
+        the transfer's tool call and the next model call carry it under
+        the capture gate.
+
+        The signal goes on the session of the agent handing off: this
+        Session by default, or the child session the wrap names with
+        ``child_session_id``, ``child_agent_id``, ``child_agent_name``
+        and ``agent_role`` (the identity it passed to
+        :meth:`emit_subagent_session_start`). A child identity given in
+        part is dropped with a warning rather than sent on the wrong
+        session. A directive in the response is applied on the sensor's
+        own session and discarded on a child's, as the child
+        ``session_start`` and ``session_end`` discard theirs.
+
+        Nothing is sent once the session has ended or is shutting down
+        (``end()`` ran, a SIGTERM / SIGINT shutdown started, or a
+        shutdown directive arrived).
+
+        Posted synchronously, as the child ``session_start`` and
+        ``session_end`` are: a queued signal could reach ingestion after
+        the child's ``session_end``, and the worker drops an event that
+        arrives for a closed session. The post is one attempt bounded by
+        :data:`HANDOFF_POST_TIMEOUT_SECS`, so a slow or unreachable
+        control plane holds the agent's hand-off for about that long at
+        most; a failure then follows the unavailability policy. Never
+        raises, except the :class:`DirectiveError` the ``halt`` policy
+        raises when the control plane is unreachable.
+        """
+        try:
+            if (
+                self._state is SessionState.CLOSED
+                or self._signal_shutdown is not None
+                or self._shutdown_requested
+            ):
+                return
+            child = (child_session_id, child_agent_id, child_agent_name, agent_role)
+            if any(v is not None for v in child) and not all(child):
+                _log.warning(
+                    "agent_handoff names part of a child session's identity; "
+                    "the hand-off was not reported"
+                )
+                return
+            data: dict[str, Any] = {}
+            for key, name in (("from", from_agent), ("to", to_agent)):
+                label = _handoff_agent_label(name)
+                if label:
+                    data[key] = label
+            payload = self._build_payload(
+                EventType.SESSION_SIGNAL,
+                signal=SIGNAL_AGENT_HANDOFF,
+                signal_data=data,
+                # A signal names no model: the worker would take one as
+                # the session's model.
+                model=None,
+            )
+            if child_session_id is not None:
+                payload.update(
+                    {
+                        "session_id": child_session_id,
+                        "parent_session_id": self.config.session_id,
+                        "agent_role": agent_role,
+                        "agent_id": child_agent_id,
+                        "agent_name": child_agent_name,
+                        # The child's own running state, as on its
+                        # session_start and session_end.
+                        "tokens_used_session": 0,
+                        "token_limit_session": None,
+                    }
+                )
+            directive, _ = self.client.post_event(
+                payload, timeout=HANDOFF_POST_TIMEOUT_SECS, max_attempts=1
+            )
+            if directive is not None and child_session_id is None:
+                self._apply_directive(directive)
+        except DirectiveError:
+            raise
+        except Exception:
+            _log.warning("agent_handoff was not reported", exc_info=True)
 
     def _build_subagent_payload(
         self,

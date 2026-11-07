@@ -613,3 +613,21 @@ whether content exists told the operator capture was off when it was on.
 **Rejected alternative:** inferring the posture from `capture_enabled`
 (whether any event stored content), which cannot tell capture-off from
 capture-on-but-empty.
+
+## D250 -- The OpenAI patch hooks resources the client builds in its constructor, and the openai floor is 1.26
+
+**Date:** 2026-11-07
+**Decision:** on openai before 1.78, whose client assigns `self.chat =
+Chat(self)` in `__init__`, the class patch installs a data descriptor for
+each resource the client class annotates; it keeps the SDK's resource in
+the instance `__dict__` and hands out the sensor proxy while a session is
+active. The `openai` extra requires `openai>=1.26`; below it the
+interceptor patches nothing and warns once at import. CI tests 1.26.0.
+**Why:** the sensor declared `openai>=1.0` while every call on 1.0 to
+1.77 went unmetered. 1.26 is the first release whose chat `create` takes
+`stream_options`, which the sensor adds to every streamed chat call; on
+an older SDK that call raises `TypeError` in the caller's code.
+**Rejected alternative:** raising the floor to 1.78 (drops the year of
+releases from May 2024 to May 2025, when the hook is small and tested in
+CI); keeping 1.0 and skipping `stream_options` there (streamed calls
+would report no usage, so they could not be metered).

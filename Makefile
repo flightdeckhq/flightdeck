@@ -24,6 +24,9 @@ PYTHON ?= ./sensor/.venv/bin/python
 # has the commands that build them.
 GENAI_PYTHON ?= $(HOME)/.cache/fd-genai-capture-venv/bin/python
 GENAI_ADK_PYTHON ?= $(HOME)/.cache/fd-genai-capture-adk-venv/bin/python
+# The OpenAI floor playground runs the sensor against the oldest openai
+# it supports, from a venv of its own (playground/README.md).
+OPENAI_FLOOR_PYTHON ?= $(HOME)/.cache/fd-openai-floor-venv/bin/python
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -130,6 +133,9 @@ playground-genai-google-adk: ## Rule 40a playground: Google ADK over OpenTelemet
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py
 
+playground-openai-floor: ## Rule 40d playground: chat, streams and embeddings on the oldest supported openai (built-in-constructor resources). Requires the OpenAI floor venv + OPENAI_API_KEY.
+	$(OPENAI_FLOOR_PYTHON) playground/36_openai_floor.py
+
 playground-langchain: ## Rule 40d playground: LangChain (chat + MCP). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/03_langchain.py
 
@@ -205,8 +211,8 @@ playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / for
 	$(PYTHON) playground/policy_demo_degrade.py
 	$(PYTHON) playground/policy_demo_forced_degrade.py
 
-playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL / missing GenAI venvs).
-	FD_GENAI_PYTHON=$(GENAI_PYTHON) FD_GENAI_ADK_PYTHON=$(GENAI_ADK_PYTHON) $(PYTHON) playground/run_all.py
+playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL / missing GenAI or OpenAI floor venvs).
+	FD_GENAI_PYTHON=$(GENAI_PYTHON) FD_GENAI_ADK_PYTHON=$(GENAI_ADK_PYTHON) FD_OPENAI_FLOOR_PYTHON=$(OPENAI_FLOOR_PYTHON) $(PYTHON) playground/run_all.py
 
 # `test-e2e` is the Playwright browser-end-to-end suite;
 # `test-sensor-e2e` is the pytest respx suite. Two separate targets

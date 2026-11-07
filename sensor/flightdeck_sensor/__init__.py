@@ -741,7 +741,10 @@ def patch(
     and streaming views are covered too. For OpenAI it
     replaces the ``chat`` / ``responses`` / ``embeddings``
     ``cached_property`` descriptors on the client classes with custom
-    descriptors. Each patched class is tagged with a
+    descriptors; on openai before 1.78, whose clients build those
+    resources in the constructor, it installs a data descriptor for each
+    that hands out the sensor proxy over the client's own resource.
+    openai below 1.26 is left unpatched, with a warning. Each patched class is tagged with a
     ``_flightdeck_patched`` sentinel attribute. ``isinstance(x,
     anthropic.Anthropic)`` and captured references like ``from
     anthropic import Anthropic`` continue to work correctly because the
@@ -763,7 +766,11 @@ def patch(
     was called that already accessed ``.chat`` once have the unwrapped
     resource cached in their ``__dict__`` and are not intercepted. New
     instances and new accesses on existing instances ARE intercepted.
-    Anthropic clients built before ``patch()`` are intercepted from
+    On openai before 1.78 a client built before ``patch()`` is
+    intercepted from its next ``.chat`` / ``.responses`` /
+    ``.embeddings`` access, except through its client-level
+    ``with_raw_response`` / ``with_streaming_response`` view, which that
+    SDK builds with the client. Anthropic clients built before ``patch()`` are intercepted from
     their next call on, because the patch lives on the resource class;
     the one exception is a raw or streaming view
     (``messages.with_raw_response`` / ``with_streaming_response``) first

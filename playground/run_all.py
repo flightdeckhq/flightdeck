@@ -53,14 +53,30 @@ GENAI_ADK_PYTHON = os.environ.get(
     "FD_GENAI_ADK_PYTHON",
     str(_HOME / ".cache/fd-genai-capture-adk-venv/bin/python"),
 )
+# ``36_openai_floor.py`` runs the sensor against the oldest openai it
+# supports, from a venv of its own (playground/README.md, OpenAI floor
+# venv); it is tagged SKIP when that venv is missing.
+OPENAI_FLOOR_PYTHON = os.environ.get(
+    "FD_OPENAI_FLOOR_PYTHON", str(_HOME / ".cache/fd-openai-floor-venv/bin/python")
+)
+
+
+def _venv_python(name: str) -> str | None:
+    """The venv Python a playground file needs instead of this one, or
+    None when it runs under this interpreter."""
+    if "_genai_" in name:
+        return GENAI_ADK_PYTHON if "google_adk" in name else GENAI_PYTHON
+    if "_openai_floor" in name:
+        return OPENAI_FLOOR_PYTHON
+    return None
 
 
 def _interpreter(name: str) -> str | None:
-    """The Python a playground file runs under, or None when it is a
-    GenAI script whose venv is missing."""
-    if "_genai_" not in name:
+    """The Python a playground file runs under, or None when the venv
+    it needs is missing."""
+    python = _venv_python(name)
+    if python is None:
         return sys.executable
-    python = GENAI_ADK_PYTHON if "google_adk" in name else GENAI_PYTHON
     return python if Path(python).is_file() else None
 
 
@@ -104,6 +120,14 @@ def main() -> int:
         print(f"\n=== {name} ===", flush=True)
         python = _interpreter(name)
         if python is None:
+            if "_openai_floor" in name:
+                print(
+                    f"OpenAI floor script skipped: no venv at {OPENAI_FLOOR_PYTHON}"
+                    " (playground/README.md, OpenAI floor venv)",
+                    flush=True,
+                )
+                rows.append((name, SKIP_RC, 0.0, "no OpenAI floor venv"))
+                continue
             print(
                 "GenAI scripts skipped: no venv at "
                 f"{GENAI_ADK_PYTHON if 'google_adk' in name else GENAI_PYTHON}"

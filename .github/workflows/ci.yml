@@ -170,6 +170,47 @@ jobs:
       - name: Unit tests
         run: pytest tests/unit -q -n auto
 
+  sensor-openai-floor:
+    name: Sensor (Python ${{ matrix.python-version }}, openai floor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    # The oldest openai release the sensor supports (the lock's
+    # openai-floor group, the openai extra's floor), with no other SDK.
+    # Before 1.78 the client builds its resources in the constructor, a
+    # layout the other lanes' SDKs never show, so this lane runs the OpenAI
+    # tests that drive the installed SDK; the rest of the unit suite
+    # imports anthropic.
+    defaults:
+      run:
+        working-directory: sensor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
+      - name: Install the sensor with the oldest supported openai
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra test --extra openai --group openai-floor
+
+      - name: Installed SDK versions
+        run: pip list | grep -iE "^(openai|httpx) "
+
+      - name: OpenAI tests
+        run: pytest tests/unit/test_openai_constructed_resources.py -q
+
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04

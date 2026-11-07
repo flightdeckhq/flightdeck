@@ -467,12 +467,12 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 // shape BuildEventExtra writes into events.payload (Rule 20 keeps
 // the body verbatim). Two shapes land here:
 //
-//   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
+//   - Inline (body ≤ 8 KiB): “{body, captured_at}“ — body is
 //     decoded back into the framework's source shape (string /
 //     dict / list / scalar / null).
-//   * Overflow (body > 8 KiB): ``{has_content, content_bytes,
-//     captured_at}`` — body lives in event_content; the dashboard
-//     fetches via ``GET /v1/events/{id}/content``. The stub here
+//   - Overflow (body > 8 KiB): “{has_content, content_bytes,
+//     captured_at}“ — body lives in event_content; the dashboard
+//     fetches via “GET /v1/events/{id}/content“. The stub here
 //     lets the dashboard render a size-aware "load full message"
 //     affordance without an extra round-trip.
 //
@@ -502,10 +502,10 @@ func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
 	return out
 }
 
-// isMCPEventType reports whether ``eventType`` is one of the six
+// isMCPEventType reports whether “eventType“ is one of the six
 // MCP event types. Used by BuildEventExtra to gate the MCP-content
-// projection: ``content`` on MCP_RESOURCE_READ goes inline into
-// events.payload (small, render-inline), whereas ``content`` on LLM
+// projection: “content“ on MCP_RESOURCE_READ goes inline into
+// events.payload (small, render-inline), whereas “content“ on LLM
 // events routes via HasContent into the event_content table (large,
 // fetch-on-demand). Centralising the membership test keeps every
 // MCP-specific branch in BuildEventExtra and Process self-consistent.

@@ -1,46 +1,46 @@
 // Package metrics exposes the worker's observability counters.
 //
 // Kept deliberately dependency-free: no Prometheus client library. The
-// counters are plain ``sync/atomic`` uint64s exposed via a small HTTP
+// counters are plain “sync/atomic“ uint64s exposed via a small HTTP
 // handler (Snapshot + ServeHTTP). Swapping in prometheus/client_golang
 // later would not change the call sites. Choosing
 // no-dep here avoids adding a library to the worker that isn't needed
 // by any other package yet.
 //
-// The package keeps three counter families: ``dropped_events_total``
-// with a ``reason`` label, ``sessions_closed_total`` and
-// ``sessions_revived_total``. Every known drop path in the worker
+// The package keeps three counter families: “dropped_events_total“
+// with a “reason“ label, “sessions_closed_total“ and
+// “sessions_revived_total“. Every known drop path in the worker
 // pipeline increments the first:
 //
 //   - unmarshal_error       — NATS payload failed json.Unmarshal; the
-//                             consumer Terms the message.
+//     consumer Terms the message.
 //   - invalid_session_id    — NATS payload whose session_id is not a
-//                             canonical UUID (a publisher that skipped
-//                             ingestion); the consumer Terms it on its
-//                             first delivery, before any lane.
+//     canonical UUID (a publisher that skipped
+//     ingestion); the consumer Terms it on its
+//     first delivery, before any lane.
 //   - orphan_session_end    — session_end for a session_id the server
-//                             never saw, once the retry budget has
-//                             given its session_start time to land.
-//                             ACK'd with a WARN + counter bump and no
-//                             event row.
+//     never saw, once the retry budget has
+//     given its session_start time to land.
+//     ACK'd with a WARN + counter bump and no
+//     event row.
 //   - superseded_session_end — session_end published before the
-//                             session's current run began (a
-//                             re-attachment, or an emitter that sent
-//                             its end first) that found the row open.
-//                             Recorded as an event; the row's state is
-//                             left as it is. On a closed row the same
-//                             end counts as closed_session_skip.
+//     session's current run began (a
+//     re-attachment, or an emitter that sent
+//     its end first) that found the row open.
+//     Recorded as an event; the row's state is
+//     left as it is. On a closed row the same
+//     end counts as closed_session_skip.
 //   - closed_session_skip   — event arrived for a session already in
-//                             state=closed (a duplicate session_end
-//                             included). The
-//                             handler skips work; the counter records
-//                             how often this happens.
+//     state=closed (a duplicate session_end
+//     included). The
+//     handler skips work; the counter records
+//     how often this happens.
 //   - fk_violation          — residual bucket for Postgres FK errors
-//                             not covered by orphan_session_end.
-//                             Should trend to zero once the orphan
-//                             path is fully plumbed.
+//     not covered by orphan_session_end.
+//     Should trend to zero once the orphan
+//     path is fully plumbed.
 //   - max_retries_exhausted — consumer hit NATS maxDeliver after
-//                             redelivering an event N times.
+//     redelivering an event N times.
 //
 // The counters live in process. Handler renders them in the Prometheus
 // text format (a TYPE line per family, then one line per label value)

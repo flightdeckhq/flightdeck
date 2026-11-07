@@ -133,4 +133,3 @@ func TestApplyTemplate_InvalidJSON_400(t *testing.T) {
 		t.Errorf("error body = %s; want it to contain 'invalid JSON'", rec.Body.String())
 	}
 }
-

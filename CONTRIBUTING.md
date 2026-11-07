@@ -132,6 +132,14 @@ This runs:
 - `golangci-lint run ./...` on ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
 
+`make lint` does not check Go formatting, and golangci-lint runs without a
+formatter enabled. CI runs `gofmt -l .` in ingestion, workers and api and fails
+when it lists any file. Before pushing Go changes, run `gofmt -l .` in each module
+you touched and `gofmt -w .` to fix what it lists. Use the gofmt from the
+toolchain the module's `go.mod` requires (`$(go env GOROOT)/bin/gofmt`, run from
+inside the module): gofmt from another Go release can format doc comments
+differently, so CI and your machine would disagree.
+
 ## Dependency vulnerability scans
 
 CI scans every dependency set for known vulnerabilities:

@@ -76,12 +76,12 @@ func (m *mockWriter) ReconcileStaleSessions(_ context.Context) error {
 func makeEvent(eventType string) consumer.EventPayload {
 	total := 100
 	return consumer.EventPayload{
-		SessionID: "sess-001",
-		Flavor:    "test-agent",
-		AgentType: "autonomous",
-		EventType: eventType,
-		Host:      "host-1",
-		Timestamp: "2026-04-07T10:00:00Z",
+		SessionID:   "sess-001",
+		Flavor:      "test-agent",
+		AgentType:   "autonomous",
+		EventType:   eventType,
+		Host:        "host-1",
+		Timestamp:   "2026-04-07T10:00:00Z",
 		TokensTotal: &total,
 	}
 }

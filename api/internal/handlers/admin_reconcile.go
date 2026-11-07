@@ -15,7 +15,7 @@ import (
 // endpoint. Two parallel reconciles on the same DB would race each
 // other's per-agent UPDATEs — fine in theory (last-writer-wins on the
 // same computed ground truth) but operators expect a deterministic
-// single-run cost and response shape. A process-level ``TryLock``
+// single-run cost and response shape. A process-level “TryLock“
 // returns 409 Conflict when the endpoint is busy; a distributed
 // (multi-API-replica) deployment that cares about cross-process
 // mutual exclusion should layer a Postgres advisory lock on top in a
@@ -26,7 +26,7 @@ var reconcileLock sync.Mutex
 // call. It (1) recomputes every agent's denormalised rollup counters
 // from sessions ground truth, then (2) deletes orphan rows whose
 // post-reconcile total_sessions is 0 AND whose last_seen_at is older
-// than ``orphan_threshold_secs`` (default 30 days). Requires a valid
+// than “orphan_threshold_secs“ (default 30 days). Requires a valid
 // bearer token like every other endpoint.
 //
 // @Summary      Reconcile agent rollup counters AND reap stale orphan rows

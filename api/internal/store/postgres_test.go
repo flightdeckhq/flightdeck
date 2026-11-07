@@ -50,7 +50,7 @@ func newTestStore(t *testing.T) (*Store, func()) {
 // FIX 2 -- the previous query stringified array-typed JSONB context
 // values as a single facet entry, e.g.
 // frameworks=["langchain/0.1.12","crewai/0.42.0"] showed up as one
-// bogus value ``["langchain/0.1.12","crewai/0.42.0"]`` instead of
+// bogus value “["langchain/0.1.12","crewai/0.42.0"]“ instead of
 // two distinct framework versions. The new query unnests array
 // values via jsonb_array_elements_text inside a LATERAL UNION ALL,
 // so each element becomes its own facet entry counted independently.

@@ -61,12 +61,12 @@ func (r *fakeRows) Err() error { return nil }
 // miss, etc.). Each query type has its own canned response and a
 // counter so tests can assert call patterns.
 type fakeDB struct {
-	devRow         *fakeRow      // returned by the tok_dev SELECT
-	ftdCandidates  [][4]string   // returned by the ftd_ Query
-	devQueryCount  atomic.Int32
-	ftdQueryCount  atomic.Int32
-	execCount      atomic.Int32
-	queryErr       error
+	devRow        *fakeRow    // returned by the tok_dev SELECT
+	ftdCandidates [][4]string // returned by the ftd_ Query
+	devQueryCount atomic.Int32
+	ftdQueryCount atomic.Int32
+	execCount     atomic.Int32
+	queryErr      error
 }
 
 func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {

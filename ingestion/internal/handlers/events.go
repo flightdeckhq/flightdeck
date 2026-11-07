@@ -12,31 +12,32 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 )
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
 
-// Timestamp bounds. An event whose ``timestamp`` falls outside
+// Timestamp bounds. An event whose “timestamp“ falls outside
 // this window is rejected at the wire boundary with 400. Motivation:
 // a sensor whose clock drifts (backwards) can backdate a session so
 // the reconciler instantly marks it lost; a sensor whose clock drifts
 // (forwards) can freeze a session in active forever because
-// ``last_seen_at > NOW()`` trips no staleness condition. Both would
+// “last_seen_at > NOW()“ trips no staleness condition. Both would
 // otherwise be silent in prod.
 //
 // Bounds are deliberately generous:
-//   maxClockSkewPast  — 48h: covers retry-after-long-outage scenarios,
-//                       batch replay, and the E2E ``aged-closed``
-//                       fixture (28h old) that lives outside the
-//                       swimlane window by design. Anything older is
-//                       almost certainly a clock bug rather than a
-//                       legitimate backlog.
-//   maxClockSkewFuture — 5m: tight enough to catch a forward-drifting
-//                         clock, loose enough to absorb ordinary NTP
-//                         jitter on a fleet of machines that are not
-//                         tightly synchronised.
+//
+//	maxClockSkewPast  — 48h: covers retry-after-long-outage scenarios,
+//	                    batch replay, and the E2E ``aged-closed``
+//	                    fixture (28h old) that lives outside the
+//	                    swimlane window by design. Anything older is
+//	                    almost certainly a clock bug rather than a
+//	                    legitimate backlog.
+//	maxClockSkewFuture — 5m: tight enough to catch a forward-drifting
+//	                      clock, loose enough to absorb ordinary NTP
+//	                      jitter on a fleet of machines that are not
+//	                      tightly synchronised.
 const (
 	maxClockSkewPast   = 48 * time.Hour
 	maxClockSkewFuture = 5 * time.Minute
@@ -78,8 +79,8 @@ var validClientTypes = func() map[string]bool {
 	return m
 }()
 
-// maxAgentRoleLen caps the length of the optional sub-agent ``agent_role``
-// field on the wire. CrewAI ``Agent.role`` labels and LangGraph node
+// maxAgentRoleLen caps the length of the optional sub-agent “agent_role“
+// field on the wire. CrewAI “Agent.role“ labels and LangGraph node
 // names are typically a few words (10-40 chars) — 256 is a generous
 // ceiling that admits every realistic role string while blocking the
 // abuse case where a misbehaving emitter dumps an unbounded blob into
@@ -709,7 +710,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 // boundary (Rule 36). Returns an empty string when the
 // payload is valid; returns a user-facing error message otherwise.
 //
-// The shared ``policy_decision`` block is part of the required-field
+// The shared “policy_decision“ block is part of the required-field
 // set with no compatibility fallback: sensor + plugin + ingestion +
 // workers ship together.
 func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {

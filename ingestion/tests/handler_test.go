@@ -1536,4 +1536,3 @@ func TestEventsHandler_SessionSignal(t *testing.T) {
 		})
 	}
 }
-

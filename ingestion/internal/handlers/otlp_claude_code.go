@@ -150,10 +150,10 @@ const (
 
 // ccRecord is one Claude Code log record the dialect maps.
 type ccRecord struct {
-	res                 *ccResource
-	attrs               otlpAttrs
-	name                string // event.name: api_request
-	ts                  time.Time
+	res   *ccResource
+	attrs otlpAttrs
+	name  string // event.name: api_request
+	ts    time.Time
 	// receiverDated: the record carries neither time_unix_nano nor
 	// observed_time_unix_nano, so ts is the receiver's clock, which an
 	// end on Claude Code's clock cannot be compared with.

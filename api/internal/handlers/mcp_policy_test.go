@@ -24,13 +24,13 @@ import (
 // behaviour it needs via field-level closures.
 type stubQuerier struct {
 	store.Querier
-	getGlobal      func(context.Context) (*store.MCPPolicy, error)
-	getFlavor      func(context.Context, string) (*store.MCPPolicy, error)
-	createFlavor   func(context.Context, string, store.MCPPolicyMutation, []store.MCPPolicyEntry, *string) (*store.MCPPolicy, error)
-	updateScope    func(context.Context, string, string, store.MCPPolicyMutation, []store.MCPPolicyEntry, *string, map[string]any) (*store.MCPPolicy, error)
-	deleteFlavor   func(context.Context, string, *string) error
-	resolveFlavor  func(context.Context, string, string) (*store.MCPPolicyResolveResult, error)
-	resolvedURL    string
+	getGlobal     func(context.Context) (*store.MCPPolicy, error)
+	getFlavor     func(context.Context, string) (*store.MCPPolicy, error)
+	createFlavor  func(context.Context, string, store.MCPPolicyMutation, []store.MCPPolicyEntry, *string) (*store.MCPPolicy, error)
+	updateScope   func(context.Context, string, string, store.MCPPolicyMutation, []store.MCPPolicyEntry, *string, map[string]any) (*store.MCPPolicy, error)
+	deleteFlavor  func(context.Context, string, *string) error
+	resolveFlavor func(context.Context, string, string) (*store.MCPPolicyResolveResult, error)
+	resolvedURL   string
 }
 
 func (q *stubQuerier) GetGlobalMCPPolicy(ctx context.Context) (*store.MCPPolicy, error) {

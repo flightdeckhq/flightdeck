@@ -377,14 +377,15 @@ class Session:
         self._mcp_servers: list[MCPServerFingerprint] = []
 
         # originating_event_id chain. Tracks the
-        # UUID of the most-recent ``pre_call`` emission so downstream
-        # events fired during the same LLM call (tool_call, llm_error,
-        # mcp_*, policy_mcp_*, policy_warn/degrade/block) can stamp
+        # UUID of the most-recent ``post_call`` emission so downstream
+        # events (tool_call, llm_error, mcp_*, policy_mcp_*,
+        # policy_warn/degrade/block) can stamp
         # ``payload.originating_event_id`` and the dashboard can chain
-        # them visually. Cleared on ``post_call`` enqueue (the call
-        # window closes there). ``None`` outside an active call window;
-        # session_start / session_end / mcp_server_attached do NOT set
-        # it because they don't belong to any LLM call.
+        # them visually. Only ``_post_call`` sets it, to the post_call's
+        # own id, and nothing clears it; ``None`` until the session's
+        # first post_call. session_start / session_end /
+        # mcp_server_attached do NOT set it because they don't belong
+        # to any LLM call.
         self._current_call_event_id: str | None = None
 
         # Per-(provider, request_id) retry counter for llm_error
@@ -610,18 +611,20 @@ class Session:
     # ------------------------------------------------------------------
 
     def set_current_call_event_id(self, event_id: str | None) -> None:
-        """Stash the most-recent pre_call emission's UUID so downstream
-        events fired during the same call window can reference it via
-        ``originating_event_id``. Called by the interceptor's _pre_call
-        right after _build_payload mints the id; cleared on _post_call
-        emission (the call window closes there)."""
+        """Stash the most-recent post_call emission's UUID so the events
+        that follow it (its tool calls, an llm_error filed beside it, the
+        MCP and policy events after it) can reference it via
+        ``originating_event_id``. Called by the interceptor's _post_call
+        with the post_call's own id, just before the post_call is
+        enqueued; nothing clears it, so it holds until the next
+        post_call replaces it."""
         with self._lock:
             self._current_call_event_id = event_id
 
     def get_current_call_event_id(self) -> str | None:
-        """Read the current call's originating event id, or None when
-        outside a call window. Called by downstream emissions to thread
-        ``payload.originating_event_id`` through."""
+        """Read the most-recent post_call's event id, or None before the
+        session's first post_call. Called by downstream emissions to
+        thread ``payload.originating_event_id`` through."""
         with self._lock:
             return self._current_call_event_id
 
@@ -1444,10 +1447,10 @@ class Session:
         }
 
         # originating_event_id chain. Stamp the
-        # current call window's originator event id (post_call, or
-        # pre_call when post_call hasn't fired yet) onto every
-        # downstream emission so the dashboard can render the call →
-        # sub-event ancestry. Suppressed for:
+        # most-recent post_call's event id onto every downstream
+        # emission so the dashboard can render the call → sub-event
+        # ancestry; nothing is stamped before the session's first
+        # post_call. Suppressed for:
         #   - the originators themselves (PRE_CALL, POST_CALL, EMBEDDINGS
         #     — embeddings is its own originator, not chained off an LLM
         #     call);

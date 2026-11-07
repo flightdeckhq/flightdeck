@@ -853,6 +853,12 @@ def patch(
             )
         _import_hook.watch(callbacks)
         for target in selected:
+            # An interceptor module another thread started importing
+            # before the finder was installed has no end of import the
+            # hook reports, and the SDK its import imports is too early
+            # to patch when its own import ends: wait for that import, so
+            # the SDK it imported is found imported here.
+            _import_hook.wait_for(target.interceptor_module)
             if _import_hook.imported(target.module) is not None:
                 _patch_sdk(target, quiet)
             elif not quiet:
@@ -1003,18 +1009,20 @@ def _patch_on_interceptor_import(target: _SDKTarget, quiet: bool, _module: str) 
     first imports the SDK, the SDK's own callback ran while this module
     was still executing, too early to patch, and left it to this one.
     An SDK that is not imported is left alone, as patch() leaves it."""
-    if _import_hook.finished(target.module):
+    if _import_hook.executed(target.module):
         _pending.append((target, quiet))
         _patch_pending()
 
 
 def _interceptor_executing(target: _SDKTarget) -> bool:
     """Whether the interceptor module of ``target`` is being imported and
-    has not yet defined its patch function: importing it would hand back
-    the module half-built, so its patch waits for the end of its import
-    (see _patch_on_interceptor_import)."""
-    module = sys.modules.get(target.interceptor_module)
-    return module is not None and not hasattr(module, target.patch)
+    its code has not run to the end: importing it would hand back the
+    module half-built, so its patch waits for the end of its import (see
+    _patch_on_interceptor_import, and patch() for an import that started
+    before the finder was there to report its end)."""
+    return target.interceptor_module in sys.modules and not _import_hook.executed(
+        target.interceptor_module
+    )
 
 
 def _patch_pending() -> None:

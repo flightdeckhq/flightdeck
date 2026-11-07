@@ -328,17 +328,44 @@ def test_a_failing_patch_on_import_does_not_break_the_import(
 
 
 # An interceptor module for the on-disk stand-in SDK: it imports the SDK
-# at its top, as every real one does, and records its calls on it.
+# at its top, as every real one does, patches idempotently, as every real
+# one does, and records its calls on it. With its gate's WAIT set, it
+# signals ENTERED and holds its import until RELEASE.
 _INTERCEPTOR_SOURCE = """\
+import {gate}
+
+if {gate}.WAIT:
+    {gate}.ENTERED.set()
+    {gate}.RELEASE.wait({wait})
+
 import {sdk}
 
 
 def patch_fake(quiet=False):
+    if getattr({sdk}, "PATCHED", False):
+        return
+    {sdk}.PATCHED = True
     {sdk}.CALLS.append(("patch", str(quiet)))
 
 
 def unpatch_fake():
+    {sdk}.PATCHED = False
     {sdk}.CALLS.append(("unpatch",))
+"""
+# One that defines its patch before it imports the SDK, and binds a name
+# the patch uses only after: patched before its code ends, it would fail.
+_LATE_BINDING_INTERCEPTOR_SOURCE = """\
+def patch_fake(quiet=False):
+    {sdk}.CALLS.append(("patch", _LABEL))
+
+
+def unpatch_fake():
+    pass
+
+
+import {sdk}
+
+_LABEL = "whole"
 """
 # One that does not import the SDK.
 _SDK_FREE_INTERCEPTOR_SOURCE = """\
@@ -363,7 +390,11 @@ def fake_sdk_on_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     interceptor_dir = tmp_path / "interceptor"
     sdk_dir.mkdir()
     interceptor_dir.mkdir()
+    gate = f"{name}_gate"
     (sdk_dir / f"{name}.py").write_text("CALLS = []\n")
+    (sdk_dir / f"{gate}.py").write_text(
+        "import threading\nENTERED = threading.Event()\nRELEASE = threading.Event()\nWAIT = False\n"
+    )
     monkeypatch.syspath_prepend(str(sdk_dir))
     package = sys.modules["flightdeck_sensor.interceptor"]
     monkeypatch.setattr(package, "__path__", [*package.__path__, str(interceptor_dir)])
@@ -374,15 +405,17 @@ def fake_sdk_on_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(flightdeck_sensor, "_session", MagicMock())
 
     def write(source: str) -> None:
-        (interceptor_dir / f"{interceptor}.py").write_text(source.format(sdk=name))
+        (interceptor_dir / f"{interceptor}.py").write_text(
+            source.format(sdk=name, gate=gate, wait=THREAD_WAIT_SECS)
+        )
 
     try:
         yield types.SimpleNamespace(
-            name=name, interceptor=interceptor, module=module_name, write=write
+            name=name, gate=gate, interceptor=interceptor, module=module_name, write=write
         )
     finally:
         flightdeck_sensor.unpatch()
-        for module in (name, module_name):
+        for module in (name, gate, module_name):
             sys.modules.pop(module, None)
         if hasattr(package, interceptor):
             delattr(package, interceptor)
@@ -421,6 +454,44 @@ def test_an_interceptor_module_imported_without_its_sdk_patches_nothing(
     _patch()
     importlib.import_module(fake_sdk_on_disk.module)
     assert fake_sdk_on_disk.name not in sys.modules
+
+
+def test_an_interceptor_module_is_patched_from_only_once_its_code_has_run(
+    fake_sdk_on_disk: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Its patch function exists when its import of the SDK ends, but a
+    # name the patch needs does not yet: the patch waits for the module's
+    # last line, not for the function to be defined.
+    fake_sdk_on_disk.write(_LATE_BINDING_INTERCEPTOR_SOURCE)
+    _patch()
+    importlib.import_module(fake_sdk_on_disk.module)
+    assert sys.modules[fake_sdk_on_disk.name].CALLS == [("patch", "whole")]
+    assert "failed" not in caplog.text
+
+
+def test_patch_waits_for_an_interceptor_import_another_thread_started(
+    fake_sdk_on_disk: Any,
+) -> None:
+    fake_sdk_on_disk.write(_INTERCEPTOR_SOURCE)
+    gate = importlib.import_module(fake_sdk_on_disk.gate)
+    gate.WAIT = True
+    # The interceptor module's import starts before patch() installs the
+    # finder, so no hook reports its end; its SDK import comes after, and
+    # ends while the module is still executing, too early to patch.
+    # patch() has to wait for the module's import and patch the SDK itself.
+    importer = threading.Thread(target=importlib.import_module, args=(fake_sdk_on_disk.module,))
+    importer.start()
+    assert gate.ENTERED.wait(THREAD_WAIT_SECS)
+    patcher = threading.Thread(target=_patch)
+    patcher.start()
+    # Give patch() time to reach the import in progress: one that did not
+    # wait for it would return before the SDK is imported, and nothing
+    # would patch it later.
+    patcher.join(PATCH_HEAD_START_SECS)
+    gate.RELEASE.set()
+    importer.join(THREAD_WAIT_SECS)
+    patcher.join(THREAD_WAIT_SECS)
+    assert sys.modules[fake_sdk_on_disk.name].CALLS == [("patch", "True")]
 
 
 def test_an_interceptor_module_imported_after_unpatch_patches_nothing(

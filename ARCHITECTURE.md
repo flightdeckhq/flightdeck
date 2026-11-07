@@ -1079,12 +1079,15 @@ every `tool_call`, in `core/tool_capture.py`) lives outside them, so an
 LLM call never imports another SDK. When importing an interceptor module
 is nonetheless what first imports its SDK (the application reads a
 `patch_*` name before importing the SDK, say), the SDK finishes importing
-while that module is still executing, before it defines its patch: the
-finder watches each interceptor module too, and the SDK is patched as
-that module's import ends. `wrap` looks for a client's SDK classes only
-when that SDK is imported (a client cannot exist before), and the
-interceptor names `flightdeck_sensor` re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
-resolve on first access. LangGraph is watched as `langgraph.graph`, where
+while that module is still executing: the finder watches each
+interceptor module too, and the SDK is patched as that module's code
+ends, never earlier. An interceptor module another thread started
+importing before `patch` installed the finder is waited for by `patch`,
+which then patches the SDK that import brought in. `wrap` looks for a
+client's SDK classes only when that SDK is imported (a client cannot
+exist before), and the interceptor names `flightdeck_sensor` re-exports
+(`SensorLitellm`, the `patch_*` / `unpatch_*` functions) resolve on
+first access. LangGraph is watched as `langgraph.graph`, where
 `StateGraph` lives: `langgraph` itself is a namespace package shared with
 LangGraph's other distributions, and a namespace package runs no code to
 hook.

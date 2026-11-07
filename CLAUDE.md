@@ -232,7 +232,9 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
      - ``agent_type = "coding"`` (dev smoke, from the locked agent_type vocabulary)
      - ``flavor = "playground-<script-name>"``
 
-     Enforced mechanically by ``playground/_helpers.py::init_sensor``.
+     Enforced mechanically by ``playground/_helpers.py::init_sensor`` for
+     sensor scripts and by ``playground/_genai.py::configure_exporter`` for
+     the OpenTelemetry framework scripts.
 
      Without this rule every playground run lands as ``flavor="unknown"`` /
      ``agent_type="autonomous"`` -- outside the locked agent_type vocabulary

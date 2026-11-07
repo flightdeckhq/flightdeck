@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/metrics"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
@@ -102,7 +104,8 @@ func main() {
 	// store the assembler drains, anything else counted as rejected.
 	stagingStore := otlpstage.NewStore(pool)
 	otlpDialect := handlers.NewOTLPRouter(handlers.NewClaudeCodeDialect(sessAttacher), stagingStore)
-	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute)
+	durations := metrics.NewRequestDurations()
+	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute, durations)
 
 	// The OTLP GenAI assembler: every process claims due staged traces
 	// and publishes them through the receiver's publish path. It stops
@@ -127,6 +130,20 @@ func main() {
 		}
 	}()
 
+	// Metrics listener. A failure to bind is logged, not fatal: the
+	// histogram is observability, and the API must keep serving events
+	// because a port is taken.
+	var metricsSrv *http.Server
+	if cfg.MetricsPort > 0 {
+		metricsSrv = metrics.NewServer(fmt.Sprintf(":%d", cfg.MetricsPort), durations)
+		go func() {
+			slog.Info("metrics listener starting", "addr", metricsSrv.Addr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("metrics listener failed", "err", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown on SIGTERM/SIGINT
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
@@ -147,6 +164,11 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", "err", err)
+	}
+	if metricsSrv != nil {
+		if err := metricsSrv.Shutdown(ctx); err != nil {
+			slog.Warn("metrics listener shutdown", "err", err)
+		}
 	}
 	slog.Info("ingestion API stopped")
 }

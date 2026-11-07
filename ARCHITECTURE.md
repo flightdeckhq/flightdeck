@@ -334,6 +334,7 @@ flightdeck/
 │   ├── internal/
 │   │   ├── config/config.go    # Config struct: env-driven
 │   │   ├── server/server.go    # HTTP server, routes, recovery middleware, request logging
+│   │   ├── metrics/metrics.go  # Request-latency histogram, the middleware that times each request by route pattern, and the /metrics listener
 │   │   ├── handlers/
 │   │   │   ├── events.go       # POST /v1/events: validate, publish NATS, return directive
 │   │   │   ├── event_fields.go # Exact-case field-name check on every event key (the worker's decoder ignores case)
@@ -408,6 +409,7 @@ flightdeck/
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── server/server.go    # Router, CORS, auth middleware, withRESTTimeout
+│   │   ├── metrics/metrics.go  # Request-latency histogram and /metrics listener (twin of ingestion/internal/metrics)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens (same rules as ingestion's)
 │   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
 │   │   ├── mcp_identity/identity.go  # MCP server identity canonicalisation + fingerprint (Go twin of the sensor / plugin helpers)
@@ -3181,8 +3183,9 @@ quiet session; the sensor does not (its post_call events give the same
 signal at the cadence it produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
-`GET /docs/index.html` serves the Swagger UI. The ingestion API serves no
-Prometheus `/metrics` endpoint.
+`GET /docs/index.html` serves the Swagger UI. Request latency is served
+at `/metrics` on a separate listener, not on the API port (see
+Operational Concerns > Metrics > Request latency).
 
 ### OTLP ingest
 
@@ -5952,8 +5955,9 @@ as the row list.
 
 ### Server timeouts
 
-`withRESTTimeout` middleware wraps every REST handler in a
-`context.WithTimeout(15s)` so a slow store query cannot hold an HTTP
+`withRESTTimeout` middleware wraps every REST handler in
+`http.TimeoutHandler` with a 30-second limit (answering `503` with
+`{"error":"request timeout"}`) so a slow store query cannot hold an HTTP
 goroutine forever. The WebSocket route `/v1/stream` is registered WITHOUT
 this wrapper — the WebSocket pump runs for the lifetime of a client
 connection and applies its own per-message write deadline. The HTTP
@@ -9580,6 +9584,22 @@ overlay (`docker-compose.prod.yml`) terminates TLS at nginx on 443,
 redirects 80 → 443, and unsets `ENVIRONMENT=dev` so the seed `tok_dev`
 row is rejected.
 
+Every compose service logs through Docker's `json-file` driver with
+rotation: a container's log file is rotated at 20 MiB and five files
+are kept, so one container holds at most 100 MiB of logs and the seven
+at most 700 MiB. Without it the driver keeps a container's whole output
+in one file that grows until the disk is full, and the workers log a
+line for every event they drop, so a flood of bad events would fill the
+host disk through the log alone. 20 MiB and five files are the defaults
+of Docker's own rotating `local` driver; `json-file` is kept over
+`local` because `docker logs` reads both, while log shippers that tail
+container files read only `json-file`. The rotation is set in
+`docker-compose.yml` and applies under the dev and prod overlays alike;
+a daemon-wide `log-opts` in `/etc/docker/daemon.json` does not override
+it. Under Helm the kubelet rotates container logs
+(`containerLogMaxSize`, `containerLogMaxFiles`) and the chart sets
+nothing.
+
 **Helm chart (Kubernetes).** A Chart at `helm/` ships a values file
 covering image tags, replicas, HPA bounds, NATS JetStream PVC sizes,
 ingress configuration, and an `externalUrl` escape hatch for managed
@@ -9636,6 +9656,7 @@ Constraint #4).
 | `FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS` | Age limit of the `FLIGHTDECK` stream in hours (default 72, at least 1); see Worker / Event Processing > The FLIGHTDECK stream |
 | `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` | Size limit of the stream on each NATS server in MiB (default 5120, at least 64) |
 | `FLIGHTDECK_NATS_STREAM_REPLICAS` | NATS servers holding a copy of the stream, 1 to 5 (default 1). The compose file sets 1, since it runs one NATS server, which accepts a higher count without placing any further copy |
+| `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves the request-latency histogram at `/metrics` (default 9103; `0` turns it off; the service refuses to start outside 0 to 65535) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Workers:**
@@ -9662,6 +9683,7 @@ Constraint #4).
 | `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set |
 | `FLIGHTDECK_ADMIN_EMAIL` / `FLIGHTDECK_ADMIN_PASSWORD` | Seed the initial dashboard login |
 | `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` (the price overrides layered over the built-in catalogue) |
+| `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves the request-latency histogram at `/metrics` (default 9104; `0` turns it off; the service refuses to start outside 0 to 65535) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **flightdeck-sensor (agent environment):**
@@ -9752,9 +9774,82 @@ migration never restarts the pod) and lists it on the workers' headless
 Service for scrapers. A port that cannot be bound is logged and event
 processing continues. Compose does not publish the port; nginx does not
 route to it. The worker's log lines for the same events (drops, reaper
-closes, revivals) remain the signal when the listener is off. Request
-latency histograms for the ingestion and query APIs are planned
-([#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
+closes, revivals) remain the signal when the listener is off.
+
+#### Request latency
+
+The ingestion API and the query API each time the requests they serve
+into one histogram family, `flightdeck_http_request_duration_seconds`,
+kept in process (`ingestion/internal/metrics`, `api/internal/metrics`;
+the two packages are twins, as the services share no Go module). The
+name carries the `flightdeck_` namespace because HTTP latency is a
+family every service in a cluster can export under a generic name; the
+workers' counters predate it and keep their names so existing scrapes
+do not break. Each series has three labels, all bounded:
+
+- `route` — the pattern the request matched as registered on the
+  service's router, without its method: `/v1/events`,
+  `/v1/sessions/`, `/v1/agents/{agent_id}/summary`. A path parameter
+  stays a placeholder, so session and agent ids never become label
+  values. A request no pattern matched (a 404, a 405) is `unmatched`,
+  and so is any method outside the known set below, because the
+  router's answer to a `CONNECT` names the raw path.
+- `method` — `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or
+  `OPTIONS`; any other method is `OTHER`, so a client cannot mint
+  label values.
+- `status_class` — `1xx` to `5xx` from the status the handler wrote (a
+  handler that writes no status answered `200`). A panic the recovery
+  middleware turns into a `500` counts as `5xx`, a REST call cut by the
+  query API's 30-second timeout as the `503` it returned.
+
+The buckets, in seconds, are 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+0.1, 0.25, 0.5, 1, 2.5, 5, 10 and 30, the same for both services so
+their percentiles compare. The millisecond buckets resolve the
+ingestion hot path (validate, publish to NATS, look up a directive),
+which takes one to two milliseconds on the dev stack; 10 is the
+ingestion server's write timeout and 30 the query API's REST timeout,
+so a request that ran to either limit lands in a bucket of its own
+instead of only in `+Inf`.
+
+The timer starts when the request reaches the router, after the public
+prefix is stripped, and stops when the handler returns, so it measures
+the service's own work and not the time a slow client takes to send the
+body (the server's read timeout bounds that). The query API's CORS
+preflights are answered before the router and are not timed. A request
+whose connection is hijacked is not recorded: the `/v1/stream`
+WebSocket runs for as long as the dashboard stays open, and its
+duration is a session length, not a latency. An upgrade the handler
+refuses (a `401`) is an ordinary response and is recorded under
+`/v1/stream`.
+
+Each service serves the histogram at `GET /metrics` on a listener of
+its own, like the workers: `FLIGHTDECK_METRICS_PORT`, default 9103 on
+ingestion and 9104 on the query API (`0` turns it off; any other path
+is 404), in the Prometheus text format with `# HELP` and `# TYPE`
+lines, cumulative `_bucket` samples ending in `le="+Inf"`, then `_sum`
+and `_count`, series in sorted label order. The listener carries no
+auth, so it is kept off the public edge: compose does not publish the
+port and nginx does not route to it, and the Helm chart
+(`ingestion.metricsPort`, `api.metricsPort`) declares the port on the
+pods and lists it on a headless `<release>-ingestion-metrics` or
+`<release>-api-metrics` Service, never on the Service the Ingress or a
+`LoadBalancer` uses. Each deployment sets its own
+`FLIGHTDECK_METRICS_PORT` (the workers' included) rather than the
+shared ConfigMap, since all three services read the same variable. The
+ports differ from the workers' 9102 so the three services can share one
+host's network without a clash. The listener binds every interface
+(only its port is configurable): in compose it is reachable on the
+internal network only and in Kubernetes on the pod IP, so an operator
+running the binaries on a bare host firewalls the port, or turns the
+listener off with `0`. The metrics listeners, the workers' included,
+are internal, on ports of their own, and are not part of the
+Swagger-documented API surface, which covers the API ports only. The
+service's readiness and liveness
+stay on `/health`; a metrics port that cannot be bound is logged and
+the API keeps serving.
+The histogram is process-local and starts empty when the process
+starts, so with several replicas each pod is scraped and the series
+summed by `route`.
 
 ### Operator endpoints
 

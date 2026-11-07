@@ -43,9 +43,16 @@ spec:
             - name: http
               containerPort: {{ .Values.ingestion.port }}
               protocol: TCP
+            {{- if gt (int .Values.ingestion.metricsPort) 0 }}
+            - name: metrics
+              containerPort: {{ .Values.ingestion.metricsPort }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: FLIGHTDECK_PORT
               value: {{ .Values.ingestion.port | quote }}
+            - name: FLIGHTDECK_METRICS_PORT
+              value: {{ .Values.ingestion.metricsPort | quote }}
           envFrom:
             - configMapRef:
                 name: {{ include "flightdeck.configMapName" . }}

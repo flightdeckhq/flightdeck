@@ -13,7 +13,7 @@ import (
 // forwards the path as sent): each prefixed path gets the same answer
 // as its bare form, and CORS applies to both.
 func TestAPIServesRoutesUnderPublicPrefix(t *testing.T) {
-	srv := NewForTesting(":0", nil, nil, "*")
+	srv := NewForTesting(":0", nil, nil, "*", nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -52,7 +52,7 @@ func TestAPIServesRoutesUnderPublicPrefix(t *testing.T) {
 func TestAPIAuthAppliesUnderPublicPrefix(t *testing.T) {
 	// A request with no token is refused before the validator looks the
 	// token up, so no pool is needed.
-	srv := New(":0", nil, nil, auth.NewValidator(nil), "*")
+	srv := New(":0", nil, nil, auth.NewValidator(nil), "*", nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -79,7 +79,7 @@ func TestAPIAuthAppliesUnderPublicPrefix(t *testing.T) {
 // to index.html, which it builds from the path as sent) end on the UI
 // page under both forms, with the prefix appearing once.
 func TestAPISwaggerUIRedirectsUnderPublicPrefix(t *testing.T) {
-	srv := NewForTesting(":0", nil, nil, "*")
+	srv := NewForTesting(":0", nil, nil, "*", nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

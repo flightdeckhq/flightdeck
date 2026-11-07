@@ -13,6 +13,7 @@ import (
 
 	ingestiondocs "github.com/flightdeckhq/flightdeck/ingestion/docs"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/metrics"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
 
@@ -38,6 +39,9 @@ const (
 // dev compose) when running the integration suite. A non-positive
 // value falls back to the default inside NewRateLimiter so a
 // misconfigured env var cannot accidentally disable the limit.
+//
+// durations records the latency of every request the router serves,
+// labelled by the pattern it matched; nil records nothing.
 func New(
 	addr string,
 	validator handlers.TokenValidator,
@@ -46,6 +50,7 @@ func New(
 	sessAttacher handlers.SessionAttacher,
 	otlpDialect handlers.OTLPDialect,
 	rateLimitPerMinute int,
+	durations *metrics.RequestDurations,
 ) *http.Server {
 	mux := http.NewServeMux()
 
@@ -77,8 +82,13 @@ func New(
 	))
 
 	return &http.Server{
-		Addr:         addr,
-		Handler:      withPublicPrefix(withLogging(withRecovery(mux)), publicPathPrefix),
+		Addr: addr,
+		// The latency middleware sits inside withPublicPrefix, which
+		// hands the router a copy of the request: the router writes the
+		// matched pattern to that copy, so the middleware must see the
+		// same one. It sits outside withRecovery so a panic counts as
+		// the 500 the recovery answers.
+		Handler:      withPublicPrefix(metrics.Middleware(durations, withLogging(withRecovery(mux))), publicPathPrefix),
 		ReadTimeout:  serverReadTimeout,
 		WriteTimeout: serverWriteTimeout,
 		IdleTimeout:  serverIdleTimeout,

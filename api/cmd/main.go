@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 	"github.com/flightdeckhq/flightdeck/api/internal/config"
+	"github.com/flightdeckhq/flightdeck/api/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/api/internal/server"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
@@ -94,7 +96,8 @@ func main() {
 	go validator.ListenRevocations(ctx, pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, s, hub, validator, cfg.CORSOrigin)
+	durations := metrics.NewRequestDurations()
+	srv := server.New(addr, s, hub, validator, cfg.CORSOrigin, durations)
 
 	// Start server
 	go func() {
@@ -104,6 +107,20 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Metrics listener. A failure to bind is logged, not fatal: the
+	// histogram is observability, and the API must keep serving because
+	// a port is taken.
+	var metricsSrv *http.Server
+	if cfg.MetricsPort > 0 {
+		metricsSrv = metrics.NewServer(fmt.Sprintf(":%d", cfg.MetricsPort), durations)
+		go func() {
+			slog.Info("metrics listener starting", "addr", metricsSrv.Addr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("metrics listener failed", "err", err)
+			}
+		}()
+	}
 
 	// Graceful shutdown on SIGTERM/SIGINT
 	quit := make(chan os.Signal, 1)
@@ -118,6 +135,11 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
+	}
+	if metricsSrv != nil {
+		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics listener shutdown", "err", err)
+		}
 	}
 	slog.Info("query API stopped")
 }

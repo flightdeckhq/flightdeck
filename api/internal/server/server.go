@@ -16,6 +16,7 @@ import (
 	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
 	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 	"github.com/flightdeckhq/flightdeck/api/internal/handlers"
+	"github.com/flightdeckhq/flightdeck/api/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
@@ -48,14 +49,17 @@ const (
 // non-empty scheme and host. Anything else fails fast at startup
 // rather than rendering a non-functional CORS surface in
 // production.
-func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
+//
+// durations records the latency of every request the router serves,
+// labelled by the pattern it matched; nil records nothing.
+func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string, durations *metrics.RequestDurations) *http.Server {
 	if validator == nil {
 		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")
 	}
 	if err := validateCORSOrigin(corsOrigin); err != nil {
 		panic(fmt.Sprintf("server: %v", err))
 	}
-	return newServer(addr, s, hub, validator, corsOrigin)
+	return newServer(addr, s, hub, validator, corsOrigin, durations)
 }
 
 // validateCORSOrigin enforces the documented contract on
@@ -85,14 +89,14 @@ func validateCORSOrigin(origin string) error {
 // WITHOUT auth. Intended for tests that exercise handler wiring through
 // the real ServeMux without needing a Postgres-backed token validator.
 // Never call this from production code paths.
-func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string) *http.Server {
-	return newServer(addr, s, hub, nil, corsOrigin)
+func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string, durations *metrics.RequestDurations) *http.Server {
+	return newServer(addr, s, hub, nil, corsOrigin, durations)
 }
 
 // newServer is the unexported builder shared by New and NewForTesting.
 // validator may be nil; when nil the sync/register endpoints mount
 // without auth (NewForTesting only -- New panics before reaching here).
-func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
+func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string, durations *metrics.RequestDurations) *http.Server {
 	mux := http.NewServeMux()
 
 	// gate wraps REST handlers with the 30s timeout AND the
@@ -210,8 +214,15 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("GET /v1/stream", handlers.StreamHandler(hub, validator))
 
 	return &http.Server{
-		Addr:        addr,
-		Handler:     withPublicPrefix(withCORS(withLogging(withRecovery(mux)), corsOrigin), publicPathPrefix),
+		Addr: addr,
+		// The latency middleware sits inside withPublicPrefix, which
+		// hands the router a copy of the request: the router writes the
+		// matched pattern to that copy, so the middleware must see the
+		// same one. It sits inside withCORS, which answers preflights
+		// without routing them, and outside withRecovery so a panic
+		// counts as the 500 the recovery answers.
+		Handler: withPublicPrefix(withCORS(metrics.Middleware(durations,
+			withLogging(withRecovery(mux))), corsOrigin), publicPathPrefix),
 		ReadTimeout: serverReadTimeout,
 		IdleTimeout: serverIdleTimeout,
 	}

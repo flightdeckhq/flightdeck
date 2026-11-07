@@ -257,7 +257,7 @@ func TestNewServerExposesHistogram(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /metrics: status %d", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4; charset=utf-8" {
 		t.Errorf("Content-Type %q", ct)
 	}
 	body := rec.Body.String()

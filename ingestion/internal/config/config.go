@@ -47,7 +47,9 @@ type Config struct {
 	// off.
 	//
 	// Env: FLIGHTDECK_METRICS_PORT (default DefaultMetricsPort). Load()
-	// panics on a value outside 0..maxPort.
+	// panics on a value outside 0..maxPort. The listener binds every
+	// interface and carries no auth: outside compose or Kubernetes,
+	// firewall the port or set it to 0.
 	MetricsPort int
 }
 

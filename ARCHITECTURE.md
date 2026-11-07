@@ -9836,7 +9836,14 @@ pods and lists it on a headless `<release>-ingestion-metrics` or
 `FLIGHTDECK_METRICS_PORT` (the workers' included) rather than the
 shared ConfigMap, since all three services read the same variable. The
 ports differ from the workers' 9102 so the three services can share one
-host's network without a clash. The service's readiness and liveness
+host's network without a clash. The listener binds every interface
+(only its port is configurable): in compose it is reachable on the
+internal network only and in Kubernetes on the pod IP, so an operator
+running the binaries on a bare host firewalls the port, or turns the
+listener off with `0`. The metrics listeners, the workers' included,
+are internal, on ports of their own, and are not part of the
+Swagger-documented API surface, which covers the API ports only. The
+service's readiness and liveness
 stay on `/health`; a metrics port that cannot be bound is logged and
 the API keeps serving.
 The histogram is process-local and starts empty when the process

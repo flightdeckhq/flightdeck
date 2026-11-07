@@ -702,19 +702,15 @@ reconciling (they fight over settings across a version skew).
 ## D255 -- The ingestion and query APIs time requests by route pattern and serve the histogram on a listener of their own
 
 **Date:** 2026-11-07
-**Decision:** both APIs record `flightdeck_http_request_duration_seconds`
-labelled by the matched route pattern (`unmatched` otherwise), a bounded
-method and a status class, and serve it at `GET /metrics` on a separate
-unauthenticated port (9103 ingestion, 9104 query API) that compose does
-not publish and nginx does not route; Helm lists it only on headless
-`-metrics` Services. Hijacked (WebSocket) connections are not recorded.
-This extends D198, which kept `/metrics` off the API processes because
-the counters then lived only in the workers.
-**Why:** the pattern keeps ids out of label values; a port of its own
-keeps an auth-free endpoint off the public edge without a token for
-every scraper, and keeps the services free of the Prometheus client
-library, as the workers are.
-**Rejected alternative:** `/metrics` on the API port behind a token or
-an nginx deny (one routing slip exposes it); raw paths as the label
-(one series per session id); prometheus/client_golang (a dependency
-for one histogram family).
+**Decision:** (extends D198) both APIs record
+`flightdeck_http_request_duration_seconds` by route pattern, bounded
+method and status class, served at `GET /metrics` on an unauthenticated
+port of their own (9103, 9104) that compose does not publish, nginx does
+not route and Helm lists only on headless `-metrics` Services.
+**Why:** the pattern keeps ids out of label values; a separate port keeps
+an auth-free endpoint off the public edge, and the services stay free of
+the Prometheus client library, as the workers are.
+**Rejected alternative:** `/metrics` on the API port behind a token or an
+nginx deny (one routing slip exposes it); raw paths as the label (a
+series per session id); prometheus/client_golang (a dependency for one
+family).

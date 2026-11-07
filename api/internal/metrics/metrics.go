@@ -77,6 +77,10 @@ var RequestDurationBuckets = []float64{
 // deterministically.
 var now = time.Now
 
+// contentType is the Prometheus text exposition format, version 0.0.4,
+// which is UTF-8.
+const contentType = "text/plain; version=0.0.4; charset=utf-8"
+
 // readHeaderTimeout bounds how long the metrics listener waits for a
 // request's headers. A scrape sends a few hundred bytes at once, so
 // five seconds is generous for any real client while stopping a slow
@@ -216,7 +220,7 @@ func (d *RequestDurations) WriteText(w io.Writer) error {
 // Handler serves the histogram in the Prometheus text format.
 func Handler(d *RequestDurations) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.Header().Set("Content-Type", contentType)
 		// A write error means the scraper went away; there is nothing
 		// to answer it with.
 		_ = d.WriteText(w)

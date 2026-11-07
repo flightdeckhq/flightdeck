@@ -15,6 +15,7 @@ framework.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json
 from typing import Any
@@ -339,17 +340,19 @@ async def test_react_tool_run_carries_no_content_with_capture_off(llama: Any, se
 # ----- multi-agent hand-off ------------------------------------------------------
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_agent_workflow_hand_off_ends_one_child_and_opens_the_next(
-    llama: Any, sensor: Any
+    llama: Any, sensor: Any, streaming: bool
 ) -> None:
     workflow, _ = llama
     rec = sensor()
     llm = _llm(llama)
+    reply = _stream if streaming else _completion
     with respx.mock(base_url=BASE_URL) as router:
         router.post("/chat/completions").mock(
             side_effect=[
-                _completion(tool_calls=[_tool_call("call_1", "multiply", {"a": 6, "b": 7})]),
-                _completion(
+                reply(tool_calls=[_tool_call("call_1", "multiply", {"a": 6, "b": 7})]),
+                reply(
                     tool_calls=[
                         _tool_call(
                             "call_2",
@@ -358,7 +361,7 @@ async def test_agent_workflow_hand_off_ends_one_child_and_opens_the_next(
                         )
                     ]
                 ),
-                _completion(content="The answer is 42."),
+                reply(content="The answer is 42."),
             ]
         )
         calculator = workflow.FunctionAgent(
@@ -367,10 +370,10 @@ async def test_agent_workflow_hand_off_ends_one_child_and_opens_the_next(
             tools=[multiply],
             llm=llm,
             can_handoff_to=["writer"],
-            streaming=False,
+            streaming=streaming,
         )
         writer = workflow.FunctionAgent(
-            name="writer", description="Writes the answer.", llm=llm, streaming=False
+            name="writer", description="Writes the answer.", llm=llm, streaming=streaming
         )
         flow = workflow.AgentWorkflow(agents=[calculator, writer], root_agent="calculator")
         result = await flow.run(user_msg="6 times 7, then hand off to the writer.")
@@ -469,6 +472,164 @@ async def test_a_provider_error_ends_the_child_in_error(llama: Any, sensor: Any)
     assert err["session_id"] == rec.session_id
     (end,) = rec.of("session_end", child_id)
     assert end["state"] == "error"
+
+
+async def test_a_streamed_provider_error_ends_the_child_in_error(llama: Any, sensor: Any) -> None:
+    workflow, _ = llama
+    rec = sensor()
+    with respx.mock(base_url=BASE_URL) as router:
+        router.post("/chat/completions").mock(
+            return_value=httpx.Response(500, json={"error": {"message": "down", "type": "x"}})
+        )
+        agent = workflow.FunctionAgent(name="streamer", llm=_llm(llama), streaming=True)
+        with pytest.raises(Exception):  # noqa: B017 -- whatever the SDK raises
+            await agent.run(user_msg="hi")
+    (end,) = rec.of("session_end", rec.children()["streamer"]["session_id"])
+    assert end["state"] == "error"
+    assert li_mod._tracker._runs == {}
+    assert li_mod._tracker._steps == {}
+
+
+# ----- cancellation and concurrency ---------------------------------------------
+
+
+def _slow_tool(started: asyncio.Event) -> Any:
+    async def wait_forever(x: int) -> int:
+        """Wait on an external system."""
+        started.set()
+        await asyncio.sleep(3600)
+        return x
+
+    return wait_forever
+
+
+async def _start_slow_run(llama: Any, router: Any) -> tuple[Any, asyncio.Event]:
+    """A FunctionAgent run parked inside a tool call."""
+    workflow, _ = llama
+    router.post("/chat/completions").mock(
+        return_value=_completion(tool_calls=[_tool_call("c1", "wait_forever", {"x": 1})])
+    )
+    started = asyncio.Event()
+    agent = workflow.FunctionAgent(
+        name="waiter", tools=[_slow_tool(started)], llm=_llm(llama), streaming=False
+    )
+    handler = agent.run(user_msg="wait")
+    await asyncio.wait_for(started.wait(), timeout=5)
+    return handler, started
+
+
+async def _settled(handler: Any) -> None:
+    """Wait for a cancelled run to finish unwinding."""
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(handler, timeout=5)
+
+
+async def test_a_cancelled_task_leaves_no_step_behind(llama: Any, sensor: Any) -> None:
+    rec = sensor()
+    with respx.mock(base_url=BASE_URL) as router:
+        handler, _ = await _start_slow_run(llama, router)
+        assert li_mod._tracker._steps != {}
+        handler.cancel()
+        await _settled(handler)
+    assert li_mod._tracker._steps == {}
+    assert li_mod._tracker._runs == {}
+    (end,) = rec.of("session_end", rec.children()["waiter"]["session_id"])
+    assert end["state"] == "error"
+    assert rec.session.active_subagent_scope() is None
+
+
+def _cancel_run_exits_the_run_span() -> bool:
+    """Whether the installed llama-index-workflows stops a ``cancel_run()``
+    run with its own exception and exits the run span (current releases),
+    rather than cancelling the run's task, which drops the span with a
+    ``CancelledError`` (early 2.x releases, the floor lane's)."""
+    import importlib
+    import inspect
+
+    try:
+        module = importlib.import_module("workflows.runtime.types.step_function")
+    except ImportError:
+        return False
+    return "WorkflowCancelledByUser" in inspect.getsource(module)
+
+
+async def test_cancel_run_ends_the_child_closed(llama: Any, sensor: Any) -> None:
+    rec = sensor()
+    with respx.mock(base_url=BASE_URL) as router:
+        handler, _ = await _start_slow_run(llama, router)
+        await handler.cancel_run()
+        await _settled(handler)
+    assert li_mod._tracker._steps == {}
+    assert li_mod._tracker._runs == {}
+    (end,) = rec.of("session_end", rec.children()["waiter"]["session_id"])
+    if _cancel_run_exits_the_run_span():
+        assert "state" not in end
+    else:
+        assert end["state"] == "error"
+        assert end["error"]["type"] == "CancelledError"
+
+
+async def test_concurrent_runs_stay_isolated(llama: Any, sensor: Any) -> None:
+    workflow, _ = llama
+    rec = sensor()
+    llm = _llm(llama)
+
+    def _answer(request: httpx.Request) -> httpx.Response:
+        # A request that carries a tool result is the run's second call.
+        messages = json.loads(request.content)["messages"]
+        if any(m.get("role") == "tool" for m in messages):
+            return _completion(content="done")
+        return _completion(tool_calls=[_tool_call("c1", "multiply", {"a": 2, "b": 3})])
+
+    with respx.mock(base_url=BASE_URL) as router:
+        router.post("/chat/completions").mock(side_effect=_answer)
+        first = workflow.FunctionAgent(name="first", tools=[multiply], llm=llm, streaming=False)
+        second = workflow.FunctionAgent(name="second", tools=[multiply], llm=llm, streaming=False)
+        await asyncio.gather(first.run(user_msg="one"), second.run(user_msg="two"))
+
+    children = rec.children()
+    assert set(children) == {"first", "second"}
+    assert children["first"]["incoming_message"]["body"] == "one"
+    assert children["second"]["incoming_message"]["body"] == "two"
+    for child in children.values():
+        (end,) = rec.of("session_end", child["session_id"])
+        assert "state" not in end
+    assert len(rec.of("post_call", rec.session_id)) == 4
+    assert len(rec.of("tool_call")) == 2
+    assert li_mod._tracker._runs == {}
+    assert li_mod._tracker._steps == {}
+
+
+async def test_parallel_tool_calls_in_one_response_are_reported_once_each(
+    llama: Any, sensor: Any
+) -> None:
+    workflow, _ = llama
+    rec = sensor()
+    calls = [_tool_call(f"call_{i}", "multiply", {"a": i, "b": 2}) for i in range(3)]
+    with respx.mock(base_url=BASE_URL) as router:
+        router.post("/chat/completions").mock(
+            side_effect=[_completion(tool_calls=calls), _completion(content="0, 2 and 4")]
+        )
+        agent = workflow.FunctionAgent(
+            name="parallel", tools=[multiply], llm=_llm(llama), streaming=False
+        )
+        await agent.run(user_msg="Multiply 0, 1 and 2 by 2.")
+    tools = rec.of("tool_call")
+    assert len(tools) == len(calls)
+    assert all(t["session_id"] == rec.session_id for t in tools)
+
+
+async def test_unpatch_ends_an_open_run_closed(llama: Any, sensor: Any) -> None:
+    rec = sensor()
+    with respx.mock(base_url=BASE_URL) as router:
+        handler, _ = await _start_slow_run(llama, router)
+        li_mod.unpatch_llama_index()
+        (end,) = rec.of("session_end", rec.children()["waiter"]["session_id"])
+        assert "state" not in end
+        handler.cancel()
+        await _settled(handler)
+    # Nothing further is reported for the run once the wrap is gone.
+    assert len(rec.of("session_end")) == 1
 
 
 class _Bound:

@@ -1610,7 +1610,14 @@ that carry it (`AgentInput`, `AgentSetup`, `AgentOutput`):
   ends it with `state=error` and the exception's type and message. A
   run whose last failed step no later step followed also ends in error,
   with that step's exception: early llama-index-workflows 2 releases
-  exit the run span of a failed run instead of dropping it.
+  exit the run span of a failed run instead of dropping it. Cancelling
+  the run's task (`handler.cancel()`) drops the run span, so its child
+  ends with `state=error`; `handler.cancel_run()` stops the run with
+  LlamaIndex's own `WorkflowCancelledByUser`, so its child ends with
+  `state=closed` (early llama-index-workflows 2 releases implement
+  `cancel_run()` by cancelling the run's task, and the child ends with
+  `state=error`). Either way the steps still in flight are forgotten.
+  `unpatch()` ends a run's open child with `state=closed`.
 - The agent's model calls, the tools it runs and the model and MCP
   calls a tool makes are reported on the sensor's session, as for the
   other wraps. An agent run started inside a tool opens its own child,

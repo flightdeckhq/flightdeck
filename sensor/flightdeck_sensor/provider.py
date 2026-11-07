@@ -45,7 +45,8 @@ class Provider(StrEnum):
       ``init(langgraph_agent_node_pattern=…)``.
     * ``Provider.LLAMA_INDEX`` — a span handler on LlamaIndex's root
       instrumentation dispatcher that reports each agent of an agent
-      workflow run as a child session carrying its own calls.
+      workflow run as a child session (start, end, hand-offs); the
+      agents' calls stay on the sensor's session.
     * ``Provider.CLAUDE_AGENT_SDK`` — wrap around
       ``claude_agent_sdk.query`` and ``ClaudeSDKClient``, reporting each
       Agent SDK run as its own session from the SDK's message stream.

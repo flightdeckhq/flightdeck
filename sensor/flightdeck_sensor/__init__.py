@@ -825,8 +825,9 @@ def patch(
             ``StateGraph.add_node`` so each agent-bearing node run
             lands as a child session), ``LLAMA_INDEX`` (a span handler on
             LlamaIndex's instrumentation dispatcher, so each agent of an
-            agent workflow run lands as a child session with its own
-            model and tool calls) and ``CLAUDE_AGENT_SDK`` (wraps
+            agent workflow run lands as a child session with its start,
+            end and hand-offs; the calls stay on the sensor's session)
+            and ``CLAUDE_AGENT_SDK`` (wraps
             the SDK's ``query()`` path and ``ClaudeSDKClient`` so each
             Agent SDK run lands as its own ``claude_agent_sdk``
             session). Silent no-op when a target's

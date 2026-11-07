@@ -238,6 +238,7 @@ class _Tracker:
             run = self._runs.pop(id_, None)
             step = self._steps.pop(id_, None)
         if run is not None:
+            self._forget_steps(run)
             failed = run.step_error
             if failed is not None:
                 self._end_child(run, state="error", error=_error_block(failed))
@@ -259,6 +260,7 @@ class _Tracker:
             run = self._runs.pop(id_, None)
             step = self._steps.pop(id_, None)
         if run is not None:
+            self._forget_steps(run)
             failed = err if err is not None else run.step_error
             error = _error_block(failed) if failed is not None else None
             self._end_child(run, state="error", error=error)
@@ -270,6 +272,30 @@ class _Tracker:
                 step.run.step_error = err
         if step.token is not None:
             step.run.session.exit_subagent_scope(step.token)
+
+    def close(self) -> None:
+        """End every followed run's open child (``state=closed``) and forget
+        the runs and their steps: the wrap is being detached, and the spans
+        that would have ended them will not reach it."""
+        with self._lock:
+            runs = list(self._runs.values())
+            self._runs.clear()
+        for run in runs:
+            self._forget_steps(run)
+            self._end_child(run, state="closed", error=None)
+
+    def _forget_steps(self, run: _Run) -> None:
+        """Drop the run's step spans that never exited (a cancelled run's
+        in-flight steps end without a span exit or drop) and leave their
+        scopes. A step's scope token belongs to the step's own context, so
+        leaving it from here only succeeds where that context is this one;
+        a step whose task is gone took its context, and its scope, with it."""
+        with self._lock:
+            ids = [i for i, step in self._steps.items() if step.run is run]
+            steps = [self._steps.pop(i) for i in ids]
+        for step in steps:
+            if step.token is not None:
+                run.session.exit_subagent_scope(step.token)
 
     # -- run state ------------------------------------------------------
 
@@ -373,6 +399,8 @@ class _Tracker:
         assert step.tool_call is not None and step.scope is not None
         tool_name, kwargs, tool_id = step.tool_call
         session = step.run.session
+        # A call with no id cannot be matched to a response's tool call,
+        # so it is reported (the wrap's text-parsed calls always have one).
         if session.tool_call_reported(step.scope, tool_id):
             return
         latency_ms = int((time.monotonic() - step.started) * 1000)
@@ -508,8 +536,8 @@ def patch_llama_index(*, quiet: bool = False) -> None:
 
 
 def unpatch_llama_index() -> None:
-    """Detach the span handler. Idempotent. Runs still open keep the
-    children they opened; their steps are no longer followed."""
+    """Detach the span handler. Idempotent. A run still open has its open
+    child ended (``state=closed``); its later steps are not followed."""
     global _handler, _tracker
     if _handler is None:
         return
@@ -519,4 +547,8 @@ def unpatch_llama_index() -> None:
     except Exception:  # noqa: BLE001
         _log.debug("detaching the LlamaIndex span handler failed", exc_info=True)
     _handler = None
+    try:
+        _tracker.close()
+    except Exception:  # noqa: BLE001
+        _log.debug("ending the open LlamaIndex children failed", exc_info=True)
     _tracker = _Tracker()

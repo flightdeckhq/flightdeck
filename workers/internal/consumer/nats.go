@@ -554,14 +554,14 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("jetstream context: %w", err)
 	}
 
-	// Ensure the stream exists (may be created by ingestion first, or by us)
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     streamName,
-		Subjects: []string{"events.>"},
-		Storage:  nats.FileStorage,
-	})
+	// Ingestion owns the stream and its settings; the worker only
+	// waits for it to exist.
+	info, err := waitForStream(ctx, js, streamWaitInterval)
 	if err != nil {
-		return fmt.Errorf("ensure stream %s: %w", streamName, err)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
 	}
 
 	// The start-up clearing of stale session sequences is a safety net
@@ -569,16 +569,19 @@ func (c *Consumer) Start(ctx context.Context) error {
 	// failure here is logged and consumption goes ahead, since a pool
 	// that never subscribes would look healthy while nothing is
 	// processed.
-	if info, err := js.StreamInfo(streamName); err != nil {
-		slog.Error("stream info failed; stale session sequences not cleared",
-			"stream", streamName, "err", err)
-	} else if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
+	if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
 		slog.Error("clearing stale session sequences failed",
 			"stream", streamName, "err", err)
 	}
 
-	if err := ensureConsumer(js); err != nil {
+	delivered, existed, err := ensureConsumer(js)
+	if err != nil {
 		return err
+	}
+	if removed := removedUndelivered(existed, delivered, info.State.FirstSeq); removed > 0 {
+		slog.Warn("events were removed from the stream before the workers were delivered them (its age or size limit, or a purge)",
+			"stream", streamName, "consumer", durableName, "removed", removed,
+			"last_delivered_seq", delivered, "stream_first_seq", info.State.FirstSeq)
 	}
 	sub, err := js.PullSubscribe(subjectAll, durableName, nats.Bind(streamName, durableName))
 	if err != nil {
@@ -590,12 +593,68 @@ func (c *Consumer) Start(ctx context.Context) error {
 	})
 }
 
+// streamWaitInterval is how often a worker that started before
+// the stream exists looks for it again. Ingestion creates the stream
+// as it starts, which takes seconds, so two seconds finds it soon
+// after without a busy loop against NATS.
+const streamWaitInterval = 2 * time.Second
+
+// streamWaitLogEvery is how many looks pass between two log lines
+// while the worker waits for the stream: one line a minute at the
+// default interval, so a stack whose ingestion never starts says so
+// without flooding the log.
+const streamWaitLogEvery = 30
+
+// streamInfoer is the part of nats.JetStreamContext waitForStream uses.
+type streamInfoer interface {
+	StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error)
+}
+
+// waitForStream returns the stream's info once the stream exists,
+// looking again every interval while it does not. Ingestion creates
+// the stream and owns its settings, and the workers can start first.
+// Any error other than a missing stream is returned at once, as is
+// ctx's error when ctx ends first.
+func waitForStream(ctx context.Context, js streamInfoer, interval time.Duration) (*nats.StreamInfo, error) {
+	for looks := 0; ; looks++ {
+		info, err := js.StreamInfo(streamName)
+		if err == nil {
+			return info, nil
+		}
+		if !errors.Is(err, nats.ErrStreamNotFound) {
+			return nil, fmt.Errorf("stream info %s: %w", streamName, err)
+		}
+		if looks%streamWaitLogEvery == 0 {
+			slog.Info("waiting for ingestion to create the stream", "stream", streamName)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// removedUndelivered is how many messages the stream's limits removed
+// before the consumer was delivered them: the sequences between the
+// last one the consumer was delivered and the stream's first. It is
+// zero for a consumer created at this start, which has been delivered
+// nothing and starts at the stream's first message.
+func removedUndelivered(consumerExisted bool, lastDelivered, firstSeq uint64) uint64 {
+	if !consumerExisted || firstSeq <= lastDelivered+1 {
+		return 0
+	}
+	return firstSeq - lastDelivered - 1
+}
+
 // ensureConsumer creates the durable consumer with the settings the
 // lanes rely on, or brings an existing one to them. A subscription that
 // asked for them would be refused for a consumer created with others
 // (one an older worker created), so the consumer is reconciled first
-// and the subscription binds to it.
-func ensureConsumer(js nats.JetStreamContext) error {
+// and the subscription binds to it. It returns the stream sequence of
+// the last message an existing consumer was delivered, and whether the
+// consumer existed.
+func ensureConsumer(js nats.JetStreamContext) (uint64, bool, error) {
 	info, err := js.ConsumerInfo(streamName, durableName)
 	if errors.Is(err, nats.ErrConsumerNotFound) {
 		_, err = js.AddConsumer(streamName, &nats.ConsumerConfig{
@@ -607,26 +666,27 @@ func ensureConsumer(js nats.JetStreamContext) error {
 			MaxAckPending: maxAckPending,
 		})
 		if err != nil {
-			return fmt.Errorf("add consumer %s: %w", durableName, err)
+			return 0, false, fmt.Errorf("add consumer %s: %w", durableName, err)
 		}
-		return nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("consumer info %s: %w", durableName, err)
+		return 0, false, fmt.Errorf("consumer info %s: %w", durableName, err)
 	}
+	delivered := info.Delivered.Stream
 	cfg := info.Config
 	if cfg.MaxDeliver == maxDeliver && cfg.AckWait == ackWait && cfg.MaxAckPending == maxAckPending {
-		return nil
+		return delivered, true, nil
 	}
 	cfg.MaxDeliver = maxDeliver
 	cfg.AckWait = ackWait
 	cfg.MaxAckPending = maxAckPending
 	if _, err := js.UpdateConsumer(streamName, &cfg); err != nil {
-		return fmt.Errorf("update consumer %s: %w", durableName, err)
+		return 0, false, fmt.Errorf("update consumer %s: %w", durableName, err)
 	}
 	slog.Info("consumer settings updated", "consumer", durableName,
 		"ack_wait", ackWait, "max_ack_pending", maxAckPending)
-	return nil
+	return delivered, true, nil
 }
 
 // run processes fetched messages until ctx is cancelled: fetch is

@@ -12,6 +12,10 @@ import (
 
 const streamName = "FLIGHTDECK"
 
+// streamSubjects are the subjects the FLIGHTDECK stream stores: every
+// event type's subject (see SubjectForEventType).
+var streamSubjects = []string{"events.>"}
+
 // natsRetryDelays governs the per-publish retry schedule on NATS
 // JetStream errors: three attempts with exponential backoff.
 // Total worst-case latency added on a 3-fail-then-succeed path:
@@ -30,23 +34,17 @@ type Publisher struct {
 	lostEvents atomic.Int64
 }
 
-// NewPublisher creates a Publisher, ensuring the FLIGHTDECK stream exists.
-func NewPublisher(nc *nats.Conn) (*Publisher, error) {
+// NewPublisher creates a Publisher. Ingestion owns the FLIGHTDECK
+// stream: NewPublisher creates it with the given settings, or brings
+// an existing one to them in place (see ensureStream).
+func NewPublisher(nc *nats.Conn, settings StreamSettings) (*Publisher, error) {
 	js, err := nc.JetStream()
 	if err != nil {
 		return nil, fmt.Errorf("jetstream context: %w", err)
 	}
-
-	// Create the stream if it does not exist; update if it does.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     streamName,
-		Subjects: []string{"events.>"},
-		Storage:  nats.FileStorage,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ensure stream %s: %w", streamName, err)
+	if err := ensureStream(js, streamName, streamSubjects, settings); err != nil {
+		return nil, err
 	}
-
 	return &Publisher{js: js}, nil
 }
 

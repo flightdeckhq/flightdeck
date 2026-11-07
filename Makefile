@@ -79,8 +79,10 @@ test-integration: ## Run integration tests (requires running stack)
 # TEST_POSTGRES_URL / TEST_ASSEMBLER_POSTGRES_URL) against the running
 # dev stack's Postgres, each package on a fresh database of its own
 # that the script creates, migrates and drops. It never touches the
-# `flightdeck` database. CI runs it in the integration job.
-test-go-db: ## Run the Go tests that need Postgres (requires running stack)
+# `flightdeck` database. It also runs the Go tests gated on
+# TEST_NATS_URL against the stack's NATS, on streams of their own. CI
+# runs it in the integration job.
+test-go-db: ## Run the Go tests that need Postgres or NATS (requires running stack)
 	./scripts/go-db-tests.sh
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)

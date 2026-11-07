@@ -182,6 +182,28 @@ nats:
     fileStore:
       size: "10Gi"
       storageClassName: ""
+    # The FLIGHTDECK stream that carries every event from ingestion to
+    # the workers. Ingestion creates it with these settings, or updates
+    # an existing stream to them in place, at startup. The stream keeps
+    # a message until a limit removes it, processed or not, and at the
+    # size limit removes the oldest: events the workers have not
+    # processed are lost when the workers are down for longer than
+    # maxAgeHours, or fall further behind than maxSizeMiB.
+    stream:
+      # How long a message is kept. 72 hours lets the workers be down
+      # from a Friday evening to a Monday morning without losing events.
+      maxAgeHours: 72
+      # The most the stream stores on each NATS server, in MiB. Every
+      # server holds a full replica on its own fileStore volume, and a
+      # NATS server without a configured store limit reserves at most
+      # 75% of the volume's free space when it starts, so keep this
+      # well under that: 5120 MiB (5 GiB) on the 10Gi default volume.
+      maxSizeMiB: 5120
+      # Servers holding a copy of the stream. Empty: 3 when
+      # nats.replicas is at least 3, otherwise 1. Set: 1 to 5, at most
+      # nats.replicas. Raising it on an existing install copies the
+      # stream to the new servers in place.
+      replicas: null
   resources:
     requests:
       cpu: 100m

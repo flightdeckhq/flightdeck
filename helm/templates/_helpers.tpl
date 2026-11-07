@@ -88,6 +88,53 @@ routes can form).
 {{- end -}}
 
 {{/*
+Replica count of the FLIGHTDECK JetStream stream. Unset, it is 3 when
+the NATS cluster has at least 3 servers and 1 otherwise: 3 replicas keep
+a quorum through the loss of one server, while 2 need both servers for
+a quorum, so they would stop the stream on either server's loss. Set,
+it must be between 1 and 5 (JetStream's maximum) and at most
+nats.replicas, since JetStream places each replica on its own server.
+*/}}
+{{- define "flightdeck.natsStreamReplicas" -}}
+{{- $servers := int .Values.nats.replicas -}}
+{{- $set := .Values.nats.jetstream.stream.replicas -}}
+{{- $replicas := 1 -}}
+{{- if not (kindIs "invalid" $set) -}}
+{{- $replicas = int $set -}}
+{{- else if ge $servers 3 -}}
+{{- $replicas = 3 -}}
+{{- end -}}
+{{- if or (lt $replicas 1) (gt $replicas 5) -}}
+{{- fail (printf "nats.jetstream.stream.replicas must be between 1 and 5, got %d" $replicas) -}}
+{{- end -}}
+{{- if gt $replicas $servers -}}
+{{- fail (printf "nats.jetstream.stream.replicas (%d) must not exceed nats.replicas (%d): JetStream places each stream replica on its own server" $replicas $servers) -}}
+{{- end -}}
+{{- $replicas -}}
+{{- end -}}
+
+{{/*
+The FLIGHTDECK stream's age and size limits, validated so a bad value
+fails the render instead of the ingestion pods' startup (which refuses
+the same values).
+*/}}
+{{- define "flightdeck.natsStreamMaxAgeHours" -}}
+{{- $hours := int .Values.nats.jetstream.stream.maxAgeHours -}}
+{{- if lt $hours 1 -}}
+{{- fail (printf "nats.jetstream.stream.maxAgeHours must be at least 1, got %d" $hours) -}}
+{{- end -}}
+{{- $hours -}}
+{{- end -}}
+
+{{- define "flightdeck.natsStreamMaxSizeMiB" -}}
+{{- $mib := int .Values.nats.jetstream.stream.maxSizeMiB -}}
+{{- if lt $mib 64 -}}
+{{- fail (printf "nats.jetstream.stream.maxSizeMiB must be at least 64, got %d" $mib) -}}
+{{- end -}}
+{{- $mib -}}
+{{- end -}}
+
+{{/*
 Bundled Postgres password. Fails the render when postgres.externalUrl is
 empty AND postgres.password is unset — prior releases silently defaulted
 to the literal "flightdeck", which left every bundled-Postgres install

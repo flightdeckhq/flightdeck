@@ -225,7 +225,9 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     row (ReviveOrCreateSession) with NULL context/token columns gets
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
-//     the stored value and the incoming EXCLUDED is ignored.
+//     the stored value and the incoming EXCLUDED is ignored. When it
+//     fills a sensor row whose framework a call already set, it adds
+//     that label to context.frameworks if no entry has it.
 //   - state -- EXCLUDED.state (active), which also revives a closed row
 //     for a re-attachment (clearing ended_at and closed_seq), unless the
 //     session_end that closed the row was published after this
@@ -381,7 +383,31 @@ const upsertSessionSQL = `
 	    -- row with NULL context / token columns picks up the real
 	    -- values when session_start later arrives. Real values are
 	    -- preserved (COALESCE returns the stored side first).
-	    context = COALESCE(sessions.context, EXCLUDED.context),
+	    --
+	    -- A sensor call that reached the worker before its
+	    -- session_start filled sessions.framework on the lazy row
+	    -- (UpdateSessionFromCall) but could not append to its NULL
+	    -- context; when this start writes that context, it appends the
+	    -- label unless an entry already has it, so a run with that one
+	    -- call is not left out of the analytics framework dimension.
+	    -- Other clients carry their own frameworks entries (or, for an
+	    -- OpenTelemetry Claude Code session, none on purpose).
+	    context = CASE
+	        WHEN sessions.context IS NULL
+	             AND sessions.framework IS NOT NULL
+	             AND COALESCE(sessions.client_type, EXCLUDED.client_type) = 'flightdeck_sensor'
+	             AND EXCLUDED.context IS NOT NULL AND EXCLUDED.context <> '{}'::jsonb
+	             AND COALESCE(jsonb_typeof(EXCLUDED.context->'frameworks'), 'array') = 'array'
+	             AND NOT EXISTS (
+	                 SELECT 1
+	                 FROM jsonb_array_elements_text(
+	                     COALESCE(EXCLUDED.context->'frameworks', '[]'::jsonb)) AS f
+	                 WHERE split_part(f, '/', 1) = sessions.framework
+	             )
+	        THEN jsonb_set(EXCLUDED.context, '{frameworks}',
+	                       COALESCE(EXCLUDED.context->'frameworks', '[]'::jsonb)
+	                       || to_jsonb(sessions.framework))
+	        ELSE COALESCE(sessions.context, EXCLUDED.context) END,
 	    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
 	    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
 	    -- Sentinel upgrade: "unknown" on flavor / agent_type

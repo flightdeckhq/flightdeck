@@ -1321,9 +1321,10 @@ The labels are one vocabulary with the OTLP receiver's GenAI dialect
 (`google_adk`, `openai_agents`, `strands`, `pydantic_ai`), so the analytics
 `framework` dimension counts a framework's sensor and OTLP sessions
 together. `claude-code` is the Claude Code client's label (the plugin's
-and the OTLP receiver's), outside this classifier vocabulary. The classifiers, in the order the per-event label is taken
-(the first match wins, and a framework comes before the ones it is built
-on or commonly embeds):
+and the OTLP receiver's), outside this classifier vocabulary. The
+classifiers, in the order the per-event label is taken (the first match
+wins, and a framework comes before the ones it is built on or commonly
+embeds):
 
 | Label | Detected from (`sys.modules`) | Version from |
 |---|---|---|
@@ -4722,7 +4723,10 @@ the bare label to `context.frameworks[]` whenever the session's own
 label (the column still NULL, or, on a `flightdeck_sensor` session, equal
 to the event's) has no entry there, versioned or bare; a row whose
 context is still NULL or `{}` is left for its `session_start` or the
-context upgrade to fill, and the next event appends the label then. A
+context upgrade to fill, and the next event appends the label then; a
+`flightdeck_sensor` `session_start` that fills a NULL context of a row
+whose `framework` a call already set appends that label itself, so a
+run with a single call is counted too. A
 stored framework is never replaced, and a session whose array already
 lists its label (the plugin's `claude-code/<version>`, the Agent SDK's,
 one detected at `init`) is left as it is, as is any other client's

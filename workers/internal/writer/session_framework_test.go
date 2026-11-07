@@ -171,6 +171,63 @@ func TestUpdateSessionFromCall_AppendsTheLabelAfterALateSessionStart(t *testing.
 	}
 }
 
+// A run with one call whose post_call is processed before its
+// session_start: no later call reaches UpdateSessionFromCall (the
+// session_end does not), so the session_start that writes the context
+// adds the label the call put on the row. Other clients' starts write
+// their context as sent.
+func TestUpsertSession_AddsTheFrameworkALateCallSetOnALazyRow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		clientType, framework, context string
+		want                           []any // nil: no frameworks key
+	}{
+		"sensor, one call": {"flightdeck_sensor", "langchain", `{"os":"Linux"}`, []any{"langchain"}},
+		"sensor, already listed": {"flightdeck_sensor", "langchain",
+			`{"os":"Linux","frameworks":["langchain/1.6.10"]}`, []any{"langchain/1.6.10"}},
+		"claude code plugin": {"claude_code", "claude-code",
+			`{"frameworks":["claude-code/2.1.316"]}`, []any{"claude-code/2.1.316"}},
+		"agent sdk": {"claude_agent_sdk", "claude_agent_sdk",
+			`{"frameworks":["claude_agent_sdk/0.2.168"]}`, []any{"claude_agent_sdk/0.2.168"}},
+		"otlp claude code": {"claude_code", "claude-code",
+			`{"telemetry":"otlp","claude_code_version":"2.1.319"}`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := testPool(t)
+			w := New(pool)
+			ctx := context.Background()
+			id := testAgent(t, w, pool, "framework-test")
+			id.ClientType = tc.clientType
+			sessionID := newUUID(t)
+			trackSession(t, pool, sessionID)
+
+			if _, err := w.ReviveOrCreateSession(ctx, sessionID, "writer-test", id.AgentType,
+				"writer-test-host", tc.framework, "some-model", id, time.Now().UTC(), "", ""); err != nil {
+				t.Fatalf("lazy create: %v", err)
+			}
+			updateFromCall(t, w, sessionID, "some-model", tc.framework)
+			if _, err := w.UpsertSession(ctx, sessionID, "writer-test", id.AgentType,
+				"writer-test-host", "", "", "active",
+				id.AgentID, id.ClientType, id.AgentName,
+				[]byte(tc.context), "", "", "", "", true, 0, time.Time{},
+			); err != nil {
+				t.Fatalf("session_start: %v", err)
+			}
+
+			r := readFrameworkRow(t, w, sessionID)
+			if r.framework == nil || *r.framework != tc.framework {
+				t.Errorf("framework = %v, want %q", r.framework, tc.framework)
+			}
+			got, has := r.context["frameworks"]
+			switch {
+			case tc.want == nil && has:
+				t.Errorf("context gained frameworks: %v", r.context)
+			case tc.want != nil && fmt.Sprint(got) != fmt.Sprint(tc.want):
+				t.Errorf("context.frameworks = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A session whose array already lists its own label, versioned or bare,
 // is unchanged by its calls: the plugin's sessions, the Agent SDK's and
 // those whose framework the sensor found at init().

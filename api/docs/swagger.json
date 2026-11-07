@@ -411,7 +411,7 @@
         },
         "/v1/agents/{agent_id}/summary": {
             "get": {
-                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum “tokens_total“ over “post_call“ and “embeddings“ events and over the “llm_error“ events of streams that failed after the provider billed tokens, the events the session totals and cost count. Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
+                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum “tokens_total“ over “post_call“ and “embeddings“ events and over the “llm_error“ events of streams that failed after the provider billed tokens, the events the session totals and cost count. Errors count “llm_error“ events and failed “tool_call“ events (a payload error object) — policy events are enforcement decisions, not failures, and MCP failures have their own mcp_error_types indicator. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
                 "produces": [
                     "application/json"
                 ],
@@ -999,7 +999,7 @@
                             "type": "string"
                         },
                         "collectionFormat": "csv",
-                        "description": "Filter by MCP server name from an MCP event's payload (repeatable)",
+                        "description": "Filter by MCP server name from an MCP event's payload (repeatable). A Claude Code plugin server's plugin:\u003cplugin\u003e:\u003cserver\u003e key also matches the plugin_\u003cplugin\u003e_\u003cserver\u003e key older plugin releases stored, which the mcp_server facet reads as the colon key.",
                         "name": "mcp_server",
                         "in": "query"
                     },
@@ -2387,7 +2387,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other.",
+                        "description": "Filter to sessions that emitted an error event (an llm_error, or a tool_call whose payload carries an error object: a failed tool call, error_type other) of one of the listed taxonomy values (repeatable/comma). Matches the error_types[] aggregate each row carries. 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other.",
                         "name": "error_type",
                         "in": "query"
                     },
@@ -4022,7 +4022,7 @@
                     "type": "string"
                 },
                 "error_types": {
-                    "description": "ErrorTypes lists every distinct ``payload-\u003e'error'-\u003e\u003e'error_type''\nobserved across the session's ``llm_error`` events. Always\npresent on the wire (empty array when the session has no\nerrors) so dashboard code can treat the slice as\nnon-nullable. Mirrors the ``frameworks`` JSONB-array surfacing\nshape: aggregated server-side via a correlated subquery on the\nlisting query so the dashboard can render the ERROR TYPE facet\nand the row-level error indicator without a per-session\nfollow-up fetch.",
+                    "description": "ErrorTypes lists every distinct ``payload-\u003e'error'-\u003e\u003e'error_type''\nobserved across the session's error events: its ``llm_error``\nevents and its failed ``tool_call`` events (errorEventFilter). Always\npresent on the wire (empty array when the session has no\nerrors) so dashboard code can treat the slice as\nnon-nullable. Mirrors the ``frameworks`` JSONB-array surfacing\nshape: aggregated server-side via a correlated subquery on the\nlisting query so the dashboard can render the ERROR TYPE facet\nand the row-level error indicator without a per-session\nfollow-up fetch.",
                     "type": "array",
                     "items": {
                         "type": "string"

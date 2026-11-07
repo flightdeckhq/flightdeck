@@ -53,7 +53,7 @@ const (
 // @Param        estimated_via            query  []string false "Filter by token-estimation method (repeatable)"
 // @Param        matched_entry_id         query  []string false "Filter by MCP-policy matched entry id (repeatable)"
 // @Param        originating_call_context query  []string false "Filter by originating call context (repeatable)"
-// @Param        mcp_server               query  []string false "Filter by MCP server name from an MCP event's payload (repeatable)"
+// @Param        mcp_server               query  []string false "Filter by MCP server name from an MCP event's payload (repeatable). A Claude Code plugin server's plugin:<plugin>:<server> key also matches the plugin_<plugin>_<server> key older plugin releases stored, which the mcp_server facet reads as the colon key."
 // @Param        terminal                 query  bool    false  "Filter to events whose payload terminal flag matches"
 // @Param        os                       query  []string false "Filter by sessions.context->>'os' (repeatable; resolved via a sessions subquery)"
 // @Param        arch                     query  []string false "Filter by sessions.context->>'arch' (repeatable)"

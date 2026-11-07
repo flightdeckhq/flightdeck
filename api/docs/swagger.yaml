@@ -1115,7 +1115,8 @@ definitions:
       error_types:
         description: |-
           ErrorTypes lists every distinct ``payload->'error'->>'error_type''
-          observed across the session's ``llm_error`` events. Always
+          observed across the session's error events: its ``llm_error``
+          events and its failed ``tool_call`` events (errorEventFilter). Always
           present on the wire (empty array when the session has no
           errors) so dashboard code can treat the slice as
           non-nullable. Mirrors the ``frameworks`` JSONB-array surfacing
@@ -1556,8 +1557,9 @@ paths:
         omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum
         “tokens_total“ over “post_call“ and “embeddings“ events and over the “llm_error“
         events of streams that failed after the provider billed tokens, the events
-        the session totals and cost count. Errors count events with “event_type =
-        'llm_error'“ only — policy events are enforcement decisions, not failures.
+        the session totals and cost count. Errors count “llm_error“ events and failed
+        “tool_call“ events (a payload error object) — policy events are enforcement
+        decisions, not failures, and MCP failures have their own mcp_error_types indicator.
         Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency
         percentiles use “event_type = 'post_call'“ rows only, matching the analytics
         endpoint convention.
@@ -1991,7 +1993,10 @@ paths:
         name: originating_call_context
         type: array
       - collectionFormat: csv
-        description: Filter by MCP server name from an MCP event's payload (repeatable)
+        description: Filter by MCP server name from an MCP event's payload (repeatable).
+          A Claude Code plugin server's plugin:<plugin>:<server> key also matches
+          the plugin_<plugin>_<server> key older plugin releases stored, which the
+          mcp_server facet reads as the colon key.
         in: query
         items:
           type: string
@@ -2974,11 +2979,13 @@ paths:
         in: query
         name: orchestration
         type: string
-      - description: 'Filter to sessions that emitted an llm_error event of one of
-          the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit,
-          quota_exceeded, context_overflow, content_filter, invalid_request, authentication,
-          permission, not_found, request_too_large, api_error, overloaded, timeout,
-          stream_error, other.'
+      - description: 'Filter to sessions that emitted an error event (an llm_error,
+          or a tool_call whose payload carries an error object: a failed tool call,
+          error_type other) of one of the listed taxonomy values (repeatable/comma).
+          Matches the error_types[] aggregate each row carries. 14-entry vocabulary:
+          rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request,
+          authentication, permission, not_found, request_too_large, api_error, overloaded,
+          timeout, stream_error, other.'
         in: query
         name: error_type
         type: string

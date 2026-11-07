@@ -2061,6 +2061,25 @@ Content Capture). A failed `Bash` command, a `Read` on a missing file
 and an MCP call that errored thus land as the same row shape as a
 success with one extra field.
 
+A failed `tool_call` (one whose `payload.error` is an object, from the
+plugin's hook or from Claude Code's OTLP `tool_result`) counts as an
+error on every per-session and per-agent error count: in the session
+listing's `error_types[]` aggregate and its `error_type` filter, in the
+agent summary's `errors` count, and in the dashboard's live patch of
+that count. The api defines the predicate once (`errorEventFilter` in
+`api/internal/store`) and the dashboard once (`isErrorEvent` in
+`lib/events.ts`). These surfaces still read `llm_error` only: the Fleet
+"Errors" event-type filter pill, the `/v1/search` `error` category, the
+swimlane's red `llm_error` node colour, and `has_terminal_error`. A
+failed `mcp_tool_call` keeps its own `mcp_error_types[]` indicator and
+is not an `errors` count: MCP failures carry the JSON-RPC taxonomy, not
+the LLM one. Without `OTEL_LOG_TOOL_DETAILS=1`, though, an MCP failure
+reported over OTLP is stored as a `tool_call` named `mcp_tool`, so it
+does count in `errors`. In the session drawer a
+failed `tool_call` row carries the same red error indicator as a failed
+MCP row, its detail reads `<tool> · failed`, and the expanded row lists
+the error's type, class and message.
+
 A tool event carries an id derived from its `tool_use_id`
 (`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://claude-code/tool_call/<tool_use_id>")`, for `tool_call`
@@ -4971,7 +4990,7 @@ authoritative parameter-level reference.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
-| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
+| `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, the error types of the session's `llm_error` and failed `tool_call` events, which the `error_type` filter matches the same way; `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events, and `capture_prompts`, the session's stored capture posture: `true` or `false` once a `session_start` declared it, `null` while none has) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
@@ -5320,9 +5339,11 @@ Returns:
 - `totals.tokens`: `SUM(events.tokens_total)` over `post_call` and
   `embeddings` events and the `llm_error` events of failed streams that
   carry tokens, as the analytics `tokens` metric counts them.
-- `totals.errors`: `COUNT(*)` of events with
-  `event_type='llm_error'`. Policy events are enforcement
-  decisions, not errors, and are not counted here.
+- `totals.errors`: `COUNT(*)` of `llm_error` events and of
+  `tool_call` events whose `payload.error` is an object (a failed
+  tool call; see Tool calls and failures). Policy events are
+  enforcement decisions, not errors, and are not counted here; MCP
+  failures have their own `mcp_error_types[]` indicator.
 - `totals.sessions`: `COUNT(DISTINCT session_id)` across events
   in the window. Every run with any activity in the window
   counts, regardless of when it started.
@@ -6203,7 +6224,8 @@ flavor, a label, and no agent id; one neither ties to an agent is
 left to the next fetch). It adds the `tokens_total` of a `post_call`,
 an `embeddings` call or a failed stream's `llm_error` to
 `totals.tokens` and the most-recent series bucket, as the summary
-endpoint counts them, counts an `llm_error` in `errors`, and raises
+endpoint counts them, counts an `llm_error` and a failed `tool_call`
+in `errors`, and raises
 `latency_p95_ms` to a `post_call`'s latency above it, then ticks a
 per-agent counter so only that row's memoised cells invalidate.
 
@@ -6638,7 +6660,11 @@ client-type pill disambiguating same-named agents), `event_type`,
 `policy_event_type`, `error_type`, `framework`, `model`,
 `close_reason` (gated to `session_end` events), `estimated_via`,
 `matched_entry_id`, `originating_call_context`, `mcp_server` (the
-MCP event's `payload.server_name`), `terminal` (toggle), plus 9
+MCP event's `payload.server_name`, with a Claude Code plugin-bundled
+server's flattened `plugin_<plugin>_<server>` key, which some stored
+rows carry, read as `plugin:<plugin>:<server>` so one server is one
+value; filtering on the colon key matches both
+spellings), `terminal` (toggle), plus 9
 runtime-context dims sourced from `sessions.context`: `os`,
 `arch`, `hostname` (URL param `host`), `user`, `git_branch`,
 `git_repo`, `orchestration`, `python_version`, `process_name`.
@@ -6758,7 +6784,36 @@ header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. A tool call's content (the sensor's `tool_call`,
+`response`. An OpenAI Responses call (the sensor's `responses` calls
+and litellm's) is shown in the Responses API's own terms: its stored
+`system` text under `instructions`, and its stored `input` under
+Input, a string as written and an input item list as one box per item:
+a message item with its role and its content parts (`input_text` and
+`output_text` as text, `refusal` labelled, `input_image`, `input_file`
+and `input_audio` named by type), a `function_call` with its name,
+`call_id` and arguments, a `function_call_output` with its `call_id`
+and output, a `reasoning` item with its summary text, and any other
+item type labelled by its `type` and shown as its JSON, never dropped.
+Its function tools, which the Responses API declares flat (`name`,
+`description`, `parameters`), show their parameters, and a hosted tool
+(`web_search_preview` and the like) is named by its `type`. A legacy
+completion (litellm's `text_completion`) shows its stored `input` under
+Prompt, the request parameter it holds: a string as written, a list of
+prompts as one box each, token ids as their JSON. The viewer knows
+either call by the stored response's `object`, which the API sets on
+every response object: `"response"` for a Responses call and
+`"text_completion"` for a legacy completion (a chat completion carries
+`chat.completion`, an embeddings response `list`, an Anthropic message
+has none). Neither the event nor the content names the API a call
+used, and the content's shape alone (no `messages`, an `input`) is the
+same for a Responses call, a legacy completion and an embeddings call.
+A call whose stored response carries no `object` (a stream that stored
+no response snapshot) shows no Input or Prompt, and its stored `system`
+text under System: a litellm Responses
+stream the caller leaves before its terminal event keeps no snapshot,
+while an OpenAI SDK one stores the `ResponseStreamState` snapshot, which
+carries `object` from `response.created` on. An embeddings
+call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written
@@ -8534,8 +8589,8 @@ attribution). The Fleet swimlane renders MCP events with a
 hexagon clip-path shape (B-5b) so the family is identifiable
 from the timeline at a glance even without reading badge text. A
 small inline error indicator (red AlertCircle) decorates rows
-whose `payload.error` is populated so failures surface without
-expanding the row. The session detail drawer's MCP SERVERS panel
+whose `payload.error` is populated, and failed `tool_call` rows
+alike, so failures surface without expanding the row. The session detail drawer's MCP SERVERS panel
 lists every fingerprint from `context.mcp_servers`.
 
 ### Per-event `framework` field

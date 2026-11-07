@@ -172,6 +172,22 @@ All notable changes to Flightdeck are documented here.
   inside the interceptor module that patches it (anthropic, openai,
   litellm and mcp alike) is now patched once that module's import ends.
 
+- **A failed Claude Code tool call counts as an error.** The plugin and
+  Claude Code's OpenTelemetry store a failed tool call as a `tool_call`
+  with an `error` block. It now counts in the session listing's
+  `error_types[]` and its `error_type` filter, in the agent summary's
+  `errors` (and the Agents table's live count), and as one of the error
+  kinds the agent drawer's Runs-tab errors column counts for a run (the
+  column shows a run's distinct error kinds, not its failures). In the
+  run drawer the failed row carries the red error indicator, reads
+  `<tool> · failed`, and lists the error's type, class and message when
+  expanded. A failed MCP call keeps its own `mcp_error_types[]`
+  indicator. The `/v1/events` `mcp_server`
+  facet reads a plugin-bundled server's `plugin_<plugin>_<server>` key,
+  stored by plugin releases before v0.6.0, as `plugin:<plugin>:<server>`,
+  so one server is one value, and filtering on the colon key matches both
+  ([#179](https://github.com/flightdeckhq/flightdeck/issues/179)).
+
 - **The sensor meters OpenAI calls on openai releases before 1.78.**
   Their client builds `chat`, `embeddings` and `responses` in its
   constructor, which the class patch never reached, so `patch()` left
@@ -208,6 +224,18 @@ All notable changes to Flightdeck are documented here.
   claiming capture is off, and a call of a capture-on run that recorded
   nothing says so. The Claude Code plugin's hook tool calls render as
   before ([#260](https://github.com/flightdeckhq/flightdeck/pull/260)).
+- **The Prompts tab shows an OpenAI Responses call's input.** A
+  Responses call (the OpenAI SDK's or litellm's) stores its request as
+  `instructions` and `input`, with no `messages`, so the Prompts tab
+  showed no request at all. It now shows the input in the Responses
+  API's terms: a string as written, or one box per input item (a message
+  with its role and content parts, a `function_call` with its arguments,
+  a `function_call_output` with its result, a `reasoning` summary, and
+  any other item labelled by its type with its JSON). The system text
+  is labelled `instructions`, not System, and a Responses function
+  tool shows its parameters. A litellm `text_completion` call shows its
+  prompt under Prompt (D252,
+  [#222](https://github.com/flightdeckhq/flightdeck/issues/222)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

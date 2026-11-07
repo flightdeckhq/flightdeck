@@ -315,6 +315,7 @@ function RunRow({
         {formatTokens(run.tokens_used)}
       </td>
       <td
+        data-testid="agent-drawer-run-errors"
         style={{
           padding: "6px 10px",
           textAlign: "right",

@@ -648,3 +648,35 @@ an older SDK that call raises `TypeError` in the caller's code.
 releases from May 2024 to May 2025, when the hook is small and tested in
 CI); keeping 1.0 and skipping `stream_options` there (streamed calls
 would report no usage, so they could not be metered).
+
+## D251 -- A failed tool_call counts on every per-session and per-agent error count, and a plugin MCP server's flattened key reads as its colon key
+
+**Date:** 2026-11-07
+**Decision:** an error event is an `llm_error` or a `tool_call` whose
+`payload.error` is an object, one predicate for `error_types[]`, the
+`error_type` filter and the agent summary's `errors`; a failed
+`mcp_tool_call` stays on `mcp_error_types[]`. The `mcp_server` facet
+reads `plugin_<plugin>_<server>` as `plugin:<plugin>:<server>`, and a
+filter on the colon key matches both. Extends D190.
+**Why:** a plugin tool failure is stored as a `tool_call` with an error
+block (D190), so counting only `llm_error` hid it from those counts.
+**Rejected alternative:** a migration rewriting the old key (it edits
+stored events, and an older plugin still posting recreates them);
+counting MCP failures in `errors` (JSON-RPC taxonomy, not the LLM one).
+
+## D252 -- The Prompts view tells a Responses call and a legacy completion by the stored response's `object`
+
+**Date:** 2026-11-07
+**Decision:** `PromptViewer` renders a call's stored `input` as a
+Responses request (`instructions`, input items) when the stored response's
+`object` is `"response"`, and as a legacy completion's `prompt` when it is
+`"text_completion"`. Without either (a stream that stored no response
+snapshot), the input is not shown there.
+**Why:** the provider sets `object` on every response it returns, so the
+marker is already in every stored row. The content's shape alone (no
+`messages`, an `input`) is shared with embeddings calls, and the viewer
+gets only the event id.
+**Rejected alternative:** a sensor-stamped `api` field in the content
+envelope (a contract change that leaves every stored row unmarked);
+guessing from the shape of `input` (an embeddings call's string list
+would render as a Responses input).

@@ -202,10 +202,12 @@ func TestEnsureStreamReturnsAnUpdateThatGetsNoAnswer(t *testing.T) {
 	}
 }
 
-// A transient failure followed by success is retried to success.
+// A transient failure followed by success is retried to success: no
+// answer, then a leader election's 503, then the update applies.
 func TestEnsureStreamRetriesATransientUpdateFailure(t *testing.T) {
 	noRetryPauses(t)
-	f := &fakeStreams{cfg: unboundedStream(), updateErrs: []error{nats.ErrNoResponders, nats.ErrTimeout}}
+	leaderElection := &nats.APIError{Code: 503, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}
+	f := &fakeStreams{cfg: unboundedStream(), updateErrs: []error{nats.ErrNoResponders, leaderElection}}
 	if err := ensureStream(f, streamName, streamSubjects, testSettings); err != nil {
 		t.Fatalf("ensureStream: %v", err)
 	}
@@ -224,6 +226,19 @@ func TestIsRefusal(t *testing.T) {
 		{"api error", insufficientStorage, true},
 		{"wrapped api error", fmt.Errorf("update: %w", insufficientStorage), true},
 		{"stream not found answer", nats.ErrStreamNotFound, true},
+		{"insufficient resources (503, a placement refusal)",
+			&nats.APIError{Code: 503, ErrorCode: nats.JSErrCodeInsufficientResourcesErr, Description: "insufficient resources"}, true},
+		{"jetstream not enabled (503)", nats.ErrJetStreamNotEnabled, true},
+		{"cluster temporarily unavailable (leader election, 503)",
+			&nats.APIError{Code: 503, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}, false},
+		{"wrapped cluster unavailable",
+			fmt.Errorf("update: %w", &nats.APIError{Code: 503, ErrorCode: 10008}), false},
+		{"no leader to handle the request",
+			&nats.APIError{Code: 500, ErrorCode: 10009, Description: "JetStream cluster can not handle request"}, false},
+		{"stream offline",
+			&nats.APIError{Code: 500, ErrorCode: 10118, Description: "stream is offline"}, false},
+		{"503 with no JetStream code", &nats.APIError{Code: 503}, false},
+		{"500 with no JetStream code", &nats.APIError{Code: 500, Description: "internal"}, true},
 		{"timeout", nats.ErrTimeout, false},
 		{"no responders", nats.ErrNoResponders, false},
 		{"connection closed", nats.ErrConnectionClosed, false},

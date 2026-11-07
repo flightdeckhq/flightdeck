@@ -50,7 +50,8 @@ func streamConfig(name string, subjects []string, s StreamSettings) *nats.Stream
 
 // updateRetryDelays are the pauses between the attempts of a stream
 // update that failed without an answer from the server (a timeout, no
-// responders, a dropped connection): four attempts in all, 1.75 s of
+// responders, a dropped connection) or with a cluster that has no
+// leader at the moment (see isRefusal): four attempts in all, 1.75 s of
 // pauses. Each attempt waits up to the JetStream request timeout (5 s),
 // so a NATS that never answers is given up on after about 22 s, inside
 // the Helm chart's ingestion liveness budget (15 s delay plus three
@@ -151,11 +152,38 @@ func ensureStream(js streamManager, name string, subjects []string, s StreamSett
 	}
 }
 
-// isRefusal reports whether err is the server's answer to a request
-// (a JetStream API error) rather than a failure to get one.
+// JetStream API error codes a clustered server answers with while it
+// has no leader to act on a request, as during a rolling restart of
+// the NATS servers. They pass within seconds, so a stream update that
+// gets one is retried as one that got no answer. nats.go names only the
+// first; the others are the server's JSClusterNotLeaderErr and
+// JSStreamOfflineErr.
+const (
+	errCodeClusterNotAvailable nats.ErrorCode = nats.JSErrCodeJetStreamNotAvailable // 10008, HTTP 503
+	errCodeClusterNotLeader    nats.ErrorCode = 10009
+	errCodeStreamOffline       nats.ErrorCode = 10118
+)
+
+// isRefusal reports whether err is the server's settled answer to a
+// request (a JetStream API error) rather than a failure to get one or a
+// passing state of the cluster. A leader election's errors (above), and
+// a 503 the server gives no JetStream code for, are not refusals. The
+// HTTP code alone does not decide: insufficient resources (10023) and
+// JetStream not enabled (10039, 10076) also carry 503 and do not pass
+// with a retry.
 func isRefusal(err error) bool {
 	var jsErr nats.JetStreamError
-	return errors.As(err, &jsErr) && jsErr.APIError() != nil
+	if !errors.As(err, &jsErr) || jsErr.APIError() == nil {
+		return false
+	}
+	apiErr := jsErr.APIError()
+	switch apiErr.ErrorCode {
+	case errCodeClusterNotAvailable, errCodeClusterNotLeader, errCodeStreamOffline:
+		return false
+	case 0:
+		return apiErr.Code != 503
+	}
+	return true
 }
 
 // subjectDrift compares a stream's subjects with the ones ingestion

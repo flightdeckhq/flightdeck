@@ -4072,8 +4072,14 @@ size larger than a server can reserve (a server without a configured
 store limit reserves at most 75% of its volume's free space, measured
 when it starts) and a replica count above the cluster's server count.
 Correct the setting and restart ingestion. An update that gets no
-answer at all (a timeout, no responders, a dropped connection) is a
-different case: ingestion tries it four times, pausing 0.25, 0.5 and 1
+answer at all (a timeout, no responders, a dropped connection), or an
+answer that the cluster has no leader at the moment (JetStream codes
+10008 "temporarily unavailable", 10009 "can not handle request" and
+10118 "stream is offline", or a 503 with no JetStream code, as during a
+rolling restart of the NATS servers), is a different case. The HTTP 503
+alone does not decide: insufficient resources and JetStream not
+enabled also carry it, and are refusals. Ingestion tries such an update
+four times, pausing 0.25, 0.5 and 1
 second between attempts (about 22 seconds at most, with the 5-second
 request timeout), and then exits so its supervisor restarts it, since
 it cannot tell whether the stream is usable.

@@ -99,6 +99,19 @@ def _events(session_id: str, *types: str) -> list[dict[str, Any]]:
     )
 
 
+def _of_type(session_id: str, event_type: str, count: int) -> list[dict[str, Any]]:
+    """The session's events of ``event_type`` once ``count`` of them have
+    landed, or those there at the deadline: the queued model and tool
+    events reach the worker after the synchronous child posts, so the
+    first one being there does not mean the last is."""
+    deadline = time.monotonic() + EVENTS_LANDED_S
+    while True:
+        found = [e for e in _events(session_id, event_type) if e["event_type"] == event_type]
+        if len(found) >= count or time.monotonic() > deadline:
+            return found
+        time.sleep(CHILDREN_POLL_S)
+
+
 def _check(label: str, ok: bool, detail: Any = "") -> None:
     print_result(label, ok, 0, str(detail)[:FAILURE_DUMP_CHARS] if not ok else "")
     if not ok:
@@ -198,8 +211,7 @@ def section_handoff(sdk: Any, settings: Any, model: str) -> None:
         bool(triage_end and weather_start) and triage_end[0] <= weather_start[0],
         (triage_end, weather_start),
     )
-    root_events = _events(root, "post_call")
-    posts = [e for e in root_events if e["event_type"] == "post_call"]
+    posts = _of_type(root, "post_call", 2)
     _check("the model calls stay on the sensor's session", len(posts) >= 2, len(posts))
 
 
@@ -242,8 +254,7 @@ def section_tools(sdk: Any, settings: Any, model: str) -> None:
         [g["agent_role"] for g in grandchildren] == ["expert_agent"],
         grandchildren,
     )
-    root_events = _events(root, "tool_call")
-    tools = sorted(e.get("tool_name") for e in root_events if e["event_type"] == "tool_call")
+    tools = sorted(e.get("tool_name") for e in _of_type(root, "tool_call", 2))
     _check(
         "one tool_call per function call, on the sensor's session",
         tools == ["ask_expert", "get_temperature"],

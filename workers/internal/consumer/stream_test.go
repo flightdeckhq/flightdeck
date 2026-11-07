@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -80,5 +81,21 @@ func TestRemovedUndelivered(t *testing.T) {
 					tc.existed, tc.lastDelivered, tc.firstSeq, got, tc.want)
 			}
 		})
+	}
+}
+
+// The waiting lines are INFO until the wait has gone on for
+// streamWaitWarnAfter, then WARN.
+func TestStreamWaitLevelEscalates(t *testing.T) {
+	for waited, want := range map[time.Duration]slog.Level{
+		0:                                 slog.LevelInfo,
+		time.Minute:                       slog.LevelInfo,
+		streamWaitWarnAfter - time.Second: slog.LevelInfo,
+		streamWaitWarnAfter:               slog.LevelWarn,
+		time.Hour:                         slog.LevelWarn,
+	} {
+		if got := streamWaitLevel(waited); got != want {
+			t.Errorf("streamWaitLevel(%v) = %v, want %v", waited, got, want)
+		}
 	}
 }

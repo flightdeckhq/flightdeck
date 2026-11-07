@@ -174,6 +174,33 @@ func TestEnsureStreamKeepsTheStreamWhenNATSRefusesTheUpdate(t *testing.T) {
 	}
 }
 
+// A stream whose subjects drifted (ingestion's subject missing, another
+// one added by hand) gets ingestion's subject back and keeps the other.
+func TestEnsureStreamRestoresAMissingSubjectOnNATS(t *testing.T) {
+	js := realJetStream(t)
+	name, subjects := testStream(t, js)
+	extra := name + "_EXTRA.>"
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name: name, Subjects: []string{extra}, Storage: nats.FileStorage,
+	}); err != nil {
+		t.Fatalf("create the drifted stream: %v", err)
+	}
+	settings := StreamSettings{MaxAge: 72 * time.Hour, MaxBytes: 64 << 20, Replicas: 1}
+	if err := ensureStream(js, name, subjects, settings); err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	info, err := js.StreamInfo(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Config.Subjects; len(got) != 2 || got[0] != extra || got[1] != subjects[0] {
+		t.Errorf("subjects after reconcile %v, want [%s %s]", got, extra, subjects[0])
+	}
+	if _, err := js.Publish(name+".post_call", []byte(`{}`)); err != nil {
+		t.Errorf("publish on ingestion's subject after reconcile: %v", err)
+	}
+}
+
 // A missing stream is created with the settings.
 func TestEnsureStreamCreatesTheStreamOnNATS(t *testing.T) {
 	js := realJetStream(t)

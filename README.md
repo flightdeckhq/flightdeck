@@ -460,7 +460,7 @@ docker compose \
 
 The prod overlay terminates TLS at nginx on 443 with 80 to 443 redirect, rejects the seed `tok_dev` token, sets `restart: unless-stopped` on every service, and uses named volumes for Postgres and NATS JetStream.
 
-The `FLIGHTDECK` NATS stream that carries events from ingestion to the workers keeps them for 72 hours, up to 5 GiB, then removes the oldest (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`, `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` in `docker/.env`). The limits remove events whether or not the workers have processed them, so if the workers are down for longer than 72 hours, or fall more than 5 GiB behind, the oldest unprocessed events are lost; the workers log how many at their next start.
+The `FLIGHTDECK` NATS stream that carries events from ingestion to the workers keeps them for 72 hours, up to 5 GiB, then removes the oldest (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`, `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` in `docker/.env`). The limits remove events whether or not the workers have processed them, so if the workers are down for longer than 72 hours, or fall more than 5 GiB behind, the oldest unprocessed events are lost; the workers log how many at their next start. To roll back to a release before the stream was bounded, first run `nats stream edit FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old --replicas=1 --force` (with `-s <your NATS URL>`), which restores unbounded retention; the earlier ingestion and workers do not start on the bounded stream.
 
 Reach the dashboard at `https://flightdeck.example.com/`. Go to **Settings → Access tokens → Create** and mint your first token. The token's plaintext is shown once at creation; copy it into your secret store before closing the modal.
 
@@ -506,8 +506,8 @@ The chart is at `version` 0.8.0 with `appVersion` 0.8.0; the default `image.tag`
 | `nats.auth.token` | *(empty)* | Client token for the event bus. Required in production. |
 | `nats.jetstream.fileStore.size` | `10Gi` | PVC size per NATS replica. |
 | `nats.jetstream.stream.maxAgeHours` | `72` | How long the `FLIGHTDECK` stream keeps an event, processed or not. Unprocessed events older than this are lost. |
-| `nats.jetstream.stream.maxSizeMiB` | `5120` | Most the stream stores on each NATS server; at the limit the oldest events go. Keep it well under 75% of `fileStore.size` (`values.prod.yaml`: 30720 for 50Gi). |
-| `nats.jetstream.stream.replicas` | *(empty)* | Servers holding a copy of the stream. Empty: 3 when `nats.replicas` is 3 or more, else 1. At most `nats.replicas` and 5. |
+| `nats.jetstream.stream.maxSizeMiB` | `5120` | Most the stream stores on each NATS server; at the limit the oldest events go. The render fails above 75% of `fileStore.size`; keep it well under (`values.prod.yaml`: 30720 for 50Gi). |
+| `nats.jetstream.stream.replicas` | *(empty)* | Servers holding a copy of the stream. Empty: 3 when `nats.replicas` is 3 or more, else 1. At most `nats.replicas` and 5, and not 2. |
 | `ingress.enabled` | `false` | Render an Ingress routing `/` to dashboard, `/api` to query API, `/ingest` to ingestion API. |
 | `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza. |
 

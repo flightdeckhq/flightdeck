@@ -605,6 +605,22 @@ const streamWaitInterval = 2 * time.Second
 // without flooding the log.
 const streamWaitLogEvery = 30
 
+// streamWaitWarnAfter is how long the worker waits for the stream
+// before its waiting lines go from INFO to WARN. Ingestion creates the
+// stream within seconds of starting, and even a cold `go run` start in
+// CI takes under two minutes; ten minutes without a stream means
+// ingestion is down or cannot create it, which an operator should see.
+const streamWaitWarnAfter = 10 * time.Minute
+
+// streamWaitLevel is the level of a waiting line after waiting for so
+// long.
+func streamWaitLevel(waited time.Duration) slog.Level {
+	if waited >= streamWaitWarnAfter {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
+}
+
 // streamInfoer is the part of nats.JetStreamContext waitForStream uses.
 type streamInfoer interface {
 	StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error)
@@ -616,6 +632,7 @@ type streamInfoer interface {
 // Any error other than a missing stream is returned at once, as is
 // ctx's error when ctx ends first.
 func waitForStream(ctx context.Context, js streamInfoer, interval time.Duration) (*nats.StreamInfo, error) {
+	start := time.Now()
 	for looks := 0; ; looks++ {
 		info, err := js.StreamInfo(streamName)
 		if err == nil {
@@ -625,7 +642,9 @@ func waitForStream(ctx context.Context, js streamInfoer, interval time.Duration)
 			return nil, fmt.Errorf("stream info %s: %w", streamName, err)
 		}
 		if looks%streamWaitLogEvery == 0 {
-			slog.Info("waiting for ingestion to create the stream", "stream", streamName)
+			waited := time.Since(start)
+			slog.Log(ctx, streamWaitLevel(waited), "waiting for ingestion to create the stream",
+				"stream", streamName, "waited", waited.Round(time.Second))
 		}
 		select {
 		case <-ctx.Done():

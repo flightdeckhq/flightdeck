@@ -70,10 +70,10 @@ const MinStreamMaxAgeHours = 1
 const DefaultStreamMaxSizeMiB = 5120
 
 // MinStreamMaxSizeMiB is the smallest max size the stream may be
-// given, in MiB. 64 MiB holds tens of thousands of typical events and
-// 64 at NATS's 1 MiB max payload; a smaller value reads as a unit
-// mistake (bytes or GiB typed as MiB) that would leave room for a
-// handful of events.
+// given, in MiB. 64 MiB holds about 30,000 events of the typical 2 KiB,
+// but only 64 events of NATS's 1 MiB maximum. Anything smaller reads as
+// a unit mistake (a size in GiB typed into a MiB setting) and would
+// leave room for a handful of large events.
 const MinStreamMaxSizeMiB = 64
 
 // MaxStreamReplicas is the most replicas JetStream allows a stream.

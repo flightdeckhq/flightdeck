@@ -3972,7 +3972,9 @@ The ingestion API owns the `FLIGHTDECK` JetStream stream
 request, it creates the stream or brings an existing one to its
 configured settings in place. The workers never create or change the
 stream: a worker that starts first looks for it every two seconds,
-logging once a minute while it waits, and then sets up its consumer.
+logging once a minute while it waits (at INFO, then at WARN once it has
+waited ten minutes, by when ingestion is down or cannot create it), and
+then sets up its consumer.
 
 | Setting | Value |
 |---|---|
@@ -4024,8 +4026,13 @@ also what an operator can replay from with a new consumer.
 max age, max size, discard policy and replica count with the
 configured ones and, if any differs, sends a stream update that carries
 the stream's current configuration with only those four fields changed,
-so a field ingestion does not set (subjects, duplicate window,
-description) is kept. JetStream applies limits and replica changes in
+so a field ingestion does not set (duplicate window, description) is
+kept. The subjects are compared too: a subject ingestion publishes to
+(`events.>`) that the stream lacks is added, in the same update, since
+adding a subject removes nothing, and a subject the stream has that
+ingestion does not know is logged at WARN (`stream has subjects
+ingestion does not publish to; kept`) and left in place, since removing
+it could drop messages another publisher relies on. JetStream applies limits and replica changes in
 place: lowering a limit removes the messages beyond it at once, oldest
 first, and raising the replica count copies the stream to the new
 servers. The storage type cannot change in place, so a stream whose
@@ -4039,14 +4046,29 @@ checks that one.
 
 **When the update fails.** A stream that cannot be read, or a missing
 stream that cannot be created, stops ingestion at startup: it cannot
-publish without one. An update NATS refuses is logged at ERROR with the
-stream's current and wanted settings (`stream update refused; the
-stream keeps its current settings`), and ingestion starts on the stream
-as it is, so a value the cluster cannot take does not become an
-ingestion outage. NATS refuses a size larger than a server can reserve
-(a server without a configured store limit reserves at most 75% of its
-volume's free space, measured when it starts) and a replica count above
-the cluster's server count. Correct the setting and restart ingestion.
+publish without one. An update NATS refuses (a JetStream API error, the
+server's answer) is logged at ERROR with the stream's current and wanted
+settings (`stream update refused; the stream keeps its current
+settings`), and ingestion starts on the stream as it is, so a value the
+cluster cannot take does not become an ingestion outage. NATS refuses a
+size larger than a server can reserve (a server without a configured
+store limit reserves at most 75% of its volume's free space, measured
+when it starts) and a replica count above the cluster's server count.
+Correct the setting and restart ingestion. An update that gets no
+answer at all (a timeout, no responders, a dropped connection) is a
+different case: ingestion tries it four times, pausing 0.25, 0.5 and 1
+second between attempts (about 22 seconds at most, with the 5-second
+request timeout), and then exits so its supervisor restarts it, since
+it cannot tell whether the stream is usable.
+
+**Rolling back.** Code that creates the stream with no limits and one
+replica fails at startup (`stream name already in use`) on a stream with
+limits or more replicas, since JetStream refuses a create whose
+configuration differs from the existing stream's. Before starting such
+an ingestion or worker, reset the stream with the NATS CLI: `nats
+stream edit FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old
+--replicas=1 --force`, which restores unbounded retention and one
+replica.
 
 ### NATS consumer
 
@@ -9546,9 +9568,11 @@ Worker / Event Processing > The FLIGHTDECK stream). Unset, `replicas` is
 3 when `nats.replicas` is 3 or more and 1 otherwise: 3 copies keep a
 quorum through the loss of one server, while 2 copies need both servers
 for a quorum and so would stop the stream on either one's loss. A set
-`replicas` must be 1 to 5 and at most `nats.replicas`, and the render
-fails otherwise, as it does for an age under 1 hour or a size under
-64 MiB. Each NATS server holds a full copy on its own PVC, so
+`replicas` must be 1 to 5, not 2 for that reason, and at most
+`nats.replicas`, and the render fails otherwise, as it does for an age
+under 1 hour, a size under 64 MiB, or a size above 75% of
+`nats.jetstream.fileStore.size` (read when it is a plain integer with a
+`Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). Each NATS server holds a full copy on its own PVC, so
 `maxSizeMiB` stays well under the 75% of free space a server reserves
 at most: 5120 MiB on the 10Gi default volume, 30720 MiB on the 50Gi
 volume of `values.prod.yaml`. The ingestion pods carry a checksum of the

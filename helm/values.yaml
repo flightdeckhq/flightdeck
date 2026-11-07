@@ -198,10 +198,12 @@ nats:
       # NATS server without a configured store limit reserves at most
       # 75% of the volume's free space when it starts, so keep this
       # well under that: 5120 MiB (5 GiB) on the 10Gi default volume.
+      # The render fails above 75% of fileStore.size.
       maxSizeMiB: 5120
       # Servers holding a copy of the stream. Empty: 3 when
-      # nats.replicas is at least 3, otherwise 1. Set: 1 to 5, at most
-      # nats.replicas. Raising it on an existing install copies the
+      # nats.replicas is at least 3, otherwise 1. Set: 1 to 5 but not 2
+      # (two copies stop the stream when either server is lost), at
+      # most nats.replicas. Raising it on an existing install copies the
       # stream to the new servers in place.
       replicas: null
   resources:

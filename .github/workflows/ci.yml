@@ -1141,6 +1141,10 @@ jobs:
           refuse "must be between 1 and 5" --set nats.replicas=7 --set nats.jetstream.stream.replicas=6
           refuse "maxAgeHours must be at least 1" --set nats.jetstream.stream.maxAgeHours=0
           refuse "maxSizeMiB must be at least 64" --set nats.jetstream.stream.maxSizeMiB=10
+          refuse "must not be 2" --set nats.jetstream.stream.replicas=2
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.stream.maxSizeMiB=7681
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.fileStore.size=50Gi --set nats.jetstream.stream.maxSizeMiB=38401
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "7680"' --set nats.jetstream.stream.maxSizeMiB=7680
           # A change to the settings rolls the ingestion pods, which
           # apply them at startup.
           sum() {

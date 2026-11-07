@@ -528,6 +528,11 @@ All notable changes to Flightdeck are documented here.
   the updated stream fails its own stream setup until it is upgraded
   (D253; [#169](https://github.com/flightdeckhq/flightdeck/issues/169),
   part of [#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
+  **Rolling back:** an earlier ingestion or worker cannot start on the
+  updated stream. Reset it first with the NATS CLI, `nats stream edit
+  FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old --replicas=1
+  --force` (add `-s <your NATS URL>`), which restores unbounded
+  retention and a single replica, then start the earlier release.
 - **The analytics `tokens` metric and the per-agent summary count
   embeddings calls**, which the session and agent totals and the cost
   already did, so every token total agrees

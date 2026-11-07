@@ -2,6 +2,7 @@ package nats
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,12 +10,14 @@ import (
 )
 
 // fakeStreams is an in-memory streamManager holding at most one
-// stream. The err fields, when set, are returned by the matching call.
+// stream. The err fields, when set, are returned by the matching call;
+// updateErrs are returned by successive updates, one each, and once
+// they run out an update succeeds.
 type fakeStreams struct {
 	cfg         *nats.StreamConfig
 	infoErr     error
 	addErr      error
-	updateErr   error
+	updateErrs  []error
 	adds        []nats.StreamConfig
 	updates     []nats.StreamConfig
 	infoCalls   int
@@ -48,8 +51,10 @@ func (f *fakeStreams) AddStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.
 
 func (f *fakeStreams) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
 	f.updates = append(f.updates, *cfg)
-	if f.updateErr != nil {
-		return nil, f.updateErr
+	if len(f.updateErrs) > 0 {
+		err := f.updateErrs[0]
+		f.updateErrs = f.updateErrs[1:]
+		return nil, err
 	}
 	c := *cfg
 	f.cfg = &c
@@ -149,16 +154,128 @@ func TestEnsureStreamUpdatesWhenAnyOwnedFieldDiffers(t *testing.T) {
 	}
 }
 
+// insufficientStorage is the API error NATS answers an update with when
+// the size cannot be reserved.
+var insufficientStorage = &nats.APIError{
+	Code: 500, ErrorCode: 10047, Description: "insufficient storage resources available",
+}
+
+// noRetryPauses removes the pauses between update attempts for a test.
+func noRetryPauses(t *testing.T) {
+	t.Helper()
+	saved := updateRetryDelays
+	updateRetryDelays = make([]time.Duration, len(saved))
+	t.Cleanup(func() { updateRetryDelays = saved })
+}
+
 // An update the server refuses is logged and the stream is used as it
-// is: ingestion still starts.
+// is: ingestion still starts, and the refusal is not retried.
 func TestEnsureStreamToleratesARefusedUpdate(t *testing.T) {
-	f := &fakeStreams{cfg: unboundedStream(), updateErr: errors.New("nats: insufficient storage resources available")}
+	f := &fakeStreams{cfg: unboundedStream(), updateErrs: []error{insufficientStorage}}
 	if err := ensureStream(f, streamName, streamSubjects, testSettings); err != nil {
 		t.Fatalf("ensureStream = %v, want nil for a refused update", err)
 	}
 	if len(f.updates) != 1 || f.cfg.MaxBytes != -1 {
 		t.Errorf("updates %d, stream max bytes %d; want one refused update and the stream unchanged",
 			len(f.updates), f.cfg.MaxBytes)
+	}
+}
+
+// An update that gets no answer is retried, and one that still gets
+// none after every attempt is returned so ingestion exits and restarts.
+func TestEnsureStreamReturnsAnUpdateThatGetsNoAnswer(t *testing.T) {
+	noRetryPauses(t)
+	errs := make([]error, len(updateRetryDelays)+1)
+	for i := range errs {
+		errs[i] = nats.ErrTimeout
+	}
+	f := &fakeStreams{cfg: unboundedStream(), updateErrs: errs}
+	err := ensureStream(f, streamName, streamSubjects, testSettings)
+	if !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("ensureStream = %v, want the timeout returned", err)
+	}
+	if want := len(updateRetryDelays) + 1; len(f.updates) != want {
+		t.Errorf("updates %d, want %d attempts", len(f.updates), want)
+	}
+	if f.cfg.MaxBytes != -1 {
+		t.Errorf("stream max bytes %d, want it unchanged", f.cfg.MaxBytes)
+	}
+}
+
+// A transient failure followed by success is retried to success.
+func TestEnsureStreamRetriesATransientUpdateFailure(t *testing.T) {
+	noRetryPauses(t)
+	f := &fakeStreams{cfg: unboundedStream(), updateErrs: []error{nats.ErrNoResponders, nats.ErrTimeout}}
+	if err := ensureStream(f, streamName, streamSubjects, testSettings); err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	if len(f.updates) != 3 || f.cfg.MaxBytes != testSettings.MaxBytes {
+		t.Errorf("updates %d, max bytes %d; want the third attempt to apply the settings",
+			len(f.updates), f.cfg.MaxBytes)
+	}
+}
+
+func TestIsRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"api error", insufficientStorage, true},
+		{"wrapped api error", fmt.Errorf("update: %w", insufficientStorage), true},
+		{"stream not found answer", nats.ErrStreamNotFound, true},
+		{"timeout", nats.ErrTimeout, false},
+		{"no responders", nats.ErrNoResponders, false},
+		{"connection closed", nats.ErrConnectionClosed, false},
+		{"other", errors.New("boom"), false},
+	} {
+		if got := isRefusal(tc.err); got != tc.want {
+			t.Errorf("%s: isRefusal = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A stream missing one of ingestion's subjects gets it added; a subject
+// ingestion does not know is kept, not removed.
+func TestEnsureStreamAddsMissingSubjectsAndKeepsOthers(t *testing.T) {
+	cfg := streamConfig(streamName, []string{"audit.>"}, testSettings)
+	f := &fakeStreams{cfg: cfg}
+	if err := ensureStream(f, streamName, streamSubjects, testSettings); err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	if len(f.updates) != 1 {
+		t.Fatalf("updates %d, want 1 although every setting already matched", len(f.updates))
+	}
+	got := f.updates[0].Subjects
+	if len(got) != 2 || got[0] != "audit.>" || got[1] != "events.>" {
+		t.Errorf("subjects sent %v, want [audit.> events.>]", got)
+	}
+	if len(cfg.Subjects) != 1 {
+		t.Errorf("the stream's own subject list was modified: %v", cfg.Subjects)
+	}
+}
+
+// A stream with an extra subject and every setting matching is left
+// alone: the extra subject is only reported.
+func TestEnsureStreamOnlyReportsAnExtraSubject(t *testing.T) {
+	cfg := streamConfig(streamName, []string{"events.>", "audit.>"}, testSettings)
+	f := &fakeStreams{cfg: cfg}
+	if err := ensureStream(f, streamName, streamSubjects, testSettings); err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+	if len(f.updates) != 0 {
+		t.Errorf("updates %d, want none for an extra subject alone", len(f.updates))
+	}
+}
+
+func TestSubjectDrift(t *testing.T) {
+	missing, extra := subjectDrift([]string{"events.>", "audit.>"}, []string{"events.>", "extra.>"})
+	if len(missing) != 1 || missing[0] != "extra.>" || len(extra) != 1 || extra[0] != "audit.>" {
+		t.Errorf("missing %v, extra %v; want [extra.>], [audit.>]", missing, extra)
+	}
+	missing, extra = subjectDrift([]string{"events.>"}, []string{"events.>"})
+	if missing != nil || extra != nil {
+		t.Errorf("matching subjects: missing %v, extra %v; want neither", missing, extra)
 	}
 }
 

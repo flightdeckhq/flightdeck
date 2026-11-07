@@ -247,7 +247,9 @@ def main() -> None:
         read: list[str] = []
         try:
             for event in stream:
-                read.append(str(getattr(event, "type", "?")))
+                # The event type as litellm gives it: a str enum, which
+                # equals its value while str() of it names the member.
+                read.append(getattr(event, "type", "?"))
                 if len(read) >= EARLY_EXIT_EVENTS:
                     break
         finally:

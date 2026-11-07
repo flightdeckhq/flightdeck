@@ -191,6 +191,24 @@ def _responses_sse(*, tool: bool = False) -> bytes:
     return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
 
 
+def _responses_sse_without_terminal() -> bytes:
+    """Only ``response.created`` and ``response.in_progress``: the stream
+    ends before any output or terminal event, so no event carries usage."""
+    events = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": _response_obj("in_progress"),
+        },
+        {
+            "type": "response.in_progress",
+            "sequence_number": 1,
+            "response": _response_obj("in_progress"),
+        },
+    ]
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+
+
 def _anthropic_sse() -> bytes:
     return "".join(
         f"event: {name}\ndata: {json.dumps(data)}\n\n"
@@ -203,11 +221,12 @@ class _HttpRoutes:
     Anthropic messages API, streamed or not. Records the paths and the
     outer-call mark at each request."""
 
-    def __init__(self, *, tool: bool = False) -> None:
+    def __init__(self, *, tool: bool = False, responses_sse: bytes | None = None) -> None:
         self.paths: list[str] = []
         self.bodies: list[dict[str, Any]] = []
         self.marks: list[bool] = []
         self._tool = tool
+        self._responses_sse = responses_sse
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
@@ -217,7 +236,10 @@ class _HttpRoutes:
         sse = {"content-type": "text/event-stream"}
         if request.url.path.endswith("/responses"):
             if payload.get("stream"):
-                return httpx.Response(200, content=_responses_sse(tool=self._tool), headers=sse)
+                body = self._responses_sse
+                if body is None:
+                    body = _responses_sse(tool=self._tool)
+                return httpx.Response(200, content=body, headers=sse)
             return httpx.Response(200, json=_response_obj("completed", tool=self._tool))
         if payload.get("stream"):
             return httpx.Response(200, content=_anthropic_sse(), headers=sse)
@@ -590,7 +612,7 @@ def _read_until_first_delta(stream: Any) -> list[str]:
     """Read a Responses stream until its first text delta, then leave."""
     kinds: list[str] = []
     for event in stream:
-        kinds.append(str(event.type))
+        kinds.append(event.type)
         if event.type == "response.output_text.delta":
             break
     return kinds
@@ -599,7 +621,7 @@ def _read_until_first_delta(stream: Any) -> list[str]:
 async def _aread_until_first_delta(stream: Any) -> list[str]:
     kinds: list[str] = []
     async for event in stream:
-        kinds.append(str(event.type))
+        kinds.append(event.type)
         if event.type == "response.output_text.delta":
             break
     return kinds
@@ -641,6 +663,14 @@ def test_responses_stream_left_early_stores_the_in_progress_response(
     assert "response.completed" not in kinds
     (pc,) = _post_calls(capture_session)
     assert pc["streaming"]["final_outcome"] == "aborted"
+    # The tokens are what the events delivered: none of the events read
+    # carries usage, so the post_call keeps the pre-call estimate and
+    # takes nothing from the stored snapshot (the terminal event's
+    # RESPONSES_INPUT_TOKENS / RESPONSES_OUTPUT_TOKENS never arrived).
+    (pre,) = _events_of(capture_session, "pre_call")
+    assert pre["tokens_input"] > 0
+    assert (pc["tokens_input"], pc["tokens_output"]) == (pre["tokens_input"], 0)
+    assert pc["tokens_input"] != RESPONSES_INPUT_TOKENS
     content = pc["content"]
     assert content["response"]["object"] == "response"
     assert content["response"]["status"] == "in_progress"
@@ -648,6 +678,36 @@ def test_responses_stream_left_early_stores_the_in_progress_response(
     assert content["system"] == INSTRUCTIONS
     assert content["input"] == PROMPT
     assert _events_of(capture_session, "tool_call") == []
+
+
+@requires_litellm_responses
+def test_responses_stream_exhausted_without_a_terminal_event_settles_on_the_snapshot(
+    capture_session: Session,
+) -> None:
+    """An iterator that ends after ``response.created`` and
+    ``response.in_progress`` counts as complete (it was read to its end),
+    so the snapshot is passed as the whole message. It names no tool
+    call and no stop reason, and the tokens stay what the events
+    delivered: none carried usage, so the pre-call estimate stands."""
+    routes = _HttpRoutes(responses_sse=_responses_sse_without_terminal())
+    stream = litellm.responses(
+        model="gpt-4o-mini",
+        input=PROMPT,
+        instructions=INSTRUCTIONS,
+        stream=True,
+        client=_handler(routes),
+        api_key="k",
+    )
+    kinds = [event.type for event in stream]
+    assert kinds == ["response.created", "response.in_progress"]
+    (pc,) = _post_calls(capture_session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert _events_of(capture_session, "tool_call") == []
+    (pre,) = _events_of(capture_session, "pre_call")
+    assert (pc["tokens_input"], pc["tokens_output"]) == (pre["tokens_input"], 0)
+    assert pc.get("stop_reason") is None
+    assert pc["content"]["response"]["object"] == "response"
+    assert pc["content"]["response"]["status"] == "in_progress"
 
 
 @requires_litellm_responses

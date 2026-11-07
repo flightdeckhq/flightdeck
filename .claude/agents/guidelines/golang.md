@@ -82,9 +82,10 @@ Flightdeck conventions (see `CLAUDE.md`):
   the contract between sensor and ingestion API — never change it without
   updating `ARCHITECTURE.md` first. All database schema changes go
   through `golang-migrate`: create a new numbered pair under
-  `docker/postgres/migrations/` (`000NNN_description.up.sql` +
-  `000NNN_description.down.sql`, exact inverses). Never modify an applied
-  migration. Never add schema changes to `init.sql` (seed data only).
+  `storage/migrations/postgres/` and its SQLite twin with the same
+  number under `storage/migrations/sqlite/` (`000NNN_description.up.sql`
+  + `000NNN_description.down.sql`, exact inverses). Never modify an
+  applied migration. Never add schema changes to `init.sql` (seed data only).
   SQL lives only in each service's store packages, never in handlers
   (CLAUDE.md rule 35 lists them). Every event payload is
   validated at the ingestion API boundary before it reaches NATS.

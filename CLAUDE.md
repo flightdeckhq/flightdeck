@@ -145,20 +145,27 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     The schema is a contract between the sensor and the ingestion API.
 
 34. **All database schema changes must use golang-migrate.** Create a new numbered
-    migration pair in `docker/postgres/migrations/`:
+    migration pair in `storage/migrations/postgres/` and one with the same
+    number in `storage/migrations/sqlite/` (the SQLite translation):
       `000NNN_description.up.sql`
       `000NNN_description.down.sql`
     The down file must be the exact inverse of the up file. Never add schema
     changes to `init.sql` -- it contains seed data only. Never modify an existing
     migration file that has already been applied. Always add a new migration.
+    `scripts/check-migration-pairs.sh` fails CI when the two directories'
+    version lists differ; the storage module's parity test fails when the
+    two schemas differ.
 
 35. **SQL lives only in each service's store packages, never in handlers.**
     Those are `api/internal/store` (with the token lookups and revocation
     `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive`,
     `ingestion/internal/otlpstage` and `workers/internal/writer`; `workers/internal/migrate` applies the
-    migration files. The current places outside store packages that run
-    SQL are:
+    migration files. Stores open their database through the `storage`
+    module (`storage.Open`, `storage.Dialect`, `storage.Bus`; the
+    Storage section of ARCHITECTURE.md), never through pgx directly;
+    stores not yet converted still hold a pgx pool. The current places
+    outside store packages that run SQL are:
     - `workers/internal/processor/policy.go`: token policy lookups and the
       directives it issues;
     - `workers/internal/processor/session.go`: session-row reads

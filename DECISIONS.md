@@ -801,3 +801,27 @@ calls to children needs an ingestion fallback first.
 **Rejected alternative:** a tracing processor (silent with tracing off,
 swallows exceptions); `llm_error` or `policy_block` for a guardrail (not a
 model failure or a Flightdeck policy); per-child attribution now.
+
+## D262 -- SQLite is the default storage, Postgres the second backend, behind one `storage` boundary
+
+**Date:** 2026-11-07
+**Decision:** the Go services open their database through the `storage`
+module: `Open(ctx, url)` takes `sqlite://<path>` (default; pure-Go
+`modernc.org/sqlite`, WAL, one writer connection) or `postgres://…`
+(pgx as a `database/sql` driver) and returns a `*sql.DB` plus a `Dialect`
+for the constructs that differ (placeholders, now, intervals,
+`date_trunc`, case-insensitive match, array parameters, JSON reads,
+upsert, `RETURNING`); where SQL differs beyond that a store keeps a query
+set per dialect. `Bus` (`Publish`, `Subscribe`) replaces direct
+LISTEN/NOTIFY: Postgres LISTEN/NOTIFY with today's payloads, in-process
+channels on SQLite. Migrations live in `storage/migrations/{postgres,sqlite}`,
+embedded; SQLite starts from one baseline equal to Postgres 000036 and
+every later change is a pair with the same number (CI checks the lists,
+a test checks the schemas).
+**Why:** one binary with nothing to install needs an embedded store; the
+Helm / multi-instance path still needs Postgres; a single boundary keeps
+the two from drifting.
+**Rejected alternative:** SQLite only (loses the Helm scale path);
+embedded Postgres (a 40 MB download and a child process to manage); a
+query builder or ORM (hides the SQL the stores are tuned on; two small
+query sets are reviewable).

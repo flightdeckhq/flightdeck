@@ -6747,7 +6747,36 @@ header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. A tool call's content (the sensor's `tool_call`,
+`response`. An OpenAI Responses call (the sensor's `responses` calls
+and litellm's) is shown in the Responses API's own terms: its stored
+`system` text under `instructions`, and its stored `input` under
+Input, a string as written and an input item list as one box per item:
+a message item with its role and its content parts (`input_text` and
+`output_text` as text, `refusal` labelled, `input_image`, `input_file`
+and `input_audio` named by type), a `function_call` with its name,
+`call_id` and arguments, a `function_call_output` with its `call_id`
+and output, a `reasoning` item with its summary text, and any other
+item type labelled by its `type` and shown as its JSON, never dropped.
+Its function tools, which the Responses API declares flat (`name`,
+`description`, `parameters`), show their parameters, and a hosted tool
+(`web_search_preview` and the like) is named by its `type`. A legacy
+completion (litellm's `text_completion`) shows its stored `input` under
+Prompt, the request parameter it holds: a string as written, a list of
+prompts as one box each, token ids as their JSON. The viewer knows
+either call by the stored response's `object`, which the API sets on
+every response object: `"response"` for a Responses call and
+`"text_completion"` for a legacy completion (a chat completion carries
+`chat.completion`, an embeddings response `list`, an Anthropic message
+has none). Neither the event nor the content names the API a call
+used, and the content's shape alone (no `messages`, an `input`) is the
+same for a Responses call, a legacy completion and an embeddings call.
+A call whose stored response carries no `object` (a stream that stored
+no response snapshot) shows no Input or Prompt, and its stored `system`
+text under System: a litellm Responses
+stream the caller leaves before its terminal event keeps no snapshot,
+while an OpenAI SDK one stores the `ResponseStreamState` snapshot, which
+carries `object` from `response.created` on. An embeddings
+call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written

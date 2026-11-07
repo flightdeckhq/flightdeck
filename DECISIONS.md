@@ -648,3 +648,20 @@ an older SDK that call raises `TypeError` in the caller's code.
 releases from May 2024 to May 2025, when the hook is small and tested in
 CI); keeping 1.0 and skipping `stream_options` there (streamed calls
 would report no usage, so they could not be metered).
+
+## D252 -- The Prompts view tells a Responses call and a legacy completion by the stored response's `object`
+
+**Date:** 2026-11-07
+**Decision:** `PromptViewer` renders a call's stored `input` as a
+Responses request (`instructions`, input items) when the stored response's
+`object` is `"response"`, and as a legacy completion's `prompt` when it is
+`"text_completion"`. Without either (a stream that stored no response
+snapshot), the input is not shown there.
+**Why:** the provider sets `object` on every response it returns, so the
+marker is already in every stored row. The content's shape alone (no
+`messages`, an `input`) is shared with embeddings calls, and the viewer
+gets only the event id.
+**Rejected alternative:** a sensor-stamped `api` field in the content
+envelope (a contract change that leaves every stored row unmarked);
+guessing from the shape of `input` (an embeddings call's string list
+would render as a Responses input).

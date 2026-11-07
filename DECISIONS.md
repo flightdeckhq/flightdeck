@@ -680,3 +680,21 @@ gets only the event id.
 envelope (a contract change that leaves every stored row unmarked);
 guessing from the shape of `input` (an embeddings call's string list
 would render as a Responses input).
+
+## D253 -- Ingestion owns the FLIGHTDECK stream and bounds it by age and size, discarding the oldest
+
+**Date:** 2026-11-07
+**Decision:** ingestion creates the stream, or updates it in place at
+startup, with limits retention, discard-old, a max age (default 72 h),
+a max size (default 5 GiB) and a replica count (1 in compose; under Helm
+3 on a cluster of 3 or more servers). The workers only wait for it. An
+update NATS refuses is logged and the stream is used as it is.
+**Why:** the stream kept every event (1.4 GB on a dev stack in ten
+weeks). Under limits retention a full stream holds processed messages,
+so discard-new would refuse every publish once full. The cost: events
+still unprocessed are lost when the workers are down past the age limit
+or behind by more than the size limit.
+**Rejected alternative:** interest or work-queue retention (a message
+published before the workers' consumer exists is dropped at once);
+discard-new (stops ingestion at steady state); both services
+reconciling (they fight over settings across a version skew).

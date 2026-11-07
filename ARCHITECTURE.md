@@ -134,6 +134,8 @@ no single point of failure introduced into the agent's execution path.
 │  Stream: FLIGHTDECK  │               │
 │  Subjects: events.>  │               │
 │  Storage: file       │               │
+│  Limits: 72 h, 5 GiB │               │
+│  Discard: old        │               │
 │  Durable: flightdeck │               │
 │    -workers          │               │
 └──────────┬───────────┘               │
@@ -353,6 +355,7 @@ flightdeck/
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
 │   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
+│   │   ├── nats/stream.go      # Creates the FLIGHTDECK stream or updates its limits and replicas in place
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
 │   │   ├── otlpstage/store.go  # OTLP GenAI staging: stage records, claim due traces under a lease, load, mark assembled, sweeps
 │   │   ├── genai/              # OTLP GenAI mapping, pure (no I/O): scope table, span/log record → content-free fact, trace index, identity, Resolve (trace → events)
@@ -370,7 +373,7 @@ flightdeck/
 │   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
 │   ├── internal/
 │   │   ├── config/config.go
-│   │   ├── consumer/nats.go    # JetStream consumer: fetch loop, session_id check, ack handling
+│   │   ├── consumer/nats.go    # JetStream consumer: waits for the stream, fetch loop, session_id check, ack handling
 │   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── logcap/logcap.go    # Named caps for payload strings written to log lines
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
@@ -3961,6 +3964,87 @@ It connects to NATS, consumes events from
 the `FLIGHTDECK` stream, processes them through the session state machine
 and policy evaluator, writes to Postgres, and emits `flightdeck_fleet`
 NOTIFY events.
+
+### The FLIGHTDECK stream
+
+The ingestion API owns the `FLIGHTDECK` JetStream stream
+(`ingestion/internal/nats/stream.go`). At startup, before it serves a
+request, it creates the stream or brings an existing one to its
+configured settings in place. The workers never create or change the
+stream: a worker that starts first looks for it every two seconds,
+logging once a minute while it waits, and then sets up its consumer.
+
+| Setting | Value |
+|---|---|
+| Subjects | `events.>` |
+| Storage | file |
+| Retention | limits: a message stays until a limit removes it, acknowledged or not |
+| Discard | old: at the size limit the oldest messages are removed to make room |
+| Max age | `FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`, default 72 hours, at least 1 |
+| Max size | `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB`, default 5120 MiB (5 GiB) on each server, at least 64 MiB |
+| Replicas | `FLIGHTDECK_NATS_STREAM_REPLICAS`, 1 to 5, default 1 |
+
+The age limit lets the workers be down from a Friday evening to a Monday
+morning (about 64 hours) without losing an event; a processed message is
+never read again, so keeping messages longer only costs disk. Events
+average about 2 KiB on the wire, so 5 GiB holds about 2.6 million: 72
+hours of a sustained 10 events a second. On a compose host, where NATS
+shares the disk with Postgres, the size limit is what bounds the NATS
+store. Ingestion refuses to start on a value outside the bounds in the
+table; an age under an hour would remove the backlog of a routine
+restart, and a size under 64 MiB reads as a unit mistake.
+
+**What a limit removes.** With workers that keep up, the limits remove
+only messages already processed, whose events Postgres holds. A limit
+also removes a message the workers have not processed, so events are
+lost in two cases: the workers are down, or stuck, for longer than the
+max age (the events published at the start of the outage age out), or
+their backlog grows past the max size (the oldest unprocessed events
+are discarded to make room for new ones). A removed event is never
+written to Postgres; the consumer resumes at the oldest message left.
+At startup the worker compares its consumer's last delivered sequence
+with the stream's first and, when messages between them were removed
+before delivery, logs a WARN with their count (`events were removed from
+the stream before the workers were delivered them`). Discarding new
+messages instead would not protect the backlog: a full stream of
+processed messages, the steady state under limits retention, would
+refuse every publish: `POST /v1/events` logs and drops an event whose
+publish still fails after its retries, and the OTLP receiver answers
+503.
+
+Retention stays by limits rather than by interest: an interest stream
+drops a message no consumer is subscribed to, so the events published
+on a fresh install before the workers create their consumer, or while
+the consumer is being recreated, would vanish. The processed window is
+also what an operator can replay from with a new consumer.
+
+**In-place update.** When the stream exists, ingestion compares its
+max age, max size, discard policy and replica count with the
+configured ones and, if any differs, sends a stream update that carries
+the stream's current configuration with only those four fields changed,
+so a field ingestion does not set (subjects, duplicate window,
+description) is kept. JetStream applies limits and replica changes in
+place: lowering a limit removes the messages beyond it at once, oldest
+first, and raising the replica count copies the stream to the new
+servers. The storage type cannot change in place, so a stream whose
+storage or retention is not the one in the table is logged at ERROR and
+left as it is; recreating it deletes its messages and is an operator's
+call. Every ingestion replica runs the same check at startup with the
+same settings (the compose file and the Helm config map give all of them
+one set), so concurrent starts send identical updates, and a create that
+loses a race with another replica reads the stream it created and
+checks that one.
+
+**When the update fails.** A stream that cannot be read, or a missing
+stream that cannot be created, stops ingestion at startup: it cannot
+publish without one. An update NATS refuses is logged at ERROR with the
+stream's current and wanted settings (`stream update refused; the
+stream keeps its current settings`), and ingestion starts on the stream
+as it is, so a value the cluster cannot take does not become an
+ingestion outage. NATS refuses a size larger than a server can reserve
+(a server without a configured store limit reserves at most 75% of its
+volume's free space, measured when it starts) and a replica count above
+the cluster's server count. Correct the setting and restart ingestion.
 
 ### NATS consumer
 
@@ -9454,6 +9538,21 @@ Postgres. The bundled Postgres StatefulSet is fine for small
 deployments; production should provide an external HA Postgres via
 `postgres.externalUrl`.
 
+The chart passes the `FLIGHTDECK` stream's settings to ingestion from
+`nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
+Worker / Event Processing > The FLIGHTDECK stream). Unset, `replicas` is
+3 when `nats.replicas` is 3 or more and 1 otherwise: 3 copies keep a
+quorum through the loss of one server, while 2 copies need both servers
+for a quorum and so would stop the stream on either one's loss. A set
+`replicas` must be 1 to 5 and at most `nats.replicas`, and the render
+fails otherwise, as it does for an age under 1 hour or a size under
+64 MiB. Each NATS server holds a full copy on its own PVC, so
+`maxSizeMiB` stays well under the 75% of free space a server reserves
+at most: 5120 MiB on the 10Gi default volume, 30720 MiB on the 50Gi
+volume of `values.prod.yaml`. The ingestion pods carry a checksum of the
+three settings, so changing one rolls them and the new settings apply to
+the stream in place.
+
 **Public path prefixes.** Clients reach ingestion under `/ingest` and
 the query API under `/api` on one origin, and each service also accepts
 its own prefix: `/ingest/v1/events` and `/v1/events` reach the same
@@ -9483,6 +9582,9 @@ Constraint #4).
 | `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token in the URL's user slot (`nats://<FLIGHTDECK_NATS_TOKEN>@nats:4222`; a lone user is sent as the auth token, so the token is limited to URL-unreserved characters); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
+| `FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS` | Age limit of the `FLIGHTDECK` stream in hours (default 72, at least 1); see Worker / Event Processing > The FLIGHTDECK stream |
+| `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` | Size limit of the stream on each NATS server in MiB (default 5120, at least 64) |
+| `FLIGHTDECK_NATS_STREAM_REPLICAS` | NATS servers holding a copy of the stream, 1 to 5 (default 1). The compose file sets 1, since it runs one NATS server, which accepts a higher count without placing any further copy |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Workers:**

@@ -27,6 +27,7 @@ payload-extraction Provider classes (``AnthropicProvider`` /
 
 from __future__ import annotations
 
+import importlib.util
 from unittest.mock import MagicMock
 from unittest.mock import patch as mock_patch
 
@@ -150,6 +151,15 @@ def _exit_all(branches: dict[str, MagicMock]) -> None:
         ctx.__exit__(None, None, None)
 
 
+# patch() hands MCP to its interceptor only when the mcp SDK is installed;
+# it is an optional extra.
+_needs_mcp = pytest.mark.skipif(
+    importlib.util.find_spec("mcp") is None,
+    reason="the mcp extra is not installed, so patch() has no MCP SDK to patch",
+)
+
+
+@_needs_mcp
 def test_patch_accepts_list_of_provider_enum() -> None:
     """Canonical enum-based call shape: ``patch(providers=[Provider.X,
     Provider.Y])`` calls the right interceptor branches and skips the
@@ -189,6 +199,7 @@ def test_patch_accepts_list_of_str_backward_compat() -> None:
     assert not mocks["mcp"].called
 
 
+@_needs_mcp
 def test_patch_accepts_mixed_provider_and_str_list() -> None:
     """Operators mid-migration shouldn't have to choose -- a list of
     mixed enum members and raw strings is a fully-supported call
@@ -208,6 +219,7 @@ def test_patch_accepts_mixed_provider_and_str_list() -> None:
     assert not mocks["litellm"].called
 
 
+@_needs_mcp
 def test_patch_default_none_patches_every_provider() -> None:
     """``providers=None`` (the default) patches every member of
     ``Provider``. The enum is the single source of truth for the

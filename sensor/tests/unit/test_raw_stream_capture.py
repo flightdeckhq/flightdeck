@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -42,6 +43,7 @@ from flightdeck_sensor.interceptor.openai import (
     patch_openai_classes,
     unpatch_openai_classes,
 )
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.providers.openai import OpenAIProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
@@ -580,6 +582,35 @@ def test_the_anthropic_helper_stream_keeps_its_own_snapshot() -> None:
         with client.messages.stream(**_ANTHROPIC_KW) as helper:
             assert provider.stream_accumulator(helper, _ANTHROPIC_KW) is None
             helper.until_done()
+
+
+class _LegacyStreamMeta(type):
+    """The ``isinstance`` override anthropic 0.x puts on ``Stream``: the
+    ``messages.stream()`` helper passes, with a ``DeprecationWarning``."""
+
+    def __instancecheck__(cls, instance: Any) -> bool:
+        if isinstance(instance, _LegacyHelper):
+            warnings.warn("isinstance on a MessageStream", DeprecationWarning, stacklevel=2)
+            return True
+        return type.__instancecheck__(cls, instance)
+
+
+class _LegacyStream(metaclass=_LegacyStreamMeta):
+    pass
+
+
+class _LegacyHelper:
+    current_message_snapshot = None
+
+
+def test_a_helper_passing_the_legacy_isinstance_shim_is_not_a_raw_stream() -> None:
+    with pytest.warns(DeprecationWarning):
+        assert isinstance(_LegacyHelper(), _LegacyStream)  # the shim, as on anthropic 0.x
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert is_raw_stream(_LegacyHelper(), (_LegacyStream,)) is False
+        assert is_raw_stream(_LegacyStream(), (_LegacyStream,)) is True
+    assert is_raw_stream(_LegacyStream(), ()) is False
 
 
 # ----- OpenAI chat raw stream ------------------------------------------------

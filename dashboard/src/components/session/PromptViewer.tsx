@@ -299,9 +299,9 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
 /* ---- Main component ---- */
 
 export function PromptViewer({ eventId }: PromptViewerProps) {
-  // fetchEventContent resolves null when the content does not exist
-  // (capture off for the session). Only this event's result is shown;
-  // a failed request ends the spinner and renders nothing.
+  // fetchEventContent resolves null for any failed fetch: a 404 (capture
+  // off for the session) or any other error. Either way the viewer shows
+  // the capture-disabled message. Only this event's result is shown.
   const contentFetch = useKeyedFetch<EventContent | null>(eventId || null, () =>
     fetchEventContent(eventId ?? ""),
   );

@@ -14,6 +14,10 @@
 //
 //   - unmarshal_error       — NATS payload failed json.Unmarshal; the
 //                             consumer Terms the message.
+//   - invalid_session_id    — NATS payload whose session_id is not a
+//                             canonical UUID (a publisher that skipped
+//                             ingestion); the consumer Terms it on its
+//                             first delivery, before any lane.
 //   - orphan_session_end    — session_end for a session_id the server
 //                             never saw, once the retry budget has
 //                             given its session_start time to land.
@@ -65,6 +69,7 @@ type DropReason string
 
 const (
 	ReasonUnmarshalError       DropReason = "unmarshal_error"
+	ReasonInvalidSessionID     DropReason = "invalid_session_id"
 	ReasonOrphanSessionEnd     DropReason = "orphan_session_end"
 	ReasonSupersededSessionEnd DropReason = "superseded_session_end"
 	ReasonClosedSessionSkip    DropReason = "closed_session_skip"

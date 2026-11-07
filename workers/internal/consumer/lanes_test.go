@@ -57,7 +57,7 @@ func TestRun_ProcessesEachSessionsEventsInOrderOneAtATime(t *testing.T) {
 	for i := range perSession {
 		for s := range sessions {
 			data, _ := json.Marshal(map[string]any{
-				"session_id": fmt.Sprintf("session-%d", s),
+				"session_id": testSessionID(s),
 				"event_type": "post_call",
 				"id":         fmt.Sprintf("%d", i),
 			})
@@ -97,10 +97,10 @@ func TestRun_ProcessesEachSessionsEventsInOrderOneAtATime(t *testing.T) {
 		t.Fatalf("two events of one session were processed at the same time")
 	}
 	for s := range sessions {
-		got := proc.seen[fmt.Sprintf("session-%d", s)]
+		got := proc.seen[testSessionID(s)]
 		for i, n := range got {
 			if n != i {
-				t.Fatalf("session-%d processed out of order: %v", s, got)
+				t.Fatalf("session %d processed out of order: %v", s, got)
 			}
 		}
 	}
@@ -165,6 +165,12 @@ func (p *blockingProcessor) has(entry string) bool {
 	return false
 }
 
+// testSessionID is a canonical UUID numbered n, the only session_id
+// shape the consumer hands to a lane.
+func testSessionID(n int) string {
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
+}
+
 func eventMsg(sessionID, id string) *nats.Msg {
 	data, _ := json.Marshal(map[string]any{"session_id": sessionID, "event_type": "post_call", "id": id})
 	return &nats.Msg{Data: data}
@@ -198,12 +204,12 @@ func poll(t *testing.T, cond func() bool, what string) {
 
 func TestRun_ASessionStuckOnItsLaneDoesNotHoldTheOtherLanes(t *testing.T) {
 	const lanes = 4
-	stuck := "stuck-session"
+	stuck := testSessionID(9999)
 	// One session per other lane, each with several events queued
 	// behind the stuck session's in the fetch.
 	var others []string
 	for i := 0; len(others) < lanes-1; i++ {
-		sid := fmt.Sprintf("other-%d", i)
+		sid := testSessionID(100 + i)
 		if laneFor(sid, lanes) == laneFor(stuck, lanes) {
 			continue
 		}
@@ -245,7 +251,7 @@ func TestRun_ASessionStuckOnItsLaneDoesNotHoldTheOtherLanes(t *testing.T) {
 }
 
 func TestRun_TheProcessingDeadlineFreesAStuckLane(t *testing.T) {
-	stuck := "stuck-session"
+	stuck := testSessionID(9999)
 	msgs := []*nats.Msg{eventMsg(stuck, "0"), eventMsg(stuck, "1")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -302,7 +308,7 @@ func TestLane_DueReportsLongWaitingMessagesOncePerInterval(t *testing.T) {
 }
 
 func TestRun_KeepsWaitingMessagesAliveWhileTheirLaneIsBusy(t *testing.T) {
-	stuck := "stuck-session"
+	stuck := testSessionID(9999)
 	held := eventMsg(stuck, "0")
 	waiting := eventMsg(stuck, "1")
 	ctx, cancel := context.WithCancel(context.Background())

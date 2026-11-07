@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -110,6 +111,6 @@ func stateChanges(idLists ...[]string) []fleetNotifyPayload {
 func (w *Writer) announce(ctx context.Context, what string, payloads []fleetNotifyPayload) {
 	if err := notifyFleet(ctx, w.pool, payloads); err != nil {
 		slog.Warn("notify of committed session change failed",
-			"change", what, "sessions", len(payloads), "err", err)
+			"change", what, "sessions", len(payloads), "err", logcap.Err(err))
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1125,7 +1126,7 @@ func (w *Writer) ReviveOrCreateSession(
 			// missed increment at worst shows one fewer session in the
 			// total_sessions column until reconciliation runs.
 			slog.Warn("bump agent session count failed (non-fatal)",
-				"agent_id", identity.AgentID, "err", bErr)
+				"agent_id", logcap.ID(identity.AgentID), "err", logcap.Err(bErr))
 		}
 		return true, nil
 	}

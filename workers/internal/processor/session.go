@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5"
@@ -163,16 +164,16 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			// so a transient DB failure costs a redelivery, not the event.
 			slog.Error("lazy-create session failed",
 				"session_id", e.SessionID,
-				"event_type", e.EventType,
-				"err", cErr,
+				"event_type", logcap.EventType(e.EventType),
+				"err", logcap.Err(cErr),
 			)
 			return false, nil
 		}
 		if created {
 			slog.Info("lazy-created session on event",
 				"session_id", e.SessionID,
-				"event_type", e.EventType,
-				"flavor", e.Flavor,
+				"event_type", logcap.EventType(e.EventType),
+				"flavor", logcap.Name(e.Flavor),
 			)
 		} else {
 			// The row appeared after the read above: another event of
@@ -206,7 +207,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		); bErr != nil {
 			slog.Warn("sub-agent linkage backfill failed",
 				"session_id", e.SessionID,
-				"err", bErr,
+				"err", logcap.Err(bErr),
 			)
 		}
 	}
@@ -218,13 +219,13 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
 		slog.Warn("skipping event for closed session",
 			"session_id", e.SessionID,
-			"event_type", e.EventType,
+			"event_type", logcap.EventType(e.EventType),
 		)
 		return true, nil
 	case "stale", "lost":
 		slog.Warn("reviving stale/lost session on event",
 			"session_id", e.SessionID,
-			"event_type", e.EventType,
+			"event_type", logcap.EventType(e.EventType),
 			"prior_state", state,
 		)
 		if _, rerr := sp.w.ReviveIfRevivable(ctx, e.SessionID); rerr != nil {
@@ -237,8 +238,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			// on its next tick and leaves it alone.
 			slog.Error("revive session failed",
 				"session_id", e.SessionID,
-				"event_type", e.EventType,
-				"err", rerr,
+				"event_type", logcap.EventType(e.EventType),
+				"err", logcap.Err(rerr),
 			)
 		}
 		sp.upgradeContextIfPresent(ctx, e)
@@ -307,8 +308,8 @@ func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.Eve
 	if err := sp.w.UpsertAgent(ctx, identity); err != nil {
 		slog.Warn("upsert agent for session attribution failed",
 			"session_id", e.SessionID,
-			"agent_id", e.AgentID,
-			"err", err,
+			"agent_id", logcap.ID(e.AgentID),
+			"err", logcap.Err(err),
 		)
 		return
 	}
@@ -316,8 +317,8 @@ func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.Eve
 	if err != nil {
 		slog.Warn("attribute session failed",
 			"session_id", e.SessionID,
-			"agent_id", e.AgentID,
-			"err", err,
+			"agent_id", logcap.ID(e.AgentID),
+			"err", logcap.Err(err),
 		)
 		return
 	}
@@ -326,15 +327,15 @@ func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.Eve
 	}
 	slog.Info("attributed session to its agent on event",
 		"session_id", e.SessionID,
-		"agent_id", e.AgentID,
-		"event_type", e.EventType,
+		"agent_id", logcap.ID(e.AgentID),
+		"event_type", logcap.EventType(e.EventType),
 	)
 	if bErr := sp.w.BumpAgentSessionCount(ctx, e.AgentID); bErr != nil {
 		// Non-fatal -- see ReviveOrCreateSession rationale.
 		slog.Warn("bump agent session count failed (attribution)",
 			"session_id", e.SessionID,
-			"agent_id", e.AgentID,
-			"err", bErr,
+			"agent_id", logcap.ID(e.AgentID),
+			"err", logcap.Err(bErr),
 		)
 	}
 }
@@ -352,8 +353,8 @@ func (sp *SessionProcessor) claimOwnerlessRow(ctx context.Context, e consumer.Ev
 	if err != nil {
 		slog.Warn("read session owner failed",
 			"session_id", e.SessionID,
-			"event_type", e.EventType,
-			"err", err,
+			"event_type", logcap.EventType(e.EventType),
+			"err", logcap.Err(err),
 		)
 		return
 	}
@@ -386,16 +387,16 @@ func (sp *SessionProcessor) upgradeContextIfPresent(ctx context.Context, e consu
 	if merr != nil {
 		slog.Warn("marshal event context for upgrade",
 			"session_id", e.SessionID,
-			"event_type", e.EventType,
-			"err", merr,
+			"event_type", logcap.EventType(e.EventType),
+			"err", logcap.Err(merr),
 		)
 		return
 	}
 	if uerr := sp.w.UpgradeSessionContext(ctx, e.SessionID, cbytes); uerr != nil {
 		slog.Warn("upgrade session context failed",
 			"session_id", e.SessionID,
-			"event_type", e.EventType,
-			"err", uerr,
+			"event_type", logcap.EventType(e.EventType),
+			"err", logcap.Err(uerr),
 		)
 	}
 }
@@ -473,7 +474,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		if mErr != nil {
 			slog.Warn("marshal session context",
 				"session_id", e.SessionID,
-				"err", mErr,
+				"err", logcap.Err(mErr),
 			)
 		} else {
 			contextJSON = marshaled
@@ -502,8 +503,8 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		if lErr != nil {
 			slog.Warn("parent session lookup failed",
 				"session_id", e.SessionID,
-				"parent_session_id", e.ParentSessionID,
-				"err", lErr,
+				"parent_session_id", logcap.ID(e.ParentSessionID),
+				"err", logcap.Err(lErr),
 			)
 		} else if !exists {
 			startedAt, tErr := time.Parse(time.RFC3339, e.Timestamp)
@@ -515,8 +516,8 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 			); sErr != nil {
 				slog.Warn("upsert parent stub failed",
 					"session_id", e.SessionID,
-					"parent_session_id", e.ParentSessionID,
-					"err", sErr,
+					"parent_session_id", logcap.ID(e.ParentSessionID),
+					"err", logcap.Err(sErr),
 				)
 			}
 		}
@@ -546,8 +547,8 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 			// Non-fatal -- see ReviveOrCreateSession rationale.
 			slog.Warn("bump agent session count failed (session_start)",
 				"session_id", e.SessionID,
-				"agent_id", e.AgentID,
-				"err", bErr,
+				"agent_id", logcap.ID(e.AgentID),
+				"err", logcap.Err(bErr),
 			)
 		}
 	}
@@ -590,9 +591,9 @@ func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.
 	if err != nil {
 		slog.Warn("bump parent last_seen failed",
 			"child_session_id", e.SessionID,
-			"parent_session_id", e.ParentSessionID,
-			"event_type", e.EventType,
-			"err", err,
+			"parent_session_id", logcap.ID(e.ParentSessionID),
+			"event_type", logcap.EventType(e.EventType),
+			"err", logcap.Err(err),
 		)
 		return
 	}
@@ -600,8 +601,8 @@ func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.
 		metrics.IncrSessionRevived(metrics.RevivalTriggerChildEvent)
 		slog.Info("revived parent on child event",
 			"child_session_id", e.SessionID,
-			"parent_session_id", e.ParentSessionID,
-			"event_type", e.EventType,
+			"parent_session_id", logcap.ID(e.ParentSessionID),
+			"event_type", logcap.EventType(e.EventType),
 		)
 	}
 }
@@ -625,7 +626,7 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 	}
 	if e.Model != "" {
 		if err := sp.w.UpdateSessionModel(ctx, e.SessionID, e.Model); err != nil {
-			slog.Warn("update session model failed", "session_id", e.SessionID, "err", err)
+			slog.Warn("update session model failed", "session_id", e.SessionID, "err", logcap.Err(err))
 		}
 	}
 	delta := 0
@@ -644,8 +645,8 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 			if aErr := sp.w.IncrementAgentTokens(ctx, e.AgentID, int64(delta)); aErr != nil {
 				slog.Warn("increment agent tokens failed",
 					"session_id", e.SessionID,
-					"agent_id", e.AgentID,
-					"err", aErr,
+					"agent_id", logcap.ID(e.AgentID),
+					"err", logcap.Err(aErr),
 				)
 			}
 		}
@@ -679,15 +680,15 @@ func (sp *SessionProcessor) addTokensBeforeEnd(ctx context.Context, e consumer.E
 	}
 	slog.Info("added tokens of a call published before its session ended",
 		"session_id", e.SessionID,
-		"event_type", e.EventType,
+		"event_type", logcap.EventType(e.EventType),
 		"tokens", delta,
 	)
 	if e.AgentID != "" {
 		if aErr := sp.w.IncrementAgentTokens(ctx, e.AgentID, int64(delta)); aErr != nil {
 			slog.Warn("increment agent tokens failed",
 				"session_id", e.SessionID,
-				"agent_id", e.AgentID,
-				"err", aErr,
+				"agent_id", logcap.ID(e.AgentID),
+				"err", logcap.Err(aErr),
 			)
 		}
 	}
@@ -744,7 +745,7 @@ func (sp *SessionProcessor) HandleMCPServerAttached(
 	dictBytes, err := json.Marshal(dict)
 	if err != nil {
 		slog.Warn("mcp_server_attached marshal dict",
-			"session_id", e.SessionID, "err", err)
+			"session_id", e.SessionID, "err", logcap.Err(err))
 		return nil
 	}
 	if err := sp.w.AppendMCPServerToContext(
@@ -752,8 +753,8 @@ func (sp *SessionProcessor) HandleMCPServerAttached(
 	); err != nil {
 		slog.Warn("mcp_server_attached append failed",
 			"session_id", e.SessionID,
-			"server_name", e.ServerName,
-			"err", err,
+			"server_name", logcap.Name(e.ServerName),
+			"err", logcap.Err(err),
 		)
 	}
 	return nil

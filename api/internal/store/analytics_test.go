@@ -578,8 +578,8 @@ func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
 // TestQueryAnalytics_FrameworkDimensionGroupsByLabel pins one series per
 // framework whatever its version and however it was detected: the
 // sensor's init-time detection stores a versioned entry
-// (``langchain/1.6.10``), its detection after init() a bare one
-// (``langchain``), and both count under ``langchain``, once per
+// (`langchain/1.6.10`), its detection after init() a bare one
+// (`langchain`), and both count under `langchain`, once per
 // session even when a session lists the label twice.
 func TestQueryAnalytics_FrameworkDimensionGroupsByLabel(t *testing.T) {
 	s, cleanup := newTestStore(t)

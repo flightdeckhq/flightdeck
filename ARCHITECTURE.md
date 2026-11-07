@@ -356,7 +356,7 @@ flightdeck/
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
-│   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
+│   │   ├── auth/revocation.go  # Subscribes to revoked tokens on the storage Bus: evicts them from the validation cache
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
 │   │   ├── nats/stream.go      # Creates the FLIGHTDECK stream or updates its limits and replicas in place
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
@@ -5765,13 +5765,16 @@ clients do not hit Postgres on every request. Unknown tokens are never
 cached, so a newly created token works at once.
 
 Revocation reaches every replica of both services as soon as the delete
-commits. Deleting an `access_tokens` row, through
+commits. On Postgres, deleting an `access_tokens` row, through
 `DELETE /v1/access-tokens/:id` or directly in SQL, fires the
 `access_tokens_notify_revoked` trigger, which sends the token id on the
 `flightdeck_access_token_revoked` NOTIFY channel when the transaction
-commits. Each service process holds a dedicated LISTEN connection (outside
-its request pool) on that channel and drops the cached validations for
-that id when the notification arrives. Every invalidation also bumps a
+commits; on SQLite the store that deletes the row publishes the id on
+the storage Bus after commit. The ingestion API subscribes to that
+channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
+LISTEN connection on Postgres, outside its request pool); the query API
+still holds its own LISTEN connection. Each drops the cached validations
+for that id when the notification arrives. Every invalidation also bumps a
 generation counter; a validation that was already querying the database
 when the revocation arrived caches its result only if the counter has not
 moved, so a lookup that read the row just before the delete cannot put

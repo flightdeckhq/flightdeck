@@ -3,12 +3,18 @@
 // Tokens are opaque strings stored as SHA256(salt || raw_token) in the
 // access_tokens table. See the Authentication section of
 // ARCHITECTURE.md for the full model.
+//
+// The package reads access_tokens through the storage boundary, so it
+// runs on SQLite and Postgres alike: the SQL below is the common
+// subset of both dialects, and the one construct that differs (the
+// current time) comes from the Dialect.
 package auth
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -16,8 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 const (
@@ -27,6 +32,16 @@ const (
 	devTokenReject   = "tok_dev is only valid in development mode. Create a production token in the Settings page."
 	productionPrefix = "ftd_"
 	prefixLen        = 8
+)
+
+// The validator's queries. Ids are read as text on both backends
+// (CAST is a no-op on SQLite, where the column is text) and bound as
+// text when matched, which Postgres compares against its uuid column.
+const (
+	queryDevToken = `SELECT CAST(id AS TEXT), name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`
+	queryByPrefix = `SELECT CAST(id AS TEXT), name, token_hash, salt FROM access_tokens WHERE prefix = $1`
+	// queryTouchLastUsed takes the dialect's current-time expression.
+	queryTouchLastUsed = `UPDATE access_tokens SET last_used_at = %s WHERE id = $1`
 )
 
 // ValidationResult is the outcome of resolving a Bearer token against
@@ -48,52 +63,57 @@ type cacheEntry struct {
 	validAt time.Time
 }
 
-// dbQuerier is the narrow pgx surface the validator needs. Implemented
-// by pgxpool.Pool in production and mocks in tests.
+// dbQuerier is the narrow database surface the validator needs.
+// Implemented by sqlQuerier over storage.DB in production and by fakes
+// in tests.
 type dbQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgxRow
-	Query(ctx context.Context, sql string, args ...any) (pgxRows, error)
-	Exec(ctx context.Context, sql string, args ...any) error
+	QueryRow(ctx context.Context, query string, args ...any) rowScanner
+	Query(ctx context.Context, query string, args ...any) (rowsIter, error)
+	Exec(ctx context.Context, query string, args ...any) error
 }
 
-type pgxRow interface {
+type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// pgxRows is the minimal pgx.Rows surface used to iterate candidate
+// rowsIter is the minimal *sql.Rows surface used to iterate candidate
 // rows during ftd_ prefix lookup.
-type pgxRows interface {
+type rowsIter interface {
 	Next() bool
 	Scan(dest ...any) error
 	Close()
 	Err() error
 }
 
-type poolAdapter struct{ pool *pgxpool.Pool }
-
-func (a *poolAdapter) QueryRow(ctx context.Context, sql string, args ...any) pgxRow {
-	return a.pool.QueryRow(ctx, sql, args...)
+// sqlQuerier runs the validator's reads on the database's read handle
+// and its one write (last_used_at) on the writer.
+type sqlQuerier struct {
+	db *storage.DB
 }
 
-func (a *poolAdapter) Query(ctx context.Context, sql string, args ...any) (pgxRows, error) {
-	rows, err := a.pool.Query(ctx, sql, args...)
+func (q *sqlQuerier) QueryRow(ctx context.Context, query string, args ...any) rowScanner {
+	return q.db.Reader().QueryRowContext(ctx, query, args...)
+}
+
+func (q *sqlQuerier) Query(ctx context.Context, query string, args ...any) (rowsIter, error) {
+	rows, err := q.db.Reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	return &pgxRowsAdapter{rows: rows}, nil
+	return &sqlRows{rows: rows}, nil
 }
 
-func (a *poolAdapter) Exec(ctx context.Context, sql string, args ...any) error {
-	_, err := a.pool.Exec(ctx, sql, args...)
+func (q *sqlQuerier) Exec(ctx context.Context, query string, args ...any) error {
+	_, err := q.db.ExecContext(ctx, query, args...)
 	return err
 }
 
-type pgxRowsAdapter struct{ rows pgx.Rows }
+type sqlRows struct{ rows *sql.Rows }
 
-func (a *pgxRowsAdapter) Next() bool             { return a.rows.Next() }
-func (a *pgxRowsAdapter) Scan(dest ...any) error { return a.rows.Scan(dest...) }
-func (a *pgxRowsAdapter) Close()                 { a.rows.Close() }
-func (a *pgxRowsAdapter) Err() error             { return a.rows.Err() }
+func (r *sqlRows) Next() bool             { return r.rows.Next() }
+func (r *sqlRows) Scan(dest ...any) error { return r.rows.Scan(dest...) }
+func (r *sqlRows) Close()                 { _ = r.rows.Close() }
+func (r *sqlRows) Err() error             { return r.rows.Err() }
 
 // envLookup abstracts os.Getenv so tests can flip ENVIRONMENT without
 // leaking state into the real process environment.
@@ -116,31 +136,34 @@ type Validator struct {
 	// flight cannot be overwritten by the stale result.
 	generation uint64
 	env        envLookup
+	// touchLastUsed is queryTouchLastUsed with the dialect's current
+	// time filled in.
+	touchLastUsedQuery string
 	// onListening, when set (tests only), runs each time the revocation
-	// listener has issued LISTEN and flushed the cache.
+	// listener has subscribed and flushed the cache.
 	onListening func()
 }
 
-// NewValidator creates a Validator backed by the given pool. Env
+// NewValidator creates a Validator backed by the given database. Env
 // lookups default to os.Getenv.
-func NewValidator(pool *pgxpool.Pool) *Validator {
-	return &Validator{
-		db:    &poolAdapter{pool: pool},
-		cache: make(map[string]cacheEntry),
-		env:   os.Getenv,
-	}
+func NewValidator(db *storage.DB) *Validator {
+	return newValidatorWithDB(&sqlQuerier{db: db}, db.Dialect, os.Getenv)
 }
 
-// newValidatorWithDB creates a Validator with a custom dbQuerier and
-// env lookup (for testing).
-func newValidatorWithDB(db dbQuerier, env envLookup) *Validator {
+// newValidatorWithDB creates a Validator with a custom dbQuerier,
+// dialect and env lookup (for testing). A nil dialect means Postgres.
+func newValidatorWithDB(db dbQuerier, dialect storage.Dialect, env envLookup) *Validator {
 	if env == nil {
 		env = os.Getenv
 	}
+	if dialect == nil {
+		dialect = storage.DialectFor(storage.Postgres)
+	}
 	return &Validator{
-		db:    db,
-		cache: make(map[string]cacheEntry),
-		env:   env,
+		db:                 db,
+		cache:              make(map[string]cacheEntry),
+		env:                env,
+		touchLastUsedQuery: fmt.Sprintf(queryTouchLastUsed, dialect.Now()),
 	}
 }
 
@@ -207,9 +230,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 			return ValidationResult{Valid: false, Reason: devTokenReject}, nil
 		}
 		var id, name string
-		err := v.db.QueryRow(ctx,
-			`SELECT id::text, name FROM access_tokens WHERE name = 'Development Token' LIMIT 1`,
-		).Scan(&id, &name)
+		err := v.db.QueryRow(ctx, queryDevToken).Scan(&id, &name)
 		if err != nil {
 			return ValidationResult{}, fmt.Errorf("lookup tok_dev row: %w", err)
 		}
@@ -224,10 +245,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 
 	if strings.HasPrefix(rawToken, productionPrefix) && len(rawToken) >= prefixLen {
 		prefix := rawToken[:prefixLen]
-		rows, err := v.db.Query(ctx,
-			`SELECT id::text, name, token_hash, salt FROM access_tokens WHERE prefix = $1`,
-			prefix,
-		)
+		rows, err := v.db.Query(ctx, queryByPrefix, prefix)
 		if err != nil {
 			return ValidationResult{}, fmt.Errorf("token prefix lookup: %w", err)
 		}
@@ -255,10 +273,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 }
 
 func (v *Validator) touchLastUsed(ctx context.Context, id string) error {
-	return v.db.Exec(ctx,
-		`UPDATE access_tokens SET last_used_at = NOW() WHERE id = $1::uuid`,
-		id,
-	)
+	return v.db.Exec(ctx, v.touchLastUsedQuery, id)
 }
 
 func (v *Validator) evictOldest() {

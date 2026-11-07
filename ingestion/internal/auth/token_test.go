@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// --- pgx fakes ---
+// --- database fakes ---
 
 // fakeRow is a single-row stub that scans a fixed (id, name) tuple
 // for the tok_dev SELECT branch.
@@ -69,7 +69,7 @@ type fakeDB struct {
 	queryErr      error
 }
 
-func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) rowScanner {
 	if strings.Contains(sql, "Development Token") {
 		f.devQueryCount.Add(1)
 		if f.devRow == nil {
@@ -80,7 +80,7 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
 	return &fakeRow{err: errors.New("unexpected QueryRow")}
 }
 
-func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
+func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (rowsIter, error) {
 	f.ftdQueryCount.Add(1)
 	if f.queryErr != nil {
 		return nil, f.queryErr
@@ -106,7 +106,7 @@ func envFn(value string) envLookup {
 
 func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	res, err := v.Validate(context.Background(), "tok_dev")
 	if err != nil {
@@ -130,7 +130,7 @@ func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 
 func TestValidate_TokDev_RejectedWhenEnvNotDev(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, err := v.Validate(context.Background(), "tok_dev")
 	if err != nil {
@@ -149,7 +149,7 @@ func TestValidate_TokDev_RejectedWhenEnvNotDev(t *testing.T) {
 
 func TestValidate_TokDev_RejectedWhenEnvIsProd(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn("prod"))
+	v := newValidatorWithDB(db, nil, envFn("prod"))
 
 	res, _ := v.Validate(context.Background(), "tok_dev")
 	if res.Valid {
@@ -170,7 +170,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 			{"prod-uuid", "Production K8s", hash, salt},
 		},
 	}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, err := v.Validate(context.Background(), rawToken)
 	if err != nil {
@@ -189,7 +189,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 
 func TestValidate_FtdToken_RejectedWhenNoCandidate(t *testing.T) {
 	db := &fakeDB{ftdCandidates: nil}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, _ := v.Validate(context.Background(), "ftd_unknownsuffixsuffix0123456789")
 	if res.Valid {
@@ -209,7 +209,7 @@ func TestValidate_FtdToken_RejectedWhenHashMismatch(t *testing.T) {
 			{"prod-uuid", "Real Token", hashWithSalt("salt1", "ftd_realtoken000000000000000000000"), "salt1"},
 		},
 	}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, _ := v.Validate(context.Background(), "ftd_realtoken000000000000000000xxx")
 	if res.Valid {
@@ -221,7 +221,7 @@ func TestValidate_FtdToken_RejectedWhenHashMismatch(t *testing.T) {
 
 func TestValidate_OtherFormat_Rejected(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	for _, raw := range []string{"sk-anthropic-test", "Bearer something", "random", ""} {
 		res, _ := v.Validate(context.Background(), raw)
@@ -240,7 +240,7 @@ func TestValidate_OtherFormat_Rejected(t *testing.T) {
 
 func TestValidate_CacheHitAvoidsRepeatDBCall(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	for i := 0; i < 3; i++ {
 		res, err := v.Validate(context.Background(), "tok_dev")
@@ -255,7 +255,7 @@ func TestValidate_CacheHitAvoidsRepeatDBCall(t *testing.T) {
 
 func TestValidate_CacheExpiryReQueriesDB(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	_, _ = v.Validate(context.Background(), "tok_dev")
 	if db.devQueryCount.Load() != 1 {
@@ -278,7 +278,7 @@ func TestValidate_CacheExpiryReQueriesDB(t *testing.T) {
 // creation takes effect immediately.
 func TestValidate_UnknownTokenRejectNotCached(t *testing.T) {
 	db := &fakeDB{ftdCandidates: nil}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	for i := 0; i < 3; i++ {
 		_, _ = v.Validate(context.Background(), "ftd_unknown000000000000000000000000")

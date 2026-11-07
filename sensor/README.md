@@ -24,9 +24,11 @@ cd sensor && uv sync --locked --python 3.12 --extra dev --extra anthropic --extr
 
 CI installs from `sensor/uv.lock` into the `actions/setup-python`
 interpreter and overrides via env (`PYTHON=python make -C sensor
-test`). The lock covers Python 3.11 to 3.14 and both CI lanes: the
-framework lane (`dev` extra) and the newest-SDK lane (`sdk-majors`
-dependency group). `uv lock` resolves only releases at least 14 days
+test`). The lock covers Python 3.11 to 3.14 and every CI lane: the
+framework lane (`dev` extra), the newest-SDK lane (`sdk-majors`
+dependency group) and the oldest-openai lane (`openai-floor` dependency
+group, openai 1.26.0, which runs `tests/unit/test_openai_constructed_resources.py`).
+`uv lock` resolves only releases at least 14 days
 old, anthropic a day old (`[tool.uv]` in `pyproject.toml`).
 
 ## Optional `session_id` hint

@@ -741,8 +741,11 @@ def patch(
     and streaming views are covered too. For OpenAI it
     replaces the ``chat`` / ``responses`` / ``embeddings``
     ``cached_property`` descriptors on the client classes with custom
-    descriptors. Each patched class is tagged with a
-    ``_flightdeck_patched`` sentinel attribute. ``isinstance(x,
+    descriptors; on openai before 1.78, whose clients build those
+    resources in the constructor, it installs a data descriptor for each
+    that hands out the sensor proxy over the client's own resource.
+    openai below 1.26 is left unpatched, with a warning. Each patched
+    class is tagged with a ``_flightdeck_patched`` sentinel attribute. ``isinstance(x,
     anthropic.Anthropic)`` and captured references like ``from
     anthropic import Anthropic`` continue to work correctly because the
     class objects' identities are preserved.
@@ -763,8 +766,16 @@ def patch(
     was called that already accessed ``.chat`` once have the unwrapped
     resource cached in their ``__dict__`` and are not intercepted. New
     instances and new accesses on existing instances ARE intercepted.
-    Anthropic clients built before ``patch()`` are intercepted from
-    their next call on, because the patch lives on the resource class;
+    On openai before 1.78 a client built before ``patch()`` is
+    intercepted from its next ``.chat`` / ``.responses`` /
+    ``.embeddings`` access. Its client-level ``with_raw_response`` /
+    ``with_streaming_response`` view is the exception: that SDK's
+    constructor builds the view over whatever ``client.chat`` returned
+    at that moment, so a client built before ``patch()`` or with no
+    session active has an unmetered view, and a client built while a
+    session was active keeps a view bound to that session. Anthropic
+    clients built before ``patch()`` are intercepted from their next
+    call on, because the patch lives on the resource class;
     the one exception is a raw or streaming view
     (``messages.with_raw_response`` / ``with_streaming_response``) first
     touched before ``patch()``, which binds the unpatched method when

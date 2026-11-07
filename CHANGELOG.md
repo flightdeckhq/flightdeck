@@ -160,6 +160,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The sensor meters OpenAI calls on openai releases before 1.78.**
+  Their client builds `chat`, `embeddings` and `responses` in its
+  constructor, which the class patch never reached, so `patch()` left
+  every call on those releases unmetered. The patch now installs a hook
+  for each resource such a client builds, and a client built before
+  `patch()` is metered from its next call. The `openai` extra's floor
+  rises from 1.0 to 1.26, the first release whose chat `create` takes the
+  `stream_options` the sensor adds to streamed calls; an older openai is
+  left unpatched, with a warning at import, instead of having its
+  streamed calls fail. A new CI lane runs the OpenAI tests against openai
+  1.26.0 (D250,
+  [#227](https://github.com/flightdeckhq/flightdeck/issues/227)).
 - **The worker refuses a malformed `session_id` and keeps its log lines
   small.** Anything that can publish to NATS reaches the worker without
   passing ingestion's validator. An event whose `session_id` is not a

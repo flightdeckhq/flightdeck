@@ -103,6 +103,17 @@ def _raw_stream_classes() -> tuple[type, ...]:
         return ()
 
 
+def is_raw_stream(obj: Any, classes: tuple[type, ...]) -> bool:
+    """Whether ``obj`` is one of the SDK's raw event streams ``classes``.
+
+    The test is on the object's class, not ``isinstance``: anthropic 0.x
+    overrides ``isinstance`` on ``Stream`` / ``AsyncStream`` so that a
+    ``messages.stream()`` helper (``MessageStream`` /
+    ``AsyncMessageStream``) also passes, with a ``DeprecationWarning``,
+    though the helper is not a raw stream and keeps its own snapshot."""
+    return bool(classes) and issubclass(type(obj), classes)
+
+
 def _request_headers_of(stream: Any) -> Any:
     """The headers the stream's request was sent with (the beta
     accumulator reads ``anthropic-beta`` from them), or ``None``."""
@@ -402,8 +413,7 @@ class AnthropicProvider:
         snapshot. The accumulator runs with capture on or off: it is how
         a streamed ``tool_use`` block becomes a ``tool_call`` event, and
         folding an event into the snapshot is a string append."""
-        classes = _raw_stream_classes()
-        if not classes or not isinstance(stream, classes):
+        if not is_raw_stream(stream, _raw_stream_classes()):
             return None
         return _MessageStreamAccumulator(_request_headers_of(stream))
 
@@ -605,18 +615,29 @@ def _count(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _field(obj: Any, name: str) -> Any:
+    """Attribute or dict key ``name`` of ``obj``; ``None`` when absent.
+
+    A usage object nests its breakdowns (``output_tokens_details``,
+    ``cache_creation``, ``server_tool_use``) as typed models only on the
+    SDK releases that declare them. An older release keeps a field it
+    does not declare as a pydantic extra, which stays a plain dict, so
+    a nested read has to accept both shapes."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
 def _thinking_tokens(usage: Any) -> int | None:
     """The thinking share of the output (``output_tokens_details
     .thinking_tokens``), or ``None`` when the response reports none."""
-    return _count(getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None))
+    return _count(_field(_field(usage, "output_tokens_details"), "thinking_tokens"))
 
 
 def _cache_creation_1h(usage: Any) -> int | None:
     """The one-hour share of the cache writes (``cache_creation
     .ephemeral_1h_input_tokens``), or ``None`` when not reported."""
-    return _count(
-        getattr(getattr(usage, "cache_creation", None), "ephemeral_1h_input_tokens", None)
-    )
+    return _count(_field(_field(usage, "cache_creation"), "ephemeral_1h_input_tokens"))
 
 
 def _text(value: Any) -> str | None:
@@ -627,9 +648,9 @@ def _details(model: Any, usage: Any) -> CallDetails | None:
     """The call details a message's model id and usage object carry, or
     ``None`` when they carry none."""
     tools: dict[str, int] = {}
-    server_tool_use = getattr(usage, "server_tool_use", None) if usage is not None else None
+    server_tool_use = _field(usage, "server_tool_use") if usage is not None else None
     for field in ("web_search_requests", "web_fetch_requests"):
-        count = _count(getattr(server_tool_use, field, None))
+        count = _count(_field(server_tool_use, field))
         if count:
             tools[field] = count
     details = CallDetails(

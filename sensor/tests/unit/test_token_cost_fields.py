@@ -10,6 +10,7 @@ Responses are built from the real SDK types.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,6 +19,7 @@ from anthropic.types import Message, RawMessageDeltaEvent, RawMessageStartEvent
 from litellm import ModelResponse
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.responses import Response
+from pydantic import BaseModel, ConfigDict
 
 import flightdeck_sensor
 from flightdeck_sensor.core.exceptions import ConfigurationError
@@ -234,6 +236,42 @@ def test_a_share_larger_than_its_total_is_left_out() -> None:
     assert pc["tokens_output"] == 10
     assert "tokens_reasoning" not in pc
     assert "tokens_cache_creation_1h" not in pc
+
+
+class _UndeclaredUsage(BaseModel):
+    """An Anthropic usage object from an SDK release that declares only the
+    plain counts: pydantic keeps every other field the API sends as an
+    extra, and a nested extra stays a plain dict (anthropic 0.91 has no
+    ``output_tokens_details`` field, for one)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    input_tokens: int
+    output_tokens: int
+
+
+def test_breakdowns_an_older_sdk_keeps_as_dicts_are_still_read() -> None:
+    usage = _UndeclaredUsage.model_validate(_anthropic_usage())
+    assert isinstance(usage.model_extra, dict)
+    assert isinstance(usage.model_extra["output_tokens_details"], dict)
+    message = SimpleNamespace(model="claude-sonnet-4-5-20250929", usage=usage)
+    provider = AnthropicProvider()
+
+    tokens = provider.extract_usage(message)
+    assert tokens.reasoning_tokens == 150
+    assert tokens.cache_creation_1h_tokens == 400
+    details = provider.call_details(message)
+    assert details is not None
+    assert details.server_tool_use == {"web_search_requests": 2}
+    assert (details.service_tier, details.speed, details.inference_geo) == (
+        "standard",
+        "fast",
+        "us",
+    )
+
+    delta = SimpleNamespace(type="message_delta", usage=usage)
+    streamed = provider.usage_from_stream_chunk(delta)
+    assert streamed is not None and streamed.reasoning_tokens == 150
 
 
 def test_vertex_scope_follows_the_client_region() -> None:

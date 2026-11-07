@@ -342,6 +342,18 @@ def _mcp_call_error() -> Any:
 _MCP_CALL_ERROR = _mcp_call_error()
 
 
+def _as_received(body: dict[str, Any]) -> Response:
+    """``body`` built into a ``Response`` the way the client builds an API
+    response: without validation, so an item the installed SDK predates
+    still arrives the way the SDK hands it to the sensor instead of failing
+    the fixture. On openai 2.8 a ``tool_search_call``, a ``find_in_page``
+    web-search action and an ``mcp_approval_response`` output item all
+    fail ``Response.model_validate``."""
+    response = openai._models.construct_type(type_=Response, value=body)
+    assert isinstance(response, Response)
+    return response
+
+
 @pytest.mark.parametrize(
     ("item", "name", "tool_input", "tool_id"),
     [
@@ -536,7 +548,7 @@ _MCP_CALL_ERROR = _mcp_call_error()
 def test_responses_output_item_becomes_tool_invocation(
     item: dict[str, Any], name: str, tool_input: dict[str, Any], tool_id: str
 ) -> None:
-    response = Response.model_validate(_response_body([_message_item(), item]))
+    response = _as_received(_response_body([_message_item(), item]))
     (inv,) = OpenAIProvider().extract_tool_invocations(response)
     assert (inv.name, inv.tool_input, inv.tool_id) == (name, tool_input, tool_id)
 
@@ -569,7 +581,7 @@ def test_hosted_tool_input_never_carries_results_safety_checks_or_environment() 
 
 
 def test_responses_items_that_are_not_calls_emit_no_invocation() -> None:
-    response = Response.model_validate(
+    response = _as_received(
         _response_body(
             [
                 _message_item(),
@@ -713,6 +725,10 @@ def _http_401() -> httpx.Response:
     )
 
 
+@pytest.mark.skipif(
+    not hasattr(openai, "OAuthError"),
+    reason="openai.OAuthError ships only in later openai releases; an older SDK never raises it",
+)
 def test_oauth_error_classifies_as_authentication() -> None:
     exc = openai.OAuthError(
         response=_http_401(),

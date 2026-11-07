@@ -140,6 +140,10 @@ class EventType(enum.Enum):
     # sessions.context.mcp_servers so operators investigating
     # in-flight sessions see attached servers within ~2-3 s.
     MCP_SERVER_ATTACHED = "mcp_server_attached"
+    # A change in a session that is not a call. The sensor emits one
+    # signal, agent_handoff (Session.emit_agent_handoff), in the shape
+    # the OTLP GenAI receiver gives it.
+    SESSION_SIGNAL = "session_signal"
 
 
 class DirectiveAction(enum.Enum):

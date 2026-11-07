@@ -173,6 +173,14 @@ All notable changes to Flightdeck are documented here.
   100 MiB per container, so a flood of dropped events no longer grows
   the workers' log until the host disk is full
   ([#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
+- **The sensor can report an agent hand-off.** `Session.emit_agent_handoff`
+  sends the `agent_handoff` signal the OpenTelemetry GenAI receiver
+  already records, on the session of the agent handing off (the sensor's
+  own or a child session), with the two agents' names and no content, so
+  a hand-off from a native framework wrap and one from an exporter read
+  the same on the dashboard. The Google ADK and OpenAI Agents SDK wraps
+  to come report through it
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed
 

@@ -698,3 +698,18 @@ or behind by more than the size limit.
 published before the workers' consumer exists is dropped at once);
 discard-new (stops ingestion at steady state); both services
 reconciling (they fight over settings across a version skew).
+
+## D254 -- An omitted `to` leaves the sessions and events listings without an upper bound
+
+**Date:** 2026-11-07
+**Decision:** `GET /v1/sessions` and `GET /v1/events` bound `started_at` or
+`occurred_at` from above only when the request carries `to`; a zero-time `to`
+is a 400. The agent summary and `/v1/analytics` keep the API-clock end: they
+are polled windowed aggregates, so a row dated ahead lands on the next poll.
+**Why:** Postgres stamps `started_at`; `occurred_at` is the client's time,
+accepted up to five minutes ahead. When the API's clock read behind, a fresh
+session or event fell outside the range; a dev clock stepped back ~2 s every
+few minutes emptied the state-sort integration test's listing.
+**Rejected alternative:** defaulting `to` to Postgres's `NOW()` (it can still
+read behind the client, and a stepped-back database drops its own rows); a
+grace margin on the API's clock (a guessed bound a larger skew breaks).

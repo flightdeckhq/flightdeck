@@ -12,7 +12,9 @@ import (
 
 // SessionsParams defines filters for paginated session queries.
 type SessionsParams struct {
-	From    time.Time
+	From time.Time
+	// To bounds started_at from above; the zero time leaves the range
+	// without an upper bound.
 	To      time.Time
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
@@ -552,9 +554,12 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	args = append(args, params.From)
 	argIdx++
 
-	conditions = append(conditions, fmt.Sprintf("s.started_at <= $%d", argIdx))
-	args = append(args, params.To)
-	argIdx++
+	// A zero To leaves the range without an upper bound.
+	if !params.To.IsZero() {
+		conditions = append(conditions, fmt.Sprintf("s.started_at <= $%d", argIdx))
+		args = append(args, params.To)
+		argIdx++
+	}
 
 	// State filter (repeatable: OR within group)
 	if len(params.States) > 0 {

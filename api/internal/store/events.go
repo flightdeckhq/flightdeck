@@ -30,7 +30,9 @@ import (
 // the `events.payload` column; AgentID and Frameworks resolve through
 // a `sessions` subquery because the events table carries neither.
 type EventsParams struct {
-	From       time.Time
+	From time.Time
+	// To bounds occurred_at from above; the zero time leaves the
+	// range without an upper bound.
 	To         time.Time
 	Flavor     string
 	EventTypes []string
@@ -192,9 +194,12 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 	args = append(args, params.From)
 	argIdx++
 
-	conditions = append(conditions, fmt.Sprintf("occurred_at <= $%d", argIdx))
-	args = append(args, params.To)
-	argIdx++
+	// A zero To leaves the range without an upper bound.
+	if !params.To.IsZero() {
+		conditions = append(conditions, fmt.Sprintf("occurred_at <= $%d", argIdx))
+		args = append(args, params.To)
+		argIdx++
+	}
 
 	if params.Flavor != "" {
 		conditions = append(conditions, fmt.Sprintf("flavor = $%d", argIdx))

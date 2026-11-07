@@ -579,7 +579,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return err
 	}
 	if removed := removedUndelivered(existed, delivered, info.State.FirstSeq); removed > 0 {
-		slog.Warn("events were removed from the stream before the workers were delivered them (its age or size limit, or a purge)",
+		slog.Warn("events were removed from the stream by its age or size limit before the workers were delivered them",
 			"stream", streamName, "consumer", durableName, "removed", removed,
 			"last_delivered_seq", delivered, "stream_first_seq", info.State.FirstSeq)
 	}

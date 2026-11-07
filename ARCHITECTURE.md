@@ -4005,7 +4005,9 @@ written to Postgres; the consumer resumes at the oldest message left.
 At startup the worker compares its consumer's last delivered sequence
 with the stream's first and, when messages between them were removed
 before delivery, logs a WARN with their count (`events were removed from
-the stream before the workers were delivered them`). Discarding new
+the stream by its age or size limit before the workers were delivered
+them`). The check covers what the limits remove: a purge moves the
+consumer past the purged messages, so it reports none. Discarding new
 messages instead would not protect the backlog: a full stream of
 processed messages, the steady state under limits retention, would
 refuse every publish: `POST /v1/events` logs and drops an event whose

@@ -25,6 +25,52 @@ const (
 	otlpMediaJSON     = "application/json"
 )
 
+// otlpMediaType is a request media type the receiver accepts and the
+// encoding it selects.
+type otlpMediaType struct {
+	name     string
+	encoding otlpEncoding
+}
+
+// otlpAcceptedMediaTypes is every Content-Type the OTLP receiver
+// accepts. The API docs must list exactly these as the request content
+// types of each OTLP route; swagger_spec_test.go checks it.
+var otlpAcceptedMediaTypes = []otlpMediaType{
+	{name: otlpMediaProtobuf, encoding: otlpEncodingProtobuf},
+	{name: otlpMediaJSON, encoding: otlpEncodingJSON},
+}
+
+// otlpContentEncodingName is a Content-Encoding the receiver accepts
+// and whether it means a gzip-compressed body.
+type otlpContentEncodingName struct {
+	name    string
+	gzipped bool
+}
+
+// otlpAcceptedContentEncodings is every Content-Encoding the OTLP
+// receiver accepts besides an absent header, which means an
+// uncompressed body. The API docs must name each of them;
+// swagger_spec_test.go checks it.
+var otlpAcceptedContentEncodings = []otlpContentEncodingName{
+	{name: "gzip", gzipped: true},
+	{name: "identity", gzipped: false},
+}
+
+// The 415 messages, naming what the receiver accepts.
+var (
+	otlpMediaTypeRefusal       = "content type must be " + joinOTLPNames(otlpAcceptedMediaTypes, func(m otlpMediaType) string { return m.name }, " or ")
+	otlpContentEncodingRefusal = "content encoding must be " + joinOTLPNames(otlpAcceptedContentEncodings, func(e otlpContentEncodingName) string { return e.name }, ", ") + " or none"
+)
+
+// joinOTLPNames joins the names of items with sep.
+func joinOTLPNames[T any](items []T, name func(T) string, sep string) string {
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = name(it)
+	}
+	return strings.Join(names, sep)
+}
+
 // gRPC status codes carried in the google.rpc.Status body of an OTLP
 // error response (google.golang.org/grpc/codes; the values are fixed
 // by the gRPC protocol).
@@ -182,7 +228,7 @@ type OTLPMetricsPartialSuccess struct {
 // OTLPLogsHandler handles POST /v1/logs.
 //
 // @Summary      Export OTLP logs
-// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
+// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -207,7 +253,7 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attache
 // OTLPTracesHandler handles POST /v1/traces.
 //
 // @Summary      Export OTLP traces
-// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
+// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -232,7 +278,7 @@ func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, attac
 // OTLPMetricsHandler handles POST /v1/metrics.
 //
 // @Summary      Export OTLP metrics
-// @Description  OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; Flightdeck maps no metrics into events, because they repeat what the usage spans and logs report, so partialSuccess counts every data point as rejected, with a message naming why, and nothing is published or charged. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
+// @Description  OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf body is the same message the JSON schema shows), optionally gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed body). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; Flightdeck maps no metrics into events, because they repeat what the usage spans and logs report, so partialSuccess counts every data point as rejected, with a message naming why, and nothing is published or charged. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -320,14 +366,12 @@ func otlpHandler(
 		}
 
 		if !mediaOK {
-			fail(http.StatusUnsupportedMediaType, grpcCodeInvalidArgument,
-				"content type must be "+otlpMediaProtobuf+" or "+otlpMediaJSON)
+			fail(http.StatusUnsupportedMediaType, grpcCodeInvalidArgument, otlpMediaTypeRefusal)
 			return
 		}
 		gzipped, encodingOK := otlpContentEncoding(r)
 		if !encodingOK {
-			fail(http.StatusUnsupportedMediaType, grpcCodeInvalidArgument,
-				"content encoding must be gzip, identity or none")
+			fail(http.StatusUnsupportedMediaType, grpcCodeInvalidArgument, otlpContentEncodingRefusal)
 			return
 		}
 
@@ -504,32 +548,33 @@ func grpcCodeForStatus(status int) int32 {
 }
 
 // otlpRequestEncoding reports the request's OTLP encoding from its
-// Content-Type and whether that is a supported media type. An
+// Content-Type and whether that is one of otlpAcceptedMediaTypes. An
 // unsupported one is answered in JSON.
 func otlpRequestEncoding(r *http.Request) (otlpEncoding, bool) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
 		return otlpEncodingJSON, false
 	}
-	switch mediaType {
-	case otlpMediaProtobuf:
-		return otlpEncodingProtobuf, true
-	case otlpMediaJSON:
-		return otlpEncodingJSON, true
+	for _, m := range otlpAcceptedMediaTypes {
+		if mediaType == m.name {
+			return m.encoding, true
+		}
 	}
 	return otlpEncodingJSON, false
 }
 
 // otlpContentEncoding reports whether the body is gzip-compressed and
-// whether its Content-Encoding is supported (gzip, identity or none).
+// whether its Content-Encoding is supported: absent, or one of
+// otlpAcceptedContentEncodings.
 func otlpContentEncoding(r *http.Request) (gzipped, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
-	case "":
+	enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
+	if enc == "" {
 		return false, true
-	case "identity":
-		return false, true
-	case "gzip":
-		return true, true
+	}
+	for _, e := range otlpAcceptedContentEncodings {
+		if enc == e.name {
+			return e.gzipped, true
+		}
 	}
 	return false, false
 }

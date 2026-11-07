@@ -6664,7 +6664,9 @@ them.
 An event's Prompts tab (the run drawer's event detail view and the
 event detail drawer) loads `PromptViewer` for an event with
 `event.has_content`, which shows the capture-disabled message when
-`GET /v1/events/:id/content` answers 404; an event without content
+`GET /v1/events/:id/content` fails for any reason (a 404, or any other
+error, since the client reads every failed fetch as no content); an
+event without content
 shows one of the empty states below. A `session_signal` event's
 Prompts tab shows its captured text instead, and without it the
 capture-disabled message for a signal whose text the plugin always
@@ -6753,8 +6755,8 @@ policy_entries_orphaned, sensor_version + interceptor_versions,
 policy_snapshot, originating-event jump link), and the JSON
 payload via the shared `<SyntaxJson>` component. The Prompts tab
 is the event Prompts tab described under Session drawer (it loads
-the event's run to pick its empty state, and shows nothing until the
-run has loaded). The Neighbors tab renders
+the event's run to pick its empty state, and its empty state shows
+nothing until the run has loaded). The Neighbors tab renders
 `<SurroundingEventsList>` — ±5 events from the same session,
 clickable to swap the drawer's displayed event. It brackets the open
 event's `occurred_at` with two `GET /v1/events` calls, the events up to
@@ -8662,8 +8664,8 @@ The dashboard hides the Stop Agent button for observer sessions and
 gates the Fleet Stop All control on at least one directive-capable live
 session of the agent. Custom directives need more: a session runs them
 when it is directive-capable and its `client_type` runs custom
-directives (the registry's `runs_custom_directives`, which only the
-sensor sets; a row with no `client_type` falls back as above). The run
+directives (the registry's `runs_custom_directives`, `true` only for
+the sensor; a row with no `client_type` falls back as above). The run
 drawer's Directives tab and the Fleet sidebar's directive trigger
 appear only for such sessions, so neither an observer session nor an
 enforcement-on Claude Code plugin session or Agent SDK run, which

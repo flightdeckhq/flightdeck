@@ -53,10 +53,14 @@ func otlpAcceptsMediaType(mediaType string) bool {
 
 // The request content types the spec lists for each body-taking route
 // are exactly the ones its handler accepts, so a client generated from
-// the spec never sends a body the handler refuses. A new route with a
-// request body must be added here.
+// the spec never sends a body the handler refuses, and a media type the
+// receiver starts accepting without the docs listing it fails here. A
+// new route with a request body must be added here.
 func TestSwaggerRequestContentTypesMatchHandlers(t *testing.T) {
-	otlp := []string{otlpMediaJSON, otlpMediaProtobuf}
+	otlp := make([]string, 0, len(otlpAcceptedMediaTypes))
+	for _, m := range otlpAcceptedMediaTypes {
+		otlp = append(otlp, m.name)
+	}
 	// The events and heartbeat handlers decode the body as JSON.
 	jsonOnly := []string{"application/json"}
 	want := map[string][]string{
@@ -69,12 +73,12 @@ func TestSwaggerRequestContentTypesMatchHandlers(t *testing.T) {
 
 	for _, mediaType := range otlp {
 		if !otlpAcceptsMediaType(mediaType) {
-			t.Fatalf("OTLP receiver refuses %q, which the expectation lists", mediaType)
+			t.Fatalf("OTLP receiver refuses %q, which otlpAcceptedMediaTypes lists", mediaType)
 		}
 	}
 	for _, mediaType := range []string{"text/plain", "application/xml", "application/octet-stream"} {
 		if otlpAcceptsMediaType(mediaType) {
-			t.Fatalf("OTLP receiver accepts %q; list it here and in the handler annotations", mediaType)
+			t.Fatalf("OTLP receiver accepts %q, which otlpAcceptedMediaTypes does not list", mediaType)
 		}
 	}
 
@@ -106,20 +110,22 @@ func TestSwaggerRequestContentTypesMatchHandlers(t *testing.T) {
 }
 
 // Each OTLP route documents every Content-Encoding the receiver
-// accepts, and the receiver accepts each one documented.
+// accepts, so an encoding added to otlpAcceptedContentEncodings without
+// the docs naming it fails here.
 func TestSwaggerOTLPContentEncodingDocumented(t *testing.T) {
-	accepted := []string{"gzip", "identity"}
-	for _, enc := range accepted {
+	accepted := make([]string, 0, len(otlpAcceptedContentEncodings))
+	for _, e := range otlpAcceptedContentEncodings {
+		accepted = append(accepted, e.name)
 		r := httptest.NewRequest(http.MethodPost, "/v1/logs", nil)
-		r.Header.Set("Content-Encoding", enc)
-		if _, ok := otlpContentEncoding(r); !ok {
-			t.Fatalf("OTLP receiver refuses Content-Encoding %q", enc)
+		r.Header.Set("Content-Encoding", e.name)
+		if gzipped, ok := otlpContentEncoding(r); !ok || gzipped != e.gzipped {
+			t.Fatalf("Content-Encoding %q: gzipped=%v ok=%v, want gzipped=%v ok=true", e.name, gzipped, ok, e.gzipped)
 		}
 	}
 	r := httptest.NewRequest(http.MethodPost, "/v1/logs", nil)
 	r.Header.Set("Content-Encoding", "br")
 	if _, ok := otlpContentEncoding(r); ok {
-		t.Fatal("OTLP receiver accepts Content-Encoding br; document it")
+		t.Fatal("OTLP receiver accepts Content-Encoding br, which otlpAcceptedContentEncodings does not list")
 	}
 
 	ops := loadSpecOperations(t)
@@ -143,5 +149,15 @@ func TestSwaggerOTLPContentEncodingDocumented(t *testing.T) {
 				t.Errorf("%s Content-Encoding description %q does not name %q", key, desc, enc)
 			}
 		}
+	}
+}
+
+// The 415 messages name exactly the accepted sets.
+func TestOTLPRefusalMessagesNameAcceptedSets(t *testing.T) {
+	if want := "content type must be application/x-protobuf or application/json"; otlpMediaTypeRefusal != want {
+		t.Errorf("media type refusal = %q, want %q", otlpMediaTypeRefusal, want)
+	}
+	if want := "content encoding must be gzip, identity or none"; otlpContentEncodingRefusal != want {
+		t.Errorf("content encoding refusal = %q, want %q", otlpContentEncodingRefusal, want)
 	}
 }

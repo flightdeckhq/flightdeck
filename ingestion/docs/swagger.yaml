@@ -239,11 +239,12 @@ paths:
   /v1/logs:
     post:
       description: 'OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as
-        protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally
-        gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed
-        body). Answers 200 with an ExportLogsServiceResponse in the request''s encoding
-        whenever the body decodes; partialSuccess counts the log records Flightdeck
-        did not map, with a message naming why. Error responses carry a google.rpc.Status
+        protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf
+        body is the same message the JSON schema shows), optionally gzip-compressed
+        (Content-Encoding: gzip; identity or no header for an uncompressed body).
+        Answers 200 with an ExportLogsServiceResponse in the request''s encoding whenever
+        the body decodes; partialSuccess counts the log records Flightdeck did not
+        map, with a message naming why. Error responses carry a google.rpc.Status
         in the request''s encoding. The request is refused with 429 before it is read
         when the token''s per-minute budget is spent; its mapped events, and each
         GenAI record it stages (one more unit for an agent span), are charged one
@@ -372,16 +373,17 @@ paths:
   /v1/metrics:
     post:
       description: 'OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest
-        as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally
-        gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed
-        body). Answers 200 with an ExportMetricsServiceResponse in the request''s
-        encoding whenever the body decodes; Flightdeck maps no metrics into events,
-        because they repeat what the usage spans and logs report, so partialSuccess
-        counts every data point as rejected, with a message naming why, and nothing
-        is published or charged. Error responses carry a google.rpc.Status in the
-        request''s encoding. The request is refused with 429 before it is read when
-        the token''s per-minute budget is spent. Inflating and decoding run under
-        a global limit of concurrent decodes (503 with Retry-After when none is free).'
+        as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf
+        body is the same message the JSON schema shows), optionally gzip-compressed
+        (Content-Encoding: gzip; identity or no header for an uncompressed body).
+        Answers 200 with an ExportMetricsServiceResponse in the request''s encoding
+        whenever the body decodes; Flightdeck maps no metrics into events, because
+        they repeat what the usage spans and logs report, so partialSuccess counts
+        every data point as rejected, with a message naming why, and nothing is published
+        or charged. Error responses carry a google.rpc.Status in the request''s encoding.
+        The request is refused with 429 before it is read when the token''s per-minute
+        budget is spent. Inflating and decoding run under a global limit of concurrent
+        decodes (503 with Retry-After when none is free).'
       parameters:
       - description: Bearer token
         in: header
@@ -496,9 +498,10 @@ paths:
   /v1/traces:
     post:
       description: 'OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest
-        as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally
-        gzip-compressed (Content-Encoding: gzip; identity or no header for an uncompressed
-        body). Answers 200 with an ExportTraceServiceResponse in the request''s encoding
+        as protobuf (application/x-protobuf) or OTLP JSON (application/json; the protobuf
+        body is the same message the JSON schema shows), optionally gzip-compressed
+        (Content-Encoding: gzip; identity or no header for an uncompressed body).
+        Answers 200 with an ExportTraceServiceResponse in the request''s encoding
         whenever the body decodes; partialSuccess counts the spans Flightdeck did
         not map, with a message naming why. Error responses carry a google.rpc.Status
         in the request''s encoding. The request is refused with 429 before it is read

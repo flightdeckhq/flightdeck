@@ -103,6 +103,14 @@ def imported(name: str) -> ModuleType | None:
     return module
 
 
+def finished(name: str) -> bool:
+    """Whether the module ``name`` is imported and its import has
+    finished, in any thread. Never waits and never imports, so a
+    callback may call it."""
+    module = sys.modules.get(name)
+    return module is not None and not _initializing(module)
+
+
 # ----------------------------------------------------------------------
 # Internals
 # ----------------------------------------------------------------------

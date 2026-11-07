@@ -1810,11 +1810,11 @@ def _post_call(
                 # the result reaches the model as part of the next
                 # request's messages, which that call's own content
                 # records when capture is on.
-                from flightdeck_sensor.interceptor.mcp import (
-                    _build_tool_capture_content,
+                from flightdeck_sensor.core.tool_capture import (
+                    build_tool_capture_content,
                 )
 
-                capture_content = _build_tool_capture_content(
+                capture_content = build_tool_capture_content(
                     tool_input=inv.tool_input,
                     tool_output=None,
                     server_name=resp_model or "",

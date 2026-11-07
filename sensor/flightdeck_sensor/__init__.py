@@ -841,10 +841,17 @@ def patch(
     with _patch_lock:
         # Watch first, then look: an SDK whose import finishes in between
         # is both reported by the hook and found imported, and patching it
-        # twice is a no-op.
-        _import_hook.watch(
-            {t.module: functools.partial(_patch_on_import, t, quiet) for t in selected}
-        )
+        # twice is a no-op. Each interceptor module is watched too: when
+        # importing it is what first imports its SDK, the SDK finishes
+        # importing before the module that patches it has defined its
+        # patch, so the SDK is patched once that module's import ends.
+        callbacks: dict[str, Callable[[str], None]] = {}
+        for t in selected:
+            callbacks[t.module] = functools.partial(_patch_on_import, t, quiet)
+            callbacks[t.interceptor_module] = functools.partial(
+                _patch_on_interceptor_import, t, quiet
+            )
+        _import_hook.watch(callbacks)
         for target in selected:
             if _import_hook.imported(target.module) is not None:
                 _patch_sdk(target, quiet)
@@ -988,6 +995,28 @@ def _patch_on_import(target: _SDKTarget, quiet: bool, _module: str) -> None:
     _patch_pending()
 
 
+def _patch_on_interceptor_import(target: _SDKTarget, quiet: bool, _module: str) -> None:
+    """The import hook's callback for the interceptor module of
+    ``target``, whose code has just finished: patch the SDK if the
+    application has imported it. When importing the interceptor module
+    (the sensor does on an emission path, the application may) is what
+    first imports the SDK, the SDK's own callback ran while this module
+    was still executing, too early to patch, and left it to this one.
+    An SDK that is not imported is left alone, as patch() leaves it."""
+    if _import_hook.finished(target.module):
+        _pending.append((target, quiet))
+        _patch_pending()
+
+
+def _interceptor_executing(target: _SDKTarget) -> bool:
+    """Whether the interceptor module of ``target`` is being imported and
+    has not yet defined its patch function: importing it would hand back
+    the module half-built, so its patch waits for the end of its import
+    (see _patch_on_interceptor_import)."""
+    module = sys.modules.get(target.interceptor_module)
+    return module is not None and not hasattr(module, target.patch)
+
+
 def _patch_pending() -> None:
     """Patch the SDKs the import hook queued, unless another thread holds
     the patch lock, in which case that thread does it when it releases.
@@ -999,7 +1028,9 @@ def _patch_pending() -> None:
     the lock is held finds it free again or has its entry taken by the
     holder's drain. A patch() or reload running at the same time can queue
     an SDK twice; patching is idempotent. An SDK unpatch() stopped
-    watching is dropped from the queue.
+    watching is dropped from the queue, and so is one whose interceptor
+    module is still executing, which the end of that module's import
+    queues again.
     """
     while _pending and _patch_lock.acquire(blocking=False):
         try:
@@ -1008,7 +1039,7 @@ def _patch_pending() -> None:
                     target, quiet = _pending.popleft()
                 except IndexError:
                     break
-                if not _import_hook.watching(target.module):
+                if not _import_hook.watching(target.module) or _interceptor_executing(target):
                     continue
                 try:
                     _patch_sdk(target, quiet)

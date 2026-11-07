@@ -4,12 +4,18 @@ Usage: ``_lazy_patch_child.py <capture server url> <sdk> <order>``
 
 ``order`` is ``after`` (import flightdeck_sensor, ``init()`` and
 ``patch()``, record which SDKs are loaded, then import <sdk>),
-``before`` (import <sdk> first) or ``reload`` (as ``after``, then reload
-<sdk> before using it). Then the child uses <sdk> once against
-the capture server, ends the session and prints one JSON report line:
+``before`` (import <sdk> first), ``reload`` (as ``after``, then reload
+<sdk> before using it), ``interceptor`` (as ``after``, but import the
+sensor's interceptor module for <sdk> first, which imports <sdk>) or
+``tool_call`` (as ``after`` with prompt capture on, and the one call,
+through openai, is answered with a tool call). Then the child uses <sdk>
+once against the capture server, ends the session and prints one JSON
+report line:
 
 - ``loaded_after_patch``: the patchable SDKs in ``sys.modules`` right
   after ``patch()``, in the ``after`` order (before <sdk> is imported);
+- ``loaded_at_end``: the patchable SDKs in ``sys.modules`` once the
+  call is made;
 - ``session_id``: the sensor session's id;
 - ``patched``: whether <sdk>'s patch sentinel is in place after its import;
 - ``network``: hosts other than loopback the process tried to resolve or
@@ -124,6 +130,29 @@ def _use(sdk: str, server: str) -> bool:
     raise ValueError(sdk)
 
 
+def _tool_call(server: str) -> bool:
+    """One OpenAI chat call offering a tool, which the capture server
+    answers with a call to it, so the sensor emits a captured
+    ``tool_call``. Returns whether openai's patch is in place."""
+    import openai
+
+    client = openai.OpenAI(base_url=f"{server}/v1", api_key="test-key")
+    client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "weather in Paris?"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            }
+        ],
+    )
+    return hasattr(openai.OpenAI, "_flightdeck_patched")
+
+
 async def _call_mcp_tool() -> None:
     """One tool call to an in-process MCP server: through ``mcp.Client`` on
     mcp 2.x, through an in-memory session on 1.x."""
@@ -161,7 +190,13 @@ def main() -> None:
 
     import flightdeck_sensor
 
-    flightdeck_sensor.init(server=server, token="tok", quiet=True, agent_type="coding")
+    flightdeck_sensor.init(
+        server=server,
+        token="tok",
+        quiet=True,
+        agent_type="coding",
+        capture_prompts=order == "tool_call",
+    )
     flightdeck_sensor.patch(quiet=True)
     loaded_after_patch = _loaded()
     network_at_patch = list(network)
@@ -171,7 +206,12 @@ def main() -> None:
     if sdk != "none":
         if order == "reload":
             importlib.reload(importlib.import_module(sdk))
-        patched = _use(sdk, server)
+        elif order == "interceptor":
+            # The module that patches <sdk> is imported first, and its own
+            # import of <sdk> is the SDK's first import.
+            target = next(t for t in flightdeck_sensor._SDK_TARGETS if t.module == sdk)
+            importlib.import_module(target.interceptor_module)
+        patched = _tool_call(server) if order == "tool_call" else _use(sdk, server)
     session = flightdeck_sensor._session
     assert session is not None
     session_id = session.config.session_id
@@ -179,6 +219,7 @@ def main() -> None:
 
     report = {
         "loaded_after_patch": loaded_after_patch,
+        "loaded_at_end": _loaded(),
         "session_id": session_id,
         "patched": patched,
         "network": network,

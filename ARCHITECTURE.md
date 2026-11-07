@@ -242,6 +242,7 @@ flightdeck/
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
 │   │   │   ├── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   ├── tool_capture.py # event_content envelope for a captured tool call (MCP, LLM-side, Agent SDK)
 │   │   │   └── import_hook.py  # sys.meta_path finder: runs patch() for an SDK as the application imports it
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads; the drain thread ends the session for a signal)
@@ -1072,10 +1073,17 @@ lookup. So an application loads only the SDKs it uses: `import
 flightdeck_sensor`, `init` and `patch` import none of them, and litellm's
 download of its price list from GitHub, which runs when litellm is
 imported, happens only when the application imports litellm. An SDK's
-interceptor module imports the SDK, so it is loaded only once the SDK is;
-`wrap` looks for a client's SDK classes only when that SDK is imported (a
-client cannot exist before), and the interceptor names `flightdeck_sensor`
-re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
+interceptor module imports the SDK, so it is loaded only once the SDK is,
+and code shared across interceptors (the captured-arguments envelope of
+every `tool_call`, in `core/tool_capture.py`) lives outside them, so an
+LLM call never imports another SDK. When importing an interceptor module
+is nonetheless what first imports its SDK (the application reads a
+`patch_*` name before importing the SDK, say), the SDK finishes importing
+while that module is still executing, before it defines its patch: the
+finder watches each interceptor module too, and the SDK is patched as
+that module's import ends. `wrap` looks for a client's SDK classes only
+when that SDK is imported (a client cannot exist before), and the
+interceptor names `flightdeck_sensor` re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
 resolve on first access. LangGraph is watched as `langgraph.graph`, where
 `StateGraph` lives: `langgraph` itself is a namespace package shared with
 LangGraph's other distributions, and a namespace package runs no code to

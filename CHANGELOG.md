@@ -160,6 +160,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The sensor meters MCP calls when an LLM tool call is what first
+  imports `mcp`.** With prompt capture on, the first tool call an
+  Anthropic, OpenAI or litellm response carried imported the sensor's MCP
+  interceptor to build the call's captured arguments, and with it the
+  `mcp` SDK. `mcp` then finished importing before the interceptor had
+  defined its patch, so patching it failed ("patching mcp failed; its
+  calls are not metered") and every MCP call after it went unmetered. The
+  captured-arguments envelope no longer lives in the MCP interceptor, so
+  an LLM tool call imports no SDK, and an SDK whose first import happens
+  inside the interceptor module that patches it (anthropic, openai,
+  litellm and mcp alike) is now patched once that module's import ends.
+
 - **The sensor meters OpenAI calls on openai releases before 1.78.**
   Their client builds `chat`, `embeddings` and `responses` in its
   constructor, which the class patch never reached, so `patch()` left

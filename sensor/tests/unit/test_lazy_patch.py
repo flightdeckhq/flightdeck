@@ -26,7 +26,13 @@ import pytest
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
-from tests.unit._child_process import CaptureServer, child_env, finish, start_child
+from tests.unit._child_process import (
+    CAPTURE_TOOL_NAME,
+    CaptureServer,
+    child_env,
+    finish,
+    start_child,
+)
 
 # The SDK modules whose import triggers a patch, as _SDK_TARGETS names them.
 SDK_MODULES = (
@@ -118,13 +124,16 @@ def test_import_init_and_patch_load_no_sdk() -> None:
     assert [e["event_type"] for e in events] == ["session_start", "session_end"]
 
 
-@pytest.mark.parametrize("order", ["after", "before"])
+# "interceptor" imports the sensor's interceptor module for the SDK first
+# (as the sensor's own emission paths and an application reading a
+# ``patch_*`` name can), so the SDK's first import happens inside it.
+@pytest.mark.parametrize("order", ["after", "before", "interceptor"])
 @pytest.mark.parametrize("sdk", SDK_MODULES)
 def test_an_sdk_is_patched_and_metered_whichever_is_imported_first(sdk: str, order: str) -> None:
     if not _installed(sdk):
         pytest.skip(f"{sdk} is not installed in this lane")
     report, events = _run_child(sdk, order)
-    if order == "after":
+    if order != "before":
         # Nothing was loaded until the application imported the SDK.
         assert report["loaded_after_patch"] == []
     else:
@@ -144,6 +153,23 @@ def test_a_reloaded_sdk_stays_patched(sdk: str) -> None:
     report, events = _run_child(sdk, "reload")
     assert report["patched"] is True
     _assert_metered(sdk, report["session_id"], events)
+
+
+@pytest.mark.skipif(
+    not (_installed("openai") and _installed("mcp")),
+    reason="openai and mcp are not both installed in this lane",
+)
+def test_a_captured_llm_tool_call_imports_no_other_sdk() -> None:
+    # The tool_call's captured arguments are built without the MCP
+    # interceptor, whose import would import mcp into an application that
+    # never did, inside its LLM call.
+    report, events = _run_child("openai", "tool_call")
+    assert report["patched"] is True
+    assert report["loaded_at_end"] == ["openai"]
+    tool_calls = [e for e in events if e["event_type"] == "tool_call"]
+    assert [t["tool_name"] for t in tool_calls] == [CAPTURE_TOOL_NAME], events
+    assert tool_calls[0]["has_content"] is True
+    assert tool_calls[0]["content"]["tool_input"] == {"city": "Paris"}
 
 
 @pytest.mark.skipif(not _installed("litellm"), reason="litellm is not installed in this lane")
@@ -299,6 +325,112 @@ def test_a_failing_patch_on_import_does_not_break_the_import(
     module = importlib.import_module(fake_sdk.name)
     assert module.LOADED is True
     assert f"patching {fake_sdk.name} failed" in caplog.text
+
+
+# An interceptor module for the on-disk stand-in SDK: it imports the SDK
+# at its top, as every real one does, and records its calls on it.
+_INTERCEPTOR_SOURCE = """\
+import {sdk}
+
+
+def patch_fake(quiet=False):
+    {sdk}.CALLS.append(("patch", str(quiet)))
+
+
+def unpatch_fake():
+    {sdk}.CALLS.append(("unpatch",))
+"""
+# One that does not import the SDK.
+_SDK_FREE_INTERCEPTOR_SOURCE = """\
+def patch_fake(quiet=False):
+    raise AssertionError("patched an SDK that is not imported")
+
+
+def unpatch_fake():
+    pass
+"""
+
+
+@pytest.fixture()
+def fake_sdk_on_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A stand-in SDK and a real interceptor module for it, both files on
+    disk and neither imported, with ``_SDK_TARGETS`` holding only their
+    target. ``write(source)`` writes the interceptor module."""
+    name = f"fd_fake_sdk_{uuid.uuid4().hex[:10]}"
+    interceptor = f"{name}_interceptor"
+    module_name = f"flightdeck_sensor.interceptor.{interceptor}"
+    sdk_dir = tmp_path / "sdk"
+    interceptor_dir = tmp_path / "interceptor"
+    sdk_dir.mkdir()
+    interceptor_dir.mkdir()
+    (sdk_dir / f"{name}.py").write_text("CALLS = []\n")
+    monkeypatch.syspath_prepend(str(sdk_dir))
+    package = sys.modules["flightdeck_sensor.interceptor"]
+    monkeypatch.setattr(package, "__path__", [*package.__path__, str(interceptor_dir)])
+    target = flightdeck_sensor._SDKTarget(
+        Provider.ANTHROPIC, name, interceptor, "patch_fake", "unpatch_fake"
+    )
+    monkeypatch.setattr(flightdeck_sensor, "_SDK_TARGETS", (target,))
+    monkeypatch.setattr(flightdeck_sensor, "_session", MagicMock())
+
+    def write(source: str) -> None:
+        (interceptor_dir / f"{interceptor}.py").write_text(source.format(sdk=name))
+
+    try:
+        yield types.SimpleNamespace(
+            name=name, interceptor=interceptor, module=module_name, write=write
+        )
+    finally:
+        flightdeck_sensor.unpatch()
+        for module in (name, module_name):
+            sys.modules.pop(module, None)
+        if hasattr(package, interceptor):
+            delattr(package, interceptor)
+
+
+def test_an_sdk_first_imported_by_its_interceptor_module_is_patched(
+    fake_sdk_on_disk: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_sdk_on_disk.write(_INTERCEPTOR_SOURCE)
+    _patch()
+    # The SDK finishes importing while the interceptor module is still
+    # executing and has not defined its patch: the patch waits for the
+    # end of that module's import instead of failing on a half-built one.
+    importlib.import_module(fake_sdk_on_disk.module)
+    assert sys.modules[fake_sdk_on_disk.name].CALLS == [("patch", "True")]
+    assert "failed" not in caplog.text
+
+
+def test_the_sensor_reaching_for_an_interceptor_first_finds_its_sdk_patched(
+    fake_sdk_on_disk: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    # As a package lazy name or an emission path does: the interceptor
+    # module comes back whole, and the SDK its import imported is patched.
+    fake_sdk_on_disk.write(_INTERCEPTOR_SOURCE)
+    _patch()
+    module = flightdeck_sensor._interceptor(fake_sdk_on_disk.interceptor)
+    assert callable(module.patch_fake)
+    assert sys.modules[fake_sdk_on_disk.name].CALLS == [("patch", "True")]
+    assert "failed" not in caplog.text
+
+
+def test_an_interceptor_module_imported_without_its_sdk_patches_nothing(
+    fake_sdk_on_disk: Any,
+) -> None:
+    fake_sdk_on_disk.write(_SDK_FREE_INTERCEPTOR_SOURCE)
+    _patch()
+    importlib.import_module(fake_sdk_on_disk.module)
+    assert fake_sdk_on_disk.name not in sys.modules
+
+
+def test_an_interceptor_module_imported_after_unpatch_patches_nothing(
+    fake_sdk_on_disk: Any,
+) -> None:
+    fake_sdk_on_disk.write(_INTERCEPTOR_SOURCE)
+    _patch()
+    flightdeck_sensor.unpatch()
+    importlib.import_module(fake_sdk_on_disk.module)
+    assert sys.modules[fake_sdk_on_disk.name].CALLS == []
 
 
 # ----------------------------------------------------------------------

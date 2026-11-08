@@ -40,7 +40,7 @@ func canonicalUUID(id string) string {
 
 // nullIfEmpty binds an optional id or text as NULL when empty, so the
 // shared SQL needs no cast: on Postgres a NULL or text argument takes
-// the column's type, where NULLIF($n, '') would be text and fail
+// the column's type, where NULLIF($n, ”) would be text and fail
 // against a uuid column.
 func nullIfEmpty(s string) any {
 	if s == "" {

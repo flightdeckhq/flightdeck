@@ -143,8 +143,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 	var state string
 	var unattributed, assembled bool
 	var closedSeq int64
-	err = sp.db.Reader().QueryRowContext(ctx, sp.guardReadSQL(), e.SessionID,
-	).Scan(&state, &unattributed, &closedSeq, &assembled)
+	err = sp.db.Reader().QueryRowContext(ctx, sp.guardReadSQL(), e.SessionID).Scan(&state, &unattributed, &closedSeq, &assembled)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Session never seen. Lazy-create from event fields.
 		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)

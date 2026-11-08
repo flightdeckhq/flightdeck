@@ -531,31 +531,35 @@ func (s *Store) stageTrace(ctx context.Context, tx *sql.Tx, b *TraceBatch) (Stag
 	now := s.clock()
 
 	// 2. Which records are new. The trace row lock is held, so no other
-	// write adds records to this trace until this transaction ends.
+	// write adds records to this trace until this transaction ends. A
+	// trace with no staged record (span_count is 0: every insert bumps
+	// it in its own transaction) has nothing to look up.
 	candidates := dedupe(b.Records)
-	ids := make([][]byte, len(candidates))
-	kinds := make([]int16, len(candidates))
-	for i, r := range candidates {
-		ids[i] = r.SpanID[:]
-		kinds[i] = int16(r.Kind)
-	}
-	rows, err := tx.QueryContext(ctx, s.q.existingRecords, append([]any{b.Key.TokenKey, traceID}, s.q.keyArgs(ids, kinds)...)...)
-	if err != nil {
-		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
-	}
 	existing := map[FactKey]bool{}
-	for rows.Next() {
-		var id []byte
-		var kind int16
-		if err := rows.Scan(&id, &kind); err != nil {
-			_ = rows.Close()
-			return res, fmt.Errorf("otlpstage: scan staged record: %w", err)
+	if spanCount > 0 {
+		ids := make([][]byte, len(candidates))
+		kinds := make([]int16, len(candidates))
+		for i, r := range candidates {
+			ids[i] = r.SpanID[:]
+			kinds[i] = int16(r.Kind)
 		}
-		existing[factKey(id, kind)] = true
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		rows, err := tx.QueryContext(ctx, s.q.existingRecords, append([]any{b.Key.TokenKey, traceID}, s.q.keyArgs(ids, kinds)...)...)
+		if err != nil {
+			return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		}
+		for rows.Next() {
+			var id []byte
+			var kind int16
+			if err := rows.Scan(&id, &kind); err != nil {
+				_ = rows.Close()
+				return res, fmt.Errorf("otlpstage: scan staged record: %w", err)
+			}
+			existing[factKey(id, kind)] = true
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		}
 	}
 	res.Duplicate = len(b.Records) - len(candidates) + len(existing)
 

@@ -369,10 +369,18 @@ jobs:
         working-directory: storage
         run: go test ./... -v -race -count=1
 
+      # The ingestion stores run their SQLite half here (storagetest, a
+      # temp file per test). -race turns on the compiler's checkptr
+      # instrumentation as well, which makes the pure-Go SQLite's pointer
+      # arithmetic about ten times slower: a staging write of the
+      # 10 000-record cap, 0.2 s uninstrumented, then outlasts the 2 s
+      # StageTimeout the store enforces. The race detector stays on;
+      # only checkptr is turned off.
       - name: Test ingestion
         working-directory: ingestion
         run: |
           go test ./... -v -race \
+            -gcflags=all=-d=checkptr=0 \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...

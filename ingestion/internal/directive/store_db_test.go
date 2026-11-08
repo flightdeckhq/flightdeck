@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -128,6 +129,51 @@ func TestLookupPendingOnBothBackends(t *testing.T) {
 		}
 		if delivered != 4 {
 			t.Fatalf("%d directives marked delivered, want all 4", delivered)
+		}
+	})
+}
+
+// Many lookups for one session race for one pending directive: exactly
+// one takes it on both backends. On Postgres the lookups that waited on
+// the row lock re-check the updated row under READ COMMITTED and find
+// it delivered; on SQLite the one writer runs them in turn.
+func TestLookupPendingConcurrentLookupsDeliverOnce(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		s := NewStore(db)
+		flavor := "directive-race-" + randomUUID(t)[:8]
+		mine := randomUUID(t)
+		seedSession(t, db, mine, flavor)
+		const rounds, lookups = 5, 8
+		for range rounds {
+			id := seedDirective(t, db, mine, flavor, "shutdown", time.Now().UTC(), "")
+			start := make(chan struct{})
+			got := make(chan *Directive, lookups)
+			var wg sync.WaitGroup
+			for range lookups {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					d, err := s.LookupPending(ctx, mine)
+					if err != nil {
+						t.Errorf("LookupPending: %v", err)
+					}
+					got <- d
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(got)
+			var delivered []string
+			for d := range got {
+				if d != nil {
+					delivered = append(delivered, d.ID)
+				}
+			}
+			if len(delivered) != 1 || delivered[0] != id {
+				t.Fatalf("%d lookups delivered %v, want exactly one delivery of %s", lookups, delivered, id)
+			}
 		}
 	})
 }

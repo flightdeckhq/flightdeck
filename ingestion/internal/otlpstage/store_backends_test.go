@@ -140,3 +140,70 @@ func TestRawNULIsRefusedWithoutTheReplacement(t *testing.T) {
 		}
 	})
 }
+
+// The key-list statements (the staged-record lookup, the mark and the
+// content delete) take an empty list and a list with a repeated key on
+// both backends: unnest of empty arrays and json_each of "[]" match no
+// row, and a key named twice matches its row once.
+func TestKeyListHandlesEmptyAndDuplicateKeys(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newTestEnv(t, db)
+		ctx := context.Background()
+		key := e.newKey()
+		e.stage(e.batch(key, captured(span(1, 0), `{"a":1}`), captured(span(2, 1), `{"b":2}`)))
+		q := queriesFor(db)
+		lookup := func(ids [][]byte, kinds []int16) int {
+			t.Helper()
+			rows, err := db.Reader().QueryContext(ctx, q.existingRecords,
+				append([]any{key.TokenKey, key.TraceID[:]}, q.keyArgs(ids, kinds)...)...)
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			defer func() { _ = rows.Close() }()
+			n := 0
+			for rows.Next() {
+				n++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		if n := lookup(nil, nil); n != 0 {
+			t.Fatalf("an empty key list matched %d records", n)
+		}
+		if n := lookup([][]byte{idBytes(1), idBytes(1), idBytes(9)}, []int16{1, 1, 1}); n != 1 {
+			t.Fatalf("a repeated key and an unknown one matched %d records, want 1", n)
+		}
+		// A key with the other kind is another key.
+		if n := lookup([][]byte{idBytes(1)}, []int16{int16(KindLog)}); n != 0 {
+			t.Fatalf("the log kind of a staged span matched %d records", n)
+		}
+
+		_, lt := e.claimOne("a", key)
+		// The mark with a repeated key marks the record once and deletes
+		// its content once; the empty list is never sent (MarkAssembled
+		// skips it), so the statements are exercised directly.
+		dup := []FactKey{{SpanID: spanID(1), Kind: KindSpan}, {SpanID: spanID(1), Kind: KindSpan}}
+		if res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, dup); err != nil || !res.Marked {
+			t.Fatalf("MarkAssembled with a repeated key = %+v, %v", res, err)
+		}
+		if !e.assembledFlag(key, 1) || e.assembledFlag(key, 2) || e.contentRows(key) != 1 {
+			t.Fatalf("after a repeated-key mark: record 1 assembled=%v, record 2 assembled=%v, content rows=%d; want true, false, 1",
+				e.assembledFlag(key, 1), e.assembledFlag(key, 2), e.contentRows(key))
+		}
+		for _, stmt := range []string{q.markRecords, q.deleteContent} {
+			args := append([]any{key.TokenKey, key.TraceID[:]}, q.keyArgs(nil, nil)...)
+			if stmt == q.markRecords {
+				args = append(args, int64(7))
+			}
+			res, err := db.ExecContext(ctx, stmt, args...)
+			if err != nil {
+				t.Fatalf("statement with an empty key list: %v", err)
+			}
+			if n, _ := res.RowsAffected(); n != 0 {
+				t.Fatalf("an empty key list changed %d rows", n)
+			}
+		}
+	})
+}

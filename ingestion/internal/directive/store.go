@@ -40,9 +40,11 @@ func NewStore(db *storage.DB) *Store {
 // the session, or to its flavor with no session, delivered and returns
 // it. The id is read as text on both backends (CAST is a no-op on
 // SQLite, where the column is text) and the session id is bound as
-// text, which Postgres compares against its uuid column. The statement
-// is one UPDATE, so two lookups for the same session cannot both take
-// the same row: the second finds delivered_at set.
+// text, which Postgres compares against its uuid column. Two lookups
+// for the same session cannot both take one row: the outer WHERE
+// repeats delivered_at IS NULL, so on Postgres (READ COMMITTED) the
+// lookup that waited on the row lock re-checks the updated row and
+// updates nothing, and on SQLite the one writer runs them in turn.
 const queryTakePending = `
 	UPDATE directives
 	SET delivered_at = $1
@@ -55,6 +57,7 @@ const queryTakePending = `
 		ORDER BY issued_at ASC
 		LIMIT 1
 	)
+	AND delivered_at IS NULL
 	RETURNING CAST(id AS TEXT), action, COALESCE(reason, ''), degrade_to, grace_period_ms, payload`
 
 // LookupPending returns the oldest undelivered directive for a session:

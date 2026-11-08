@@ -1,15 +1,18 @@
-// Package directive provides fast lookup for pending control-plane directives.
+// Package directive provides fast lookup for pending control-plane
+// directives. It reads and marks directives through the storage
+// boundary, so it runs on SQLite and Postgres alike: its one statement
+// is the common subset of both dialects.
 package directive
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // Directive is the response-envelope payload returned to the sensor.
@@ -22,15 +25,36 @@ type Directive struct {
 	Payload       *json.RawMessage `json:"payload,omitempty"`
 }
 
-// Store reads and marks directives in Postgres.
+// Store reads and marks directives.
 type Store struct {
-	pool *pgxpool.Pool
+	db *storage.DB
 }
 
 // NewStore creates a directive Store.
-func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+func NewStore(db *storage.DB) *Store {
+	return &Store{db: db}
 }
+
+// queryTakePending marks the oldest undelivered directive addressed to
+// the session, or to its flavor with no session, delivered and returns
+// it. The id is read as text on both backends (CAST is a no-op on
+// SQLite, where the column is text) and the session id is bound as
+// text, which Postgres compares against its uuid column. The statement
+// is one UPDATE, so two lookups for the same session cannot both take
+// the same row: the second finds delivered_at set.
+const queryTakePending = `
+	UPDATE directives
+	SET delivered_at = $1
+	WHERE id = (
+		SELECT id FROM directives
+		WHERE (session_id = $2 OR (session_id IS NULL AND flavor = (
+			SELECT flavor FROM sessions WHERE session_id = $2
+		)))
+		AND delivered_at IS NULL
+		ORDER BY issued_at ASC
+		LIMIT 1
+	)
+	RETURNING CAST(id AS TEXT), action, COALESCE(reason, ''), degrade_to, grace_period_ms, payload`
 
 // LookupPending returns the oldest undelivered directive for a session:
 // one addressed to the session, or one addressed to its flavor with no
@@ -38,27 +62,21 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // returned, since that session's own lookup must take it. Returns nil
 // if none exist. Marks the directive as delivered atomically.
 func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive, error) {
-	var d Directive
-	err := s.pool.QueryRow(ctx, `
-		UPDATE directives
-		SET delivered_at = $1
-		WHERE id = (
-			SELECT id FROM directives
-			WHERE (session_id = $2::uuid OR (session_id IS NULL AND flavor = (
-				SELECT flavor FROM sessions WHERE session_id = $2::uuid
-			)))
-			AND delivered_at IS NULL
-			ORDER BY issued_at ASC
-			LIMIT 1
-		)
-		RETURNING id::text, action, COALESCE(reason, ''), degrade_to, grace_period_ms, payload
-	`, time.Now().UTC(), sessionID).Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs, &d.Payload)
-
-	if errors.Is(err, pgx.ErrNoRows) {
+	var (
+		d       Directive
+		payload []byte
+	)
+	err := s.db.QueryRowContext(ctx, queryTakePending, time.Now().UTC(), sessionID).
+		Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup pending directive: %w", err)
+	}
+	if payload != nil {
+		raw := json.RawMessage(payload)
+		d.Payload = &raw
 	}
 	return &d, nil
 }

@@ -4950,7 +4950,18 @@ what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
 SQL fragments are never templated beyond the dialect helpers. A store
 outside the boundary holds a pgx pool and runs on Postgres only
-(CLAUDE.md rule 35 lists the store packages).
+(CLAUDE.md rule 35 lists the store packages). On SQLite the ingestion
+API validates tokens and drops revoked ones through the boundary; its
+directive lookups, session attachment and OTLP staging are outside it
+and return an error there (an event is still accepted, with no
+directive and `attached: false`; OTLP requests fail), and the GenAI
+assembler does not run. `storage.Open` pings; a service opens its
+database with `storage.OpenRetry`, which retries with a doubling delay
+for a bounded budget (ingestion: 60 s) so a database that starts a
+moment after the service does not end the process. The Postgres pool is
+capped at max(4, NumCPU) connections, open and idle, idle ones closed
+after 30 minutes; the SQLite writer is one connection and the reader
+pool eight.
 
 **The common subset** both engines accept, written as is: `$1, $2, …`
 placeholders (SQLite binds `$NNN` by ordinal), `CAST(x AS TEXT)` (the
@@ -5809,7 +5820,10 @@ the storage Bus after commit. The ingestion API subscribes to that
 channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
 LISTEN connection on Postgres, outside its request pool); the query API
 holds a LISTEN connection of its own. Each drops the cached validations
-for that id when the notification arrives. Every invalidation also bumps a
+for that id when the notification arrives. The SQLite bus is in-process,
+so a token deleted by a process other than the one serving the request
+is refused only once its cached validation expires, after at most 60
+seconds. Every invalidation also bumps a
 generation counter; a validation that was already querying the database
 when the revocation arrived caches its result only if the counter has not
 moved, so a lookup that read the row just before the delete cannot put

@@ -40,6 +40,16 @@ import (
 // error. pgx parses the URL without connecting.
 const unavailablePostgresURL = "postgres://flightdeck@127.0.0.1:1/unavailable?sslmode=disable"
 
+// databaseConnectBudget is how long ingestion keeps trying to reach its
+// database at boot before exiting. storage.Open pings, so a database
+// that is a moment behind the service (compose starts both at once; a
+// Kubernetes rollout restarts them independently) would otherwise end
+// the process at once. Sixty seconds outlasts the compose Postgres
+// healthcheck's worst case (five tries, five seconds apart, plus the
+// start) while still failing a misconfigured URL within the first
+// minute of a deploy.
+const databaseConnectBudget = 60 * time.Second
+
 // directiveAdapter wraps directive.Store to satisfy handlers.DirectiveLookup.
 type directiveAdapter struct {
 	store *directive.Store
@@ -69,9 +79,11 @@ func main() {
 	cfg := config.Load()
 
 	// The database, through the storage boundary. The token validator
-	// reads it here; the stores not yet converted (directives, sessions,
-	// OTLP staging) still open a pgx pool of their own below.
-	db, err := storage.Open(context.Background(), cfg.PostgresURL)
+	// reads it here; the stores outside the boundary (directives,
+	// sessions, OTLP staging) open a pgx pool of their own below.
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), databaseConnectBudget)
+	db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
+	cancelOpen()
 	if err != nil {
 		slog.Error("database connection failed", "err", err)
 		os.Exit(1)

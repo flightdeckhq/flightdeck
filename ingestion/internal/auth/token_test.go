@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -67,6 +69,7 @@ type fakeDB struct {
 	ftdQueryCount atomic.Int32
 	execCount     atomic.Int32
 	queryErr      error
+	execErr       error // returned by Exec (the last_used_at stamp)
 }
 
 func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) rowScanner {
@@ -90,7 +93,7 @@ func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (rowsIter, error) 
 
 func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) error {
 	f.execCount.Add(1)
-	return nil
+	return f.execErr
 }
 
 func envFn(value string) envLookup {
@@ -285,5 +288,38 @@ func TestValidate_UnknownTokenRejectNotCached(t *testing.T) {
 	}
 	if db.ftdQueryCount.Load() != 3 {
 		t.Errorf("expected 3 DB hits for unknown ftd_ token (no cache), got %d", db.ftdQueryCount.Load())
+	}
+}
+
+// A failed last_used_at stamp (the SQLite writer busy, a Postgres
+// hiccup) is logged and the token stays valid: the row was just read.
+func TestValidate_LastUsedStampFailureKeepsTokenValid(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	salt := "dddddddddddddddddddddddddddddddd"
+	raw := "ftd_a3f8b00b1234567890abcdef01234567"
+	db := &fakeDB{
+		devRow:        &fakeRow{id: "dev-uuid", name: "Development Token"},
+		ftdCandidates: [][4]string{{"prod-uuid", "Prod", hashWithSalt(salt, raw), salt}},
+		execErr:       errors.New("database is locked (5) (SQLITE_BUSY)"),
+	}
+	v := newValidatorWithDB(db, nil, envFn("dev"))
+	for _, tok := range []string{"tok_dev", raw} {
+		res, err := v.Validate(context.Background(), tok)
+		if err != nil || !res.Valid {
+			t.Fatalf("%s with a failing stamp: %+v err=%v", tok, res, err)
+		}
+	}
+	if db.execCount.Load() != 2 {
+		t.Errorf("stamp attempted %d times, want 2", db.execCount.Load())
+	}
+	if n := strings.Count(logged.String(), "token last_used_at not updated"); n != 2 {
+		t.Errorf("warn logged %d times, want 2:\n%s", n, logged.String())
+	}
+	if !strings.Contains(logged.String(), "SQLITE_BUSY") || !strings.Contains(logged.String(), "token_id=prod-uuid") {
+		t.Errorf("log lacks the error or the token id:\n%s", logged.String())
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -234,12 +235,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 		if err != nil {
 			return ValidationResult{}, fmt.Errorf("lookup tok_dev row: %w", err)
 		}
-		if err := v.touchLastUsed(ctx, id); err != nil {
-			// Not load-bearing -- log-worthy in production, but a
-			// failed UPDATE should not reject an otherwise-valid
-			// token. The caller sees a Valid result either way.
-			_ = err
-		}
+		v.touchLastUsed(ctx, id)
 		return ValidationResult{Valid: true, ID: id, Name: name}, nil
 	}
 
@@ -257,9 +253,7 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 				return ValidationResult{}, fmt.Errorf("scan candidate: %w", err)
 			}
 			if constantTimeEqual(hashWithSalt(salt, rawToken), tokenHash) {
-				if err := v.touchLastUsed(ctx, id); err != nil {
-					_ = err
-				}
+				v.touchLastUsed(ctx, id)
 				return ValidationResult{Valid: true, ID: id, Name: name}, nil
 			}
 		}
@@ -272,8 +266,14 @@ func (v *Validator) resolve(ctx context.Context, rawToken string) (ValidationRes
 	return ValidationResult{Valid: false}, nil
 }
 
-func (v *Validator) touchLastUsed(ctx context.Context, id string) error {
-	return v.db.Exec(ctx, v.touchLastUsedQuery, id)
+// touchLastUsed stamps the token's last_used_at. The stamp is not
+// load-bearing: a failed UPDATE (the SQLite writer busy behind another
+// process's statement, a Postgres hiccup) is logged and the token stays
+// valid, since the row was just read.
+func (v *Validator) touchLastUsed(ctx context.Context, id string) {
+	if err := v.db.Exec(ctx, v.touchLastUsedQuery, id); err != nil {
+		slog.Warn("token last_used_at not updated", "token_id", id, "err", err)
+	}
 }
 
 func (v *Validator) evictOldest() {

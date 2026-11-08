@@ -9,22 +9,33 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/config"
 )
 
-func TestDefaultConfig_MatchesTheEnvironmentDefaults(t *testing.T) {
-	c := DefaultConfig()
-	if c.WorkerPoolSize != 10 || c.ReconcilerInterval != time.Minute || c.OrphanTimeout != 24*time.Hour ||
-		c.MigrationsDir != "/migrations" || c.ShutdownTimeout != 30*time.Second || c.MetricsPort != 0 {
-		t.Fatalf("%+v", c)
-	}
-}
-
 func TestFromEnv_MapsEveryField(t *testing.T) {
-	c := FromEnv(config.Config{
+	c := fromEnv(config.Config{
 		PostgresURL: "postgres://x", NatsURL: "nats://y", WorkerPoolSize: 3, ShutdownTimeoutSecs: 20,
 		MigrationsDir: "/m", OrphanTimeoutHours: 2, ReconcilerIntervalSecs: 5, MetricsPort: 9102,
 	})
 	want := Config{
 		PostgresURL: "postgres://x", NatsURL: "nats://y", WorkerPoolSize: 3, ReconcilerInterval: 5 * time.Second,
 		OrphanTimeout: 2 * time.Hour, MigrationsDir: "/m", MetricsPort: 9102, ShutdownTimeout: 20 * time.Second,
+	}
+	if c != want {
+		t.Fatalf("got %+v\nwant %+v", c, want)
+	}
+}
+
+func TestLoadEnv_CarriesTheEnvironmentDefaults(t *testing.T) {
+	for _, k := range []string{"FLIGHTDECK_NATS_URL", "FLIGHTDECK_WORKER_POOL_SIZE", "FLIGHTDECK_RECONCILER_INTERVAL_SECS",
+		"FLIGHTDECK_ORPHAN_TIMEOUT_HOURS", "FLIGHTDECK_MIGRATIONS_DIR", "FLIGHTDECK_METRICS_PORT", "SHUTDOWN_TIMEOUT_SECS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://x")
+	c, err := LoadEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Config{
+		PostgresURL: "postgres://x", NatsURL: "nats://nats:4222", WorkerPoolSize: 10, ReconcilerInterval: time.Minute,
+		OrphanTimeout: 24 * time.Hour, MigrationsDir: "/migrations", MetricsPort: 9102, ShutdownTimeout: 30 * time.Second,
 	}
 	if c != want {
 		t.Fatalf("got %+v\nwant %+v", c, want)

@@ -1,26 +1,20 @@
 package app
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
-func TestDefaultConfig_MatchesTheEnvironmentDefaults(t *testing.T) {
-	c := DefaultConfig()
-	if c.ListenAddr != "" {
-		t.Fatalf("default config has a listener: %q", c.ListenAddr)
-	}
-	if c.RateLimitPerMinute != 1000 || c.StreamMaxAge != 72*time.Hour || c.StreamMaxBytes != 5120<<20 ||
-		c.StreamReplicas != 1 || c.ShutdownTimeout != 30*time.Second || c.GenAIClaimInterval != 0 {
-		t.Fatalf("%+v", c)
-	}
-}
-
 func TestFromEnv_MapsEveryField(t *testing.T) {
-	c := FromEnv(config.Config{
+	c := fromEnv(config.Config{
 		Port: "8080", PostgresURL: "postgres://x", NatsURL: "nats://y", ShutdownTimeoutSecs: 7,
 		RateLimitPerMinute: 5, GenAIClaimInterval: 50 * time.Millisecond,
 		StreamMaxAge: time.Hour, StreamMaxBytes: 64 << 20, StreamReplicas: 3, MetricsPort: 9103,
@@ -29,6 +23,30 @@ func TestFromEnv_MapsEveryField(t *testing.T) {
 		ListenAddr: ":8080", PostgresURL: "postgres://x", NatsURL: "nats://y", RateLimitPerMinute: 5,
 		GenAIClaimInterval: 50 * time.Millisecond, StreamMaxAge: time.Hour, StreamMaxBytes: 64 << 20,
 		StreamReplicas: 3, MetricsPort: 9103, ShutdownTimeout: 7 * time.Second,
+	}
+	if c != want {
+		t.Fatalf("got %+v\nwant %+v", c, want)
+	}
+}
+
+func TestLoadEnv_CarriesTheEnvironmentDefaults(t *testing.T) {
+	for _, k := range []string{"FLIGHTDECK_PORT", "FLIGHTDECK_NATS_URL", "FLIGHTDECK_RATE_LIMIT_PER_MINUTE",
+		"FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS", "FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS",
+		"FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB", "FLIGHTDECK_NATS_STREAM_REPLICAS",
+		"FLIGHTDECK_METRICS_PORT", "SHUTDOWN_TIMEOUT_SECS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://x")
+	c, err := LoadEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Config{
+		ListenAddr: ":8080", PostgresURL: "postgres://x", NatsURL: "nats://nats:4222",
+		RateLimitPerMinute: 1000, GenAIClaimInterval: 0,
+		StreamMaxAge:   config.DefaultStreamMaxAgeHours * time.Hour,
+		StreamMaxBytes: config.DefaultStreamMaxSizeMiB << 20, StreamReplicas: 1,
+		MetricsPort: config.DefaultMetricsPort, ShutdownTimeout: 30 * time.Second,
 	}
 	if c != want {
 		t.Fatalf("got %+v\nwant %+v", c, want)
@@ -55,5 +73,93 @@ func TestLoadEnv_ReturnsTheEnvironmentsRefusalAsAnError(t *testing.T) {
 	}
 	if c.ListenAddr != ":18080" || c.PostgresURL != "postgres://x" {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// unreachableDSN parses but names a port nothing listens on; pgxpool
+// opens no connection until a query asks for one, so New works and the
+// handler checks below never touch a database.
+const unreachableDSN = "postgres://flightdeck@127.0.0.1:1/none?sslmode=disable"
+
+// embeddedNATS runs a JetStream-enabled nats-server in the test process
+// with no listener and returns an in-process connection to it, so New
+// can create the FLIGHTDECK stream on a bus of the test's own.
+func embeddedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	ns, err := server.NewServer(&server.Options{
+		DontListen: true, JetStream: true, StoreDir: t.TempDir(), NoSigs: true,
+		JetStreamMaxMemory: 64 << 20, JetStreamMaxStore: 256 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ns.Start()
+	if !ns.ReadyForConnections(10 * time.Second) {
+		t.Fatal("embedded NATS did not start")
+	}
+	t.Cleanup(ns.Shutdown)
+	nc, err := nats.Connect("", nats.InProcessServer(ns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+// testConfig is a Config with the stream settings the environment
+// defaults to and no listener.
+func testConfig() Config {
+	return Config{
+		RateLimitPerMinute: 1000,
+		StreamMaxAge:       config.DefaultStreamMaxAgeHours * time.Hour,
+		StreamMaxBytes:     64 << 20, // small: the embedded store is bounded
+		StreamReplicas:     1,
+		ShutdownTimeout:    10 * time.Second,
+	}
+}
+
+func TestHandler_HealthUnderBothPrefixesAndAuthBeforeAnyQuery(t *testing.T) {
+	nc := embeddedNATS(t)
+	cfg := testConfig()
+	cfg.PostgresURL = unreachableDSN
+	a, err := New(context.Background(), cfg, Deps{NATS: nc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.closeOwned()
+	if !a.ownsPool || a.ownsNATS {
+		t.Fatalf("ownsPool=%v ownsNATS=%v: New owns what it dialled and nothing else", a.ownsPool, a.ownsNATS)
+	}
+	for _, path := range []string{"/health", "/ingest/health"} {
+		rec := httptest.NewRecorder()
+		a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ok") {
+			t.Fatalf("GET %s: %d %q", path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/v1/events", "/ingest/v1/events"} {
+		rec := httptest.NewRecorder()
+		a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("POST %s without a token: %d, want 401", path, rec.Code)
+		}
+	}
+	// The stream exists on the injected bus.
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := js.StreamInfo("FLIGHTDECK"); err != nil {
+		t.Fatalf("New did not create the FLIGHTDECK stream: %v", err)
+	}
+}
+
+func TestNew_UnreachableNATSIsAnErrorAndTheOwnedPoolIsClosed(t *testing.T) {
+	cfg := testConfig()
+	cfg.PostgresURL = unreachableDSN
+	cfg.NatsURL = "nats://127.0.0.1:1"
+	_, err := New(context.Background(), cfg, Deps{})
+	if err == nil || !strings.Contains(err.Error(), "NATS connection") {
+		t.Fatalf("err = %v, want the NATS dial error", err)
 	}
 }

@@ -2,7 +2,8 @@
 // to wire, behind a Config and a Deps, so the standalone binary and the
 // single flightdeck binary run the same service. New builds the service,
 // Handler is its HTTP surface, Run drives its background loops (and its
-// own listener when Config.ListenAddr is set) until the context ends.
+// own listener when Config.ListenAddr is set) until the context ends,
+// then joins the loops before it closes what it opened.
 //
 // The package also carries the bootstrap-token helpers the flightdeck
 // binary uses to mint and check its dashboard token, since the token
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/auth"
@@ -27,8 +29,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Config is the query API's configuration. DefaultConfig gives every
-// tunable the value the service's environment variable defaults to.
+// Config is the query API's configuration. The environment is the one
+// source of defaults: LoadEnv reads it as the standalone binary does.
 type Config struct {
 	// ListenAddr is the address of the service's own HTTP listener.
 	// Empty means no listener: the caller mounts Handler() itself.
@@ -40,22 +42,14 @@ type Config struct {
 	CORSOrigin string
 	// MetricsPort is the metrics listener's port; zero turns it off.
 	MetricsPort int
-	// ShutdownTimeout bounds the graceful shutdown.
+	// ShutdownTimeout bounds the graceful shutdown: the listeners'
+	// drain and the wait for the background loops.
 	ShutdownTimeout time.Duration
 }
 
-// DefaultConfig is Config with the defaults the service's environment
-// variables have, and no listener of its own.
-func DefaultConfig() Config {
-	return Config{
-		CORSOrigin:      "*",
-		ShutdownTimeout: 30 * time.Second,
-	}
-}
-
-// FromEnv maps the service's environment configuration onto a Config
-// with its own listener, for the standalone binary.
-func FromEnv(c config.Config) Config {
+// fromEnv maps the service's environment configuration onto a Config
+// with its own listener.
+func fromEnv(c config.Config) Config {
 	return Config{
 		ListenAddr:      ":" + c.Port,
 		PostgresURL:     c.PostgresURL,
@@ -76,7 +70,7 @@ func LoadEnv() (cfg Config, err error) {
 			err = fmt.Errorf("%v", r)
 		}
 	}()
-	return FromEnv(config.Load()), nil
+	return fromEnv(config.Load()), nil
 }
 
 // Deps are the connections the service runs on. A nil Pool is opened
@@ -149,12 +143,24 @@ func (a *App) Handler() http.Handler { return a.srv.Handler }
 // Run syncs the price table and the global MCP policy, starts the hub,
 // the NOTIFY and revocation listeners, the metrics listener when
 // configured and the HTTP listener when ListenAddr is set, and blocks
-// until ctx ends or a listener fails. It then shuts down within
-// ShutdownTimeout and closes the pool it opened.
+// until ctx ends or a listener fails. It then shuts the listeners down,
+// waits for the background loops, both within ShutdownTimeout, and
+// closes the pool it opened.
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer a.closeOwned()
+
+	// Every background loop returns when runCtx ends; they are joined
+	// before the pool they use is closed.
+	var loops sync.WaitGroup
+	spawn := func(f func()) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			f()
+		}()
+	}
 
 	// Write the price list into model_pricing for the cost queries. On
 	// a fresh database the workers may not have created the table yet,
@@ -162,7 +168,7 @@ func (a *App) Run(ctx context.Context) error {
 	// table keeps its previous content until a sync succeeds.
 	if err := store.SyncPricingTable(runCtx, a.pool); err != nil {
 		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
-		go store.RetryPricingSync(runCtx, a.pool)
+		spawn(func() { store.RetryPricingSync(runCtx, a.pool) })
 	}
 	// Ensure the empty blocklist global MCP policy exists before serving
 	// traffic. Best-effort: a migration also seeds this row, so a
@@ -177,10 +183,10 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Info("ensure global mcp policy at boot complete")
 	}
 
-	go a.hub.Run(runCtx)
-	go a.hub.ListenNotify(runCtx, a.pool)
+	spawn(func() { a.hub.Run(runCtx) })
+	spawn(func() { a.hub.ListenNotify(runCtx, a.pool) })
 	// Drop cached validations of a token as soon as its row is deleted.
-	go a.validator.ListenRevocations(runCtx, a.pool)
+	spawn(func() { a.validator.ListenRevocations(runCtx, a.pool) })
 
 	g, gctx := errgroup.WithContext(runCtx)
 	if a.cfg.ListenAddr != "" {
@@ -208,9 +214,10 @@ func (a *App) Run(ctx context.Context) error {
 
 	<-gctx.Done()
 	slog.Info("shutting down query API")
-	cancel() // stops the hub and the listeners
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 	defer shutdownCancel()
+	// The listeners stop taking requests and drain first, so a request
+	// in flight still has the hub and the pool it may need.
 	if a.cfg.ListenAddr != "" {
 		if err := a.srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown error", "err", err)
@@ -222,8 +229,27 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	err := g.Wait()
+	cancel() // stops the hub and the NOTIFY and revocation listeners
+	if !waitWithin(shutdownCtx, &loops) {
+		slog.Warn("background loops did not stop before the shutdown timeout; closing the pool anyway")
+	}
 	slog.Info("query API stopped")
 	return err
+}
+
+// waitWithin waits for wg until ctx ends and reports whether wg finished.
+func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (a *App) closeOwned() {

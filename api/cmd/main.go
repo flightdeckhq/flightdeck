@@ -16,16 +16,19 @@ import (
 	"syscall"
 
 	"github.com/flightdeckhq/flightdeck/api/app"
-	"github.com/flightdeckhq/flightdeck/api/internal/config"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := app.LoadEnv()
+	if err != nil {
+		slog.Error("configuration invalid", "err", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	if err := app.Run(ctx, app.FromEnv(cfg), app.Deps{}); err != nil {
+	if err := app.Run(ctx, cfg, app.Deps{}); err != nil {
 		slog.Error("query API failed", "err", err)
 		os.Exit(1)
 	}

@@ -24,6 +24,20 @@ All notable changes to Flightdeck are documented here.
   `npm run dev` in `dashboard/` works against the binary. Each service
   also exports an `app` package (`ingestion/app`, `workers/app`,
   `api/app`) the binary and the standalone services share.
+- **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
+  later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
+  a child session for each agent that runs and for each agent used as a
+  tool (nested under the agent that called it), reports hand-offs as
+  `agent_handoff` and a guardrail that fires as the new
+  `guardrail_tripwire` signal (names only; the dashboard reads
+  `guardrail tripped · <guardrail> · <kind>`), and stores the run's
+  conversation id in the child's context as `gen_ai_conversation_id`.
+  Model, tool and MCP calls stay on the sensor's session, so a Stop or a
+  token budget applies to the whole run; a Stop also halts the run when
+  the next agent starts or hands off. The sensor warns once when the
+  OpenTelemetry instrumentation may report the same run a second time
+  (D259).
+
 - **Claude Code reports to Flightdeck over OpenTelemetry.** Point Claude
   Code's telemetry at the ingestion API (`CLAUDE_CODE_ENABLE_TELEMETRY=1`,
   `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://<host>/ingest`,

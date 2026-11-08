@@ -45,13 +45,16 @@ MIGRATIONS_DIR="$ROOT/docker/postgres/migrations"
 # Every Go test package with a test that opens Postgres through a DSN
 # from the environment, as <module>/<package dir>.
 DB_PACKAGES=(
+  api/app
   api/internal/auth
   api/internal/store
+  ingestion/app
   ingestion/internal/assembler
   ingestion/internal/auth
   ingestion/internal/handlers
   ingestion/internal/otlpstage
   ingestion/internal/session
+  workers/app
   workers/internal/processor
   workers/internal/writer
 )

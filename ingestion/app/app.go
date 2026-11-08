@@ -3,7 +3,7 @@
 // the single flightdeck binary run the same service. New builds the
 // service, Handler is its HTTP surface, Run drives its background loops
 // (and its own listener when Config.ListenAddr is set) until the context
-// ends, then shuts down in order.
+// ends, then shuts down in order: listeners, loops, connections.
 package app
 
 import (
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/assembler"
@@ -29,10 +30,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Config is the ingestion API's configuration. DefaultConfig gives every
-// tunable the value the service's environment variable defaults to; the
-// standalone binary overrides them from the environment, the flightdeck
-// binary from its own flags.
+// Config is the ingestion API's configuration. The environment is the
+// one source of defaults: LoadEnv reads it as the standalone binary
+// does; the flightdeck binary sets the variables its flags decide and
+// reads the same way.
 type Config struct {
 	// ListenAddr is the address of the service's own HTTP listener.
 	// Empty means no listener: the caller mounts Handler() itself.
@@ -54,25 +55,14 @@ type Config struct {
 	StreamReplicas int
 	// MetricsPort is the metrics listener's port; zero turns it off.
 	MetricsPort int
-	// ShutdownTimeout bounds the graceful shutdown.
+	// ShutdownTimeout bounds the graceful shutdown: the listeners'
+	// drain and the wait for the background loops.
 	ShutdownTimeout time.Duration
 }
 
-// DefaultConfig is Config with the defaults the service's environment
-// variables have, and no listener of its own.
-func DefaultConfig() Config {
-	return Config{
-		RateLimitPerMinute: handlers.DefaultRateLimitPerMinute,
-		StreamMaxAge:       config.DefaultStreamMaxAgeHours * time.Hour,
-		StreamMaxBytes:     config.DefaultStreamMaxSizeMiB << 20,
-		StreamReplicas:     1,
-		ShutdownTimeout:    30 * time.Second,
-	}
-}
-
-// FromEnv maps the service's environment configuration onto a Config
-// with its own listener, for the standalone binary.
-func FromEnv(c config.Config) Config {
+// fromEnv maps the service's environment configuration onto a Config
+// with its own listener.
+func fromEnv(c config.Config) Config {
 	return Config{
 		ListenAddr:         ":" + c.Port,
 		PostgresURL:        c.PostgresURL,
@@ -98,7 +88,7 @@ func LoadEnv() (cfg Config, err error) {
 			err = fmt.Errorf("%v", r)
 		}
 	}()
-	return FromEnv(config.Load()), nil
+	return fromEnv(config.Load()), nil
 }
 
 // Deps are the connections the service runs on. A nil one is dialled
@@ -209,22 +199,27 @@ func (a *App) Handler() http.Handler { return a.srv.Handler }
 // Run starts the background loops (token revocation listener, GenAI
 // assembler, the metrics listener when configured, the HTTP listener
 // when ListenAddr is set) and blocks until ctx ends or a listener fails.
-// It then stops the loops, lets the assembly in progress release its
-// lease, shuts the listeners down within ShutdownTimeout and closes the
-// connections it opened.
+// It then shuts the listeners down, stops the loops and waits for them
+// (the assembly in progress finishes its chunk and releases its lease),
+// both within ShutdownTimeout, and closes the connections it opened.
 func (a *App) Run(ctx context.Context) error {
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
 	defer a.closeOwned()
 
+	// Every background loop returns when runCtx ends; they are joined
+	// before the connections they use are closed.
+	var loops sync.WaitGroup
+	spawn := func(f func()) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			f()
+		}()
+	}
 	// Drop cached validations of a token as soon as its row is deleted.
-	go a.validator.ListenRevocations(runCtx, a.pool)
-
-	assemblerDone := make(chan struct{})
-	go func() {
-		defer close(assemblerDone)
-		a.assembler.Run(runCtx)
-	}()
+	spawn(func() { a.validator.ListenRevocations(runCtx, a.pool) })
+	spawn(func() { a.assembler.Run(runCtx) })
 
 	g, gctx := errgroup.WithContext(runCtx)
 	if a.cfg.ListenAddr != "" {
@@ -252,17 +247,10 @@ func (a *App) Run(ctx context.Context) error {
 
 	<-gctx.Done()
 	slog.Info("shutting down ingestion API")
-	stopRun()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 	defer cancel()
-
-	// Let the assembly in progress finish its chunk and release its
-	// lease before the database and bus connections close.
-	select {
-	case <-assemblerDone:
-	case <-shutdownCtx.Done():
-		slog.Warn("genai assembler did not stop before the shutdown timeout; its lease lapses")
-	}
+	// The listeners stop taking requests and drain first, so a request
+	// in flight still has the loops and connections it may need.
 	if a.cfg.ListenAddr != "" {
 		if err := a.srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown error", "err", err)
@@ -274,8 +262,27 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	err := g.Wait()
+	stopRun()
+	if !waitWithin(shutdownCtx, &loops) {
+		slog.Warn("genai assembler or revocation listener did not stop before the shutdown timeout; a lease in progress lapses")
+	}
 	slog.Info("ingestion API stopped")
 	return err
+}
+
+// waitWithin waits for wg until ctx ends and reports whether wg finished.
+func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (a *App) closeOwned() {

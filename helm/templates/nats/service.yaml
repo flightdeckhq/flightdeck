@@ -1,4 +1,4 @@
-{{- if .Values.nats.enabled -}}
+{{- if include "flightdeck.natsEnabled" . -}}
 {{- $component := "nats" -}}
 apiVersion: v1
 kind: Service

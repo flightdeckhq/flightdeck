@@ -4,6 +4,34 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **Compose and Helm run the one `flightdeck` image.** The seven-service
+  compose topology (nginx, postgres, nats, ingestion, workers, api,
+  dashboard) and its production overlay are gone, with the nginx
+  configurations and the per-service images they ran.
+  `docker/docker-compose.yml` is now one `flightdeck` service
+  (`flightdeckhq/flightdeck:vX.Y.Z`, port 4000, its data under the
+  `flightdeck_data` volume) on SQLite; `docker-compose.postgres.yml`
+  layers a bundled Postgres and the database URL on it, and TLS is the
+  binary's `--domain`. The Helm chart renders one `flightdeck`
+  StatefulSet (replicas, an HPA, a per-pod data volume), its Service,
+  one Ingress path, the bundled or external Postgres, and a NATS cluster
+  exactly when the chart runs more than one replica (each pod's embedded
+  bus is a bus of its own, so several pods share the cluster through
+  `--nats-url`); the `api.*`, `ingestion.*`, `workers.*` and
+  `dashboard.*` values, the JWT and admin bootstrap values (the binary
+  generates its own secrets into its data dir) and the migrations
+  ConfigMap are gone, since the migrations are embedded in the binary
+  and run at every start. The contributors' `make dev` starts Postgres
+  and NATS in containers and the binary from source on `127.0.0.1:4000`
+  (`scripts/dev-stack.sh`), where the development token works; `make
+  build-webui` first puts the dashboard into the binary. There is no
+  migration path for an existing dev stack beyond `make dev-reset`
+  after pulling: the compose project and its volumes change shape.
+  Every environment variable the services read keeps its name under
+  the binary.
+
 ### Added
 
 - **`flightdeck_sensor.init()` needs no arguments against a local

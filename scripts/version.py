@@ -46,6 +46,7 @@ LOCATIONS: list[tuple[str, str, int]] = [
     ("helm/Chart.yaml", r"(?m)^version: (?P<v>\S+)$", 1),
     ("helm/Chart.yaml", r'(?m)^appVersion: "(?P<v>[^"]+)"$', 1),
     ("helm/values.yaml", r'(?m)^  tag: "v(?P<v>[^"]+)"$', 1),
+    ("docker/docker-compose.yml", r"(?m)^    image: flightdeckhq/flightdeck:v(?P<v>\S+)$", 1),
     ("api/cmd/main.go", r"(?m)^// @version\s+(?P<v>\S+)$", 1),
     ("api/docs/docs.go", r'Version:\s+"(?P<v>[^"]+)",', 1),
     ("api/docs/swagger.json", r'(?s)"info": \{.*?"version": "(?P<v>[^"]+)"', 1),

@@ -63,10 +63,6 @@ Shared ConfigMap and Secret names.
 {{- printf "%s-secret" (include "flightdeck.fullname" .) -}}
 {{- end -}}
 
-{{- define "flightdeck.migrationsConfigMapName" -}}
-{{- printf "%s-migrations" (include "flightdeck.fullname" .) -}}
-{{- end -}}
-
 {{/*
 In-cluster hostnames.
 */}}
@@ -88,15 +84,53 @@ routes can form).
 {{- end -}}
 
 {{/*
-Replica count of the FLIGHTDECK JetStream stream. Unset, it is 3 when
-the NATS cluster has at least 3 servers and 1 otherwise: 3 replicas keep
-a quorum through the loss of one server, while 2 need both servers for
-a quorum, so they would stop the stream on either server's loss. Set,
-it must be between 1 and 5 (JetStream's maximum), not 2 for that
-reason, and at most nats.replicas, since JetStream places each replica
-on its own server.
+The flightdeck StatefulSet's headless Service, for stable pod DNS.
+*/}}
+{{- define "flightdeck.headlessServiceName" -}}
+{{- printf "%s-flightdeck-headless" (include "flightdeck.fullname" .) -}}
+{{- end -}}
+
+{{/*
+Whether the chart runs more than one flightdeck pod: replicas above 1,
+or the HPA, which may scale above 1.
+*/}}
+{{- define "flightdeck.multiReplica" -}}
+{{- if or (gt (int .Values.flightdeck.replicas) 1) .Values.flightdeck.hpa.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the NATS cluster is rendered, "true" or "". nats.enabled null
+follows the replica count: several pods need one shared bus, one pod
+uses the binary's embedded server. An explicit false with several pods
+fails the render: each embedded server is a bus of its own, so the
+workers of one pod would never see the events another pod ingested.
+*/}}
+{{- define "flightdeck.natsEnabled" -}}
+{{- $multi := include "flightdeck.multiReplica" . -}}
+{{- $set := .Values.nats.enabled -}}
+{{- if kindIs "invalid" $set -}}
+{{- $multi -}}
+{{- else if $set -}}
+true
+{{- else if $multi -}}
+{{- fail "nats.enabled=false with more than one flightdeck replica (flightdeck.replicas above 1, or flightdeck.hpa.enabled): several pods need one shared bus, since the embedded NATS of each pod is a bus of its own; leave nats.enabled unset, or run one replica" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Replica count of the FLIGHTDECK JetStream stream. Without the NATS
+cluster the embedded server holds the one copy. With it, unset, it is 3
+when the cluster has at least 3 servers and 1 otherwise: 3 replicas keep
+a quorum through the loss of one server, while 2 need both servers for a
+quorum, so they would stop the stream on either server's loss. Set, it
+must be between 1 and 5 (JetStream's maximum), not 2 for that reason,
+and at most nats.replicas, since JetStream places each replica on its
+own server.
 */}}
 {{- define "flightdeck.natsStreamReplicas" -}}
+{{- if not (include "flightdeck.natsEnabled" .) -}}
+1
+{{- else -}}
 {{- $servers := int .Values.nats.replicas -}}
 {{- $set := .Values.nats.jetstream.stream.replicas -}}
 {{- $replicas := 1 -}}
@@ -116,11 +150,12 @@ on its own server.
 {{- end -}}
 {{- $replicas -}}
 {{- end -}}
+{{- end -}}
 
 {{/*
 The FLIGHTDECK stream's age and size limits, validated so a bad value
-fails the render instead of the ingestion pods' startup (which refuses
-the same values).
+fails the render instead of the pods' startup (which refuses the same
+values).
 */}}
 {{- define "flightdeck.natsStreamMaxAgeHours" -}}
 {{- $hours := int .Values.nats.jetstream.stream.maxAgeHours -}}
@@ -135,20 +170,27 @@ the same values).
 {{- if lt $mib 64 -}}
 {{- fail (printf "nats.jetstream.stream.maxSizeMiB must be at least 64, got %d" $mib) -}}
 {{- end -}}
-{{- $volume := include "flightdeck.natsFileStoreMiB" . -}}
+{{- if include "flightdeck.natsEnabled" . -}}
+{{- $volume := include "flightdeck.sizeMiB" .Values.nats.jetstream.fileStore.size -}}
 {{- if and $volume (gt (mul $mib 4) (mul (int $volume) 3)) -}}
 {{- fail (printf "nats.jetstream.stream.maxSizeMiB (%d) must be at most 75%% of nats.jetstream.fileStore.size (%s, %s MiB): a NATS server reserves at most 75%% of its volume's free space, so it would refuse the stream" $mib .Values.nats.jetstream.fileStore.size $volume) -}}
+{{- end -}}
+{{- else -}}
+{{- $volume := include "flightdeck.sizeMiB" .Values.flightdeck.data.size -}}
+{{- if and $volume (gt (mul $mib 4) (mul (int $volume) 3)) -}}
+{{- fail (printf "nats.jetstream.stream.maxSizeMiB (%d) must be at most 75%% of flightdeck.data.size (%s, %s MiB): the embedded bus keeps its store on the pod's data volume, beside the secrets and the TLS cache" $mib .Values.flightdeck.data.size $volume) -}}
+{{- end -}}
 {{- end -}}
 {{- $mib -}}
 {{- end -}}
 
 {{/*
-nats.jetstream.fileStore.size in MiB, for the size check above. Only
-the plain forms are read (Ki, Mi, Gi, Ti and K, M, G, T, with an
-integer); anything else renders empty and skips the check.
+A Kubernetes quantity in MiB, for the size checks above. Only the plain
+forms are read (Ki, Mi, Gi, Ti and K, M, G, T, with an integer);
+anything else renders empty and skips the check.
 */}}
-{{- define "flightdeck.natsFileStoreMiB" -}}
-{{- $size := toString .Values.nats.jetstream.fileStore.size -}}
+{{- define "flightdeck.sizeMiB" -}}
+{{- $size := toString . -}}
 {{- if regexMatch "^[0-9]+(Ki|Mi|Gi|Ti|K|M|G|T)$" $size -}}
 {{- $n := int64 (regexFind "^[0-9]+" $size) -}}
 {{- $unit := trimPrefix (toString $n) $size -}}
@@ -166,14 +208,12 @@ integer); anything else renders empty and skips the check.
 
 {{/*
 Bundled Postgres password. Fails the render when postgres.externalUrl is
-empty AND postgres.password is unset — prior releases silently defaulted
-to the literal "flightdeck", which left every bundled-Postgres install
-sharing one well-known credential. Operators MUST set
-postgres.password (or set postgres.externalUrl to point at a managed DB).
-Single source of truth so the DSN helper and the Secret stay byte-aligned.
+empty AND postgres.password is unset: a default every bundled install
+would share is a well-known credential. Single source of truth so the
+DSN helper and the Secret stay byte-aligned.
 */}}
 {{- define "flightdeck.postgresPassword" -}}
-{{- required "postgres.password must be set when postgres.externalUrl is empty. Set --set postgres.password=<strong-password> or supply --set postgres.externalUrl=<dsn>. Defaulting to the literal 'flightdeck' (the pre-v0.5.1 behaviour) is unsafe and has been removed." .Values.postgres.password -}}
+{{- required "postgres.password must be set when postgres.externalUrl is empty. Set --set postgres.password=<strong-password> or supply --set postgres.externalUrl=<dsn>." .Values.postgres.password -}}
 {{- end -}}
 
 {{/*
@@ -197,8 +237,8 @@ turned any literal "+" into "%2B").
 {{- end -}}
 
 {{/*
-Postgres DSN used by every server component. Resolves to externalUrl when
-set; otherwise to the bundled in-cluster service.
+Postgres DSN the pods read (FLIGHTDECK_DATABASE_URL). Resolves to
+externalUrl when set; otherwise to the bundled in-cluster service.
 */}}
 {{- define "flightdeck.postgresURL" -}}
 {{- if .Values.postgres.externalUrl -}}
@@ -209,38 +249,36 @@ set; otherwise to the bundled in-cluster service.
 {{- end -}}
 
 {{/*
-NATS URL -- always the bundled in-cluster client Service. A token goes
-in the user slot (nats://<token>@host): nats.go sends a lone user as the
-auth token, while nats://:<token>@host sends an empty user and a
-password, which a token-protected server rejects.
+NATS URL the pods read (FLIGHTDECK_NATS_URL, the binary's --nats-url):
+the bundled cluster's client Service. The token goes in the user slot
+(nats://<token>@host): nats.go sends a lone user as the auth token,
+while nats://:<token>@host sends an empty user and a password, which a
+token-protected server rejects.
 */}}
 {{- define "flightdeck.natsURL" -}}
-{{- if .Values.nats.auth.token -}}
-{{- printf "nats://%s@%s:%d" .Values.nats.auth.token (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
-{{- else -}}
-{{- printf "nats://%s:%d" (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
-{{- end -}}
+{{- printf "nats://%s@%s:%d" (include "flightdeck.natsToken" .) (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
 {{- end -}}
 
 {{/*
-Validated NATS token. The token is written into URLs unencoded (the
-client URL and the cluster route URLs, the latter expanded from an env
-var by the kubelet), so it is limited to URL-unreserved characters.
+Validated NATS token, required whenever the cluster is rendered. The
+token is written into URLs unencoded (the client URL and the cluster
+route URLs, the latter expanded from an env var by the kubelet), so it
+is limited to URL-unreserved characters.
 */}}
 {{- define "flightdeck.natsToken" -}}
-{{- $token := .Values.nats.auth.token -}}
-{{- if and $token (not (regexMatch "^[A-Za-z0-9._~-]+$" $token)) -}}
+{{- $token := required "nats.auth.token must be set when the NATS cluster is rendered (more than one flightdeck replica, the HPA, or nats.enabled=true): an unauthenticated event bus lets any pod that can reach it forge events or drain the queue. Set --set nats.auth.token=<strong-random-token> (openssl rand -hex 32)." .Values.nats.auth.token -}}
+{{- if not (regexMatch "^[A-Za-z0-9._~-]+$" $token) -}}
 {{- fail "nats.auth.token may contain only letters, digits and . _ ~ - (it is placed in NATS URLs); generate one with: openssl rand -hex 32" -}}
 {{- end -}}
 {{- $token -}}
 {{- end -}}
 
 {{/*
-Userinfo the cluster routes authenticate with when a token is set. The
-password is the NATS_TOKEN env var, expanded by the kubelet in args.
+Userinfo the cluster routes authenticate with. The password is the
+NATS_TOKEN env var, expanded by the kubelet in args.
 */}}
 {{- define "flightdeck.natsRouteAuth" -}}
-{{- if .Values.nats.auth.token -}}route:$(NATS_TOKEN)@{{- end -}}
+route:$(NATS_TOKEN)@
 {{- end -}}
 
 {{/*
@@ -260,18 +298,13 @@ Service: <statefulset>-<ordinal>.<service>.
 {{- end -}}
 
 {{/*
-Fully-qualified image reference per component. Usage:
-  image: {{ include "flightdeck.image" (dict "root" . "component" .Values.ingestion) }}
+The flightdeck image reference.
 */}}
 {{- define "flightdeck.image" -}}
-{{- $registry := .root.Values.image.registry -}}
-{{- $repoBase := .root.Values.image.repository -}}
-{{- $repo := .component.image.repository -}}
-{{- $tag := .component.image.tag | default .root.Values.image.tag -}}
-{{- if $registry -}}
-{{- printf "%s/%s/%s:%s" $registry $repoBase $repo $tag -}}
+{{- if .Values.image.registry -}}
+{{- printf "%s/%s:%s" .Values.image.registry .Values.image.repository .Values.image.tag -}}
 {{- else -}}
-{{- printf "%s/%s:%s" $repoBase $repo $tag -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- end -}}
 {{- end -}}
 

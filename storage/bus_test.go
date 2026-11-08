@@ -186,6 +186,81 @@ func TestInProcessBus_PublishWaitsForAFullSubscriberUntilItsContextEnds(t *testi
 	expectClosed(t, ch)
 }
 
+// A publisher blocked on one full subscriber holds nothing a second
+// publisher needs: the second returns on its own deadline while the
+// first is still waiting, and the first returns once the subscriber
+// goes away.
+func TestInProcessBus_BlockedPublisherDoesNotStallOtherPublishers(t *testing.T) {
+	bus := storage.NewInProcessBus()
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	ch, err := bus.Subscribe(subCtx, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 256; i++ {
+		if err := bus.Publish(context.Background(), "c", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := make(chan error, 1)
+	go func() { first <- bus.Publish(context.Background(), "c", "blocked") }()
+	// Let the first publisher reach its send.
+	time.Sleep(50 * time.Millisecond)
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelSecond()
+	start := time.Now()
+	if err := bus.Publish(secondCtx, "c", "second"); err != context.DeadlineExceeded {
+		t.Fatalf("second publisher: %v, want DeadlineExceeded", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("second publisher took %s to honour a 200 ms deadline", took)
+	}
+	select {
+	case err := <-first:
+		t.Fatalf("first publisher returned %v while the subscriber was still full", err)
+	default:
+	}
+
+	// Other subscribers of the same channel are not held up either: a
+	// publish that includes the full one still reaches them (the full
+	// subscriber is delivered to first only because the map order is
+	// arbitrary, so this publisher gets a deadline too).
+	otherCtx, cancelOther := context.WithCancel(context.Background())
+	defer cancelOther()
+	other, err := bus.Subscribe(otherCtx, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdCtx, cancelThird := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelThird()
+	_ = bus.Publish(thirdCtx, "c", "third")
+
+	cancelSub()
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatalf("first publisher after the subscriber left: %v", err)
+		}
+	case <-time.After(busDeadline):
+		t.Fatal("first publisher did not return after the subscriber's context ended")
+	}
+	expectClosed(t, ch)
+	// Delivery to the live subscriber works after all that.
+	if err := bus.Publish(context.Background(), "c", "after"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		got := receive(t, other)
+		if got == "after" {
+			break
+		}
+		if got != "third" {
+			t.Fatalf("other received %q", got)
+		}
+	}
+}
+
 // The Postgres bus speaks the channels and payloads the services use
 // today, so a notification from a database trigger reaches a subscriber
 // unchanged.
@@ -195,7 +270,7 @@ func TestPostgresBus_ReceivesTriggerNotification(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ch, err := bus.Subscribe(ctx, "flightdeck_access_token_revoked")
+	ch, err := bus.Subscribe(ctx, storage.ChannelAccessTokenRevoked)
 	if err != nil {
 		t.Fatal(err)
 	}

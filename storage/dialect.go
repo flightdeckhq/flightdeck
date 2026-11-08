@@ -10,9 +10,14 @@ import (
 type TruncUnit string
 
 const (
-	TruncHour  TruncUnit = "hour"
-	TruncDay   TruncUnit = "day"
-	TruncWeek  TruncUnit = "week" // weeks start on Monday, as in Postgres
+	// TruncHour zeroes minutes, seconds and fractions.
+	TruncHour TruncUnit = "hour"
+	// TruncDay is midnight UTC of the timestamp's day.
+	TruncDay TruncUnit = "day"
+	// TruncWeek is midnight UTC of the Monday on or before the
+	// timestamp (weeks start on Monday, as in Postgres).
+	TruncWeek TruncUnit = "week"
+	// TruncMonth is midnight UTC of the first of the month.
 	TruncMonth TruncUnit = "month"
 )
 
@@ -44,22 +49,33 @@ type Dialect interface {
 	// moves back), as a timestamp expression.
 	AddInterval(ts, seconds string) string
 
-	// DateTrunc truncates ts to unit. On SQLite the result is text in
-	// TimeLayout; on Postgres a timestamptz. Both group and compare
-	// identically and scan through Time.
+	// DateTrunc truncates ts to unit in UTC, whatever the session time
+	// zone. On SQLite the result is text in TimeLayout; on Postgres a
+	// timestamptz. Both group and compare identically and scan through
+	// Time. ts is a timestamp expression: a column or a function; a
+	// bare placeholder has no type on Postgres and needs
+	// CAST($n AS TIMESTAMPTZ).
 	DateTrunc(unit TruncUnit, ts string) string
 
 	// ILike matches expr against a LIKE pattern without regard to ASCII
 	// case: lower(expr) LIKE lower(pattern) ESCAPE '\' on both backends,
 	// so the escaping rules agree. Neither backend folds non-ASCII
-	// letters here: SQLite's lower() is ASCII-only, and Postgres is made
-	// to match it rather than depend on the database locale.
+	// letters: SQLite's lower() is ASCII-only, and on Postgres both
+	// sides are folded under the "C" collation so the database locale
+	// cannot make 'ÉCOLE' match 'école' there and not on SQLite.
 	ILike(expr, pattern string) string
 
 	// InArray tests expr for membership in the array bound at param (a
 	// $n placeholder whose value came from ArrayArg): "expr = ANY($n)"
 	// on Postgres, "expr IN (SELECT value FROM json_each($n))" on SQLite.
 	InArray(expr, param string) string
+
+	// InUUIDArray is InArray for a uuid column: on Postgres the bound
+	// text array is cast to uuid[] so the comparison uses the column's
+	// type and index instead of casting every row to text; on SQLite,
+	// where UUIDs are text, it is InArray. The values come from
+	// ArrayArg as for InArray.
+	InUUIDArray(expr, param string) string
 
 	// ArrayArg is the argument value InArray's parameter takes for
 	// values: the []string itself on Postgres (bound as text[]), its
@@ -97,10 +113,6 @@ type commonDialect struct{}
 
 func (commonDialect) Placeholder(n int) string { return fmt.Sprintf("$%d", n) }
 
-func (commonDialect) ILike(expr, pattern string) string {
-	return fmt.Sprintf(`lower(%s) LIKE lower(%s) ESCAPE '\'`, expr, pattern)
-}
-
 func (commonDialect) Upsert(conflictCols, updateCols []string) string {
 	var b strings.Builder
 	b.WriteString("ON CONFLICT (")
@@ -134,16 +146,29 @@ func (postgresDialect) Backend() Backend { return Postgres }
 
 func (postgresDialect) Now() string { return "NOW()" }
 
+// ILike folds both sides under the "C" collation: Postgres' lower()
+// follows the collation, and under "C" it folds ASCII letters only, as
+// SQLite's lower() does. The casts give a bare placeholder a type.
+func (postgresDialect) ILike(expr, pattern string) string {
+	return fmt.Sprintf(`lower(CAST(%s AS TEXT) COLLATE "C") LIKE lower(CAST(%s AS TEXT) COLLATE "C") ESCAPE '\'`, expr, pattern)
+}
+
 func (postgresDialect) AddInterval(ts, seconds string) string {
 	return fmt.Sprintf("(%s + (%s) * INTERVAL '1 second')", ts, seconds)
 }
 
+// DateTrunc names the zone, so a session whose time zone is not UTC
+// still truncates to UTC boundaries, as SQLite's strftime does.
 func (postgresDialect) DateTrunc(unit TruncUnit, ts string) string {
-	return fmt.Sprintf("date_trunc('%s', %s)", unit, ts)
+	return fmt.Sprintf("date_trunc('%s', %s, 'UTC')", unit, ts)
 }
 
 func (postgresDialect) InArray(expr, param string) string {
 	return fmt.Sprintf("%s = ANY(%s)", expr, param)
+}
+
+func (postgresDialect) InUUIDArray(expr, param string) string {
+	return fmt.Sprintf("%s = ANY(CAST(%s AS uuid[]))", expr, param)
 }
 
 func (postgresDialect) ArrayArg(values []string) any {
@@ -179,6 +204,12 @@ const sqliteTimeFormat = "%Y-%m-%dT%H:%M:%fZ"
 
 func (sqliteDialect) Backend() Backend { return SQLite }
 
+// ILike: SQLite's lower() folds ASCII only; LIKE itself is
+// case-sensitive on every connection (case_sensitive_like is on).
+func (sqliteDialect) ILike(expr, pattern string) string {
+	return fmt.Sprintf(`lower(%s) LIKE lower(%s) ESCAPE '\'`, expr, pattern)
+}
+
 func (sqliteDialect) Now() string {
 	return fmt.Sprintf("strftime('%s', 'now')", sqliteTimeFormat)
 }
@@ -205,6 +236,10 @@ func (sqliteDialect) DateTrunc(unit TruncUnit, ts string) string {
 
 func (sqliteDialect) InArray(expr, param string) string {
 	return fmt.Sprintf("%s IN (SELECT value FROM json_each(%s))", expr, param)
+}
+
+func (d sqliteDialect) InUUIDArray(expr, param string) string {
+	return d.InArray(expr, param)
 }
 
 func (sqliteDialect) ArrayArg(values []string) any {

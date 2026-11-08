@@ -58,10 +58,18 @@ const sqliteReaderConns = 8
 // transactions start with BEGIN IMMEDIATE so the write lock is taken at
 // BEGIN and a read-then-write transaction can never fail with
 // SQLITE_BUSY halfway through. Reader returns a pool of connections for
-// statements that only read; in WAL mode they neither block the writer
-// nor are blocked by it. A read that must see a transaction's own
-// uncommitted rows runs on the transaction, not on Reader. On Postgres
-// both handles are the same pool.
+// statements that only read (its connections are query_only: a write
+// through it fails); in WAL mode they neither block the writer nor are
+// blocked by it. A read that must see a transaction's own uncommitted
+// rows runs on the transaction, not on Reader. On Postgres both handles
+// are the same pool.
+//
+// Because the writer is one connection, a statement issued on DB while
+// the same goroutine holds an open Tx or unread Rows from DB waits for
+// that connection and never gets it: a deadlock, not an error. Inside a
+// transaction every statement runs on the Tx; a read that needs no
+// transaction runs on Reader. sql.TxOptions.ReadOnly is enforced by
+// Postgres and ignored by SQLite.
 type DB struct {
 	*sql.DB
 	// Dialect is the SQL dialect of Backend.
@@ -169,10 +177,13 @@ func openSQLite(rawURL string) (*DB, error) {
 
 // sqliteDSN builds the modernc DSN for path. Every connection enables
 // WAL (readers and the writer do not block each other), the busy
-// timeout, foreign keys (off by default in SQLite) and synchronous
-// NORMAL (durable across application crashes in WAL mode, with fsync
-// only at checkpoints). The writer additionally begins every
-// transaction IMMEDIATE.
+// timeout, foreign keys (off by default in SQLite), synchronous NORMAL
+// (durable across application crashes in WAL mode, with fsync only at
+// checkpoints) and case_sensitive_like, so a plain LIKE is
+// case-sensitive as on Postgres (Dialect.ILike is the case-insensitive
+// match on both). The reader's connections are query_only, so a write
+// that reaches the read pool by mistake fails instead of racing the
+// writer. The writer additionally begins every transaction IMMEDIATE.
 func sqliteDSN(path string, writer bool) string {
 	q := url.Values{}
 	q["_pragma"] = []string{
@@ -180,11 +191,46 @@ func sqliteDSN(path string, writer bool) string {
 		fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMillis),
 		"foreign_keys(1)",
 		"synchronous(NORMAL)",
+		"case_sensitive_like(1)",
 	}
 	if writer {
 		q.Set("_txlock", "immediate")
+	} else {
+		q["_pragma"] = append(q["_pragma"], "query_only(1)")
 	}
-	return "file:" + path + "?" + q.Encode()
+	return sqliteFileURI(path) + "?" + q.Encode()
+}
+
+// sqliteFileURI renders path as the file: URI SQLite opens (modernc
+// passes a DSN that starts with "file:" to SQLite whole, with
+// SQLITE_OPEN_URI). SQLite percent-decodes the path and treats the first
+// "?" and "#" as the query and fragment separators, so every byte that
+// is not safe in a URI path is percent-encoded: a data directory named
+// "a#b", "x?y", "50%" or "My Documents" opens the file at that path, not
+// a truncated or mis-decoded one. An absolute path becomes
+// file:///path; a Windows drive path (C:\x\y.db, in either slash
+// style) becomes file:///C:/x/y.db, the form SQLite documents for
+// Windows; a relative path stays relative (file:rel/y.db).
+func sqliteFileURI(path string) string {
+	if isWindowsDrivePath(path) {
+		path = "/" + strings.ReplaceAll(path, `\`, "/")
+	}
+	escaped := (&url.URL{Path: path}).EscapedPath()
+	if strings.HasPrefix(escaped, "/") {
+		return "file://" + escaped
+	}
+	return "file:" + escaped
+}
+
+// isWindowsDrivePath reports whether path starts with a drive letter
+// and a colon, checked by shape rather than runtime.GOOS so the
+// rendering is testable everywhere.
+func isWindowsDrivePath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || (path[2] != '\\' && path[2] != '/') {
+		return false
+	}
+	c := path[0]
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 // Reader returns the handle for statements that only read. On SQLite it

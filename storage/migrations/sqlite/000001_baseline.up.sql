@@ -25,7 +25,7 @@
 -- Postgres schema never does.
 
 CREATE TABLE token_policies (
-    id              TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    id              TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
     scope           TEXT NOT NULL,
     scope_value     TEXT NOT NULL DEFAULT '',
     token_limit     INTEGER,
@@ -33,21 +33,21 @@ CREATE TABLE token_policies (
     degrade_at_pct  INTEGER,
     degrade_to      TEXT,
     block_at_pct    INTEGER,
-    created_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
+    updated_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), '') = updated_at),
     CONSTRAINT token_policies_scope_scope_value_key UNIQUE (scope, scope_value)
 );
 
 CREATE INDEX idx_token_policies_scope ON token_policies (scope, scope_value);
 
 CREATE TABLE access_tokens (
-    id           TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    id           TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
     name         TEXT NOT NULL,
     token_hash   TEXT NOT NULL,
     salt         TEXT NOT NULL,
     prefix       TEXT NOT NULL,
-    created_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    last_used_at TIMESTAMP,
+    created_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
+    last_used_at TIMESTAMP CHECK (last_used_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_used_at), '') = last_used_at)),
     CONSTRAINT access_tokens_token_hash_key UNIQUE (token_hash)
 );
 
@@ -70,15 +70,15 @@ VALUES (
 );
 
 CREATE TABLE agents (
-    agent_id        TEXT NOT NULL PRIMARY KEY,
+    agent_id        TEXT NOT NULL PRIMARY KEY CHECK (agent_id = lower(agent_id) AND agent_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(agent_id, '-', ''))), 0) = 16),
     agent_type      TEXT NOT NULL,
     client_type     TEXT NOT NULL,
     agent_name      TEXT NOT NULL,
     user_name       TEXT NOT NULL,
     hostname        TEXT NOT NULL,
-    policy_id       TEXT REFERENCES token_policies(id),
-    first_seen_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    last_seen_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    policy_id       TEXT REFERENCES token_policies(id) CHECK (policy_id IS NULL OR (policy_id = lower(policy_id) AND policy_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(policy_id, '-', ''))), 0) = 16)),
+    first_seen_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', first_seen_at), '') = first_seen_at),
+    last_seen_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at),
     total_sessions  INTEGER NOT NULL DEFAULT 0,
     total_tokens    INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT agents_agent_type_check CHECK (agent_type IN ('coding', 'production')),
@@ -90,26 +90,26 @@ CREATE INDEX idx_agents_client_type ON agents (client_type);
 CREATE INDEX idx_agents_agent_type ON agents (agent_type);
 
 CREATE TABLE sessions (
-    session_id        TEXT NOT NULL PRIMARY KEY,
+    session_id        TEXT NOT NULL PRIMARY KEY CHECK (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16),
     flavor            TEXT NOT NULL,
     agent_type        TEXT NOT NULL,
     host              TEXT,
     framework         TEXT,
     model             TEXT,
     state             TEXT NOT NULL DEFAULT 'active',
-    started_at        TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    last_seen_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ended_at          TIMESTAMP,
+    started_at        TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), '') = started_at),
+    last_seen_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at),
+    ended_at          TIMESTAMP CHECK (ended_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ended_at), '') = ended_at)),
     tokens_used       INTEGER NOT NULL DEFAULT 0,
     token_limit       INTEGER,
     metadata          TEXT,
     context           TEXT DEFAULT '{}',
-    token_id          TEXT REFERENCES access_tokens(id) ON DELETE SET NULL,
+    token_id          TEXT REFERENCES access_tokens(id) ON DELETE SET NULL CHECK (token_id IS NULL OR (token_id = lower(token_id) AND token_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(token_id, '-', ''))), 0) = 16)),
     token_name        TEXT,
-    agent_id          TEXT REFERENCES agents(agent_id),
+    agent_id          TEXT REFERENCES agents(agent_id) CHECK (agent_id IS NULL OR (agent_id = lower(agent_id) AND agent_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(agent_id, '-', ''))), 0) = 16)),
     client_type       TEXT,
     agent_name        TEXT,
-    parent_session_id TEXT REFERENCES sessions(session_id),
+    parent_session_id TEXT REFERENCES sessions(session_id) CHECK (parent_session_id IS NULL OR (parent_session_id = lower(parent_session_id) AND parent_session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(parent_session_id, '-', ''))), 0) = 16)),
     agent_role        TEXT,
     capture_prompts   BOOLEAN,
     start_seq         INTEGER,
@@ -139,8 +139,8 @@ CREATE INDEX sessions_context_python_version_idx ON sessions (json_extract(conte
 CREATE INDEX sessions_context_process_name_idx ON sessions (json_extract(context, '$.process_name')) WHERE json_extract(context, '$.process_name') IS NOT NULL;
 
 CREATE TABLE events (
-    id                    TEXT NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-    session_id            TEXT NOT NULL REFERENCES sessions(session_id),
+    id                    TEXT NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
+    session_id            TEXT NOT NULL REFERENCES sessions(session_id) CHECK (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16),
     flavor                TEXT NOT NULL,
     event_type            TEXT NOT NULL,
     model                 TEXT,
@@ -151,7 +151,7 @@ CREATE TABLE events (
     tool_name             TEXT,
     has_content           BOOLEAN NOT NULL DEFAULT FALSE,
     payload               TEXT,
-    occurred_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    occurred_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at), '') = occurred_at),
     source                TEXT,
     tokens_cache_read     INTEGER NOT NULL DEFAULT 0,
     tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
@@ -186,15 +186,15 @@ CREATE INDEX events_payload_server_name_idx ON events (json_extract(payload, '$.
 CREATE INDEX events_payload_terminal_idx ON events (json_extract(payload, '$.terminal')) WHERE json_extract(payload, '$.terminal') IS NOT NULL;
 
 CREATE TABLE event_content (
-    event_id         TEXT NOT NULL PRIMARY KEY,
-    session_id       TEXT NOT NULL REFERENCES sessions(session_id),
+    event_id         TEXT NOT NULL PRIMARY KEY CHECK (event_id = lower(event_id) AND event_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(event_id, '-', ''))), 0) = 16),
+    session_id       TEXT NOT NULL REFERENCES sessions(session_id) CHECK (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16),
     provider         TEXT NOT NULL,
     model            TEXT NOT NULL,
     system_prompt    TEXT,
     messages         TEXT,
     tools            TEXT,
     response         TEXT NOT NULL,
-    captured_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    captured_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', captured_at), '') = captured_at),
     input            TEXT,
     tool_input       TEXT,
     tool_output      TEXT,
@@ -211,16 +211,16 @@ CREATE TABLE event_content (
 CREATE INDEX event_content_session_idx ON event_content (session_id);
 
 CREATE TABLE directives (
-    id              TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-    session_id      TEXT,
+    id              TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
+    session_id      TEXT CHECK (session_id IS NULL OR (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16)),
     flavor          TEXT,
     action          TEXT NOT NULL,
     reason          TEXT,
     grace_period_ms INTEGER NOT NULL DEFAULT 5000,
     issued_by       TEXT NOT NULL DEFAULT 'platform',
-    issued_at       TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    delivered_at    TIMESTAMP,
-    acknowledged_at TIMESTAMP,
+    issued_at       TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', issued_at), '') = issued_at),
+    delivered_at    TIMESTAMP CHECK (delivered_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', delivered_at), '') = delivered_at)),
+    acknowledged_at TIMESTAMP CHECK (acknowledged_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', acknowledged_at), '') = acknowledged_at)),
     degrade_to      TEXT,
     payload         TEXT,
     CONSTRAINT directives_payload_json_check CHECK (json_valid(payload))
@@ -230,14 +230,14 @@ CREATE INDEX directives_session_pending_idx ON directives (session_id) WHERE del
 CREATE INDEX directives_flavor_pending_idx ON directives (flavor) WHERE delivered_at IS NULL;
 
 CREATE TABLE custom_directives (
-    id            TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    id            TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
     fingerprint   TEXT NOT NULL,
     name          TEXT NOT NULL,
     description   TEXT,
     flavor        TEXT NOT NULL,
     parameters    TEXT,
-    registered_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    last_seen_at  TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    registered_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (registered_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', registered_at), '') = registered_at)),
+    last_seen_at  TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (last_seen_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at)),
     CONSTRAINT custom_directives_fingerprint_flavor_key UNIQUE (fingerprint, flavor),
     CONSTRAINT custom_directives_parameters_json_check CHECK (json_valid(parameters))
 );
@@ -246,21 +246,21 @@ CREATE INDEX custom_directives_flavor_idx ON custom_directives (flavor);
 CREATE INDEX custom_directives_fp_idx ON custom_directives (fingerprint);
 
 CREATE TABLE session_attachments (
-    id          TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-    session_id  TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    attached_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    id          TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
+    session_id  TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE CHECK (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16),
+    attached_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', attached_at), '') = attached_at)
 );
 
 CREATE INDEX session_attachments_session_idx ON session_attachments (session_id, attached_at);
 
 CREATE TABLE mcp_policies (
-    id                   TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    id                   TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
     scope                TEXT NOT NULL,
     scope_value          TEXT,
     mode                 TEXT,
     block_on_uncertainty BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
+    updated_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), '') = updated_at),
     CONSTRAINT mcp_policies_scope_check CHECK (scope IN ('global', 'flavor')),
     CONSTRAINT mcp_policies_mode_check CHECK (mode IN ('allowlist', 'blocklist')),
     CONSTRAINT mcp_policies_check CHECK ((scope = 'global' AND scope_value IS NULL AND mode IS NOT NULL)
@@ -275,14 +275,14 @@ INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
 VALUES ('global', NULL, 'blocklist', FALSE);
 
 CREATE TABLE mcp_policy_entries (
-    id                   TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-    policy_id            TEXT NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE,
+    id                   TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
+    policy_id            TEXT NOT NULL REFERENCES mcp_policies(id) ON DELETE CASCADE CHECK (policy_id = lower(policy_id) AND policy_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(policy_id, '-', ''))), 0) = 16),
     server_url_canonical TEXT NOT NULL,
     server_name          TEXT NOT NULL,
     fingerprint          TEXT NOT NULL,
     entry_kind           TEXT NOT NULL,
     enforcement          TEXT,
-    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
     CONSTRAINT mcp_policy_entries_entry_kind_check CHECK (entry_kind IN ('allow', 'deny')),
     CONSTRAINT mcp_policy_entries_enforcement_check CHECK (enforcement IN ('warn', 'block', 'interactive'))
 );
@@ -291,12 +291,12 @@ CREATE UNIQUE INDEX mcp_policy_entries_policy_fp_idx ON mcp_policy_entries (poli
 CREATE INDEX mcp_policy_entries_url_idx ON mcp_policy_entries (server_url_canonical);
 
 CREATE TABLE mcp_policy_audit_log (
-    id          TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-    policy_id   TEXT REFERENCES mcp_policies(id) ON DELETE SET NULL,
+    id          TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
+    policy_id   TEXT REFERENCES mcp_policies(id) ON DELETE SET NULL CHECK (policy_id IS NULL OR (policy_id = lower(policy_id) AND policy_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(policy_id, '-', ''))), 0) = 16)),
     event_type  TEXT NOT NULL,
-    actor       TEXT REFERENCES access_tokens(id) ON DELETE SET NULL,
+    actor       TEXT REFERENCES access_tokens(id) ON DELETE SET NULL CHECK (actor IS NULL OR (actor = lower(actor) AND actor GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(actor, '-', ''))), 0) = 16)),
     payload     TEXT NOT NULL DEFAULT '{}',
-    occurred_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    occurred_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at), '') = occurred_at),
     CONSTRAINT mcp_policy_audit_log_event_type_check CHECK (event_type IN (
         'policy_created', 'policy_updated', 'policy_deleted',
         'mode_changed', 'entry_added', 'entry_removed',
@@ -334,7 +334,7 @@ CREATE TABLE model_pricing (
 CREATE TABLE model_pricing_meta (
     id           BOOLEAN NOT NULL PRIMARY KEY DEFAULT TRUE,
     content_hash TEXT NOT NULL,
-    loaded_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    loaded_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', loaded_at), '') = loaded_at),
     CONSTRAINT model_pricing_meta_id_check CHECK (id)
 );
 
@@ -346,15 +346,15 @@ CREATE TABLE otlp_traces (
     token_name        TEXT NOT NULL DEFAULT '',
     resource          TEXT NOT NULL,
     capture           BOOLEAN NOT NULL,
-    first_received_at TIMESTAMP NOT NULL,
-    last_received_at  TIMESTAMP NOT NULL,
-    root_seen_at      TIMESTAMP,
-    resolve_at        TIMESTAMP NOT NULL,
+    first_received_at TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', first_received_at), '') = first_received_at),
+    last_received_at  TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_received_at), '') = last_received_at),
+    root_seen_at      TIMESTAMP CHECK (root_seen_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', root_seen_at), '') = root_seen_at)),
+    resolve_at        TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', resolve_at), '') = resolve_at),
     pending           BOOLEAN NOT NULL DEFAULT TRUE,
     gen               INTEGER NOT NULL DEFAULT 0,
     lease_owner       TEXT,
-    lease_expires     TIMESTAMP,
-    assembled_at      TIMESTAMP,
+    lease_expires     TIMESTAMP CHECK (lease_expires IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', lease_expires), '') = lease_expires)),
+    assembled_at      TIMESTAMP CHECK (assembled_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', assembled_at), '') = assembled_at)),
     assembly_count    INTEGER NOT NULL DEFAULT 0,
     assembly_reason   TEXT,
     span_count        INTEGER NOT NULL DEFAULT 0,
@@ -383,7 +383,7 @@ CREATE TABLE otlp_spans (
     status         INTEGER NOT NULL,
     meta           TEXT NOT NULL,
     assembled      BOOLEAN NOT NULL DEFAULT FALSE,
-    received_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    received_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', received_at), '') = received_at),
     assembled_in   INTEGER,
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id) REFERENCES otlp_traces (token_key, trace_id) ON DELETE CASCADE,
@@ -400,7 +400,7 @@ CREATE TABLE otlp_span_content (
     span_id   BLOB NOT NULL,
     kind      INTEGER NOT NULL,
     content   TEXT NOT NULL,
-    staged_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    staged_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', staged_at), '') = staged_at),
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id, span_id, kind) REFERENCES otlp_spans (token_key, trace_id, span_id, kind) ON DELETE CASCADE,
     CONSTRAINT otlp_span_content_content_json_check CHECK (json_valid(content))

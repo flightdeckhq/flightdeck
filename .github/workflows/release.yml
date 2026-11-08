@@ -81,14 +81,51 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The dashboard bundle, built in a job of its own with read-only
+  # permissions: `npm ci` runs the packages' lifecycle scripts, and a
+  # compromised dependency must find neither the release token nor an
+  # OIDC token it could sign checksums.txt with. The bundle crosses to
+  # the goreleaser job as an artifact.
+  webui:
+    name: Dashboard bundle
+    runs-on: ubuntu-24.04
+    needs: verify
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Build the bundle into webui/dist
+        run: |
+          make build-webui
+          test -f webui/dist/index.html
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: webui-dist
+          path: webui/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   # The six binaries, the archives and checksums on the GitHub release,
   # the Homebrew formula in flightdeckhq/homebrew-tap (stable tags only;
-  # .goreleaser.yaml). The binaries are kept as a workflow artifact for
-  # the PyPI wheels.
+  # .goreleaser.yaml). This job runs goreleaser and cosign only: no
+  # package manager, no third-party build step, with the two write
+  # scopes the release needs. The binaries are kept as a workflow
+  # artifact for the PyPI wheels.
   goreleaser:
     name: Binaries, GitHub release, Homebrew formula
     runs-on: ubuntu-24.04
-    needs: verify
+    needs: [verify, webui]
     permissions:
       contents: write
       id-token: write
@@ -110,13 +147,13 @@ jobs:
             api/go.sum
             storage/go.sum
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          node-version: "24"
+          name: webui-dist
+          path: webui/dist
 
-      - name: Install dashboard dependencies
-        working-directory: dashboard
-        run: npm ci
+      - name: The bundle is in place
+        run: test -f webui/dist/index.html
 
       # The release notes are the tag's CHANGELOG section (the
       # Unreleased section for a pre-release), written outside dist/,
@@ -133,7 +170,9 @@ jobs:
         with:
           distribution: goreleaser
           version: ${{ env.GORELEASER_VERSION }}
-          args: release --clean --release-notes "${{ runner.temp }}/release-notes.md"
+          # --skip=before: the dashboard bundle came from the webui job,
+          # so the `make build-webui` hook (which needs npm) is not run.
+          args: release --clean --skip=before --release-notes "${{ runner.temp }}/release-notes.md"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # A fine-grained token with contents: write on homebrew-tap;

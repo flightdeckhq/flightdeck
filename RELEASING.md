@@ -121,11 +121,14 @@ Pushing the tag triggers `.github/workflows/release.yml`:
   root module and on `api`, `ingestion`, `workers` and `storage`. A
   known vulnerability in code the binaries reach stops the release
   before anything is published.
-- **goreleaser** (after verify): builds the dashboard bundle, cross-
-  compiles the six binaries, writes the archives and `checksums.txt`,
-  creates the GitHub release with the tag's CHANGELOG section as its
-  notes and uploads the assets, and pushes the Homebrew formula to the
-  tap (stable tags only). The binaries are kept as a workflow artifact.
+- **webui** (after verify): builds the dashboard bundle with read-only
+  permissions and hands it over as an artifact.
+- **goreleaser** (after webui): cross-compiles the six binaries with
+  the bundle embedded, writes the archives and `checksums.txt`, signs
+  `checksums.txt` keyless with cosign, creates the GitHub release with
+  the tag's CHANGELOG section as its notes and uploads the assets, and
+  pushes the Homebrew formula to the tap (stable tags only). The
+  binaries are kept as a workflow artifact.
 - **publish-cli** (after goreleaser): builds one `flightdeck-cli` wheel
   per platform from those binaries and publishes them to PyPI through
   OIDC trusted publishing (no API key stored).
@@ -288,4 +291,10 @@ The pipeline needs these, each once:
   trusted publisher or the Docker Hub credentials.
 - **checksums.txt signature**: no setup; the goreleaser job signs with
   its own OIDC identity through `sigstore/cosign-installer`, and the
-  installers verify it when `cosign` is present.
+  installers verify it when `cosign` is present. The identity the
+  installers accept ends in `@refs/tags/v…`, so only a tag push (this
+  workflow's only trigger) produces a signature they take; a signature
+  made from a branch, by hand or by another workflow is refused. The
+  dashboard bundle is built in a separate job without those scopes and
+  handed over as an artifact, so `npm ci` never runs next to the release
+  token or the OIDC token.

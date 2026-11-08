@@ -63,7 +63,11 @@ jobs:
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           tag="${INPUT_TAG:-$RUN_TAG}"
-          case "$tag" in v[0-9]*) ;; *) echo "::error::'$tag' is not a release tag"; exit 1 ;; esac
+          # The release tag grammar (scripts/version.py, build_wheels.py).
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::'$tag' is not a release tag (vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N)"
+            exit 1
+          fi
           case "$tag" in *-*) prerelease=true ;; *) prerelease=false ;; esac
           pep440="$(python3 -c 'import sys; sys.path.insert(0, "packaging/pypi"); import build_wheels; print(build_wheels.pep440_version(sys.argv[1]))' "$tag")"
           {
@@ -119,12 +123,18 @@ jobs:
           echo "FLIGHTDECK_DATABASE_URL=postgres://flightdeck:flightdeck_gate@127.0.0.1:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
           echo "GATE_DOCKER_DATABASE_URL=postgres://flightdeck:flightdeck_gate@host.docker.internal:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
 
+      # cosign on the runner, so install.sh verifies the signature of
+      # checksums.txt as a user with cosign would; the step fails when
+      # the installer reports the check was skipped.
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
+
       # The installer as users run it, piped from the raw URL of the tag
       # (what main serves once the tag's commit is on main).
       - name: install.sh (curl | sh)
         run: |
           test ! -e /usr/local/bin/flightdeck
-          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh | tee "$RUNNER_TEMP/install.log"
+          grep -q 'Signature of checksums.txt verified' "$RUNNER_TEMP/install.log"
           command -v flightdeck
           flightdeck --version
 
@@ -302,6 +312,10 @@ jobs:
 
       # The installer as users run it, piped from the raw URL of the tag.
       # It appends its directory to GITHUB_PATH.
+      # cosign on the runner, so install.ps1 takes its signature-check
+      # path (the one that reads cosign's stderr) on every gate run.
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
+
       # PSScriptAnalyzer ships on the Windows runner image; the installer
       # is linted on the platform that runs it.
       - name: PSScriptAnalyzer on install.ps1
@@ -317,7 +331,9 @@ jobs:
         env:
           VERSION: ${{ env.TAG }}
         run: |
-          irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:TAG/install.ps1" | iex
+          $out = irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:TAG/install.ps1" | iex *>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Signature of checksums.txt verified') { throw 'install.ps1 did not verify the signature of checksums.txt' }
 
       - name: flightdeck --version
         shell: pwsh

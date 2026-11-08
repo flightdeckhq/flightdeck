@@ -641,7 +641,10 @@ All notable changes to Flightdeck are documented here.
   current Postgres schema and every later change lands as a pair with
   the same number in both directories (`scripts/check-migration-pairs.sh`
   and a schema parity test keep them in step). `make test-go-db` runs the
-  Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`).
+  Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`). The
+  ingestion API's token validation and revocation listener are the first
+  store on the boundary: they run on either backend and learn of a
+  revoked token through the Bus.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

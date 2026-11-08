@@ -8,6 +8,9 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../ingestion:/app
+      # ingestion/go.mod replaces the storage module with ../storage,
+      # which from /app is /storage.
+      - ../storage:/storage:ro
     # The integration test suite shares one bearer token (tok_dev)
     # across 50+ tests run back-to-back. The default 1000 req/min
     # sliding window in handlers.NewRateLimiter is appropriate for

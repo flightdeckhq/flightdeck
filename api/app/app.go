@@ -73,6 +73,12 @@ func LoadEnv() (cfg Config, err error) {
 	return fromEnv(config.Load()), nil
 }
 
+// ReadTimeout is the per-request read deadline the service's own
+// listener applies; a caller that mounts Handler() on a server of its
+// own applies it itself, except on the WebSocket route (see
+// server.ReadTimeout).
+const ReadTimeout = server.ReadTimeout
+
 // Deps are the connections the service runs on. A nil Pool is opened
 // with NewPool from Config.PostgresURL and closed when Run returns; one
 // the caller passes is left open.

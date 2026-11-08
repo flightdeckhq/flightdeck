@@ -25,6 +25,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
@@ -38,7 +39,10 @@ type Config struct {
 	// ListenAddr is the address of the service's own HTTP listener.
 	// Empty means no listener: the caller mounts Handler() itself.
 	ListenAddr string
-	// PostgresURL is dialled when Deps.Pool is nil.
+	// PostgresURL is the database URL (FLIGHTDECK_POSTGRES_URL):
+	// postgres://... or sqlite://... for the stores on the storage
+	// boundary, which open it when Deps.DB is nil; the stores still on
+	// pgx dial it too when Deps.Pool is nil and it is Postgres.
 	PostgresURL string
 	// NatsURL is dialled when Deps.NATS is nil.
 	NatsURL string
@@ -91,10 +95,41 @@ func LoadEnv() (cfg Config, err error) {
 	return fromEnv(config.Load()), nil
 }
 
-// Deps are the connections the service runs on. A nil one is dialled
+// ReadTimeout and WriteTimeout are the per-request deadlines the
+// service's own listener applies; a caller that mounts Handler() on a
+// server of its own applies them itself (see server.ReadTimeout).
+const (
+	ReadTimeout  = server.ReadTimeout
+	WriteTimeout = server.WriteTimeout
+)
+
+// databaseConnectBudget is how long New keeps trying to reach the
+// database before giving up. storage.Open pings, so a database that is
+// a moment behind the service (compose starts both at once; a
+// Kubernetes rollout restarts them independently) would otherwise end
+// the process at once. Sixty seconds outlasts the compose Postgres
+// healthcheck's worst case (five tries, five seconds apart, plus the
+// start) while still failing a misconfigured URL within the first
+// minute of a deploy.
+const databaseConnectBudget = 60 * time.Second
+
+// unavailablePostgresURL is the pool target of the stores that have not
+// moved to the storage boundary when the database is SQLite: port 1 is
+// reserved and never listens, so every use fails fast with a connection
+// error. pgx parses the URL without connecting.
+const unavailablePostgresURL = "postgres://flightdeck@127.0.0.1:1/unavailable?sslmode=disable"
+
+// Deps are the connections the service runs on. A nil one is opened
 // from Config and closed when Run returns; one the caller passes is left
-// open, since the caller shares it.
+// open, since the caller shares it. DB is the database through the
+// storage boundary (the token validator and its revocation bus); Pool
+// serves the stores still on pgx (directives, sessions, OTLP staging),
+// which have no database when DB is SQLite: a nil Pool then points at a
+// port nothing listens on, so a request that reaches one of them fails
+// with an error, and the GenAI assembler does not start. Both go when
+// the last store moves to the boundary.
 type Deps struct {
+	DB   *storage.DB
 	Pool *pgxpool.Pool
 	NATS *nats.Conn
 }
@@ -126,10 +161,13 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 // App is a built ingestion API.
 type App struct {
 	cfg       Config
+	db        *storage.DB
 	pool      *pgxpool.Pool
 	nc        *nats.Conn
+	ownsDB    bool
 	ownsPool  bool
 	ownsNATS  bool
+	bus       storage.Bus
 	validator *auth.Validator
 	assembler *assembler.Assembler
 	srv       *http.Server
@@ -140,10 +178,25 @@ type App struct {
 // reconciles the FLIGHTDECK stream and builds the handlers. It starts no
 // goroutine; Run does.
 func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
-	a := &App{cfg: cfg, pool: deps.Pool, nc: deps.NATS}
-	if a.pool == nil {
-		pool, err := pgxpool.New(ctx, cfg.PostgresURL)
+	a := &App{cfg: cfg, db: deps.DB, pool: deps.Pool, nc: deps.NATS}
+	if a.db == nil {
+		openCtx, cancel := context.WithTimeout(ctx, databaseConnectBudget)
+		db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
+		cancel()
 		if err != nil {
+			return nil, fmt.Errorf("database connection: %w", err)
+		}
+		a.db, a.ownsDB = db, true
+	}
+	if a.pool == nil {
+		poolURL := cfg.PostgresURL
+		if a.db.Backend != storage.Postgres {
+			poolURL = unavailablePostgresURL
+			slog.Warn("sqlite backend: directive polling, session attachment and OTLP staging are unavailable until their stores move to the storage boundary")
+		}
+		pool, err := pgxpool.New(ctx, poolURL)
+		if err != nil {
+			a.closeOwned()
 			return nil, fmt.Errorf("postgres connection: %w", err)
 		}
 		a.pool, a.ownsPool = pool, true
@@ -167,7 +220,8 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 		return nil, fmt.Errorf("NATS publisher setup: %w", err)
 	}
 
-	a.validator = auth.NewValidator(a.pool)
+	a.bus = storage.NewBus(a.db)
+	a.validator = auth.NewValidator(a.db)
 	dirStore := &directiveAdapter{store: directive.NewStore(a.pool)}
 	sessAttacher := session.NewStore(a.pool)
 
@@ -197,11 +251,12 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 func (a *App) Handler() http.Handler { return a.srv.Handler }
 
 // Run starts the background loops (token revocation listener, GenAI
-// assembler, the metrics listener when configured, the HTTP listener
-// when ListenAddr is set) and blocks until ctx ends or a listener fails.
-// It then shuts the listeners down, stops the loops and waits for them
-// (the assembly in progress finishes its chunk and releases its lease),
-// both within ShutdownTimeout, and closes the connections it opened.
+// assembler on Postgres, the metrics listener when configured, the HTTP
+// listener when ListenAddr is set) and blocks until ctx ends or a
+// listener fails. It then shuts the listeners down, stops the loops and
+// waits for them (the assembly in progress finishes its chunk and
+// releases its lease), both within ShutdownTimeout, and closes the
+// connections it opened.
 func (a *App) Run(ctx context.Context) error {
 	runCtx, stopRun := context.WithCancel(ctx)
 	defer stopRun()
@@ -218,8 +273,11 @@ func (a *App) Run(ctx context.Context) error {
 		}()
 	}
 	// Drop cached validations of a token as soon as its row is deleted.
-	spawn(func() { a.validator.ListenRevocations(runCtx, a.pool) })
-	spawn(func() { a.assembler.Run(runCtx) })
+	spawn(func() { a.validator.ListenRevocations(runCtx, a.bus) })
+	if a.db.Backend == storage.Postgres {
+		// The staging store is not on the storage boundary yet.
+		spawn(func() { a.assembler.Run(runCtx) })
+	}
 
 	g, gctx := errgroup.WithContext(runCtx)
 	if a.cfg.ListenAddr != "" {
@@ -293,6 +351,12 @@ func (a *App) closeOwned() {
 	if a.ownsPool && a.pool != nil {
 		a.pool.Close()
 		a.pool, a.ownsPool = nil, false
+	}
+	if a.ownsDB && a.db != nil {
+		if err := a.db.Close(); err != nil {
+			slog.Warn("database close", "err", err)
+		}
+		a.db, a.ownsDB = nil, false
 	}
 }
 

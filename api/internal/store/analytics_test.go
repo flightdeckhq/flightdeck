@@ -40,6 +40,61 @@ func TestFrameworkDimensionUnnestsLabels(t *testing.T) {
 	}
 }
 
+// TestNonFrameworkDimensionsHaveNoFromExtras ensures the fromExtras
+// escape hatch is only used by the framework dimension. If a future
+// dimension needs it, the dimensions map entry and this assertion
+// should be updated together.
+func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		for name, dim := range st.dimensions() {
+			if name == "framework" {
+				continue
+			}
+			if dim.fromExtras != "" {
+				t.Errorf("%s: dimensions[%q].fromExtras should be empty, got %q", b, name, dim.fromExtras)
+			}
+		}
+	}
+}
+
+// TestSubAgentDimensionsBucketNullsAsRoot guards the agent_role and
+// parent_session_id projections against the unknown-fallback drift
+// the rest of the dimension family uses. The design spec
+// (CLAUDE.md Rule 25, ARCHITECTURE.md analytics section) requires
+// "(root)" as the null bucket for these two
+// dims so the dashboard can label the no-parent / no-role bucket
+// with a meaningful term rather than the generic "unknown" the
+// other dims use.
+func TestSubAgentDimensionsBucketNullsAsRoot(t *testing.T) {
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		for _, name := range []string{"agent_role", "parent_session_id"} {
+			dim, ok := st.dimensions()[name]
+			if !ok {
+				t.Fatalf("%s: dimensions[%q] is missing", b, name)
+			}
+			// COALESCE-to-(root) baked into the expression itself so
+			// the outer COALESCE(<dim>, 'unknown') in the query builder
+			// never overrides the (root) label. Asserting on the
+			// expression text catches both regressions: (a) someone
+			// dropping the COALESCE, (b) someone changing the literal
+			// from "(root)" to "unknown".
+			for _, expr := range []string{dim.exprEvents, dim.exprSessions} {
+				if !strings.Contains(expr, "COALESCE") {
+					t.Errorf("%s: dimensions[%q] expression must wrap the column in COALESCE; got %q", b, name, expr)
+				}
+				if !strings.Contains(expr, "'(root)'") {
+					t.Errorf("%s: dimensions[%q] expression must use '(root)' as null label; got %q", b, name, expr)
+				}
+			}
+			if !dim.needsSessionJoin {
+				t.Errorf("%s: dimensions[%q] must set needsSessionJoin=true so events-based metrics can group by it", b, name)
+			}
+		}
+	}
+}
+
 // TestParentSessionIDDimensionCastsToText covers the detail that
 // parent_session_id is a UUID column on Postgres and the projection
 // must cast to text before COALESCE so the result column scans into a

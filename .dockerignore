@@ -1,0 +1,20 @@
+# Build context for images built from the repository root
+# (ingestion/Dockerfile needs the storage module beside ingestion/).
+# Everything a Go build does not read stays out of the context.
+.git
+.github
+.claude
+.scratch
+**/node_modules
+**/.venv
+**/dist
+**/coverage*
+**/bin
+dashboard
+sensor
+plugin
+playground
+tests
+docs
+helm
+assets

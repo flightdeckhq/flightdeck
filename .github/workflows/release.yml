@@ -58,7 +58,10 @@ jobs:
       - name: Build ingestion
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
-          context: ./ingestion
+          # Root context: ingestion/go.mod replaces the storage module
+          # with ../storage, so both modules must be in the context.
+          context: .
+          file: ingestion/Dockerfile
           load: true
           tags: flightdeck-ingestion:scan
 
@@ -170,7 +173,8 @@ jobs:
       - name: Build and push ingestion
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
-          context: ./ingestion
+          context: .
+          file: ingestion/Dockerfile
           push: true
           tags: |
             flightdeckhq/flightdeck-ingestion:${{ steps.version.outputs.VERSION }}

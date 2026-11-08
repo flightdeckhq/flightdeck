@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
@@ -76,10 +77,10 @@ func TestLoadEnv_ReturnsTheEnvironmentsRefusalAsAnError(t *testing.T) {
 	}
 }
 
-// unreachableDSN parses but names a port nothing listens on; pgxpool
-// opens no connection until a query asks for one, so New works and the
-// handler checks below never touch a database.
-const unreachableDSN = "postgres://flightdeck@127.0.0.1:1/none?sslmode=disable"
+// The handler checks below run on a SQLite database from storagetest
+// (a migrated file in the test's temp directory): the token validator
+// is on the storage boundary, and the pgx stores point at the
+// unavailable URL, which no health or auth check reaches.
 
 // embeddedNATS runs a JetStream-enabled nats-server in the test process
 // with no listener and returns an in-process connection to it, so New
@@ -120,15 +121,14 @@ func testConfig() Config {
 
 func TestHandler_HealthUnderBothPrefixesAndAuthBeforeAnyQuery(t *testing.T) {
 	nc := embeddedNATS(t)
-	cfg := testConfig()
-	cfg.PostgresURL = unreachableDSN
-	a, err := New(context.Background(), cfg, Deps{NATS: nc})
+	db := storagetest.OpenSQLite(t)
+	a, err := New(context.Background(), testConfig(), Deps{DB: db, NATS: nc})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.closeOwned()
-	if !a.ownsPool || a.ownsNATS {
-		t.Fatalf("ownsPool=%v ownsNATS=%v: New owns what it dialled and nothing else", a.ownsPool, a.ownsNATS)
+	if a.ownsDB || !a.ownsPool || a.ownsNATS {
+		t.Fatalf("ownsDB=%v ownsPool=%v ownsNATS=%v: New owns what it opened (the unavailable pgx pool) and nothing else", a.ownsDB, a.ownsPool, a.ownsNATS)
 	}
 	for _, path := range []string{"/health", "/ingest/health"} {
 		rec := httptest.NewRecorder()
@@ -156,10 +156,18 @@ func TestHandler_HealthUnderBothPrefixesAndAuthBeforeAnyQuery(t *testing.T) {
 
 func TestNew_UnreachableNATSIsAnErrorAndTheOwnedPoolIsClosed(t *testing.T) {
 	cfg := testConfig()
-	cfg.PostgresURL = unreachableDSN
 	cfg.NatsURL = "nats://127.0.0.1:1"
-	_, err := New(context.Background(), cfg, Deps{})
+	_, err := New(context.Background(), cfg, Deps{DB: storagetest.OpenSQLite(t)})
 	if err == nil || !strings.Contains(err.Error(), "NATS connection") {
 		t.Fatalf("err = %v, want the NATS dial error", err)
+	}
+}
+
+func TestNew_RefusesAnUnsupportedDatabaseURL(t *testing.T) {
+	cfg := testConfig()
+	cfg.PostgresURL = "mysql://nope"
+	_, err := New(context.Background(), cfg, Deps{NATS: embeddedNATS(t)})
+	if err == nil || !strings.Contains(err.Error(), "database connection") {
+		t.Fatalf("err = %v, want the storage open error", err)
 	}
 }

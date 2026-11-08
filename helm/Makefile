@@ -6,43 +6,32 @@
 #   make -C helm install
 #   make -C helm upgrade
 #   make -C helm uninstall
-#   make -C helm sync-migrations
+#
+# The schema migrations are embedded in the flightdeck binary and run at
+# every pod start, so the chart carries no migration files.
 
 RELEASE  ?= flightdeck
 NS       ?= flightdeck
 CHART    := .
 VALUES   ?= values.yaml
 
-.PHONY: lint template install upgrade uninstall sync-migrations
+.PHONY: lint template install upgrade uninstall
 
-lint: sync-migrations
+lint:
 	helm lint $(CHART)
 
-template: sync-migrations
+template:
 	helm template $(RELEASE) $(CHART) --values $(VALUES)
 
-install: sync-migrations
+install:
 	helm install $(RELEASE) $(CHART) \
 	  --namespace $(NS) --create-namespace \
 	  --values $(VALUES)
 
-upgrade: sync-migrations
+upgrade:
 	helm upgrade $(RELEASE) $(CHART) \
 	  --namespace $(NS) \
 	  --values $(VALUES)
 
 uninstall:
 	helm uninstall $(RELEASE) --namespace $(NS)
-
-# Sync the Postgres migrations from storage/migrations/postgres into the
-# chart directory so `.Files.Glob` can package them. The destination
-# `migrations/` is a build artifact (gitignored); the canonical source is
-# `storage/migrations/postgres/`, which the Go services embed. The lint /
-# template / install / upgrade targets all gate on this prerequisite so
-# chart commands always render against an in-sync set of migrations.
-# `mkdir -p` ensures a freshly-cloned tree (where the gitignored
-# directory is absent) works on first invocation.
-sync-migrations:
-	mkdir -p migrations/
-	rm -f migrations/*.sql
-	cp ../storage/migrations/postgres/*.sql migrations/

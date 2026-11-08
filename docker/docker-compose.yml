@@ -1,173 +1,54 @@
-# Log rotation for every service. Docker's json-file driver otherwise
-# keeps a container's whole output in one file that grows until the
-# disk is full, and the workers log a line for every event they drop, so
-# a flood of bad events would fill the host disk through the log alone.
+# Flightdeck as one container: the `flightdeck` binary (ingestion API,
+# workers, query API, embedded NATS and the dashboard in one process)
+# on SQLite, with its data under the `flightdeck_data` volume.
 #
-#   max-size 20m, max-file 5: a container keeps at most five files of
-#   20 MiB, 100 MiB in all, 700 MiB across the seven services. These are
-#   the defaults of Docker's own rotating `local` driver. A dev stack's
-#   worker wrote about 70 KB in twenty minutes of integration-test
-#   traffic, so 100 MiB keeps weeks of normal output and still caps a
-#   flood.
+#   docker compose -f docker/docker-compose.yml up -d
+#   docker compose -f docker/docker-compose.yml logs flightdeck   # the start-up block with the dashboard token
 #
-# json-file is kept over `local` because `docker logs` reads both, while
-# log shippers that tail container files read only json-file. The dev
-# and prod overlays inherit this; a daemon-wide log-opts in
-# /etc/docker/daemon.json does not override it.
-x-logging: &default-logging
-  driver: json-file
-  options:
-    max-size: "20m"
-    max-file: "5"
+# :4000 inside the container is not a loopback address, so the first
+# start mints an access token, prints it in the start-up block and keeps
+# it in /data/secrets.json for the next starts; the dashboard reads it
+# from /runtime-config.json. The development token is not accepted.
+#
+# Postgres instead of SQLite, for a larger fleet: add
+# docker-compose.postgres.yml (a bundled Postgres and the database URL),
+# or set FLIGHTDECK_DATABASE_URL to a Postgres you run.
+#
+# TLS: run the binary with --domain (README, Self-hosting), or set
+# FLIGHTDECK_DOMAIN here and publish ports 80 and 443 in an override
+# file; the binary then serves HTTPS with a Let's Encrypt certificate
+# and ignores --listen.
+#
+# FLIGHTDECK_PUBLISH_PORT (default 4000) is the host port; the
+# container always listens on 4000.
 
 services:
-  postgres:
-    logging: *default-logging
-    # FLIGHTDECK_POSTGRES_IMAGE / FLIGHTDECK_POSTGRES_DATA_DIR let CI run
-    # the stack on another Postgres major; Postgres 18 images keep their
-    # data under /var/lib/postgresql (the volume mounts there) instead of
-    # /var/lib/postgresql/data.
-    image: ${FLIGHTDECK_POSTGRES_IMAGE:-postgres:16-alpine}
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-flightdeck}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightdeck_dev}
-      POSTGRES_DB: ${POSTGRES_DB:-flightdeck}
-    volumes:
-      - postgres_data:${FLIGHTDECK_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  flightdeck:
+    image: flightdeckhq/flightdeck:v0.8.0
+    restart: unless-stopped
     ports:
-      # Bind to loopback only: the database must never be reachable
-      # from the LAN in a dev loop. Prod strips this publish entirely
-      # (docker-compose.prod.yml). Use 127.0.0.1 so `docker compose`
-      # does not default-publish on 0.0.0.0.
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flightdeck}"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # NATS runs unauthenticated in dev on purpose: `make dev` is a
-  # single-host developer loop and a token/NKey round-trip just
-  # complicates the feedback cycle. docker-compose.prod.yml requires
-  # FLIGHTDECK_NATS_TOKEN, and the Helm chart takes nats.auth.token.
-  nats:
-    logging: *default-logging
-    image: nats:2.14-alpine
-    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+      - "${FLIGHTDECK_PUBLISH_PORT:-4000}:4000"
     volumes:
-      - nats_data:/data
-    ports:
-      # Loopback only: the message bus (unauthenticated in dev by
-      # design) and its monitoring port must not be LAN-reachable.
-      # Prod strips these publishes entirely (docker-compose.prod.yml).
-      - "127.0.0.1:4222:4222"
-      - "127.0.0.1:8222:8222"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  ingestion:
-    logging: *default-logging
-    image: flightdeckhq/flightdeck-ingestion:latest
+      - flightdeck_data:/data
     environment:
-      FLIGHTDECK_PORT: "8080"
-      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
-      FLIGHTDECK_NATS_URL: nats://nats:4222
-      FLIGHTDECK_ENV: development
-      # tok_dev is only accepted when ENVIRONMENT=dev. The dev
-      # compose deliberately opts in; production deployments omit this
-      # env var so the seed token becomes inert.
-      ENVIRONMENT: dev
-      SHUTDOWN_TIMEOUT_SECS: "30"
-      # The FLIGHTDECK stream's limits, which ingestion applies to the
-      # stream at startup (see .env.example). Unprocessed events are
-      # lost when the workers are down longer than the age limit or fall
-      # further behind than the size limit.
-      FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS: ${FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS:-72}
-      FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: ${FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB:-5120}
-      # One NATS server, so one copy of the stream. A standalone server
-      # accepts a higher count without placing any further copy.
-      FLIGHTDECK_NATS_STREAM_REPLICAS: "1"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-
-  workers:
-    logging: *default-logging
-    image: flightdeckhq/flightdeck-workers:latest
-    environment:
-      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
-      FLIGHTDECK_NATS_URL: nats://nats:4222
-      FLIGHTDECK_WORKER_POOL_SIZE: "10"
-      SHUTDOWN_TIMEOUT_SECS: "30"
-      FLIGHTDECK_MIGRATIONS_DIR: /migrations
-    volumes:
-      - ../storage/migrations/postgres:/migrations:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-
-  api:
-    logging: *default-logging
-    image: flightdeckhq/flightdeck-api:latest
-    environment:
-      FLIGHTDECK_PORT: "8081"
-      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
-      FLIGHTDECK_ENV: development
-      # tok_dev only works when ENVIRONMENT=dev.
-      ENVIRONMENT: dev
-      SHUTDOWN_TIMEOUT_SECS: "30"
-    volumes:
-      # Mount the repo-level pricing.yaml into the production
-      # default path so a dev operator can edit prices and restart the
-      # api without rebuilding the image. Production deployments that
-      # use the baked-in copy instead can drop this mount.
-      - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-
-  dashboard:
-    logging: *default-logging
-    image: flightdeckhq/flightdeck-dashboard:latest
-    ports:
-      - "3000:3000"
-
-  nginx:
-    logging: *default-logging
-    image: nginx:1.30-alpine
-    volumes:
-      - ./nginx/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "4000:4000"
-    depends_on:
-      api:
-        condition: service_healthy
-      ingestion:
-        condition: service_healthy
-      dashboard:
-        condition: service_started
+      # Empty: SQLite at /data/flightdeck.db. A postgres:// URL switches
+      # the backend (docker-compose.postgres.yml sets one).
+      FLIGHTDECK_DATABASE_URL: ${FLIGHTDECK_DATABASE_URL:-}
+      FLIGHTDECK_DOMAIN: ${FLIGHTDECK_DOMAIN:-}
+    # Log rotation. Docker's json-file driver otherwise keeps the
+    # container's whole output in one file that grows until the disk is
+    # full, and the workers log a line for every event they drop, so a
+    # flood of bad events would fill the host disk through the log
+    # alone. 20 MiB and five files (100 MiB) are the defaults of
+    # Docker's own rotating `local` driver; json-file is kept over
+    # `local` because `docker logs` reads both while log shippers that
+    # tail container files read only json-file. A daemon-wide log-opts
+    # in /etc/docker/daemon.json does not override it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
-  postgres_data:
-  nats_data:
+  flightdeck_data:

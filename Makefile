@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
+.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -248,17 +248,23 @@ lint: ## Lint all components
 	$(MAKE) -C api lint
 	$(MAKE) -C dashboard lint
 
-dev: ## Start full local dev environment
-	$(MAKE) -C docker dev
+# The dev stack (scripts/dev-stack.sh): Postgres and NATS from
+# docker/docker-compose.dev.yml, and the flightdeck binary built from
+# this checkout, run in the background on 127.0.0.1:4000 where the
+# development token works. The dashboard is served from webui/dist, so
+# run `make build-webui` first (or after a dashboard change); without
+# it / answers 503 and the API and ingestion still work.
+dev: ## Start the dev stack: Postgres + NATS containers, the flightdeck binary from source on :4000
+	scripts/dev-stack.sh up
 
-dev-reset: ## Wipe volumes and restart
-	$(MAKE) -C docker dev-reset
+dev-reset: ## Stop the dev stack, drop its volumes and data dir, start it again
+	scripts/dev-stack.sh reset
 
-down: ## Stop local dev environment
-	$(MAKE) -C docker down
+down: ## Stop the dev stack (volumes kept)
+	scripts/dev-stack.sh down
 
-logs: ## Tail logs from all services
-	$(MAKE) -C docker logs
+logs: ## Tail the flightdeck binary's log
+	scripts/dev-stack.sh logs
 
 release-prep: ## Open the release PR: bump every version location, date the CHANGELOG (usage: make release-prep VERSION=v0.6.0)
 	@test -n "$(VERSION)" || (echo "Usage: make release-prep VERSION=v0.6.0" && exit 1)
@@ -277,16 +283,8 @@ version-check: ## Check every version location matches the VERSION file
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py
 
-# -----------------------------------------------
-# Migration targets -- LOCAL DEVELOPMENT ONLY
-# migrate-local-up and migrate-local-status use
-# docker compose and require the stack to be
-# running locally. For remote or production
-# environments, see CONTRIBUTING.md.
-# -----------------------------------------------
-
-migrate-local-up: ## Apply all pending migrations (local dev only)
-	docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml run --rm -e FLIGHTDECK_MIGRATE_ONLY=true workers
-
-migrate-local-status: ## Show current migration version (local dev only)
-	docker exec docker-postgres-1 psql -U flightdeck -d flightdeck -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"
+# Migrations run inside the binary at every start (the dev stack's
+# included), so there is no separate migrate target. The applied
+# versions are visible on the dev database with:
+#   docker exec docker-postgres-1 psql -U flightdeck -d flightdeck \
+#     -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"

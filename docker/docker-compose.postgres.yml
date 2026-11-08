@@ -1,0 +1,47 @@
+# Postgres instead of SQLite, as a second container. Layer it on the base
+# file:
+#
+#   POSTGRES_PASSWORD=<strong password> docker compose \
+#     -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml up -d
+#
+# POSTGRES_PASSWORD is required (compose refuses to start without it):
+# a database that every install shared one well-known password for was
+# the mistake this file does not repeat. Use letters and digits, or
+# percent-encode anything else (`@` as `%40`): the password is placed
+# in the database URL, whose user:password part ends at the first `@`.
+# The database is reachable only on the compose network; nothing is
+# published on the host.
+#
+# A Postgres of your own instead: skip this file and set
+# FLIGHTDECK_DATABASE_URL on the flightdeck service to its URL.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flightdeck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong password for the bundled Postgres}
+      POSTGRES_DB: flightdeck
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightdeck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  flightdeck:
+    environment:
+      FLIGHTDECK_DATABASE_URL: postgres://flightdeck:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to a strong password for the bundled Postgres}@postgres:5432/flightdeck?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

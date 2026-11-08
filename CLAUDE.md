@@ -277,12 +277,14 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
        changes: rebuild the affected container(s) so the dev stack is
        running branch HEAD, then run the component's full test suite
        (unit + integration) locally. Don't push until green.
-     - The project's dev stack uses the `docker-compose.dev.yml`
-       override (mounts source, runs `go run ./cmd/` / vite dev) — a
-       plain `docker compose up --build` without the override rebuilds
-       a stale prod-image layer and will NOT reflect your edits. Use
-       `make dev` or `docker compose -f docker-compose.yml -f
-       docker-compose.dev.yml up --build -d <service>`.
+     - The project's dev stack (`make dev`, `scripts/dev-stack.sh`)
+       runs Postgres and NATS from `docker/docker-compose.dev.yml` and
+       the `flightdeck` binary built from the checkout on
+       `127.0.0.1:4000`. The binary is built at `make dev`, so after a
+       Go change run `make down && make dev` (or `make dev-reset` for a
+       clean database); after a dashboard change run `make build-webui`
+       first, since the dashboard is embedded in the binary. A stack
+       started before your edit does NOT reflect them.
      - Exempt: pure docs, comments, type-only fixes, and formatting
        passes that cannot change runtime behavior.
 

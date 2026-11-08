@@ -280,7 +280,7 @@ func (s *Store) OTLPSessionEnds(ctx context.Context, sessionIDs []string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("read OTLP session ends: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ends := make(map[string]time.Time, len(sessionIDs))
 	for rows.Next() {
 		var id string

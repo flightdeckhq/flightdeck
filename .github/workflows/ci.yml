@@ -871,9 +871,9 @@ jobs:
         run: make test-integration
 
       - name: Go tests that need Postgres or NATS
-        # The Go tests that read TEST_POSTGRES_URL or
-        # TEST_ASSEMBLER_POSTGRES_URL skip in the Go job, which has no
-        # database. This step runs them against this stack's Postgres,
+        # The Go tests that read TEST_POSTGRES_URL skip their Postgres
+        # half in the Go job, which has no database. This step runs
+        # them against this stack's Postgres,
         # so they run on both majors the matrix covers, and runs the
         # TEST_NATS_URL tests against this stack's NATS.
         # scripts/go-db-tests.sh gives each package a fresh database

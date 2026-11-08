@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/storage"
@@ -66,7 +67,10 @@ func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive
 		d       Directive
 		payload []byte
 	)
-	err := s.db.QueryRowContext(ctx, queryTakePending, time.Now().UTC(), sessionID).
+	// Lower case: the canonical form the SQLite CHECK enforces, and the
+	// one Postgres' uuid type normalises to; the handlers accept hex
+	// digits of either case.
+	err := s.db.QueryRowContext(ctx, queryTakePending, time.Now().UTC(), strings.ToLower(sessionID)).
 		Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

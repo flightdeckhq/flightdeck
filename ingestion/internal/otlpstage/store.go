@@ -539,8 +539,7 @@ func (s *Store) stageTrace(ctx context.Context, tx *sql.Tx, b *TraceBatch) (Stag
 		ids[i] = r.SpanID[:]
 		kinds[i] = int16(r.Kind)
 	}
-	idsArg, kindsArg := s.q.keyArgs(ids, kinds)
-	rows, err := tx.QueryContext(ctx, s.q.existingRecords, b.Key.TokenKey, traceID, idsArg, kindsArg)
+	rows, err := tx.QueryContext(ctx, s.q.existingRecords, append([]any{b.Key.TokenKey, traceID}, s.q.keyArgs(ids, kinds)...)...)
 	if err != nil {
 		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
 	}
@@ -549,12 +548,12 @@ func (s *Store) stageTrace(ctx context.Context, tx *sql.Tx, b *TraceBatch) (Stag
 		var id []byte
 		var kind int16
 		if err := rows.Scan(&id, &kind); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return res, fmt.Errorf("otlpstage: scan staged record: %w", err)
 		}
 		existing[factKey(id, kind)] = true
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
 	}
@@ -719,7 +718,7 @@ func (s *Store) ClaimDue(ctx context.Context, owner string) ([]Trace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("otlpstage: claim due traces: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Trace
 	for rows.Next() {
 		t, err := scanTrace(rows)
@@ -784,15 +783,15 @@ func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error
 	if err != nil {
 		return out, fmt.Errorf("otlpstage: load records: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
-			f                     StagedFact
-			spanID, parent        []byte
-			kind                  int16
-			meta, content         []byte
-			assembledIn           sql.NullInt64
-			received              storage.Time
+			f              StagedFact
+			spanID, parent []byte
+			kind           int16
+			meta, content  []byte
+			assembledIn    sql.NullInt64
+			received       storage.Time
 		)
 		if err := rows.Scan(&spanID, &kind, &parent, &f.RemoteParent, &f.ScopeName, &f.ScopeVersion,
 			&f.Name, &f.Op, &f.AgentName, &f.StartNs, &f.EndNs, &f.Status, &meta,
@@ -932,13 +931,11 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 			ids[i] = k.SpanID[:]
 			kinds[i] = int16(k.Kind)
 		}
-		idsArg, kindsArg := s.q.keyArgs(ids, kinds)
-		if _, err := tx.ExecContext(ctx, s.q.markRecords,
-			key.TokenKey, key.TraceID[:], idsArg, kindsArg, assembly); err != nil {
+		keyArgs := append([]any{key.TokenKey, key.TraceID[:]}, s.q.keyArgs(ids, kinds)...)
+		if _, err := tx.ExecContext(ctx, s.q.markRecords, append(keyArgs, assembly)...); err != nil {
 			return MarkResult{}, fmt.Errorf("otlpstage: mark records: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, s.q.deleteContent,
-			key.TokenKey, key.TraceID[:], idsArg, kindsArg); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q.deleteContent, keyArgs...); err != nil {
 			return MarkResult{}, fmt.Errorf("otlpstage: delete assembled content: %w", err)
 		}
 	}

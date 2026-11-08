@@ -79,9 +79,8 @@ Postgres (ARCHITECTURE.md, Storage), and a test opens its database through
 SQLite needs no server: every test gets a fresh file in its temp directory,
 migrated from the embedded baseline, so `go test ./...` and the CI Go job run
 the SQLite half everywhere. The Postgres half skips without
-`TEST_POSTGRES_URL` (`TEST_ASSEMBLER_POSTGRES_URL` for the assembler). Store
-packages that have not yet moved to the storage boundary still read
-`TEST_POSTGRES_URL` directly and run on Postgres only.
+`TEST_POSTGRES_URL`. Store packages that have not yet moved to the storage
+boundary still read `TEST_POSTGRES_URL` directly and run on Postgres only.
 
 `make test-go-db` runs the lot against the running dev stack, and CI runs it in
 the integration job on both Postgres majors that job covers.

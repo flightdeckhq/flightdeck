@@ -30,6 +30,10 @@
 #                           Downloads are HTTPS only, except from localhost; the
 #                           signature is checked only for the default URL, since
 #                           it names this repository's workflow as the signer.
+#   FLIGHTDECK_RELEASE_SIGNED_URL  the one URL whose checksums.txt the signature
+#                           check applies to (default: the repository URL above).
+#                           Only scripts/test-install-sh.sh sets it, to run the
+#                           cosign path against its local server with a fake cosign.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
@@ -37,6 +41,7 @@ set -eu
 
 DEFAULT_REPO_URL="https://github.com/flightdeckhq/flightdeck"
 REPO_URL="${FLIGHTDECK_RELEASE_URL:-$DEFAULT_REPO_URL}"
+SIGNED_URL="${FLIGHTDECK_RELEASE_SIGNED_URL:-$DEFAULT_REPO_URL}"
 BINARY="flightdeck"
 # The signer of checksums.txt: this repository's release workflow,
 # through GitHub's OIDC issuer. Any workflow file of the repository is
@@ -79,23 +84,47 @@ detect_arch() {
 
 # Plain HTTP is accepted from this machine only (a local test server);
 # everything else must be HTTPS, and the clients are told so, so a
-# redirect cannot downgrade the connection either.
+# redirect cannot downgrade the connection either. The authority of an
+# http:// URL is parsed, not pattern-matched: `http://localhost:x@evil`
+# names evil with user info, so any `@` is refused, and the host must be
+# exactly localhost, 127.0.0.1 or [::1], with an all-digit port at most.
 check_scheme() {
   case "$REPO_URL" in
-    https://*) ;;
-    http://localhost | http://localhost:* | http://localhost/* | \
-    http://127.0.0.1 | http://127.0.0.1:* | http://127.0.0.1/* | \
-    'http://[::1]' | 'http://[::1]:'* | 'http://[::1]/'*) ;;
+    https://*) return 0 ;;
+    http://*) ;;
     *) fail "FLIGHTDECK_RELEASE_URL must be https:// (or http://localhost for a local test server): $REPO_URL" ;;
+  esac
+  authority="${REPO_URL#http://}"
+  authority="${authority%%/*}"
+  case "$authority" in
+    *@* | *\?* | *\#*) fail "FLIGHTDECK_RELEASE_URL: plain HTTP is allowed for localhost only, and its authority may not carry user info: $REPO_URL" ;;
+  esac
+  case "$authority" in
+    \[*) host="${authority%%\]*}]"; rest="${authority#*\]}" ;;
+    *) host="${authority%%:*}"; rest="${authority#"$host"}" ;;
+  esac
+  case "$host" in
+    localhost | 127.0.0.1 | '[::1]') ;;
+    *) fail "FLIGHTDECK_RELEASE_URL must be https:// (plain HTTP is allowed for localhost, 127.0.0.1 or [::1] only): $REPO_URL" ;;
+  esac
+  case "$rest" in
+    '') ;;
+    :*) port="${rest#:}"
+        case "$port" in
+          '' | *[!0-9]*) fail "FLIGHTDECK_RELEASE_URL: the port must be digits: $REPO_URL" ;;
+        esac ;;
+    *) fail "FLIGHTDECK_RELEASE_URL: unexpected authority: $REPO_URL" ;;
   esac
 }
 
 fetch() {
   # fetch URL DEST
   if command -v curl >/dev/null 2>&1; then
+    # --proto-redir: a redirect from the local test server may not land
+    # on plain HTTP elsewhere either.
     case "$1" in
-      https://*) curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1" ;;
-      *) curl -fsSL --proto '=http,https' --retry 3 -o "$2" "$1" ;;
+      https://*) curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 -o "$2" "$1" ;;
+      *) curl -fsSL --proto '=http,https' --proto-redir '=https' --retry 3 -o "$2" "$1" ;;
     esac
   elif command -v wget >/dev/null 2>&1; then
     case "$1" in
@@ -123,7 +152,7 @@ sha256_of() {
 # Sigstore bundle when cosign is available and the release comes from
 # the default repository (the only signer the identity names).
 verify_checksums_signature() {
-  if [ "$REPO_URL" != "$DEFAULT_REPO_URL" ]; then
+  if [ "$REPO_URL" != "$SIGNED_URL" ]; then
     info "Signature of checksums.txt not checked: FLIGHTDECK_RELEASE_URL is not the flightdeckhq/flightdeck release"
     return 0
   fi

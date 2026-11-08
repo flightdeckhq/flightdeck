@@ -121,6 +121,7 @@ mode_run() {
 
   if ! wait_ready "$base" "kill -0 $pid 2>/dev/null"; then
     printf 'flightdeck is not ready after %ss; its output:\n' "$READY_TIMEOUT" >&2
+    token_from <"$log" >/dev/null  # registers the mask before the log is shown
     cat "$log" >&2
     die "not ready"
   fi
@@ -150,9 +151,11 @@ mode_check() {
   local base="$1"; shift
   local token
   say "waiting for $base"
-  wait_ready "$base" || { eval "$*" >&2 || true; die "not ready after ${READY_TIMEOUT}s"; }
+  # The mask is registered from the logs before they are ever shown.
+  show_logs() { eval "$*" 2>&1 | token_from >/dev/null || true; eval "$*" >&2 || true; }
+  wait_ready "$base" || { show_logs "$@"; die "not ready after ${READY_TIMEOUT}s"; }
   token="$(eval "$*" 2>&1 | token_from)"
-  [[ -n "$token" ]] || { eval "$*" >&2 || true; die "no Token line in the output of: $*"; }
+  [[ -n "$token" ]] || { show_logs "$@"; die "no Token line in the output of: $*"; }
   say "token from the start-up block: ${token:0:8}…"
   checks "$base" "$token"
   echo "GATE OK"

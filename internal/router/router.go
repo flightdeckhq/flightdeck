@@ -7,6 +7,7 @@ package router
 
 import (
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"path"
@@ -54,8 +55,9 @@ func New(c Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", c.API)
 	mux.Handle("/api/", c.API)
-	mux.Handle("/ingest", c.Ingest)
-	mux.Handle("/ingest/", c.Ingest)
+	ingest := drainRefusedBody(c.Ingest)
+	mux.Handle("/ingest", ingest)
+	mux.Handle("/ingest/", ingest)
 	mux.HandleFunc("GET /runtime-config.json", runtimeConfig(c.Token))
 	mux.HandleFunc("HEAD /runtime-config.json", runtimeConfig(c.Token))
 	// /investigate was the events page's earlier route; bookmarks and
@@ -70,6 +72,29 @@ func New(c Config) http.Handler {
 	mux.HandleFunc("/v1/", v1Hint)
 	mux.Handle("/", &ui{fsys: c.UI, built: fsHas(c.UI, "index.html")})
 	return mux
+}
+
+// edgeDrainBytes bounds how much of a request body the edge reads after
+// the ingestion handler answered without reading it, as a refused
+// over-cap body (413) is. net/http drains only 256 KiB of leftover body
+// before it closes the connection, and a client still sending the rest
+// then sees a reset instead of the status; nginx, the edge before the
+// binary, read the whole body itself. 16 MiB is the receivers' inflated
+// body cap, four times the 4 MiB they accept as sent, so every body a
+// well-behaved exporter could send is drained and the status reaches it;
+// past that the connection closes, as it would otherwise.
+const edgeDrainBytes = 16 << 20
+
+// drainRefusedBody reads what the handler left of the request body, up
+// to edgeDrainBytes, so the client receives the response that was
+// written rather than a connection reset.
+func drainRefusedBody(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+		if r.Body != nil {
+			_, _ = io.CopyN(io.Discard, r.Body, edgeDrainBytes)
+		}
+	})
 }
 
 func fsHas(fsys fs.FS, name string) bool {

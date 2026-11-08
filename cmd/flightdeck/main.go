@@ -41,7 +41,17 @@ var version = "dev"
 const shutdownTimeout = 30 * time.Second
 
 func main() {
+	useUTC()
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// useUTC makes the process's local time zone UTC, as the containers the
+// services ran in had. The query API formats the timestamps it reads
+// from Postgres in the process's zone, and its contract is RFC 3339 in
+// UTC (the "Z" suffix the dashboard and the integration suite expect);
+// a laptop in another zone would otherwise serve "+02:00" offsets.
+func useUTC() {
+	time.Local = time.UTC
 }
 
 func run(args []string, stdout, stderr *os.File) int {

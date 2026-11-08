@@ -10013,8 +10013,13 @@ and everything under it to the query API's handler; `/ingest` and
 everything under it to the ingestion handler, each path forwarded as
 sent (the services strip their own prefix; see Public path prefixes).
 A bare `/v1/...` is answered 404 with a hint naming the two prefixes, so
-a sensor pointed at the origin without `/ingest` learns why. The
-dashboard responses carry the browser security headers the dashboard
+a sensor pointed at the origin without `/ingest` learns why. When the
+ingestion handler answers without reading the request body (a body
+over the receivers' 4 MiB cap is refused with 413 unread), the router
+drains up to 16 MiB of it, the receivers' inflated-body cap, so the
+client receives the status rather than a connection reset; nginx did
+the same by reading the whole body itself. The dashboard responses
+carry the browser security headers the dashboard
 image's nginx used to add (`X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy`, the same
 `Content-Security-Policy`). The server has a 15-second header read
@@ -10073,6 +10078,11 @@ HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
 and on `:80` to answer the ACME challenge and redirect everything else
 to `https://`; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
+
+**Time zone.** The binary sets the process's local zone to UTC at
+start, as the containers the services ran in had: the query API
+formats the timestamps it reads from Postgres in the process's zone,
+and its contract is RFC 3339 in UTC, whatever zone the host is in.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it

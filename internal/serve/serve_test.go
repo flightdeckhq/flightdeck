@@ -1,10 +1,13 @@
 package serve
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -35,6 +38,22 @@ func TestListen_FreePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = ln.Close()
+}
+
+func TestAddrInUse_MatchesTheErrnoAndTheWindowsText(t *testing.T) {
+	cases := map[error]bool{
+		syscall.EADDRINUSE: true,
+		fmt.Errorf("listen tcp 127.0.0.1:4000: bind: %w", syscall.EADDRINUSE):                                                                       true,
+		errors.New("listen tcp 127.0.0.1:4000: bind: address already in use"):                                                                       true,
+		errors.New("listen tcp 127.0.0.1:4000: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted."): true,
+		errors.New("listen tcp 10.0.0.9:4000: bind: cannot assign requested address"):                                                               false,
+		syscall.EACCES: false,
+	}
+	for err, want := range cases {
+		if got := addrInUse(err); got != want {
+			t.Errorf("addrInUse(%v) = %v, want %v", err, got, want)
+		}
+	}
 }
 
 func TestNextPort(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,7 +52,7 @@ func Server(h http.Handler) *http.Server {
 func Listen(addr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
+		if addrInUse(err) {
 			_, port, _ := net.SplitHostPort(addr)
 			return nil, fmt.Errorf("%s is already in use (another flightdeck, or the compose stack, may be listening on port %s); "+
 				"stop it or pick another port with --listen, for example --listen 127.0.0.1:%s", addr, port, nextPort(port))
@@ -59,6 +60,18 @@ func Listen(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	return ln, nil
+}
+
+// addrInUse reports whether a listen error means the port is taken. The
+// errno matches on Unix; Windows reports WSAEADDRINUSE, which syscall's
+// Errno.Is does not fold into EADDRINUSE, so its message is matched too.
+func addrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "Only one usage of each socket address")
 }
 
 func nextPort(port string) string {

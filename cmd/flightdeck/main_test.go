@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
@@ -82,6 +84,20 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 	}
 	if got := os.Getenv("FLIGHTDECK_NATS_URL"); got != "nats://external:4222" {
 		t.Errorf("FLIGHTDECK_NATS_URL = %q", got)
+	}
+}
+
+func TestUseUTC(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Jerusalem")
+	if err != nil {
+		t.Skip("no zone database")
+	}
+	previous := time.Local
+	defer func() { time.Local = previous }()
+	time.Local = loc
+	useUTC()
+	if got := time.Now().Format(time.RFC3339); !strings.HasSuffix(got, "Z") {
+		t.Fatalf("time.Now() formats as %q, want a UTC Z suffix", got)
 	}
 }
 

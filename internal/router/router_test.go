@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -216,4 +217,64 @@ func TestNilUI_Is503(t *testing.T) {
 	if rec := get(t, h, http.MethodGet, "/events"); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", rec.Code)
 	}
+}
+
+// refusingHandler answers 413 without reading the body, as the ingestion
+// receivers do for a body over their cap.
+type refusingHandler struct{}
+
+func (refusingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+}
+
+func TestIngest_RefusedBodyIsDrainedSoTheClientSeesTheStatus(t *testing.T) {
+	h := New(Config{API: &recordingHandler{name: "api"}, Ingest: refusingHandler{}, UI: testUI(), Token: "tok_dev"})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Well over net/http's own 256 KiB leftover drain, under edgeDrainBytes.
+	body := bytes.Repeat([]byte(" "), 2<<20)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/ingest/v1/logs", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = int64(len(body))
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("the client saw an error instead of the status: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", resp.StatusCode)
+	}
+}
+
+func TestDrainRefusedBody_StopsAtTheBound(t *testing.T) {
+	var left int64
+	h := drainRefusedBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}))
+	body := &countingReader{n: edgeDrainBytes + 1024}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ingest/v1/events", body)
+	h.ServeHTTP(rec, req)
+	left = body.n
+	if left != 1024 {
+		t.Fatalf("%d bytes left unread, want 1024 (the drain stops at edgeDrainBytes)", left)
+	}
+}
+
+// countingReader yields n bytes and counts down what is left.
+type countingReader struct{ n int64 }
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.n <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > c.n {
+		p = p[:c.n]
+	}
+	c.n -= int64(len(p))
+	return len(p), nil
 }

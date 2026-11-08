@@ -1,15 +1,17 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// --- pgx fakes ---
+// --- database fakes ---
 
 // fakeRow is a single-row stub that scans a fixed (id, name) tuple
 // for the tok_dev SELECT branch.
@@ -67,9 +69,10 @@ type fakeDB struct {
 	ftdQueryCount atomic.Int32
 	execCount     atomic.Int32
 	queryErr      error
+	execErr       error // returned by Exec (the last_used_at stamp)
 }
 
-func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) rowScanner {
 	if strings.Contains(sql, "Development Token") {
 		f.devQueryCount.Add(1)
 		if f.devRow == nil {
@@ -80,7 +83,7 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
 	return &fakeRow{err: errors.New("unexpected QueryRow")}
 }
 
-func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
+func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (rowsIter, error) {
 	f.ftdQueryCount.Add(1)
 	if f.queryErr != nil {
 		return nil, f.queryErr
@@ -90,7 +93,7 @@ func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
 
 func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) error {
 	f.execCount.Add(1)
-	return nil
+	return f.execErr
 }
 
 func envFn(value string) envLookup {
@@ -106,7 +109,7 @@ func envFn(value string) envLookup {
 
 func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	res, err := v.Validate(context.Background(), "tok_dev")
 	if err != nil {
@@ -130,7 +133,7 @@ func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 
 func TestValidate_TokDev_RejectedWhenEnvNotDev(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, err := v.Validate(context.Background(), "tok_dev")
 	if err != nil {
@@ -149,7 +152,7 @@ func TestValidate_TokDev_RejectedWhenEnvNotDev(t *testing.T) {
 
 func TestValidate_TokDev_RejectedWhenEnvIsProd(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn("prod"))
+	v := newValidatorWithDB(db, nil, envFn("prod"))
 
 	res, _ := v.Validate(context.Background(), "tok_dev")
 	if res.Valid {
@@ -170,7 +173,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 			{"prod-uuid", "Production K8s", hash, salt},
 		},
 	}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, err := v.Validate(context.Background(), rawToken)
 	if err != nil {
@@ -189,7 +192,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 
 func TestValidate_FtdToken_RejectedWhenNoCandidate(t *testing.T) {
 	db := &fakeDB{ftdCandidates: nil}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, _ := v.Validate(context.Background(), "ftd_unknownsuffixsuffix0123456789")
 	if res.Valid {
@@ -209,7 +212,7 @@ func TestValidate_FtdToken_RejectedWhenHashMismatch(t *testing.T) {
 			{"prod-uuid", "Real Token", hashWithSalt("salt1", "ftd_realtoken000000000000000000000"), "salt1"},
 		},
 	}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	res, _ := v.Validate(context.Background(), "ftd_realtoken000000000000000000xxx")
 	if res.Valid {
@@ -221,7 +224,7 @@ func TestValidate_FtdToken_RejectedWhenHashMismatch(t *testing.T) {
 
 func TestValidate_OtherFormat_Rejected(t *testing.T) {
 	db := &fakeDB{}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	for _, raw := range []string{"sk-anthropic-test", "Bearer something", "random", ""} {
 		res, _ := v.Validate(context.Background(), raw)
@@ -240,7 +243,7 @@ func TestValidate_OtherFormat_Rejected(t *testing.T) {
 
 func TestValidate_CacheHitAvoidsRepeatDBCall(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	for i := 0; i < 3; i++ {
 		res, err := v.Validate(context.Background(), "tok_dev")
@@ -255,7 +258,7 @@ func TestValidate_CacheHitAvoidsRepeatDBCall(t *testing.T) {
 
 func TestValidate_CacheExpiryReQueriesDB(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	_, _ = v.Validate(context.Background(), "tok_dev")
 	if db.devQueryCount.Load() != 1 {
@@ -278,12 +281,45 @@ func TestValidate_CacheExpiryReQueriesDB(t *testing.T) {
 // creation takes effect immediately.
 func TestValidate_UnknownTokenRejectNotCached(t *testing.T) {
 	db := &fakeDB{ftdCandidates: nil}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 
 	for i := 0; i < 3; i++ {
 		_, _ = v.Validate(context.Background(), "ftd_unknown000000000000000000000000")
 	}
 	if db.ftdQueryCount.Load() != 3 {
 		t.Errorf("expected 3 DB hits for unknown ftd_ token (no cache), got %d", db.ftdQueryCount.Load())
+	}
+}
+
+// A failed last_used_at stamp (the SQLite writer busy, a Postgres
+// hiccup) is logged and the token stays valid: the row was just read.
+func TestValidate_LastUsedStampFailureKeepsTokenValid(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	salt := "dddddddddddddddddddddddddddddddd"
+	raw := "ftd_a3f8b00b1234567890abcdef01234567"
+	db := &fakeDB{
+		devRow:        &fakeRow{id: "dev-uuid", name: "Development Token"},
+		ftdCandidates: [][4]string{{"prod-uuid", "Prod", hashWithSalt(salt, raw), salt}},
+		execErr:       errors.New("database is locked (5) (SQLITE_BUSY)"),
+	}
+	v := newValidatorWithDB(db, nil, envFn("dev"))
+	for _, tok := range []string{"tok_dev", raw} {
+		res, err := v.Validate(context.Background(), tok)
+		if err != nil || !res.Valid {
+			t.Fatalf("%s with a failing stamp: %+v err=%v", tok, res, err)
+		}
+	}
+	if db.execCount.Load() != 2 {
+		t.Errorf("stamp attempted %d times, want 2", db.execCount.Load())
+	}
+	if n := strings.Count(logged.String(), "token last_used_at not updated"); n != 2 {
+		t.Errorf("warn logged %d times, want 2:\n%s", n, logged.String())
+	}
+	if !strings.Contains(logged.String(), "SQLITE_BUSY") || !strings.Contains(logged.String(), "token_id=prod-uuid") {
+		t.Errorf("log lacks the error or the token id:\n%s", logged.String())
 	}
 }

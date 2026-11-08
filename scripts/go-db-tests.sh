@@ -81,6 +81,7 @@ DB_PACKAGES=(
 # SQLite as well. A package joins this list when its tests open their
 # database through storage/storagetest.
 DUAL_PACKAGES=(
+  ingestion/internal/auth
   storage
 )
 

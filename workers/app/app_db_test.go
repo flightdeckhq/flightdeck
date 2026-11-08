@@ -86,15 +86,13 @@ func TestRun_DoesNotMigrateAndLeavesInjectedConnectionsOpen(t *testing.T) {
 		"000999_bad.up.sql":   {Data: []byte("THIS IS NOT SQL;")},
 		"000999_bad.down.sql": {Data: []byte("THIS IS NOT SQL;")},
 	}
+	// Run spawns its loops before it watches the context, so cancelling
+	// at once still exercises the start, the join and the close; the
+	// assertions below need none of the loops to have done any work.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	cancel()
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, testConfig(), Deps{Pool: pool, NATS: nc, Migrations: bad}) }()
-
-	// Let the loops start (the consumer is waiting for the stream), then
-	// stop.
-	time.Sleep(200 * time.Millisecond)
-	cancel()
 	select {
 	case err := <-done:
 		if err != nil {

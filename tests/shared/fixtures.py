@@ -967,16 +967,17 @@ def _worker_log_file_lines(
     """``worker_log_lines`` over the log file of the flightdeck binary.
 
     The binary logs through slog's default handler, whose lines start
-    with a local-time ``YYYY/MM/DD HH:MM:SS`` stamp; a ``time.time()``
-    ``since`` keeps the lines stamped at or after it (minus the same
-    margin the daemon path allows). A string ``since`` (a docker
+    with a ``YYYY/MM/DD HH:MM:SS`` stamp in the process's zone, which the
+    binary sets to UTC; a ``time.time()`` ``since`` keeps the lines
+    stamped at or after it (minus the same margin the daemon path
+    allows). A string ``since`` (a docker
     duration or RFC 3339 value) cannot be applied to a file and is
     ignored, so a caller gets at most the ``tail`` bound it asked for.
     """
     with open(WORKER_LOG_FILE, encoding="utf-8", errors="replace") as fh:
         lines = fh.read().splitlines()[-tail:]
     if since is not None and not isinstance(since, str):
-        floor = time.localtime(since - DOCKER_CLOCK_MARGIN_SECS)
+        floor = time.gmtime(since - DOCKER_CLOCK_MARGIN_SECS)
         floor_text = time.strftime("%Y/%m/%d %H:%M:%S", floor)
         lines = [line for line in lines if line[:19] >= floor_text]
     return [line for line in lines if all(needle in line for needle in needles)]

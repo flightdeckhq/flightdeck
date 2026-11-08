@@ -475,9 +475,9 @@ func TestAppendBreakdownPoint_SumInvariant(t *testing.T) {
 	bucket1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	bucket2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
 	series := &AnalyticsSeries{Dimension: "p1"}
-	appendBreakdownPoint(series, bucket1, "Researcher", 100)
-	appendBreakdownPoint(series, bucket1, "Writer", 50)
-	appendBreakdownPoint(series, bucket2, "Researcher", 25)
+	appendBreakdownPoint(series, bucket1, dayLabel, "Researcher", 100)
+	appendBreakdownPoint(series, bucket1, dayLabel, "Writer", 50)
+	appendBreakdownPoint(series, bucket2, dayLabel, "Researcher", 25)
 	if len(series.Data) != 2 {
 		t.Fatalf("expected 2 DataPoints; got %d", len(series.Data))
 	}

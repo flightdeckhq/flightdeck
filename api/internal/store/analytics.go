@@ -53,9 +53,11 @@ type AnalyticsParams struct {
 	FilterIsSubAgent bool
 }
 
-// DataPoint is a single time series data point. “Breakdown“ carries
-// per-secondary-axis segments when the caller passes a two-dimension
-// “group_by“. Single-dim queries leave “Breakdown“
+// DataPoint is a single time series data point. Date is the bucket's
+// start in UTC: the calendar date (YYYY-MM-DD) for the day and week
+// granularities, the hour (YYYY-MM-DDTHH:00Z) for hour. “Breakdown“
+// carries per-secondary-axis segments when the caller passes a
+// two-dimension “group_by“. Single-dim queries leave “Breakdown“
 // nil — the JSON “omitempty“ keeps the wire shape byte-identical to
 // the single-dimension contract for those callers.
 type DataPoint struct {
@@ -349,10 +351,11 @@ func (s *Store) metricSpecs() map[string]metricSpec {
 func appendBreakdownPoint(
 	series *AnalyticsSeries,
 	bucket time.Time,
+	layout string,
 	subDim string,
 	value float64,
 ) {
-	dateStr := bucket.Format("2006-01-02")
+	dateStr := bucket.Format(layout)
 	if n := len(series.Data); n > 0 && series.Data[n-1].Date == dateStr {
 		// Same primary × bucket → append to the existing point.
 		series.Data[n-1].Breakdown = append(
@@ -402,16 +405,27 @@ func timeRange(rangeStr string, from, to time.Time) (time.Time, time.Time) {
 	}
 }
 
-// bucketSQL is the time-bucket expression of a series: the calendar
-// date of timeCol truncated to the granularity. The result is a date
-// on both engines (DateOf), so a finer granularity than a day still
-// groups by day, the resolution DataPoint.Date carries.
-func (s *Store) bucketSQL(granularity, timeCol string) (string, error) {
+// Bucket label layouts: the calendar date for day and week buckets,
+// the UTC hour for hour buckets (DataPoint.Date).
+const (
+	dayLabel  = "2006-01-02"
+	hourLabel = "2006-01-02T15:00Z"
+)
+
+// bucketSQL is the time-bucket expression of a series and the layout
+// its label takes: timeCol truncated to the granularity, taken as a
+// UTC date (DateOf) for day and week so the buckets of both engines
+// are the same calendar days whatever the session time zone, and as
+// the truncated timestamp for hour.
+func (s *Store) bucketSQL(granularity, timeCol string) (expr, layout string, err error) {
 	unit, ok := truncUnit(granularity)
-	if !ok {
-		return "", fmt.Errorf("invalid granularity: %s", granularity)
+	if !ok || unit == storage.TruncMonth {
+		return "", "", fmt.Errorf("invalid granularity: %s", granularity)
 	}
-	return s.d.DateOf(s.d.DateTrunc(unit, timeCol)), nil
+	if unit == storage.TruncHour {
+		return s.d.DateTrunc(unit, timeCol), hourLabel, nil
+	}
+	return s.d.DateOf(s.d.DateTrunc(unit, timeCol)), dayLabel, nil
 }
 
 // seriesRow is one row of a series query, scanned on either shape.
@@ -422,8 +436,9 @@ type seriesRow struct {
 }
 
 // scanSeriesRows walks a series query's rows into fn, with the
-// two-key or three-key shape. The bucket comes back as a date on
-// Postgres and as 'YYYY-MM-DD' text on SQLite; storage.Time reads both.
+// two-key or three-key shape. The bucket comes back as a date or
+// timestamptz on Postgres and as text on SQLite; storage.Time reads
+// every shape.
 func scanSeriesRows(rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -448,8 +463,9 @@ func scanSeriesRows(rows interface {
 }
 
 // foldSeries runs a series query and folds its rows into the response
-// series, in first-seen dimension order, returning the grand total.
-func (s *Store) foldSeries(ctx context.Context, query string, args []any, hasSecondary bool) ([]AnalyticsSeries, float64, error) {
+// series, in first-seen dimension order, labelling buckets with
+// layout, and returns the grand total.
+func (s *Store) foldSeries(ctx context.Context, query string, args []any, hasSecondary bool, layout string) ([]AnalyticsSeries, float64, error) {
 	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
@@ -467,10 +483,10 @@ func (s *Store) foldSeries(ctx context.Context, query string, args []any, hasSec
 			order = append(order, r.dim)
 		}
 		if hasSecondary {
-			appendBreakdownPoint(series, r.bucket, r.subDim, r.value)
+			appendBreakdownPoint(series, r.bucket, layout, r.subDim, r.value)
 		} else {
 			series.Data = append(series.Data, DataPoint{
-				Date:  r.bucket.Format("2006-01-02"),
+				Date:  r.bucket.Format(layout),
 				Value: r.value,
 			})
 		}
@@ -529,7 +545,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	if !ok {
 		return nil, fmt.Errorf("invalid metric: %s", params.Metric)
 	}
-	bucket, err := s.bucketSQL(params.Granularity, spec.timeCol)
+	bucket, layout, err := s.bucketSQL(params.Granularity, spec.timeCol)
 	if err != nil {
 		return nil, err
 	}
@@ -747,7 +763,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 			whereAnd, spec.timeCol, spec.timeCol, filterSQL)
 	}
 
-	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary)
+	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary, layout)
 	if err != nil {
 		return nil, fmt.Errorf("analytics query: %w", err)
 	}
@@ -927,7 +943,7 @@ func (s *Store) querySubagentAnalytics(
 	if selectExpr == "" {
 		return nil, fmt.Errorf("invalid sub-agent metric: %s", params.Metric)
 	}
-	bucket, err := s.bucketSQL(params.Granularity, "s.started_at")
+	bucket, layout, err := s.bucketSQL(params.Granularity, "s.started_at")
 	if err != nil {
 		return nil, err
 	}
@@ -1058,7 +1074,7 @@ func (s *Store) querySubagentAnalytics(
 		`, dimExpr, bucket, aggregate, selectExpr, fromClause, filterSQL)
 	}
 
-	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary)
+	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary, layout)
 	if err != nil {
 		return nil, fmt.Errorf("subagent analytics query: %w", err)
 	}

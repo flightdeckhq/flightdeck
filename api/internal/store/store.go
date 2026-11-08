@@ -424,9 +424,9 @@ type AgentSummary struct {
 	// multiple hosts / branches surfaces its latest session's values
 	// here — facets are single-valued per agent. Each field is null
 	// when the latest session's context is absent or the JSON key
-	// is missing. Sourced via one correlated lookup of the latest
-	// session per agent (agentLatestSessionJoin); the per-agent
-	// overhead is bounded by the page size. `Hostname` and `UserName`
+	// is missing. Sourced via one correlated lookup of the agent's
+	// latest session; the per-agent overhead is bounded by the page
+	// size. `Hostname` and `UserName`
 	// above remain the authoritative single-valued slices for those
 	// two dims (sourced from agents-table columns); these are the
 	// JSON-only slices the operator slices the roster by.

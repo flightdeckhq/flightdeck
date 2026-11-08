@@ -23,6 +23,13 @@ All notable changes to Flightdeck are documented here.
   session, event, agent and search queries over one fixture and
   compares the results to one golden. Search results now carry their
   timestamps as RFC 3339 UTC strings on both backends.
+- `GET /v1/sessions` orders a NULL sort key last in either direction
+  (`sort=model&order=desc` put sessions without a model first on
+  Postgres before).
+- `GET /v1/agents?search=` matches `%`, `_` and `\` literally, as the
+  other search inputs do.
+- `GET /v1/analytics?granularity=hour` buckets by hour (`date` is
+  `YYYY-MM-DDTHH:00Z`); it grouped by calendar day before.
 
 - **`flightdeck_sensor.init()` needs no arguments against a local
   stack.** `server` and `token` are optional: each resolves as the kwarg,

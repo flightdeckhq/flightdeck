@@ -75,6 +75,12 @@ func LoadEnv() (cfg Config, err error) {
 	return fromEnv(config.Load()), nil
 }
 
+// ReadTimeout is the per-request read deadline the service's own
+// listener applies; a caller that mounts Handler() on a server of its
+// own applies it itself, except on the WebSocket route (see
+// server.ReadTimeout).
+const ReadTimeout = server.ReadTimeout
+
 // databaseConnectBudget is how long New keeps trying to reach the
 // database before giving up. storage.Open pings, so a database that is
 // a moment behind the service (compose starts both at once; a

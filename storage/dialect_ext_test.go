@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"net/url"
 	"regexp"
 	"testing"
 	"time"
@@ -128,6 +129,41 @@ func TestDialect_SecondsBetweenAndDateOf(t *testing.T) {
 		}
 		if !day.Valid || !day.Time.Equal(time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)) {
 			t.Errorf("DateOf(DateTrunc(hour)) = %+v, want 2026-11-07", day)
+		}
+		// The date is the UTC date whatever the session time zone: on
+		// Postgres a bare CAST to DATE would read 23:45Z of the 7th as
+		// the 7th in New York only because New York is behind UTC;
+		// 01:30Z of the 8th is still the 7th there.
+		if db.Backend == storage.Postgres {
+			u, err := url.Parse(storagetest.PostgresURL(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := u.Query()
+			q.Set("TimeZone", "America/New_York")
+			u.RawQuery = q.Encode()
+			tzDB, err := storage.Open(context.Background(), u.String())
+			if err != nil {
+				t.Fatalf("open with TimeZone: %v", err)
+			}
+			defer func() { _ = tzDB.Close() }()
+			early := time.Date(2026, 11, 8, 1, 30, 0, 0, time.UTC)
+			mustExec(t, db, "UPDATE storagetest_dialect_times SET ts = $1 WHERE id = 1", early)
+			var tzDay storage.Time
+			if err := tzDB.QueryRowContext(context.Background(),
+				"SELECT "+d.DateOf("ts")+" FROM storagetest_dialect_times").Scan(&tzDay); err != nil {
+				t.Fatal(err)
+			}
+			if !tzDay.Valid || !tzDay.Time.Equal(time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)) {
+				t.Errorf("DateOf under TimeZone=America/New_York = %+v, want 2026-11-08 (the UTC date)", tzDay)
+			}
+			if err := tzDB.QueryRowContext(context.Background(),
+				"SELECT "+d.DateOf(d.DateTrunc(storage.TruncDay, "ts"))+" FROM storagetest_dialect_times").Scan(&tzDay); err != nil {
+				t.Fatal(err)
+			}
+			if !tzDay.Valid || !tzDay.Time.Equal(time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)) {
+				t.Errorf("DateOf(DateTrunc(day)) under TimeZone=America/New_York = %+v, want 2026-11-08", tzDay)
+			}
 		}
 	})
 }

@@ -689,10 +689,12 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		}
 		entry, exists := bucketByTimestamp[ts.Time.UTC()]
 		if !exists {
-			// An event between the window's start and its first
-			// whole bucket belongs to that bucket's predecessor,
-			// which the zero-fill does not list; the Postgres
-			// generate_series had the same edge.
+			// Every event the query returns is at or after the
+			// window's start, so its bucket is at or after the first
+			// zero-filled one; only an event stamped after the clock
+			// reading the buckets end at (a client clock ahead of the
+			// server's) falls outside the series, and it is left out
+			// rather than given a bucket the window does not show.
 			continue
 		}
 		serverBucket := ServerCountBucket{Count: count}

@@ -95,6 +95,7 @@ func (postgresQueries) contextFacets() string {
 		         SELECT value #>> '{}' AS val
 		         WHERE jsonb_typeof(value) <> 'array'
 		     ) expanded
+		WHERE val IS NOT NULL
 		GROUP BY key, val
 		ORDER BY key ASC, count DESC, val ASC`
 }

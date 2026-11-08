@@ -23,6 +23,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -98,17 +99,33 @@ type rowsIter interface {
 	Err() error
 }
 
+// errNoDatabase is what a validator built without a database answers
+// every lookup with.
+var errNoDatabase = errors.New("auth: validator has no database")
+
 // sqlQuerier runs the validator's reads on the database's read handle
-// and its one write (last_used_at) on the writer.
+// and its one write (last_used_at) on the writer. A nil db makes every
+// call fail with errNoDatabase instead of dereferencing it.
 type sqlQuerier struct {
 	db *storage.DB
 }
 
+// errRow is a row whose Scan fails with a fixed error.
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }
+
 func (q *sqlQuerier) QueryRow(ctx context.Context, query string, args ...any) rowScanner {
+	if q.db == nil {
+		return errRow{err: errNoDatabase}
+	}
 	return q.db.Reader().QueryRowContext(ctx, query, args...)
 }
 
 func (q *sqlQuerier) Query(ctx context.Context, query string, args ...any) (rowsIter, error) {
+	if q.db == nil {
+		return nil, errNoDatabase
+	}
 	rows, err := q.db.Reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -117,6 +134,9 @@ func (q *sqlQuerier) Query(ctx context.Context, query string, args ...any) (rows
 }
 
 func (q *sqlQuerier) Exec(ctx context.Context, query string, args ...any) error {
+	if q.db == nil {
+		return errNoDatabase
+	}
 	_, err := q.db.ExecContext(ctx, query, args...)
 	return err
 }
@@ -151,8 +171,9 @@ type Validator struct {
 }
 
 // NewValidator creates a Validator backed by the given database. A nil
-// db builds a validator whose lookups fail when first used (a server
-// that only exercises the unauthenticated paths needs no database).
+// db builds a validator whose lookups fail with an error when first
+// used (a server that only exercises the unauthenticated paths needs
+// no database).
 func NewValidator(db *storage.DB) *Validator {
 	var dialect storage.Dialect
 	if db != nil {

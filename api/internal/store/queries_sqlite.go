@@ -74,6 +74,7 @@ func (sqliteQueries) contextFacets() string {
 		)
 		SELECT key, val AS value, COUNT(*) AS count
 		FROM expanded
+		WHERE val IS NOT NULL
 		GROUP BY key, val
 		ORDER BY key ASC, count DESC, val ASC`
 }

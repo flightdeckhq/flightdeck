@@ -112,9 +112,9 @@ type Dialect interface {
 	// precision SQLite timestamps carry.
 	SecondsBetween(a, b string) string
 
-	// DateOf is the calendar date (UTC) of the timestamp expression ts;
-	// on Postgres a date, on SQLite 'YYYY-MM-DD' text. Both scan
-	// through Time.
+	// DateOf is the calendar date in UTC of the timestamp expression
+	// ts, whatever the session time zone; on Postgres a date, on
+	// SQLite 'YYYY-MM-DD' text. Both scan through Time.
 	DateOf(ts string) string
 
 	// JSONTypeOf is the JSON type name of the value at path of col (or
@@ -276,8 +276,12 @@ func (postgresDialect) SecondsBetween(a, b string) string {
 	return fmt.Sprintf("EXTRACT(EPOCH FROM (%s - %s))", a, b)
 }
 
+// DateOf takes the date in UTC: a bare CAST of a timestamptz to DATE
+// reads the session's TimeZone, so on a server west of UTC the 12:00Z
+// bucket of a day would land on the day before. AT TIME ZONE 'UTC'
+// turns the instant into the UTC wall-clock time first.
 func (postgresDialect) DateOf(ts string) string {
-	return fmt.Sprintf("CAST(%s AS DATE)", ts)
+	return fmt.Sprintf("CAST((%s) AT TIME ZONE 'UTC' AS DATE)", ts)
 }
 
 func (postgresDialect) JSONTypeOf(col string, path ...string) string {

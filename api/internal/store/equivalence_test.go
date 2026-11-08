@@ -213,6 +213,10 @@ func seedEquivalenceFixture(t *testing.T, s *Store) eqvFixture {
 		VALUES ('eqv-model-b', 'direct', 'other', 2, 8, 0.2, 2.5, 4, 10, 1000, 4, 16, 2, 1.5, 'override')`)
 	exec(`INSERT INTO model_pricing (model_id, platform, provider, input, output, cache_read, cache_write_5m, cache_write_1h, source, deprecated_on)
 		VALUES ('eqv-model-old', 'direct', 'other', 1, 2, 0.1, 1, 2, 'override', $1)`, "2025-01-01")
+	// A dated snapshot with a price of its own beside the undated id:
+	// the exact id must win over the undated fallback.
+	exec(`INSERT INTO model_pricing (model_id, platform, provider, input, output, cache_read, cache_write_5m, cache_write_1h, source)
+		VALUES ('eqv-model-a-20260115', 'direct', 'other', 30, 150, 3, 37.5, 60, 'override')`)
 
 	// Events across the sessions: post_calls with tokens, latency,
 	// providers, billing modes, platforms and payload multipliers;
@@ -261,6 +265,9 @@ func seedEquivalenceFixture(t *testing.T, s *Store) eqvFixture {
 	add(ev{session: f.parent, flavor: f.flavorA, eventType: "post_call", model: str("eqv-model-a-20260101"),
 		in: ints(500), out: ints(50), total: ints(550), latency: ints(400), payload: `{}`,
 		at: p.Add(11 * time.Minute), provider: nil, billing: str("metered"), platform: str("bedrock-mantle")})
+	add(ev{session: f.parent, flavor: f.flavorA, eventType: "post_call", model: str("eqv-model-a-20260115"),
+		in: ints(100), out: ints(10), total: ints(110), latency: ints(210), payload: `{}`,
+		at: p.Add(11*time.Minute + 30*time.Second), provider: str("anthropic"), billing: str("metered"), platform: nil})
 	add(ev{session: f.parent, flavor: f.flavorA, eventType: "post_call", model: str("eqv-unpriced"),
 		in: ints(700), out: ints(70), total: ints(770), latency: ints(150), payload: `{}`,
 		at: p.Add(12 * time.Minute), provider: str("other"), billing: str("metered"), platform: nil,

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -60,7 +61,9 @@ func run() int {
 	defer func() { _ = db.Close() }()
 
 	// Run database migrations before anything else: the embedded set of
-	// the database's backend, on a connection of their own.
+	// the database's backend, on a connection of their own. The migrator
+	// gets the URL as configured, without the lock timeout: a migration
+	// that waits for a lock must wait, not abort halfway.
 	slog.Info("running database migrations", "backend", db.Backend)
 	if err := storage.Migrate(context.Background(), cfg.PostgresURL); err != nil {
 		slog.Error("database migration failed", "err", err)
@@ -91,6 +94,17 @@ func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Every loop returns when ctx ends; they are joined at shutdown,
+	// within the shutdown timeout, before the connections close.
+	var loops sync.WaitGroup
+	spawn := func(f func()) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			f()
+		}()
+	}
+
 	// Start background reconciler for stale/lost/orphaned sessions.
 	// reconcilerInterval is sourced from FLIGHTDECK_RECONCILER_INTERVAL_SECS
 	// (default 60 s; the dev stack lowers it so the integration tests
@@ -99,25 +113,22 @@ func run() int {
 	// (default 24h) — see config.OrphanTimeoutHours for the rationale.
 	reconcilerInterval := time.Duration(cfg.ReconcilerIntervalSecs) * time.Second
 	orphanTimeout := time.Duration(cfg.OrphanTimeoutHours) * time.Hour
-	go proc.StartReconciler(ctx, reconcilerInterval, orphanTimeout)
+	spawn(func() { proc.StartReconciler(ctx, reconcilerInterval, orphanTimeout) })
 
 	// Rewrite events stored before the write path canonicalised model
 	// ids; returns once none are left (see writer.RunModelBackfill).
-	go writer.New(db, bus).RunModelBackfill(ctx)
+	spawn(func() { writer.New(db, bus).RunModelBackfill(ctx) })
 
-	// Start NATS consumer pool
+	// Start NATS consumer pool. Start returns an error only when setup
+	// fails (JetStream unavailable, stream or subscription refused);
+	// otherwise it runs the lanes until ctx ends and returns once they
+	// have finished the messages they hold.
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)
-	go func() {
+	consumerErr := make(chan error, 1)
+	spawn(func() {
 		slog.Info("workers starting", "pool_size", cfg.WorkerPoolSize, "backend", db.Backend)
-		// Start returns an error only when setup fails (JetStream
-		// unavailable, stream or subscription refused). Exit so the
-		// supervisor restarts the worker and retries, rather than
-		// leaving a live process that consumes nothing.
-		if err := cons.Start(ctx); err != nil {
-			slog.Error("consumer setup failed, exiting", "err", err)
-			os.Exit(1)
-		}
-	}()
+		consumerErr <- cons.Start(ctx)
+	})
 
 	// Metrics listener. A failure to bind is logged, not fatal: the
 	// counters are observability, and event processing must not stop
@@ -133,24 +144,51 @@ func run() int {
 		}()
 	}
 
-	// Graceful shutdown on SIGTERM/SIGINT
+	// Graceful shutdown on SIGTERM/SIGINT, or when the consumer could
+	// not be set up: exit so the supervisor restarts the worker and
+	// retries, rather than leaving a live process that consumes nothing.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
-	<-quit
+	exit := 0
+	select {
+	case <-quit:
+	case err := <-consumerErr:
+		if err != nil {
+			slog.Error("consumer setup failed, exiting", "err", err)
+			exit = 1
+		}
+	}
 
 	slog.Info("shutting down workers")
 	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
+	defer shutdownCancel()
 	if metricsSrv != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
 		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 			slog.Warn("metrics listener shutdown", "err", err)
 		}
-		shutdownCancel()
 	}
-
-	// Allow in-flight messages to drain
-	time.Sleep(time.Duration(cfg.ShutdownTimeoutSecs) * time.Second / 10)
+	// The lanes finish the messages they hold and the reconciler and
+	// the backfill stop before the database and NATS connections close.
+	if !waitWithin(shutdownCtx, &loops) {
+		slog.Warn("consumer lanes or background loops did not stop before the shutdown timeout; closing the connections anyway")
+	}
 	slog.Info("workers stopped")
-	return 0
+	return exit
+}
+
+// waitWithin waits for wg until ctx ends and reports whether wg finished.
+func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

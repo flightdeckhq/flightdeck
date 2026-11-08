@@ -4970,7 +4970,15 @@ a client-minted id gets one from the writer rather than the database,
 so both backends store the one shape the SQLite schema's CHECK accepts.
 A content row the database refuses (invalid data, a broken constraint,
 a size limit; `storage.IsDataError`) is dropped and the event stored
-without it; any other failure is retried. The Postgres connections
+without it; any other failure is retried. The two backends are held to
+the same result by `workers/internal/processor/equivalence_test.go`,
+which drives one fixed event sequence through both and compares the
+rows it leaves; two differences are normalised away because they are
+properties of the engines, not of the worker: JSON key order (Postgres
+`jsonb` reorders keys, SQLite stores the document as written, so
+documents compare as decoded values) and timestamp precision (Postgres
+keeps microseconds, SQLite milliseconds, so timestamps compare at the
+millisecond). The Postgres connections
 carry `lock_timeout` as a URL runtime parameter (`writer.DatabaseURL`,
 8 s, under the lane's 10 s processing deadline); SQLite has no row
 locks. The worker applies the embedded migrations of its backend at

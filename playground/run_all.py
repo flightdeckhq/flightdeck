@@ -107,12 +107,14 @@ def main() -> int:
         # post-call drain). 180s caps them while still flagging a
         # genuinely stuck run loud and early. The GenAI scripts make
         # four model calls, then wait up to 90s for the receiver to
-        # assemble the trace.
+        # assemble the trace. 40_openai_agents runs four multi-agent
+        # runs, about ten model calls.
         if (
             "subagents" in name
             or "_genai_" in name
             or "mcp_policy_langchain" in name
             or "mcp_policy_llamaindex" in name
+            or name == "40_openai_agents.py"
         ):
             timeout_s = 180
         else:

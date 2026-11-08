@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -117,12 +118,53 @@ def _sse(output: list[dict[str, Any]]) -> str:
     )
 
 
-def _serve(router: Any, *outputs: list[dict[str, Any]]) -> None:
-    queue = list(outputs)
+# The agent a request comes from, read from its instructions (``_agent``
+# writes "You are <name>." for every agent).
+_INSTRUCTIONS_RE = re.compile(r"^You are (\w+)\.$")
+# The input item a tool's result rides on: a request carrying one is an
+# agent's turn after a tool ran.
+_TOOL_RESULT_ITEM = "function_call_output"
+
+
+def _asking_agent(body: dict[str, Any]) -> str:
+    match = _INSTRUCTIONS_RE.match(body.get("instructions") or "")
+    return match.group(1) if match else ""
+
+
+def _after_a_tool(body: dict[str, Any]) -> bool:
+    items = body.get("input")
+    return isinstance(items, list) and any(
+        isinstance(i, dict) and i.get("type") == _TOOL_RESULT_ITEM for i in items
+    )
+
+
+def _serve(
+    router: Any,
+    first: dict[str, list[dict[str, Any]]],
+    after_tool: dict[str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Mock the Responses endpoint with canned output items chosen by the
+    request, never by its place in the sequence: the order requests
+    arrive in is not fixed (an input guardrail runs beside the model call
+    and can stop the run before its request is sent; xdist workers share
+    nothing but still change timings). ``first`` is an agent's output
+    keyed by its name, read from the request's instructions;
+    ``after_tool`` the output for an agent's turn after one of its tools
+    ran (its input carries the tool's result). An agent absent from
+    ``after_tool`` gets its ``first`` output on every turn. A request from
+    an agent neither names fails the call, and the test, loudly."""
 
     def respond(request: Any) -> Any:
-        output = queue.pop(0)
-        if json.loads(request.content).get("stream"):
+        body = json.loads(request.content)
+        agent = _asking_agent(body)
+        table = after_tool if after_tool and agent in after_tool and _after_a_tool(body) else first
+        output = table.get(agent)
+        if output is None:
+            return httpx.Response(
+                400,
+                json={"error": {"message": f"no canned response for agent {agent!r}"}},
+            )
+        if body.get("stream"):
             return httpx.Response(
                 200, text=_sse(output), headers={"content-type": "text/event-stream"}
             )
@@ -271,13 +313,17 @@ def test_hand_off_nested_agent_and_guardrail_land_as_designed(flavor: str) -> No
     with respx.mock(base_url=BASE_URL, assert_all_called=False) as router:
         _serve(
             router,
-            [_call("ask_expert", {"input": "why?"}, "c1")],
-            [_message("because")],
-            [_call("transfer_to_weather_agent", {}, "c2")],
-            [_message("sunny")],
-            [_message("4")],
-            [_call("read_file", {"path": "/etc/shadow"}, "c3")],
-            [_message("I cannot read that.")],
+            first={
+                "triage_agent": [_call("ask_expert", {"input": "why?"}, "c1")],
+                "expert_agent": [_message("because")],
+                "weather_agent": [_message("sunny")],
+                "tutor_agent": [_message("4")],
+                "reader_agent": [_call("read_file", {"path": "/etc/shadow"}, "c3")],
+            },
+            after_tool={
+                "triage_agent": [_call("transfer_to_weather_agent", {}, "c2")],
+                "reader_agent": [_message("I cannot read that.")],
+            },
         )
         result = agents.Runner.run_sync(
             triage, "weather?", run_config=agents.RunConfig(group_id="g-1")
@@ -397,7 +443,7 @@ def test_a_streamed_run_closes_its_child(flavor: str) -> None:
     root = str(uuid.uuid4())
     _init(root)
     with respx.mock(base_url=BASE_URL, assert_all_called=False) as router:
-        _serve(router, [_message("hi there")])
+        _serve(router, first={"streaming_agent": [_message("hi there")]})
         result = asyncio.run(_stream(_agent("streaming_agent")))
     assert result.final_output == "hi there"
     flightdeck_sensor.teardown()

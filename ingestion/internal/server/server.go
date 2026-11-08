@@ -21,10 +21,16 @@ import (
 // edge proxy or Ingress (see withPublicPrefix).
 const publicPathPrefix = "/ingest"
 
+// ReadTimeout and WriteTimeout bound a request's read (headers and
+// body) and its response write; the flightdeck binary applies them per
+// request on its /ingest routes, since its one server also carries the
+// query API's WebSocket. A sensor batch or an OTLP export of the 4 MiB
+// cap completes well within 10 seconds on any link worth serving, and
+// a client that stalls mid-body holds a connection no longer than that.
 const (
-	serverReadTimeout  = 10 * time.Second
-	serverWriteTimeout = 10 * time.Second
-	serverIdleTimeout  = 60 * time.Second
+	ReadTimeout       = 10 * time.Second
+	WriteTimeout      = 10 * time.Second
+	serverIdleTimeout = 60 * time.Second
 )
 
 // New creates the HTTP server with all routes registered.
@@ -89,8 +95,8 @@ func New(
 		// same one. It sits outside withRecovery so a panic counts as
 		// the 500 the recovery answers.
 		Handler:      withPublicPrefix(metrics.Middleware(durations, withLogging(withRecovery(mux))), publicPathPrefix),
-		ReadTimeout:  serverReadTimeout,
-		WriteTimeout: serverWriteTimeout,
+		ReadTimeout:  ReadTimeout,
+		WriteTimeout: WriteTimeout,
 		IdleTimeout:  serverIdleTimeout,
 	}
 }

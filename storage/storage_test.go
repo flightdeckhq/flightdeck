@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +58,75 @@ func TestOpen_SQLiteCreatesFileWithWALAndForeignKeys(t *testing.T) {
 	}
 	if db.Reader() == db.DB {
 		t.Error("SQLite reader is the writer handle; want a separate pool")
+	}
+}
+
+// A path with the characters SQLite's URI syntax reserves opens the
+// file at exactly that path: nothing is truncated at "#" or "?", a "%"
+// is not decoded, and no sibling file appears.
+func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
+	for _, dir := range []string{"a#b", "x?y", "50%", "%41", "My Documents", "mix #?% ed"} {
+		t.Run(dir, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, dir, "fd.db")
+			url := "sqlite://" + path
+			ctx := context.Background()
+			// The migrator opens the same path through the same DSN.
+			if err := storage.Migrate(ctx, url); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			db, err := storage.Open(ctx, url)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			mustExec(t, db, "INSERT INTO token_policies (scope, scope_value) VALUES ('global', $1)", dir)
+			if n := queryInt(t, db, "SELECT COUNT(*) FROM token_policies WHERE scope_value = $1", dir); n != 1 {
+				t.Errorf("row written through the writer not read back by the reader: %d", n)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("database file is not at %q: %v", path, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if e.Name() != dir {
+					t.Errorf("unexpected entry %q beside %q: the path was cut or decoded", e.Name(), dir)
+				}
+			}
+		})
+	}
+}
+
+// The read pool cannot write, and a plain LIKE is case-sensitive, as on
+// Postgres.
+func TestOpen_SQLiteReaderIsQueryOnlyAndLikeIsCaseSensitive(t *testing.T) {
+	db := storagetest.OpenSQLite(t)
+	ctx := context.Background()
+	_, err := db.Reader().ExecContext(ctx, "INSERT INTO token_policies (scope, scope_value) VALUES ('global', 'x')")
+	if err == nil || !strings.Contains(err.Error(), "readonly") {
+		t.Errorf("write through Reader(): err=%v, want a readonly database error", err)
+	}
+	if n := queryInt(t, db, "SELECT COUNT(*) FROM token_policies WHERE scope_value = 'x'"); n != 0 {
+		t.Errorf("the refused write landed: %d rows", n)
+	}
+	// The pragma is per connection: every reader connection has it.
+	for i := 0; i < 2*8; i++ {
+		var ro int
+		if err := db.Reader().QueryRowContext(ctx, "PRAGMA query_only").Scan(&ro); err != nil || ro != 1 {
+			t.Fatalf("reader connection %d: query_only=%d err=%v", i, ro, err)
+		}
+	}
+	if n := queryInt(t, db, "SELECT COUNT(*) FROM access_tokens WHERE name LIKE 'development token'"); n != 0 {
+		t.Errorf("plain LIKE matched %d rows ignoring case; case_sensitive_like is off", n)
+	}
+	if n := queryInt(t, db, "SELECT COUNT(*) FROM access_tokens WHERE name LIKE 'Development Token'"); n != 1 {
+		t.Errorf("plain LIKE on the exact name matched %d rows, want 1", n)
 	}
 }
 

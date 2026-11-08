@@ -26,10 +26,13 @@ status=0
 fail() { echo "FAIL: $1" >&2; status=1; }
 
 # versions <dir>: prints the distinct version numbers of a directory,
-# failing on a file that is not an up/down pair or is misnamed.
+# failing on a file that is not an up/down pair or is misnamed. Plain
+# lists and comm(1), not associative arrays: macOS ships bash 3.2,
+# which has none.
 versions() {
-  local dir="$1" f name stem kind
-  declare -A ups=() downs=()
+  local dir="$1" f name stem ups downs
+  ups=""
+  downs=""
   for f in "$dir"/*.sql; do
     name="$(basename "$f")"
     if [[ ! "$name" =~ ^([0-9]{6})_([a-z0-9_]+)\.(up|down)\.sql$ ]]; then
@@ -37,16 +40,24 @@ versions() {
       continue
     fi
     stem="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
-    kind="${BASH_REMATCH[3]}"
-    if [ "$kind" = up ]; then ups["$stem"]=1; else downs["$stem"]=1; fi
+    if [ "${BASH_REMATCH[3]}" = up ]; then
+      ups="$ups$stem"$'\n'
+    else
+      downs="$downs$stem"$'\n'
+    fi
   done
-  for stem in "${!ups[@]}"; do
-    [ -n "${downs[$stem]:-}" ] || fail "$dir/$stem.up.sql has no $stem.down.sql"
-    echo "${stem%%_*}"
-  done
-  for stem in "${!downs[@]}"; do
-    [ -n "${ups[$stem]:-}" ] || fail "$dir/$stem.down.sql has no $stem.up.sql"
-  done
+  ups="$(printf '%s' "$ups" | sort -u)"
+  downs="$(printf '%s' "$downs" | sort -u)"
+  # In ups only / in downs only.
+  while IFS= read -r stem; do
+    [ -n "$stem" ] && fail "$dir/$stem.up.sql has no $stem.down.sql"
+  done < <(comm -23 <(printf '%s\n' "$ups") <(printf '%s\n' "$downs"))
+  while IFS= read -r stem; do
+    [ -n "$stem" ] && fail "$dir/$stem.down.sql has no $stem.up.sql"
+  done < <(comm -13 <(printf '%s\n' "$ups") <(printf '%s\n' "$downs"))
+  while IFS= read -r stem; do
+    [ -n "$stem" ] && echo "${stem%%_*}"
+  done <<<"$ups"
 }
 
 pg_versions="$(versions "$PG_DIR" | sort -u)"

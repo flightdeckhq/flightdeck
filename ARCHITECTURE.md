@@ -4948,10 +4948,9 @@ against it. No pgx type and no SQLite driver symbol is used outside the
 `storage` module. Where a query differs between the two engines beyond
 what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
-SQL fragments are never templated beyond the dialect helpers. Stores
-move to the boundary one at a time; a store that has not moved still
-holds a pgx pool and runs on Postgres only (CLAUDE.md rule 35 lists the
-store packages).
+SQL fragments are never templated beyond the dialect helpers. A store
+outside the boundary holds a pgx pool and runs on Postgres only
+(CLAUDE.md rule 35 lists the store packages).
 
 **The common subset** both engines accept, written as is: `$1, $2, …`
 placeholders (SQLite binds `$NNN` by ordinal), `CAST(x AS TEXT)` (the
@@ -4969,16 +4968,23 @@ the same result:
 | `Placeholder(n)` | `$n` | `$n` |
 | `Now()` | `NOW()` | `strftime('%Y-%m-%dT%H:%M:%fZ','now')` |
 | `AddInterval(ts, secs)` | `ts + (secs) * INTERVAL '1 second'` | `strftime(…, ts, (secs) \|\| ' seconds')` |
-| `DateTrunc(unit, ts)` (hour, day, week, month; weeks start Monday) | `date_trunc('unit', ts)` | `strftime` with the unit's fields zeroed; week via `'-6 days', 'weekday 1'` |
-| `ILike(expr, pattern)` | `lower(expr) LIKE lower(pattern) ESCAPE '\'` | same |
+| `DateTrunc(unit, ts)` (hour, day, week, month; weeks start Monday; always UTC) | `date_trunc('unit', ts, 'UTC')` | `strftime` with the unit's fields zeroed; week via `'-6 days', 'weekday 1'` |
+| `ILike(expr, pattern)` | `lower(CAST(expr AS TEXT) COLLATE "C") LIKE lower(CAST(pattern AS TEXT) COLLATE "C") ESCAPE '\'` | `lower(expr) LIKE lower(pattern) ESCAPE '\'` |
 | `InArray(expr, param)` + `ArrayArg(values)` | `expr = ANY($n)` with a `[]string` (`text[]`) | `expr IN (SELECT value FROM json_each($n))` with the JSON array text |
+| `InUUIDArray(expr, param)` | `expr = ANY(CAST($n AS uuid[]))`, so the uuid column's index is used | same as `InArray` (UUIDs are text) |
 | `JSONText(col, keys…)` | `col->'a'->>'b'` | `json_extract(col, '$.a.b')` |
 | `Upsert(conflict, update)` | `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` | same |
 | `Returning(cols…)` | `RETURNING …` | same |
 
 Case-insensitive matching uses `lower()` on both sides on both engines
-and folds ASCII only: SQLite's `lower()` and `LIKE` are ASCII-only, and
-Postgres is made to agree rather than depend on the database locale.
+and folds ASCII only: SQLite's `lower()` is ASCII-only, and on Postgres
+both sides are folded under the `"C"` collation, so the database locale
+cannot make `'ÉCOLE'` match `'école'` on one engine and not the other.
+A plain `LIKE` is case-sensitive on both (SQLite connections set
+`case_sensitive_like`), so a store that wants case folding says so with
+`ILike`. `DateTrunc` truncates to UTC boundaries whatever the session
+time zone; its argument is a column or function, since a bare
+placeholder has no type on Postgres (`CAST($n AS TIMESTAMPTZ)`).
 `JSONText` is for string-valued keys: Postgres `->>` yields text for
 every scalar, SQLite `json_extract` yields the JSON value's own type.
 
@@ -4992,34 +4998,55 @@ functions).
 
 ### SQLite semantics
 
-- **File and connections.** Every connection sets `journal_mode=WAL`,
-  `busy_timeout=5000`, `foreign_keys=ON` (off by default in SQLite) and
-  `synchronous=NORMAL`. The embedded `*sql.DB` is the **writer**: one
+- **File and connections.** The database URL is `sqlite://<path>`; the
+  path is percent-encoded into the `file:` URI SQLite opens, so a data
+  directory containing `#`, `?`, `%` or spaces opens the file at that
+  path, and a Windows drive path (`C:\…`) becomes `file:///C:/…`. Every
+  connection sets `journal_mode=WAL`, `busy_timeout=5000`,
+  `foreign_keys=ON` (off by default in SQLite), `synchronous=NORMAL` and
+  `case_sensitive_like=ON`. The embedded `*sql.DB` is the **writer**: one
   connection, so write transactions queue in Go (context-aware) instead
   of spinning on the busy handler, and every transaction on it begins
   `IMMEDIATE`, taking the write lock at `BEGIN` so a read-then-write
   transaction cannot fail with `SQLITE_BUSY` halfway. `DB.Reader()` is a
-  pool of eight connections for statements that only read; in WAL mode
-  they neither block the writer nor wait for it. A read that must see a
-  transaction's own uncommitted rows runs on the transaction. On
-  Postgres both handles are the same pool.
+  pool of eight `query_only` connections for statements that only read
+  (a write through it fails); in WAL mode they neither block the writer
+  nor wait for it. A read that must see a transaction's own uncommitted
+  rows runs on the transaction. Because the writer is one connection, a
+  statement issued on the writer while the same goroutine holds an open
+  `Tx` or unread `Rows` from it waits forever: inside a transaction every
+  statement runs on the `Tx`, and a read that needs no transaction runs
+  on `Reader()`. `sql.TxOptions.ReadOnly` is enforced by Postgres and
+  ignored by SQLite. On Postgres both handles are the same pool.
 - **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
   `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
   byte, SQLite's date functions read and produce it, and the driver
-  scans it as `time.Time`. The `storage` driver wrapper writes every
+  scans it as `time.Time`. Every timestamp column carries a `CHECK` that
+  the value round-trips through `strftime` in this layout, so a value in
+  another shape (microseconds, no zone, a date alone) is refused rather
+  than sorted wrongly. The `storage` driver wrapper writes every
   `time.Time` argument in this form, so stores pass `time.Time` as on
   Postgres. Postgres keeps microseconds; SQLite keeps milliseconds. A
   timestamp an expression computes (`MAX(ts)`, `DateTrunc`) has no
   declared type and comes back as text on SQLite: scan it through
   `storage.Time`, which accepts both shapes.
-- **UUIDs** are `TEXT` in canonical lower-case form; defaults generate a
-  random version-4 UUID in SQL. Postgres `uuid` columns compare with a
-  bound text argument, so stores pass UUIDs as strings on both engines.
+- **UUIDs** are `TEXT` in canonical lower-case form, with a `CHECK` on
+  every uuid column (lower-case, `8-4-4-4-12`, hexadecimal), so an
+  upper-case or unhyphenated id cannot be stored and then missed by a
+  lookup; defaults generate a random version-4 UUID in SQL. Postgres
+  `uuid` columns compare with a bound text argument, so stores pass
+  UUIDs as strings on both engines.
+- **Text collation** is `BINARY`: comparison and `ORDER BY` on text are
+  byte order, not locale order, on SQLite; Postgres orders by the
+  database collation. Stores that need a locale-independent order sort
+  on `lower()` or on a non-text key.
 - **JSON** (`jsonb` on Postgres) is `TEXT` with a `json_valid()` `CHECK`,
   read with `json_extract`; the facet indexes are expression indexes on
   `json_extract(col, '$.key')` and replace the Postgres GIN index on the
-  whole document.
+  whole document. SQLite stores the document text as written, so key
+  order and duplicate keys survive, where Postgres `jsonb` normalises
+  them; stores compare JSON by extracted keys, never as text.
 - **Booleans** are `BOOLEAN` columns holding 0 / 1; `integer`, `bigint`
   and `smallint` are `INTEGER`; `numeric` is `NUMERIC`; `bytea` is
   `BLOB`; `date` is `DATE`.
@@ -5051,9 +5078,10 @@ mount the Postgres directory for the workers' runner and
 ### Bus
 
 `storage.Bus` carries the notifications the services exchange: a
-session or agent changed (`flightdeck_fleet`, a JSON object with
-`session_id`, `event_type`, `event_id`), an access token was revoked
-(`flightdeck_access_token_revoked`, the token id). `Publish(ctx,
+session or agent changed (`storage.ChannelFleet`, `flightdeck_fleet`, a
+JSON object with `session_id`, `event_type`, `event_id`), an access
+token was revoked (`storage.ChannelAccessTokenRevoked`,
+`flightdeck_access_token_revoked`, the token id). `Publish(ctx,
 channel, payload)` delivers to every current subscriber; `Subscribe(ctx,
 channel)` returns a channel of payloads that closes when `ctx` ends or
 the subscription is lost. A subscriber that must not miss a
@@ -5063,7 +5091,9 @@ picks the implementation: on Postgres, `pg_notify` through the pool and
 one dedicated `LISTEN` connection per subscription, so every process on
 the database sees every notification; on SQLite, in-process buffered
 channels, where a publisher waits for a subscriber whose buffer (256
-payloads) is full rather than dropping.
+payloads) is full rather than dropping; the wait ends with the
+publisher's context or the subscriber's, and publishers never wait for
+each other.
 
 ### Tests on both backends
 

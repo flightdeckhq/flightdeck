@@ -137,7 +137,7 @@ func TestDialect_ILike(t *testing.T) {
 	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
 		createTable(t, db, "storagetest_names",
 			"(name TEXT NOT NULL)", "(name TEXT NOT NULL)")
-		for _, n := range []string{"Hello World", "50% off", "50x off", "under_score", "underXscore"} {
+		for _, n := range []string{"Hello World", "50% off", "50x off", "under_score", "underXscore", "ÉCOLE", "école"} {
 			mustExec(t, db, "INSERT INTO storagetest_names (name) VALUES ($1)", n)
 		}
 		d := db.Dialect
@@ -153,12 +153,117 @@ func TestDialect_ILike(t *testing.T) {
 			{"50_ off", 2}, // _ matches one character
 			{`under\_score`, 1},
 			{"under_score", 2},
+			// Non-ASCII letters are not folded on either backend: the
+			// Postgres side runs under the "C" collation so the
+			// database locale cannot make it match both rows.
+			{"école", 1},
+			{"ÉCOLE", 1},
+			{"%cole", 2}, // the ASCII tail matches both
 		}
 		for _, c := range cases {
 			q := "SELECT COUNT(*) FROM storagetest_names WHERE " + d.ILike("name", "$1")
 			if n := queryInt(t, db, q, c.pattern); n != c.want {
 				t.Errorf("ILike(name, %q) matched %d, want %d", c.pattern, n, c.want)
 			}
+		}
+		// A literal pattern (not a placeholder) renders too.
+		q := "SELECT COUNT(*) FROM storagetest_names WHERE " + d.ILike("name", "'hello%'")
+		if n := queryInt(t, db, q); n != 1 {
+			t.Errorf("ILike with a literal pattern matched %d, want 1", n)
+		}
+		// Plain LIKE is case-sensitive on both backends (SQLite through
+		// case_sensitive_like), so a store that wants case folding has
+		// to say so with ILike.
+		if n := queryInt(t, db, "SELECT COUNT(*) FROM storagetest_names WHERE name LIKE 'hello%'"); n != 0 {
+			t.Errorf("plain LIKE 'hello%%' matched %d rows, want 0 (case-sensitive)", n)
+		}
+		if n := queryInt(t, db, "SELECT COUNT(*) FROM storagetest_names WHERE name LIKE 'Hello%'"); n != 1 {
+			t.Errorf("plain LIKE 'Hello%%' matched %d rows, want 1", n)
+		}
+	})
+}
+
+// DateTrunc truncates in UTC whatever the connection's time zone: a
+// timestamp just after midnight UTC belongs to that UTC day even when
+// the session zone is hours behind.
+func TestDialect_DateTruncIgnoresSessionTimeZone(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		base := time.Date(2026, 11, 7, 1, 30, 0, 0, time.UTC) // Saturday 01:30 UTC
+		timesTable(t, db, base)
+		ctx := context.Background()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if db.Backend == storage.Postgres {
+			// Friday 20:30 in New York; a zone-following truncation
+			// would say Friday.
+			if _, err := conn.ExecContext(ctx, "SET TIME ZONE 'America/New_York'"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d := db.Dialect
+		cases := map[storage.TruncUnit]time.Time{
+			storage.TruncHour:  time.Date(2026, 11, 7, 1, 0, 0, 0, time.UTC),
+			storage.TruncDay:   time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC),
+			storage.TruncWeek:  time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC),
+			storage.TruncMonth: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		}
+		for unit, want := range cases {
+			var got storage.Time
+			q := "SELECT " + d.DateTrunc(unit, "ts") + " FROM storagetest_dialect_times WHERE id = 1"
+			if err := conn.QueryRowContext(ctx, q).Scan(&got); err != nil {
+				t.Fatalf("DateTrunc(%s): %v", unit, err)
+			}
+			if !got.Valid || !got.Time.Equal(want) {
+				t.Errorf("DateTrunc(%s) under a non-UTC session = %s, want %s", unit, got.Time.UTC(), want)
+			}
+		}
+		// Grouping by the truncation puts the row in the UTC day.
+		var day storage.Time
+		var n int
+		q := "SELECT " + d.DateTrunc(storage.TruncDay, "ts") + " AS d, COUNT(*) FROM storagetest_dialect_times GROUP BY d"
+		if err := conn.QueryRowContext(ctx, q).Scan(&day, &n); err != nil {
+			t.Fatal(err)
+		}
+		if !day.Time.Equal(cases[storage.TruncDay]) || n != 1 {
+			t.Errorf("GROUP BY DateTrunc = (%s, %d)", day.Time.UTC(), n)
+		}
+	})
+}
+
+func TestDialect_InUUIDArray(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		var ids []string
+		for i := 0; i < 3; i++ {
+			var id string
+			if err := db.QueryRowContext(ctx,
+				"INSERT INTO token_policies (scope, scope_value, token_limit) VALUES ('flavor', $1, 1) RETURNING CAST(id AS TEXT)",
+				"storagetest_uuid_"+string(rune('a'+i))).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), "DELETE FROM token_policies WHERE scope_value LIKE 'storagetest_uuid_%'")
+		})
+		d := db.Dialect
+		q := "SELECT COUNT(*) FROM token_policies WHERE " + d.InUUIDArray("id", "$1")
+		if n := queryInt(t, db, q, d.ArrayArg(ids[:2])); n != 2 {
+			t.Errorf("InUUIDArray matched %d, want 2", n)
+		}
+		if n := queryInt(t, db, q, d.ArrayArg([]string{ids[2], "00000000-0000-4000-8000-000000000000"})); n != 1 {
+			t.Errorf("InUUIDArray with an unknown id matched %d, want 1", n)
+		}
+		if n := queryInt(t, db, q, d.ArrayArg(nil)); n != 0 {
+			t.Errorf("InUUIDArray over an empty array matched %d, want 0", n)
+		}
+		// Text comparison on the same rows agrees.
+		q = "SELECT COUNT(*) FROM token_policies WHERE " + d.InArray("CAST(id AS TEXT)", "$1")
+		if n := queryInt(t, db, q, d.ArrayArg(ids)); n != 3 {
+			t.Errorf("InArray over CAST(id AS TEXT) matched %d, want 3", n)
 		}
 	})
 }

@@ -160,6 +160,35 @@ func TestMigrate_SQLite_UpDownUp(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "INSERT INTO sessions (session_id, flavor, agent_type, context) VALUES ($1, 'f', 'coding', 'not json')", id); err == nil {
 		t.Error("insert of invalid JSON succeeded; the json_valid check is missing")
 	}
+	// Timestamp and UUID columns accept only the canonical text forms,
+	// so a value that would sort or compare wrongly cannot be stored.
+	badValues := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"microsecond timestamp", "UPDATE access_tokens SET last_used_at = '2026-11-07T12:00:00.123456Z' WHERE id = $1", []any{id}},
+		{"timestamp without zone", "UPDATE access_tokens SET last_used_at = '2026-11-07 12:00:00.123' WHERE id = $1", []any{id}},
+		{"date only", "UPDATE access_tokens SET last_used_at = '2026-11-07' WHERE id = $1", []any{id}},
+		{"garbage timestamp", "UPDATE access_tokens SET last_used_at = 'yesterday' WHERE id = $1", []any{id}},
+		{"upper-case uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ($1, 'flavor', 'u1')", []any{strings.ToUpper(id)}},
+		{"uuid without dashes", "INSERT INTO token_policies (id, scope, scope_value) VALUES ($1, 'flavor', 'u2')", []any{strings.ReplaceAll(id, "-", "")}},
+		{"non-hex uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ('zzzzzzzz-zzzz-4zzz-8zzz-zzzzzzzzzzzz', 'flavor', 'u3')", nil},
+		{"short uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ('abc', 'flavor', 'u4')", nil},
+	}
+	for _, c := range badValues {
+		if _, err := db.ExecContext(ctx, c.query, c.args...); err == nil || !strings.Contains(err.Error(), "CHECK") {
+			t.Errorf("%s: err=%v, want a CHECK constraint failure", c.name, err)
+		}
+	}
+	// The canonical forms, and NULL where allowed, are accepted; a
+	// time.Time goes through the driver in the canonical form.
+	mustExec(t, db, "UPDATE access_tokens SET last_used_at = $1 WHERE id = $2", time.Date(2026, 11, 7, 12, 0, 0, 123456789, time.UTC), id)
+	if got := queryString(t, db, "SELECT CAST(last_used_at AS TEXT) FROM access_tokens WHERE id = $1", id); got != "2026-11-07T12:00:00.123Z" {
+		t.Errorf("stored last_used_at %q, want the millisecond layout", got)
+	}
+	mustExec(t, db, "UPDATE access_tokens SET last_used_at = NULL WHERE id = $1", id)
+	mustExec(t, db, "INSERT INTO token_policies (id, scope, scope_value) VALUES ($1, 'flavor', 'u5')", "0123abcd-4567-4ef0-89ab-0123456789ab")
 	_ = db.Close()
 
 	if err := storage.MigrateDown(ctx, rawURL); err != nil {

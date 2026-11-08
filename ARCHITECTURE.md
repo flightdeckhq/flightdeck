@@ -10344,8 +10344,7 @@ StatefulSet.
 ### Install channels and release artifacts
 
 The `flightdeck` binary reaches users through these channels, all built
-from one tag by the release workflow (`.github/workflows/release.yml`,
-RELEASING.md has the sequence):
+from one release tag (RELEASING.md has the sequence):
 
 | Channel | Command | What it installs |
 |---|---|---|
@@ -10363,7 +10362,17 @@ named `flightdeck_<os>_<arch>.tar.gz` (`.zip` on Windows) without the
 version, so `releases/latest/download/<asset>` resolves with no API
 call; the version is inside (`flightdeck --version` prints
 `flightdeck v<tag>`). `checksums.txt` carries the SHA-256 of every
-archive and both installers verify against it. The GitHub release's
+archive and both installers verify against it. `checksums.txt` is
+signed keyless with cosign (Sigstore): the signer is the release
+workflow's OIDC identity and the bundle `checksums.txt.sigstore.json`
+sits beside it. The installers verify that signature when `cosign` is
+installed on the machine and the download comes from the default
+repository URL; without cosign the signature is not checked and the
+installers say so, so the trust then rests on TLS to github.com and the
+archive's checksum guards against corruption only. That gap is stated in
+the installers' headers; closing it for everyone would need a verifier
+that needs no extra tool, which no package of the installers' size
+provides today. The GitHub release's
 notes are the tag's section of CHANGELOG.md (`scripts/release_notes.py`;
 a pre-release tag, `vX.Y.Z-rc.1`, takes the Unreleased section and is
 marked as a pre-release, which the Homebrew tap and the installers'

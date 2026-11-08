@@ -280,7 +280,7 @@ version-check: ## Check every version location matches the VERSION file
 # dependencies (make -C dashboard install). CI runs the same build on
 # every pull request so a target that stops cross-compiling fails there.
 release-snapshot: ## Build every release artifact into dist/ without publishing (needs goreleaser)
-	HOMEBREW_TAP_GITHUB_TOKEN="$${HOMEBREW_TAP_GITHUB_TOKEN:-unset}" goreleaser release --snapshot --clean
+	HOMEBREW_TAP_GITHUB_TOKEN="$${HOMEBREW_TAP_GITHUB_TOKEN:-unset}" goreleaser release --snapshot --clean --skip=sign
 
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py

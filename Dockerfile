@@ -4,15 +4,20 @@
 # (ingestion, workers, query API, embedded NATS and the dashboard in one
 # process) on a distroless base, as a non-root user.
 #
-#   docker run -d --name flightdeck -p 4000:4000 -v flightdeck-data:/data \
+#   docker run -d --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck-data:/data \
 #     -e FLIGHTDECK_DATABASE_URL='postgres://user:password@host:5432/flightdeck?sslmode=disable' \
 #     flightdeckhq/flightdeck
 #   docker logs flightdeck     # the start-up block with the dashboard token
 #
-# :4000 inside the container is not a loopback address, so the binary
-# mints an access token on its first start, prints it in the start-up
-# block (docker logs) and keeps it in /data/secrets.json for the next
-# starts. Everything the container writes lives under /data.
+# Publish the port on 127.0.0.1 (as above) unless other machines should
+# reach it: the dashboard token is served to anyone who can reach the
+# origin. :4000 inside the container is not a loopback address, so the
+# binary mints an access token on its first start, prints it once in the
+# start-up block (docker logs; treat those logs as the secret they
+# carry) and keeps it in /data/secrets.json, mode 0600, owned by the
+# nonroot user, for the next starts. Everything the container writes
+# lives under /data. The base images are pinned by digest; Dependabot
+# proposes the updates.
 #
 # The release workflow builds this file for linux/amd64 and linux/arm64
 # with buildx; the Go cross-compile runs on the build platform, so no
@@ -20,7 +25,7 @@
 #   docker build --build-arg VERSION=v$(cat VERSION) -t flightdeck .
 
 # ---- dashboard bundle -----------------------------------------------------
-FROM --platform=$BUILDPLATFORM node:24-alpine AS webui
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS webui
 WORKDIR /src/dashboard
 COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -29,7 +34,7 @@ COPY dashboard/ ./
 RUN npm run build && find dist -name '*.map' -delete
 
 # ---- binary ---------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 ARG TARGETOS
 ARG TARGETARCH
 # What `flightdeck --version` prints; release.yml passes the tag.

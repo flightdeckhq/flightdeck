@@ -365,22 +365,25 @@ jobs:
       # on SQLite here (a temp file per test, no server); the Postgres
       # half and the schema parity test run in the integration job's
       # `make test-go-db`, which has a Postgres.
+      #
+      # -race also turns on the compiler's checkptr instrumentation,
+      # which makes the pure-Go SQLite (modernc.org/sqlite and the libc
+      # it is transpiled against) about ten times slower per statement:
+      # the ingestion store's write of its 10 000-record cap, 0.2 s
+      # uninstrumented, then outlasts the 2 s StageTimeout it enforces.
+      # checkptr is turned off for the modernc.org packages only, by
+      # package pattern; the race detector stays on everywhere and
+      # checkptr stays on for our own code. Every Go module whose
+      # SQLite half runs under -race takes the same flag.
       - name: Test storage (SQLite)
         working-directory: storage
-        run: go test ./... -v -race -count=1
+        run: go test ./... -v -race -count=1 -gcflags='modernc.org/...=-d=checkptr=0'
 
-      # The ingestion stores run their SQLite half here (storagetest, a
-      # temp file per test). -race turns on the compiler's checkptr
-      # instrumentation as well, which makes the pure-Go SQLite's pointer
-      # arithmetic about ten times slower: a staging write of the
-      # 10 000-record cap, 0.2 s uninstrumented, then outlasts the 2 s
-      # StageTimeout the store enforces. The race detector stays on;
-      # only checkptr is turned off.
       - name: Test ingestion
         working-directory: ingestion
         run: |
           go test ./... -v -race \
-            -gcflags=all=-d=checkptr=0 \
+            -gcflags='modernc.org/...=-d=checkptr=0' \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...

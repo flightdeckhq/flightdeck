@@ -1210,6 +1210,16 @@ jobs:
       - name: Pricing catalogue refresh script
         run: python3 -m unittest scripts/test_pricing_refresh.py
 
+      # The README's command budget (scripts/readme-budget.sh): the
+      # self-test pins the counting rule on fixtures, then the README
+      # is measured. Report mode until the single-binary README lands
+      # within budget; that pull request drops --report so the budget
+      # then fails the build.
+      - name: README command budget
+        run: |
+          scripts/test-readme-budget.sh
+          scripts/readme-budget.sh --report
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'

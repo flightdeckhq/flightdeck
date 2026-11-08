@@ -12,13 +12,56 @@
 
 ## Getting Started
 
+This is the contributor path: the stack from source, with the test
+harness around it. A user who only wants to run Flightdeck installs a
+release instead (README, Quickstart) and never needs a clone.
+
 ```bash
 git clone https://github.com/flightdeckhq/flightdeck.git
 cd flightdeck
 make dev
 ```
 
-This starts all services via Docker Compose. Dashboard is at `http://localhost:4000`.
+`make dev` starts the dev stack. The dashboard is at `http://localhost:4000`
+and the stack accepts the development token `tok_dev`, which the plugin and
+the test suites default to. `make down` stops it, `make logs` tails it,
+`make dev-reset` wipes its data and starts again.
+
+### Running the sensor and the plugin from source
+
+- **Sensor:** `pip install -e sensor/` from the repo root installs the
+  package from the checkout instead of PyPI (`sensor/README.md` has the
+  venv layout the Makefile expects).
+- **Plugin:** `claude --plugin-dir /path/to/flightdeck/plugin` loads the
+  Claude Code plugin from the checkout instead of the marketplace.
+
+### Playground
+
+Working examples for every supported framework live in
+[`playground/`](playground/). Each script runs the sensor against a real
+LLM API and costs cents per run, so none of them run in CI:
+
+```bash
+make playground-anthropic    # Anthropic direct
+make playground-openai       # OpenAI direct
+make playground-langchain    # LangChain + ChatAnthropic / ChatOpenAI
+make playground-langgraph    # LangGraph agent loops
+make playground-llamaindex   # LlamaIndex
+make playground-llamaindex-agents  # LlamaIndex agent workflows as child sessions
+make playground-crewai       # CrewAI multi-agent
+make playground-mcp          # MCP tool calls
+make playground-policies     # token policy enforcement
+
+make playground-all          # everything (~$0.50/run)
+```
+
+Each script self-skips when its API keys are not set, so `make
+playground-all` runs cleanly on any box and only exercises what you have
+credentials for. The `flavor` field on each session names the script
+that produced it, so the sessions are easy to find on the dashboard.
+[`playground/README.md`](playground/README.md) has the full matrix and
+the per-framework venvs; the WSL note under [Releasing](#releasing)
+applies to every playground run.
 
 ## Running Tests
 
@@ -155,11 +198,14 @@ make lint
 
 This runs:
 - `mypy --strict` and `ruff check` on the sensor
-- `gofmt -l .` then `golangci-lint run ./...` on ingestion, workers, and api
+- `gofmt -l .` then `golangci-lint run ./...` on storage, ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
 
-`make lint` and CI both fail when `gofmt -l .` lists any file in ingestion,
-workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
+Run `shellcheck` on any script under `scripts/` you touch
+(`uvx --from shellcheck-py shellcheck scripts/<name>.sh` needs no install).
+
+`make lint` and CI both fail when `gofmt -l .` lists any file in storage,
+ingestion, workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
 toolchain the module's `go.mod` requires (`$(go env GOROOT)/bin/gofmt`, run from
 inside the module): gofmt from another Go release can format doc comments
 differently, so CI and your machine would disagree.
@@ -238,6 +284,19 @@ the pull request; delete it then.
 4. Open a PR against `main` — CI runs automatically
 5. All CI checks must pass before merge
 
+### Which document a change belongs in
+
+The README is written for a user who runs Flightdeck from a release and
+points agents at it; everything a user needs stays there. Contributor
+steps (a clone, `make dev`, per-component commands, the playground) belong
+in this file. `scripts/readme-budget.sh` measures the README's command
+lines per section and its length against the budget in the script's header
+(CI runs it in the scripts job); when a README change goes over, move
+contributor steps here, never user-facing content. ARCHITECTURE.md
+describes the system as it is, CHANGELOG.md what changed per release, and
+DECISIONS.md the decisions a future contributor would otherwise relitigate
+(the Engineering principles below, L1 and L2).
+
 ## Review pipeline (`.claude/`)
 
 `.claude/` ships with this repo. The review agents, guidelines, the
@@ -311,6 +370,11 @@ where it lives in the code; set a milestone only when the work is planned
 for a release.
 
 ## Releasing
+
+[RELEASING.md](RELEASING.md) has the release flow: the `VERSION` file and
+the locations `scripts/version.py` keeps in step with it, `make release-prep`
+for the release pull request and `make release-tag` for the tag that starts
+the release workflow.
 
 Before tagging a release, run `make playground-all` against a live stack with
 real provider API keys (`ANTHROPIC_API_KEY` + `OPENAI_API_KEY` exported). It

@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
+.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan release-snapshot pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -273,6 +273,14 @@ pricing-refresh: ## Regenerate the vendored pricing catalogue from litellm's cur
 
 version-check: ## Check every version location matches the VERSION file
 	python3 scripts/version.py check
+
+# The release build, without publishing: the six binaries, their
+# archives, checksums.txt and the Homebrew formula land in dist/. Needs
+# goreleaser (https://goreleaser.com/install/) and the dashboard's
+# dependencies (make -C dashboard install). CI runs the same build on
+# every pull request so a target that stops cross-compiling fails there.
+release-snapshot: ## Build every release artifact into dist/ without publishing (needs goreleaser)
+	HOMEBREW_TAP_GITHUB_TOKEN="$${HOMEBREW_TAP_GITHUB_TOKEN:-unset}" goreleaser release --snapshot --clean
 
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py

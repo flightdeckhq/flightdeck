@@ -1,0 +1,137 @@
+# goreleaser builds the `flightdeck` binary for every supported platform
+# and publishes a release from it: archives and checksums on the GitHub
+# release, the Homebrew formula in flightdeckhq/homebrew-tap. The release
+# workflow (.github/workflows/release.yml) runs it on a version tag; CI
+# runs `goreleaser build --snapshot` on every pull request so a target
+# that stops cross-compiling fails the PR, not the release.
+#
+# The build is parameterised here only: BINARY_MAIN (the package),
+# the binary name and the ldflags. A rename is one edit.
+#
+# Local run (needs the dashboard's dependencies, `make -C dashboard
+# install`):
+#   goreleaser release --snapshot --clean      # everything, nothing published
+#   goreleaser build --snapshot --clean        # the six binaries only
+version: 2
+
+project_name: flightdeck
+
+# The dashboard bundle is embedded into the binary (webui/dist), so it is
+# built first, once, for every target.
+before:
+  hooks:
+    - make build-webui
+
+builds:
+  - id: flightdeck
+    main: ./cmd/flightdeck
+    binary: flightdeck
+    # Pure Go: the database drivers (pgx, and the modernc.org/sqlite
+    # driver the storage module brings) and the embedded NATS server
+    # need no C toolchain, which is what makes six targets from one
+    # runner possible.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    # main.version is what `flightdeck --version` prints (the Makefile
+    # builds it as v<VERSION>, so the tag form is kept here). The Go
+    # linker ignores -X for a symbol the program does not define, so
+    # commit and date are set for the day cmd/flightdeck reads them.
+    ldflags:
+      - -s -w
+      - -X main.version=v{{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids: [flightdeck]
+    formats: [tar.gz]
+    # No version in the file name: install.sh and install.ps1 download
+    # `releases/latest/download/flightdeck_<os>_<arch>.tar.gz` without an
+    # API call, and a pinned version goes through releases/download/<tag>/.
+    # The version is inside: `flightdeck --version`.
+    name_template: "flightdeck_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  # A snapshot is never a release; the version says so and carries the
+  # commit it was built from.
+  version_template: "{{ incpatch .Version }}-snapshot.{{ .ShortCommit }}"
+
+changelog:
+  # The notes come from CHANGELOG.md: release.yml extracts the tag's
+  # section with scripts/release_notes.py and passes --release-notes.
+  disable: true
+
+release:
+  github:
+    owner: flightdeckhq
+    name: flightdeck
+  # A tag with a pre-release suffix (v1.2.3-rc.1) is marked as a
+  # pre-release on GitHub; the Homebrew formula skips it (below) and the
+  # install scripts' `latest` never resolves to it.
+  prerelease: auto
+  draft: false
+  # A re-run of the workflow on the same tag (a retry after a failed
+  # downstream job) replaces the assets rather than failing on them.
+  mode: replace
+  name_template: "{{ .Tag }}"
+
+# A formula, not a cask: goreleaser marks `brews` deprecated in favour of
+# `homebrew_casks`, but only a formula carries the `service` stanza that
+# `brew services start flightdeck` needs. goreleaser removes deprecated
+# options at a major version only; `goreleaser check` reports the warning.
+brews:
+  - name: flightdeck
+    ids: [default]
+    repository:
+      owner: flightdeckhq
+      name: homebrew-tap
+      branch: main
+      # A fine-grained token with contents: write on homebrew-tap; the
+      # workflow's GITHUB_TOKEN cannot push to another repository.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    commit_author:
+      name: flightdeck-release
+      email: noreply@flightdeckhq.dev
+    commit_msg_template: "flightdeck {{ .Tag }}"
+    homepage: https://github.com/flightdeckhq/flightdeck
+    description: "Flightdeck: fleet observability and control for AI coding agents, in one binary"
+    license: Apache-2.0
+    # The tap tracks stable releases only.
+    skip_upload: auto
+    install: |
+      bin.install "flightdeck"
+    test: |
+      assert_match "flightdeck v#{version}", shell_output("#{bin}/flightdeck --version")
+    # `brew services start flightdeck` runs the binary as a user agent
+    # with its defaults: 127.0.0.1:4000 and ~/.flightdeck as the data
+    # dir, logging to the Homebrew var directory.
+    service: |
+      run [opt_bin/"flightdeck"]
+      keep_alive true
+      log_path var/"log/flightdeck.log"
+      error_log_path var/"log/flightdeck.log"
+    caveats: |
+      Run `flightdeck` and open http://localhost:4000, or start it in the
+      background with `brew services start flightdeck` (the token is then in
+      #{var}/log/flightdeck.log and the data dir is ~/.flightdeck).

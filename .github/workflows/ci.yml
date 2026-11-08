@@ -1306,6 +1306,17 @@ jobs:
       - name: Pricing catalogue refresh script
         run: python3 -m unittest scripts/test_pricing_refresh.py
 
+      # The release notes come from CHANGELOG.md; the installers and the
+      # install gate's checks are shell the release depends on. The
+      # runner's shellcheck is the one Ubuntu ships.
+      - name: Release notes script and shell installers
+        run: |
+          python3 -m unittest scripts/test_release_notes.py
+          python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
+          shellcheck --version | head -2
+          shellcheck -s sh install.sh
+          shellcheck scripts/install-gate.sh
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'
@@ -1345,3 +1356,69 @@ jobs:
               sys.exit(1)
           print(f"marketplace.json OK: {len(data['plugins'])} plugin(s) validated")
           PY
+
+  # The release build on every pull request, without publishing:
+  # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and
+  # the all-in-one Docker image is built from the root Dockerfile, so a
+  # platform or an image that stops building fails here and not on the
+  # tag. The binaries are not run: the `flightdeck` job above smokes the
+  # native build against Postgres.
+  release-snapshot:
+    name: Release snapshot (six binaries, Docker image)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # goreleaser reads the tags for the snapshot version.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Cross-build the six binaries
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
+        with:
+          distribution: goreleaser
+          # Same pin as release.yml: the release must build what CI built.
+          version: v2.20.0
+          args: build --snapshot --clean
+
+      - name: Every target is present and the native one runs
+        run: |
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            ls dist/flightdeck_${target}*/flightdeck >/dev/null
+          done
+          ls dist/flightdeck_windows_amd64*/flightdeck.exe dist/flightdeck_windows_arm64*/flightdeck.exe >/dev/null
+          ./dist/flightdeck_linux_amd64*/flightdeck --version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build the all-in-one image (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: flightdeck:ci
+          build-args: |
+            VERSION=v${{ github.sha }}
+
+      - name: The image runs as non-root and prints its version
+        run: |
+          test "$(docker image inspect flightdeck:ci --format '{{.Config.User}}')" = "nonroot"
+          docker run --rm flightdeck:ci --version | grep -q "flightdeck v${{ github.sha }}"

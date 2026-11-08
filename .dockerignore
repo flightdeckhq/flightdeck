@@ -1,0 +1,31 @@
+# Build context of the root Dockerfile (the all-in-one image). The build
+# copies the whole tree, so everything that is not source stays out: the
+# per-service images have their own contexts and ignore files.
+.git
+.github
+.claude
+.claude-plugin
+.scratch
+.chunkhound
+assets
+docs
+helm
+playground
+plugin
+tests
+sensor
+contracts
+bin
+dist
+**/node_modules
+dashboard/dist
+dashboard/coverage
+dashboard/playwright-report
+dashboard/test-results
+webui/dist/*
+!webui/dist/.gitkeep
+**/*.md
+!dashboard/**/*.md
+**/.venv
+**/__pycache__
+**/*_test.go

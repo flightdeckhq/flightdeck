@@ -801,3 +801,25 @@ calls to children needs an ingestion fallback first.
 **Rejected alternative:** a tracing processor (silent with tracing off,
 swallows exceptions); `llm_error` or `policy_block` for a guardrail (not a
 model failure or a Flightdeck policy); per-child attribution now.
+
+## D261 -- Flightdeck ships as one binary: the three services in-process, NATS and the dashboard embedded, one topology everywhere
+
+**Date:** 2026-11-07
+**Decision:** `flightdeck` (root module, `cmd/flightdeck`) runs ingestion,
+the workers and the query API as goroutines of one process behind one
+listener (default `127.0.0.1:4000`): `/` is the dashboard from `go:embed`,
+`/ingest/*` and `/api/*` reach the two muxes, bare `/v1/*` is not served,
+`/runtime-config.json` is generated. NATS runs embedded (JetStream,
+`DontListen`, in-process connections, store under the data dir) unless
+`--nats-url` names a server; migrations run at start from embedded files.
+Each service exports an `app` package (`Run`, `Handler`) the binary
+composes. On loopback the dev token works; elsewhere or with `--domain`
+(TLS via ACME) an `ftd_` token is minted once into `<data>/secrets.json`.
+Postgres is the one external dependency until the SQLite backend lands.
+**Why:** the try-it path was the contributor path (clone, compile seven
+containers, 5-15 minutes); one process with nothing to configure is one
+topology to test.
+**Rejected alternative:** an all-in-one container under supervisord (a
+second topology, Docker-only); keeping the seven services with better
+images (no laptop or Windows path); nginx as the edge (three routes and
+autocert replace it).

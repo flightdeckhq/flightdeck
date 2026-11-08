@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -31,17 +31,55 @@ OPENAI_FLOOR_PYTHON ?= $(HOME)/.cache/fd-openai-floor-venv/bin/python
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
-build: ## Build all components
+build: ## Build all components, the flightdeck binary included
 	$(MAKE) -C sensor build
 	$(MAKE) -C ingestion build
 	$(MAKE) -C workers build
 	$(MAKE) -C api build
+	$(MAKE) build-flightdeck
+
+# ---------------------------------------------------------------------------
+# The flightdeck binary: the root Go module (go.mod at the repo root,
+# go.work lists the three service modules). The dashboard bundle is
+# embedded with go:embed, so build-webui runs first and copies
+# dashboard/dist into webui/dist. Source maps stay out: they are 12 MB
+# the browser never asks for in production.
+#
+# Root-module Go commands name their packages ($(GO_ROOT_PKGS)) instead
+# of ./..., which would walk dashboard/node_modules (a minute on a
+# Windows mount) and pick up a stray Go package a dependency ships.
+# ---------------------------------------------------------------------------
+GO_ROOT_PKGS := . ./cmd/... ./internal/... ./webui/...
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
+build-webui: ## Build the dashboard and copy its bundle (without source maps) into webui/dist
+	$(MAKE) -C dashboard build
+	rm -rf webui/dist
+	mkdir -p webui/dist
+	cp -R dashboard/dist/. webui/dist/
+	find webui/dist -name '*.map' -delete
+	touch webui/dist/.gitkeep
+
+build-flightdeck: build-webui ## Build bin/flightdeck with the VERSION file's version
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
+
+run-flightdeck: ## Run the binary from source; pass flags with ARGS="--listen 127.0.0.1:4100"
+	go run ./cmd/flightdeck $(ARGS)
+
+test-flightdeck: ## Unit tests of the root module (the binary's packages)
+	go test $(GO_ROOT_PKGS)
+
+lint-flightdeck: ## gofmt and golangci-lint on the root module
+	@test -x "$(GOFMT)" || { echo "gofmt not found at $(GOFMT)"; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal webui embed.go)" || { echo "gofmt reports unformatted files (run gofmt -w cmd internal webui embed.go):"; $(GOFMT) -l cmd internal webui embed.go; exit 1; }
+	golangci-lint run $(GO_ROOT_PKGS)
 
 test: ## Run all unit tests
 	$(MAKE) -C sensor test
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
+	$(MAKE) test-flightdeck
 	$(MAKE) test-plugin
 	$(MAKE) -C dashboard test
 
@@ -241,6 +279,7 @@ lint: ## Lint all components
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint
 	$(MAKE) -C api lint
+	$(MAKE) lint-flightdeck
 	$(MAKE) -C dashboard lint
 
 dev: ## Start full local dev environment

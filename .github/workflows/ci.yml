@@ -465,6 +465,68 @@ jobs:
           path: api/coverage.html
           retention-days: 14
 
+  flightdeck:
+    # The one binary: the root module's lint and unit tests, the build
+    # with the dashboard bundle embedded, and scripts/flightdeck-smoke.sh
+    # against a Postgres service container: start, migrate an empty
+    # database, serve the dashboard, accept an event through the
+    # embedded bus and serve the session back, stop cleanly.
+    name: flightdeck binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flightdeck
+          POSTGRES_PASSWORD: flightdeck_dev
+          POSTGRES_DB: flightdeck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flightdeck"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Build the dashboard bundle into webui/dist
+        run: make build-webui
+
+      - name: Install golangci-lint v2
+        # Same pin as the Go job above.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@793d05316077345337ae9a11ae05ec8f23edfe1b
+
+      - name: gofmt and golangci-lint (root module)
+        run: make lint-flightdeck
+
+      - name: Unit tests (root module)
+        run: go test -race . ./cmd/... ./internal/... ./webui/...
+
+      - name: Build bin/flightdeck
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
+
+      - name: Smoke the binary against Postgres
+        run: scripts/flightdeck-smoke.sh ./bin/flightdeck 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable' 127.0.0.1:4000
+
   dashboard:
     name: Dashboard (TypeScript)
     runs-on: ubuntu-24.04

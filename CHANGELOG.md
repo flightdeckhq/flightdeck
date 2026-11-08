@@ -6,6 +6,24 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **One `flightdeck` binary runs the whole control plane.** `flightdeck
+  --database-url postgres://...` starts the ingestion API, the workers and
+  the query API in one process on `127.0.0.1:4000`, with NATS JetStream
+  embedded (no port, store under `~/.flightdeck/nats`) and the dashboard
+  served from the binary; `/api` and `/ingest` are the two prefixes, as
+  behind the compose nginx. The schema migrations run at start from the
+  binary. On loopback the development token works and is printed; on any
+  other `--listen`, or with `--domain example.com` (TLS from Let's
+  Encrypt on :443, :80 redirecting), an `ftd_` token is minted on the
+  first start, printed once and kept in `~/.flightdeck/secrets.json` for
+  the dashboard. `--nats-url` uses an external NATS instead; `--metrics`
+  opens the services' metrics listeners. Postgres is still required; the
+  binary says so and names the compose database when none is given.
+  `make build-flightdeck` builds it, `go run ./cmd/flightdeck` runs it
+  from source, and the dashboard's Vite proxy now points at `:4000`, so
+  `npm run dev` in `dashboard/` works against the binary. Each service
+  also exports an `app` package (`ingestion/app`, `workers/app`,
+  `api/app`) the binary and the standalone services share.
 - **Claude Code reports to Flightdeck over OpenTelemetry.** Point Claude
   Code's telemetry at the ingestion API (`CLAUDE_CODE_ENABLE_TELEMETRY=1`,
   `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://<host>/ingest`,

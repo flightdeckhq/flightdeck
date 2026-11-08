@@ -14,6 +14,12 @@ build/
 bin/
 tmp/
 
+# The dashboard bundle the flightdeck binary embeds; `make build-webui`
+# fills it from dashboard/dist. The .gitkeep stays so go:embed has a
+# file to match on a checkout without a bundle.
+webui/dist/*
+!webui/dist/.gitkeep
+
 # Node
 node_modules/
 .vite/

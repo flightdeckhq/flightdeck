@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 )
 
 // Config is what the router serves.
@@ -26,10 +28,17 @@ type Config struct {
 	UI fs.FS
 	// Token is the access token /runtime-config.json hands the dashboard.
 	Token string
+	// IngestReadTimeout and IngestWriteTimeout are the per-request
+	// deadlines on /ingest, the ingestion service's own; APIReadTimeout
+	// is the read deadline on /api other than the WebSocket. Zero leaves
+	// a deadline unset.
+	IngestReadTimeout  time.Duration
+	IngestWriteTimeout time.Duration
+	APIReadTimeout     time.Duration
 }
 
-// Security headers for every dashboard response, the ones the dashboard
-// image's nginx used to add: the SPA is never framed, content types are
+// Security headers for every dashboard response, the ones the compose
+// dashboard's nginx sets: the SPA is never framed, content types are
 // not sniffed, referrers stay on the origin, and the CSP admits only
 // same-origin scripts, styles, fonts and connections (inline scripts and
 // styles are what Vite's bundle and Tailwind emit).
@@ -50,12 +59,17 @@ const assetsCacheControl = "public, max-age=31536000, immutable"
 // so a rotated token is never served stale.
 const runtimeConfigCacheControl = "no-store, no-cache, must-revalidate"
 
+// websocketPath is the one /api route that stays open for as long as the
+// dashboard does; a read deadline would cut it.
+const websocketPath = "/api/v1/stream"
+
 // New builds the router.
 func New(c Config) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api", c.API)
-	mux.Handle("/api/", c.API)
-	ingest := drainRefusedBody(c.Ingest)
+	api := withDeadlines(c.API, c.APIReadTimeout, 0, func(r *http.Request) bool { return r.URL.Path == websocketPath })
+	mux.Handle("/api", api)
+	mux.Handle("/api/", api)
+	ingest := withDeadlines(drainRefusedBody(c.Ingest), c.IngestReadTimeout, c.IngestWriteTimeout, nil)
 	mux.Handle("/ingest", ingest)
 	mux.Handle("/ingest/", ingest)
 	mux.HandleFunc("GET /runtime-config.json", runtimeConfig(c.Token))
@@ -74,6 +88,36 @@ func New(c Config) http.Handler {
 	return mux
 }
 
+// withDeadlines sets the connection's read and write deadlines for the
+// request (a zero duration leaves one unset), except for requests
+// exempt reports, so a client that stalls mid-body or never reads its
+// response holds a connection no longer than the services' own
+// listeners allowed. The deadlines come from the services' named
+// constants; the one server here cannot carry them server-wide because
+// the query API's WebSocket must stay open.
+func withDeadlines(h http.Handler, read, write time.Duration, exempt func(*http.Request) bool) http.Handler {
+	if read == 0 && write == 0 {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if exempt == nil || !exempt(r) {
+			rc := http.NewResponseController(w)
+			now := time.Now()
+			if read > 0 {
+				if err := rc.SetReadDeadline(now.Add(read)); err != nil {
+					slog.Debug("read deadline not supported on this connection", "err", err)
+				}
+			}
+			if write > 0 {
+				if err := rc.SetWriteDeadline(now.Add(write)); err != nil {
+					slog.Debug("write deadline not supported on this connection", "err", err)
+				}
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // edgeDrainBytes bounds how much of a request body the edge reads after
 // the ingestion handler answered without reading it, as a refused
 // over-cap body (413) is. net/http drains only 256 KiB of leftover body
@@ -82,7 +126,9 @@ func New(c Config) http.Handler {
 // binary, read the whole body itself. 16 MiB is the receivers' inflated
 // body cap, four times the 4 MiB they accept as sent, so every body a
 // well-behaved exporter could send is drained and the status reaches it;
-// past that the connection closes, as it would otherwise.
+// past that the connection closes, as it would otherwise. The drain
+// runs under the request's read deadline (withDeadlines), so a stalled
+// client cannot hold it open.
 const edgeDrainBytes = 16 << 20
 
 // drainRefusedBody reads what the handler left of the request body, up
@@ -141,8 +187,10 @@ func v1Hint(w http.ResponseWriter, r *http.Request) {
 }
 
 // ui serves the dashboard bundle: a file when the path names one, with
-// the immutable cache policy under /assets/, and index.html for every
-// other path so the SPA's own router handles it.
+// the immutable cache policy under /assets/; a 404 for an /assets/ path
+// that names no file (a stale hash from an old bundle must not be
+// answered with HTML the browser would try to run); and index.html for
+// every other path so the SPA's own router handles it.
 type ui struct {
 	fsys  fs.FS
 	built bool
@@ -168,6 +216,10 @@ func (u *ui) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
 		http.ServeFileFS(w, r, u.fsys, name)
+		return
+	}
+	if strings.HasPrefix(name, "assets/") {
+		http.NotFound(w, r)
 		return
 	}
 	// The SPA's client-side routes (/events, /agents, ...) and unknown

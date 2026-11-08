@@ -10005,7 +10005,8 @@ and embeds its message bus. Postgres is the one external dependency
 The router serves `/` and every path with no other owner from the
 embedded dashboard bundle (`webui/dist`, filled by `make build-webui`
 from `dashboard/dist` without the source maps), falling back to
-`index.html` for the SPA's client-side routes; `/assets/*` with a
+`index.html` for the SPA's client-side routes (an `/assets/*` path that
+names no file is a 404, never `index.html`); `/assets/*` with a
 one-year immutable cache, since Vite hashes the file names;
 `/runtime-config.json`, generated (below) and sent with `Cache-Control:
 no-store`; `/investigate` as a permanent redirect to `/events`; `/api`
@@ -10023,17 +10024,27 @@ dashboard responses carry the browser security headers the compose
 dashboard's nginx sets (`X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy`, the same
 `Content-Security-Policy`). The server has a 15-second header read
-timeout, a 120-second idle timeout and no write timeout, because
-`/api/v1/stream` is a WebSocket; the query API's own 30-second REST
-timeout and the ingestion body limits still apply inside their
+timeout, a 120-second idle timeout and no server-wide write timeout,
+because `/api/v1/stream` is a WebSocket; instead the router sets the
+services' own per-request deadlines on the connection: the ingestion
+read and write timeouts (10 seconds each) on `/ingest`, the query
+API's read timeout (15 seconds) on `/api` except the WebSocket, so a
+client that stalls mid-body holds a connection no longer than it
+could with the standalone services. The query API's own 30-second
+REST timeout and the ingestion body limits still apply inside their
 handlers. A port already in use stops the start with the error and a
-`--listen` hint. The three services' metrics listeners
+`--listen` hint; a privileged port the process may not bind (`:80`
+and `:443` of `--domain`) with the remedy (root, `CAP_NET_BIND_SERVICE`
+or a higher `--listen` port). The sockets are bound before anything
+else, so either message arrives before any side effect. The three services' metrics listeners
 (ports 9102, 9103 and 9104, see Metrics) are off unless `--metrics` is
 given; the public port never serves `/metrics`.
 
 **Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
-mode 0700. It holds `nats/`, the embedded JetStream store;
+mode 0700; an existing directory with a wider mode is used as it is and
+a warning names the `chmod`, since it holds the bus store and the
+secrets file. It holds `nats/`, the embedded JetStream store;
 `secrets.json` (mode 0600) with the JWT secret, generated once, and the
 dashboard token of the non-loopback mode below; and `acme/`, the TLS
 certificate cache. A `--database-url` is the only other state the
@@ -10075,8 +10086,9 @@ with `--domain`. Further tokens are minted in the Settings page.
 **TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
 the binary with certificates from Let's Encrypt (`acme/autocert`,
 HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
-and on `:80` to answer the ACME challenge and redirect everything else
-to `https://`; `--listen` is ignored in this mode. Without `--domain`
+and on `:80` to answer the ACME challenge and redirect every other GET
+or HEAD to `https://<domain>` with the same path and query, whatever
+`Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
 **Time zone.** The binary sets the process's local zone to UTC at
@@ -10099,21 +10111,29 @@ defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
 suite runs the binary with the same two overrides the dev compose
 sets.
 
-**Start order and shutdown.** The binary binds its port first (so a
-busy port fails before anything is touched), prepares the data dir and
-secrets, connects to Postgres, applies the embedded migrations, starts
-the bus, then the three services together, then serves. On SIGINT or
-SIGTERM it stops the services (the ingestion assembler and the worker
-lanes finish their current message within `SHUTDOWN_TIMEOUT_SECS`),
-drains the HTTP server, and shuts the embedded NATS server down last so
-every publish and acknowledgement before it has reached the store.
+**Start order and shutdown.** The binary binds its port(s) first (so a
+busy or privileged port fails before anything is touched), prepares
+the data dir and secrets, connects to Postgres, applies the embedded
+migrations, starts the bus, then the three services together, then
+serves. On SIGINT or SIGTERM, or when a service or a listener fails,
+it stops in order: the HTTP server stops accepting and drains the
+requests in flight (which still have the services they are calling),
+then the services are cancelled and waited for (each joins its own
+loops: the ingestion assembler and the worker lanes finish their
+current message within `SHUTDOWN_TIMEOUT_SECS`), each step bounded by
+30 seconds; then the embedded NATS server and the database pool close,
+the bus last so every publish and acknowledgement before it has reached
+the store. A service's failure is the exit status's reason; a stop on
+a signal exits 0.
 
 **The `app` packages.** Each service exports `ingestion/app`,
 `workers/app` and `api/app`: `Config` (the service's tunables, the
 values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
 workers, the migrations `fs.FS`; a nil dependency is dialled from
 `Config`), `New`, `Run(ctx)` and, for ingestion and the API,
-`Handler()`. The per-service `cmd/main.go` is environment parsing plus
+`Handler()`. `Run` joins every goroutine it starts before it closes
+the connections it owns; the workers' `Run` does not migrate (the
+binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
 `app.Run`, and the compose dev overlay still runs them with `go run
 ./cmd/` behind nginx on `:4000` for the dashboard hot-reload loop; the
 dashboard's Vite proxy forwards `/api` and `/ingest` to `:4000`, so

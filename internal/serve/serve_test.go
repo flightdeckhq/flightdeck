@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -79,8 +80,8 @@ func TestACME_Wiring(t *testing.T) {
 	app := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	https, redirect := ACME("fd.example.com", t.TempDir(), app)
 
-	if https.Addr != HTTPSPort || redirect.Addr != HTTPPort {
-		t.Fatalf("addrs %q %q", https.Addr, redirect.Addr)
+	if https.Addr != "" || redirect.Addr != "" {
+		t.Fatalf("the caller binds the listeners; addrs %q %q", https.Addr, redirect.Addr)
 	}
 	if https.TLSConfig == nil || https.TLSConfig.GetCertificate == nil {
 		t.Fatal("https server has no autocert TLS config")
@@ -94,19 +95,43 @@ func TestACME_Wiring(t *testing.T) {
 		t.Fatalf("https serves %d, want the app", rec.Code)
 	}
 
-	rec = httptest.NewRecorder()
-	redirect.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://fd.example.com/events?x=1", nil))
-	if rec.Code != http.StatusFound && rec.Code != http.StatusMovedPermanently {
-		t.Fatalf("redirect status %d", rec.Code)
+	// The redirect is pinned to the domain, whatever Host the request
+	// carried: a request for another name on this address is not sent
+	// on to that name.
+	for _, host := range []string{"fd.example.com", "evil.example.net", "203.0.113.9"} {
+		rec = httptest.NewRecorder()
+		redirect.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://"+host+"/events?x=1", nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("Host %s: redirect status %d", host, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "https://fd.example.com/events?x=1" {
+			t.Fatalf("Host %s: Location %q", host, loc)
+		}
 	}
-	if loc := rec.Header().Get("Location"); loc != "https://fd.example.com/events?x=1" {
-		t.Fatalf("Location %q", loc)
-	}
-	// A POST to :80 is not redirected (the body would be lost); autocert
-	// answers it with 400.
+	// A POST to :80 is not redirected (the body would be lost); it is
+	// answered with 400.
 	rec = httptest.NewRecorder()
 	redirect.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://fd.example.com/ingest/v1/events", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST on :80 status %d", rec.Code)
+	}
+}
+
+func TestListen_PrivilegedPortNamesTheRemedy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: binding :80 is allowed")
+	}
+	// Port 1 is privileged on every Unix; the message must say so.
+	_, err := Listen("127.0.0.1:1")
+	if err == nil {
+		t.Skip("binding a privileged port succeeded (CAP_NET_BIND_SERVICE or unprivileged port range)")
+	}
+	if !errors.Is(err, syscall.EACCES) && !strings.Contains(err.Error(), "privileged") {
+		t.Skipf("the bind failed for another reason: %v", err)
+	}
+	for _, want := range []string{"privileged", "CAP_NET_BIND_SERVICE", "--listen"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q lacks %q", err.Error(), want)
+		}
 	}
 }

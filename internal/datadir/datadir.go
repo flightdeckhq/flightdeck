@@ -37,10 +37,17 @@ type Layout struct {
 	NATS    string // the embedded JetStream store
 	Secrets string // secrets.json
 	ACME    string // the TLS certificate cache
+	// Warning is set when the directory exists with a mode wider than
+	// 0700 (not on Windows): the bus store and the secrets file inside
+	// are then readable by other users of the machine. The caller logs
+	// it; the directory is used as it is, since fixing modes behind the
+	// operator's back is worse than telling them.
+	Warning string
 }
 
 // Ensure creates dir (and the NATS and ACME subdirectories) with mode
-// 0700 and returns its layout. An existing directory is left as it is.
+// 0700 and returns its layout. An existing directory is left as it is,
+// with Layout.Warning set when its mode admits other users.
 func Ensure(dir string) (Layout, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -55,6 +62,15 @@ func Ensure(dir string) (Layout, error) {
 	for _, p := range []string{l.Root, l.NATS, l.ACME} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
 			return Layout{}, fmt.Errorf("create %s: %w", p, err)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(l.Root)
+		if err != nil {
+			return Layout{}, fmt.Errorf("stat %s: %w", l.Root, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			l.Warning = fmt.Sprintf("data dir %s has mode %04o; it holds the message-bus store and secrets.json and should be 0700 (chmod 700 %s)", l.Root, perm, l.Root)
 		}
 	}
 	return l, nil

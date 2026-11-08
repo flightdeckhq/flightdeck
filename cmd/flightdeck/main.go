@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,14 +31,14 @@ import (
 	"github.com/flightdeckhq/flightdeck/webui"
 	workersapp "github.com/flightdeckhq/flightdeck/workers/app"
 	"github.com/nats-io/nats.go"
-	"golang.org/x/sync/errgroup"
 )
 
 // version is set at build time from the VERSION file (make build-flightdeck).
 var version = "dev"
 
-// shutdownTimeout bounds the HTTP server's drain on exit; the services
-// have their own SHUTDOWN_TIMEOUT_SECS and stop in parallel with it.
+// shutdownTimeout bounds each step of the exit: the HTTP drain, then the
+// services' stop. The services have their own SHUTDOWN_TIMEOUT_SECS
+// (30 s by default) inside the second step.
 const shutdownTimeout = 30 * time.Second
 
 func main() {
@@ -74,23 +75,55 @@ func run(args []string, stdout, stderr *os.File) int {
 	return 0
 }
 
+// listeners are the bound sockets of one mode: plain on --listen, or
+// :443 and :80 with --domain.
+type listeners struct {
+	plain, https, redirect net.Listener
+}
+
+func (l *listeners) closeAll() {
+	for _, ln := range []net.Listener{l.plain, l.https, l.redirect} {
+		if ln != nil {
+			_ = ln.Close()
+		}
+	}
+}
+
+// bind opens the sockets of the mode before anything else is touched: a
+// busy port, or a privileged one the process may not bind, is the most
+// common failure, and it should be reported before any side effect.
+func bind(opts cli.Options) (*listeners, error) {
+	var l listeners
+	var err error
+	if opts.Domain == "" {
+		l.plain, err = serve.Listen(opts.Listen)
+		return &l, err
+	}
+	if l.https, err = serve.Listen(serve.HTTPSPort); err != nil {
+		return nil, err
+	}
+	if l.redirect, err = serve.Listen(serve.HTTPPort); err != nil {
+		l.closeAll()
+		return nil, err
+	}
+	return &l, nil
+}
+
 func serveAll(opts cli.Options, stdout *os.File) error {
 	dev := bootstrap.DevMode(opts.Listen, opts.Domain)
 
-	// The port first: a busy port is the most common failure, and it
-	// should be reported before any state is touched.
-	var ln net.Listener
-	if opts.Domain == "" {
-		var err error
-		if ln, err = serve.Listen(opts.Listen); err != nil {
-			return err
-		}
-		defer func() { _ = ln.Close() }()
+	lns, err := bind(opts)
+	if err != nil {
+		return err
 	}
+	defer lns.closeAll()
 
 	layout, err := datadir.Ensure(opts.DataDir)
 	if err != nil {
 		return err
+	}
+	if layout.Warning != "" {
+		slog.Warn(layout.Warning)
 	}
 	secrets, err := datadir.LoadSecrets(layout.Secrets)
 	if err != nil {
@@ -171,44 +204,118 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return err
 	}
 	handler := router.New(router.Config{
-		API:    apiApp.Handler(),
-		Ingest: ingApp.Handler(),
-		UI:     webui.FS(),
-		Token:  token.Token,
+		API:                apiApp.Handler(),
+		Ingest:             ingApp.Handler(),
+		UI:                 webui.FS(),
+		Token:              token.Token,
+		IngestReadTimeout:  ingestionapp.ReadTimeout,
+		IngestWriteTimeout: ingestionapp.WriteTimeout,
+		APIReadTimeout:     apiapp.ReadTimeout,
 	})
 
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return ingApp.Run(gctx) })
-	g.Go(func() error { return apiApp.Run(gctx) })
-	g.Go(func() error {
-		return workersapp.Run(gctx, wrkCfg, workersapp.Deps{NATS: wrkNC})
-	})
-
-	var servers []*http.Server
+	services := []service{
+		{name: "ingestion", run: ingApp.Run},
+		{name: "query API", run: apiApp.Run},
+		{name: "workers", run: func(c context.Context) error {
+			return workersapp.Run(c, wrkCfg, workersapp.Deps{NATS: wrkNC})
+		}},
+	}
+	var srvs []*http.Server
+	var serveFns []func() error
 	if opts.Domain != "" {
 		https, redirect := serve.ACME(opts.Domain, layout.ACME, handler)
-		servers = append(servers, https, redirect)
-		g.Go(func() error { return serveErr("https", https.ListenAndServeTLS("", "")) })
-		g.Go(func() error { return serveErr("http redirect", redirect.ListenAndServe()) })
+		srvs = append(srvs, https, redirect)
+		serveFns = append(serveFns,
+			func() error { return serveErr("https", https.ServeTLS(lns.https, "", "")) },
+			func() error { return serveErr("http redirect", redirect.Serve(lns.redirect)) })
 	} else {
 		srv := serve.Server(handler)
-		servers = append(servers, srv)
-		g.Go(func() error { return serveErr("http", srv.Serve(ln)) })
+		srvs = append(srvs, srv)
+		serveFns = append(serveFns, func() error { return serveErr("http", srv.Serve(lns.plain)) })
 	}
-	g.Go(func() error {
-		<-gctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		for _, s := range servers {
-			if err := s.Shutdown(shutdownCtx); err != nil {
-				slog.Warn("http server shutdown", "err", err)
-			}
-		}
-		return nil
-	})
 
 	printBanner(stdout, opts, dev, token, layout, embedded != nil)
-	return g.Wait()
+	return supervise(ctx, services, serveFns, func(c context.Context) error {
+		var firstErr error
+		for _, s := range srvs {
+			if err := s.Shutdown(c); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}, shutdownTimeout)
+}
+
+// service is one of the three in-process services.
+type service struct {
+	name string
+	run  func(context.Context) error
+}
+
+// supervise runs the services and the HTTP servers and stops them in
+// order when ctx ends or one of them fails: the HTTP servers stop
+// accepting and drain their requests first (a request in flight still
+// has the services it is calling), then the services are cancelled and
+// waited for, each step within timeout. The caller's defers then close
+// the bus and the database, which nothing uses any more. The error of
+// the service or server that failed first is returned; a stop on ctx is
+// nil.
+func supervise(ctx context.Context, services []service, serveFns []func() error,
+	shutdownHTTP func(context.Context) error, timeout time.Duration,
+) error {
+	// The services' context is not derived from ctx: a signal must not
+	// stop them before the HTTP servers have drained.
+	svcCtx, cancelServices := context.WithCancel(context.Background())
+	defer cancelServices()
+
+	type outcome struct {
+		name string
+		err  error
+	}
+	failed := make(chan outcome, len(services)+len(serveFns))
+	var wg sync.WaitGroup
+	for _, s := range services {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			failed <- outcome{s.name, s.run(svcCtx)}
+		}()
+	}
+	for _, fn := range serveFns {
+		go func() { failed <- outcome{"http", fn()} }()
+	}
+
+	var cause error
+	select {
+	case <-ctx.Done():
+	case o := <-failed:
+		if o.err != nil {
+			cause = o.err
+		} else {
+			cause = fmt.Errorf("%s stopped unexpectedly", o.name)
+		}
+		slog.Error("stopping: a component failed", "component", o.name, "err", o.err)
+	}
+
+	// 1. Stop accepting and drain the requests in flight.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), timeout)
+	defer cancelDrain()
+	if err := shutdownHTTP(drainCtx); err != nil {
+		slog.Warn("http server shutdown", "err", err)
+	}
+	// 2. Stop the services and wait for them.
+	cancelServices()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("services did not stop before the shutdown timeout; closing the bus and the database anyway")
+	}
+	return cause
 }
 
 // serveErr turns a listener's normal close into nil.

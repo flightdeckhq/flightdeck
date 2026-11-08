@@ -45,8 +45,36 @@ func TestEnsure_CreatesTheLayoutPrivately(t *testing.T) {
 		t.Fatalf("secrets path %q", l.Secrets)
 	}
 	// A second Ensure on the same directory is a no-op.
-	if _, err := Ensure(root); err != nil {
+	again, err := Ensure(root)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if again.Warning != "" {
+		t.Fatalf("a 0700 data dir drew a warning: %q", again.Warning)
+	}
+}
+
+func TestEnsure_WarnsAboutAWideDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not checked on Windows")
+	}
+	root := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Ensure(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"0755", "chmod 700", root} {
+		if !strings.Contains(l.Warning, want) {
+			t.Fatalf("warning %q lacks %q", l.Warning, want)
+		}
+	}
+	// The directory is used as it is: Ensure does not change modes.
+	info, _ := os.Stat(root)
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("Ensure changed the mode to %04o", info.Mode().Perm())
 	}
 }
 

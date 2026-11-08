@@ -91,6 +91,14 @@ func LoadEnv() (cfg Config, err error) {
 	return fromEnv(config.Load()), nil
 }
 
+// ReadTimeout and WriteTimeout are the per-request deadlines the
+// service's own listener applies; a caller that mounts Handler() on a
+// server of its own applies them itself (see server.ReadTimeout).
+const (
+	ReadTimeout  = server.ReadTimeout
+	WriteTimeout = server.WriteTimeout
+)
+
 // Deps are the connections the service runs on. A nil one is dialled
 // from Config and closed when Run returns; one the caller passes is left
 // open, since the caller shares it.

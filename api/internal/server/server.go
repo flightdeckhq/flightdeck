@@ -26,8 +26,13 @@ import (
 // edge proxy or Ingress (see withPublicPrefix).
 const publicPathPrefix = "/api"
 
+// ReadTimeout bounds a request's read (headers and body); the flightdeck
+// binary applies it per request on its /api routes other than the
+// WebSocket. The query API's request bodies are small JSON documents
+// (policies, directives, tokens), so 15 seconds is a stall, not a slow
+// upload.
 const (
-	serverReadTimeout = 15 * time.Second
+	ReadTimeout = 15 * time.Second
 	// WriteTimeout intentionally omitted -- WebSocket connections are
 	// long-lived and a global write timeout kills them after N seconds.
 	// The WebSocket write pump controls its own per-message deadline.
@@ -223,7 +228,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		// counts as the 500 the recovery answers.
 		Handler: withPublicPrefix(withCORS(metrics.Middleware(durations,
 			withLogging(withRecovery(mux))), corsOrigin), publicPathPrefix),
-		ReadTimeout: serverReadTimeout,
+		ReadTimeout: ReadTimeout,
 		IdleTimeout: serverIdleTimeout,
 	}
 }

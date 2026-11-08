@@ -504,6 +504,15 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Build the binary from a bare checkout (empty webui/dist)
+        # A fresh clone has only webui/dist/.gitkeep; go:embed's pattern
+        # must still match, so `go build` works before the dashboard is
+        # built (the router then answers 503 with build instructions).
+        run: |
+          test -f webui/dist/.gitkeep
+          test "$(ls -A webui/dist | wc -l)" = "1"
+          go build -o /dev/null ./cmd/flightdeck
+
       - name: Install dashboard dependencies
         working-directory: dashboard
         run: npm ci

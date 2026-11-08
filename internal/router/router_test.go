@@ -3,12 +3,15 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // recordingHandler records the path it was called with, as the services
@@ -277,4 +280,72 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	}
 	c.n -= int64(len(p))
 	return len(p), nil
+}
+
+func TestAssets_MissingHashIs404NotIndex(t *testing.T) {
+	h, _, _ := newTestRouter(t)
+	rec := get(t, h, http.MethodGet, "/assets/index-stale.js")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404 (index.html must not be served for a stale asset)", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "<title>Flightdeck</title>") {
+		t.Fatal("a missing asset was answered with index.html")
+	}
+}
+
+// stalledRequest opens a raw connection, sends a POST with a declared
+// body length and one byte of it, and returns the time until the server
+// closes the connection or answers.
+func stalledRequest(t *testing.T, addr, path string, bound time.Duration) (elapsed time.Duration, answered bool) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	start := time.Now()
+	_, _ = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{", path)
+	_ = conn.SetReadDeadline(time.Now().Add(bound))
+	buf := make([]byte, 1)
+	n, _ := conn.Read(buf)
+	return time.Since(start), n > 0
+}
+
+func TestIngest_StalledBodyIsCutAtTheReadDeadline(t *testing.T) {
+	// The handler reads the whole body, as the ingestion receivers do;
+	// the client sends one byte of a thousand and stops.
+	reading := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+	const deadline = 300 * time.Millisecond
+	h := New(Config{API: reading, Ingest: reading, UI: testUI(), Token: "tok_dev",
+		IngestReadTimeout: deadline, IngestWriteTimeout: deadline, APIReadTimeout: deadline})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	for _, path := range []string{"/ingest/v1/events", "/api/v1/policies"} {
+		elapsed, _ := stalledRequest(t, addr, path, 10*time.Second)
+		if elapsed >= 5*time.Second {
+			t.Fatalf("%s: the stalled request held the connection for %s; the read deadline is %s", path, elapsed, deadline)
+		}
+	}
+}
+
+func TestWithDeadlines_ExemptsTheWebSocketAndZeroIsAPassThrough(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	if h := withDeadlines(inner, 0, 0, nil); fmt.Sprintf("%p", h) != fmt.Sprintf("%p", inner) {
+		t.Fatal("zero deadlines must return the handler itself")
+	}
+	var exempted bool
+	h := withDeadlines(inner, time.Second, 0, func(r *http.Request) bool {
+		exempted = r.URL.Path == websocketPath
+		return exempted
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, websocketPath, nil))
+	if !exempted || rec.Code != http.StatusNoContent {
+		t.Fatalf("exempt=%v status=%d", exempted, rec.Code)
+	}
 }

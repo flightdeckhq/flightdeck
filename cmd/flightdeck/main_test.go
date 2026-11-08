@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,5 +128,109 @@ func TestRun_UsageErrorsExitTwo(t *testing.T) {
 	}
 	if code := run([]string{"-h"}, devnull, devnull); code != 0 {
 		t.Fatalf("-h: exit %d, want 0", code)
+	}
+}
+
+// fakeService records when its context was cancelled and blocks until
+// then (or returns the error it was given at once).
+type fakeService struct {
+	name      string
+	cancelled atomic.Int64 // UnixNano of the cancellation, 0 until then
+	fail      error
+}
+
+func (f *fakeService) run(ctx context.Context) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	<-ctx.Done()
+	f.cancelled.Store(time.Now().UnixNano())
+	return nil
+}
+
+func TestSupervise_DrainsHTTPBeforeCancellingTheServices(t *testing.T) {
+	a, b := &fakeService{name: "a"}, &fakeService{name: "b"}
+	var drained atomic.Int64
+	shutdownHTTP := func(context.Context) error {
+		// The services must still be running while the drain happens.
+		if a.cancelled.Load() != 0 || b.cancelled.Load() != 0 {
+			t.Error("a service was cancelled before the HTTP drain")
+		}
+		drained.Store(time.Now().UnixNano())
+		return nil
+	}
+	serveStarted := make(chan struct{})
+	serveFn := func() error {
+		close(serveStarted)
+		select {} // a server blocks until Shutdown; the fake never returns
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- supervise(ctx, []service{{"a", a.run}, {"b", b.run}}, []func() error{serveFn}, shutdownHTTP, 5*time.Second)
+	}()
+	<-serveStarted
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a stop on ctx returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("supervise did not return")
+	}
+	if drained.Load() == 0 || a.cancelled.Load() == 0 || b.cancelled.Load() == 0 {
+		t.Fatalf("drain=%d a=%d b=%d: every step must have run", drained.Load(), a.cancelled.Load(), b.cancelled.Load())
+	}
+	if a.cancelled.Load() < drained.Load() || b.cancelled.Load() < drained.Load() {
+		t.Fatal("services were cancelled before the HTTP drain finished")
+	}
+}
+
+func TestSupervise_AServiceFailureDrainsHTTPThenStopsTheRest(t *testing.T) {
+	boom := errors.New("consumer setup: stream gone")
+	bad, good := &fakeService{name: "bad", fail: boom}, &fakeService{name: "good"}
+	var drained atomic.Bool
+	shutdownHTTP := func(context.Context) error {
+		if good.cancelled.Load() != 0 {
+			t.Error("the healthy service was cancelled before the HTTP drain")
+		}
+		drained.Store(true)
+		return nil
+	}
+	serveFn := func() error { select {} }
+	err := supervise(context.Background(), []service{{"bad", bad.run}, {"good", good.run}}, []func() error{serveFn}, shutdownHTTP, 5*time.Second)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the failing service's error", err)
+	}
+	if !drained.Load() || good.cancelled.Load() == 0 {
+		t.Fatalf("drained=%v good cancelled=%d", drained.Load(), good.cancelled.Load())
+	}
+}
+
+func TestSupervise_AnHTTPServerFailureStopsTheServices(t *testing.T) {
+	svc := &fakeService{name: "svc"}
+	serveFn := func() error { return errors.New("https server: tls handshake listener closed") }
+	err := supervise(context.Background(), []service{{"svc", svc.run}}, []func() error{serveFn}, func(context.Context) error { return nil }, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "https server") {
+		t.Fatalf("err = %v", err)
+	}
+	if svc.cancelled.Load() == 0 {
+		t.Fatal("the service was not stopped after the server failed")
+	}
+}
+
+func TestBind_PlainModeBindsTheListenAddress(t *testing.T) {
+	lns, err := bind(cli.Options{Listen: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lns.closeAll()
+	if lns.plain == nil || lns.https != nil || lns.redirect != nil {
+		t.Fatalf("%+v", lns)
+	}
+	busy := lns.plain.Addr().String()
+	if _, err := bind(cli.Options{Listen: busy}); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("second bind of %s: %v", busy, err)
 	}
 }

@@ -806,20 +806,16 @@ model failure or a Flightdeck policy); per-child attribution now.
 
 **Date:** 2026-11-07
 **Decision:** `flightdeck` (root module, `cmd/flightdeck`) runs ingestion,
-the workers and the query API as goroutines of one process behind one
-listener (default `127.0.0.1:4000`): `/` is the dashboard from `go:embed`,
-`/ingest/*` and `/api/*` reach the two muxes, bare `/v1/*` is not served,
-`/runtime-config.json` is generated. NATS runs embedded (JetStream,
-`DontListen`, in-process connections, store under the data dir) unless
-`--nats-url` names a server; migrations run at start from embedded files.
+the workers and the query API in one process behind one listener
+(default `127.0.0.1:4000`): `/` is the embedded dashboard, `/ingest/*`
+and `/api/*` reach the two muxes, bare `/v1/*` is not served. NATS runs
+embedded (JetStream, no port, store under the data dir) unless
+`--nats-url` names a server; migrations are embedded and run at start.
 Each service exports an `app` package (`Run`, `Handler`) the binary
 composes. On loopback the dev token works; elsewhere or with `--domain`
 (TLS via ACME) an `ftd_` token is minted once into `<data>/secrets.json`.
-Postgres is the one external dependency until the SQLite backend lands.
 **Why:** the try-it path was the contributor path (clone, compile seven
-containers, 5-15 minutes); one process with nothing to configure is one
-topology to test.
+containers, 5-15 minutes); one process, nothing to configure, one topology.
 **Rejected alternative:** an all-in-one container under supervisord (a
-second topology, Docker-only); keeping the seven services with better
-images (no laptop or Windows path); nginx as the edge (three routes and
-autocert replace it).
+second topology, Docker-only); better per-service images (no laptop or
+Windows path); nginx as the edge (three routes and autocert replace it).

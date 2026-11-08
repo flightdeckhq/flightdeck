@@ -911,9 +911,11 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	}
 
 	// Fetch page. session_id breaks ties on the sort key so pages are
-	// stable on both engines.
+	// stable, and a NULL sort key (a session without a model) sorts
+	// last in either direction: Postgres and SQLite place NULLs at
+	// opposite ends by default, so the order is spelled out.
 	querySQL := fmt.Sprintf(
-		"%s %s\n\tORDER BY %s %s, s.session_id ASC\n\tLIMIT $%d OFFSET $%d",
+		"%s %s\n\tORDER BY %s %s NULLS LAST, s.session_id ASC\n\tLIMIT $%d OFFSET $%d",
 		s.sessionListProjection(), where, sortExpr, orderDir, argIdx, argIdx+1,
 	)
 	args = append(args, params.Limit, params.Offset)

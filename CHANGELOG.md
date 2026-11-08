@@ -6,6 +6,24 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **The query API runs on SQLite or Postgres.** Every store of the API
+  (`api/internal/store`), the token validator and the WebSocket hub go
+  through the `storage` boundary: plain `database/sql` on either engine,
+  the dialect helpers for what differs (JSON paths, array membership,
+  case-insensitive match, percentiles, date truncation and time
+  differences), and a per-backend query file where a query differs
+  beyond them (the price lookup, the framework unnest, the context
+  facets, row locks). Fleet and directive notifications and token
+  revocations travel on the storage Bus (in-process on SQLite,
+  LISTEN/NOTIFY on Postgres). SQLite connections carry `regexp_like`,
+  `regexp_replace`, `percentile_cont` and `gen_random_uuid` with
+  Postgres' semantics, so the SQL spells them the same on both. Every
+  api database test runs on both backends, and a cross-backend
+  equivalence test runs every analytics metric and dimension pair, the
+  session, event, agent and search queries over one fixture and
+  compares the results to one golden. Search results now carry their
+  timestamps as RFC 3339 UTC strings on both backends.
+
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
   a child session for each agent that runs and for each agent used as a

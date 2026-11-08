@@ -75,7 +75,10 @@ jobs:
       - name: Build api
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
-          context: ./api
+          # Root context: api/go.mod replaces the storage module with
+          # ../storage, so both modules must be in the context.
+          context: .
+          file: api/Dockerfile
           load: true
           tags: flightdeck-api:scan
 
@@ -203,7 +206,8 @@ jobs:
       - name: Build and push api
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
-          context: ./api
+          context: .
+          file: api/Dockerfile
           push: true
           tags: |
             flightdeckhq/flightdeck-api:${{ steps.version.outputs.VERSION }}

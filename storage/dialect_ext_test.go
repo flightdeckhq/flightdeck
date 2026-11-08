@@ -284,8 +284,11 @@ func TestDialect_LeastGreatest(t *testing.T) {
 	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
 		d := db.Dialect
 		var lo, hi int
+		// Bare placeholders have no type on Postgres; a store compares
+		// columns and literals.
 		if err := db.QueryRowContext(context.Background(),
-			"SELECT "+d.Least("$1", "$2")+", "+d.Greatest("$1", "$2"), 3, 9).Scan(&lo, &hi); err != nil {
+			"SELECT "+d.Least("CAST($1 AS INTEGER)", "CAST($2 AS INTEGER)")+", "+
+				d.Greatest("CAST($1 AS INTEGER)", "CAST($2 AS INTEGER)"), 3, 9).Scan(&lo, &hi); err != nil {
 			t.Fatal(err)
 		}
 		if lo != 3 || hi != 9 {

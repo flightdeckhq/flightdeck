@@ -596,15 +596,18 @@ const agentLatestSessionJoin = `LEFT JOIN sessions latest ON latest.session_id =
 		LIMIT 1
 	)`
 
-// agentRoleSQL is the agent aliased a's sub-agent role: read from any
-// one session under this agent_id whose agent_role is non-null. By the
-// identity derivation every session under one agent_id shares the same
-// 6-tuple including agent_role, so any-row LIMIT 1 is authoritative.
+// agentRoleSQL is the agent aliased a's sub-agent role: read from the
+// earliest session under this agent_id whose agent_role is non-null.
+// By the identity derivation every session under one agent_id shares
+// the same 6-tuple including agent_role, so any such row is
+// authoritative; the ORDER BY makes the pick the same on both engines
+// should rows ever disagree.
 const agentRoleSQL = `(
 		SELECT s.agent_role
 		FROM sessions s
 		WHERE s.agent_id = a.agent_id
 		  AND s.agent_role IS NOT NULL
+		ORDER BY s.started_at, s.session_id
 		LIMIT 1
 	)`
 

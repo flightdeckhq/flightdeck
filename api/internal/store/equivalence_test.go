@@ -105,6 +105,15 @@ func seedEquivalenceFixture(t *testing.T, s *Store) eqvFixture {
 	// A previous run that died mid-way may have left its rows.
 	cleanup()
 	t.Cleanup(cleanup)
+	// The price table is the fixture's alone: a shared Postgres test
+	// database may hold the catalogue a pricing-loader test wrote, which
+	// would price the fixture's real model names on one backend and not
+	// the other. The API rebuilds the table at its next start.
+	for _, q := range []string{`DELETE FROM model_pricing`, `DELETE FROM model_pricing_meta`} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("clear prices: %v", err)
+		}
+	}
 
 	exec := func(query string, args ...any) {
 		t.Helper()
@@ -605,6 +614,13 @@ func roundNumbers(v any) any {
 			return json.Number(strconv.FormatInt(int64(f), 10))
 		}
 		return json.Number(strconv.FormatFloat(f, 'g', 9, 64))
+	case string:
+		// A timestamp renders in the driver's zone (Postgres: the
+		// session's, SQLite: UTC); the instant is what must agree.
+		if ts, err := time.Parse(time.RFC3339Nano, x); err == nil {
+			return ts.UTC().Format(time.RFC3339Nano)
+		}
+		return x
 	}
 	return v
 }

@@ -412,7 +412,7 @@ flightdeck/
 │   │   ├── server/server.go    # Router, CORS, auth middleware, withRESTTimeout
 │   │   ├── metrics/metrics.go  # Request-latency histogram and /metrics listener (twin of ingestion/internal/metrics)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens (same rules as ingestion's)
-│   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
+│   │   ├── auth/revocation.go  # Subscribes to revoked tokens on the storage Bus: evicts them from the validation cache
 │   │   ├── mcp_identity/identity.go  # MCP server identity canonicalisation + fingerprint (Go twin of the sensor / plugin helpers)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation (twin of workers/internal/modelid, same test vectors)
 │   │   ├── handlers/
@@ -439,8 +439,10 @@ flightdeck/
 │   │   │   ├── uuid.go             # Shared UUID path / query param validator
 │   │   │   └── health.go
 │   │   ├── store/
-│   │   │   ├── postgres.go         # Store + pool; fleet, session detail, session events, token policies,
-│   │   │   │                       # directives, custom directives, event content, context facets via pgx
+│   │   │   ├── store.go            # Store on storage.DB; fleet, session detail, session events, token policies,
+│   │   │   │                       # directives, custom directives, event content, context facets (database/sql)
+│   │   │   ├── queries_postgres.go # The SQL fragments that differ per backend beyond the Dialect (price lookup,
+│   │   │   ├── queries_sqlite.go   # framework unnest, context facets, row lock), one implementation each
 │   │   │   ├── sessions.go         # Listing + filters (framework, error_type)
 │   │   │   ├── events.go           # Bulk events query + event facets
 │   │   │   ├── agents.go           # Agents listing: filters, sort, search, pagination; agent by id
@@ -455,7 +457,7 @@ flightdeck/
 │   │   │   ├── mcp_policy_types.go # Go structs for mcp_policies / mcp_policy_entries rows and API DTOs
 │   │   │   ├── access_tokens.go
 │   │   │   └── search.go
-│   │   └── ws/hub.go               # WebSocket hub: client registry, broadcast on PG NOTIFY
+│   │   └── ws/hub.go               # WebSocket hub: client registry, broadcast of the Bus's fleet notifications
 │   └── tests/handler_test.go
 │
 ├── dashboard/                  # React + TypeScript + Vite + Zustand
@@ -4950,14 +4952,17 @@ what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
 SQL fragments are never templated beyond the dialect helpers. A store
 outside the boundary holds a pgx pool and runs on Postgres only
-(CLAUDE.md rule 35 lists the store packages). On SQLite the ingestion
+(CLAUDE.md rule 35 lists the store packages). The query API runs wholly
+on the boundary: every store in `api/internal/store`, its token
+validator and the WebSocket hub, so it serves a SQLite file and a
+Postgres database alike. On SQLite the ingestion
 API validates tokens and drops revoked ones through the boundary; its
 directive lookups, session attachment and OTLP staging are outside it
 and return an error there (an event is still accepted, with no
 directive and `attached: false`; OTLP requests fail), and the GenAI
 assembler does not run. `storage.Open` pings; a service opens its
 database with `storage.OpenRetry`, which retries with a doubling delay
-for a bounded budget (ingestion: 60 s) so a database that starts a
+for a bounded budget (ingestion and the query API: 60 s) so a database that starts a
 moment after the service does not end the process. The Postgres pool is
 capped at max(4, NumCPU) connections, open and idle, idle ones closed
 after 30 minutes; the SQLite writer is one connection and the reader
@@ -4986,6 +4991,17 @@ the same result:
 | `JSONText(col, keys…)` | `col->'a'->>'b'` | `json_extract(col, '$.a.b')` |
 | `Upsert(conflict, update)` | `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` | same |
 | `Returning(cols…)` | `RETURNING …` | same |
+| `Percentile(fraction, expr)` | `PERCENTILE_CONT(f) WITHIN GROUP (ORDER BY expr)` | `percentile_cont(expr, f)`, the registered aggregate below |
+| `SecondsBetween(a, b)` | `EXTRACT(EPOCH FROM (a - b))` | `ROUND((julianday(a) - julianday(b)) * 86400, 3)` (exact to the millisecond both carry) |
+| `DateOf(ts)` | `CAST(ts AS DATE)` | `date(ts)` |
+| `JSONTypeOf(col, keys…)` | `jsonb_typeof(col->'a'->'b')` | `json_type(col, '$.a.b')`, mapped onto Postgres' names (`boolean`, `number`, `string`) |
+| `JSONIsTrue(col, keys…)` | `(col->>'k') = 'true'` (a JSON `true` or the string `"true"`) | `json_type(…) = 'true' OR json_extract(…) = 'true'` |
+| `JSONBoolText(col, keys…)` | `col->>'k'` | a `CASE` rendering a JSON boolean as `'true'` / `'false'` (`json_extract` yields 1 / 0) |
+| `JSONNumber(col, keys…)` | `CAST(col->>'k' AS NUMERIC)` | `CAST(json_extract(…) AS NUMERIC)` |
+| `JSONArray(col, keys…)` | the array at the path, `'[]'::jsonb` when absent or not an array | same with `json_type` / `json_extract` |
+| `JSONArrayElements(arr, alias)` | `jsonb_array_elements(arr) AS alias(value)` (a FROM item; may reference a preceding table) | `json_each(arr) AS alias` |
+| `JSONElementText(alias)` | `alias.value #>> '{}'` | `alias.value` |
+| `Least(a, b)` / `Greatest(a, b)` | `LEAST` / `GREATEST` | the scalar `MIN` / `MAX` |
 
 Case-insensitive matching uses `lower()` on both sides on both engines
 and folds ASCII only: SQLite's `lower()` is ASCII-only, and on Postgres
@@ -4999,13 +5015,31 @@ placeholder has no type on Postgres (`CAST($n AS TIMESTAMPTZ)`).
 `JSONText` is for string-valued keys: Postgres `->>` yields text for
 every scalar, SQLite `json_extract` yields the JSON value's own type.
 
+**SQL functions the SQLite connections carry** so the common SQL can
+name them as Postgres does: `regexp_like(text, pattern)` and
+`regexp_replace(text, pattern, replacement)` (Postgres 15's functions;
+the first match, `\1`..`\9` and `\&` in the replacement, RE2 patterns
+that mean the same under Postgres' engine), `percentile_cont(value,
+fraction)` (the continuous percentile with Postgres' interpolation,
+`lo + (hi - lo) * frac` over the non-NULL values, NULL for none) and
+`gen_random_uuid()` (a canonical lower-case version-4 UUID). The
+`storage` module registers them on modernc's driver before any
+connection opens; a test runs each against both engines.
+`storage.IsUniqueViolation(err)` tells a refused duplicate key apart from
+other errors on both engines, so no store inspects a driver error type.
+
 **Constructs with no helper**, converted per store: `LATERAL` becomes a
-correlated subquery or CTE; `FOR UPDATE SKIP LOCKED` is a no-op on
-SQLite (one writer, transactions begin `IMMEDIATE`); an advisory lock
-becomes the `IMMEDIATE` transaction itself; `array_agg` / `unnest` /
-`jsonb_array_elements` / `jsonb_set` / `split_part` get a SQLite query
-of their own (`json_group_array`, `json_each`, `json_set`, string
-functions).
+correlated subquery (in a SELECT list or an `ON` clause: both engines
+accept `LEFT JOIN t ON t.pk = (SELECT … LIMIT 1)` referencing the outer
+row), a window function or a CTE; `FOR UPDATE` and `FOR UPDATE SKIP
+LOCKED` are no-ops on SQLite (one writer, transactions begin
+`IMMEDIATE`); an advisory lock becomes the `IMMEDIATE` transaction
+itself; `FILTER (WHERE c)` becomes `CASE WHEN c THEN x END` inside the
+aggregate; `ARRAY(SELECT DISTINCT …)` becomes a JSON array
+(`json_agg` / `json_group_array`) scanned in Go; `generate_series`
+becomes the buckets computed in Go; `array_agg` / `unnest` /
+`jsonb_set` / `split_part` / `jsonb_each` get a SQLite query of their
+own (`json_group_array`, `json_each`, `json_set`, string functions).
 
 ### SQLite semantics
 
@@ -5713,7 +5747,7 @@ authoritative parameter-level reference.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
+| `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSON through a correlated join to that session), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from` (default: 7 days ago), `to` (omitted, no upper bound on `started_at`: Postgres stamps it, so ending the range at the API's clock would drop a session that just started whenever that clock reads behind), `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, the error types of the session's `llm_error` and failed `tool_call` events, which the `error_type` filter matches the same way; `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
 | `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events, and `capture_prompts`, the session's stored capture posture: `true` or `false` once a `session_start` declared it, `null` while none has) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
@@ -5815,11 +5849,13 @@ commits. On Postgres, deleting an `access_tokens` row, through
 `DELETE /v1/access-tokens/:id` or directly in SQL, fires the
 `access_tokens_notify_revoked` trigger, which sends the token id on the
 `flightdeck_access_token_revoked` NOTIFY channel when the transaction
-commits; on SQLite the store that deletes the row publishes the id on
-the storage Bus after commit. The ingestion API subscribes to that
-channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
-LISTEN connection on Postgres, outside its request pool); the query API
-holds a LISTEN connection of its own. Each drops the cached validations
+commits; the query API's token store publishes the id on the storage
+Bus after its own delete commits on both backends (on Postgres the
+trigger fires as well; a repeated id is harmless), so a SQLite
+deployment gets the same prompt revocation. Both services subscribe to
+that channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
+LISTEN connection on Postgres, outside the request pool; an in-process
+channel on SQLite). Each drops the cached validations
 for that id when the notification arrives. The SQLite bus is in-process,
 so a token deleted by a process other than the one serving the request
 is refused only once its cached validation expires, after at most 60
@@ -5904,10 +5940,10 @@ dashboard image's nginx. The dev stack uses `tok_dev` regardless, so
 the looser dev header is acceptable; production deployers always run
 the multi-stage image where the strict triplet applies.
 
-### Real-time push: NOTIFY → Hub → WebSocket
+### Real-time push: fleet notification → Hub → WebSocket
 
-Changes reach the dashboard through a four-step LISTEN / NOTIFY chain,
-fully decoupled from REST paths.
+Changes reach the dashboard through a four-step notification chain on
+the storage Bus, fully decoupled from REST paths.
 
 1. **Worker write.** On each event,
    `workers/internal/writer/postgres.go::InsertEvent` INSERTs into `events`
@@ -5919,9 +5955,12 @@ fully decoupled from REST paths.
    `flightdeck_fleet` channel with payload `{session_id, event_type,
    event_id}`, one per changed session (see Worker / Event Processing →
    Notify for who sends what, and when).
-3. **Hub LISTEN + single-row fetch.** The API hub
-   (`api/internal/ws/hub.go::listenOnce`) holds one pgx connection
-   permanently subscribed to `flightdeck_fleet`. On each notification it
+3. **Hub subscription + single-row fetch.** The API hub
+   (`api/internal/ws/hub.go::listenOnce`) subscribes to `flightdeck_fleet`
+   on the storage Bus (`storage.ChannelFleet`: a dedicated LISTEN
+   connection on Postgres, an in-process channel on SQLite) and
+   subscribes again three seconds after the subscription fails or
+   closes. On each notification it
    parses the payload, fetches the session row via
    `store.GetSession(session_id)`, and, when `event_id` is set, fetches
    that event via `store.GetEvent(event_id)` — a PK lookup on `events.id`.
@@ -5939,7 +5978,7 @@ fully decoupled from REST paths.
    agent or the read fails; the dashboard takes the agent's badge from
    it, since a page holds only some of an agent's runs.
 
-Per NOTIFY the hub makes three indexed reads, none of which scans a
+Per notification the hub makes three indexed reads, none of which scans a
 session's events or an agent's run history: the session by primary key
 (with its effective-policy lookups), the event by primary key on
 `events.id`, and the agent rollup. The rollup's "any run active" check
@@ -6085,11 +6124,10 @@ Returns:
   `totals.partial_estimate`, `totals.models_unpriced` and
   `totals.billing_modes` as in the analytics response, so the page
   can render the subscription and partial states.
-- `totals.latency_p50_ms` / `totals.latency_p95_ms`:
-  `PERCENTILE_CONT` over `events.latency_ms` filtered to
-  `event_type='post_call'`, matching the analytics endpoint
-  convention.
-- `series[]`: per-bucket rows with `ts` (`date_trunc(bucket,
+- `totals.latency_p50_ms` / `totals.latency_p95_ms`: the continuous
+  percentile (`Dialect.Percentile`) over `events.latency_ms` of the
+  `post_call` events, matching the analytics endpoint convention.
+- `series[]`: per-bucket rows with `ts` (`Dialect.DateTrunc(bucket,
   occurred_at)`), `tokens`, `errors`, `sessions`, `cost_usd`,
   `latency_p95_ms` (p50 omitted at series granularity —
   totals carry it for context).
@@ -6442,8 +6480,8 @@ Matched columns per entity:
 - **Agents** — `agent_name`, `hostname`, `user_name`. Sensor-keyed
   agents already embed `user@hostname` in `agent_name`, but seeded /
   test / cloud agents often don't, so both columns are searched
-  independently. Each agent result also carries `client_type` and a
-  LATERAL-derived `state` (via the shared `agentStateRollupSQL`),
+  independently. Each agent result also carries `client_type` and the
+  rolled-up `state` (via the shared `agentStateRollupSQL`),
   so the palette's AgentRow renders the same identity primitives
   as `/agents` (ClaudeCodeLogo, ClientTypePill, state chip) and
   the two surfaces agree on every agent's rolled-up state. It
@@ -6478,6 +6516,8 @@ same row lands in the most semantic slot:
 
 Recency (`occurred_at DESC` for events, `last_seen_at DESC` for
 agents, `started_at DESC` for sessions) is the per-tier tiebreaker.
+Every timestamp a hit carries (`last_seen`, `started_at`, `ended_at`,
+`occurred_at`) is an RFC 3339 UTC string, the same on both backends.
 
 **Result routing.** The Cmd/Ctrl+K palette routes each
 result type to a different surface — agent and event hits open
@@ -6519,12 +6559,13 @@ rather than a bare `?...` fragment.
 
 ### Bulk events
 
-`GET /v1/events` runs the COUNT and SELECT inside a single
-`pgx.BeginTx` with `pgx.TxIsoLevel("repeatable read")`. Without the
-explicit isolation level, a worker INSERT between the COUNT and SELECT
-could leave `total` stale relative to `events`, breaking pagination math
-(`offset + len(events) > total`). Repeatable read pins both reads to the
-same snapshot.
+`GET /v1/events` runs the COUNT and SELECT inside a single read-only
+transaction on the storage reader handle: `REPEATABLE READ` on
+Postgres, and on SQLite the read transaction's WAL snapshot (the
+isolation level is ignored there). Without one snapshot, a worker
+INSERT between the COUNT and SELECT could leave `total` stale relative
+to `events`, breaking pagination math (`offset + len(events) > total`).
+`GET /v1/sessions` pages the same way.
 
 Rows are ordered by `occurred_at`, then `id`, both in the requested
 direction (`order=asc`, the default, or `desc`). The `id` tiebreaker
@@ -6578,20 +6619,24 @@ WebSocket stream is not killed by a global write deadline.
 
 ### Context facets
 
-`api/internal/store/postgres.go::GetContextFacets(ctx)` runs:
+`api/internal/store/store.go::GetContextFacets(ctx)` runs the
+per-backend `contextFacets` query (`queries_postgres.go`,
+`queries_sqlite.go`): every key of every session's `context`, one row
+per element for an array-valued key (`jsonb_array_elements_text` /
+`json_each`), the scalar's text otherwise (a boolean renders as `true`
+/ `false` on both engines), counted and ordered by key, then count
+descending, then value:
 
 ```sql
 SELECT key, value, COUNT(*) AS count
-FROM sessions, jsonb_each_text(context)
-WHERE state IN ('active', 'idle', 'stale')
-  AND context != '{}'::jsonb
+FROM <one row per (key, element or scalar) over sessions.context>
 GROUP BY key, value
-ORDER BY key ASC, count DESC
+ORDER BY key ASC, count DESC, value ASC
 ```
 
 Returns `map[string][]ContextFacetValue` keyed by context field name.
-Empty context dicts are excluded so they do not pollute facet groups
-with `{}` entries. `GetContextFacets` failure is best-effort — the
+Sessions of every state count: the panel describes the fleet's
+composition, not its live agents. `GetContextFacets` failure is best-effort — the
 fleet handler logs a warning and returns an empty map rather than
 failing the entire `GET /v1/fleet` response.
 
@@ -6666,12 +6711,13 @@ fields sourced from the agent's MOST RECENT session's
 dashboard's source pill reads it, see Dashboard > Session source). `hostname`
 and `user` already live as direct columns on the `agents`
 table (denormalised at agent-upsert time); the eight
-fields ride a single shared `LEFT JOIN LATERAL` per agent
-(`agentLatestContextSQL` in `api/internal/store/postgres.go`)
-that runs `SELECT context->>'<key>' ... WHERE agent_id =
-a.agent_id ORDER BY started_at DESC LIMIT 1`.
+fields ride one shared correlated join per agent
+(`agentLatestSessionJoin` in `api/internal/store/store.go`): `LEFT JOIN
+sessions latest ON latest.session_id = (SELECT session_id … WHERE
+agent_id = a.agent_id ORDER BY started_at DESC LIMIT 1)`, each key read
+with `Dialect.JSONText(latest.context, key)`.
 
-The lateral attaches to all three agent-row projection paths —
+The join attaches to all three agent-row projection paths —
 `GetAgentFleet`, `ListAgents`, `GetAgentByID` — so `/v1/fleet`
 and `/v1/agents` carry an identical agent-row shape on the
 new columns. The agents arm of `GET /v1/search` joins the same
@@ -6928,8 +6974,8 @@ that hit that endpoint directly): `hostname` and `user` are
 direct agents-table columns (single-valued per agent); the
 other seven (`os`, `arch`, `git_branch`, `git_repo`,
 `orchestration`, `python_version`, `process_name`) come from a
-`LEFT JOIN LATERAL` against each agent's MOST RECENT session's
-`sessions.context` JSONB. An agent that ran across multiple
+correlated join to each agent's MOST RECENT session's
+`sessions.context` JSON. An agent that ran across multiple
 hosts / branches facets by its latest run only — a single-row-
 per-agent facet model requires a single-valued projection.
 Agents whose latest session's context omits a key (or whose
@@ -10713,8 +10759,8 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
 7. Never use MUI, Ant Design, or Chakra UI.
 8. D3 is used for time scale math only. React owns the DOM.
 9. SQL lives only in each service's store packages, never in handlers:
-   `api/internal/store` (with the token lookups and revocation `LISTEN`
-   of `api/internal/auth`), `ingestion/internal/session`,
+   `api/internal/store` (with the token lookups of
+   `api/internal/auth`), `ingestion/internal/session`,
    `ingestion/internal/auth`, `ingestion/internal/directive`,
    `ingestion/internal/otlpstage` (the OTLP GenAI staging tables) and
    `workers/internal/writer`; `workers/internal/migrate` applies the
@@ -10722,9 +10768,8 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
    SQL are `workers/internal/processor/policy.go` (token policy lookups
    and the directives it issues), `workers/internal/processor/session.go`
    (session-row reads: `rowOwnerless`, `handleSessionGuard`,
-   `sessionLookupState`), the `enrichSessionEnd` queries in
-   `workers/internal/processor/event.go`, and the `LISTEN` / `UNLISTEN`
-   in `api/internal/ws/hub.go`.
+   `sessionLookupState`) and the `enrichSessionEnd` queries in
+   `workers/internal/processor/event.go`.
 10. All database migrations have an up and a down.
 11. Prompt content is never stored or logged when `capture_prompts=false`.
     This is a hard rule. No exceptions.

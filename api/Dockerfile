@@ -1,11 +1,16 @@
 # Multi-stage build: compile Go binary, copy to minimal image.
+# Built from the repository root (docker build -f api/Dockerfile .):
+# api/go.mod replaces the storage module with ../storage, so both
+# modules must be in the build context.
 FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /build
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd/
+COPY storage/go.mod storage/go.sum ./storage/
+COPY api/go.mod api/go.sum ./api/
+RUN cd api && go mod download
+COPY storage/ ./storage/
+COPY api/ ./api/
+RUN cd api && CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd/
 
 FROM alpine:3.24
 RUN apk --no-cache add ca-certificates wget

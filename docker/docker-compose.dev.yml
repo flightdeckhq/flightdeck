@@ -56,6 +56,9 @@ services:
     command: ["go", "run", "./cmd/"]
     volumes:
       - ../api:/app
+      # api/go.mod replaces the storage module with ../storage, which
+      # from /app is /storage.
+      - ../storage:/storage:ro
       # Compose merges volumes by replacing the base list when the
       # overlay sets its own, so the pricing.yaml mount from the base
       # docker-compose.yml needs to be re-declared here for dev runs.

@@ -1385,7 +1385,7 @@ const (
 
 func migrationFile(t *testing.T, name, direction string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", "..", "docker", "postgres", "migrations",
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "storage", "migrations", "postgres",
 		name+"."+direction+".sql"))
 	if err != nil {
 		t.Fatalf("read migration: %v", err)

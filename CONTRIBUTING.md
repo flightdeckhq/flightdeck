@@ -29,7 +29,7 @@ make test
 # Integration tests (requires running stack)
 make test-integration
 
-# Go tests that need Postgres (requires running stack)
+# Go tests that need a database, on Postgres and SQLite (requires running stack)
 make test-go-db
 
 # Per-component
@@ -62,25 +62,51 @@ hand, seed first (`make seed-e2e`), then:
 ./sensor/.venv/bin/python -m pytest tests/integration -m "exclusive"
 ```
 
-### Go tests that need Postgres
+### Go tests that need a database
 
 Some Go tests run SQL against a real database: the store packages, the staging
-store, the assembler, the workers' writer and processor, and the token
-revocation listeners. Each skips unless `TEST_POSTGRES_URL` names a database
-(`TEST_ASSEMBLER_POSTGRES_URL` for the assembler), so `make -C <component> test`
-and the CI Go job skip them. `make test-go-db` runs them against the running
-dev stack's Postgres, and CI runs it in the integration job on both Postgres
-majors that job covers. `scripts/go-db-tests.sh` creates a fresh database per
-test package, seeds it with `docker/postgres/init.sql`, migrates it to the
-newest migration through the workers' migrate-only mode, runs the package
-against it, and drops every database it created; the `flightdeck` database is
-never touched. Each package gets its own database because the assembler claims
-every due trace in its database, the staging store tests' traces included.
+store, the assembler, the workers' writer and processor, the token revocation
+listeners, and the `storage` module itself. Flightdeck runs on SQLite or
+Postgres (ARCHITECTURE.md, Storage), and a test opens its database through
+`storage/storagetest`, which decides the backends from the environment:
+
+| `FLIGHTDECK_TEST_BACKEND` | Runs on |
+|---|---|
+| unset | SQLite always; Postgres too when `TEST_POSTGRES_URL` names a database |
+| `sqlite` | SQLite only |
+| `postgres` | Postgres only (`TEST_POSTGRES_URL` required; the test skips otherwise) |
+
+SQLite needs no server: every test gets a fresh file in its temp directory,
+migrated from the embedded baseline, so `go test ./...` and the CI Go job run
+the SQLite half everywhere. The Postgres half skips without
+`TEST_POSTGRES_URL` (`TEST_ASSEMBLER_POSTGRES_URL` for the assembler). Store
+packages that have not yet moved to the storage boundary still read
+`TEST_POSTGRES_URL` directly and run on Postgres only.
+
+`make test-go-db` runs the lot against the running dev stack, and CI runs it in
+the integration job on both Postgres majors that job covers.
+`scripts/go-db-tests.sh` creates a fresh Postgres database per test package,
+seeds it with `docker/postgres/init.sql`, migrates it to the newest migration
+through the workers' migrate-only mode, runs the package against it on
+Postgres, runs the storage-converted packages (`DUAL_PACKAGES` in the script)
+on SQLite as well, and drops every database it created; the `flightdeck`
+database is never touched. `FLIGHTDECK_TEST_BACKEND=postgres` or `=sqlite`
+limits the script to one pass (the Postgres databases are created either way:
+the storage module's schema parity test compares the two engines). Each
+package gets its own database because the assembler claims every due trace in
+its database, the staging store tests' traces included.
 
 The run fails when a test in those packages fails or skips, and when a test
-file outside the script's `DB_PACKAGES` list opens a pool or reads any
-`*POSTGRES_URL` variable. A new DB-gated test package goes into that list. To run one package by hand,
-point it at a migrated database of your own, never at `flightdeck`:
+file outside the script's `DB_PACKAGES` list opens a pool, reads any
+`*POSTGRES_URL` variable or imports `storage/storagetest`. A new DB-gated test
+package goes into `DB_PACKAGES`, and into `DUAL_PACKAGES` once it opens its
+database through `storagetest`. To run one package by hand on SQLite:
+
+```bash
+cd storage && FLIGHTDECK_TEST_BACKEND=sqlite go test -count=1 ./...
+```
+
+and on Postgres, against a migrated database of your own, never `flightdeck`:
 
 ```bash
 cd ingestion && TEST_POSTGRES_URL='postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/<your_db>?sslmode=disable' \
@@ -305,16 +331,31 @@ PYTHON=$HOME/.cache/fd-sensor-venv/bin/python make playground-all
 ## Database Migrations
 
 Schema changes are managed by [golang-migrate](https://github.com/golang-migrate/migrate).
-Migration files live in `docker/postgres/migrations/`.
+Migration files live in the `storage` module, one directory per backend:
+`storage/migrations/postgres/` (the full history) and
+`storage/migrations/sqlite/` (`000001_baseline`, the Postgres schema at 000036
+translated once, then one pair per later change). The Go binaries embed both
+directories; the compose files and the Helm chart copy the Postgres one for
+the workers' runner.
 
 ### Creating a new migration
 
 1. Name the files `000NNN_description.up.sql` and `000NNN_description.down.sql`
-   where `NNN` is the next sequential number.
+   where `NNN` is the next sequential number, and create the pair **in both
+   directories** with the same number and description: the Postgres SQL
+   and its SQLite translation (ARCHITECTURE.md, Storage, has the type
+   mapping: `uuid` → `TEXT`, `timestamptz` → `TIMESTAMP` text in
+   `storage.TimeLayout`, `jsonb` → `TEXT` with a `json_valid()` check,
+   expression indexes on `json_extract`, no triggers).
 2. The down file must be the **exact inverse** of the up file.
 3. Never modify `docker/postgres/init.sql` for schema changes — it contains seed data only.
 4. Never modify an existing migration file that has already been applied to any environment.
    Always add a new migration.
+5. Run `scripts/check-migration-pairs.sh` (CI does): it fails when the two
+   directories' version lists differ. Then run the storage tests on both
+   backends (`make test-go-db`, or `cd storage && go test ./...` with
+   `TEST_POSTGRES_URL` set): the schema parity test fails when the two
+   schemas' tables, columns, nullability or indexes differ.
 
 ### Applying migrations
 

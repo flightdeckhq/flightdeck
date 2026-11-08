@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Runs the Go tests that need Postgres against the dev stack's Postgres.
+# Runs the Go tests that need a database, on Postgres against the dev
+# stack's server and on SQLite against a temp file per test.
 #
-# Those tests skip unless TEST_POSTGRES_URL (or, for the assembler,
-# TEST_ASSEMBLER_POSTGRES_URL) names a database, so `go test ./...`
-# alone never runs them. This script gives each package its own fresh
-# database on the running stack's Postgres server, seeds it with
-# docker/postgres/init.sql and migrates it to the newest migration
-# through the workers' own migrate path, runs the package's tests
-# against it, and drops every database it created on exit. The shared
-# `flightdeck` database is never touched.
+# Those tests skip unless the environment names a backend, so `go test
+# ./...` alone never runs the Postgres half. Postgres: this script gives
+# each package its own fresh database on the running stack's Postgres
+# server, seeds it with docker/postgres/init.sql and migrates it to the
+# newest migration through the workers' own migrate path, runs the
+# package's tests against it, and drops every database it created on
+# exit. The shared `flightdeck` database is never touched. SQLite: the
+# storage/storagetest package creates and migrates a file in each test's
+# temp directory, so the SQLite pass needs no server; it runs the
+# packages that have been converted to the storage boundary
+# (DUAL_PACKAGES), with FLIGHTDECK_TEST_BACKEND=sqlite.
 #
 # A database per package keeps packages from seeing each other's rows;
 # the assembler needs one to itself because it claims every due trace
@@ -16,8 +20,9 @@
 #
 # The run fails when a package fails, when any test in a listed package
 # skips (a DB-gated test that skips did not run), or when a test file
-# outside the list opens Postgres or reads a Postgres DSN variable (a
-# new DB-gated package must be added to DB_PACKAGES).
+# outside the list opens Postgres, reads a Postgres DSN variable or
+# imports storage/storagetest (a new DB-gated package must be added to
+# DB_PACKAGES, and to DUAL_PACKAGES once it runs on SQLite).
 #
 # The Go tests that need a real NATS server (gated on TEST_NATS_URL) run
 # here too, against the stack's NATS, under the same rules with
@@ -28,6 +33,11 @@
 # Usage: make test-go-db   (or scripts/go-db-tests.sh)
 #
 # Environment overrides:
+#   FLIGHTDECK_TEST_BACKEND  postgres, sqlite or both (default both):
+#                  which passes to run. The per-package Postgres
+#                  databases are created either way: the storage
+#                  module's schema parity test compares the two
+#                  backends and needs Postgres in the SQLite pass too.
 #   PG_CONTAINER   Postgres container name (default docker-postgres-1)
 #   PG_BASE_URL    DSN prefix the tests connect through, without the
 #                  database name (default
@@ -40,10 +50,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_CONTAINER="${PG_CONTAINER:-docker-postgres-1}"
 PG_BASE_URL="${PG_BASE_URL:-postgres://flightdeck:flightdeck_dev@127.0.0.1:5432}"
 NATS_TEST_URL="${NATS_TEST_URL:-nats://127.0.0.1:4222}"
-MIGRATIONS_DIR="$ROOT/docker/postgres/migrations"
+BACKENDS="${FLIGHTDECK_TEST_BACKEND:-both}"
+MIGRATIONS_DIR="$ROOT/storage/migrations/postgres"
 
-# Every Go test package with a test that opens Postgres through a DSN
-# from the environment, as <module>/<package dir>.
+case "$BACKENDS" in
+  postgres | sqlite | both) ;;
+  *) echo "FLIGHTDECK_TEST_BACKEND=$BACKENDS: want postgres, sqlite or both" >&2; exit 2 ;;
+esac
+
+# The Go modules whose test files are scanned for DB and NATS gates.
+MODULES=(api ingestion storage workers)
+
+# Every Go test package with a test that opens a database from the
+# environment, as <module>/<package dir> (<module> alone for a module's
+# root package). All of them run on Postgres.
 DB_PACKAGES=(
   api/app
   api/internal/auth
@@ -54,9 +74,17 @@ DB_PACKAGES=(
   ingestion/internal/handlers
   ingestion/internal/otlpstage
   ingestion/internal/session
+  storage
   workers/app
   workers/internal/processor
   workers/internal/writer
+)
+
+# The DB_PACKAGES that go through the storage boundary and so run on
+# SQLite as well. A package joins this list when its tests open their
+# database through storage/storagetest.
+DUAL_PACKAGES=(
+  storage
 )
 
 # Every Go test package with a test that reads TEST_NATS_URL, as
@@ -79,32 +107,58 @@ psql_admin() {
   docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q -U flightdeck -d postgres "$@"
 }
 
+# pkg_module / pkg_dir split "<module>/<dir>" ("<module>" alone is the
+# module's root package).
+pkg_module() { echo "${1%%/*}"; }
+pkg_dir() { if [[ "$1" == */* ]]; then echo "./${1#*/}/"; else echo "./"; fi; }
+
 # --- Every DB-gated test package is in the list ---------------------------
 cd "$ROOT"
 # A package counts as DB-gated when a test file opens a connection
-# (pgxpool.New, pgx.Connect) or names any *POSTGRES_URL variable, however
-# it reads it (Getenv, LookupEnv, a helper). Lines that call Setenv are
-# left out: the config tests set FLIGHTDECK_POSTGRES_URL to a dummy
-# value to test config parsing and never open a database.
+# (pgxpool.New, pgx.Connect), names any *POSTGRES_URL variable, however
+# it reads it (Getenv, LookupEnv, a helper), or imports
+# storage/storagetest. Lines that call Setenv are left out: the config
+# tests set FLIGHTDECK_POSTGRES_URL to a dummy value to test config
+# parsing and never open a database.
 found=()
 while IFS= read -r pkg; do found+=("$pkg"); done < <(
-  grep -rnE 'pgxpool\.New|pgx\.Connect|[A-Z_]*POSTGRES_URL' \
-    --include='*_test.go' api ingestion workers |
+  grep -rnE 'pgxpool\.New|pgx\.Connect|[A-Z_]*POSTGRES_URL|flightdeck/storage/storagetest"' \
+    --include='*_test.go' "${MODULES[@]}" |
     grep -v 'Setenv(' | cut -d: -f1 | xargs -r -n1 dirname | sort -u
 )
 for pkg in ${found[@]+"${found[@]}"}; do
   if [[ ! " ${DB_PACKAGES[*]} " == *" $pkg "* ]]; then
-    fail "$pkg has a test that opens Postgres or reads a Postgres DSN but is not in DB_PACKAGES in scripts/go-db-tests.sh"
+    fail "$pkg has a test that opens a database or reads a Postgres DSN but is not in DB_PACKAGES in scripts/go-db-tests.sh"
   fi
 done
 for pkg in "${DB_PACKAGES[@]}"; do
   if [[ ! " ${found[*]-} " == *" $pkg "* ]]; then
-    fail "$pkg is in DB_PACKAGES but no test there opens Postgres or reads a Postgres DSN; remove it from scripts/go-db-tests.sh"
+    fail "$pkg is in DB_PACKAGES but no test there opens a database or reads a Postgres DSN; remove it from scripts/go-db-tests.sh"
+  fi
+done
+# A package that opens its database through storagetest runs on SQLite
+# too, and only such packages do.
+found_dual=()
+while IFS= read -r pkg; do found_dual+=("$pkg"); done < <(
+  grep -rln 'flightdeck/storage/storagetest"' --include='*_test.go' "${MODULES[@]}" |
+    xargs -r -n1 dirname | sort -u
+)
+for pkg in ${found_dual[@]+"${found_dual[@]}"}; do
+  if [[ ! " ${DUAL_PACKAGES[*]} " == *" $pkg "* ]]; then
+    fail "$pkg imports storage/storagetest but is not in DUAL_PACKAGES in scripts/go-db-tests.sh"
+  fi
+done
+for pkg in "${DUAL_PACKAGES[@]}"; do
+  if [[ ! " ${found_dual[*]-} " == *" $pkg "* ]]; then
+    fail "$pkg is in DUAL_PACKAGES but no test there imports storage/storagetest; remove it from scripts/go-db-tests.sh"
+  fi
+  if [[ ! " ${DB_PACKAGES[*]} " == *" $pkg "* ]]; then
+    fail "$pkg is in DUAL_PACKAGES but not in DB_PACKAGES in scripts/go-db-tests.sh"
   fi
 done
 found_nats=()
 while IFS= read -r pkg; do found_nats+=("$pkg"); done < <(
-  grep -rn 'TEST_NATS_URL' --include='*_test.go' api ingestion workers |
+  grep -rn 'TEST_NATS_URL' --include='*_test.go' "${MODULES[@]}" |
     cut -d: -f1 | xargs -r -n1 dirname | sort -u
 )
 for pkg in ${found_nats[@]+"${found_nats[@]}"}; do
@@ -183,30 +237,38 @@ endgroup
 # Without -race: two allocation tests in ingestion/internal/handlers
 # (otlp_decode_test.go) skip under the race detector, which changes what
 # allocations cost, and the no-skip check below would flag them. The Go
-# job already runs every package under -race with the DB tests skipped.
+# job already runs every package under -race with the Postgres tests
+# skipped.
 summary=()
 status=0
-for pkg in "${DB_PACKAGES[@]}"; do
+
+# run_pkg <backend> <pkg>: runs one package's tests on one backend and
+# records a summary line.
+run_pkg() {
+  local backend="$1" pkg="$2"
+  local db dsn module dir log start rc passed skipped line
   db="$(db_name "$pkg")"
   dsn="$PG_BASE_URL/$db?sslmode=disable"
-  module="${pkg%%/*}"
-  log="$workdir/test-$db.log"
-  group "go test ./${pkg#*/}/ ($module) on $db"
+  module="$(pkg_module "$pkg")"
+  dir="$(pkg_dir "$pkg")"
+  log="$workdir/test-$backend-$db.log"
+  group "go test $dir ($module) on $backend"
   start=$SECONDS
   set +e
   (
     cd "$module" &&
       env -u FLIGHTDECK_POSTGRES_URL \
+        FLIGHTDECK_TEST_BACKEND="$backend" \
         TEST_POSTGRES_URL="$dsn" \
         TEST_ASSEMBLER_POSTGRES_URL="$dsn" \
-        go test -count=1 -v "./${pkg#*/}/"
+        go test -count=1 -v "$dir"
   ) 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}
   set -e
   endgroup
   passed="$(grep -cE '^\s*--- PASS' "$log" || true)"
   skipped="$(grep -cE '^\s*--- SKIP' "$log" || true)"
-  line="$pkg: $passed passed, $skipped skipped, $((SECONDS - start))s"
+  line="$pkg [$backend]: $passed passed, $skipped skipped, $((SECONDS - start))s"
   if [ "$rc" -ne 0 ]; then
     line="$line, FAILED (exit $rc)"
     status=1
@@ -221,18 +283,30 @@ for pkg in "${DB_PACKAGES[@]}"; do
     status=1
   fi
   summary+=("$line")
-done
+}
+
+if [ "$BACKENDS" != sqlite ]; then
+  for pkg in "${DB_PACKAGES[@]}"; do
+    run_pkg postgres "$pkg"
+  done
+fi
+if [ "$BACKENDS" != postgres ]; then
+  for pkg in "${DUAL_PACKAGES[@]}"; do
+    run_pkg sqlite "$pkg"
+  done
+fi
 
 # --- Run each NATS-gated package against the stack's NATS -----------------
 for pkg in "${NATS_PACKAGES[@]}"; do
-  module="${pkg%%/*}"
+  module="$(pkg_module "$pkg")"
+  dir="$(pkg_dir "$pkg")"
   log="$workdir/test-nats-$(echo "$pkg" | tr '/' '_').log"
-  group "go test ./${pkg#*/}/ ($module) on NATS $NATS_TEST_URL"
+  group "go test $dir ($module) on NATS $NATS_TEST_URL"
   start=$SECONDS
   set +e
   (
     cd "$module" &&
-      TEST_NATS_URL="$NATS_TEST_URL" go test -count=1 -v "./${pkg#*/}/"
+      TEST_NATS_URL="$NATS_TEST_URL" go test -count=1 -v "$dir"
   ) 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}
   set -e
@@ -257,7 +331,7 @@ for pkg in "${NATS_PACKAGES[@]}"; do
 done
 
 echo
-echo "Go DB and NATS tests on Postgres $pg_version:"
+echo "Go DB tests (backends: $BACKENDS; Postgres $pg_version) and NATS tests:"
 printf '  %s\n' "${summary[@]}"
 if [ "$status" -ne 0 ]; then
   fail "Go DB tests failed; see the package groups above"

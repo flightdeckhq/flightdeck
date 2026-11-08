@@ -97,6 +97,7 @@ updates:
     directories:
       - "/api"
       - "/ingestion"
+      - "/storage"
       - "/workers"
     schedule:
       interval: monthly

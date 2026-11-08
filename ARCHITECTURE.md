@@ -10017,10 +10017,10 @@ a sensor pointed at the origin without `/ingest` learns why. When the
 ingestion handler answers without reading the request body (a body
 over the receivers' 4 MiB cap is refused with 413 unread), the router
 drains up to 16 MiB of it, the receivers' inflated-body cap, so the
-client receives the status rather than a connection reset; nginx did
-the same by reading the whole body itself. The dashboard responses
-carry the browser security headers the dashboard
-image's nginx used to add (`X-Frame-Options: DENY`,
+client receives the status rather than a connection reset, as it does
+behind the compose nginx, which reads the whole body itself. The
+dashboard responses carry the browser security headers the compose
+dashboard's nginx sets (`X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy`, the same
 `Content-Security-Policy`). The server has a 15-second header read
 timeout, a 120-second idle timeout and no write timeout, because
@@ -10080,7 +10080,7 @@ to `https://`; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
 **Time zone.** The binary sets the process's local zone to UTC at
-start, as the containers the services ran in had: the query API
+start, as the compose containers have: the query API
 formats the timestamps it reads from Postgres in the process's zone,
 and its contract is RFC 3339 in UTC, whatever zone the host is in.
 
@@ -10109,8 +10109,8 @@ drains the HTTP server, and shuts the embedded NATS server down last so
 every publish and acknowledgement before it has reached the store.
 
 **The `app` packages.** Each service exports `ingestion/app`,
-`workers/app` and `api/app`: `Config` (what the service's environment
-used to carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
+`workers/app` and `api/app`: `Config` (the service's tunables, the
+values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
 workers, the migrations `fs.FS`; a nil dependency is dialled from
 `Config`), `New`, `Run(ctx)` and, for ingestion and the API,
 `Handler()`. The per-service `cmd/main.go` is environment parsing plus

@@ -1317,6 +1317,13 @@ jobs:
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh
 
+      # The PyPI wheels (flightdeck-cli) are built by a script, not a
+      # build backend; its tests pin the wheel layout, tags and RECORD.
+      # discover mode: the directory is named packaging/, which a module
+      # path would resolve to the packaging library.
+      - name: PyPI wheel builder
+        run: python3 -m unittest discover -s packaging/pypi -p 'test_*.py'
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'

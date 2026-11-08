@@ -13,7 +13,9 @@ All notable changes to Flightdeck are documented here.
   the machine, verifies it against the release's `checksums.txt` and
   installs it without sudo; `brew install flightdeckhq/tap/flightdeck`
   installs it from the new Homebrew tap, where `brew services start
-  flightdeck` keeps it running; and `docker run -p 4000:4000 -v
+  flightdeck` keeps it running; `pip install flightdeck-cli` (or `uvx
+  flightdeck-cli`, `pipx run flightdeck-cli`) installs the same binary
+  from PyPI with a `flightdeck` command; and `docker run -p 4000:4000 -v
   flightdeck-data:/data flightdeckhq/flightdeck` runs the new all-in-one
   image (distroless, non-root, amd64 and arm64), whose first start prints
   the dashboard token in `docker logs`. `flightdeck --version` prints the

@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan release-snapshot pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
+.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan release-snapshot pypi-wheels pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -281,6 +281,13 @@ version-check: ## Check every version location matches the VERSION file
 # every pull request so a target that stops cross-compiling fails there.
 release-snapshot: ## Build every release artifact into dist/ without publishing (needs goreleaser)
 	HOMEBREW_TAP_GITHUB_TOKEN="$${HOMEBREW_TAP_GITHUB_TOKEN:-unset}" goreleaser release --snapshot --clean
+
+# The flightdeck-cli wheels from the binaries release-snapshot (or the
+# release workflow) left in dist/: one per platform, into
+# packaging/pypi/dist. TAG names the version (v0.9.0, v0.9.0-rc.1).
+pypi-wheels: ## Build the flightdeck-cli wheels from dist/artifacts.json (usage: make pypi-wheels TAG=v0.9.0)
+	@test -n "$(TAG)" || (echo "Usage: make pypi-wheels TAG=v0.9.0" && exit 1)
+	python3 packaging/pypi/build_wheels.py --artifacts dist/artifacts.json --tag $(TAG) --out packaging/pypi/dist
 
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py

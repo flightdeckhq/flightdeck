@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -14,10 +15,14 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 )
 
-// The equivalence test drives one fixed event sequence through Process
-// on every covered backend, dumps the rows it produced in a normalised
+// The equivalence test drives one fixed sequence through the worker on
+// both backends in one run, dumps the rows each left in a normalised
 // shape and asserts the dumps are identical. It is the pinned proof
-// that the two query sets agree, beyond the per-feature tests.
+// that the two query sets agree, beyond the per-feature tests, so it
+// opens the backends itself rather than through storagetest.Each
+// (which runs one backend per process): SQLite always, Postgres when
+// TEST_POSTGRES_URL is set, which both passes of
+// scripts/go-db-tests.sh provide.
 //
 // Two differences between the engines are normalised away on purpose
 // and documented in ARCHITECTURE.md (Worker / Event Processing →
@@ -25,7 +30,7 @@ import (
 // SQLite stores the text as written, so documents are compared as
 // decoded values), and timestamp precision (Postgres keeps
 // microseconds, SQLite milliseconds, so timestamps are compared as
-// millisecond offsets from the run's first event). Two more are
+// millisecond offsets from the sequence's reference time). Two more are
 // properties of the run, not of the engine: ids differ per run and are
 // replaced by their role names (event ids by their position in the
 // sequence), wherever they appear, payload JSON included; and a time
@@ -33,32 +38,42 @@ import (
 // started_at and ended_at) depends on when the run happened, so such a
 // time is reduced to "clock" when it falls inside the run's window.
 
-// equivalenceRun is the fixed sequence: a child sub-agent whose start
-// arrives before its parent's, the parent's call before its own start
-// (lazy creation with a framework), the start without a framework (so
-// the label is appended to the context), a call with content and its
-// re-sent copy, a tool call, an MCP server attached twice, a failed
-// stream with partial tokens, the ends, and a session that stays open.
-func equivalenceRun(ids map[string]string, t0 time.Time) []consumer.EventPayload {
-	at := func(i int) string { return t0.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano) }
-	base := func(session, eventType string, i int) consumer.EventPayload {
+// The sequence reaches every path the two query sets spell
+// differently: the session_start upsert's framework append on a lazily
+// created row (parent), UpdateSessionFromCall's append on a row whose
+// start carried no framework (late), the context upgrade and the MCP
+// server append, a parent marked stale by the reconciler and revived
+// by its child's event, a session marked stale, then lost, then reaped
+// with a synthetic session_end, an assembled OpenTelemetry session
+// whose start and end date the row, a failed stream's partial tokens,
+// a re-sent event, and a model-id backfill over a legacy row.
+func equivalenceEvents(ids map[string]string, t0 time.Time) (before, revive, after []consumer.EventPayload) {
+	at := func(secs int) string { return t0.Add(time.Duration(secs) * time.Second).Format(time.RFC3339Nano) }
+	base := func(session, eventType string, secs int) consumer.EventPayload {
 		return consumer.EventPayload{
 			SessionID: ids[session], EventType: eventType, Flavor: "equivalence",
 			AgentID: ids["agent"], AgentType: "coding", ClientType: "flightdeck_sensor",
 			AgentName: "equivalence-agent", User: "test", Hostname: "test-host",
-			Host: "test-host", Timestamp: at(i), CapturePrompts: true, StreamSeq: uint64(i + 1),
+			Host: "test-host", Timestamp: at(secs), CapturePrompts: true, StreamSeq: uint64(secs + 1),
 		}
 	}
-	child := func(eventType string, i int) consumer.EventPayload {
-		e := base("child", eventType, i)
+	child := func(eventType string, secs int) consumer.EventPayload {
+		e := base("child", eventType, secs)
 		e.AgentID, e.AgentName = ids["child_agent"], "equivalence-child"
 		e.ParentSessionID, e.AgentRole = strings.ToUpper(ids["parent"]), "researcher"
+		return e
+	}
+	otel := func(eventType string, secs int) consumer.EventPayload {
+		e := base("otel", eventType, secs)
+		e.ClientType, e.AgentType = "otlp", "production"
+		e.AgentID, e.AgentName = ids["otel_agent"], "equivalence-otel"
 		return e
 	}
 	tok := func(e *consumer.EventPayload, in, out int) {
 		total := in + out
 		e.TokensInput, e.TokensOutput, e.TokensTotal = &in, &out, &total
 	}
+
 	cs := child("session_start", 0)
 	cs.Context = map[string]interface{}{"os": "Linux", "frameworks": []string{"claude_agent_sdk/0.2.1"}}
 	c1 := base("parent", "post_call", 1)
@@ -83,14 +98,37 @@ func equivalenceRun(ids map[string]string, t0 time.Time) []consumer.EventPayload
 	failed := base("parent", "llm_error", 8)
 	failed.Model = "gpt-4o-mini"
 	failed.Error = json.RawMessage(`{"error_type":"stream_error","partial_tokens_input":40,"partial_tokens_output":2}`)
-	cc := child("post_call", 9)
-	cc.Model = "gpt-4o-mini"
-	tok(&cc, 10, 5)
-	ce := child("session_end", 10)
-	pe := base("parent", "session_end", 11)
+
+	ls := base("late", "session_start", 9)
+	ls.Context = map[string]interface{}{"os": "Linux"}
+	lc := base("late", "post_call", 10)
+	lc.Framework, lc.Model = "agno", "gpt-4o-mini"
+	tok(&lc, 7, 3)
+	lc2 := base("late", "post_call", 11)
+	lc2.Framework, lc2.Model = "agno", "gpt-4o-mini"
+	tok(&lc2, 7, 3)
+
+	os_ := otel("session_start", 20)
+	os_.Context = map[string]interface{}{"telemetry": "otlp", "otel_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"}
+	oc := otel("post_call", 30)
+	oc.Model = "claude-sonnet-4-6"
+	tok(&oc, 50, 5)
+	oe := otel("session_end", 40)
+
 	is := base("idle", "session_start", 12)
 	is.Context = map[string]interface{}{"os": "Linux"}
-	return []consumer.EventPayload{cs, c1, ps, c2, c2dup, tc, mcp, mcp2, failed, cc, ce, pe, is}
+	lg := base("legacy", "session_start", 13)
+
+	before = []consumer.EventPayload{cs, c1, ps, c2, c2dup, tc, mcp, mcp2, failed, ls, lc, lc2, os_, oc, oe, is, lg}
+
+	// The child's call after the reconciler marked the parent stale.
+	cc := child("post_call", 50)
+	cc.Model = "gpt-4o-mini"
+	tok(&cc, 10, 5)
+	revive = []consumer.EventPayload{cc}
+
+	after = []consumer.EventPayload{child("session_end", 60), base("parent", "session_end", 61)}
+	return before, revive, after
 }
 
 // equivalenceDump is the normalised state of the rows the run wrote.
@@ -99,6 +137,145 @@ type equivalenceDump struct {
 	Events   []map[string]any `json:"events"`
 	Content  []map[string]any `json:"event_content"`
 	Agents   []map[string]any `json:"agents"`
+}
+
+// runEquivalence drives the sequence on db and returns the normalised
+// dump, after the per-backend expectations the sequence implies have
+// been checked, so a single-backend run fails for the right reason too.
+func runEquivalence(t *testing.T, db *storage.DB) equivalenceDump {
+	t.Helper()
+	ctx := context.Background()
+	ids := map[string]string{
+		"agent": randomID(t), "child_agent": randomID(t), "otel_agent": randomID(t),
+		"parent": randomID(t), "child": randomID(t), "late": randomID(t),
+		"otel": randomID(t), "idle": randomID(t), "legacy": randomID(t), "call": randomID(t),
+	}
+	for _, k := range []string{"agent", "child_agent", "otel_agent"} {
+		id := ids[k]
+		t.Cleanup(func() { _, _ = db.ExecContext(context.Background(), `DELETE FROM agents WHERE agent_id = $1`, id) })
+	}
+	// The child references the parent: registered after it, removed first.
+	for _, k := range []string{"parent", "late", "otel", "idle", "legacy", "child"} {
+		cleanupSession(t, db, ids[k])
+	}
+	p := newTestProcessor(db)
+	// The events are dated a minute before the run, so a time the
+	// database's clock wrote is told apart from an event-dated one.
+	t0 := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	from := databaseNow(t, db).Add(-time.Millisecond)
+	process := func(events []consumer.EventPayload) {
+		t.Helper()
+		for i, e := range events {
+			if err := p.Process(ctx, e); err != nil {
+				t.Fatalf("%s event %d (%s): %v", db.Backend, i, e.EventType, err)
+			}
+		}
+	}
+	backdate := func(session string, ts time.Time) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = $2 WHERE session_id = $1`, ids[session], ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func(session string) string {
+		t.Helper()
+		var s string
+		if err := db.Reader().QueryRowContext(ctx, `SELECT state FROM sessions WHERE session_id = $1`, ids[session]).Scan(&s); err != nil {
+			t.Fatalf("state of %s: %v", session, err)
+		}
+		return s
+	}
+	before, revive, after := equivalenceEvents(ids, t0)
+	process(before)
+
+	// The reconciler marks the silent parent and idle sessions stale;
+	// the child's next call revives the parent, while idle goes lost and
+	// is reaped as an orphan with a synthetic session_end.
+	backdate("parent", t0.Add(-3*time.Minute))
+	backdate("idle", t0.Add(-3*time.Minute))
+	if err := p.w.ReconcileStaleSessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := state("parent"); got != "stale" {
+		t.Fatalf("%s: parent after the reconciler = %q, want stale", db.Backend, got)
+	}
+	process(revive)
+	if got := state("parent"); got != "active" {
+		t.Errorf("%s: parent after its child's call = %q, want active (revived)", db.Backend, got)
+	}
+	backdate("idle", t0.Add(-31*time.Minute))
+	if err := p.w.ReconcileStaleSessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := state("idle"); got != "lost" {
+		t.Fatalf("%s: idle after the second pass = %q, want lost", db.Backend, got)
+	}
+	backdate("idle", t0.Add(-2*time.Hour))
+	if n, err := p.w.ReapOrphanedLostSessions(ctx, time.Hour); err != nil || n != 1 {
+		t.Fatalf("%s: reap = %d, %v; want 1", db.Backend, n, err)
+	}
+	process(after)
+
+	// A legacy row (raw model, no model_requested) for the backfill.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO events (session_id, flavor, event_type, model, payload, occurred_at)
+		VALUES ($1, 'equivalence', 'post_call', 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', $2, $3)`,
+		ids["legacy"], `{"provider_metadata":{"platform":"bedrock"}}`, t0.Add(14*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	p.w.RunModelBackfill(ctx)
+	to := databaseNow(t, db).Add(time.Millisecond)
+
+	d := dumpEquivalence(t, db, ids, t0, from, to)
+	if len(d.Sessions) != 6 || len(d.Events) != 21 || len(d.Content) != 1 || len(d.Agents) != 3 {
+		t.Fatalf("%s rows: %d sessions, %d events, %d content, %d agents; want 6, 21 (the copy dropped, the reaper's end added), 1, 3",
+			db.Backend, len(d.Sessions), len(d.Events), len(d.Content), len(d.Agents))
+	}
+	for _, s := range d.Sessions {
+		row := canonical(t, s)
+		ctxDoc, _ := s["context"].(map[string]any)
+		check := func(cond bool, what string) {
+			if !cond {
+				t.Errorf("%s %s row: %s (%s)", db.Backend, s["session"], what, row)
+			}
+		}
+		switch s["session"] {
+		case "parent":
+			servers, _ := ctxDoc["mcp_servers"].([]any)
+			check(strings.Contains(row, `"framework":"langchain"`) && fmt.Sprint(ctxDoc["frameworks"]) == "[langchain]", "framework appended once by the start")
+			check(s["tokens_used"] == 100+20+200+30+42 && strings.Contains(row, `"state":"closed"`), "tokens and close")
+			check(len(servers) == 1, "one MCP server")
+		case "late":
+			check(strings.Contains(row, `"framework":"agno"`) && fmt.Sprint(ctxDoc["frameworks"]) == "[agno]" && ctxDoc["os"] == "Linux",
+				"framework appended once by the call")
+		case "otel":
+			check(s["started_at_ms"] == int64(20000) && s["ended_at_ms"] == int64(40000), "event-dated start and end")
+		case "idle":
+			check(strings.Contains(row, `"state":"closed"`) && s["last_seen_ms"] == int64(-2*time.Hour/time.Millisecond), "reaped")
+		}
+	}
+	legacy, orphan := 0, 0
+	for _, e := range d.Events {
+		row := canonical(t, e)
+		if e["session"] == "legacy" && e["event_type"] == "post_call" {
+			legacy++
+			if !strings.Contains(row, `"model_requested":"us.anthropic.claude-sonnet-4-5-20250929-v1:0"`) ||
+				!strings.Contains(row, `"model":"claude-sonnet-4-5-20250929"`) || !strings.Contains(row, `"inference_scope":"regional"`) ||
+				!strings.Contains(row, `"platform":"bedrock"`) {
+				t.Errorf("%s legacy row not backfilled: %s", db.Backend, row)
+			}
+		}
+		if e["session"] == "idle" && e["event_type"] == "session_end" {
+			orphan++
+			if !strings.Contains(row, `"close_reason":"orphan_timeout"`) {
+				t.Errorf("%s synthetic end: %s", db.Backend, row)
+			}
+		}
+	}
+	if legacy != 1 || orphan != 1 {
+		t.Errorf("%s: %d legacy rows, %d synthetic ends; want 1 and 1", db.Backend, legacy, orphan)
+	}
+	return d
 }
 
 // dumpEquivalence reads the run's rows. Ids become role names (event
@@ -211,26 +388,26 @@ func dumpEquivalence(t *testing.T, db *storage.DB, ids map[string]string, t0, fr
 
 	rows, err = db.Reader().QueryContext(ctx, `
 		SELECT CAST(session_id AS TEXT), event_type, model, tokens_input, tokens_output, tokens_total,
-		       provider, billing_mode, model_requested, tool_name, has_content, occurred_at, payload
+		       provider, billing_mode, model_requested, platform, tool_name, has_content, occurred_at, payload
 		FROM events WHERE flavor = 'equivalence' ORDER BY occurred_at, event_type`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
 		var sid, eventType string
-		var model, provider, billing, requested, toolName *string
+		var model, provider, billing, requested, platform, toolName *string
 		var in, out, total *int
 		var hasContent bool
 		var occurredAt time.Time
 		var payload []byte
 		if err := rows.Scan(&sid, &eventType, &model, &in, &out, &total, &provider, &billing, &requested,
-			&toolName, &hasContent, &occurredAt, &payload); err != nil {
+			&platform, &toolName, &hasContent, &occurredAt, &payload); err != nil {
 			t.Fatal(err)
 		}
 		d.Events = append(d.Events, map[string]any{
 			"session": label(&sid), "event_type": eventType, "model": model, "tokens_input": in,
 			"tokens_output": out, "tokens_total": total, "provider": provider, "billing_mode": billing,
-			"model_requested": requested, "tool_name": toolName, "has_content": hasContent,
+			"model_requested": requested, "platform": platform, "tool_name": toolName, "has_content": hasContent,
 			"occurred_at_ms": offset(&occurredAt), "payload": decode(payload),
 		})
 	}
@@ -292,63 +469,34 @@ func canonical(t *testing.T, v any) string {
 	return string(data)
 }
 
-// The one fixed sequence leaves identical rows on every backend. Each
-// backend's dump is also checked against the expectations the sequence
-// implies, so the test fails for the right reason on a single backend
-// too; the cross-backend comparison runs when the run covers both.
+// The one fixed sequence leaves identical rows on both backends.
 func TestProcess_SameEventsLeaveIdenticalRowsOnBothBackends(t *testing.T) {
-	dumps := map[storage.Backend]equivalenceDump{}
-	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
-		ids := map[string]string{
-			"agent": randomID(t), "child_agent": randomID(t),
-			"parent": randomID(t), "child": randomID(t), "idle": randomID(t), "call": randomID(t),
-		}
-		for _, k := range []string{"agent", "child_agent"} {
-			id := ids[k]
-			t.Cleanup(func() { _, _ = db.ExecContext(context.Background(), `DELETE FROM agents WHERE agent_id = $1`, id) })
-		}
-		// The child references the parent: registered after it, removed first.
-		cleanupSession(t, db, ids["parent"])
-		cleanupSession(t, db, ids["idle"])
-		cleanupSession(t, db, ids["child"])
-
-		p := newTestProcessor(db)
-		// The events are dated a minute before the run, so a time the
-		// database's clock wrote is told apart from an event-dated one.
-		t0 := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-		from := databaseNow(t, db).Add(-time.Millisecond)
-		for i, e := range equivalenceRun(ids, t0) {
-			if err := p.Process(context.Background(), e); err != nil {
-				t.Fatalf("event %d (%s): %v", i, e.EventType, err)
-			}
-		}
-		to := databaseNow(t, db).Add(time.Millisecond)
-		d := dumpEquivalence(t, db, ids, t0, from, to)
-
-		if len(d.Sessions) != 3 || len(d.Events) != 12 || len(d.Content) != 1 || len(d.Agents) != 2 {
-			t.Fatalf("rows: %d sessions, %d events, %d content, %d agents; want 3, 12 (the copy dropped), 1, 2",
-				len(d.Sessions), len(d.Events), len(d.Content), len(d.Agents))
-		}
-		for _, s := range d.Sessions {
-			if s["session"] != "parent" {
-				continue
-			}
-			row := canonical(t, s)
-			ctxDoc, _ := s["context"].(map[string]any)
-			servers, _ := ctxDoc["mcp_servers"].([]any)
-			if !strings.Contains(row, `"framework":"langchain"`) || !strings.Contains(row, `"state":"closed"`) ||
-				fmt.Sprint(ctxDoc["frameworks"]) != "[langchain]" || s["tokens_used"] != 100+20+200+30+42 || len(servers) != 1 {
-				t.Errorf("parent row: %s", row)
-			}
-		}
-		dumps[db.Backend] = d
-	})
-	pg, okPG := dumps[storage.Postgres]
-	sq, okSQ := dumps[storage.SQLite]
-	if !okPG || !okSQ {
+	sq := runEquivalence(t, storagetest.OpenSQLite(t))
+	if os.Getenv(storagetest.PostgresURLEnv) == "" {
+		t.Skipf("%s unset: the SQLite half ran; the Postgres half and the comparison need a database", storagetest.PostgresURLEnv)
+	}
+	pg := runEquivalence(t, storagetest.OpenPostgres(t))
+	a, b := canonical(t, pg), canonical(t, sq)
+	if a == b {
 		return
 	}
-	if a, b := canonical(t, pg), canonical(t, sq); a != b {
-		t.Errorf("the backends disagree.\npostgres: %s\nsqlite:   %s", a, b)
+	// Name the first differing row per section, so the failure reads.
+	for _, section := range []struct {
+		name   string
+		pg, sq []map[string]any
+	}{{"sessions", pg.Sessions, sq.Sessions}, {"events", pg.Events, sq.Events}, {"event_content", pg.Content, sq.Content}, {"agents", pg.Agents, sq.Agents}} {
+		for i := 0; i < len(section.pg) || i < len(section.sq); i++ {
+			var x, y string
+			if i < len(section.pg) {
+				x = canonical(t, section.pg[i])
+			}
+			if i < len(section.sq) {
+				y = canonical(t, section.sq[i])
+			}
+			if x != y {
+				t.Errorf("the backends disagree on %s row %d:\npostgres: %s\nsqlite:   %s", section.name, i, x, y)
+				break
+			}
+		}
 	}
 }

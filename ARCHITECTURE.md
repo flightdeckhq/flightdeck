@@ -4993,9 +4993,14 @@ A content row the database refuses (invalid data, a broken constraint,
 a size limit; `storage.IsDataError`) is dropped and the event stored
 without it; any other failure is retried. The two backends are held to
 the same result by `workers/internal/processor/equivalence_test.go`,
-which drives one fixed event sequence through both and compares the
-rows it leaves; two differences are normalised away because they are
-properties of the engines, not of the worker: JSON key order (Postgres
+which opens both in one run (SQLite always, Postgres when
+`TEST_POSTGRES_URL` is set), drives one fixed event sequence through
+each — the lazy-create and late-framework appends, the MCP server
+append, a parent marked stale and revived by its child, a session
+marked stale, lost and reaped, an assembled OpenTelemetry session, a
+re-sent event, a model-id backfill — and compares the rows each leaves;
+two differences are normalised away because they are properties of the
+engines, not of the worker: JSON key order (Postgres
 `jsonb` reorders keys, SQLite stores the document as written, so
 documents compare as decoded values) and timestamp precision (Postgres
 keeps microseconds, SQLite milliseconds, so timestamps compare at the

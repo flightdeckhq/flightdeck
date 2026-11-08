@@ -114,7 +114,7 @@ services:
       SHUTDOWN_TIMEOUT_SECS: "30"
       FLIGHTDECK_MIGRATIONS_DIR: /migrations
     volumes:
-      - ./postgres/migrations:/migrations:ro
+      - ../storage/migrations/postgres:/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -29,9 +29,26 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
+
+// unavailablePostgresURL is the pool target of the stores that have not
+// moved to the storage boundary when the database is SQLite: port 1 is
+// reserved and never listens, so every use fails fast with a connection
+// error. pgx parses the URL without connecting.
+const unavailablePostgresURL = "postgres://flightdeck@127.0.0.1:1/unavailable?sslmode=disable"
+
+// databaseConnectBudget is how long ingestion keeps trying to reach its
+// database at boot before exiting. storage.Open pings, so a database
+// that is a moment behind the service (compose starts both at once; a
+// Kubernetes rollout restarts them independently) would otherwise end
+// the process at once. Sixty seconds outlasts the compose Postgres
+// healthcheck's worst case (five tries, five seconds apart, plus the
+// start) while still failing a misconfigured URL within the first
+// minute of a deploy.
+const databaseConnectBudget = 60 * time.Second
 
 // directiveAdapter wraps directive.Store to satisfy handlers.DirectiveLookup.
 type directiveAdapter struct {
@@ -61,8 +78,31 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 func main() {
 	cfg := config.Load()
 
-	// Postgres
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
+	// The database, through the storage boundary. The token validator
+	// reads it here; the stores outside the boundary (directives,
+	// sessions, OTLP staging) open a pgx pool of their own below.
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), databaseConnectBudget)
+	db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
+	cancelOpen()
+	if err != nil {
+		slog.Error("database connection failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = db.Close() }()
+	bus := storage.NewBus(db)
+
+	// Postgres, for the stores that have not moved to storage yet. On
+	// SQLite they have no database: the pool below points at a port
+	// nothing listens on, so a request that reaches one of them fails
+	// with an error instead of a nil dereference, and the GenAI
+	// assembler (a background loop over the staging store) does not
+	// start. Both go when the last store moves to the boundary.
+	poolURL := cfg.PostgresURL
+	if db.Backend != storage.Postgres {
+		poolURL = unavailablePostgresURL
+		slog.Warn("sqlite backend: directive polling, session attachment and OTLP staging are unavailable until their stores move to the storage boundary")
+	}
+	pool, err := pgxpool.New(context.Background(), poolURL)
 	if err != nil {
 		slog.Error("postgres connection failed", "err", err)
 		os.Exit(1)
@@ -87,13 +127,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	validator := auth.NewValidator(pool)
+	validator := auth.NewValidator(db)
 
 	// runCtx lives until shutdown begins; background loops stop with it.
 	runCtx, stopRun := context.WithCancel(context.Background())
 	defer stopRun()
 	// Drop cached validations of a token as soon as its row is deleted.
-	go validator.ListenRevocations(runCtx, pool)
+	go validator.ListenRevocations(runCtx, bus)
 	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
 	sessAttacher := session.NewStore(pool)
 
@@ -118,6 +158,10 @@ func main() {
 	assemblerDone := make(chan struct{})
 	go func() {
 		defer close(assemblerDone)
+		if db.Backend != storage.Postgres {
+			// The staging store is not on the storage boundary yet.
+			return
+		}
 		genaiAssembler.Run(runCtx)
 	}()
 

@@ -1315,7 +1315,14 @@ jobs:
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
-          shellcheck scripts/install-gate.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-sh.sh
+
+      # install.sh end to end against a local server with the release
+      # layout (a fake archive): latest, a pinned VERSION, the fallback
+      # install dir, and the refusals (bad checksum, missing checksum
+      # entry, unsupported CPU, unknown version, plain-HTTP host).
+      - name: install.sh against a local release server
+        run: scripts/test-install-sh.sh
 
       # The PyPI wheels (flightdeck-cli) are built by a script, not a
       # build backend; its tests pin the wheel layout, tags and RECORD.
@@ -1401,7 +1408,7 @@ jobs:
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
         with:
           distribution: goreleaser
-          # Same pin as release.yml: the release must build what CI built.
+          # Pinned: the release workflow must run the same goreleaser.
           version: v2.20.0
           args: build --snapshot --clean
 

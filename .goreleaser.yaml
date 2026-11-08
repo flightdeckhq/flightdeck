@@ -71,6 +71,25 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# checksums.txt is signed keyless with cosign (Sigstore): the release
+# workflow's OIDC identity is the signer, and the bundle
+# checksums.txt.sigstore.json is uploaded beside it. install.sh and
+# install.ps1 verify it when cosign is installed:
+#   cosign verify-blob --bundle checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/flightdeckhq/flightdeck/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+# Needs cosign on the release runner and id-token: write on the job; a
+# local snapshot passes --skip=sign (make release-snapshot).
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
 snapshot:
   # A snapshot is never a release; the version says so and carries the
   # commit it was built from.
@@ -135,3 +154,8 @@ brews:
       Run `flightdeck` and open http://localhost:4000, or start it in the
       background with `brew services start flightdeck` (the token is then in
       #{var}/log/flightdeck.log and the data dir is ~/.flightdeck).
+
+      Until the bundled SQLite database ships, flightdeck needs a Postgres:
+      run it as `flightdeck --database-url postgres://...` (or export
+      FLIGHTDECK_DATABASE_URL); `brew services` cannot pass that, so start it
+      from a terminal for now.

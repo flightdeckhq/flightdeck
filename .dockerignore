@@ -1,6 +1,9 @@
-# Build context of the root Dockerfile (the all-in-one image). The build
-# copies the whole tree, so everything that is not source stays out: the
-# per-service images have their own contexts and ignore files.
+# Build context of the images built from the repository root: the
+# all-in-one image (Dockerfile, which needs the Go modules and the
+# dashboard's sources) and the service images that need the storage
+# module beside their own (ingestion/Dockerfile). Everything no build
+# reads stays out of the context; the per-service images with their own
+# context keep their own ignore files.
 .git
 .github
 .claude
@@ -15,17 +18,24 @@ plugin
 tests
 sensor
 contracts
-bin
-dist
+**/bin
+**/dist
+!webui/dist/.gitkeep
 **/node_modules
-dashboard/dist
-dashboard/coverage
+**/coverage*
 dashboard/playwright-report
 dashboard/test-results
-webui/dist/*
-!webui/dist/.gitkeep
 **/*.md
 !dashboard/**/*.md
 **/.venv
 **/__pycache__
 **/*_test.go
+
+# Never in an image: local environment files (a dashboard/.env with
+# VITE_* values would be baked into the public bundle), keys and the
+# binary's secrets file. The example env file is documentation.
+**/.env*
+!**/.env.example
+**/*.pem
+**/*.key
+**/secrets.json

@@ -172,7 +172,7 @@ CI scans every dependency set for known vulnerabilities:
 |---|---|---|
 | Go modules (ingestion, workers, api) | `govulncheck` | Go (ingestion, workers, api) |
 | npm (`dashboard/`, `plugin/`) and pip (`sensor/`) | `npm audit`, `pip-audit` via `scripts/vuln_scan.py` | Dependency vulnerability scan (npm, pip) |
-| Release images | Trivy | Scan Docker images (release workflow) |
+| Release image | Trivy, govulncheck | Scan the all-in-one image and the Go modules (release workflow) |
 
 Run the npm and pip scan locally with:
 

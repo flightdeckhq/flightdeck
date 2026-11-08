@@ -1,113 +1,187 @@
 name: Release
 
+# A version tag builds the flightdeck binary for every platform and
+# publishes it through every channel: GitHub release archives with
+# checksums and the Homebrew formula (goreleaser), the flightdeck-sensor
+# and flightdeck-cli packages on PyPI, and the all-in-one Docker image.
+# The install gate (install-gate.yml) runs on this workflow's completion
+# and installs from each channel on fresh runners.
+#
+# Tags: vX.Y.Z is a release; vX.Y.Z-<pre-release> (v0.9.0-rc.1) is a dry
+# run of the same pipeline: a GitHub pre-release, no Homebrew formula,
+# no `latest` image tag, no flightdeck-sensor publish (its version would
+# be the final X.Y.Z), flightdeck-cli as a PEP 440 pre-release that pip
+# does not pick by default. RELEASING.md has the sequence.
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
 
-# Workflow-level least privilege: read-only by default. The two jobs
-# that need wider scope override at the job level — publish-sensor
-# (id-token: write for OIDC trusted PyPI publish), github-release
-# (contents: write to create the release). publish-docker uses
-# Docker Hub credentials from secrets and pushes images out to a
-# third-party registry; it never needs the GITHUB_TOKEN's write
-# scope, so leaving it on the workflow default closes the
-# supply-chain gap a future compromised action in that job's step
-# sequence would otherwise widen.
+# Workflow-level least privilege: read-only by default. The jobs that
+# need more say so: goreleaser (contents: write for the release and its
+# assets), the two PyPI jobs (id-token: write for trusted publishing).
+# The Docker job pushes with Docker Hub credentials from secrets and
+# never needs the GITHUB_TOKEN's write scope.
 permissions:
   contents: read
 
+env:
+  # goreleaser is pinned here and in ci.yml's release-snapshot job: the
+  # release must build what CI built.
+  GORELEASER_VERSION: v2.20.0
+
 jobs:
-  # Gate before anything is published: build the four images without
-  # pushing and scan them. The release fails on any HIGH or CRITICAL
-  # vulnerability that has a fixed version available (--ignore-unfixed:
-  # an unfixable finding cannot be acted on by bumping) and on a base
-  # image whose OS has reached end of life (--exit-on-eol). Trivy runs
-  # from its official image pinned by digest rather than through a
-  # third-party action; Dependabot does not see a pin inside a run:
-  # script, so bump it by hand. publish-sensor waits for this job, so a
-  # failing scan publishes nothing to PyPI or Docker Hub. publish-docker
-  # rebuilds the images from the same commit minutes later rather than
-  # reusing these.
-  scan-images:
-    name: Scan Docker images
+  # Nothing is built or published unless the tag names the version every
+  # file carries (scripts/version.py), and the Go modules have no known
+  # vulnerability. A tag pushed before the release PR merged stops here.
+  verify:
+    name: Tag matches VERSION, govulncheck
     runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Nothing is built or published unless the tag matches the VERSION
-      # file and every file that carries the version (scripts/version.py),
-      # so a tag pushed before the release PR merged stops here.
       - name: Tag matches VERSION
-        run: python3 scripts/version.py check --tag "${GITHUB_REF_NAME}"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
-      # pricing.yaml is the canonical source of truth at the repo root.
-      # api/Dockerfile bakes it into the image at
-      # /etc/flightdeck/pricing.yaml via `COPY pricing.yaml ...`, which
-      # resolves relative to the Docker build context. The context
-      # below is ./api, so stage the file into the context without
-      # relocating the source of truth or broadening the context to
-      # the whole repo. The runner's working tree is ephemeral, so the
-      # staged copy is discarded at the end of the job.
-      - name: Stage pricing.yaml into api build context
-        run: cp pricing.yaml api/pricing.yaml
-
-      - name: Build ingestion
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./ingestion
-          load: true
-          tags: flightdeck-ingestion:scan
-
-      - name: Build workers
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./workers
-          load: true
-          tags: flightdeck-workers:scan
-
-      - name: Build api
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./api
-          load: true
-          tags: flightdeck-api:scan
-
-      - name: Build dashboard
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./dashboard
-          load: true
-          tags: flightdeck-dashboard:scan
-
-      - name: Scan images
-        # Scans every image before failing, so one run reports all
-        # findings. The trivy-cache volume keeps the vulnerability DB
-        # from being downloaded once per image.
+        id: tag
         run: |
-          failed=""
-          for image in ingestion workers api dashboard; do
-            echo "::group::flightdeck-$image"
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              -v trivy-cache:/root/.cache \
-              aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-              image --no-progress --severity HIGH,CRITICAL --ignore-unfixed \
-              --exit-code 1 --exit-on-eol 1 "flightdeck-$image:scan" \
-              || failed="$failed $image"
+          python3 scripts/version.py check --tag "$GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT"; echo "::notice::$GITHUB_REF_NAME is a pre-release: a dry run of the pipeline" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+            storage/go.sum
+
+      # govulncheck reports only vulnerabilities in code the binaries
+      # reach, module by module. The root module names its packages
+      # instead of ./... so dashboard/node_modules is not walked. Pinned
+      # to a commit (golang/vuln v1.9.0): a tag can be re-pointed.
+      - name: govulncheck (root module and the service modules)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@d1f380186385b4f64e00313f31743df8e4b89a77
+          govulncheck . ./cmd/... ./internal/... ./webui/...
+          for m in api ingestion workers storage; do
+            echo "::group::$m"
+            (cd "$m" && govulncheck ./...)
             echo "::endgroup::"
           done
-          if [ -n "$failed" ]; then
-            echo "::error::Image scan failed for:$failed"
-            exit 1
-          fi
+
+  # The six binaries, the archives and checksums on the GitHub release,
+  # the Homebrew formula in flightdeckhq/homebrew-tap (stable tags only;
+  # .goreleaser.yaml). The binaries are kept as a workflow artifact for
+  # the PyPI wheels.
+  goreleaser:
+    name: Binaries, GitHub release, Homebrew formula
+    runs-on: ubuntu-24.04
+    needs: verify
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # goreleaser reads the tags and the commit for the version.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+            storage/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      # The release notes are the tag's CHANGELOG section (the
+      # Unreleased section for a pre-release), written outside dist/,
+      # which goreleaser --clean empties.
+      - name: Release notes from CHANGELOG.md
+        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" -o "$RUNNER_TEMP/release-notes.md"
+
+      - name: goreleaser release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean --release-notes "${{ runner.temp }}/release-notes.md"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A fine-grained token with contents: write on homebrew-tap;
+          # the GITHUB_TOKEN cannot push to another repository. Unused
+          # on a pre-release (the formula is skipped).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Keep the binaries for the PyPI wheels
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: binaries
+          path: |
+            dist/artifacts.json
+            dist/flightdeck_*/flightdeck
+            dist/flightdeck_*/flightdeck.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-cli:
+    name: Publish flightdeck-cli to PyPI
+    runs-on: ubuntu-24.04
+    needs: goreleaser
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: binaries
+          path: dist
+
+      # One wheel per platform from the binaries goreleaser built
+      # (packaging/pypi/build_wheels.py); the version is the tag in its
+      # PEP 440 form (v0.9.0-rc.1 -> 0.9.0rc1).
+      - name: Build the wheels
+        run: |
+          chmod +x dist/flightdeck_*/flightdeck*
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            python3 packaging/pypi/build_wheels.py --artifacts dist/artifacts.json \
+              --tag "$GITHUB_REF_NAME" --out packaging/pypi/dist
+          ls -l packaging/pypi/dist
+
+      - name: Publish to PyPI (OIDC trusted publishing)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          packages-dir: packaging/pypi/dist/
+          # A re-run on the same tag finds the version already on PyPI;
+          # skip it instead of failing the rest of the release.
+          skip-existing: true
 
   publish-sensor:
     name: Publish flightdeck-sensor to PyPI
     runs-on: ubuntu-24.04
-    needs: scan-images
+    needs: verify
+    # The sensor's version is the final X.Y.Z, so a pre-release tag
+    # (a dry run) must not publish it.
+    if: needs.verify.outputs.prerelease == 'false'
     environment: pypi
     permissions:
       id-token: write
@@ -129,34 +203,47 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: sensor/dist/
-          # Idempotent publish: if a workflow re-run targets the same
-          # tag (e.g. retrying a release after a downstream Docker
-          # build failure) the version already exists on PyPI and
-          # would otherwise hard-fail the job. ``skip-existing: true``
-          # turns that into a no-op so publish-docker and
-          # github-release can still execute on the rerun.
           skip-existing: true
 
+  # The all-in-one image, built from the root Dockerfile for linux/amd64
+  # and linux/arm64. The Go cross-compile runs on the build platform and
+  # the runtime stage has no RUN, so no emulation is set up. The amd64
+  # image is scanned before anything is pushed: the release fails on a
+  # HIGH or CRITICAL vulnerability with a fix available (--ignore-unfixed)
+  # or an end-of-life base (--exit-on-eol). Trivy runs from its image
+  # pinned by digest; Dependabot does not see a pin inside a run: script,
+  # so bump it by hand.
   publish-docker:
-    name: Build and push Docker images
+    name: All-in-one image to Docker Hub
     runs-on: ubuntu-24.04
-    needs: publish-sensor
-    # Declaring an environment causes GitHub to record a Deployment
-    # for this job, which surfaces it in the repo Deployments panel
-    # alongside the ``pypi`` deployment created by publish-sensor.
-    # Without this block the four Docker Hub publishes are invisible
-    # to anyone scanning the panel for "where did v0.2.0 ship?". One
-    # environment covers all four images because they all push to the
-    # same flightdeckhq Docker Hub namespace from the same job.
+    needs: [verify, goreleaser]
     environment:
       name: docker-hub
-      url: https://hub.docker.com/u/flightdeckhq
+      url: https://hub.docker.com/r/flightdeckhq/flightdeck
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build linux/amd64 for the scan
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: flightdeck:scan
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-to: type=gha,mode=max
+          cache-from: type=gha
+
+      - name: Scan the image
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache \
+            aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+            image --no-progress --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --exit-on-eol 1 flightdeck:scan
 
       - name: Log in to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -164,68 +251,22 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - name: Image tags
+        id: tags
+        run: |
+          tags="flightdeckhq/flightdeck:${GITHUB_REF_NAME}"
+          if [ "${{ needs.verify.outputs.prerelease }}" = "false" ]; then
+            tags="$tags,flightdeckhq/flightdeck:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ingestion
+      - name: Build and push linux/amd64 and linux/arm64
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
-          context: ./ingestion
+          context: .
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            flightdeckhq/flightdeck-ingestion:${{ steps.version.outputs.VERSION }}
-            flightdeckhq/flightdeck-ingestion:latest
-
-      - name: Build and push workers
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./workers
-          push: true
-          tags: |
-            flightdeckhq/flightdeck-workers:${{ steps.version.outputs.VERSION }}
-            flightdeckhq/flightdeck-workers:latest
-
-      # pricing.yaml is the canonical source of truth at the repo root.
-      # api/Dockerfile bakes it into the image at
-      # /etc/flightdeck/pricing.yaml via `COPY pricing.yaml ...`, which
-      # resolves relative to the Docker build context. The context
-      # below is ./api, so stage the file into the context without
-      # relocating the source of truth or broadening the context to
-      # the whole repo. The runner's working tree is ephemeral, so the
-      # staged copy is discarded at the end of the job.
-      - name: Stage pricing.yaml into api build context
-        run: cp pricing.yaml api/pricing.yaml
-
-      - name: Build and push api
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./api
-          push: true
-          tags: |
-            flightdeckhq/flightdeck-api:${{ steps.version.outputs.VERSION }}
-            flightdeckhq/flightdeck-api:latest
-
-      - name: Build and push dashboard
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ./dashboard
-          push: true
-          tags: |
-            flightdeckhq/flightdeck-dashboard:${{ steps.version.outputs.VERSION }}
-            flightdeckhq/flightdeck-dashboard:latest
-
-  github-release:
-    name: Create GitHub Release
-    runs-on: ubuntu-24.04
-    needs: [publish-sensor, publish-docker]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Create release with auto-generated notes
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
-        with:
-          generate_release_notes: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha

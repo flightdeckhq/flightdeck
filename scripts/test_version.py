@@ -74,6 +74,30 @@ class VersionScriptTest(unittest.TestCase):
         self.assertEqual(self.run_quiet(version.changelog, "9.8.7"), 0)
         self.assertEqual(self.run_quiet(version.check, "v9.8.7"), 0)
 
+    def test_check_accepts_a_prerelease_tag_of_the_version_without_a_dated_changelog(
+        self,
+    ) -> None:
+        self.assertEqual(self.run_quiet(version.set_version, "9.8.7"), 0)
+        # No dated section yet: the dry run comes before the release PR.
+        self.assertEqual(self.run_quiet(version.check, "v9.8.7-rc.1"), 0)
+        self.assertEqual(self.run_quiet(version.check, "v9.8.7-beta.2"), 0)
+        # The release tag itself still needs the dated section.
+        self.assertEqual(self.run_quiet(version.check, "v9.8.7"), 1)
+
+    def test_check_rejects_a_prerelease_tag_of_another_version_or_a_malformed_tag(
+        self,
+    ) -> None:
+        current = (self.tmp / "VERSION").read_text().strip()
+        self.assertEqual(self.run_quiet(version.check, "v99.0.0-rc.1"), 1)
+        for bad in (
+            current,
+            f"v{current}rc1",
+            f"v{current}-",
+            "latest",
+            f"v{current}.1",
+        ):
+            self.assertEqual(self.run_quiet(version.check, bad), 1, bad)
+
     def test_set_rejects_a_non_release_version(self) -> None:
         for bad in ("v1.2.3", "1.2.3rc1", "1.2"):
             with self.assertRaises(SystemExit, msg=bad):

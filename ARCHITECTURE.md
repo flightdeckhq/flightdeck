@@ -592,7 +592,7 @@ flightdeck/
 │   ├── e2e-fixtures/           # Canonical seed dataset for Playwright dev-stack runs
 │   ├── fixtures/               # mcp_identity_vectors.json: cross-language MCP identity vectors (sensor, plugin, api)
 │   └── shared/                 # fixtures.py: pytest-free helpers shared by the integration conftest and the e2e seeder
-└── .github/workflows/          # ci.yml, release.yml
+└── .github/workflows/          # ci.yml, release.yml, install-gate.yml
 ```
 
 ---
@@ -10355,6 +10355,24 @@ marked as a pre-release, which the Homebrew tap and the installers'
 `latest` skip). CI cross-builds the six binaries with `goreleaser build
 --snapshot` on every pull request and builds the Docker image, so a
 target that stops compiling fails the PR, not the release.
+
+The release workflow (`release.yml`, on a `v*` tag) first checks that the
+tag names the version every file carries and runs `govulncheck` on the
+Go modules, then runs goreleaser, builds the `flightdeck-cli` wheels
+from its binaries and publishes them, publishes `flightdeck-sensor`
+(stable tags only), and scans, builds and pushes the image. When it
+completes, the install gate (`install-gate.yml`, also runnable by hand
+with a tag) installs the published artifacts on fresh runners, one leg
+per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
+`windows-2022`), through the channel under test (`install.sh`, `pip`
+and `uvx`, `docker run`, `brew`, `install.ps1`), and runs
+`scripts/install-gate.sh`: health, the token from the start-up block,
+`/runtime-config.json`, the dashboard, one sensor-shaped event posted
+and read back by id and from the sessions list, a clean stop. A
+pre-release tag (`vX.Y.Z-rc.N`, pushed by hand) is the dry run: the same
+pipeline with the GitHub release marked pre-release, no formula, no
+`latest` image tag, no sensor publish; the gate's Homebrew leg then
+installs with `install.sh`. RELEASING.md has the operator's view.
 
 ### Health checks
 

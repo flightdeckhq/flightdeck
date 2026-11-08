@@ -1331,6 +1331,24 @@ jobs:
       - name: PyPI wheel builder
         run: python3 -m unittest discover -s packaging/pypi -p 'test_*.py'
 
+      # The same ruff the sensor pins (sensor/uv.lock), with the sensor's
+      # configuration, so the packaging code follows the repository's
+      # Python rules; and the builder's output must pass twine's
+      # metadata check and build byte-identical wheels twice.
+      - name: ruff, twine and reproducibility of the wheel builder
+        run: |
+          pip install --quiet ruff==0.17.1 twine==7.0.0
+          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
+          for n in 1 2; do
+            python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \
+              --tag "v$(cat VERSION)" --out "$RUNNER_TEMP/wheels-$n" --source-date-epoch 1767322800
+          done
+          twine check --strict "$RUNNER_TEMP"/wheels-1/*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*manylinux*.whl "$RUNNER_TEMP"/wheels-2/*manylinux*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*musllinux*.whl "$RUNNER_TEMP"/wheels-2/*musllinux*.whl
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'

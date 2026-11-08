@@ -644,7 +644,15 @@ All notable changes to Flightdeck are documented here.
   Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`). The
   ingestion API's token validation and revocation listener are the first
   store on the boundary: they run on either backend and learn of a
-  revoked token through the Bus.
+  revoked token through the Bus. The workers follow: every write of the
+  event pipeline (agents, sessions, events and their content, the
+  reconciler, the orphan reaper, the model-id backfill) and the
+  processor's reads run on either backend, with the JSON mutations
+  (the framework and MCP server appends) behaving identically on both,
+  and the fleet notifications go through the Bus. The workers apply the
+  embedded migrations at start, so `FLIGHTDECK_MIGRATIONS_DIR` and the
+  compose mount of the migrations directory are gone; every id the
+  workers store is canonical lower-case UUID text.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

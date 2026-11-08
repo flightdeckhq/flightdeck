@@ -50,7 +50,7 @@ const DefaultOrphanDeleteThreshold = 30 * 24 * time.Hour
 // The four denormalised columns on the agents table reconciled by
 // ReconcileAgents are ``total_sessions``, ``total_tokens``,
 // ``first_seen_at``, and ``last_seen_at``. The worker's write paths
-// (workers/internal/writer/postgres.go) touch these on event
+// (workers/internal/writer/writer.go) touch these on event
 // arrivals but carry no decrement / compensate path, so drift can
 // accumulate across session deletes, failed event processing, and
 // pre-migration data. Any addition to the reconciled-column set

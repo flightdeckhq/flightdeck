@@ -135,6 +135,10 @@ def init_sensor(
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
+    These are the sensor's own ``init()`` defaults; the helper keeps its
+    copy (``INGESTION_URL`` / ``API_TOKEN``) because ``assert_event_landed``
+    and the other HTTP helpers in this module need the same values for
+    their own requests, and passes them explicitly so the two never drift.
 
     The sensor's ``init()`` normalises a plugin-style
     ``FLIGHTDECK_SERVER`` (no ``/ingest`` suffix) on its own, so this

@@ -75,5 +75,11 @@ class MCPPolicyBlocked(Exception):  # noqa: N818
         super().__init__(message)
 
 
-class ConfigurationError(Exception):
-    """Raised when init() receives invalid arguments."""
+class ConfigurationError(ValueError):
+    """Raised when init() receives invalid arguments.
+
+    A ``ValueError`` so callers that validate configuration generically
+    (``except ValueError``) catch it alongside the egress URL checks,
+    which raise ``ValueError`` directly; ``except ConfigurationError``
+    keeps working unchanged.
+    """

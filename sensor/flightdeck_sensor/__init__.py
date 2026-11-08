@@ -18,6 +18,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.parse
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,7 @@ from flightdeck_sensor.core.types import (
 from flightdeck_sensor.interceptor.langgraph import (
     set_agent_node_pattern as _set_langgraph_agent_node_pattern,
 )
+from flightdeck_sensor.interceptor.platform import is_loopback_host
 from flightdeck_sensor.provider import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
@@ -369,8 +371,8 @@ def directive(
 
 
 def init(
-    server: str,
-    token: str,
+    server: str | None = None,
+    token: str | None = None,
     api_url: str | None = None,
     capture_prompts: bool = False,
     quiet: bool = False,
@@ -385,6 +387,23 @@ def init(
     billing_mode: str | None = None,
 ) -> None:
     """Initialize the sensor and start the run.
+
+    ``server`` and ``token`` each resolve as: the kwarg when passed,
+    else the ``FLIGHTDECK_SERVER`` / ``FLIGHTDECK_TOKEN`` environment
+    variable, else the default (the environment wins over a passed
+    kwarg, like every other knob here; see the override warning
+    below). ``server`` defaults to ``http://localhost:4000/ingest``,
+    where the ``flightdeck`` binary and the dev compose stack listen.
+    ``token`` defaults to the dev seed ``tok_dev`` **only** when the
+    server was defaulted as well and that default's host is loopback;
+    init then logs one WARNING naming the token in use and how to set
+    ``FLIGHTDECK_TOKEN``. A server supplied by kwarg or environment
+    without a token raises :class:`ConfigurationError` (a
+    ``ValueError``) naming both variables, whatever its host: the
+    sensor never sends ``tok_dev`` to a server the caller chose. The
+    control plane accepts ``tok_dev`` only on loopback (the binary) or
+    with ``ENVIRONMENT=dev`` (compose), so ``init()`` with no
+    arguments works on one machine and fails closed everywhere else.
 
     ``token`` here is a Flightdeck **access token** (an ``ftd_...``
     opaque string minted via ``POST /v1/access-tokens``, or the
@@ -436,6 +455,8 @@ def init(
 
     Reads from environment (overrides parameters):
 
+    - ``FLIGHTDECK_SERVER`` -- ingestion base URL (overrides *server*)
+    - ``FLIGHTDECK_TOKEN`` -- access token (overrides *token*)
     - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
     - ``FLIGHTDECK_SESSION_ID`` -- run id hint (overrides *session_id*)
     - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*;
@@ -502,12 +523,47 @@ def init(
                 server,
                 _env.ENV_SERVER,
             )
-        resolved_server = os.environ.get(_env.ENV_SERVER, server)
-        resolved_token = os.environ.get(_env.ENV_TOKEN, token)
+        # ``None`` means "not supplied" for both values; an empty string
+        # is a supplied-but-blank value and stays an error, so a shell
+        # with ``FLIGHTDECK_TOKEN=""`` cannot fall through to the dev
+        # token.
+        resolved_server = env_server if env_server is not None else server
+        server_defaulted = resolved_server is None
+        if server_defaulted:
+            resolved_server = _env.DEFAULT_SERVER
         if not resolved_server:
-            raise ConfigurationError("server URL is required")
+            raise ConfigurationError(
+                f"server URL is required: pass server= or set {_env.ENV_SERVER}"
+            )
+
+        env_token = os.environ.get(_env.ENV_TOKEN)
+        resolved_token = env_token if env_token is not None else token
+        if resolved_token is None and server_defaulted and _is_loopback_server(resolved_server):
+            # The dev token is the fallback for the default server only.
+            # A server the caller chose, loopback or not, never gets it:
+            # a reverse tunnel on localhost is still someone else's
+            # control plane, and the caller who picked the server must
+            # pick the token. The control plane applies the same gate
+            # and refuses tok_dev unless it is bound to loopback.
+            resolved_token = _env.DEFAULT_DEV_TOKEN
+            _log.warning(
+                "No %s set: using the local dev token %r for %s. Set %s (or pass "
+                "token=) to use an access token.",
+                _env.ENV_TOKEN,
+                _env.DEFAULT_DEV_TOKEN,
+                resolved_server,
+                _env.ENV_TOKEN,
+            )
         if not resolved_token:
-            raise ConfigurationError("token is required")
+            server_source = (
+                f"the {_env.ENV_SERVER} environment variable"
+                if env_server is not None
+                else "the server= kwarg"
+            )
+            raise ConfigurationError(
+                f"token is required for {resolved_server} (from {server_source}): "
+                f"pass token= or set {_env.ENV_TOKEN}"
+            )
 
         # Resolve the plaintext-transport opt-in. Env wins over the
         # kwarg (same precedence as every other flag); default False.
@@ -984,6 +1040,18 @@ def _is_valid_uuid(value: str) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
+
+
+def _is_loopback_server(url: str) -> bool:
+    """Whether *url* names this machine: ``localhost`` (or a name under
+    it), ``127.0.0.0/8`` or ``::1`` (``[::1]`` in URL form). Private
+    network addresses are not loopback: a control plane there belongs
+    to someone, and the dev token must not be sent to it by default.
+    A URL with no host is not loopback."""
+    host = urllib.parse.urlsplit(url).hostname
+    if not host:
+        return False
+    return is_loopback_host(host)
 
 
 def _env_bool(key: str, default: bool) -> bool:

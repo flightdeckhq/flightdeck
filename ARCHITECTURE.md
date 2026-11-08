@@ -638,8 +638,8 @@ a sidecar container or system service.
 
 ```python
 def init(
-    server: str,
-    token: str,
+    server: str | None = None,       # default http://localhost:4000/ingest
+    token: str | None = None,        # default tok_dev, loopback server only
     api_url: str | None = None,      # control-plane base URL
     capture_prompts: bool = False,   # opt-in
     quiet: bool = False,
@@ -650,6 +650,22 @@ def init(
 ) -> None:
     """
     Initialize the sensor.
+
+    server and token each resolve as: the kwarg if passed, else the
+    FLIGHTDECK_SERVER / FLIGHTDECK_TOKEN environment variable, else the
+    default. The environment wins over a passed kwarg, as for every other
+    knob; init warns when it overrides a different server. The server
+    default is http://localhost:4000/ingest, the local flightdeck binary
+    or dev stack. The token default is the dev seed token tok_dev, and it
+    applies only when neither the server nor the token was supplied by
+    kwarg or environment and the default server's host is loopback
+    (localhost, 127.0.0.1, ::1); init then logs one WARNING naming the
+    token in use and FLIGHTDECK_TOKEN. A server supplied without a token
+    raises ConfigurationError (a ValueError) naming both environment
+    variables, whatever its host: the sensor never sends tok_dev to a
+    server the caller chose. The flightdeck binary accepts tok_dev only
+    when bound to loopback, so the default pair works out of the box on
+    one machine and nowhere else.
 
     api_url is the base URL for control-plane calls (directive registration,
     sync, policy prefetch). Derived from server by replacing "/ingest" with
@@ -666,6 +682,8 @@ def init(
     to the prior row.
 
     Reads from environment (override init params):
+        FLIGHTDECK_SERVER             -- ingestion base URL
+        FLIGHTDECK_TOKEN              -- access token
         FLIGHTDECK_API_URL            -- control-plane base URL
         FLIGHTDECK_SESSION_ID         -- session-id hint
         AGENT_FLAVOR / FLIGHTDECK_AGENT_NAME -- persistent agent label
@@ -10369,8 +10387,8 @@ Constraint #4).
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_SERVER` | Ingestion base URL |
-| `FLIGHTDECK_TOKEN` | Access token |
+| `FLIGHTDECK_SERVER` | Ingestion base URL; overrides the `server=` kwarg; default `http://localhost:4000/ingest` |
+| `FLIGHTDECK_TOKEN` | Access token; overrides the `token=` kwarg; defaults to `tok_dev` only when the server is also defaulted (see Sensor, Public API) |
 | `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
 | `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture |

@@ -18,3 +18,5 @@ tests
 docs
 helm
 assets
+# The dev stack's binary, data dir and log (scripts/dev-stack.sh).
+.dev

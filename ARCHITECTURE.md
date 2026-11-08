@@ -222,7 +222,9 @@ flightdeck/
 ├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
-├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
+├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/, llms.txt)
+│   ├── opentelemetry.md        # Claude Code's own telemetry and the agent frameworks' GenAI spans into Flightdeck
+│   └── mcp-protection-policy.md  # The operator's view of the MCP Protection Policy
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
 │   ├── Makefile

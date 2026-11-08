@@ -31,6 +31,17 @@ All notable changes to Flightdeck are documented here.
   after pulling: the compose project and its volumes change shape.
   Every environment variable the services read keeps its name under
   the binary.
+- **The README is the user's page.** It is the one-command install and
+  `flightdeck`, pointing the plugin and the sensor at it, the coverage
+  matrices, the features and self-hosting (`--domain`, `--database-url`,
+  the image, Compose, Helm), measured by `scripts/readme-budget.sh` in
+  CI (Quickstart at most 3 command lines, Self-hosting 6, 20 in all,
+  300 lines). The reference material moved as it was: the two
+  OpenTelemetry sections to `docs/opentelemetry.md`, the MCP Protection
+  Policy to `docs/mcp-protection-policy.md`, Identity and the Sensor
+  reference to `sensor/README.md`; the contributor steps (clone, `make
+  dev`, the playground, the sensor and the plugin from source) to
+  CONTRIBUTING.md.
 
 ### Added
 

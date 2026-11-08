@@ -362,7 +362,7 @@ flightdeck/
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
-│   │   ├── auth/revocation.go  # LISTEN for revoked tokens: evicts them from the validation cache
+│   │   ├── auth/revocation.go  # Subscribes to revoked tokens on the storage Bus: evicts them from the validation cache
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
 │   │   ├── nats/stream.go      # Creates the FLIGHTDECK stream or updates its limits and replicas in place
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
@@ -4956,7 +4956,18 @@ what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
 SQL fragments are never templated beyond the dialect helpers. A store
 outside the boundary holds a pgx pool and runs on Postgres only
-(CLAUDE.md rule 35 lists the store packages).
+(CLAUDE.md rule 35 lists the store packages). On SQLite the ingestion
+API validates tokens and drops revoked ones through the boundary; its
+directive lookups, session attachment and OTLP staging are outside it
+and return an error there (an event is still accepted, with no
+directive and `attached: false`; OTLP requests fail), and the GenAI
+assembler does not run. `storage.Open` pings; a service opens its
+database with `storage.OpenRetry`, which retries with a doubling delay
+for a bounded budget (ingestion: 60 s) so a database that starts a
+moment after the service does not end the process. The Postgres pool is
+capped at max(4, NumCPU) connections, open and idle, idle ones closed
+after 30 minutes; the SQLite writer is one connection and the reader
+pool eight.
 
 **The common subset** both engines accept, written as is: `$1, $2, …`
 placeholders (SQLite binds `$NNN` by ordinal), `CAST(x AS TEXT)` (the
@@ -5806,13 +5817,19 @@ clients do not hit Postgres on every request. Unknown tokens are never
 cached, so a newly created token works at once.
 
 Revocation reaches every replica of both services as soon as the delete
-commits. Deleting an `access_tokens` row, through
+commits. On Postgres, deleting an `access_tokens` row, through
 `DELETE /v1/access-tokens/:id` or directly in SQL, fires the
 `access_tokens_notify_revoked` trigger, which sends the token id on the
 `flightdeck_access_token_revoked` NOTIFY channel when the transaction
-commits. Each service process holds a dedicated LISTEN connection (outside
-its request pool) on that channel and drops the cached validations for
-that id when the notification arrives. Every invalidation also bumps a
+commits; on SQLite the store that deletes the row publishes the id on
+the storage Bus after commit. The ingestion API subscribes to that
+channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
+LISTEN connection on Postgres, outside its request pool); the query API
+holds a LISTEN connection of its own. Each drops the cached validations
+for that id when the notification arrives. The SQLite bus is in-process,
+so a token deleted by a process other than the one serving the request
+is refused only once its cached validation expires, after at most 60
+seconds. Every invalidation also bumps a
 generation counter; a validation that was already querying the database
 when the revocation arrived caches its result only if the counter has not
 moved, so a lookup that read the row just before the delete cannot put

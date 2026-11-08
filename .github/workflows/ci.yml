@@ -290,6 +290,14 @@ jobs:
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04
+    # The service modules are built one at a time by their Dockerfiles
+    # and by the dev compose containers, where the root go.work does not
+    # exist. With the workspace on, go.work.sum satisfies a module whose
+    # own go.sum is incomplete and the gap only shows when a container
+    # boots. Turning the workspace off here makes this job see what the
+    # containers see; the root module uses its replace directives.
+    env:
+      GOWORK: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 

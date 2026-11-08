@@ -98,6 +98,68 @@ type Dialect interface {
 	// Returning is a RETURNING clause over cols. Identical on both
 	// backends.
 	Returning(cols ...string) string
+
+	// Percentile is the continuous percentile aggregate of expr at
+	// fraction (a SQL numeric literal such as "0.95"): PERCENTILE_CONT
+	// WITHIN GROUP on Postgres, the percentile_cont function the
+	// storage driver registers on SQLite, with the same interpolation
+	// and NULL handling. A FILTER clause has no SQLite spelling: pass a
+	// CASE that yields NULL for the rows to leave out.
+	Percentile(fraction, expr string) string
+
+	// SecondsBetween is the signed number of seconds from b to a (a - b)
+	// as a floating-point expression, exact to the millisecond, the
+	// precision SQLite timestamps carry.
+	SecondsBetween(a, b string) string
+
+	// DateOf is the calendar date (UTC) of the timestamp expression ts;
+	// on Postgres a date, on SQLite 'YYYY-MM-DD' text. Both scan
+	// through Time.
+	DateOf(ts string) string
+
+	// JSONTypeOf is the JSON type name of the value at path of col (or
+	// of col itself with no path), in Postgres' vocabulary on both
+	// engines: object, array, string, number, boolean, null; NULL when
+	// the path is absent.
+	JSONTypeOf(col string, path ...string) string
+
+	// JSONIsTrue is a boolean expression: the value at path is the JSON
+	// boolean true or the string "true". NULL when the path is absent.
+	JSONIsTrue(col string, path ...string) string
+
+	// JSONBoolText is the value at path as text, with a JSON boolean
+	// rendered as 'true' / 'false' on both engines (JSONText on SQLite
+	// yields 1 / 0 for booleans). For keys that hold a boolean or a
+	// string; the expression is not indexable on SQLite.
+	JSONBoolText(col string, path ...string) string
+
+	// JSONNumber is the value at path as a number (NULL when absent),
+	// for keys that hold a JSON number.
+	JSONNumber(col string, path ...string) string
+
+	// JSONArray is the JSON array at path of col, or an empty array when
+	// the path is absent or holds a non-array, so JSONArrayElements over
+	// it never fails on a malformed document.
+	JSONArray(col string, path ...string) string
+
+	// JSONArrayElements is a FROM item that yields one row per element
+	// of the JSON array expression arrayExpr, as alias with the element
+	// in alias.value (a JSON value on both engines: read a string
+	// element with JSONElementText, an object's key with
+	// JSONText(alias + ".value", key)). It may reference a table that
+	// precedes it in the FROM clause on both engines, in a cross join or
+	// on the right of a LEFT JOIN ... ON TRUE.
+	JSONArrayElements(arrayExpr, alias string) string
+
+	// JSONElementText is a string element of JSONArrayElements' alias
+	// as text.
+	JSONElementText(alias string) string
+
+	// Least and Greatest are the smaller and the larger of two
+	// non-NULL expressions (LEAST / GREATEST on Postgres, the scalar
+	// MIN / MAX on SQLite).
+	Least(a, b string) string
+	Greatest(a, b string) string
 }
 
 // DialectFor returns the dialect of a backend.
@@ -195,6 +257,61 @@ func (postgresDialect) JSONText(col string, path ...string) string {
 	return b.String()
 }
 
+// jsonbPath renders col->'a'->'b' (a jsonb value, not text).
+func jsonbPath(col string, path []string) string {
+	var b strings.Builder
+	b.WriteString(col)
+	for _, key := range path {
+		b.WriteString("->")
+		b.WriteString(sqlQuote(key))
+	}
+	return b.String()
+}
+
+func (postgresDialect) Percentile(fraction, expr string) string {
+	return fmt.Sprintf("PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY %s)", fraction, expr)
+}
+
+func (postgresDialect) SecondsBetween(a, b string) string {
+	return fmt.Sprintf("EXTRACT(EPOCH FROM (%s - %s))", a, b)
+}
+
+func (postgresDialect) DateOf(ts string) string {
+	return fmt.Sprintf("CAST(%s AS DATE)", ts)
+}
+
+func (postgresDialect) JSONTypeOf(col string, path ...string) string {
+	return fmt.Sprintf("jsonb_typeof(%s)", jsonbPath(col, path))
+}
+
+func (d postgresDialect) JSONIsTrue(col string, path ...string) string {
+	return fmt.Sprintf("(%s = 'true')", d.JSONText(col, path...))
+}
+
+func (d postgresDialect) JSONBoolText(col string, path ...string) string {
+	return d.JSONText(col, path...)
+}
+
+func (d postgresDialect) JSONNumber(col string, path ...string) string {
+	return fmt.Sprintf("CAST(%s AS NUMERIC)", d.JSONText(col, path...))
+}
+
+func (postgresDialect) JSONArray(col string, path ...string) string {
+	p := jsonbPath(col, path)
+	return fmt.Sprintf("(CASE WHEN jsonb_typeof(%s) = 'array' THEN %s ELSE '[]'::jsonb END)", p, p)
+}
+
+func (postgresDialect) JSONArrayElements(arrayExpr, alias string) string {
+	return fmt.Sprintf("jsonb_array_elements(%s) AS %s(value)", arrayExpr, alias)
+}
+
+func (postgresDialect) JSONElementText(alias string) string {
+	return fmt.Sprintf("(%s.value #>> '{}')", alias)
+}
+
+func (postgresDialect) Least(a, b string) string    { return fmt.Sprintf("LEAST(%s, %s)", a, b) }
+func (postgresDialect) Greatest(a, b string) string { return fmt.Sprintf("GREATEST(%s, %s)", a, b) }
+
 // --- SQLite -----------------------------------------------------------
 
 type sqliteDialect struct{ commonDialect }
@@ -255,14 +372,84 @@ func (sqliteDialect) JSONText(col string, path ...string) string {
 	if len(path) == 0 {
 		return fmt.Sprintf("json(%s)", col)
 	}
+	return fmt.Sprintf("json_extract(%s, %s)", col, jsonPathLiteral(path))
+}
+
+// jsonPathLiteral renders path as the quoted '$.a.b' literal.
+func jsonPathLiteral(path []string) string {
 	var p strings.Builder
 	p.WriteString("$")
 	for _, key := range path {
 		p.WriteString(".")
 		p.WriteString(key)
 	}
-	return fmt.Sprintf("json_extract(%s, %s)", col, sqlQuote(p.String()))
+	return sqlQuote(p.String())
 }
+
+// sqliteJSONType is json_type(col, '$.path') (json_type(col) with no
+// path), in SQLite's vocabulary.
+func sqliteJSONType(col string, path []string) string {
+	if len(path) == 0 {
+		return fmt.Sprintf("json_type(%s)", col)
+	}
+	return fmt.Sprintf("json_type(%s, %s)", col, jsonPathLiteral(path))
+}
+
+func (sqliteDialect) Percentile(fraction, expr string) string {
+	return fmt.Sprintf("percentile_cont(%s, %s)", expr, fraction)
+}
+
+// SecondsBetween: julianday is a double with about a tenth of a
+// millisecond of precision at today's dates, and both operands carry
+// milliseconds, so rounding to the millisecond recovers the exact
+// difference.
+func (sqliteDialect) SecondsBetween(a, b string) string {
+	return fmt.Sprintf("ROUND((julianday(%s) - julianday(%s)) * 86400.0, 3)", a, b)
+}
+
+func (sqliteDialect) DateOf(ts string) string {
+	return fmt.Sprintf("date(%s)", ts)
+}
+
+// JSONTypeOf maps SQLite's type names (true, false, integer, real, text)
+// onto Postgres' (boolean, number, string).
+func (sqliteDialect) JSONTypeOf(col string, path ...string) string {
+	t := sqliteJSONType(col, path)
+	return fmt.Sprintf("(CASE %s WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean'"+
+		" WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' ELSE %s END)", t, t)
+}
+
+func (d sqliteDialect) JSONIsTrue(col string, path ...string) string {
+	return fmt.Sprintf("(%s = 'true' OR %s = 'true')", sqliteJSONType(col, path), d.JSONText(col, path...))
+}
+
+func (d sqliteDialect) JSONBoolText(col string, path ...string) string {
+	return fmt.Sprintf("(CASE %s WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE CAST(%s AS TEXT) END)",
+		sqliteJSONType(col, path), d.JSONText(col, path...))
+}
+
+func (d sqliteDialect) JSONNumber(col string, path ...string) string {
+	return fmt.Sprintf("CAST(%s AS NUMERIC)", d.JSONText(col, path...))
+}
+
+func (d sqliteDialect) JSONArray(col string, path ...string) string {
+	value := col
+	if len(path) > 0 {
+		value = d.JSONText(col, path...)
+	}
+	return fmt.Sprintf("(CASE WHEN %s = 'array' THEN %s ELSE '[]' END)", sqliteJSONType(col, path), value)
+}
+
+func (sqliteDialect) JSONArrayElements(arrayExpr, alias string) string {
+	return fmt.Sprintf("json_each(%s) AS %s", arrayExpr, alias)
+}
+
+func (sqliteDialect) JSONElementText(alias string) string {
+	return fmt.Sprintf("%s.value", alias)
+}
+
+func (sqliteDialect) Least(a, b string) string    { return fmt.Sprintf("MIN(%s, %s)", a, b) }
+func (sqliteDialect) Greatest(a, b string) string { return fmt.Sprintf("MAX(%s, %s)", a, b) }
 
 // sqlQuote renders s as a single-quoted SQL string literal. The helpers
 // take key names from code, never from user input; the quoting keeps a

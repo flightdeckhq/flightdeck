@@ -76,8 +76,11 @@ checksum:
 # checksums.txt.sigstore.json is uploaded beside it. install.sh and
 # install.ps1 verify it when cosign is installed:
 #   cosign verify-blob --bundle checksums.txt.sigstore.json \
-#     --certificate-identity-regexp '^https://github.com/flightdeckhq/flightdeck/' \
+#     --certificate-identity-regexp \
+#       '^https://github\.com/flightdeckhq/flightdeck/\.github/workflows/.+@refs/tags/v.+$' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+# The identity carries refs/tags, so only a tag push produces a
+# signature the installers accept.
 # Needs cosign on the release runner and id-token: write on the job; a
 # local snapshot passes --skip=sign (make release-snapshot).
 signs:

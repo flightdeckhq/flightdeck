@@ -82,10 +82,24 @@ try {
         Write-Host 'Signature of checksums.txt not checked: cosign is not installed (see the header of install.ps1)'
     } else {
         Invoke-WebRequest -Uri "$base/checksums.txt.sigstore.json" -OutFile (Join-Path $tmp 'checksums.txt.sigstore.json') -UseBasicParsing
-        & cosign verify-blob --bundle (Join-Path $tmp 'checksums.txt.sigstore.json') `
-            --certificate-identity-regexp $signerIdentityRe --certificate-oidc-issuer $signerIssuer `
-            (Join-Path $tmp 'checksums.txt') 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'install.ps1: checksums.txt is not signed by the flightdeckhq/flightdeck release workflow; refusing to install' }
+        # cosign reports "Verified OK" on stderr; under
+        # ErrorActionPreference=Stop, Windows PowerShell 5.1 turns any
+        # stderr line of a native command into a terminating error, so the
+        # preference is relaxed around the call and its exit code decides.
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $cosignOutput = & cosign verify-blob --bundle (Join-Path $tmp 'checksums.txt.sigstore.json') `
+                --certificate-identity-regexp $signerIdentityRe --certificate-oidc-issuer $signerIssuer `
+                (Join-Path $tmp 'checksums.txt') 2>&1
+            $cosignExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $savedPreference
+        }
+        if ($cosignExit -ne 0) {
+            Write-Host ($cosignOutput | Out-String)
+            throw 'install.ps1: checksums.txt is not signed by the flightdeckhq/flightdeck release workflow; refusing to install'
+        }
         Write-Host 'Signature of checksums.txt verified (Sigstore)'
     }
 

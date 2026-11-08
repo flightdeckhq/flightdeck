@@ -13,11 +13,13 @@ All notable changes to Flightdeck are documented here.
   the machine, verifies it against the release's `checksums.txt` and
   installs it without sudo; `brew install flightdeckhq/tap/flightdeck`
   installs it from the new Homebrew tap, where `brew services start
-  flightdeck` keeps it running; and `docker run -p 4000:4000 -v
-  flightdeck-data:/data flightdeckhq/flightdeck` runs the new all-in-one
-  image (distroless, non-root, amd64 and arm64), whose first start prints
-  the dashboard token in `docker logs`. `flightdeck --version` prints the
-  release the binary came from.
+  flightdeck` keeps it running; and `docker run -p 127.0.0.1:4000:4000
+  -v flightdeck-data:/data flightdeckhq/flightdeck` runs the new
+  all-in-one image (distroless, non-root, amd64 and arm64), whose first
+  start prints the dashboard token in `docker logs`. `flightdeck
+  --version` prints the release the binary came from, and the release's
+  `checksums.txt` is signed with Sigstore: both installers verify the
+  signature when `cosign` is installed.
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
   a child session for each agent that runs and for each agent used as a

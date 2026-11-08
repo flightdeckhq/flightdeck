@@ -23,6 +23,17 @@ ENV_SERVER = "FLIGHTDECK_SERVER"
 ENV_API_URL = "FLIGHTDECK_API_URL"
 ENV_TOKEN = "FLIGHTDECK_TOKEN"
 
+# Where ``init()`` points when neither the kwarg nor ``ENV_SERVER`` names
+# a server: the ``flightdeck`` binary and the dev compose stack both
+# listen on :4000 and serve ingestion under ``/ingest``.
+DEFAULT_SERVER = "http://localhost:4000/ingest"
+
+# The seed token the control plane accepts only when it is bound to
+# loopback (the binary) or runs with ``ENVIRONMENT=dev`` (the compose
+# stack). ``init()`` falls back to it only when the server was
+# defaulted as well and its host is loopback; see ``init``.
+DEFAULT_DEV_TOKEN = "tok_dev"
+
 # ----------------------------------------------------------------
 # Identity
 # ----------------------------------------------------------------

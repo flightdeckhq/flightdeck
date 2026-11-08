@@ -2,6 +2,30 @@
 
 In-process agent observability sensor for [Flightdeck](https://github.com/flightdeckhq/flightdeck).
 
+## Quickstart
+
+```bash
+pip install flightdeck-sensor
+```
+
+```python
+import flightdeck_sensor
+
+flightdeck_sensor.init()
+flightdeck_sensor.patch()
+```
+
+`init()` resolves `server` and `token` each as: the kwarg, else the
+`FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` environment variable, else the
+default. The server default is `http://localhost:4000/ingest`, where the
+`flightdeck` binary and the dev compose stack listen. The token default
+is the dev seed `tok_dev`, used only when the server was defaulted as
+well and its host is loopback; `init()` logs one WARNING when it is in
+use. A server supplied without a token raises `ConfigurationError` (a
+`ValueError`) naming both variables, whatever its host: the sensor never
+sends `tok_dev` to a server you chose. The environment wins over a passed
+kwarg, as for every other `init()` knob.
+
 ## Local development venv
 
 Flightdeck pins **Python 3.12** for local development. The sensor

@@ -78,10 +78,7 @@ pip install flightdeck-sensor
 ```python
 import flightdeck_sensor
 
-flightdeck_sensor.init(
-    server="http://localhost:4000/ingest",
-    token="tok_dev",
-)
+flightdeck_sensor.init()
 flightdeck_sensor.patch()
 
 # Your existing agent code. Nothing changes.
@@ -90,7 +87,7 @@ client = anthropic.Anthropic()
 client.messages.create(model="claude-sonnet-4-6", ...)
 ```
 
-The agent shows up in the fleet view within seconds.
+The agent shows up in the fleet view within seconds. With no arguments `init()` talks to the local stack at `http://localhost:4000/ingest` with the dev token `tok_dev` and logs one warning saying so. For any other stack set `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` (or pass `server=` and `token=`); a server given without a token is an error, the dev token is never sent to a server you chose.
 
 To run the sensor from source instead of PyPI: `pip install -e sensor/` from the repo root.
 
@@ -395,8 +392,8 @@ Call `patch()` before any framework or user code constructs a client. In practic
 
 | Variable                        | Purpose                                                         |
 |---------------------------------|-----------------------------------------------------------------|
-| `FLIGHTDECK_SERVER`             | Ingestion base URL. Overrides the `server=` kwarg.              |
-| `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg.                     |
+| `FLIGHTDECK_SERVER`             | Ingestion base URL. Overrides the `server=` kwarg. Default `http://localhost:4000/ingest`. |
+| `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg. Defaults to `tok_dev` only when the server is defaulted too. |
 | `FLIGHTDECK_API_URL`            | Control-plane base URL. Derived from `FLIGHTDECK_SERVER` if unset. |
 | `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |
 | `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture.                          |

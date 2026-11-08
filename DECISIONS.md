@@ -817,3 +817,25 @@ two from drifting.
 **Rejected alternative:** SQLite only (loses the Helm scale path);
 embedded Postgres (a 40 MB download and a child process to manage); a
 query builder or ORM (hides the SQL the stores are tuned on).
+
+## D264 -- The sensor defaults to the local control plane and its dev token, on loopback only
+
+**Date:** 2026-11-08
+**Decision:** `flightdeck_sensor.init()` takes no required arguments.
+`server` resolves kwarg, then `FLIGHTDECK_SERVER`, then
+`http://localhost:4000/ingest`; `token` resolves kwarg, then
+`FLIGHTDECK_TOKEN`, then `tok_dev`, and the token default applies only
+when the server was defaulted too and its host is loopback. init logs one
+WARNING when the dev token is in use. A server given by kwarg or
+environment without a token raises `ConfigurationError` (a `ValueError`)
+naming both variables; the sensor never sends `tok_dev` to a server the
+caller chose.
+**Why:** the quickstart is `pip install flightdeck-sensor`, `init()`,
+`patch()` against the `flightdeck` binary, which accepts `tok_dev` only
+when bound to loopback; the sensor's gate mirrors the server's, so the
+pair works on one machine and nowhere else.
+**Rejected alternative:** default the token whenever the server is
+loopback (a remote reverse tunnel on `localhost` would receive `tok_dev`
+silently; the caller chose that server and must choose the token); keep
+both arguments required (the quickstart stays at two values the user has
+to look up for a stack that already prints them).

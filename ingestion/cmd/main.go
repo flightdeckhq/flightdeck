@@ -4,185 +4,32 @@
 // @host        localhost:8080
 // @BasePath    /
 
-// Entry point for the Flightdeck ingestion API.
-// Receives sensor events via HTTP, publishes to NATS JetStream.
+// Entry point for the standalone Flightdeck ingestion API: reads the
+// service's environment and runs ingestion/app until SIGTERM or SIGINT.
 package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/assembler"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/metrics"
-	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
-	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
-	"github.com/flightdeckhq/flightdeck/storage"
-	"github.com/nats-io/nats.go"
+	"github.com/flightdeckhq/flightdeck/ingestion/app"
 )
 
-// databaseConnectBudget is how long ingestion keeps trying to reach its
-// database at boot before exiting. storage.Open pings, so a database
-// that is a moment behind the service (compose starts both at once; a
-// Kubernetes rollout restarts them independently) would otherwise end
-// the process at once. Sixty seconds outlasts the compose Postgres
-// healthcheck's worst case (five tries, five seconds apart, plus the
-// start) while still failing a misconfigured URL within the first
-// minute of a deploy.
-const databaseConnectBudget = 60 * time.Second
-
-// directiveAdapter wraps directive.Store to satisfy handlers.DirectiveLookup.
-type directiveAdapter struct {
-	store *directive.Store
-}
-
-func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) (*handlers.DirectiveResponse, error) {
-	d, err := a.store.LookupPending(ctx, sessionID)
-	if err != nil || d == nil {
-		return nil, err
-	}
-	// Payload is the JSONB blob for action="custom" directives
-	// (directive_name / fingerprint / parameters). Project it through
-	// so the sensor's DirectivePayloadSchema can validate and dispatch
-	// to the registered handler. Dropping it here would leave the
-	// sensor unable to dispatch the directive.
-	return &handlers.DirectiveResponse{
-		ID:            d.ID,
-		Action:        d.Action,
-		Reason:        d.Reason,
-		DegradeTo:     d.DegradeTo,
-		GracePeriodMs: d.GracePeriodMs,
-		Payload:       d.Payload,
-	}, nil
-}
-
 func main() {
-	cfg := config.Load()
-
-	// The database, through the storage boundary: SQLite or Postgres,
-	// shared by every store below.
-	openCtx, cancelOpen := context.WithTimeout(context.Background(), databaseConnectBudget)
-	db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
-	cancelOpen()
+	cfg, err := app.LoadEnv()
 	if err != nil {
-		slog.Error("database connection failed", "err", err)
-		os.Exit(1)
-	}
-	defer func() { _ = db.Close() }()
-	bus := storage.NewBus(db)
-
-	// NATS
-	nc, err := nats.Connect(cfg.NatsURL)
-	if err != nil {
-		slog.Error("NATS connection failed", "err", err)
-		os.Exit(1)
-	}
-	defer nc.Close()
-
-	publisher, err := inats.NewPublisher(nc, inats.StreamSettings{
-		MaxAge:   cfg.StreamMaxAge,
-		MaxBytes: cfg.StreamMaxBytes,
-		Replicas: cfg.StreamReplicas,
-	})
-	if err != nil {
-		slog.Error("NATS publisher setup failed", "err", err)
+		slog.Error("configuration invalid", "err", err)
 		os.Exit(1)
 	}
 
-	validator := auth.NewValidator(db)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 
-	// runCtx lives until shutdown begins; background loops stop with it.
-	runCtx, stopRun := context.WithCancel(context.Background())
-	defer stopRun()
-	// Drop cached validations of a token as soon as its row is deleted.
-	go validator.ListenRevocations(runCtx, bus)
-	dirStore := &directiveAdapter{store: directive.NewStore(db)}
-	sessAttacher := session.NewStore(db)
-
-	addr := fmt.Sprintf(":%s", cfg.Port)
-	// OTLP resources are routed by scope: Claude Code through its
-	// dialect (which reads sessions through the same store that runs the
-	// attachment check), the recorded GenAI frameworks to the staging
-	// store the assembler drains, anything else counted as rejected.
-	stagingStore := otlpstage.NewStore(db)
-	otlpDialect := handlers.NewOTLPRouter(handlers.NewClaudeCodeDialect(sessAttacher), stagingStore)
-	durations := metrics.NewRequestDurations()
-	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute, durations)
-
-	// The OTLP GenAI assembler: every process claims due staged traces
-	// and publishes them through the receiver's publish path. It stops
-	// claiming when runCtx ends, before the server shuts down.
-	genaiAssembler := assembler.New(
-		stagingStore,
-		handlers.NewOTLPPublisher(publisher, sessAttacher),
-		assembler.WithInterval(cfg.GenAIClaimInterval),
-	)
-	assemblerDone := make(chan struct{})
-	go func() {
-		defer close(assemblerDone)
-		genaiAssembler.Run(runCtx)
-	}()
-
-	// Start server
-	go func() {
-		slog.Info("ingestion API starting", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	// Metrics listener. A failure to bind is logged, not fatal: the
-	// histogram is observability, and the API must keep serving events
-	// because a port is taken.
-	var metricsSrv *http.Server
-	if cfg.MetricsPort > 0 {
-		metricsSrv = metrics.NewServer(fmt.Sprintf(":%d", cfg.MetricsPort), durations)
-		go func() {
-			slog.Info("metrics listener starting", "addr", metricsSrv.Addr)
-			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("metrics listener failed", "err", err)
-			}
-		}()
+	if err := app.Run(ctx, cfg, app.Deps{}); err != nil {
+		slog.Error("ingestion API failed", "err", err)
+		os.Exit(1)
 	}
-
-	// Graceful shutdown on SIGTERM/SIGINT
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
-	<-quit
-
-	slog.Info("shutting down ingestion API")
-	stopRun()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
-	defer cancel()
-
-	// Let the assembly in progress finish its chunk and release its
-	// lease before the database and bus connections close.
-	select {
-	case <-assemblerDone:
-	case <-ctx.Done():
-		slog.Warn("genai assembler did not stop before the shutdown timeout; its lease lapses")
-	}
-
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("shutdown error", "err", err)
-	}
-	if metricsSrv != nil {
-		if err := metricsSrv.Shutdown(ctx); err != nil {
-			slog.Warn("metrics listener shutdown", "err", err)
-		}
-	}
-	slog.Info("ingestion API stopped")
 }

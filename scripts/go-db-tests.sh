@@ -65,8 +65,10 @@ MODULES=(api ingestion storage workers)
 # environment, as <module>/<package dir> (<module> alone for a module's
 # root package). All of them run on Postgres.
 DB_PACKAGES=(
+  api/app
   api/internal/auth
   api/internal/store
+  ingestion/app
   ingestion/internal/assembler
   ingestion/internal/auth
   ingestion/internal/directive
@@ -74,6 +76,7 @@ DB_PACKAGES=(
   ingestion/internal/otlpstage
   ingestion/internal/session
   storage
+  workers/app
   workers/internal/processor
   workers/internal/writer
 )
@@ -82,6 +85,7 @@ DB_PACKAGES=(
 # SQLite as well. A package joins this list when its tests open their
 # database through storage/storagetest.
 DUAL_PACKAGES=(
+  ingestion/app
   ingestion/internal/assembler
   ingestion/internal/auth
   ingestion/internal/directive

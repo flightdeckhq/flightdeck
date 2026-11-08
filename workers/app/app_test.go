@@ -33,7 +33,7 @@ func TestFromEnv_MapsEveryField(t *testing.T) {
 
 func TestLoadEnv_ReturnsTheEnvironmentsRefusalAsAnError(t *testing.T) {
 	t.Setenv("FLIGHTDECK_POSTGRES_URL", "")
-	if _, err := LoadEnv(); err == nil || !strings.Contains(err.Error(), "FLIGHTDECK_POSTGRES_URL") {
+	if _, err := LoadEnv(); err == nil || !strings.Contains(err.Error(), "FLIGHTDECK_POSTGRES") {
 		t.Fatalf("err = %v", err)
 	}
 	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://x")

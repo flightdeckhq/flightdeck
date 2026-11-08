@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,13 +37,13 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/modelid"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // pricingFile is the pricing.yaml document. Version 2 holds overrides,
@@ -421,8 +422,10 @@ func pricingContentHash(rows []PriceRow) string {
 }
 
 // pricingSyncLockKey is the transaction-scoped advisory lock the table
-// rebuild takes, so API replicas starting together write it one at a
-// time and every one after the first finds the hash already current.
+// rebuild takes on Postgres, so API replicas starting together write it
+// one at a time and every one after the first finds the hash already
+// current. SQLite has one writer, whose IMMEDIATE transaction is the
+// lock.
 const pricingSyncLockKey = 0x70726963 // "pric"
 
 // pricingSyncTimeout bounds the startup rebuild; the table holds a few
@@ -446,9 +449,9 @@ const (
 // ends. Run it in a goroutine after a failed first sync: until it
 // succeeds, model_pricing is empty or stale, so estimated cost leaves
 // calls unpriced and a token policy's degrade_to is rejected.
-func RetryPricingSync(ctx context.Context, pool *pgxpool.Pool) {
+func RetryPricingSync(ctx context.Context, db *storage.DB) {
 	retryUntilDone(ctx, func(ctx context.Context) error {
-		return SyncPricingTable(ctx, pool)
+		return SyncPricingTable(ctx, db)
 	}, pricingSyncRetryInitial, pricingSyncRetryMax)
 }
 
@@ -477,71 +480,108 @@ func retryUntilDone(ctx context.Context, sync func(context.Context) error, initi
 	}
 }
 
+// pricingInsertBatch is how many model_pricing rows one INSERT carries:
+// 19 columns a row keeps 500 rows under both engines' bound-parameter
+// limits (65535 on Postgres, 32766 on SQLite) with room to spare, and
+// the few-thousand-row table lands in a handful of statements.
+const pricingInsertBatch = 500
+
+// pricingColumns are the model_pricing columns SyncPricingTable writes,
+// in the order pricingValues renders them.
+var pricingColumns = []string{
+	"model_id", "platform", "provider", "input", "output", "cache_read",
+	"cache_write_5m", "cache_write_1h", "reasoning", "tier_threshold_tokens",
+	"tier_input", "tier_output", "tier_cache_read", "tier_cache_write_5m",
+	"tier_cache_write_1h", "priority_multiplier", "fast_multiplier", "source",
+	"deprecated_on",
+}
+
+// pricingValues renders one row's bind values in pricingColumns order.
+// deprecated_on is bound as its YYYY-MM-DD text: a date on Postgres,
+// and on SQLite the shape CURRENT_DATE compares against.
+func pricingValues(r PriceRow) []any {
+	var deprecated any
+	if r.DeprecatedOn != nil {
+		if _, err := time.Parse(time.DateOnly, *r.DeprecatedOn); err == nil {
+			deprecated = *r.DeprecatedOn
+		}
+	}
+	return []any{
+		r.ModelID, r.Platform, r.Provider, r.Input, r.Output, r.CacheRead,
+		r.CacheWrite5m, r.CacheWrite1h, r.Reasoning, r.TierThreshold,
+		r.TierInput, r.TierOutput, r.TierCacheRead, r.TierCacheWrite5m,
+		r.TierCacheWrite1h, r.PriorityMultiplier, r.FastMultiplier, r.Source,
+		deprecated,
+	}
+}
+
 // SyncPricingTable writes the live price list into model_pricing in one
 // transaction, skipping the write when model_pricing_meta already holds
 // the same content hash. Errors are returned for the caller to log; the
 // table keeps its previous content.
-func SyncPricingTable(ctx context.Context, pool *pgxpool.Pool) error {
+func SyncPricingTable(ctx context.Context, db *storage.DB) error {
 	ctx, cancel := context.WithTimeout(ctx, pricingSyncTimeout)
 	defer cancel()
 	rows := pricingRows
 	hash := pricingContentHash(rows)
 
-	tx, err := pool.Begin(ctx)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin pricing sync: %w", err)
 	}
 	// A no-op once Commit has succeeded.
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, pricingSyncLockKey); err != nil {
-		return fmt.Errorf("lock pricing sync: %w", err)
+	if db.Backend == storage.Postgres {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, pricingSyncLockKey); err != nil {
+			return fmt.Errorf("lock pricing sync: %w", err)
+		}
 	}
 	var current string
-	err = tx.QueryRow(ctx, `SELECT content_hash FROM model_pricing_meta`).Scan(&current)
+	err = tx.QueryRowContext(ctx, `SELECT content_hash FROM model_pricing_meta`).Scan(&current)
 	if err == nil && current == hash {
 		return nil
 	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read pricing hash: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM model_pricing`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM model_pricing`); err != nil {
 		return fmt.Errorf("clear model_pricing: %w", err)
 	}
-	columns := []string{
-		"model_id", "platform", "provider", "input", "output", "cache_read",
-		"cache_write_5m", "cache_write_1h", "reasoning", "tier_threshold_tokens",
-		"tier_input", "tier_output", "tier_cache_read", "tier_cache_write_5m",
-		"tier_cache_write_1h", "priority_multiplier", "fast_multiplier", "source",
-		"deprecated_on",
-	}
-	values := make([][]any, 0, len(rows))
-	for _, r := range rows {
-		var deprecated any
-		if r.DeprecatedOn != nil {
-			if d, err := time.Parse(time.DateOnly, *r.DeprecatedOn); err == nil {
-				deprecated = d
+	for start := 0; start < len(rows); start += pricingInsertBatch {
+		end := min(start+pricingInsertBatch, len(rows))
+		batch := rows[start:end]
+		var sb strings.Builder
+		sb.WriteString("INSERT INTO model_pricing (")
+		sb.WriteString(strings.Join(pricingColumns, ", "))
+		sb.WriteString(") VALUES ")
+		args := make([]any, 0, len(batch)*len(pricingColumns))
+		for i, r := range batch {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
+			sb.WriteString("(")
+			for j := range pricingColumns {
+				if j > 0 {
+					sb.WriteString(", ")
+				}
+				fmt.Fprintf(&sb, "$%d", len(args)+j+1)
+			}
+			sb.WriteString(")")
+			args = append(args, pricingValues(r)...)
 		}
-		values = append(values, []any{
-			r.ModelID, r.Platform, r.Provider, r.Input, r.Output, r.CacheRead,
-			r.CacheWrite5m, r.CacheWrite1h, r.Reasoning, r.TierThreshold,
-			r.TierInput, r.TierOutput, r.TierCacheRead, r.TierCacheWrite5m,
-			r.TierCacheWrite1h, r.PriorityMultiplier, r.FastMultiplier, r.Source,
-			deprecated,
-		})
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("write model_pricing: %w", err)
+		}
 	}
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"model_pricing"}, columns, pgx.CopyFromRows(values)); err != nil {
-		return fmt.Errorf("write model_pricing: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO model_pricing_meta (id, content_hash, loaded_at) VALUES (TRUE, $1, NOW())
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_pricing_meta (id, content_hash, loaded_at) VALUES (TRUE, $1, `+db.Dialect.Now()+`)
 		ON CONFLICT (id) DO UPDATE SET content_hash = EXCLUDED.content_hash, loaded_at = EXCLUDED.loaded_at
 	`, hash); err != nil {
 		return fmt.Errorf("write pricing hash: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit pricing sync: %w", err)
 	}
 	slog.Info("model_pricing rebuilt", "rows", len(rows))

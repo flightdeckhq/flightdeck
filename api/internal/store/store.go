@@ -1,45 +1,52 @@
-// Package store provides Postgres queries for the query API.
-// All queries use pgx directly -- no ORM.
+// Package store provides the query API's database access through the
+// storage boundary: plain database/sql against storage.DB, so the same
+// queries run on SQLite and Postgres. The SQL is the common subset of
+// both engines; what differs comes from storage.Dialect or from the
+// per-backend fragments in queries_postgres.go / queries_sqlite.go.
+// No ORM.
 package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
-// NotifyChannel is the Postgres LISTEN/NOTIFY channel that carries
-// real-time fleet updates from the writer (workers) and the directive
-// register path (this package) to the dashboard WebSocket hub.
-//
-// Producers (this package's RegisterDirectives, workers/writer.NotifyFleetChange)
-// and the consumer (api/internal/ws.Hub.listenOnce) MUST agree on this
-// channel name. The literal is duplicated in workers/internal/writer/notify.go
-// only because workers and api are separate Go modules.
-const NotifyChannel = "flightdeck_fleet"
+// NotifyChannel is the Bus channel that carries real-time fleet updates
+// from the writer (workers) and the directive register path (this
+// package) to the dashboard WebSocket hub. On Postgres it is the
+// LISTEN/NOTIFY channel of the same name; the storage module owns the
+// literal so every service spells it the same.
+const NotifyChannel = storage.ChannelFleet
 
 // AccessTokenRevokedChannel carries the id of every deleted access_tokens
-// row. Migration 000028's trigger is the producer; the token validators
-// in this module and in ingestion are the consumers, which drop cached
-// validations for that id. The literal is duplicated in
-// ingestion/internal/auth because the services are separate Go modules.
-const AccessTokenRevokedChannel = "flightdeck_access_token_revoked"
+// row: published by DeleteAccessToken after its commit, and on Postgres
+// also by migration 000028's trigger for a row deleted outside the API.
+// The token validators in this module and in ingestion drop their cached
+// validations for that id.
+const AccessTokenRevokedChannel = storage.ChannelAccessTokenRevoked
 
-// NotifyDirectiveRegistered is the sentinel payload broadcast on
+// NotifyDirectiveRegistered is the sentinel payload published on
 // NotifyChannel after a successful directive registration. The hub
 // special-cases this literal (it has no JSON envelope) and re-broadcasts
 // a directives_changed message to WebSocket clients. Keep producer and
 // consumer in lock-step by referencing this constant on both sides.
 const NotifyDirectiveRegistered = "directive_registered"
 
+// ErrPolicyNotFound is returned by UpdatePolicy and DeletePolicy when no
+// token policy has the given id; handlers answer 404.
+var ErrPolicyNotFound = errors.New("policy not found")
+
 // Querier is the interface for fleet data access.
-// Implemented by Store (Postgres) and mocks in tests.
+// Implemented by Store and mocks in tests.
 type Querier interface {
 	GetAgentFleet(ctx context.Context, limit, offset int, agentType string) ([]AgentSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
@@ -135,14 +142,103 @@ type Querier interface {
 // WrapStore returns a Querier from any compatible implementation.
 func WrapStore(q Querier) Querier { return q }
 
-// Store provides read queries for the fleet dashboard.
+// Store provides the queries for the fleet dashboard on either backend.
+//
+// Reads run on db.Reader() (on SQLite a pool that never waits for the
+// writer); writes and read-then-write transactions run on db, the
+// writer. Read-only transactions that need one snapshot for a count
+// and a page run on the reader too.
 type Store struct {
-	pool *pgxpool.Pool
+	db  *storage.DB
+	bus storage.Bus
+	d   storage.Dialect
+	q   queries
 }
 
-// New creates a Store.
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+// New creates a Store on db, publishing its notifications (directive
+// registrations, token revocations) on bus.
+func New(db *storage.DB, bus storage.Bus) *Store {
+	return &Store{db: db, bus: bus, d: db.Dialect, q: queriesFor(db.Backend)}
+}
+
+// DB returns the database the store runs on.
+func (s *Store) DB() *storage.DB { return s.db }
+
+// reader is the handle for statements that only read.
+func (s *Store) reader() *sql.DB { return s.db.Reader() }
+
+// readTx begins a read-only transaction on the reader, so a count and
+// the page it paginates come from one snapshot. REPEATABLE READ gives
+// Postgres the snapshot; SQLite's read transaction has one in WAL mode
+// and ignores the isolation level.
+func (s *Store) readTx(ctx context.Context) (*sql.Tx, error) {
+	return s.reader().BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+}
+
+// uuidArg normalises an id a caller supplied for a uuid comparison:
+// Postgres parses any spelling, SQLite compares the text, so both get
+// the canonical lower-case form.
+func uuidArg(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
+// jsonArg binds JSON for a JSON column: the document as text (SQLite
+// stores a []byte as a BLOB, which its json functions would read as
+// binary JSON), or NULL for no document.
+func jsonArg(raw []byte) any {
+	if raw == nil {
+		return nil
+	}
+	return string(raw)
+}
+
+// jsonStrings scans a JSON array of strings (from queries.jsonArrayAgg)
+// into a sorted, never-nil slice.
+type jsonStrings []string
+
+// Scan implements sql.Scanner.
+func (j *jsonStrings) Scan(src any) error {
+	*j = []string{}
+	var data []byte
+	switch v := src.(type) {
+	case nil:
+		return nil
+	case string:
+		data = []byte(v)
+	case []byte:
+		data = v
+	default:
+		return fmt.Errorf("store: cannot scan %T into a string array", src)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return fmt.Errorf("store: string array: %w", err)
+	}
+	sort.Strings(out)
+	if out == nil {
+		out = []string{}
+	}
+	*j = out
+	return nil
+}
+
+// strings returns the slice, never nil.
+func (j jsonStrings) strings() []string {
+	if j == nil {
+		return []string{}
+	}
+	return j
+}
+
+// distinctJSONArray is a scalar subquery that collects the distinct
+// values of expr over fromWhere ("FROM ... WHERE ...") as a JSON array
+// of strings, '[]' when there are none. It replaces Postgres'
+// ARRAY(SELECT DISTINCT ...) with a shape both engines produce.
+func (s *Store) distinctJSONArray(expr, fromWhere string) string {
+	return "(SELECT " + s.q.jsonArrayAgg("v") + " FROM (SELECT DISTINCT " + expr + " AS v " + fromWhere + ") dv)"
 }
 
 // Session represents a session row for API responses.
@@ -169,7 +265,7 @@ type Session struct {
 	TokenLimit *int       `json:"token_limit,omitempty"`
 
 	// Runtime context collected by the sensor at init() time and
-	// stored once in sessions.context (JSONB) on the session_start
+	// stored once in sessions.context (JSON) on the session_start
 	// event. Carries hostname, OS, git, orchestration, frameworks,
 	// etc. -- see sensor/flightdeck_sensor/core/context.py.
 	Context map[string]any `json:"context,omitempty"`
@@ -324,16 +420,16 @@ type AgentSummary struct {
 	//              and the agent itself is not a child.
 	Topology string `json:"topology"`
 	// Runtime-context slice from the agent's MOST RECENT session's
-	// `sessions.context` JSONB. An agent that ran across
+	// `sessions.context` JSON. An agent that ran across
 	// multiple hosts / branches surfaces its latest session's values
 	// here — facets are single-valued per agent. Each field is null
-	// when the latest session's context is absent or the JSONB key
-	// is missing. Sourced via one LATERAL JOIN per agent ordered by
-	// started_at DESC LIMIT 1; the per-agent overhead is bounded by
-	// the page size. `Hostname` and `UserName` above remain the
-	// authoritative single-valued slices for those two dims (sourced
-	// from agents-table columns); these are the JSONB-only
-	// slices the operator slices the roster by.
+	// when the latest session's context is absent or the JSON key
+	// is missing. Sourced via one correlated lookup of the latest
+	// session per agent (agentLatestSessionJoin); the per-agent
+	// overhead is bounded by the page size. `Hostname` and `UserName`
+	// above remain the authoritative single-valued slices for those
+	// two dims (sourced from agents-table columns); these are the
+	// JSON-only slices the operator slices the roster by.
 	OS            *string `json:"os,omitempty"`
 	Arch          *string `json:"arch,omitempty"`
 	GitBranch     *string `json:"git_branch,omitempty"`
@@ -362,7 +458,7 @@ type AgentSummary struct {
 // store's “listItemToSession“ consumes for the swimlane row; the
 // heavy correlated-subquery columns of “SessionListItem“
 // (error_types, policy_event_types, mcp_server_names, ...) are
-// intentionally absent so the per-agent LATERAL stays cheap on
+// intentionally absent so the per-agent lookup stays cheap on
 // fleet pages with many agents.
 type RecentSession struct {
 	SessionID  string  `json:"session_id"`
@@ -406,27 +502,155 @@ type RecentSession struct {
 }
 
 // closeReasonsSQL is the distinct close_reason values of a session's
-// session_end events, sorted, as a text[] that is never NULL.
-// The %s verb takes the session id expression of the enclosing query. Shared by
-// GetSession and GetRecentSessionsByAgentIDs; SessionListItem's listing
-// query builds the same array.
-const closeReasonsSQL = `COALESCE(
-	ARRAY(
-		SELECT DISTINCT e.payload->>'close_reason'
-		FROM events e
-		WHERE e.session_id = %s
+// session_end events, sorted, as a JSON array that is never NULL.
+// sessionExpr is the session id expression of the enclosing query.
+// Shared by GetSession and GetRecentSessionsByAgentIDs; SessionListItem's
+// listing query builds the same array.
+func (s *Store) closeReasonsSQL(sessionExpr string) string {
+	reason := s.d.JSONText("e.payload", "close_reason")
+	return s.distinctJSONArray(reason, `FROM events e
+		WHERE e.session_id = `+sessionExpr+`
 		AND e.event_type = 'session_end'
-		AND e.payload->>'close_reason' IS NOT NULL
-		ORDER BY 1
-	),
-	ARRAY[]::text[]
-)`
+		AND `+reason+` IS NOT NULL`)
+}
+
+// captureEnabledSQL is true when any event of the session aliased by
+// sessionExpr stored captured content.
+func captureEnabledSQL(sessionExpr string) string {
+	return `EXISTS(
+		SELECT 1 FROM events e
+		WHERE e.session_id = ` + sessionExpr + `
+		AND e.has_content = TRUE
+		LIMIT 1
+	)`
+}
 
 // RecentSessionsPerAgent caps the per-agent rollup on the
 // /v1/fleet response. Five rows is enough to cover the swimlane's
 // visible event-circle stack for a typical agent without ballooning
 // payload size on fleet pages with 50+ agents; tune by observation.
 const RecentSessionsPerAgent = 5
+
+// agentProjection is the SELECT list every agent-level query projects:
+// the agents row aliased a, with the rolled-up state, the sub-agent
+// rollup and the latest session's context fields. agentFrom is the
+// matching FROM clause.
+func (s *Store) agentProjection() string {
+	ctx := func(key string) string { return s.d.JSONText("latest.context", key) }
+	return `
+		SELECT
+			CAST(a.agent_id AS TEXT), a.agent_name, a.agent_type, a.client_type,
+			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
+			a.total_sessions, a.total_tokens,
+			COALESCE(a.rollup_state, '') AS state,
+			` + agentRoleSQL + ` AS agent_role,
+			` + agentTopologySQL + ` AS topology,
+			` + ctx("os") + ` AS os, ` + ctx("arch") + ` AS arch,
+			` + ctx("git_branch") + ` AS git_branch, ` + ctx("git_repo") + ` AS git_repo,
+			` + ctx("orchestration") + ` AS orchestration,
+			` + ctx("python_version") + ` AS python_version,
+			` + ctx("process_name") + ` AS process_name,
+			` + ctx("telemetry") + ` AS telemetry`
+}
+
+// agentFrom is the FROM clause of the agent-level queries: the agents
+// table with its rolled-up state as a.rollup_state (so filters and
+// sorts can name it), joined to the agent's latest session as latest.
+const agentFrom = ` FROM (` + agentsWithStateSQL + `) a ` + agentLatestSessionJoin
+
+// agentsWithStateSQL is the agents table extended with rollup_state,
+// an agent's rolled-up state: "active" if any of its sessions is
+// active, otherwise the state of the most-recently-started session, or
+// NULL for an agent with no sessions. The correlated subqueries run
+// once per agent row that reaches the outer query.
+const agentsWithStateSQL = `SELECT a.*, ` + agentStateRollupSQL + ` AS rollup_state FROM agents a`
+
+// agentStateRollupSQL derives the agent aliased a's state from its
+// sessions. Shared by ListAgents, GetAgentByID, GetAgentState and the
+// agents arm of Search so the state column reads identically on /agents
+// and /v1/search.
+const agentStateRollupSQL = `CASE
+		WHEN EXISTS (
+			SELECT 1 FROM sessions s
+			WHERE s.agent_id = a.agent_id AND s.state = 'active'
+		) THEN 'active'
+		ELSE (
+			SELECT s.state
+			FROM sessions s
+			WHERE s.agent_id = a.agent_id
+			ORDER BY s.started_at DESC
+			LIMIT 1
+		)
+	END`
+
+// agentLatestSessionJoin joins the agents row aliased a to its most
+// recently started session as latest (no row for an agent without
+// sessions). The lookup rides the composite index on
+// sessions(agent_id, started_at DESC); it replaces a LATERAL join,
+// which SQLite lacks, with a correlated subquery both engines accept in
+// an ON clause.
+const agentLatestSessionJoin = `LEFT JOIN sessions latest ON latest.session_id = (
+		SELECT s.session_id FROM sessions s
+		WHERE s.agent_id = a.agent_id
+		ORDER BY s.started_at DESC
+		LIMIT 1
+	)`
+
+// agentRoleSQL is the agent aliased a's sub-agent role: read from any
+// one session under this agent_id whose agent_role is non-null. By the
+// identity derivation every session under one agent_id shares the same
+// 6-tuple including agent_role, so any-row LIMIT 1 is authoritative.
+const agentRoleSQL = `(
+		SELECT s.agent_role
+		FROM sessions s
+		WHERE s.agent_id = a.agent_id
+		  AND s.agent_role IS NOT NULL
+		LIMIT 1
+	)`
+
+// agentTopologySQL classifies the agent aliased a: "child" wins over
+// "parent" when both apply because a sub-agent role's defining property
+// is being spawned by a parent; secondary nesting is incidental. The
+// EXISTS subqueries hit the partial index sessions_parent_session_id_idx.
+const agentTopologySQL = `CASE
+		WHEN EXISTS (
+			SELECT 1 FROM sessions s
+			WHERE s.agent_id = a.agent_id
+			  AND s.parent_session_id IS NOT NULL
+		) THEN 'child'
+		WHEN EXISTS (
+			SELECT 1
+			FROM sessions ch
+			JOIN sessions p
+			  ON ch.parent_session_id = p.session_id
+			WHERE p.agent_id = a.agent_id
+		) THEN 'parent'
+		ELSE 'lone'
+	END`
+
+// scanAgentSummary reads one agentProjection row.
+func scanAgentSummary(row interface{ Scan(dest ...any) error }) (AgentSummary, error) {
+	var a AgentSummary
+	var topology *string
+	err := row.Scan(
+		&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
+		&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
+		&a.TotalSessions, &a.TotalTokens, &a.State,
+		&a.AgentRole, &topology,
+		&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
+		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
+		&a.Telemetry,
+	)
+	if err != nil {
+		return a, err
+	}
+	if topology != nil {
+		a.Topology = *topology
+	} else {
+		a.Topology = "lone"
+	}
+	return a, nil
+}
 
 // GetAgentFleet returns agents with rollup state, paginated. Accepts
 // optional agent_type filter (locked vocabulary). Returns
@@ -439,73 +663,40 @@ func (s *Store) GetAgentFleet(
 	var args []any
 	filter := ""
 	if agentType != "" {
-		filter = " WHERE agent_type = $1"
+		filter = " WHERE a.agent_type = $1"
 		args = append(args, agentType)
 	}
 
 	var totalCount int
 	countArgs := args
-	if err := s.pool.QueryRow(
+	if err := s.reader().QueryRowContext(
 		ctx,
-		`SELECT COUNT(*) FROM agents`+filter,
+		`SELECT COUNT(*) FROM agents a`+filter,
 		countArgs...,
 	).Scan(&totalCount); err != nil {
 		return nil, 0, fmt.Errorf("get agent fleet count: %w", err)
 	}
 
-	// State rollup via LATERAL subquery against sessions for each
-	// agent row: "active" if any active session exists; otherwise
-	// the most-recent session's state by started_at. An agent with
-	// no sessions yet reports state = '' (empty string) which the
-	// dashboard renders as a muted placeholder.
 	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
 	offsetPlaceholder := fmt.Sprintf("$%d", len(args)+2)
 	args = append(args, limit, offset)
 
-	query := `
-		SELECT
-			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
-			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
-			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state,
-			subagent.agent_role,
-			subagent.topology,
-			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name,
-			latest.telemetry
-		FROM agents a
-		LEFT JOIN LATERAL (
-			SELECT CASE
-				WHEN EXISTS (
-					SELECT 1 FROM sessions s
-					WHERE s.agent_id = a.agent_id AND s.state = 'active'
-				) THEN 'active'
-				ELSE (
-					SELECT s.state
-					FROM sessions s
-					WHERE s.agent_id = a.agent_id
-					ORDER BY s.started_at DESC
-					LIMIT 1
-				)
-			END AS state
-		) rollup ON TRUE
-		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + filter + `
-		-- ORDER BY: primary last_seen_at DESC matches user expectation
-		-- ("most recently active first"). Secondary client_type ASC
-		-- breaks last_seen_at ties deterministically -- critical for
-		-- bulk-seeded fleets where many rows share a timestamp; without
-		-- it page 1 could silently hide an entire client type. Tertiary
-		-- agent_id ASC guarantees page-stable ordering so the same row
-		-- does not appear on both page N and page N+1 when two agents
-		-- share both timestamp AND client_type.
+	// ORDER BY: primary last_seen_at DESC matches user expectation
+	// ("most recently active first"). Secondary client_type ASC
+	// breaks last_seen_at ties deterministically -- critical for
+	// bulk-seeded fleets where many rows share a timestamp; without
+	// it page 1 could silently hide an entire client type. Tertiary
+	// agent_id ASC guarantees page-stable ordering so the same row
+	// does not appear on both page N and page N+1 when two agents
+	// share both timestamp AND client_type.
+	query := s.agentProjection() + agentFrom + filter + `
 		ORDER BY a.last_seen_at DESC, a.client_type ASC, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get agent fleet: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Start with a non-nil empty slice so an empty fleet encodes as
 	// ``[]`` in JSON rather than ``null``. A null ``agents`` field
@@ -515,27 +706,9 @@ func (s *Store) GetAgentFleet(
 	// ``sessions.go::GetSessions``.
 	result := make([]AgentSummary, 0)
 	for rows.Next() {
-		var a AgentSummary
-		var rollupState *string
-		var topology *string
-		if err := rows.Scan(
-			&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
-			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
-			&a.TotalSessions, &a.TotalTokens, &rollupState,
-			&a.AgentRole, &topology,
-			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
-			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
-			&a.Telemetry,
-		); err != nil {
+		a, err := scanAgentSummary(rows)
+		if err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
-		}
-		if rollupState != nil {
-			a.State = *rollupState
-		}
-		if topology != nil {
-			a.Topology = *topology
-		} else {
-			a.Topology = "lone"
 		}
 		result = append(result, a)
 	}
@@ -584,7 +757,7 @@ func (s *Store) GetAgentFleet(
 // swap rows with equal sort keys).
 //
 // Empty “agentIDs“ or non-positive “perAgent“ short-circuits to
-// an empty map without hitting Postgres.
+// an empty map without hitting the database.
 func (s *Store) GetRecentSessionsByAgentIDs(
 	ctx context.Context, agentIDs []string, perAgent int,
 ) (map[string][]RecentSession, error) {
@@ -592,9 +765,13 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 	if len(agentIDs) == 0 || perAgent <= 0 {
 		return out, nil
 	}
+	ids := make([]string, len(agentIDs))
+	for i, id := range agentIDs {
+		ids[i] = uuidArg(id)
+	}
 
 	// LEFT JOIN sessions back on parent_session_id to project the
-	// parent's agent_id directly. The join is on UUID PK so it's
+	// parent's agent_id directly. The join is on the UUID PK so it's
 	// cheap; per agent the inner SELECT yields perAgent rows max,
 	// so the total join fan-out is bounded by perAgent × len(agentIDs).
 	// parent_s.agent_id is NULL when the session has no parent OR
@@ -607,13 +784,13 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
 			t.token_limit, t.capture_enabled,
 			t.parent_session_id, t.parent_agent_id, t.agent_role,
-			` + fmt.Sprintf(closeReasonsSQL, "t.session_id::uuid") + ` AS close_reasons
+			` + s.closeReasonsSQL("t.session_id") + ` AS close_reasons
 		FROM (
 			SELECT
-				s.session_id::text AS session_id,
+				CAST(s.session_id AS TEXT) AS session_id,
 				s.flavor,
 				s.agent_type,
-				s.agent_id::text AS agent_id,
+				CAST(s.agent_id AS TEXT) AS agent_id,
 				s.agent_name,
 				s.client_type,
 				s.host,
@@ -625,14 +802,9 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 				s.last_seen_at,
 				s.tokens_used,
 				s.token_limit,
-				EXISTS(
-					SELECT 1 FROM events e
-					WHERE e.session_id = s.session_id
-					  AND e.has_content = true
-					LIMIT 1
-				) AS capture_enabled,
-				s.parent_session_id::text AS parent_session_id,
-				parent_s.agent_id::text AS parent_agent_id,
+				` + captureEnabledSQL("s.session_id") + ` AS capture_enabled,
+				CAST(s.parent_session_id AS TEXT) AS parent_session_id,
+				CAST(parent_s.agent_id AS TEXT) AS parent_agent_id,
 				s.agent_role,
 				ROW_NUMBER() OVER (
 					PARTITION BY s.agent_id
@@ -641,18 +813,19 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			FROM sessions s
 			LEFT JOIN sessions parent_s
 				ON parent_s.session_id = s.parent_session_id
-			WHERE s.agent_id = ANY($1::uuid[])
+			WHERE ` + s.d.InUUIDArray("s.agent_id", "$1") + `
 		) t
 		WHERE t.rn <= $2
 		ORDER BY t.agent_id, t.started_at DESC, t.session_id ASC
 	`
-	rows, err := s.pool.Query(ctx, query, agentIDs, perAgent)
+	rows, err := s.reader().QueryContext(ctx, query, s.d.ArrayArg(ids), perAgent)
 	if err != nil {
 		return nil, fmt.Errorf("recent sessions by agent ids: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r RecentSession
+		var closeReasons jsonStrings
 		if err := rows.Scan(
 			&r.SessionID, &r.Flavor, &r.AgentType, &r.AgentID,
 			&r.AgentName, &r.ClientType, &r.Host, &r.Model,
@@ -660,10 +833,11 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			&r.StartedAt, &r.EndedAt, &r.LastSeenAt, &r.TokensUsed,
 			&r.TokenLimit, &r.CaptureEnabled,
 			&r.ParentSessionID, &r.ParentAgentID, &r.AgentRole,
-			&r.CloseReasons,
+			&closeReasons,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent session: %w", err)
 		}
+		r.CloseReasons = closeReasons.strings()
 		if r.AgentID != nil {
 			out[*r.AgentID] = append(out[*r.AgentID], r)
 		}
@@ -674,126 +848,16 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 	return out, nil
 }
 
-// agentRollupSQL is the LATERAL subquery that computes the
-// sub-agent observability per-agent rollup fields: agent_role and
-// topology. Shared by GetAgentFleet, ListAgents, and GetAgentByID so
-// the three projections stay byte-identical on the new columns.
-//
-//	agent_role — read from any one session under this agent_id whose
-//	             agent_role is non-null. By the identity derivation
-//	             every session under one agent_id shares the same
-//	             6-tuple including agent_role, so any-row LIMIT 1 is
-//	             authoritative.
-//
-//	topology   — "child" wins over "parent" when both apply because a
-//	             sub-agent role's defining property is being spawned
-//	             by a parent; secondary nesting is incidental. The
-//	             EXISTS subqueries hit the partial index
-//	             ``sessions_parent_session_id_idx`` directly.
-const agentRollupSQL = `
-	SELECT
-		(
-			SELECT s.agent_role
-			FROM sessions s
-			WHERE s.agent_id = a.agent_id
-			  AND s.agent_role IS NOT NULL
-			LIMIT 1
-		) AS agent_role,
-		CASE
-			WHEN EXISTS (
-				SELECT 1 FROM sessions s
-				WHERE s.agent_id = a.agent_id
-				  AND s.parent_session_id IS NOT NULL
-			) THEN 'child'
-			WHEN EXISTS (
-				SELECT 1
-				FROM sessions ch
-				JOIN sessions p
-				  ON ch.parent_session_id = p.session_id
-				WHERE p.agent_id = a.agent_id
-			) THEN 'parent'
-			ELSE 'lone'
-		END AS topology
-`
-
-// agentLatestContextSQL is the LATERAL subquery that projects the
-// runtime-context fields from an agent's MOST RECENT
-// session's `sessions.context` JSONB. Shared by GetAgentFleet,
-// ListAgents, GetAgentByID and the agents arm of Search (which reads
-// only `telemetry`) so the projections stay byte-identical.
-//
-// One subquery per agent — bounded by the page size. Each scan
-// rides the composite index on `sessions(agent_id, started_at
-// DESC)` so the ORDER BY ... LIMIT 1 is a single index lookup.
-// `hostname` and `user` are NOT projected here — those are direct
-// `agents`-table columns and are authoritatively single-valued
-// already.
-//
-// IMPORTANT: this fragment references `a.agent_id` from the outer
-// query — every caller MUST alias the outer `agents` table as `a`
-// (`FROM agents a` / `... agents a ...`). Adding a call
-// site with a different alias produces a runtime planner error,
-// not a compile-time failure. Matches the existing convention
-// used by `agentRollupSQL` above.
-//
-// Returns nulls when the agent has no sessions OR the latest
-// session's context is null OR the JSONB key is missing — three
-// cases the consumer collapses to "no value for this agent".
-const agentLatestContextSQL = `
-	SELECT
-		s.context->>'os'             AS os,
-		s.context->>'arch'           AS arch,
-		s.context->>'git_branch'     AS git_branch,
-		s.context->>'git_repo'       AS git_repo,
-		s.context->>'orchestration'  AS orchestration,
-		s.context->>'python_version' AS python_version,
-		s.context->>'process_name'   AS process_name,
-		s.context->>'telemetry'      AS telemetry
-	FROM sessions s
-	WHERE s.agent_id = a.agent_id
-	ORDER BY s.started_at DESC
-	LIMIT 1
-`
-
-// agentStateRollupSQL is the LATERAL subquery that derives an
-// agent's rolled-up state from its sessions: "active" if any
-// session is active right now, otherwise the state of the
-// most-recently-started session. Shared by ListAgents,
-// GetAgentByID, and the agents arm of Search so the L37 state
-// column reads identically on /agents and /v1/search.
-//
-// IMPORTANT: references “a.agent_id“ from the outer query —
-// every caller MUST alias the outer “agents“ table as “a“
-// (same convention as “agentRollupSQL“ and
-// “agentLatestContextSQL“ above).
-//
-// Used inside a “LEFT JOIN LATERAL ( ... ) rollup ON TRUE“
-// clause; callers read “rollup.state“.
-const agentStateRollupSQL = `
-	SELECT CASE
-		WHEN EXISTS (
-			SELECT 1 FROM sessions s
-			WHERE s.agent_id = a.agent_id AND s.state = 'active'
-		) THEN 'active'
-		ELSE (
-			SELECT s.state
-			FROM sessions s
-			WHERE s.agent_id = a.agent_id
-			ORDER BY s.started_at DESC
-			LIMIT 1
-		)
-	END AS state
-`
-
 // GetSession returns a single session by ID, including effective policy thresholds.
 // Policy lookup cascades: session scope > flavor scope > org scope.
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, error) {
 	var sess Session
 	var contextRaw []byte
-	err := s.pool.QueryRow(ctx, `
+	var closeReasons jsonStrings
+	err := s.reader().QueryRowContext(ctx, `
 		SELECT
-			s.session_id::text, s.flavor, s.agent_type,
-			s.agent_id::text, s.agent_name, s.client_type,
+			CAST(s.session_id AS TEXT), s.flavor, s.agent_type,
+			CAST(s.agent_id AS TEXT), s.agent_name, s.client_type,
 			s.host, s.framework, s.model,
 			s.state, s.started_at, s.last_seen_at, s.ended_at, s.tokens_used, s.token_limit,
 			s.context, s.token_name,
@@ -802,25 +866,20 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 			COALESCE(ps.degrade_at_pct, pf.degrade_at_pct, po.degrade_at_pct) AS degrade_at_pct,
 			COALESCE(ps.degrade_to, pf.degrade_to, po.degrade_to) AS degrade_to,
 			COALESCE(ps.block_at_pct, pf.block_at_pct, po.block_at_pct) AS block_at_pct,
-			EXISTS(
-				SELECT 1 FROM events e
-				WHERE e.session_id = s.session_id
-				AND e.has_content = true
-				LIMIT 1
-			) AS capture_enabled,
+			`+captureEnabledSQL("s.session_id")+` AS capture_enabled,
 			s.capture_prompts,
-			s.parent_session_id::text,
+			CAST(s.parent_session_id AS TEXT),
 			s.agent_role,
-			`+fmt.Sprintf(closeReasonsSQL, "s.session_id")+` AS close_reasons
+			`+s.closeReasonsSQL("s.session_id")+` AS close_reasons
 		FROM sessions s
 		LEFT JOIN token_policies ps
-			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
+			ON ps.scope = 'session' AND ps.scope_value = CAST(s.session_id AS TEXT)
 		LEFT JOIN token_policies pf
 			ON pf.scope = 'flavor' AND pf.scope_value = s.flavor
 		LEFT JOIN token_policies po
 			ON po.scope = 'org' AND po.scope_value = ''
-		WHERE s.session_id = $1::uuid
-	`, sessionID).Scan(
+		WHERE s.session_id = $1
+	`, uuidArg(sessionID)).Scan(
 		&sess.SessionID, &sess.Flavor, &sess.AgentType,
 		&sess.AgentID, &sess.AgentName, &sess.ClientType,
 		&sess.Host, &sess.Framework, &sess.Model,
@@ -831,14 +890,15 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled, &sess.CapturePrompts,
 		&sess.ParentSessionID, &sess.AgentRole,
-		&sess.CloseReasons,
+		&closeReasons,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session %s: %w", sessionID, err)
 	}
+	sess.CloseReasons = closeReasons.strings()
 	if len(contextRaw) > 0 {
 		var v map[string]any
 		if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil && len(v) > 0 {
@@ -849,14 +909,14 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 	// Check for pending shutdown directive.
 	// Log but do not fail the request on error -- default to false
 	// so the kill switch button remains usable.
-	if pdErr := s.pool.QueryRow(ctx, `
+	if pdErr := s.reader().QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM directives
-			WHERE (session_id = $1::uuid OR flavor = $2)
+			WHERE (session_id = $1 OR flavor = $2)
 			AND delivered_at IS NULL
 			AND action IN ('shutdown', 'shutdown_flavor')
 		)
-	`, sessionID, sess.Flavor).Scan(&sess.HasPendingDirective); pdErr != nil {
+	`, uuidArg(sessionID), sess.Flavor).Scan(&sess.HasPendingDirective); pdErr != nil {
 		slog.Warn("has_pending_directive query error", "session_id", sessionID, "err", pdErr)
 	}
 
@@ -877,6 +937,21 @@ type Policy struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// policyColumns is the SELECT / RETURNING list every token_policies
+// read projects, in the order scanPolicy reads it.
+const policyColumns = `CAST(id AS TEXT), scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at`
+
+// scanPolicy reads one policyColumns row. The timestamps go through
+// storage.Time: a RETURNING clause reports no column type on SQLite.
+func scanPolicy(row interface{ Scan(dest ...any) error }) (Policy, error) {
+	var p Policy
+	var created, updated storage.Time
+	err := row.Scan(&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct,
+		&p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &created, &updated)
+	p.CreatedAt, p.UpdatedAt = created.Time, updated.Time
+	return p, err
+}
+
 // GetEffectivePolicy returns the most specific policy for a given flavor/session.
 // Cascading lookup: session > flavor > org. Returns nil if no policy found.
 func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string) (*Policy, error) {
@@ -888,17 +963,14 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 		if pair.value == "" && pair.scope != "org" {
 			continue
 		}
-		var p Policy
-		err := s.pool.QueryRow(ctx, `
-			SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+		p, err := scanPolicy(s.reader().QueryRowContext(ctx, `
+			SELECT `+policyColumns+`
 			FROM token_policies WHERE scope = $1 AND scope_value = $2
-		`, pair.scope, pair.value).Scan(
-			&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
-		)
+		`, pair.scope, pair.value))
 		if err == nil {
 			return &p, nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("get policy %s/%s: %w", pair.scope, pair.value, err)
 		}
 	}
@@ -908,12 +980,49 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 // tokenCostColumns lists the events token and cost columns in the order
 // Event's TokensReasoning .. CostSource fields scan them, each column
 // qualified with prefix (an alias and a dot, or "" for none).
-// cost_reported is NUMERIC and is read as float8 for the JSON response.
+// cost_reported is NUMERIC and is read as a double for the JSON response.
 func tokenCostColumns(prefix string) string {
 	return prefix + "tokens_reasoning, " + prefix + "model_requested, " +
 		prefix + "model_served, " + prefix + "provider, " +
 		prefix + "billing_mode, " + prefix + "platform, " +
-		prefix + "cost_reported::float8, " + prefix + "cost_source"
+		"CAST(" + prefix + "cost_reported AS DOUBLE PRECISION), " + prefix + "cost_source"
+}
+
+// eventColumns is the SELECT list of an events row, qualified with
+// prefix, in the order scanEvent reads it.
+func eventColumns(prefix string) string {
+	return `CAST(` + prefix + `id AS TEXT), CAST(` + prefix + `session_id AS TEXT), ` +
+		prefix + `flavor, ` + prefix + `event_type, ` + prefix + `model,
+		       ` + prefix + `tokens_input, ` + prefix + `tokens_output, ` + prefix + `tokens_total,
+		       ` + prefix + `tokens_cache_read, ` + prefix + `tokens_cache_creation,
+		       ` + tokenCostColumns(prefix) + `,
+		       ` + prefix + `latency_ms, ` + prefix + `tool_name, ` + prefix + `has_content, ` +
+		prefix + `payload, ` + prefix + `occurred_at`
+}
+
+// scanEvent reads one eventColumns row, plus extra trailing columns.
+func scanEvent(row interface{ Scan(dest ...any) error }, extra ...any) (Event, error) {
+	var e Event
+	var payloadRaw []byte
+	dest := []any{
+		&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
+		&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
+		&e.TokensCacheRead, &e.TokensCacheCreation,
+		&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
+		&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
+		&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
+	}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
+		return e, err
+	}
+	if len(payloadRaw) > 0 {
+		var v map[string]any
+		if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
+			e.Payload = v
+		}
+	}
+	return e, nil
 }
 
 // GetSessionEvents returns events for a session in chronological (ASC)
@@ -931,65 +1040,43 @@ func tokenCostColumns(prefix string) string {
 // the same order, and so neither skips nor repeats the events that
 // share that event's timestamp.
 //
-// The payload JSONB column is decoded into Event.Payload so callers
+// The payload JSON column is decoded into Event.Payload so callers
 // (the dashboard) can read directive_name / directive_status / result
 // without a separate /v1/events/:id/content fetch. NULL or empty
 // payload columns yield a nil map on the Event struct, which omits
 // the field from the JSON response.
 func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error) {
-	var sql string
-	args := []any{sessionID}
+	var query string
+	args := []any{uuidArg(sessionID)}
 	if limit > 0 {
-		sql = `
-			SELECT id::text, session_id::text, flavor, event_type, model,
-			       tokens_input, tokens_output, tokens_total,
-			       tokens_cache_read, tokens_cache_creation,
-			       ` + tokenCostColumns("") + `,
-			       latency_ms, tool_name, has_content, payload, occurred_at
+		query = `
+			SELECT ` + eventColumns("") + `
 			FROM events
-			WHERE session_id = $1::uuid
+			WHERE session_id = $1
 			ORDER BY occurred_at DESC, id DESC
 			LIMIT $2
 		`
 		args = append(args, limit)
 	} else {
-		sql = `
-			SELECT id::text, session_id::text, flavor, event_type, model,
-			       tokens_input, tokens_output, tokens_total,
-			       tokens_cache_read, tokens_cache_creation,
-			       ` + tokenCostColumns("") + `,
-			       latency_ms, tool_name, has_content, payload, occurred_at
+		query = `
+			SELECT ` + eventColumns("") + `
 			FROM events
-			WHERE session_id = $1::uuid
+			WHERE session_id = $1
 			ORDER BY occurred_at ASC, id ASC
 		`
 	}
 
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get events for %s: %w", sessionID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var payloadRaw []byte
-		if err := rows.Scan(
-			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
-			&e.TokensCacheRead, &e.TokensCacheCreation,
-			&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
-			&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
-			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
-		); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
-		}
-		if len(payloadRaw) > 0 {
-			var v map[string]any
-			if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
-				e.Payload = v
-			}
 		}
 		events = append(events, e)
 	}
@@ -1008,43 +1095,24 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 }
 
 // GetEvent returns a single event by primary key. Used by the
-// WebSocket hub to fetch exactly the event named in a NOTIFY payload,
-// avoiding the race where re-querying GetSessionEvents and taking the
-// tail would return a later event when paired writes commit close
-// together. Returns (nil, nil) when the event does not exist -- this
-// is possible when the hub runs the query before the insert
-// transaction has committed (uncommon but valid). Caller handles the
-// nil return by skipping the broadcast.
+// WebSocket hub to fetch exactly the event named in a fleet
+// notification, avoiding the race where re-querying GetSessionEvents
+// and taking the tail would return a later event when paired writes
+// commit close together. Returns (nil, nil) when the event does not
+// exist -- this is possible when the hub runs the query before the
+// insert transaction has committed (uncommon but valid). Caller handles
+// the nil return by skipping the broadcast.
 func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
-	var e Event
-	var payloadRaw []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, session_id::text, flavor, event_type, model,
-		       tokens_input, tokens_output, tokens_total,
-		       tokens_cache_read, tokens_cache_creation,
-		       `+tokenCostColumns("")+`,
-		       latency_ms, tool_name, has_content, payload, occurred_at
+	e, err := scanEvent(s.reader().QueryRowContext(ctx, `
+		SELECT `+eventColumns("")+`
 		FROM events
-		WHERE id = $1::uuid
-	`, eventID).Scan(
-		&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-		&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
-		&e.TokensCacheRead, &e.TokensCacheCreation,
-		&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
-		&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
-		&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
+		WHERE id = $1
+	`, uuidArg(eventID)))
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get event %s: %w", eventID, err)
-	}
-	if len(payloadRaw) > 0 {
-		var v map[string]any
-		if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
-			e.Payload = v
-		}
 	}
 	return &e, nil
 }
@@ -1057,16 +1125,16 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 // re-attachment's session_start (the session drawer's ATTACH badge,
 // the swimlane's amber circle).
 func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.reader().QueryContext(ctx, `
 		SELECT attached_at
 		FROM session_attachments
-		WHERE session_id = $1::uuid
+		WHERE session_id = $1
 		ORDER BY attached_at ASC
-	`, sessionID)
+	`, uuidArg(sessionID))
 	if err != nil {
 		return nil, fmt.Errorf("get attachments for %s: %w", sessionID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []time.Time
 	for rows.Next() {
@@ -1084,41 +1152,36 @@ func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]
 
 // GetPolicies returns all policies ordered by creation date (newest first).
 func (s *Store) GetPolicies(ctx context.Context) ([]Policy, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT `+policyColumns+`
 		FROM token_policies ORDER BY created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("get policies: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var policies []Policy
+	policies := []Policy{} // Return empty array, not null
 	for rows.Next() {
-		var p Policy
-		if err := rows.Scan(
-			&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
-		); err != nil {
+		p, err := scanPolicy(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan policy: %w", err)
 		}
 		policies = append(policies, p)
 	}
-	if policies == nil {
-		policies = []Policy{} // Return empty array, not null
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("policies scan: %w", err)
 	}
 	return policies, nil
 }
 
 // GetPolicyByID returns a single policy by ID. Returns nil if not found.
 func (s *Store) GetPolicyByID(ctx context.Context, id string) (*Policy, error) {
-	var p Policy
-	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
-		FROM token_policies WHERE id = $1::uuid
-	`, id).Scan(
-		&p.ID, &p.Scope, &p.ScopeValue, &p.TokenLimit, &p.WarnAtPct, &p.DegradeAtPct, &p.DegradeTo, &p.BlockAtPct, &p.CreatedAt, &p.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	p, err := scanPolicy(s.reader().QueryRowContext(ctx, `
+		SELECT `+policyColumns+`
+		FROM token_policies WHERE id = $1
+	`, uuidArg(id)))
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -1129,8 +1192,7 @@ func (s *Store) GetPolicyByID(ctx context.Context, id string) (*Policy, error) {
 
 // UpsertPolicy creates or updates a policy. Returns the resulting policy with all fields.
 func (s *Store) UpsertPolicy(ctx context.Context, p Policy) (*Policy, error) {
-	var result Policy
-	err := s.pool.QueryRow(ctx, `
+	result, err := scanPolicy(s.db.QueryRowContext(ctx, `
 		INSERT INTO token_policies (scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (scope, scope_value)
@@ -1139,11 +1201,9 @@ func (s *Store) UpsertPolicy(ctx context.Context, p Policy) (*Policy, error) {
 		              degrade_at_pct = EXCLUDED.degrade_at_pct,
 		              degrade_to = EXCLUDED.degrade_to,
 		              block_at_pct = EXCLUDED.block_at_pct,
-		              updated_at = NOW()
-		RETURNING id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
-	`, p.Scope, p.ScopeValue, p.TokenLimit, p.WarnAtPct, p.DegradeAtPct, p.DegradeTo, p.BlockAtPct).Scan(
-		&result.ID, &result.Scope, &result.ScopeValue, &result.TokenLimit, &result.WarnAtPct, &result.DegradeAtPct, &result.DegradeTo, &result.BlockAtPct, &result.CreatedAt, &result.UpdatedAt,
-	)
+		              updated_at = `+s.d.Now()+`
+		RETURNING `+policyColumns+`
+	`, p.Scope, p.ScopeValue, p.TokenLimit, p.WarnAtPct, p.DegradeAtPct, p.DegradeTo, p.BlockAtPct))
 	if err != nil {
 		return nil, fmt.Errorf("upsert policy: %w", err)
 	}
@@ -1151,21 +1211,18 @@ func (s *Store) UpsertPolicy(ctx context.Context, p Policy) (*Policy, error) {
 }
 
 // UpdatePolicy updates an existing policy by ID. Returns the updated policy.
-// Returns pgx.ErrNoRows if the ID does not exist.
+// Returns ErrPolicyNotFound if the ID does not exist.
 func (s *Store) UpdatePolicy(ctx context.Context, id string, p Policy) (*Policy, error) {
-	var result Policy
-	err := s.pool.QueryRow(ctx, `
+	result, err := scanPolicy(s.db.QueryRowContext(ctx, `
 		UPDATE token_policies
 		SET scope = $2, scope_value = $3, token_limit = $4,
 		    warn_at_pct = $5, degrade_at_pct = $6, degrade_to = $7,
-		    block_at_pct = $8, updated_at = NOW()
-		WHERE id = $1::uuid
-		RETURNING id::text, scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct, created_at, updated_at
-	`, id, p.Scope, p.ScopeValue, p.TokenLimit, p.WarnAtPct, p.DegradeAtPct, p.DegradeTo, p.BlockAtPct).Scan(
-		&result.ID, &result.Scope, &result.ScopeValue, &result.TokenLimit, &result.WarnAtPct, &result.DegradeAtPct, &result.DegradeTo, &result.BlockAtPct, &result.CreatedAt, &result.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("update policy %s: %w", id, pgx.ErrNoRows)
+		    block_at_pct = $8, updated_at = `+s.d.Now()+`
+		WHERE id = $1
+		RETURNING `+policyColumns+`
+	`, uuidArg(id), p.Scope, p.ScopeValue, p.TokenLimit, p.WarnAtPct, p.DegradeAtPct, p.DegradeTo, p.BlockAtPct))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("update policy %s: %w", id, ErrPolicyNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("update policy %s: %w", id, err)
@@ -1173,14 +1230,14 @@ func (s *Store) UpdatePolicy(ctx context.Context, id string, p Policy) (*Policy,
 	return &result, nil
 }
 
-// DeletePolicy removes a policy by ID. Returns an error if not found.
+// DeletePolicy removes a policy by ID. Returns ErrPolicyNotFound if not found.
 func (s *Store) DeletePolicy(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM token_policies WHERE id = $1::uuid", id)
+	res, err := s.db.ExecContext(ctx, "DELETE FROM token_policies WHERE id = $1", uuidArg(id))
 	if err != nil {
 		return fmt.Errorf("delete policy %s: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrPolicyNotFound
 	}
 	return nil
 }
@@ -1214,14 +1271,14 @@ type CustomDirective struct {
 
 // GetActiveSessionIDsByFlavor returns session IDs for active/idle sessions of a flavor.
 func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT session_id::text FROM sessions
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT CAST(session_id AS TEXT) FROM sessions
 		WHERE flavor = $1 AND state IN ('active', 'idle')
 	`, flavor)
 	if err != nil {
 		return nil, fmt.Errorf("get active sessions for %s: %w", flavor, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -1230,13 +1287,16 @@ func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) 
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active sessions scan: %w", err)
+	}
 	return ids, nil
 }
 
 // CreateDirective inserts a new directive and returns the full record.
 // CreateDirectives (directives.go) inserts a set in one transaction.
 func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, error) {
-	result, err := insertDirective(ctx, s.pool, d)
+	result, err := insertDirective(ctx, s.db, d)
 	if err != nil {
 		return nil, fmt.Errorf("create directive: %w", err)
 	}
@@ -1273,68 +1333,49 @@ type EventContent struct {
 	CapturedAt time.Time `json:"captured_at"`
 }
 
+// decodeJSON unmarshals a JSON column into any; nil for NULL or a
+// document that does not parse.
+func decodeJSON(raw []byte) any {
+	if raw == nil {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
+	return v
+}
+
 // GetEventContent returns the prompt content for an event.
 // Returns nil, nil when the event has no captured content.
 func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventContent, error) {
 	var ec EventContent
 	var messagesRaw, toolsRaw, responseRaw, inputRaw, toolInputRaw, toolOutputRaw []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT event_id::text, session_id::text, provider, model, system_prompt,
+	err := s.reader().QueryRowContext(ctx, `
+		SELECT CAST(event_id AS TEXT), CAST(session_id AS TEXT), provider, model, system_prompt,
 		       messages, tools, response, input, tool_input, tool_output,
 		       captured_at
 		FROM event_content
-		WHERE event_id = $1::uuid
-	`, eventID).Scan(
+		WHERE event_id = $1
+	`, uuidArg(eventID)).Scan(
 		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &ec.SystemPrompt,
 		&messagesRaw, &toolsRaw, &responseRaw, &inputRaw,
 		&toolInputRaw, &toolOutputRaw,
 		&ec.CapturedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get event content %s: %w", eventID, err)
 	}
 
-	// Unmarshal JSONB columns into any for proper JSON serialization
-	if messagesRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(messagesRaw, &v); jsonErr == nil {
-			ec.Messages = v
-		}
-	}
-	if toolsRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(toolsRaw, &v); jsonErr == nil {
-			ec.Tools = v
-		}
-	}
-	if responseRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(responseRaw, &v); jsonErr == nil {
-			ec.Response = v
-		}
-	}
-	if inputRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(inputRaw, &v); jsonErr == nil {
-			ec.Input = v
-		}
-	}
-	if toolInputRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(toolInputRaw, &v); jsonErr == nil {
-			ec.ToolInput = v
-		}
-	}
-	if toolOutputRaw != nil {
-		var v any
-		if jsonErr := json.Unmarshal(toolOutputRaw, &v); jsonErr == nil {
-			ec.ToolOutput = v
-		}
-	}
-
+	ec.Messages = decodeJSON(messagesRaw)
+	ec.Tools = decodeJSON(toolsRaw)
+	ec.Response = decodeJSON(responseRaw)
+	ec.Input = decodeJSON(inputRaw)
+	ec.ToolInput = decodeJSON(toolInputRaw)
+	ec.ToolOutput = decodeJSON(toolOutputRaw)
 	return &ec, nil
 }
 
@@ -1358,17 +1399,17 @@ func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints 
 		return nil, fmt.Errorf("sync directives: flavor is required")
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sync directives begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	// Find which fingerprints exist for this flavor
-	rows, err := tx.Query(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT fingerprint FROM custom_directives
-		WHERE flavor = $1 AND fingerprint = ANY($2)
-	`, flavor, fingerprints)
+		WHERE flavor = $1 AND `+s.d.InArray("fingerprint", "$2")+`
+	`, flavor, s.d.ArrayArg(fingerprints))
 	if err != nil {
 		return nil, fmt.Errorf("sync directives lookup: %w", err)
 	}
@@ -1377,15 +1418,18 @@ func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints 
 	for rows.Next() {
 		var fp string
 		if err := rows.Scan(&fp); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan fingerprint: %w", err)
 		}
 		found[fp] = true
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, fmt.Errorf("sync directives scan: %w", err)
 	}
+	// The rows are closed before the next statement on the
+	// transaction: on SQLite the writer is one connection.
+	_ = rows.Close()
 
 	// Update last_seen_at for found fingerprints (scoped to flavor)
 	if len(found) > 0 {
@@ -1393,15 +1437,15 @@ func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints 
 		for fp := range found {
 			foundFPs = append(foundFPs, fp)
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE custom_directives SET last_seen_at = NOW()
-			WHERE flavor = $1 AND fingerprint = ANY($2)
-		`, flavor, foundFPs); err != nil {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE custom_directives SET last_seen_at = `+s.d.Now()+`
+			WHERE flavor = $1 AND `+s.d.InArray("fingerprint", "$2")+`
+		`, flavor, s.d.ArrayArg(foundFPs)); err != nil {
 			return nil, fmt.Errorf("sync directives update: %w", err)
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sync directives commit: %w", err)
 	}
 
@@ -1417,15 +1461,16 @@ func (s *Store) SyncDirectives(ctx context.Context, flavor string, fingerprints 
 
 // RegisterDirectives inserts custom directives, updating last_seen_at on conflict.
 //
-// All upserts run inside a single transaction. After commit a NOTIFY is sent
-// on the flightdeck_fleet channel so the dashboard WebSocket hub broadcasts
-// a fleet update and the Directives page refreshes in real time.
+// All upserts run inside a single transaction. After commit a
+// notification is published on the fleet channel so the dashboard
+// WebSocket hub broadcasts a fleet update and the Directives page
+// refreshes in real time.
 func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirective) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("register directives begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	for _, d := range directives {
 		var paramsJSON []byte
@@ -1436,23 +1481,24 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 			}
 			paramsJSON = marshaled
 		}
-		if _, err := tx.Exec(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO custom_directives (fingerprint, name, description, flavor, parameters)
 			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (fingerprint, flavor) DO UPDATE SET last_seen_at = NOW()
-		`, d.Fingerprint, d.Name, d.Description, d.Flavor, paramsJSON); err != nil {
+			ON CONFLICT (fingerprint, flavor) DO UPDATE SET last_seen_at = `+s.d.Now()+`
+		`, d.Fingerprint, d.Name, d.Description, d.Flavor, jsonArg(paramsJSON)); err != nil {
 			return fmt.Errorf("register directive %s: %w", d.Fingerprint, err)
 		}
 	}
 
-	// Notify the dashboard hub so the Directives page updates in real time.
-	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`,
-		NotifyChannel, NotifyDirectiveRegistered); err != nil {
-		return fmt.Errorf("register directives notify: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("register directives commit: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("register directives commit: %w", err)
+	// Notify the dashboard hub so the Directives page updates in real
+	// time. The rows are committed; a failed publish only delays the
+	// page's refresh to its next fetch.
+	if err := s.bus.Publish(ctx, NotifyChannel, NotifyDirectiveRegistered); err != nil {
+		slog.Warn("directive registration notification not published", "err", err)
 	}
 	return nil
 }
@@ -1462,7 +1508,7 @@ func (s *Store) RegisterDirectives(ctx context.Context, directives []CustomDirec
 // scoped to that flavor.
 func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, `
+	err := s.reader().QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM custom_directives
 			WHERE fingerprint = $1
@@ -1478,7 +1524,7 @@ func (s *Store) CustomDirectiveExists(ctx context.Context, fingerprint, flavor s
 // DeleteCustomDirectivesByNamePrefix deletes all rows from custom_directives
 // whose name starts with the given prefix. Returns the number of rows
 // deleted. Intended as a dev/test utility to keep the smoke test suite
-// idempotent across runs on a shared Postgres volume -- the sensor
+// idempotent across runs on a shared database -- the sensor
 // registers directives by fingerprint and cross-flavor collisions can
 // leave stale rows pinned to an older flavor on re-runs. Production
 // callers should not rely on this.
@@ -1486,38 +1532,36 @@ func (s *Store) DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePref
 	if namePrefix == "" {
 		return 0, fmt.Errorf("name prefix is required")
 	}
-	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM custom_directives WHERE name LIKE $1
-	`, namePrefix+"%")
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM custom_directives WHERE name LIKE $1 ESCAPE '\'
+	`, likeEscape(namePrefix)+"%")
 	if err != nil {
 		return 0, fmt.Errorf("delete custom directives: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete custom directives: %w", err)
+	}
+	return n, nil
 }
 
 // GetCustomDirectives returns all custom directives, optionally filtered by flavor.
 func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error) {
-	var rows pgx.Rows
-	var err error
+	query := `
+		SELECT CAST(id AS TEXT), fingerprint, name, COALESCE(description, ''), flavor,
+		       parameters, registered_at, last_seen_at
+		FROM custom_directives`
+	var args []any
 	if flavor != "" {
-		rows, err = s.pool.Query(ctx, `
-			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
-			       parameters, registered_at, last_seen_at
-			FROM custom_directives WHERE flavor = $1
-			ORDER BY registered_at DESC
-		`, flavor)
-	} else {
-		rows, err = s.pool.Query(ctx, `
-			SELECT id::text, fingerprint, name, COALESCE(description, ''), flavor,
-			       parameters, registered_at, last_seen_at
-			FROM custom_directives
-			ORDER BY registered_at DESC
-		`)
+		query += ` WHERE flavor = $1`
+		args = append(args, flavor)
 	}
+	query += ` ORDER BY registered_at DESC`
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get custom directives: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	directives := make([]CustomDirective, 0)
 	for rows.Next() {
@@ -1529,12 +1573,7 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 		); err != nil {
 			return nil, fmt.Errorf("scan custom directive: %w", err)
 		}
-		if paramsRaw != nil {
-			var v any
-			if jsonErr := json.Unmarshal(paramsRaw, &v); jsonErr == nil {
-				d.Parameters = v
-			}
-		}
+		d.Parameters = decodeJSON(paramsRaw)
 		directives = append(directives, d)
 	}
 	if err := rows.Err(); err != nil {
@@ -1558,45 +1597,20 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 // UX that hid useful composition data from operators running
 // post-hoc investigations.
 //
-// Array-typed JSONB values (e.g. “frameworks: ["langchain/0.1.12",
+// Array-typed JSON values (e.g. “frameworks: ["langchain/0.1.12",
 // "crewai/0.42.0"]“) are unnested element-by-element so each
-// framework becomes its own facet entry. The previous implementation
-// used “jsonb_each_text“ which stringifies arrays as a single
-// value -- the dashboard then showed
-// “["langchain/0.1.12", "crewai/0.42.0"]“ as one bogus facet
-// instead of two distinct framework versions.
+// framework becomes its own facet entry; a stringified array as one
+// value would show as one bogus facet instead of two distinct
+// framework versions.
 //
 // Within each key, values are ordered by count descending so the
 // most common value sits at the top of its facet group.
 func (s *Store) GetContextFacets(ctx context.Context) (map[string][]ContextFacetValue, error) {
-	// CROSS JOIN LATERAL on a UNION ALL: scalar values take the
-	// ``#>> '{}'`` branch (extract as text) and array values take the
-	// ``jsonb_array_elements_text`` branch (one row per element). The
-	// jsonb_typeof guards make the two branches mutually exclusive,
-	// so a row's value contributes to exactly one branch and there
-	// is no double-counting.
-	rows, err := s.pool.Query(ctx, `
-		WITH context_pairs AS (
-			SELECT key, value
-			FROM sessions, jsonb_each(context)
-			WHERE context != '{}'::jsonb
-		)
-		SELECT key, val AS value, COUNT(*) AS count
-		FROM context_pairs,
-		     LATERAL (
-		         SELECT jsonb_array_elements_text(value) AS val
-		         WHERE jsonb_typeof(value) = 'array'
-		         UNION ALL
-		         SELECT value #>> '{}' AS val
-		         WHERE jsonb_typeof(value) <> 'array'
-		     ) expanded
-		GROUP BY key, val
-		ORDER BY key ASC, count DESC
-	`)
+	rows, err := s.reader().QueryContext(ctx, s.q.contextFacets())
 	if err != nil {
 		return nil, fmt.Errorf("get context facets: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	facets := make(map[string][]ContextFacetValue)
 	for rows.Next() {

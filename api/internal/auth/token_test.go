@@ -12,7 +12,7 @@ import (
 
 // fakeRow / fakeRows / fakeDB mirror the ingestion-side test doubles.
 // Kept in-package so the rest of the codebase can depend only on the
-// real pgxpool-backed Validator.
+// real storage-backed Validator.
 
 type fakeRow struct {
 	id   string
@@ -63,7 +63,7 @@ type fakeDB struct {
 	ftdQueryCount atomic.Int32
 }
 
-func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) rowScanner {
 	if strings.Contains(sql, "Development Token") {
 		f.devQueryCount.Add(1)
 		if f.devRow == nil {
@@ -74,7 +74,7 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
 	return &fakeRow{err: errors.New("unexpected QueryRow")}
 }
 
-func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
+func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (rowsIter, error) {
 	f.ftdQueryCount.Add(1)
 	return &fakeRows{rows: f.ftdCandidates}, nil
 }
@@ -94,7 +94,7 @@ func envFn(value string) envLookup {
 
 func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 
 	res, err := v.Validate(context.Background(), "tok_dev")
 	if err != nil || !res.Valid || res.ID != "dev-uuid" {
@@ -103,7 +103,7 @@ func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 }
 
 func TestValidate_TokDev_RejectedWhenEnvNotDev(t *testing.T) {
-	v := newValidatorWithDB(&fakeDB{}, envFn(""))
+	v := newValidatorWithDB(&fakeDB{}, nil, envFn(""))
 	res, _ := v.Validate(context.Background(), "tok_dev")
 	if res.Valid {
 		t.Fatalf("expected reject, got %+v", res)
@@ -121,7 +121,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 			{"prod-uuid", "Production K8s", hashWithSalt(salt, raw), salt},
 		},
 	}
-	v := newValidatorWithDB(db, envFn(""))
+	v := newValidatorWithDB(db, nil, envFn(""))
 	res, err := v.Validate(context.Background(), raw)
 	if err != nil || !res.Valid || res.Name != "Production K8s" {
 		t.Fatalf("expected production accept, got %+v err=%v", res, err)
@@ -129,7 +129,7 @@ func TestValidate_FtdToken_AcceptedWithMatchingHash(t *testing.T) {
 }
 
 func TestValidate_InvalidToken_Rejected(t *testing.T) {
-	v := newValidatorWithDB(&fakeDB{}, envFn("dev"))
+	v := newValidatorWithDB(&fakeDB{}, nil, envFn("dev"))
 	for _, raw := range []string{"not-a-token", "sk-real-openai", "", "ftd_badbadbadbadbadbadbadbadbadbad"} {
 		res, _ := v.Validate(context.Background(), raw)
 		if res.Valid {
@@ -141,7 +141,7 @@ func TestValidate_InvalidToken_Rejected(t *testing.T) {
 // --- Middleware behavior ---
 
 func TestMiddleware_RejectsMissingBearer(t *testing.T) {
-	v := newValidatorWithDB(&fakeDB{}, envFn("dev"))
+	v := newValidatorWithDB(&fakeDB{}, nil, envFn("dev"))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("next must not be called without a bearer token")
 		w.WriteHeader(http.StatusOK)
@@ -157,7 +157,7 @@ func TestMiddleware_RejectsMissingBearer(t *testing.T) {
 }
 
 func TestMiddleware_SurfacesTokDevReasonIn401(t *testing.T) {
-	v := newValidatorWithDB(&fakeDB{}, envFn(""))
+	v := newValidatorWithDB(&fakeDB{}, nil, envFn(""))
 	h := Middleware(v, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -174,7 +174,7 @@ func TestMiddleware_SurfacesTokDevReasonIn401(t *testing.T) {
 
 func TestMiddleware_AcceptsValidToken(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}
-	v := newValidatorWithDB(db, envFn("dev"))
+	v := newValidatorWithDB(db, nil, envFn("dev"))
 	called := false
 	h := Middleware(v, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true

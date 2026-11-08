@@ -25,8 +25,18 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/server"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
+
+// databaseConnectBudget is how long the API keeps trying to reach its
+// database at boot before exiting. storage.Open pings, so a database
+// that is a moment behind the service (compose starts both at once; a
+// Kubernetes rollout restarts them independently) would otherwise end
+// the process at once. Sixty seconds outlasts the compose Postgres
+// healthcheck's worst case (five tries, five seconds apart, plus the
+// start) while still failing a misconfigured URL within the first
+// minute of a deploy.
+const databaseConnectBudget = 60 * time.Second
 
 func main() {
 	cfg := config.Load()
@@ -36,27 +46,19 @@ func main() {
 	// -- the service must not crash on a bad pricing file.
 	store.LoadPricing()
 
-	// Postgres
-	poolConfig, err := pgxpool.ParseConfig(cfg.PostgresURL)
+	// The database, through the storage boundary: sqlite:// or
+	// postgres://. Every store of the API runs on it.
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), databaseConnectBudget)
+	db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
+	cancelOpen()
 	if err != nil {
-		slog.Error("postgres connection config invalid", "err", err)
+		slog.Error("database connection failed", "err", err)
 		os.Exit(1)
 	}
-	// The API's queries are interactive aggregations over an analytics
-	// window. Postgres's JIT compiles the long per-row cost expression
-	// on every query, which costs more than it saves at these sizes
-	// (estimated cost over 100,000 events: 780 ms with JIT, 250 ms
-	// without; 1,000,000 events: 2.6 s against 2.3 s), so the API's
-	// connections run without it.
-	poolConfig.ConnConfig.RuntimeParams["jit"] = "off"
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-	if err != nil {
-		slog.Error("postgres connection failed", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
+	defer func() { _ = db.Close() }()
+	bus := storage.NewBus(db)
 
-	s := store.New(pool)
+	s := store.New(db, bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -65,14 +67,14 @@ func main() {
 	// a fresh database the workers may not have created the table yet,
 	// so a failed first sync keeps retrying in the background; the
 	// table keeps its previous content until a sync succeeds.
-	if err := store.SyncPricingTable(ctx, pool); err != nil {
+	if err := store.SyncPricingTable(ctx, db); err != nil {
 		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
-		go store.RetryPricingSync(ctx, pool)
+		go store.RetryPricingSync(ctx, db)
 	}
 	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
-	// unique-violation handles parallel API instances on shared
-	// Postgres. Best-effort: a migration also seeds this row, so a
+	// unique-violation handles parallel API instances on a shared
+	// database. Best-effort: a migration also seeds this row, so a
 	// failure here (for example on a database the workers have not
 	// migrated yet) leaves nothing missing once the migrations have
 	// run.
@@ -85,15 +87,15 @@ func main() {
 		slog.Info("ensure global mcp policy at boot complete")
 	}
 	hub := ws.NewHub(s)
-	validator := auth.NewValidator(pool)
+	validator := auth.NewValidator(db)
 
 	// Start Hub event loop
 	go hub.Run(ctx)
 
-	// Start Postgres NOTIFY listener
-	go hub.ListenNotify(ctx, pool)
+	// Start the fleet notification listener
+	go hub.ListenNotify(ctx, bus)
 	// Drop cached validations of a token as soon as its row is deleted.
-	go validator.ListenRevocations(ctx, pool)
+	go validator.ListenRevocations(ctx, bus)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	durations := metrics.NewRequestDurations()
@@ -128,7 +130,7 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down query API")
-	cancel() // stops Hub and NOTIFY listener
+	cancel() // stops Hub and the notification listeners
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
 	defer shutdownCancel()

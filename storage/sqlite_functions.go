@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 //     the same NULL handling (NULL values are skipped; no value gives
 //     NULL), so Dialect.Percentile renders one aggregate on each
 //     engine and a p50 or p95 agrees to the bit.
+//   - gen_random_uuid(), a random version-4 UUID in canonical form.
 //
 // They are registered on modernc's default driver, the one the wrapped
 // flightdeck-sqlite driver opens connections through, before any
@@ -66,6 +68,25 @@ func registerSQLiteFunctions() {
 			return &percentileAgg{}, nil
 		},
 	})
+	sqlite.MustRegisterFunction("gen_random_uuid", &sqlite.FunctionImpl{
+		NArgs:  0,
+		Scalar: sqliteGenRandomUUID,
+	})
+}
+
+// sqliteGenRandomUUID is Postgres' gen_random_uuid(): a random
+// version-4 UUID in the canonical lower-case hyphenated form the
+// schema's CHECKs demand, so SQL that generates an id (test seeds, a
+// store that needs the id before the INSERT) spells the same on both
+// engines.
+func sqliteGenRandomUUID(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, fmt.Errorf("storage: gen_random_uuid: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // regexCache holds the compiled patterns; a store's patterns are a

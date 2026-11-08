@@ -2,26 +2,28 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // revocationReconnectDelay is how long the revocation listener waits
-// before reconnecting after its LISTEN connection fails. Every reconnect
-// clears the whole validation cache, so the delay only bounds how long a
-// revoked token can still ride the cacheTTL fallback while Postgres is
-// unreachable; two seconds matches the fleet stream's reconnect cadence
-// without hammering a database that is restarting.
+// before subscribing again after its subscription fails or closes.
+// Every resubscription clears the whole validation cache, so the delay
+// only bounds how long a revoked token can still ride the cacheTTL
+// fallback while the bus is unreachable; two seconds matches the fleet
+// stream's reconnect cadence without hammering a database that is
+// restarting.
 const revocationReconnectDelay = 2 * time.Second
 
-// closeTimeout bounds closing the listener's connection at shutdown, so
-// an unreachable server cannot hold up the process exit.
-const closeTimeout = 2 * time.Second
+// errSubscriptionClosed is the listener's reason for resubscribing when
+// the bus closed its channel before the context ended (on Postgres, the
+// LISTEN connection dropped).
+var errSubscriptionClosed = errors.New("revocation subscription closed")
 
 // Invalidate drops every cached validation that resolved to the token
 // with the given id. Called when that token's access_tokens row is
@@ -46,18 +48,18 @@ func (v *Validator) Flush() {
 	v.cache = make(map[string]cacheEntry)
 }
 
-// ListenRevocations keeps a LISTEN connection on the revoked-token
-// channel and invalidates cached validations as token rows are deleted.
-// It returns when ctx is cancelled. A NOTIFY fired while no connection
-// is listening is lost, so the cache is flushed each time the listener
-// (re)connects; a revocation during an outage cannot outlive it.
-func (v *Validator) ListenRevocations(ctx context.Context, pool *pgxpool.Pool) {
+// ListenRevocations keeps a subscription on the revoked-token channel
+// of bus and invalidates cached validations as token ids arrive. It
+// returns when ctx is cancelled. A notification published while no
+// subscription is live is lost, so the cache is flushed each time the
+// listener (re)subscribes; a revocation during a gap cannot outlive it.
+func (v *Validator) ListenRevocations(ctx context.Context, bus storage.Bus) {
 	for ctx.Err() == nil {
-		err := v.listenRevocationsOnce(ctx, pool)
+		err := v.listenRevocationsOnce(ctx, bus)
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Error("token revocation listener error, reconnecting",
+		slog.Error("token revocation listener error, resubscribing",
 			"delay", revocationReconnectDelay, "err", err)
 		select {
 		case <-ctx.Done():
@@ -67,25 +69,10 @@ func (v *Validator) ListenRevocations(ctx context.Context, pool *pgxpool.Pool) {
 	}
 }
 
-func (v *Validator) listenRevocationsOnce(ctx context.Context, pool *pgxpool.Pool) error {
-	// A dedicated connection, not one borrowed from the pool: the
-	// listener holds it for the life of the process, and the pool is
-	// sized for request traffic.
-	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+func (v *Validator) listenRevocationsOnce(ctx context.Context, bus storage.Bus) error {
+	ch, err := bus.Subscribe(ctx, store.AccessTokenRevokedChannel)
 	if err != nil {
-		return fmt.Errorf("connect for LISTEN: %w", err)
-	}
-	channel := pgx.Identifier{store.AccessTokenRevokedChannel}.Sanitize()
-	defer func() {
-		// The caller's ctx is usually cancelled by now; close on a fresh
-		// short context so the server side is released promptly.
-		cctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-		defer cancel()
-		_ = conn.Close(cctx)
-	}()
-
-	if _, err := conn.Exec(ctx, "LISTEN "+channel); err != nil {
-		return fmt.Errorf("LISTEN failed: %w", err)
+		return fmt.Errorf("subscribe: %w", err)
 	}
 	v.Flush()
 	if v.onListening != nil {
@@ -93,11 +80,8 @@ func (v *Validator) listenRevocationsOnce(ctx context.Context, pool *pgxpool.Poo
 	}
 	slog.Info("listening for token revocations", "channel", store.AccessTokenRevokedChannel)
 
-	for {
-		n, err := conn.WaitForNotification(ctx)
-		if err != nil {
-			return fmt.Errorf("wait for notification: %w", err)
-		}
-		v.Invalidate(n.Payload)
+	for payload := range ch {
+		v.Invalidate(payload)
 	}
+	return errSubscriptionClosed
 }

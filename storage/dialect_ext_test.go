@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"regexp"
 	"testing"
 	"time"
 
@@ -342,6 +343,29 @@ func TestRegexpFunctions(t *testing.T) {
 		}
 		if null.Valid {
 			t.Errorf("regexp_replace(NULL) = %q, want NULL", null.String)
+		}
+	})
+}
+
+// gen_random_uuid() yields a canonical lower-case version-4 UUID on
+// both engines, so it passes the SQLite schema's uuid CHECKs.
+func TestGenRandomUUID(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		var a, b string
+		if err := db.QueryRowContext(context.Background(), `SELECT CAST(gen_random_uuid() AS TEXT), CAST(gen_random_uuid() AS TEXT)`).Scan(&a, &b); err != nil {
+			t.Fatal(err)
+		}
+		re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+		if !re.MatchString(a) || !re.MatchString(b) {
+			t.Errorf("gen_random_uuid() = %q, %q, want canonical v4 UUIDs", a, b)
+		}
+		if a == b {
+			t.Errorf("two calls returned the same id %q", a)
+		}
+		// Usable as an INSERT value under the uuid CHECK.
+		if _, err := db.ExecContext(context.Background(),
+			`INSERT INTO token_policies (id, scope, scope_value) VALUES (gen_random_uuid(), 'flavor', $1)`, "uuid-fn-"+a[:8]); err != nil {
+			t.Errorf("insert with gen_random_uuid(): %v", err)
 		}
 	})
 }

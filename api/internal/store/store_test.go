@@ -2,181 +2,118 @@ package store
 
 import (
 	"context"
-	"os"
+	"encoding/json"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 )
 
-// dbURLForTest returns a Postgres DSN if one is reachable, or the
-// empty string when the test should skip. The function looks at
-// TEST_POSTGRES_URL first (so CI / `go test` can wire its own URL)
-// and falls back to FLIGHTDECK_POSTGRES_URL (used by the local dev
-// stack). Returning "" instead of failing keeps `go test ./...` green
-// on a workstation where Postgres is not running.
-func dbURLForTest() string {
-	if u := os.Getenv("TEST_POSTGRES_URL"); u != "" {
-		return u
-	}
-	return os.Getenv("FLIGHTDECK_POSTGRES_URL")
-}
-
-// newTestStore opens a pool against the dev Postgres or skips the test
-// if no DSN is available. The pool is closed when the test ends; the
-// returned cleanup is a no-op kept for existing callers.
-func newTestStore(t *testing.T) (*Store, func()) {
+// eachStore runs fn once per covered backend (storagetest.Each), with a
+// Store on a migrated database: SQLite always, in a file of the test's
+// own; Postgres when TEST_POSTGRES_URL names a database. The Postgres
+// database is shared by the package's tests, so every test keeps to
+// rows it created (random ids, unique flavors) and removes them in
+// t.Cleanup.
+func eachStore(t *testing.T, fn func(t *testing.T, s *Store)) {
 	t.Helper()
-	dsn := dbURLForTest()
-	if dsn == "" {
-		t.Skip("no TEST_POSTGRES_URL or FLIGHTDECK_POSTGRES_URL set; skipping DB test")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("postgres pool unavailable, skipping DB test: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
-		t.Skipf("postgres ping failed, skipping DB test: %v", err)
-	}
-	// The pool closes through t.Cleanup, not the returned func: test
-	// helpers register their row deletes with t.Cleanup too, and those
-	// run before this one (cleanups run last-registered first), while a
-	// deferred close would run before every t.Cleanup and leave the rows
-	// behind. The returned func is kept for the callers that defer it.
-	t.Cleanup(pool.Close)
-	return New(pool), func() {}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		fn(t, New(db, storage.NewBus(db)))
+	})
 }
 
-// FIX 2 -- the previous query stringified array-typed JSONB context
-// values as a single facet entry, e.g.
-// frameworks=["langchain/0.1.12","crewai/0.42.0"] showed up as one
-// bogus value “["langchain/0.1.12","crewai/0.42.0"]“ instead of
-// two distinct framework versions. The new query unnests array
-// values via jsonb_array_elements_text inside a LATERAL UNION ALL,
-// so each element becomes its own facet entry counted independently.
-//
-// This test inserts three sessions with overlapping framework lists
-// into a temp schema, runs GetContextFacets, and asserts each
-// framework appears as a separate value with the correct count.
-func TestGetContextFacetsUnnestArrayValues(t *testing.T) {
-	store, cleanup := newTestStore(t)
-	defer cleanup()
+// testNow is the current time at the millisecond, the precision both
+// backends keep, so a timestamp written and read back compares equal.
+func testNow() time.Time {
+	return time.Now().UTC().Truncate(time.Millisecond)
+}
 
-	ctx := context.Background()
-
-	// Use a temp schema so the test cannot see (or pollute) data
-	// from any other session in the dev DB. The schema is dropped
-	// at the end via the deferred cleanup query below.
-	const schema = "test_facets_unnest"
-	_, _ = store.pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
-	if _, err := store.pool.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	defer func() {
-		_, _ = store.pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
-	}()
-
-	// Build a minimal sessions table that mirrors the columns
-	// GetContextFacets reads (state + context). The full schema is
-	// large; only these two are needed for the query under test.
-	if _, err := store.pool.Exec(ctx, `
-		CREATE TABLE `+schema+`.sessions (
-			session_id TEXT PRIMARY KEY,
-			state TEXT NOT NULL,
-			context JSONB NOT NULL DEFAULT '{}'::jsonb
-		)
-	`); err != nil {
-		t.Fatalf("create temp sessions table: %v", err)
-	}
-
-	// Insert three sessions:
-	//   s1: frameworks = ["langchain/0.1.12"]
-	//   s2: frameworks = ["langchain/0.1.12", "crewai/0.42.0"]
-	//   s3: frameworks = ["autogen/0.2.34"], scalar os = "Linux"
-	// Expected unnested counts:
-	//   frameworks/langchain/0.1.12 = 2
-	//   frameworks/crewai/0.42.0    = 1
-	//   frameworks/autogen/0.2.34   = 1
-	//   os/Linux                    = 1
-	if _, err := store.pool.Exec(ctx, `
-		INSERT INTO `+schema+`.sessions (session_id, state, context) VALUES
-			('s1', 'active', '{"frameworks": ["langchain/0.1.12"]}'::jsonb),
-			('s2', 'idle',   '{"frameworks": ["langchain/0.1.12","crewai/0.42.0"]}'::jsonb),
-			('s3', 'stale',  '{"frameworks": ["autogen/0.2.34"], "os": "Linux"}'::jsonb)
-	`); err != nil {
-		t.Fatalf("insert sessions: %v", err)
-	}
-
-	// Run the same query GetContextFacets uses, but against the
-	// temp schema. We don't call store.GetContextFacets directly
-	// because that hits the public ``sessions`` table. Keeping the
-	// query duplicated here is acceptable for a regression test --
-	// if the production query drifts, this test will catch it via
-	// the assertions below (correct semantics) rather than via SQL
-	// string comparison.
-	rows, err := store.pool.Query(ctx, `
-		WITH context_pairs AS (
-			SELECT key, value
-			FROM `+schema+`.sessions, jsonb_each(context)
-			WHERE context != '{}'::jsonb
-		)
-		SELECT key, val AS value, COUNT(*) AS count
-		FROM context_pairs,
-		     LATERAL (
-		         SELECT jsonb_array_elements_text(value) AS val
-		         WHERE jsonb_typeof(value) = 'array'
-		         UNION ALL
-		         SELECT value #>> '{}' AS val
-		         WHERE jsonb_typeof(value) <> 'array'
-		     ) expanded
-		GROUP BY key, val
-		ORDER BY key ASC, count DESC
-	`)
+// jsonObject renders v as JSON text for a JSON column argument.
+func jsonObject(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
 	if err != nil {
-		t.Fatalf("query context facets: %v", err)
+		t.Fatalf("marshal %v: %v", v, err)
 	}
-	defer rows.Close()
+	return string(b)
+}
 
-	type facetRow struct {
-		key   string
-		value string
-		count int
-	}
-	var got []facetRow
-	for rows.Next() {
-		var r facetRow
-		if err := rows.Scan(&r.key, &r.value, &r.count); err != nil {
-			t.Fatalf("scan: %v", err)
+// GetContextFacets unnests array-typed context values element by
+// element: frameworks=["langchain/0.1.12","crewai/0.42.0"] shows as two
+// distinct facet values, each counted independently, never as the one
+// stringified value "[...]". Booleans render as true / false text and
+// scalars as their text on both engines.
+func TestGetContextFacetsUnnestArrayValues(t *testing.T) {
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		tag := randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, testNow(), testNow(), 3, 0)
+		// Three sessions:
+		//   s1: frameworks = ["langchain/0.1.12-<tag>"]
+		//   s2: frameworks = ["langchain/0.1.12-<tag>", "crewai/0.42.0-<tag>"]
+		//   s3: frameworks = ["autogen/0.2.34-<tag>"], os = "Linux-<tag>",
+		//       supports_directives = true, python_version = 3.12
+		// Expected unnested counts:
+		//   frameworks/langchain/0.1.12-<tag> = 2
+		//   frameworks/crewai/0.42.0-<tag>    = 1
+		//   frameworks/autogen/0.2.34-<tag>   = 1
+		//   os/Linux-<tag>                    = 1
+		//   supports_directives/true          >= 1
+		for i, contextJSON := range []string{
+			`{"frameworks": ["langchain/0.1.12-` + tag + `"]}`,
+			`{"frameworks": ["langchain/0.1.12-` + tag + `","crewai/0.42.0-` + tag + `"]}`,
+			`{"frameworks": ["autogen/0.2.34-` + tag + `"], "os": "Linux-` + tag + `", "supports_directives": true, "python_version": "3.12-` + tag + `"}`,
+		} {
+			seedSessionRow(t, s, randomUUID(t), agentID, "facets-"+tag, nil, nil,
+				contextJSON, testNow().Add(-time.Duration(i)*time.Minute), 0)
 		}
-		got = append(got, r)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows error: %v", err)
-	}
 
-	// Assert each framework value appears separately with the correct
-	// count, and that the stringified array form does NOT appear --
-	// that is the regression we are guarding against.
-	want := map[string]int{
-		"frameworks|langchain/0.1.12": 2,
-		"frameworks|crewai/0.42.0":    1,
-		"frameworks|autogen/0.2.34":   1,
-		"os|Linux":                    1,
-	}
-	gotMap := make(map[string]int, len(got))
-	for _, r := range got {
-		gotMap[r.key+"|"+r.value] = r.count
-	}
-	for key, count := range want {
-		if gotMap[key] != count {
-			t.Errorf("facet %q: want count=%d, got count=%d", key, count, gotMap[key])
+		facets, err := s.GetContextFacets(ctx)
+		if err != nil {
+			t.Fatalf("GetContextFacets: %v", err)
 		}
-	}
-	// The bug we are fixing: a stringified array value must NOT appear
-	// as its own facet entry under any framework key.
-	for _, r := range got {
-		if r.key == "frameworks" && (len(r.value) > 0 && r.value[0] == '[') {
-			t.Errorf("frameworks facet contains stringified array %q -- jsonb_array_elements_text not applied", r.value)
+		counts := func(key string) map[string]int {
+			out := map[string]int{}
+			for _, v := range facets[key] {
+				out[v.Value] = v.Count
+			}
+			return out
 		}
-	}
+		fw := counts("frameworks")
+		for value, want := range map[string]int{
+			"langchain/0.1.12-" + tag: 2,
+			"crewai/0.42.0-" + tag:    1,
+			"autogen/0.2.34-" + tag:   1,
+		} {
+			if fw[value] != want {
+				t.Errorf("frameworks facet %q: count=%d, want %d", value, fw[value], want)
+			}
+		}
+		for value := range fw {
+			if len(value) > 0 && value[0] == '[' {
+				t.Errorf("frameworks facet contains stringified array %q", value)
+			}
+		}
+		if got := counts("os")["Linux-"+tag]; got != 1 {
+			t.Errorf("os facet Linux-%s: count=%d, want 1", tag, got)
+		}
+		if got := counts("python_version")["3.12-"+tag]; got != 1 {
+			t.Errorf("python_version facet: count=%d, want 1", got)
+		}
+		if got := counts("supports_directives")["true"]; got < 1 {
+			t.Errorf("supports_directives facet: true counted %d times, want at least 1 (values: %v)",
+				got, facets["supports_directives"])
+		}
+		// Within a key, values come most-common first.
+		if vals := facets["frameworks"]; len(vals) > 1 {
+			for i := 1; i < len(vals); i++ {
+				if vals[i].Count > vals[i-1].Count {
+					t.Errorf("frameworks facet not ordered by count: %v", vals)
+					break
+				}
+			}
+		}
+	})
 }

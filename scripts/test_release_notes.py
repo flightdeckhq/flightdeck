@@ -68,13 +68,19 @@ class ReleaseNotesTest(unittest.TestCase):
             release_notes.extract(CHANGELOG, "v0.7.0")
 
     def test_an_empty_unreleased_section_fails(self) -> None:
-        text = CHANGELOG.replace("### Added\n\n- Something not released yet.\n\n## v0.9.0", "## v0.9.0")
+        text = CHANGELOG.replace(
+            "### Added\n\n- Something not released yet.\n\n## v0.9.0", "## v0.9.0"
+        )
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             release_notes.extract(text, "v0.9.0-rc.1")
 
     def test_a_malformed_tag_fails(self) -> None:
         for tag in ("0.9.0", "v0.9", "v0.9.0rc1", "latest"):
-            with self.subTest(tag=tag), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            with (
+                self.subTest(tag=tag),
+                self.assertRaises(SystemExit),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 release_notes.section_heading(tag)
 
     def test_the_repository_changelog_has_a_section_for_the_latest_release(self) -> None:

@@ -41,9 +41,7 @@ def extract(text: str, tag: str) -> str:
     """The body of the tag's section: from its heading to the next '## '."""
     heading = section_heading(tag)
     lines = text.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.startswith(heading)), None
-    )
+    start = next((i for i, line in enumerate(lines) if line.startswith(heading)), None)
     if start is None:
         sys.exit(f"CHANGELOG.md has no '{heading}' section for {tag}")
     end = next(

@@ -209,6 +209,12 @@ is published as the PEP 440 pre-release (`0.9.0rc1`), which `pip` and
 CHANGELOG's Unreleased section. The version guard still requires
 `X.Y.Z` to match `VERSION`.
 
+A second dry run after a fix is a new tag, `-rc.2`: PyPI never
+replaces a published file (the publish step skips a version that already
+exists, so a re-pushed `-rc.1` would silently keep the old wheels), and
+the installers cache nothing but would otherwise see two builds under
+one name.
+
 Clean up afterwards: delete the pre-release on GitHub if it should not
 stay visible (`gh release delete vX.Y.Z-rc.1 --cleanup-tag`). The PyPI
 pre-release and the Docker tag stay; neither is what a default install
@@ -218,13 +224,16 @@ resolves to.
 
 Published artifacts are built from the tag; do not move the tag.
 
-1. **verify or goreleaser failed, nothing published:** fix the cause on
-   `main` (through a PR), delete the tag (`git tag -d vX.Y.Z && git push
-   origin :refs/tags/vX.Y.Z`) and run `make release-tag VERSION=vX.Y.Z`
-   again on the fixed `main`. Until the tag is back, plugin installs
-   fail (the marketplace entry points at it), so keep the gap short.
-   govulncheck names the module, the package and the fixed version; the
-   fix is a dependency bump.
+1. **verify or goreleaser failed, nothing published:** the PyPI and
+   Docker jobs wait for goreleaser, so nothing has left the runner. Fix
+   the cause on `main` (through a PR), delete the tag and any partial
+   GitHub release (`gh release delete vX.Y.Z --cleanup-tag`, or `git tag
+   -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` when no release was
+   created) and run `make release-tag VERSION=vX.Y.Z` again on the fixed
+   `main`. Until the tag is back, plugin installs fail (the marketplace
+   entry points at it), so keep the gap short. govulncheck names the
+   module, the package and the fixed version; the fix is a dependency
+   bump.
 
 2. **The GitHub release exists but a later job failed** (a PyPI or
    Docker Hub error, the image scan): if the failure was transient,
@@ -233,7 +242,10 @@ Published artifacts are built from the tag; do not move the tag.
    version that already exists, and the Docker push is idempotent. If it
    needs a code change, release a patch version. A failed image scan
    lands here: the fix is a newer base image digest in the `Dockerfile`
-   or a Go dependency bump.
+   or a Go dependency bump. The install gate starts only when the
+   Release workflow succeeds, so after a re-run that turns it green,
+   run the gate by hand (`gh workflow run install-gate.yml -f
+   tag=vX.Y.Z`) if it did not start on its own.
 
 3. **The install gate is red:** something published does not install or
    run on that platform. Read the leg's log (the gate prints the binary's
@@ -252,9 +264,14 @@ The pipeline needs these, each once:
 
 - **Homebrew tap**: the repository `flightdeckhq/homebrew-tap` exists.
   The secret `HOMEBREW_TAP_GITHUB_TOKEN` must hold a fine-grained
-  personal access token (or a GitHub App token) with *Contents: read and
-  write* on that repository only; the workflow's `GITHUB_TOKEN` cannot
-  push to another repository.
+  personal access token (or a GitHub App token) scoped to that one
+  repository with *Contents: read and write* and nothing else; the
+  workflow's `GITHUB_TOKEN` cannot push to another repository. Give it
+  an expiry (a year at most) and note the date; a stable release fails
+  at the formula step when it lapses, after the GitHub release exists
+  (case 2 above). `brew services start flightdeck` runs the binary with
+  its defaults and no environment, so until the SQLite default lands it
+  cannot pass `FLIGHTDECK_DATABASE_URL`; the formula's caveats say so.
 - **PyPI trusted publishing** for `flightdeck-cli`, as a pending
   publisher at https://pypi.org/manage/account/publishing/ until the
   first publish creates the project: owner `flightdeckhq`, repository
@@ -266,4 +283,9 @@ The pipeline needs these, each once:
   repository is created on Docker Hub first.
 - **GitHub environments** `pypi` and `docker-hub` exist; the release
   jobs run under them so the Deployments panel shows where a version
-  shipped.
+  shipped. Give each a deployment branch rule that allows tags matching
+  `v*` only, so a workflow on a branch can never reach the PyPI
+  trusted publisher or the Docker Hub credentials.
+- **checksums.txt signature**: no setup; the goreleaser job signs with
+  its own OIDC identity through `sigstore/cosign-installer`, and the
+  installers verify it when `cosign` is present.

@@ -311,6 +311,11 @@ jobs:
       # is enabled and unformatted files pass it. gofmt comes from the
       # toolchain setup-go installed above, the same Go release every
       # module's go.mod requires, so CI and a local `gofmt -l .` agree.
+      # The workflow files themselves: expressions, runner labels, shell
+      # in run: blocks. Pinned to a commit (rhysd/actionlint v1.7.12).
+      - name: actionlint on the workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca -color .github/workflows/*.yml
+
       - name: Migration pairs (postgres and sqlite directories in step)
         run: |
           scripts/test-check-migration-pairs.sh

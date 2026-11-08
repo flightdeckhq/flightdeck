@@ -32,12 +32,15 @@ VERSION_FILE = ROOT / "VERSION"
 # location.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
-# A tag the release workflow accepts: vX.Y.Z, or vX.Y.Z-<pre-release>
-# (v0.9.0-rc.1). A pre-release tag is a dry run of the release pipeline
-# and the install gate: it must name the version the files carry, but
-# the CHANGELOG need not be dated yet, since the release PR that dates
-# it comes after the dry run.
-TAG_RE = re.compile(r"^v(?P<base>\d+\.\d+\.\d+)(?P<pre>-[0-9A-Za-z.]+)?$")
+# A tag the release workflow accepts: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N
+# or -rc.N (v0.9.0-rc.1). A pre-release tag is a dry run of the release
+# pipeline and the install gate: it must name the version the files
+# carry, but the CHANGELOG need not be dated yet, since the release PR
+# that dates it comes after the dry run. The grammar is the one
+# packaging/pypi/build_wheels.py turns into a PEP 440 version, so a tag
+# this guard accepts never fails half-way through the pipeline;
+# test_version.py pins that the two agree.
+TAG_RE = re.compile(r"^v(?P<base>\d+\.\d+\.\d+)(?P<pre>-(?:alpha|beta|rc)\.\d+)?$")
 
 # (path, pattern, expected matches). Each pattern's ``v`` group is the
 # version text; set() replaces exactly that span. The expected count
@@ -93,7 +96,7 @@ def check(tag: str | None) -> int:
     if tag is not None:
         m = TAG_RE.match(tag)
         if m is None:
-            problems.append(f"tag {tag} is not vX.Y.Z or vX.Y.Z-<pre-release>")
+            problems.append(f"tag {tag} is not vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N")
         elif m.group("base") != version:
             problems.append(
                 f"tag {tag} does not match VERSION {version} (expected v{version})"

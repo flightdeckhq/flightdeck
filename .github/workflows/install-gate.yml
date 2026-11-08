@@ -52,6 +52,8 @@ jobs:
       pep440: ${{ steps.tag.outputs.pep440 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Tag, pre-release flag and PEP 440 version
         id: tag
@@ -87,7 +89,9 @@ jobs:
             extras: false
     services:
       postgres:
-        image: postgres:16-alpine
+        # Pinned by digest, as the dev stack's and CI's are not: the gate
+        # must fail on the binary, never on a base-image change.
+        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         env:
           POSTGRES_USER: flightdeck
           POSTGRES_PASSWORD: flightdeck_gate
@@ -103,6 +107,11 @@ jobs:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The tag under test: its install scripts and gate checks, not
+          # the default branch's.
+          ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       - name: Database for the binary
         if: env.GATE_NEEDS_POSTGRES == 'true'
@@ -110,12 +119,12 @@ jobs:
           echo "FLIGHTDECK_DATABASE_URL=postgres://flightdeck:flightdeck_gate@127.0.0.1:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
           echo "GATE_DOCKER_DATABASE_URL=postgres://flightdeck:flightdeck_gate@host.docker.internal:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
 
-      # The installer as users run it, piped from the raw URL of this
-      # commit (main's copy once this file is on main).
+      # The installer as users run it, piped from the raw URL of the tag
+      # (what main serves once the tag's commit is on main).
       - name: install.sh (curl | sh)
         run: |
           test ! -e /usr/local/bin/flightdeck
-          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/install.sh" | VERSION="$TAG" sh
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh
           command -v flightdeck
           flightdeck --version
 
@@ -201,6 +210,11 @@ jobs:
       PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The tag under test: its install scripts and gate checks, not
+          # the default branch's.
+          ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       # The macOS runner images ship no PostgreSQL; Homebrew's is a
       # minute to install. Local connections are trusted for the runner
@@ -229,7 +243,7 @@ jobs:
           if [ "${{ matrix.channel }}" = brew ]; then
             echo "::warning::$TAG is a pre-release, which the tap does not carry; this leg installs with install.sh"
           fi
-          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/install.sh" | VERSION="$TAG" sh
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh
           echo "FLIGHTDECK_BIN=$(command -v flightdeck)" >> "$GITHUB_ENV"
 
       - name: Gate
@@ -256,6 +270,11 @@ jobs:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The tag under test: its install scripts and gate checks, not
+          # the default branch's.
+          ref: ${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
 
       # The runner image ships PostgreSQL as a stopped Windows service
       # with PGBIN, PGUSER=postgres and PGPASSWORD=root in the environment.
@@ -281,14 +300,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'createdb failed' }
           "FLIGHTDECK_DATABASE_URL=postgres://${user}:${password}@127.0.0.1:5432/flightdeck?sslmode=disable" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # The installer as users run it, piped from the raw URL of this
-      # commit. It appends its directory to GITHUB_PATH.
+      # The installer as users run it, piped from the raw URL of the tag.
+      # It appends its directory to GITHUB_PATH.
+      # PSScriptAnalyzer ships on the Windows runner image; the installer
+      # is linted on the platform that runs it.
+      - name: PSScriptAnalyzer on install.ps1
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer
+          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error
+          $findings | Format-Table -AutoSize | Out-String | Write-Host
+          if ($findings) { throw "PSScriptAnalyzer: $($findings.Count) finding(s) in install.ps1" }
+
       - name: install.ps1 (irm | iex)
         shell: pwsh
         env:
           VERSION: ${{ env.TAG }}
         run: |
-          irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:GITHUB_SHA/install.ps1" | iex
+          irm "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:TAG/install.ps1" | iex
 
       - name: flightdeck --version
         shell: pwsh

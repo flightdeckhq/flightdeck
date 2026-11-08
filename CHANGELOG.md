@@ -24,6 +24,17 @@ All notable changes to Flightdeck are documented here.
   `npm run dev` in `dashboard/` works against the binary. Each service
   also exports an `app` package (`ingestion/app`, `workers/app`,
   `api/app`) the binary and the standalone services share.
+- **`flightdeck_sensor.init()` needs no arguments against a local
+  stack.** `server` and `token` are optional: each resolves as the kwarg,
+  else `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN`, else the default
+  (`http://localhost:4000/ingest` and the dev token `tok_dev`). The token
+  default applies only when the server was defaulted too and its host is
+  loopback, and `init()` logs one warning when it is in use; a server
+  given without a token raises `ConfigurationError` (now a `ValueError`)
+  naming both variables, so the dev token is never sent to a server the
+  caller chose. The quickstart is `pip install flightdeck-sensor`, then
+  `init(); patch()` (D264).
+
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
   a child session for each agent that runs and for each agent used as a

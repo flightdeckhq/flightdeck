@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	flightdeck "github.com/flightdeckhq/flightdeck"
 	apiapp "github.com/flightdeckhq/flightdeck/api/app"
 	ingestionapp "github.com/flightdeckhq/flightdeck/ingestion/app"
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
@@ -28,6 +27,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/natsembed"
 	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/internal/serve"
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/webui"
 	workersapp "github.com/flightdeckhq/flightdeck/workers/app"
 	"github.com/nats-io/nats.go"
@@ -164,8 +164,13 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	}
 
 	// The schema first, once, before any service or the token bootstrap
-	// touches the database.
-	if err := workersapp.Migrate(wrkCfg, workersapp.Deps{Migrations: flightdeck.Migrations()}); err != nil {
+	// touches the database: the Postgres migrations the storage module
+	// embeds, applied through the workers' runner.
+	migrations, err := storage.MigrationsFS(storage.Postgres)
+	if err != nil {
+		return err
+	}
+	if err := workersapp.Migrate(wrkCfg, workersapp.Deps{Migrations: migrations}); err != nil {
 		return err
 	}
 

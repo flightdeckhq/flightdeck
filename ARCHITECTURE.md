@@ -214,9 +214,8 @@ flightdeck/
 ├── CODE_OF_CONDUCT.md
 ├── LICENSE                     # Apache-2.0
 ├── Makefile                    # Root Makefile -- orchestrates all components; builds the flightdeck binary
-├── go.work                     # Go workspace: the root module and the three service modules
-├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary
-├── embed.go                    # Embeds docker/postgres/migrations so the binary migrates at start
+├── go.work                     # Go workspace: the root module, the storage module and the three service modules
+├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary (migrates from the storage module's embedded files)
 ├── cmd/flightdeck/main.go      # The binary: flags, data dir, Postgres, embedded NATS, the three services, the router
 ├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, secrets), bootstrap (token mode),
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config)
@@ -388,7 +387,7 @@ flightdeck/
 │   │   ├── consumer/nats.go    # JetStream consumer: waits for the stream, fetch loop, session_id check, ack handling
 │   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── logcap/logcap.go    # Named caps for payload strings written to log lines
-│   │   ├── migrate/migrate.go  # golang-migrate runner: applies the migrations from a directory or an embedded fs.FS at boot
+│   │   ├── migrate/migrate.go  # golang-migrate runner: applies storage/migrations/postgres at boot, from a directory (mounted at /migrations) or an embedded fs.FS
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
 │   │   ├── billing/billing.go    # Billing-mode defaults for LLM events
@@ -574,12 +573,22 @@ flightdeck/
 │   ├── _helpers.py             # init_sensor with required flavor + capture defaults
 │   └── *.py                    # one script per framework / scenario
 │
+├── storage/                    # Go module: the one database boundary (Storage section below)
+│   ├── storage.go              # Open(ctx, url): sqlite:// or postgres://, *sql.DB + Dialect, SQLite read/write split
+│   ├── dialect.go              # Dialect: the SQL constructs that differ between the backends
+│   ├── sqlite_driver.go        # modernc wrapper: time.Time arguments written as RFC 3339 UTC text
+│   ├── time.go                 # Time: scans a timestamp from either backend, column or expression
+│   ├── bus.go, bus_postgres.go # Bus: in-process channels (SQLite) or LISTEN/NOTIFY (Postgres)
+│   ├── migrate.go              # golang-migrate runner over the embedded migrations of both backends
+│   ├── migrations/postgres/    # The Postgres migrations (canonical; compose and Helm mount copies)
+│   ├── migrations/sqlite/      # 000001_baseline, then one pair per Postgres migration after it
+│   └── storagetest/            # Opens migrated databases for Go tests on every backend the run covers
 ├── helm/                       # Kubernetes Helm chart
 │   ├── Makefile                # lint / template / install / upgrade — each gates on sync-migrations
 │   ├── templates/              # ConfigMap consumes migrations/ via .Files.Glob at chart-render time
 │   └── migrations/             # Build artifact (gitignored); populated by `make sync-migrations`
-│                               # from docker/postgres/migrations/. Single source of truth lives there.
-├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/migrations
+│                               # from storage/migrations/postgres/. Single source of truth lives there.
+├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/init.sql (seed only)
 ├── tests/
 │   ├── integration/            # Full-pipeline pytest suite (real NATS + Postgres)
 │   ├── e2e-fixtures/           # Canonical seed dataset for Playwright dev-stack runs
@@ -4926,6 +4935,194 @@ row it holds.
 
 ---
 
+## Storage
+
+Flightdeck runs on one of two database engines behind one boundary, the
+Go module `storage` (`github.com/flightdeckhq/flightdeck/storage`):
+
+- **SQLite** (default): one file, pure Go (`modernc.org/sqlite`, no cgo),
+  one process. `storage.Open(ctx, "sqlite://<path>")`.
+- **Postgres**: the multi-process backend (Helm, several instances
+  sharing a database). `storage.Open(ctx, "postgres://…")`, pgx as the
+  `database/sql` driver.
+
+The sections after this one describe the schema in Postgres terms; the
+type mapping below says what each type is on SQLite.
+
+### The boundary
+
+`storage.Open` returns a `*storage.DB`: an embedded `*sql.DB`, the
+`Backend` name and a `Dialect`. Stores write plain `database/sql`
+against it. No pgx type and no SQLite driver symbol is used outside the
+`storage` module. Where a query differs between the two engines beyond
+what `Dialect` renders, the store keeps two query sets
+(`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
+SQL fragments are never templated beyond the dialect helpers. A store
+outside the boundary holds a pgx pool and runs on Postgres only
+(CLAUDE.md rule 35 lists the store packages).
+
+**The common subset** both engines accept, written as is: `$1, $2, …`
+placeholders (SQLite binds `$NNN` by ordinal), `CAST(x AS TEXT)` (the
+portable spelling of Postgres' `x::text`), `ON CONFLICT (…) DO UPDATE SET
+c = EXCLUDED.c` / `DO NOTHING`, `RETURNING`, `COALESCE`, `CASE`, window
+functions, recursive CTEs, partial and expression indexes.
+
+**`Dialect` renders what differs.** Each method takes SQL expressions
+(a column, a literal or a placeholder, never user input) and returns
+SQL text; every helper has a test that runs on both engines and expects
+the same result:
+
+| Helper | Postgres | SQLite |
+|---|---|---|
+| `Placeholder(n)` | `$n` | `$n` |
+| `Now()` | `NOW()` | `strftime('%Y-%m-%dT%H:%M:%fZ','now')` |
+| `AddInterval(ts, secs)` | `ts + (secs) * INTERVAL '1 second'` | `strftime(…, ts, (secs) \|\| ' seconds')` |
+| `DateTrunc(unit, ts)` (hour, day, week, month; weeks start Monday; always UTC) | `date_trunc('unit', ts, 'UTC')` | `strftime` with the unit's fields zeroed; week via `'-6 days', 'weekday 1'` |
+| `ILike(expr, pattern)` | `lower(CAST(expr AS TEXT) COLLATE "C") LIKE lower(CAST(pattern AS TEXT) COLLATE "C") ESCAPE '\'` | `lower(expr) LIKE lower(pattern) ESCAPE '\'` |
+| `InArray(expr, param)` + `ArrayArg(values)` | `expr = ANY($n)` with a `[]string` (`text[]`) | `expr IN (SELECT value FROM json_each($n))` with the JSON array text |
+| `InUUIDArray(expr, param)` | `expr = ANY(CAST($n AS uuid[]))`, so the uuid column's index is used | same as `InArray` (UUIDs are text) |
+| `JSONText(col, keys…)` | `col->'a'->>'b'` | `json_extract(col, '$.a.b')` |
+| `Upsert(conflict, update)` | `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` | same |
+| `Returning(cols…)` | `RETURNING …` | same |
+
+Case-insensitive matching uses `lower()` on both sides on both engines
+and folds ASCII only: SQLite's `lower()` is ASCII-only, and on Postgres
+both sides are folded under the `"C"` collation, so the database locale
+cannot make `'ÉCOLE'` match `'école'` on one engine and not the other.
+A plain `LIKE` is case-sensitive on both (SQLite connections set
+`case_sensitive_like`), so a store that wants case folding says so with
+`ILike`. `DateTrunc` truncates to UTC boundaries whatever the session
+time zone; its argument is a column or function, since a bare
+placeholder has no type on Postgres (`CAST($n AS TIMESTAMPTZ)`).
+`JSONText` is for string-valued keys: Postgres `->>` yields text for
+every scalar, SQLite `json_extract` yields the JSON value's own type.
+
+**Constructs with no helper**, converted per store: `LATERAL` becomes a
+correlated subquery or CTE; `FOR UPDATE SKIP LOCKED` is a no-op on
+SQLite (one writer, transactions begin `IMMEDIATE`); an advisory lock
+becomes the `IMMEDIATE` transaction itself; `array_agg` / `unnest` /
+`jsonb_array_elements` / `jsonb_set` / `split_part` get a SQLite query
+of their own (`json_group_array`, `json_each`, `json_set`, string
+functions).
+
+### SQLite semantics
+
+- **File and connections.** The database URL is `sqlite://<path>`; the
+  path is percent-encoded into the `file:` URI SQLite opens, so a data
+  directory containing `#`, `?`, `%` or spaces opens the file at that
+  path, and a Windows drive path (`C:\…`) becomes `file:///C:/…`. Every
+  connection sets `journal_mode=WAL`, `busy_timeout=5000`,
+  `foreign_keys=ON` (off by default in SQLite), `synchronous=NORMAL` and
+  `case_sensitive_like=ON`. The embedded `*sql.DB` is the **writer**: one
+  connection, so write transactions queue in Go (context-aware) instead
+  of spinning on the busy handler, and every transaction on it begins
+  `IMMEDIATE`, taking the write lock at `BEGIN` so a read-then-write
+  transaction cannot fail with `SQLITE_BUSY` halfway. `DB.Reader()` is a
+  pool of eight `query_only` connections for statements that only read
+  (a write through it fails); in WAL mode they neither block the writer
+  nor wait for it. A read that must see a transaction's own uncommitted
+  rows runs on the transaction. Because the writer is one connection, a
+  statement issued on the writer while the same goroutine holds an open
+  `Tx` or unread `Rows` from it waits forever: inside a transaction every
+  statement runs on the `Tx`, and a read that needs no transaction runs
+  on `Reader()`. `sql.TxOptions.ReadOnly` is enforced by Postgres and
+  ignored by SQLite. On Postgres both handles are the same pool.
+- **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
+  `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
+  digits, `storage.TimeLayout`): the text sorts chronologically byte for
+  byte, SQLite's date functions read and produce it, and the driver
+  scans it as `time.Time`. Every timestamp column carries a `CHECK` that
+  the value round-trips through `strftime` in this layout
+  (`strftime(fmt, col) IS col`: NULL passes, an empty string or any other
+  shape does not), so a value with microseconds, without a zone, or a
+  bare date is refused rather than sorted wrongly. The `storage` driver wrapper writes every
+  `time.Time` argument in this form, so stores pass `time.Time` as on
+  Postgres. Postgres keeps microseconds; SQLite keeps milliseconds. A
+  timestamp an expression computes (`MAX(ts)`, `DateTrunc`) has no
+  declared type and comes back as text on SQLite: scan it through
+  `storage.Time`, which accepts both shapes.
+- **UUIDs** are `TEXT` in canonical lower-case hyphenated form, with a
+  `CHECK` on every uuid column (lower-case, `8-4-4-4-12`, hexadecimal),
+  so an upper-case or unhyphenated id cannot be stored and then missed
+  by a lookup; defaults generate a random version-4 UUID in SQL.
+  Postgres' `uuid` type accepts other spellings (upper case, braces, no
+  hyphens) and stores them canonically; SQLite stores the text as given,
+  so a store lower-cases and hyphenates an id it did not generate
+  before writing, on both engines, and the `CHECK` enforces it on
+  SQLite. Postgres `uuid` columns compare with a bound text argument, so
+  stores pass UUIDs as strings on both engines.
+- **Text collation** is `BINARY`: comparison and `ORDER BY` on text are
+  byte order, not locale order, on SQLite; Postgres orders by the
+  database collation. Stores that need a locale-independent order sort
+  on `lower()` or on a non-text key.
+- **JSON** (`jsonb` on Postgres) is `TEXT` with a `json_valid()` `CHECK`,
+  read with `json_extract`; the facet indexes are expression indexes on
+  `json_extract(col, '$.key')` and replace the Postgres GIN index on the
+  whole document. SQLite stores the document text as written, so key
+  order and duplicate keys survive, where Postgres `jsonb` normalises
+  them; stores compare JSON by extracted keys, never as text.
+- **Booleans** are `BOOLEAN` columns holding 0 / 1; `integer`, `bigint`
+  and `smallint` are `INTEGER`; `numeric` is `NUMERIC`; `bytea` is
+  `BLOB`; `date` is `DATE`.
+- **No stored procedures.** The Postgres trigger that announces a
+  deleted access token on `flightdeck_access_token_revoked` has no
+  SQLite counterpart; on SQLite the store that deletes the row publishes
+  the id on the Bus after commit.
+
+### Migrations
+
+`storage/migrations/postgres/` holds the Postgres migrations (the table
+in the Database section) and `storage/migrations/sqlite/` the SQLite
+ones; both are embedded in the binaries (`go:embed`) and applied by
+`storage.Migrate(ctx, url)`, which opens a connection of its own,
+runs golang-migrate (`database/pgx/v5` or the modernc `database/sqlite`
+driver) and leaves the caller's `DB` untouched. SQLite starts from
+`000001_baseline`, the Postgres schema at 000036 translated once with
+the rules above and seeded with the same `tok_dev` row (salt, hash and
+prefix of Postgres migration 000010) and the same global MCP policy row.
+From there **every schema change is a pair**: the same version number
+and description in both directories. `scripts/check-migration-pairs.sh`
+fails CI when the version lists differ, and the `storage` module's
+parity test opens both engines at their newest migration and fails when
+the tables, columns, nullability, primary keys or explicit indexes
+differ (the GIN index is the one allowed difference). The compose files
+mount the Postgres directory for the workers' runner and
+`helm/Makefile sync-migrations` copies it into the chart.
+
+### Bus
+
+`storage.Bus` carries the notifications the services exchange: a
+session or agent changed (`storage.ChannelFleet`, `flightdeck_fleet`, a
+JSON object with `session_id`, `event_type`, `event_id`), an access
+token was revoked (`storage.ChannelAccessTokenRevoked`,
+`flightdeck_access_token_revoked`, the token id). `Publish(ctx,
+channel, payload)` delivers to every current subscriber; `Subscribe(ctx,
+channel)` returns a channel of payloads that closes when `ctx` ends or
+the subscription is lost. A subscriber that must not miss a
+notification treats a close before its context ends as a gap: it
+re-reads the state it caches and subscribes again. `storage.NewBus(db)`
+picks the implementation: on Postgres, `pg_notify` through the pool and
+one dedicated `LISTEN` connection per subscription, so every process on
+the database sees every notification; on SQLite, in-process buffered
+channels, where a publisher waits for a subscriber whose buffer (256
+payloads) is full rather than dropping; the wait ends with the
+publisher's context or the subscriber's, and publishers never wait for
+each other.
+
+### Tests on both backends
+
+Go tests that run SQL open their database through
+`storage/storagetest`: `storagetest.Each(t, fn)` runs `fn` once per
+covered backend with an open, migrated database. SQLite is always
+covered (a fresh file in the test's temp directory, migrated from the
+embedded baseline), so `go test ./...` runs the SQLite half everywhere;
+Postgres is covered when `TEST_POSTGRES_URL` names a database, and
+`FLIGHTDECK_TEST_BACKEND=sqlite|postgres` narrows a run to one engine.
+`scripts/go-db-tests.sh` (`make test-go-db`) gives each DB-gated
+package a Postgres database of its own on the dev stack, runs every
+such package on Postgres and the storage-converted ones on SQLite as
+well, and fails on a skipped test.
+
 ## Database
 
 ### `agents`
@@ -5455,9 +5652,13 @@ disabled by unsetting `ENVIRONMENT=dev` in production deployments
 ### Migrations
 
 All schema changes use `golang-migrate` numbered up/down pairs in
-`docker/postgres/migrations/`. Schema is never modified via `init.sql`
-(seed data only). Existing migrations are never modified; new changes
-always create a new numbered migration.
+`storage/migrations/postgres/`, with the SQLite translation of the same
+change under the same number in `storage/migrations/sqlite/` (the
+Storage section has the pairing rule and the type mapping). Schema is
+never modified via `init.sql` (seed data only). Existing migrations are
+never modified; new changes always create a new numbered migration. The
+table below is the Postgres history; SQLite's `000001_baseline` is the
+schema this history reaches at 000036.
 
 | # | Description |
 |---|---|
@@ -9472,8 +9673,9 @@ because the mode default is already permissive.
 > migrations 000018 (initial four tables), 000019 (seed
 > empty-blocklist global row), and 000020 (drop the
 > `mcp_policy_versions` table and the `version` column). Migrations
-> ship under `docker/postgres/migrations/` only; the Helm chart picks
-> them up via `helm/Makefile sync-migrations`. Any deviation
+> ship under `storage/migrations/` (the Postgres files, and the SQLite
+> baseline that carries the same tables); the Helm chart picks the
+> Postgres files up via `helm/Makefile sync-migrations`. Any deviation
 > — column rename, type change, additional or removed constraint,
 > index difference — requires a new `DECISIONS.md` entry recording
 > the pivot BEFORE the migration is written.

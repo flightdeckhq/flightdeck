@@ -4,5 +4,6 @@ use (
 	.
 	./api
 	./ingestion
+	./storage
 	./workers
 )

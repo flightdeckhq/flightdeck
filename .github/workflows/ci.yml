@@ -311,10 +311,15 @@ jobs:
       # is enabled and unformatted files pass it. gofmt comes from the
       # toolchain setup-go installed above, the same Go release every
       # module's go.mod requires, so CI and a local `gofmt -l .` agree.
-      - name: gofmt (ingestion, workers, api)
+      - name: Migration pairs (postgres and sqlite directories in step)
+        run: |
+          scripts/test-check-migration-pairs.sh
+          scripts/check-migration-pairs.sh
+
+      - name: gofmt (storage, ingestion, workers, api)
         run: |
           status=0
-          for m in ingestion workers api; do
+          for m in storage ingestion workers api; do
             unformatted="$(cd "$m" && gofmt -l .)"
             if [ -n "$unformatted" ]; then
               echo "::error::gofmt reports unformatted files in $m (run gofmt -w . there):"
@@ -323,6 +328,10 @@ jobs:
             fi
           done
           exit "$status"
+
+      - name: Lint storage
+        working-directory: storage
+        run: golangci-lint run ./... --timeout=5m
 
       - name: Lint ingestion
         working-directory: ingestion
@@ -344,13 +353,21 @@ jobs:
       # govulncheck fails only on a vulnerability the code can reach;
       # advisories in a required module that no call path touches are
       # reported without failing the job.
-      - name: Vulnerability scan (ingestion, workers, api)
+      - name: Vulnerability scan (storage, ingestion, workers, api)
         run: |
-          for m in ingestion workers api; do
+          for m in storage ingestion workers api; do
             echo "::group::govulncheck $m"
             (cd "$m" && govulncheck ./...)
             echo "::endgroup::"
           done
+
+      # The storage module's tests run every dialect and migration check
+      # on SQLite here (a temp file per test, no server); the Postgres
+      # half and the schema parity test run in the integration job's
+      # `make test-go-db`, which has a Postgres.
+      - name: Test storage (SQLite)
+        working-directory: storage
+        run: go test ./... -v -race -count=1
 
       - name: Test ingestion
         working-directory: ingestion
@@ -496,6 +513,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             go.work.sum
+            storage/go.sum
             ingestion/go.sum
             workers/go.sum
             api/go.sum
@@ -528,7 +546,7 @@ jobs:
         run: make lint-flightdeck
 
       - name: Unit tests (root module)
-        run: go test -race . ./cmd/... ./internal/... ./webui/...
+        run: go test -race ./cmd/... ./internal/... ./webui/...
 
       - name: Build bin/flightdeck
         run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
@@ -889,6 +907,7 @@ jobs:
         with:
           go-version: "1.27.3"
           cache-dependency-path: |
+            storage/go.sum
             ingestion/go.sum
             workers/go.sum
             api/go.sum
@@ -931,11 +950,12 @@ jobs:
         # TEST_NATS_URL tests against this stack's NATS.
         # scripts/go-db-tests.sh gives each package a fresh database
         # (init.sql seed, then the workers' migrate-only mode up to the
-        # newest migration), fails on any skipped test in those
-        # packages, and fails when a DB-gated package is missing from
-        # its list. It runs even when the integration tests failed, so
-        # the two results stay independent, but not when the stack
-        # never booted.
+        # newest migration), runs the packages on Postgres and the
+        # storage-converted ones on SQLite as well (a temp file per
+        # test), fails on any skipped test in those packages, and fails
+        # when a DB-gated package is missing from its lists. It runs
+        # even when the integration tests failed, so the two results
+        # stay independent, but not when the stack never booted.
         if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
         run: make test-go-db
 

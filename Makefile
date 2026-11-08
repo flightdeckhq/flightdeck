@@ -49,7 +49,7 @@ build: ## Build all components, the flightdeck binary included
 # of ./..., which would walk dashboard/node_modules (a minute on a
 # Windows mount) and pick up a stray Go package a dependency ships.
 # ---------------------------------------------------------------------------
-GO_ROOT_PKGS := . ./cmd/... ./internal/... ./webui/...
+GO_ROOT_PKGS := ./cmd/... ./internal/... ./webui/...
 GOFMT := $(shell go env GOROOT)/bin/gofmt
 
 build-webui: ## Build the dashboard and copy its bundle (without source maps) into webui/dist
@@ -71,11 +71,12 @@ test-flightdeck: ## Unit tests of the root module (the binary's packages)
 
 lint-flightdeck: ## gofmt and golangci-lint on the root module
 	@test -x "$(GOFMT)" || { echo "gofmt not found at $(GOFMT)"; exit 1; }
-	@test -z "$$($(GOFMT) -l cmd internal webui embed.go)" || { echo "gofmt reports unformatted files (run gofmt -w cmd internal webui embed.go):"; $(GOFMT) -l cmd internal webui embed.go; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal webui)" || { echo "gofmt reports unformatted files (run gofmt -w cmd internal webui):"; $(GOFMT) -l cmd internal webui; exit 1; }
 	golangci-lint run $(GO_ROOT_PKGS)
 
 test: ## Run all unit tests
 	$(MAKE) -C sensor test
+	$(MAKE) -C storage test
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
@@ -279,6 +280,7 @@ seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint
+	$(MAKE) -C storage lint
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint
 	$(MAKE) -C api lint

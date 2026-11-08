@@ -648,6 +648,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **One storage boundary, SQLite as the default backend.** A new Go module
+  `storage` opens SQLite (`sqlite://<path>`, pure Go, WAL, one writer
+  connection) or Postgres (`postgres://…`) behind `database/sql`, names
+  the dialect so a store can pick its query set, and carries a `Bus`
+  that replaces direct LISTEN/NOTIFY (Postgres notifications or
+  in-process channels). The schema migrations moved from
+  `docker/postgres/migrations/` to `storage/migrations/postgres/` and are
+  embedded in the binaries; SQLite starts from a baseline equal to the
+  current Postgres schema and every later change lands as a pair with
+  the same number in both directories (`scripts/check-migration-pairs.sh`
+  and a schema parity test keep them in step). `make test-go-db` runs the
+  Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`).
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

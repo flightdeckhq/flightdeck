@@ -819,3 +819,19 @@ containers, 5-15 minutes); one process, nothing to configure, one topology.
 **Rejected alternative:** an all-in-one container under supervisord (a
 second topology, Docker-only); better per-service images (no laptop or
 Windows path); nginx as the edge (three routes and autocert replace it).
+
+## D262 -- SQLite is the default storage, Postgres the second backend, behind one `storage` boundary
+
+**Date:** 2026-11-07
+**Decision:** the Go services open their database through the `storage`
+module: `sqlite://<path>` (default; pure-Go `modernc.org/sqlite`) or
+`postgres://…` (pgx as a `database/sql` driver), a `Dialect` for the SQL
+that differs and a per-dialect query set where a store differs beyond
+it, a `Bus` in place of direct LISTEN/NOTIFY, and embedded migrations in
+pairs (SQLite starts from a baseline equal to Postgres 000036).
+**Why:** one binary with nothing to install needs an embedded store; the
+Helm / multi-instance path still needs Postgres; one boundary keeps the
+two from drifting.
+**Rejected alternative:** SQLite only (loses the Helm scale path);
+embedded Postgres (a 40 MB download and a child process to manage); a
+query builder or ORM (hides the SQL the stores are tuned on).

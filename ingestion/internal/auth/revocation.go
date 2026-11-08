@@ -12,10 +12,10 @@ import (
 
 // AccessTokenRevokedChannel carries the id of every deleted access_tokens
 // row: on Postgres from migration 000028's trigger, on SQLite from the
-// store that deletes the row, both through the storage Bus. The literal
-// matches api/internal/store.AccessTokenRevokedChannel; the services are
-// separate Go modules.
-const AccessTokenRevokedChannel = "flightdeck_access_token_revoked"
+// store that deletes the row, both through the storage Bus. The name is
+// the storage module's; api/internal/store.AccessTokenRevokedChannel
+// spells the same literal.
+const AccessTokenRevokedChannel = storage.ChannelAccessTokenRevoked
 
 // revocationReconnectDelay is how long the revocation listener waits
 // before subscribing again after its subscription fails or closes.

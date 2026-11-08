@@ -5803,7 +5803,7 @@ commits; on SQLite the store that deletes the row publishes the id on
 the storage Bus after commit. The ingestion API subscribes to that
 channel on the storage Bus (`storage.Bus.Subscribe`, one dedicated
 LISTEN connection on Postgres, outside its request pool); the query API
-still holds its own LISTEN connection. Each drops the cached validations
+holds a LISTEN connection of its own. Each drops the cached validations
 for that id when the notification arrives. Every invalidation also bumps a
 generation counter; a validation that was already querying the database
 when the revocation arrived caches its result only if the counter has not

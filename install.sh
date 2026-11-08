@@ -4,24 +4,45 @@
 #   curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh | sh
 #
 # Detects the operating system and CPU, downloads the matching release
-# archive and the release's checksums.txt, verifies the archive, and
-# installs `flightdeck` into /usr/local/bin when that is writable by this
-# user, else into ~/.local/bin. No sudo is run; a directory this user
-# cannot write to is reported, not forced.
+# archive and the release's checksums.txt, verifies the archive against
+# it, and installs `flightdeck` into /usr/local/bin when that is writable
+# by this user, else into ~/.local/bin. No sudo is run; a directory this
+# user cannot write to is reported, not forced.
+#
+# What is and is not verified: the archive's SHA-256 is checked against
+# checksums.txt, which guards against a corrupt or truncated download.
+# checksums.txt itself is signed by the release workflow with Sigstore
+# (keyless, cosign; the bundle is checksums.txt.sigstore.json next to
+# it). When `cosign` is installed, this script verifies that signature
+# and refuses a release whose checksums were not produced by this
+# repository's release workflow. Without cosign the signature is NOT
+# checked, and the download is trusted as far as TLS to github.com is:
+# install cosign (https://docs.sigstore.dev/cosign/system_config/installation/)
+# before running this script to close that gap. This script is itself
+# fetched over TLS from the repository; read it before piping it to sh.
 #
 # Overrides, as environment variables:
 #   VERSION                 a release tag (v1.2.3); default: the latest release
 #   INSTALL_DIR             where the binary goes; default: /usr/local/bin or ~/.local/bin
 #   FLIGHTDECK_RELEASE_URL  the repository URL the release assets hang off
 #                           (default https://github.com/flightdeckhq/flightdeck);
-#                           a local server with the same layout tests this script
+#                           a local server with the same layout tests this script.
+#                           Downloads are HTTPS only, except from localhost; the
+#                           signature is checked only for the default URL, since
+#                           it names this repository's workflow as the signer.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
 set -eu
 
-REPO_URL="${FLIGHTDECK_RELEASE_URL:-https://github.com/flightdeckhq/flightdeck}"
+DEFAULT_REPO_URL="https://github.com/flightdeckhq/flightdeck"
+REPO_URL="${FLIGHTDECK_RELEASE_URL:-$DEFAULT_REPO_URL}"
 BINARY="flightdeck"
+# The signer of checksums.txt: this repository's release workflow,
+# through GitHub's OIDC issuer. Any workflow file of the repository is
+# accepted so a renamed workflow does not break older installs.
+SIGNER_IDENTITY_RE='^https://github\.com/flightdeckhq/flightdeck/\.github/workflows/.+@refs/tags/v.+$'
+SIGNER_ISSUER="https://token.actions.githubusercontent.com"
 
 info() { printf '%s\n' "$*"; }
 fail() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
@@ -56,12 +77,31 @@ detect_arch() {
 
 # ---- download and verify ----------------------------------------------
 
+# Plain HTTP is accepted from this machine only (a local test server);
+# everything else must be HTTPS, and the clients are told so, so a
+# redirect cannot downgrade the connection either.
+check_scheme() {
+  case "$REPO_URL" in
+    https://*) ;;
+    http://localhost | http://localhost:* | http://localhost/* | \
+    http://127.0.0.1 | http://127.0.0.1:* | http://127.0.0.1/* | \
+    'http://[::1]' | 'http://[::1]:'* | 'http://[::1]/'*) ;;
+    *) fail "FLIGHTDECK_RELEASE_URL must be https:// (or http://localhost for a local test server): $REPO_URL" ;;
+  esac
+}
+
 fetch() {
   # fetch URL DEST
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 3 -o "$2" "$1"
+    case "$1" in
+      https://*) curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1" ;;
+      *) curl -fsSL --proto '=http,https' --retry 3 -o "$2" "$1" ;;
+    esac
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
+    case "$1" in
+      https://*) wget -q --https-only -O "$2" "$1" ;;
+      *) wget -q -O "$2" "$1" ;;
+    esac
   else
     fail "neither curl nor wget is installed"
   fi
@@ -79,6 +119,27 @@ sha256_of() {
   fi
 }
 
+# verify_checksums_signature BASE DIR checks checksums.txt against its
+# Sigstore bundle when cosign is available and the release comes from
+# the default repository (the only signer the identity names).
+verify_checksums_signature() {
+  if [ "$REPO_URL" != "$DEFAULT_REPO_URL" ]; then
+    info "Signature of checksums.txt not checked: FLIGHTDECK_RELEASE_URL is not the flightdeckhq/flightdeck release"
+    return 0
+  fi
+  if ! command -v cosign >/dev/null 2>&1; then
+    info "Signature of checksums.txt not checked: cosign is not installed (see the header of install.sh)"
+    return 0
+  fi
+  fetch "$1/checksums.txt.sigstore.json" "$2/checksums.txt.sigstore.json"
+  cosign verify-blob --bundle "$2/checksums.txt.sigstore.json" \
+    --certificate-identity-regexp "$SIGNER_IDENTITY_RE" \
+    --certificate-oidc-issuer "$SIGNER_ISSUER" \
+    "$2/checksums.txt" >/dev/null 2>&1 ||
+    fail "checksums.txt is not signed by the flightdeckhq/flightdeck release workflow; refusing to install"
+  info "Signature of checksums.txt verified (Sigstore)"
+}
+
 # ---- install location -------------------------------------------------
 
 choose_install_dir() {
@@ -86,8 +147,10 @@ choose_install_dir() {
     echo "$INSTALL_DIR"
   elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
     echo /usr/local/bin
-  else
+  elif [ -n "${HOME:-}" ]; then
     echo "${HOME}/.local/bin"
+  else
+    fail "/usr/local/bin is not writable and HOME is unset; set INSTALL_DIR"
   fi
 }
 
@@ -101,6 +164,7 @@ on_path() {
 # ---- main ---------------------------------------------------------------
 
 main() {
+  check_scheme
   os="$(detect_os)"
   arch="$(detect_arch)"
   asset="${BINARY}_${os}_${arch}.tar.gz"
@@ -118,13 +182,15 @@ main() {
   fi
 
   tmp="$(mktemp -d 2>/dev/null || mktemp -d -t flightdeck)"
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 130' INT TERM
 
   info "Downloading ${base}/${asset}"
   fetch "${base}/${asset}" "${tmp}/${asset}"
   fetch "${base}/checksums.txt" "${tmp}/checksums.txt"
+  verify_checksums_signature "$base" "$tmp"
 
-  expected="$(grep " ${asset}\$" "${tmp}/checksums.txt" | cut -d' ' -f1)"
+  expected="$(grep -F " ${asset}" "${tmp}/checksums.txt" | grep " ${asset}\$" | cut -d' ' -f1)"
   [ -n "$expected" ] || fail "checksums.txt has no entry for ${asset}"
   actual="$(sha256_of "${tmp}/${asset}")"
   [ "$actual" = "$expected" ] || fail "checksum mismatch for ${asset}: expected ${expected}, got ${actual}"

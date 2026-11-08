@@ -46,9 +46,15 @@ uuid() {
 }
 
 # token_from reads the start-up block's Token line: `tok_dev` on a
-# loopback listen, the minted `ftd_...` token on any other.
+# loopback listen, the minted `ftd_...` token on any other. Under GitHub
+# Actions the token is masked in the job log before anything prints it.
 token_from() {
-  sed -n 's/^[[:space:]]*Token[[:space:]]\{1,\}\([A-Za-z0-9_]\{1,\}\).*/\1/p' | head -n 1
+  local token
+  token="$(sed -n 's/^[[:space:]]*Token[[:space:]]\{1,\}\([A-Za-z0-9_]\{1,\}\).*/\1/p' | head -n 1)"
+  if [[ -n "$token" && -n "${GITHUB_ACTIONS:-}" ]]; then
+    printf '::add-mask::%s\n' "$token" >&2
+  fi
+  printf '%s\n' "$token"
 }
 
 wait_ready() {
@@ -68,8 +74,12 @@ checks() {
   say "health ok"
 
   say "dashboard"
-  curl -sf "$base/" | grep -q '<title>Flightdeck</title>' || die "GET / is not the dashboard"
-  curl -sf "$base/runtime-config.json" | grep -q "\"access_token\":\"$token\"" || die "/runtime-config.json does not carry the printed token"
+  # Each body is captured before it is searched: a `curl | grep -q`
+  # under pipefail fails when grep exits before curl finishes writing.
+  body="$(curl -sf "$base/")" || die "GET / failed"
+  grep -q '<title>Flightdeck</title>' <<<"$body" || die "GET / is not the dashboard"
+  body="$(curl -sf "$base/runtime-config.json")" || die "GET /runtime-config.json failed"
+  grep -q "\"access_token\":\"$token\"" <<<"$body" || die "/runtime-config.json does not carry the printed token"
 
   say "one sensor-shaped event"
   sid="$(uuid)"; aid="$(uuid)"
@@ -80,16 +90,15 @@ checks() {
     || die "POST /ingest/v1/events failed"
   printf '   ingest answered: %s\n' "$resp"
 
+  body=""
   for ((i = 0; i < STORE_TIMEOUT; i++)); do
-    if curl -sf -H "Authorization: Bearer $token" "$base/api/v1/sessions/$sid" | grep -q "\"session_id\":\"$sid\""; then
-      break
-    fi
+    body="$(curl -sf -H "Authorization: Bearer $token" "$base/api/v1/sessions/$sid" || true)"
+    if grep -q "\"session_id\":\"$sid\"" <<<"$body"; then break; fi
     sleep 1
   done
-  curl -sf -H "Authorization: Bearer $token" "$base/api/v1/sessions/$sid" | grep -q "\"session_id\":\"$sid\"" \
-    || die "session $sid not served within ${STORE_TIMEOUT}s"
-  curl -sf -H "Authorization: Bearer $token" "$base/api/v1/sessions" | grep -q "$sid" \
-    || die "GET /api/v1/sessions does not list $sid"
+  grep -q "\"session_id\":\"$sid\"" <<<"$body" || die "session $sid not served within ${STORE_TIMEOUT}s"
+  body="$(curl -sf -H "Authorization: Bearer $token" "$base/api/v1/sessions")" || die "GET /api/v1/sessions failed"
+  grep -q "$sid" <<<"$body" || die "GET /api/v1/sessions does not list $sid"
   say "session $sid stored and listed"
 }
 

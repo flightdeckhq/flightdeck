@@ -1315,7 +1315,14 @@ jobs:
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
-          shellcheck scripts/install-gate.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-sh.sh
+
+      # install.sh end to end against a local server with the release
+      # layout (a fake archive): latest, a pinned VERSION, the fallback
+      # install dir, and the refusals (bad checksum, missing checksum
+      # entry, unsupported CPU, unknown version, plain-HTTP host).
+      - name: install.sh against a local release server
+        run: scripts/test-install-sh.sh
 
       # The PyPI wheels (flightdeck-cli) are built by a script, not a
       # build backend; its tests pin the wheel layout, tags and RECORD.
@@ -1323,6 +1330,24 @@ jobs:
       # path would resolve to the packaging library.
       - name: PyPI wheel builder
         run: python3 -m unittest discover -s packaging/pypi -p 'test_*.py'
+
+      # The same ruff the sensor pins (sensor/uv.lock), with the sensor's
+      # configuration, so the packaging code follows the repository's
+      # Python rules; and the builder's output must pass twine's
+      # metadata check and build byte-identical wheels twice.
+      - name: ruff, twine and reproducibility of the wheel builder
+        run: |
+          pip install --quiet ruff==0.17.1 twine==7.0.0
+          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
+          for n in 1 2; do
+            python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \
+              --tag "v$(cat VERSION)" --out "$RUNNER_TEMP/wheels-$n" --source-date-epoch 1767322800
+          done
+          twine check --strict "$RUNNER_TEMP"/wheels-1/*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*manylinux*.whl "$RUNNER_TEMP"/wheels-2/*manylinux*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*musllinux*.whl "$RUNNER_TEMP"/wheels-2/*musllinux*.whl
 
       - name: Validate marketplace.json structure
         run: |
@@ -1401,7 +1426,7 @@ jobs:
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
         with:
           distribution: goreleaser
-          # Same pin as release.yml: the release must build what CI built.
+          # Pinned: the release workflow must run the same goreleaser.
           version: v2.20.0
           args: build --snapshot --clean
 

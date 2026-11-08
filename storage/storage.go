@@ -14,8 +14,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"runtime"
 	"strings"
+	"time"
 
 	// Postgres through pgx's database/sql adapter: the "pgx" driver name.
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -34,6 +37,38 @@ const (
 // ErrUnsupportedURL is returned by Open for a URL whose scheme is
 // neither sqlite nor postgres.
 var ErrUnsupportedURL = errors.New("storage: database URL must start with sqlite:// or postgres://")
+
+// ErrSQLiteNeedsFile is returned by Open for a sqlite:// URL that names
+// no file (empty or :memory:): an in-memory database is private to one
+// connection, so the read pool and the migrator would each see an
+// empty one.
+var ErrSQLiteNeedsFile = errors.New("storage: sqlite URL must name a file")
+
+// postgresMinOpenConns is the floor of the Postgres pool size; the pool
+// holds max(postgresMinOpenConns, NumCPU) connections, open and idle
+// alike, the default pgxpool used before the storage boundary. The cap
+// matters because token validation runs before the rate limiter and an
+// unknown token is never cached: without it a burst of bad tokens
+// opens a connection per request and can exhaust the server's
+// max_connections. Four covers a small host; a CPU per connection is
+// as many queries as the process runs at once.
+const postgresMinOpenConns = 4
+
+// postgresConnMaxIdleTime is how long an idle Postgres connection is
+// kept before it is closed (pgxpool's default). Long enough that the
+// pool does not reconnect between requests of a quiet service, short
+// enough that a burst's connections are returned to the server within
+// the hour.
+const postgresConnMaxIdleTime = 30 * time.Minute
+
+// OpenRetry's backoff: the first wait after a failed attempt, doubling
+// to the cap. Half a second notices a database that is a moment behind
+// the service in a compose or Kubernetes start; five seconds keeps the
+// log from filling while a slower restart completes.
+const (
+	openRetryInitialDelay = 500 * time.Millisecond
+	openRetryMaxDelay     = 5 * time.Second
+)
 
 // sqliteBusyTimeoutMillis is how long an SQLite connection waits for a
 // lock held by another connection before failing with SQLITE_BUSY.
@@ -114,6 +149,41 @@ func Open(ctx context.Context, rawURL string) (*DB, error) {
 	return db, nil
 }
 
+// OpenRetry is Open for a service starting up: a database that does not
+// answer is retried with a doubling delay until it does or budget has
+// elapsed, each attempt logged at warn, so a service that starts a
+// moment before its database (compose, a Kubernetes rollout) comes up
+// instead of exiting. A URL Open can never accept (unsupported scheme,
+// sqlite without a file) is not retried. The last error is returned
+// when the budget runs out or ctx ends.
+func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, error) {
+	deadline := time.Now().Add(budget)
+	delay := openRetryInitialDelay
+	for attempt := 1; ; attempt++ {
+		db, err := Open(ctx, rawURL)
+		if err == nil {
+			return db, nil
+		}
+		if errors.Is(err, ErrUnsupportedURL) || errors.Is(err, ErrSQLiteNeedsFile) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("storage: database not reachable after %d attempts over %s: %w", attempt, budget, err)
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		slog.Warn("database not reachable, retrying", "attempt", attempt, "delay", delay, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("storage: open gave up after %d attempts: %w (last error: %w)", attempt, ctx.Err(), err)
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, openRetryMaxDelay)
+	}
+}
+
 // BackendOf reports which backend a database URL names.
 func BackendOf(rawURL string) (Backend, error) {
 	switch {
@@ -140,15 +210,17 @@ func openPostgres(rawURL string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage: open postgres: %w", err)
 	}
+	conns := max(postgresMinOpenConns, runtime.NumCPU())
+	pool.SetMaxOpenConns(conns)
+	pool.SetMaxIdleConns(conns)
+	pool.SetConnMaxIdleTime(postgresConnMaxIdleTime)
 	return &DB{DB: pool, reader: pool, Dialect: postgresDialect{}, Backend: Postgres, url: rawURL}, nil
 }
 
 func openSQLite(rawURL string) (*DB, error) {
 	path := SQLitePath(rawURL)
 	if path == "" || strings.HasPrefix(path, ":memory:") {
-		// An in-memory database is private to one connection; the
-		// read pool and the migrator would each see an empty one.
-		return nil, errors.New("storage: sqlite URL must name a file")
+		return nil, ErrSQLiteNeedsFile
 	}
 	writer, err := sql.Open(sqliteDriverName, sqliteDSN(path, true))
 	if err != nil {

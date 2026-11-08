@@ -6,6 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,10 +33,96 @@ func TestOpen_RejectsUnknownScheme(t *testing.T) {
 
 func TestOpen_SQLiteNeedsAFile(t *testing.T) {
 	for _, url := range []string{"sqlite://", "sqlite://:memory:"} {
-		if _, err := storage.Open(context.Background(), url); err == nil {
-			t.Errorf("Open(%q) succeeded, want an error", url)
+		if _, err := storage.Open(context.Background(), url); !errors.Is(err, storage.ErrSQLiteNeedsFile) {
+			t.Errorf("Open(%q) = %v, want ErrSQLiteNeedsFile", url, err)
 		}
 	}
+}
+
+// Every handle is bounded: the Postgres pool at pgxpool's old default
+// (max(4, NumCPU) open and idle), the SQLite writer at one connection
+// and the SQLite reader at its fixed pool size. Token validation runs
+// before the rate limiter and never caches an unknown token, so an
+// unbounded pool could exhaust the server's max_connections.
+func TestOpen_ConnectionsAreCapped(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		switch db.Backend {
+		case storage.Postgres:
+			want := max(4, runtime.NumCPU())
+			if got := db.Stats().MaxOpenConnections; got != want {
+				t.Errorf("postgres MaxOpenConnections = %d, want max(4, NumCPU) = %d", got, want)
+			}
+		case storage.SQLite:
+			if got := db.Stats().MaxOpenConnections; got != 1 {
+				t.Errorf("sqlite writer MaxOpenConnections = %d, want 1", got)
+			}
+			if got := db.Reader().Stats().MaxOpenConnections; got != 8 {
+				t.Errorf("sqlite reader MaxOpenConnections = %d, want 8", got)
+			}
+		}
+	})
+}
+
+// openRetryTestBudget is the budget the retry test gives a database
+// that never answers: long enough for the first two backoff steps
+// (0.5 s + 1 s) to prove the loop retries, short enough to keep the
+// test under a few seconds.
+const openRetryTestBudget = 1600 * time.Millisecond
+
+func TestOpenRetry_RetriesUntilTheBudgetThenGivesUp(t *testing.T) {
+	// Port 1 is reserved and never listens: every attempt is refused
+	// at once, so the elapsed time is the backoff alone.
+	const closed = "postgres://u:p@127.0.0.1:1/x?sslmode=disable&connect_timeout=1"
+	start := time.Now()
+	_, err := storage.OpenRetry(context.Background(), closed, openRetryTestBudget)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("OpenRetry to a closed port succeeded")
+	}
+	if elapsed < openRetryTestBudget || elapsed > openRetryTestBudget+3*time.Second {
+		t.Errorf("gave up after %s, want about the %s budget", elapsed, openRetryTestBudget)
+	}
+	m := regexp.MustCompile(`after (\d+) attempts`).FindStringSubmatch(err.Error())
+	if m == nil {
+		t.Fatalf("error does not report its attempts: %v", err)
+	}
+	if n, _ := strconv.Atoi(m[1]); n < 3 {
+		t.Errorf("%d attempts within %s, want at least 3 (0.5 s, 1 s, then the remainder)", n, openRetryTestBudget)
+	}
+	if !strings.Contains(err.Error(), "connection refused") && !strings.Contains(err.Error(), "connect") {
+		t.Errorf("error does not carry the last connection error: %v", err)
+	}
+
+	// A URL Open can never accept is not retried.
+	start = time.Now()
+	if _, err := storage.OpenRetry(context.Background(), "mysql://x", openRetryTestBudget); !errors.Is(err, storage.ErrUnsupportedURL) {
+		t.Errorf("unsupported URL: %v, want ErrUnsupportedURL", err)
+	}
+	if _, err := storage.OpenRetry(context.Background(), "sqlite://:memory:", openRetryTestBudget); !errors.Is(err, storage.ErrSQLiteNeedsFile) {
+		t.Errorf("memory sqlite: %v, want ErrSQLiteNeedsFile", err)
+	}
+	if since := time.Since(start); since > 500*time.Millisecond {
+		t.Errorf("non-retryable URLs took %s; they must fail at once", since)
+	}
+
+	// A cancelled context ends the wait early.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	if _, err := storage.OpenRetry(ctx, closed, time.Minute); err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("cancelled retry: %v, want DeadlineExceeded", err)
+	}
+	if since := time.Since(start); since > 2*time.Second {
+		t.Errorf("cancelled retry took %s", since)
+	}
+
+	// A reachable database opens on the first attempt.
+	path := filepath.Join(t.TempDir(), "fd.db")
+	db, err := storage.OpenRetry(context.Background(), "sqlite://"+path, openRetryTestBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
 }
 
 func TestOpen_SQLiteCreatesFileWithWALAndForeignKeys(t *testing.T) {

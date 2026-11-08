@@ -9,7 +9,7 @@ replace github.com/flightdeckhq/flightdeck/storage => ../storage
 require (
 	github.com/flightdeckhq/flightdeck/storage v0.0.0
 	github.com/nats-io/nats-server/v2 v2.15.2
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag/v2 v2.0.0-rc6
 	go.opentelemetry.io/proto/slim/otlp v1.11.1

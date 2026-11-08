@@ -6,11 +6,16 @@
 -- same tables, columns, nullability and indexes.
 --
 -- Translation rules (ARCHITECTURE.md, Storage):
---   uuid         -> TEXT, canonical lower-case form; the default builds a
---                   random version-4 UUID from randomblob()
+--   uuid         -> TEXT, canonical lower-case hyphenated form, with a
+--                   CHECK (Postgres accepted upper case and other
+--                   spellings; a store normalises before writing); the
+--                   default builds a random version-4 UUID from
+--                   randomblob()
 --   timestamptz  -> TIMESTAMP, text in RFC 3339 UTC with milliseconds
 --                   ("2026-11-07T12:34:56.789Z"); declared TIMESTAMP so
---                   the driver scans it as time.Time
+--                   the driver scans it as time.Time; a CHECK that the
+--                   value round-trips through strftime in that layout
+--                   ("IS", so NULL passes and '' or garbage does not)
 --   jsonb        -> TEXT with a json_valid() CHECK; read with json_extract
 --   boolean      -> BOOLEAN (0 / 1)
 --   integer, bigint, smallint -> INTEGER
@@ -33,8 +38,8 @@ CREATE TABLE token_policies (
     degrade_at_pct  INTEGER,
     degrade_to      TEXT,
     block_at_pct    INTEGER,
-    created_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
-    updated_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), '') = updated_at),
+    created_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at),
+    updated_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', updated_at) IS updated_at),
     CONSTRAINT token_policies_scope_scope_value_key UNIQUE (scope, scope_value)
 );
 
@@ -46,8 +51,8 @@ CREATE TABLE access_tokens (
     token_hash   TEXT NOT NULL,
     salt         TEXT NOT NULL,
     prefix       TEXT NOT NULL,
-    created_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
-    last_used_at TIMESTAMP CHECK (last_used_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_used_at), '') = last_used_at)),
+    created_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at),
+    last_used_at TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', last_used_at) IS last_used_at),
     CONSTRAINT access_tokens_token_hash_key UNIQUE (token_hash)
 );
 
@@ -77,8 +82,8 @@ CREATE TABLE agents (
     user_name       TEXT NOT NULL,
     hostname        TEXT NOT NULL,
     policy_id       TEXT REFERENCES token_policies(id) CHECK (policy_id IS NULL OR (policy_id = lower(policy_id) AND policy_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(policy_id, '-', ''))), 0) = 16)),
-    first_seen_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', first_seen_at), '') = first_seen_at),
-    last_seen_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at),
+    first_seen_at   TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', first_seen_at) IS first_seen_at),
+    last_seen_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at) IS last_seen_at),
     total_sessions  INTEGER NOT NULL DEFAULT 0,
     total_tokens    INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT agents_agent_type_check CHECK (agent_type IN ('coding', 'production')),
@@ -97,9 +102,9 @@ CREATE TABLE sessions (
     framework         TEXT,
     model             TEXT,
     state             TEXT NOT NULL DEFAULT 'active',
-    started_at        TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), '') = started_at),
-    last_seen_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at),
-    ended_at          TIMESTAMP CHECK (ended_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ended_at), '') = ended_at)),
+    started_at        TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', started_at) IS started_at),
+    last_seen_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at) IS last_seen_at),
+    ended_at          TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', ended_at) IS ended_at),
     tokens_used       INTEGER NOT NULL DEFAULT 0,
     token_limit       INTEGER,
     metadata          TEXT,
@@ -151,7 +156,7 @@ CREATE TABLE events (
     tool_name             TEXT,
     has_content           BOOLEAN NOT NULL DEFAULT FALSE,
     payload               TEXT,
-    occurred_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at), '') = occurred_at),
+    occurred_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at) IS occurred_at),
     source                TEXT,
     tokens_cache_read     INTEGER NOT NULL DEFAULT 0,
     tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
@@ -194,7 +199,7 @@ CREATE TABLE event_content (
     messages         TEXT,
     tools            TEXT,
     response         TEXT NOT NULL,
-    captured_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', captured_at), '') = captured_at),
+    captured_at      TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', captured_at) IS captured_at),
     input            TEXT,
     tool_input       TEXT,
     tool_output      TEXT,
@@ -218,9 +223,9 @@ CREATE TABLE directives (
     reason          TEXT,
     grace_period_ms INTEGER NOT NULL DEFAULT 5000,
     issued_by       TEXT NOT NULL DEFAULT 'platform',
-    issued_at       TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', issued_at), '') = issued_at),
-    delivered_at    TIMESTAMP CHECK (delivered_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', delivered_at), '') = delivered_at)),
-    acknowledged_at TIMESTAMP CHECK (acknowledged_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', acknowledged_at), '') = acknowledged_at)),
+    issued_at       TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', issued_at) IS issued_at),
+    delivered_at    TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', delivered_at) IS delivered_at),
+    acknowledged_at TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', acknowledged_at) IS acknowledged_at),
     degrade_to      TEXT,
     payload         TEXT,
     CONSTRAINT directives_payload_json_check CHECK (json_valid(payload))
@@ -236,8 +241,8 @@ CREATE TABLE custom_directives (
     description   TEXT,
     flavor        TEXT NOT NULL,
     parameters    TEXT,
-    registered_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (registered_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', registered_at), '') = registered_at)),
-    last_seen_at  TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (last_seen_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at), '') = last_seen_at)),
+    registered_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', registered_at) IS registered_at),
+    last_seen_at  TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at) IS last_seen_at),
     CONSTRAINT custom_directives_fingerprint_flavor_key UNIQUE (fingerprint, flavor),
     CONSTRAINT custom_directives_parameters_json_check CHECK (json_valid(parameters))
 );
@@ -248,7 +253,7 @@ CREATE INDEX custom_directives_fp_idx ON custom_directives (fingerprint);
 CREATE TABLE session_attachments (
     id          TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))) CHECK (id = lower(id) AND id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(id, '-', ''))), 0) = 16),
     session_id  TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE CHECK (session_id = lower(session_id) AND session_id GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(session_id, '-', ''))), 0) = 16),
-    attached_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', attached_at), '') = attached_at)
+    attached_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', attached_at) IS attached_at)
 );
 
 CREATE INDEX session_attachments_session_idx ON session_attachments (session_id, attached_at);
@@ -259,8 +264,8 @@ CREATE TABLE mcp_policies (
     scope_value          TEXT,
     mode                 TEXT,
     block_on_uncertainty BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
-    updated_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', updated_at), '') = updated_at),
+    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at),
+    updated_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', updated_at) IS updated_at),
     CONSTRAINT mcp_policies_scope_check CHECK (scope IN ('global', 'flavor')),
     CONSTRAINT mcp_policies_mode_check CHECK (mode IN ('allowlist', 'blocklist')),
     CONSTRAINT mcp_policies_check CHECK ((scope = 'global' AND scope_value IS NULL AND mode IS NOT NULL)
@@ -282,7 +287,7 @@ CREATE TABLE mcp_policy_entries (
     fingerprint          TEXT NOT NULL,
     entry_kind           TEXT NOT NULL,
     enforcement          TEXT,
-    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', created_at), '') = created_at),
+    created_at           TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at),
     CONSTRAINT mcp_policy_entries_entry_kind_check CHECK (entry_kind IN ('allow', 'deny')),
     CONSTRAINT mcp_policy_entries_enforcement_check CHECK (enforcement IN ('warn', 'block', 'interactive'))
 );
@@ -296,7 +301,7 @@ CREATE TABLE mcp_policy_audit_log (
     event_type  TEXT NOT NULL,
     actor       TEXT REFERENCES access_tokens(id) ON DELETE SET NULL CHECK (actor IS NULL OR (actor = lower(actor) AND actor GLOB '????????-????-????-????-????????????' AND COALESCE(length(unhex(replace(actor, '-', ''))), 0) = 16)),
     payload     TEXT NOT NULL DEFAULT '{}',
-    occurred_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at), '') = occurred_at),
+    occurred_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at) IS occurred_at),
     CONSTRAINT mcp_policy_audit_log_event_type_check CHECK (event_type IN (
         'policy_created', 'policy_updated', 'policy_deleted',
         'mode_changed', 'entry_added', 'entry_removed',
@@ -334,7 +339,7 @@ CREATE TABLE model_pricing (
 CREATE TABLE model_pricing_meta (
     id           BOOLEAN NOT NULL PRIMARY KEY DEFAULT TRUE,
     content_hash TEXT NOT NULL,
-    loaded_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', loaded_at), '') = loaded_at),
+    loaded_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', loaded_at) IS loaded_at),
     CONSTRAINT model_pricing_meta_id_check CHECK (id)
 );
 
@@ -346,15 +351,15 @@ CREATE TABLE otlp_traces (
     token_name        TEXT NOT NULL DEFAULT '',
     resource          TEXT NOT NULL,
     capture           BOOLEAN NOT NULL,
-    first_received_at TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', first_received_at), '') = first_received_at),
-    last_received_at  TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_received_at), '') = last_received_at),
-    root_seen_at      TIMESTAMP CHECK (root_seen_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', root_seen_at), '') = root_seen_at)),
-    resolve_at        TIMESTAMP NOT NULL CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', resolve_at), '') = resolve_at),
+    first_received_at TIMESTAMP NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', first_received_at) IS first_received_at),
+    last_received_at  TIMESTAMP NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', last_received_at) IS last_received_at),
+    root_seen_at      TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', root_seen_at) IS root_seen_at),
+    resolve_at        TIMESTAMP NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', resolve_at) IS resolve_at),
     pending           BOOLEAN NOT NULL DEFAULT TRUE,
     gen               INTEGER NOT NULL DEFAULT 0,
     lease_owner       TEXT,
-    lease_expires     TIMESTAMP CHECK (lease_expires IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', lease_expires), '') = lease_expires)),
-    assembled_at      TIMESTAMP CHECK (assembled_at IS NULL OR (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', assembled_at), '') = assembled_at)),
+    lease_expires     TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', lease_expires) IS lease_expires),
+    assembled_at      TIMESTAMP CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', assembled_at) IS assembled_at),
     assembly_count    INTEGER NOT NULL DEFAULT 0,
     assembly_reason   TEXT,
     span_count        INTEGER NOT NULL DEFAULT 0,
@@ -383,7 +388,7 @@ CREATE TABLE otlp_spans (
     status         INTEGER NOT NULL,
     meta           TEXT NOT NULL,
     assembled      BOOLEAN NOT NULL DEFAULT FALSE,
-    received_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', received_at), '') = received_at),
+    received_at    TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', received_at) IS received_at),
     assembled_in   INTEGER,
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id) REFERENCES otlp_traces (token_key, trace_id) ON DELETE CASCADE,
@@ -400,7 +405,7 @@ CREATE TABLE otlp_span_content (
     span_id   BLOB NOT NULL,
     kind      INTEGER NOT NULL,
     content   TEXT NOT NULL,
-    staged_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', staged_at), '') = staged_at),
+    staged_at TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (strftime('%Y-%m-%dT%H:%M:%fZ', staged_at) IS staged_at),
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id, span_id, kind) REFERENCES otlp_spans (token_key, trace_id, span_id, kind) ON DELETE CASCADE,
     CONSTRAINT otlp_span_content_content_json_check CHECK (json_valid(content))

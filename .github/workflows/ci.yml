@@ -312,7 +312,9 @@ jobs:
       # toolchain setup-go installed above, the same Go release every
       # module's go.mod requires, so CI and a local `gofmt -l .` agree.
       - name: Migration pairs (postgres and sqlite directories in step)
-        run: scripts/check-migration-pairs.sh
+        run: |
+          scripts/test-check-migration-pairs.sh
+          scripts/check-migration-pairs.sh
 
       - name: gofmt (storage, ingestion, workers, api)
         run: |

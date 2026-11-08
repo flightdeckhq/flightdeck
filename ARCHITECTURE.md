@@ -5023,20 +5023,25 @@ functions).
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
   byte, SQLite's date functions read and produce it, and the driver
   scans it as `time.Time`. Every timestamp column carries a `CHECK` that
-  the value round-trips through `strftime` in this layout, so a value in
-  another shape (microseconds, no zone, a date alone) is refused rather
-  than sorted wrongly. The `storage` driver wrapper writes every
+  the value round-trips through `strftime` in this layout
+  (`strftime(fmt, col) IS col`: NULL passes, an empty string or any other
+  shape does not), so a value with microseconds, without a zone, or a
+  bare date is refused rather than sorted wrongly. The `storage` driver wrapper writes every
   `time.Time` argument in this form, so stores pass `time.Time` as on
   Postgres. Postgres keeps microseconds; SQLite keeps milliseconds. A
   timestamp an expression computes (`MAX(ts)`, `DateTrunc`) has no
   declared type and comes back as text on SQLite: scan it through
   `storage.Time`, which accepts both shapes.
-- **UUIDs** are `TEXT` in canonical lower-case form, with a `CHECK` on
-  every uuid column (lower-case, `8-4-4-4-12`, hexadecimal), so an
-  upper-case or unhyphenated id cannot be stored and then missed by a
-  lookup; defaults generate a random version-4 UUID in SQL. Postgres
-  `uuid` columns compare with a bound text argument, so stores pass
-  UUIDs as strings on both engines.
+- **UUIDs** are `TEXT` in canonical lower-case hyphenated form, with a
+  `CHECK` on every uuid column (lower-case, `8-4-4-4-12`, hexadecimal),
+  so an upper-case or unhyphenated id cannot be stored and then missed
+  by a lookup; defaults generate a random version-4 UUID in SQL.
+  Postgres' `uuid` type accepts other spellings (upper case, braces, no
+  hyphens) and stores them canonically; SQLite stores the text as given,
+  so a store lower-cases and hyphenates an id it did not generate
+  before writing, on both engines, and the `CHECK` enforces it on
+  SQLite. Postgres `uuid` columns compare with a bound text argument, so
+  stores pass UUIDs as strings on both engines.
 - **Text collation** is `BINARY`: comparison and `ORDER BY` on text are
   byte order, not locale order, on SQLite; Postgres orders by the
   database collation. Stores that need a locale-independent order sort

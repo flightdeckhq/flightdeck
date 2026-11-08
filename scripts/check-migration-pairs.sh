@@ -11,11 +11,14 @@
 # so a change to one backend cannot land without the other.
 #
 # Usage: scripts/check-migration-pairs.sh   (CI runs it in the Go job)
+# PG_DIR and LITE_DIR override the directories, for
+# scripts/test-check-migration-pairs.sh, which runs this script on a
+# temp copy with a file removed and expects it to fail.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PG_DIR="$ROOT/storage/migrations/postgres"
-LITE_DIR="$ROOT/storage/migrations/sqlite"
+PG_DIR="${PG_DIR:-$ROOT/storage/migrations/postgres}"
+LITE_DIR="${LITE_DIR:-$ROOT/storage/migrations/sqlite}"
 
 # The Postgres version the SQLite baseline (sqlite 000001) was translated
 # from. Postgres versions up to it have no SQLite counterpart; every
@@ -25,14 +28,17 @@ BASELINE_FROM_POSTGRES=36
 status=0
 fail() { echo "FAIL: $1" >&2; status=1; }
 
-# versions <dir>: prints the distinct version numbers of a directory,
-# failing on a file that is not an up/down pair or is misnamed. Plain
-# lists and comm(1), not associative arrays: macOS ships bash 3.2,
-# which has none.
+# versions <dir>: prints the distinct version numbers of a directory
+# and returns nonzero when a file is misnamed or is not part of an
+# up/down pair. It runs inside a command substitution, so the status
+# variable its fail() sets is the subshell's: the caller must take the
+# verdict from the return code. Plain lists and comm(1), not
+# associative arrays: macOS ships bash 3.2, which has none.
 versions() {
   local dir="$1" f name stem ups downs
   ups=""
   downs=""
+  status=0
   for f in "$dir"/*.sql; do
     name="$(basename "$f")"
     if [[ ! "$name" =~ ^([0-9]{6})_([a-z0-9_]+)\.(up|down)\.sql$ ]]; then
@@ -58,10 +64,15 @@ versions() {
   while IFS= read -r stem; do
     [ -n "$stem" ] && echo "${stem%%_*}"
   done <<<"$ups"
+  return "$status"
 }
 
-pg_versions="$(versions "$PG_DIR" | sort -u)"
-lite_versions="$(versions "$LITE_DIR" | sort -u)"
+# "$(f) || status=1": the substitution's exit code is f's, since sort
+# runs afterwards on the captured text.
+pg_versions="$(versions "$PG_DIR")" || status=1
+lite_versions="$(versions "$LITE_DIR")" || status=1
+pg_versions="$(sort -u <<<"$pg_versions")"
+lite_versions="$(sort -u <<<"$lite_versions")"
 
 [ -n "$pg_versions" ] || fail "no migrations in $PG_DIR"
 [ -n "$lite_versions" ] || fail "no migrations in $LITE_DIR"

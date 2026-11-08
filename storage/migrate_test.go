@@ -171,10 +171,14 @@ func TestMigrate_SQLite_UpDownUp(t *testing.T) {
 		{"timestamp without zone", "UPDATE access_tokens SET last_used_at = '2026-11-07 12:00:00.123' WHERE id = $1", []any{id}},
 		{"date only", "UPDATE access_tokens SET last_used_at = '2026-11-07' WHERE id = $1", []any{id}},
 		{"garbage timestamp", "UPDATE access_tokens SET last_used_at = 'yesterday' WHERE id = $1", []any{id}},
+		{"empty timestamp", "UPDATE access_tokens SET last_used_at = '' WHERE id = $1", []any{id}},
+		{"empty required timestamp", "UPDATE access_tokens SET created_at = '' WHERE id = $1", []any{id}},
 		{"upper-case uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ($1, 'flavor', 'u1')", []any{strings.ToUpper(id)}},
 		{"uuid without dashes", "INSERT INTO token_policies (id, scope, scope_value) VALUES ($1, 'flavor', 'u2')", []any{strings.ReplaceAll(id, "-", "")}},
 		{"non-hex uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ('zzzzzzzz-zzzz-4zzz-8zzz-zzzzzzzzzzzz', 'flavor', 'u3')", nil},
 		{"short uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ('abc', 'flavor', 'u4')", nil},
+		{"empty uuid", "INSERT INTO token_policies (id, scope, scope_value) VALUES ('', 'flavor', 'u6')", nil},
+		{"empty nullable uuid", "INSERT INTO sessions (session_id, flavor, agent_type, context, parent_session_id) VALUES ('0123abcd-4567-4ef0-89ab-0123456789ac', 'f', 'coding', '{}', '')", nil},
 	}
 	for _, c := range badValues {
 		if _, err := db.ExecContext(ctx, c.query, c.args...); err == nil || !strings.Contains(err.Error(), "CHECK") {

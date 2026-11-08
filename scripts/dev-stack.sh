@@ -27,10 +27,21 @@
 #   DEV_DATABASE_URL  Postgres URL (default: the compose Postgres)
 #   DEV_ARGS          extra flags for the binary (for example --metrics)
 #   DEV_BUILD         0 skips the build and runs the last binary
+#   DEV_PROJECT, DEV_PG_PORT, DEV_NATS_PORT, DEV_NATS_MONITOR_PORT
+#                     the compose project name (default docker, which
+#                     names the containers docker-postgres-1 and
+#                     docker-nats-1 as the test harness expects) and
+#                     the loopback ports (5432, 4222, 8222): a second
+#                     stack beside a running one, for a verification
+#                     that must leave the first alone, sets all of them
+#                     and DEV_LISTEN and DEV_DATABASE_URL
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE=(docker compose -f "$ROOT/docker/docker-compose.dev.yml")
+export FLIGHTDECK_DEV_PG_PORT="${DEV_PG_PORT:-5432}"
+export FLIGHTDECK_DEV_NATS_PORT="${DEV_NATS_PORT:-4222}"
+export FLIGHTDECK_DEV_NATS_MONITOR_PORT="${DEV_NATS_MONITOR_PORT:-8222}"
+COMPOSE=(docker compose -p "${DEV_PROJECT:-docker}" -f "$ROOT/docker/docker-compose.dev.yml")
 DEV_DIR="$ROOT/.dev"
 BIN="$DEV_DIR/flightdeck"
 LOG="$DEV_DIR/flightdeck.log"
@@ -73,6 +84,8 @@ wait_ready() {
 }
 
 cmd_up() {
+  # The binary reads ./pricing.yaml relative to its working directory.
+  cd "$ROOT"
   mkdir -p "$DEV_DIR"
   say "containers (Postgres, NATS)"
   "${COMPOSE[@]}" up -d --wait

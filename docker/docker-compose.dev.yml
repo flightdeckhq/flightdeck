@@ -11,7 +11,10 @@
 # The project name is fixed so the container names stay
 # `docker-postgres-1` and `docker-nats-1` whatever directory the command
 # runs from: the test harness (tests/shared/fixtures.py,
-# scripts/go-db-tests.sh, the E2E seeder) shells into them by name.
+# scripts/go-db-tests.sh, the E2E seeder) shells into them by name. The
+# FLIGHTDECK_DEV_*_PORT variables (set by scripts/dev-stack.sh from
+# DEV_PG_PORT and friends) move the loopback ports for a second stack
+# beside a running one.
 name: docker
 
 services:
@@ -32,7 +35,7 @@ services:
       # Loopback only: the database must never be reachable from the
       # LAN in a dev loop. 127.0.0.1 so `docker compose` does not
       # default-publish on 0.0.0.0.
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${FLIGHTDECK_DEV_PG_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flightdeck"]
       interval: 5s
@@ -53,8 +56,8 @@ services:
     volumes:
       - nats_data:/data
     ports:
-      - "127.0.0.1:4222:4222"
-      - "127.0.0.1:8222:8222"
+      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_MONITOR_PORT:-8222}:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
       interval: 5s

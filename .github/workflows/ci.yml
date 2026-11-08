@@ -1308,13 +1308,12 @@ jobs:
 
       # The README's command budget (scripts/readme-budget.sh): the
       # self-test pins the counting rule on fixtures, then the README
-      # is measured. Report mode until the single-binary README lands
-      # within budget; that pull request drops --report so the budget
-      # then fails the build.
+      # is measured and the job fails when a section or the whole is
+      # over budget.
       - name: README command budget
         run: |
           scripts/test-readme-budget.sh
-          scripts/readme-budget.sh --report
+          scripts/readme-budget.sh
 
       - name: Validate marketplace.json structure
         run: |

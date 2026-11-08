@@ -1,10 +1,10 @@
 # Flightdeck Plugin for Claude Code
 
-A Claude Code plugin that reports LLM call metadata, tool invocations, and token counts from Claude Code sessions to a Flightdeck stack. The plugin reads defaults for the local `make dev` stack; set its server and token options, or `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN`, to point at a different stack. Each hook invocation runs as a short-lived child process: read stdin, POST, exit.
+A Claude Code plugin that reports LLM call metadata, tool invocations, and token counts from Claude Code sessions to a Flightdeck stack. The plugin's defaults are a local `flightdeck` on `http://localhost:4000` with the development token; set its server and token options, or `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN`, to point at a different stack. Each hook invocation runs as a short-lived child process: read stdin, POST, exit.
 
 ## Quickstart
 
-Prereq: a running Flightdeck stack. The fastest path is `make dev` in the Flightdeck repo (dashboard on `http://localhost:4000`, seeded token `tok_dev`).
+Prereq: a running Flightdeck. The fastest path is the `flightdeck` binary (README, Quickstart): dashboard on `http://localhost:4000`, development token `tok_dev` while it listens on your own machine. Contributors run `make dev` in the Flightdeck repo instead, which serves the same address and token.
 
 ```bash
 claude --plugin-dir /path/to/flightdeck/plugin
@@ -188,7 +188,7 @@ plugin loaded with `--plugin-dir` (checked on Claude Code 2.1.316), so
 the plugin reports nothing for a bare run. Leave `--bare` off a run you
 want the plugin to report, or report the run through Claude Code's own
 OpenTelemetry export, which needs no hooks: see
-[Claude Code over OpenTelemetry](../README.md#claude-code-over-opentelemetry).
+[Claude Code over OpenTelemetry](../docs/opentelemetry.md#claude-code-over-opentelemetry).
 The same export covers CI jobs and cloud sessions that do not install the
 plugin.
 
@@ -210,7 +210,7 @@ installs plugins from a marketplace with its `plugins` and
 
 The runner must reach the stack, so this needs a Flightdeck deployment
 reachable from GitHub's runners (or a self-hosted runner next to it), not
-a `make dev` stack on a laptop. A runner torn down right after the run
+a `flightdeck` on a laptop. A runner torn down right after the run
 can lose the session's final flush (see Troubleshooting).
 
 **Python agents on the Claude Agent SDK** are reported by the sensor, not

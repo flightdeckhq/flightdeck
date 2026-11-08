@@ -18,8 +18,8 @@ The version lives in one place, the root `VERSION` file.
 sensor (`sensor/pyproject.toml`), the plugin (`plugin/package.json`,
 `plugin/.claude-plugin/plugin.json`), the marketplace entry (`version` and
 `source.ref` in `.claude-plugin/marketplace.json`), the Helm chart
-(`version`, `appVersion` and the default `image.tag`), the README's Helm
-section and the two services' Swagger version. CI fails if any of them
+(`version`, `appVersion` and the default `image.tag`), the compose file's
+image tag and the two services' Swagger version. CI fails if any of them
 differs from `VERSION` (`make version-check`).
 
 `main` is protected, so a release is two steps: the version bump goes

@@ -784,9 +784,10 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
 			t.token_limit, t.capture_enabled,
 			t.parent_session_id, t.parent_agent_id, t.agent_role,
-			` + s.closeReasonsSQL("t.session_id") + ` AS close_reasons
+			` + s.closeReasonsSQL("t.session_key") + ` AS close_reasons
 		FROM (
 			SELECT
+				s.session_id AS session_key,
 				CAST(s.session_id AS TEXT) AS session_id,
 				s.flavor,
 				s.agent_type,

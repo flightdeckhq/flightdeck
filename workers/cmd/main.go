@@ -17,12 +17,13 @@ import (
 func main() {
 	cfg := app.FromEnv(config.Load())
 
-	// Migrate-only mode: apply migrations and exit without starting consumers.
+	// Run database migrations before anything else.
+	if err := app.Migrate(cfg, app.Deps{}); err != nil {
+		slog.Error("database migration failed", "err", err)
+		os.Exit(1)
+	}
+	// Migrate-only mode: exit without starting consumers.
 	if os.Getenv("FLIGHTDECK_MIGRATE_ONLY") == "true" {
-		if err := app.Migrate(cfg, app.Deps{}); err != nil {
-			slog.Error("database migration failed", "err", err)
-			os.Exit(1)
-		}
 		slog.Info("migrate-only mode, exiting")
 		return
 	}

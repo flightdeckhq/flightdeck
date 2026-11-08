@@ -1,8 +1,9 @@
 // Package app is the worker service as a library: everything cmd/main.go
 // used to wire, behind a Config and a Deps, so the standalone binary and
 // the single flightdeck binary run the same service. Migrate applies the
-// schema migrations; Run migrates, then consumes the FLIGHTDECK stream
-// until the context ends.
+// schema migrations; Run consumes the FLIGHTDECK stream until the
+// context ends. Callers run Migrate first: the binaries do it once, at
+// start, before any service touches the database.
 package app
 
 import (
@@ -116,16 +117,13 @@ func Migrate(cfg Config, deps Deps) error {
 	return nil
 }
 
-// Run migrates, connects (where Deps leaves a connection nil), starts the
+// Run connects (where Deps leaves a connection nil), starts the
 // reconciler, the model backfill, the consumer lanes and the metrics
 // listener when configured, and blocks until ctx ends or the consumer
 // cannot be set up (JetStream unavailable, stream or subscription
 // refused), which is returned so the supervisor restarts the worker.
+// The schema must be current: call Migrate first.
 func Run(ctx context.Context, cfg Config, deps Deps) error {
-	if err := Migrate(cfg, deps); err != nil {
-		return err
-	}
-
 	pool := deps.Pool
 	if pool == nil {
 		p, err := writer.NewPool(ctx, cfg.PostgresURL)

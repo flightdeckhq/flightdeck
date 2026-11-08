@@ -120,8 +120,9 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return fmt.Errorf("cannot reach Postgres at %s: %w", maskURL(opts.DatabaseURL), err)
 	}
 
-	migrations := flightdeck.Migrations()
-	if err := workersapp.Migrate(wrkCfg, workersapp.Deps{Migrations: migrations}); err != nil {
+	// The schema first, once, before any service or the token bootstrap
+	// touches the database.
+	if err := workersapp.Migrate(wrkCfg, workersapp.Deps{Migrations: flightdeck.Migrations()}); err != nil {
 		return err
 	}
 
@@ -170,7 +171,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	g.Go(func() error { return ingApp.Run(gctx) })
 	g.Go(func() error { return apiApp.Run(gctx) })
 	g.Go(func() error {
-		return workersapp.Run(gctx, wrkCfg, workersapp.Deps{NATS: wrkNC, Migrations: migrations})
+		return workersapp.Run(gctx, wrkCfg, workersapp.Deps{NATS: wrkNC})
 	})
 
 	var servers []*http.Server

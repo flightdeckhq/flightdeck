@@ -1,6 +1,6 @@
 module github.com/flightdeckhq/flightdeck/ingestion
 
-go 1.27.3
+go 1.27.4
 
 // The storage module lives in this repository; the services build
 // against the checkout, not a published version.
@@ -48,10 +48,11 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sv-tools/openapi v0.4.0 // indirect
 	github.com/swaggo/files/v2 v2.0.0 // indirect
-	github.com/swaggo/swag v1.8.1 // indirect
+	github.com/swaggo/swag v1.16.6 // indirect
 	github.com/urfave/cli/v2 v2.27.5 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect

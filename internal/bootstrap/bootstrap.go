@@ -10,7 +10,7 @@ import (
 
 	apiapp "github.com/flightdeckhq/flightdeck/api/app"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // DevToken is the development token the migrations seed; the services
@@ -64,12 +64,12 @@ type Result struct {
 // and mints a new one through the query API's token store (storing it in
 // secrets) when there is none or it no longer resolves, as after the
 // database was recreated under an old data dir.
-func EnsureToken(ctx context.Context, pool *pgxpool.Pool, secrets *datadir.Secrets, secretsPath string, dev bool) (Result, error) {
+func EnsureToken(ctx context.Context, db *storage.DB, secrets *datadir.Secrets, secretsPath string, dev bool) (Result, error) {
 	if dev {
 		return Result{Token: DevToken, Dev: true}, nil
 	}
 	if secrets.DashboardToken != "" {
-		ok, err := apiapp.TokenValid(ctx, pool, secrets.DashboardToken)
+		ok, err := apiapp.TokenValid(ctx, db, secrets.DashboardToken)
 		if err != nil {
 			return Result{}, fmt.Errorf("check the stored dashboard token: %w", err)
 		}
@@ -77,7 +77,7 @@ func EnsureToken(ctx context.Context, pool *pgxpool.Pool, secrets *datadir.Secre
 			return Result{Token: secrets.DashboardToken}, nil
 		}
 	}
-	raw, err := apiapp.MintToken(ctx, pool, TokenName)
+	raw, err := apiapp.MintToken(ctx, db, TokenName)
 	if err != nil {
 		return Result{}, fmt.Errorf("mint the dashboard token: %w", err)
 	}

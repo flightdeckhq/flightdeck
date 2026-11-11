@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // AgentSummaryParams selects the window + bucketing for
@@ -20,8 +22,8 @@ type AgentSummaryParams struct {
 	// the lower bound of the window (``now - period``). The
 	// handler rejects unknown values.
 	Period string
-	// Bucket is one of ``hour``, ``day``, ``week`` and feeds
-	// ``date_trunc``. Default is derived from Period at the
+	// Bucket is one of ``hour``, ``day``, ``week`` and feeds the
+	// time truncation. Default is derived from Period at the
 	// handler layer.
 	Bucket string
 }
@@ -57,8 +59,8 @@ type AgentSummaryTotals struct {
 // the summary tile carries p50 for context.
 type AgentSummarySeriesPoint struct {
 	// TS is the bucket's start, truncated to the requested
-	// granularity (``date_trunc(bucket, occurred_at)``). Serialised
-	// as RFC 3339 / ISO 8601 by Go's default JSON encoder.
+	// granularity. Serialised as RFC 3339 / ISO 8601 by Go's default
+	// JSON encoder.
 	TS           time.Time `json:"ts"`
 	Tokens       int64     `json:"tokens"`
 	Errors       int64     `json:"errors"`
@@ -97,6 +99,22 @@ func agentSummaryPeriodToDuration(period string) (time.Duration, bool) {
 	return 0, false
 }
 
+// truncUnit maps a validated bucket / granularity name onto the
+// dialect's truncation unit.
+func truncUnit(name string) (storage.TruncUnit, bool) {
+	switch name {
+	case "hour":
+		return storage.TruncHour, true
+	case "day":
+		return storage.TruncDay, true
+	case "week":
+		return storage.TruncWeek, true
+	case "month":
+		return storage.TruncMonth, true
+	}
+	return "", false
+}
+
 // AgentSummary runs the totals + series queries for one agent
 // over the requested period. The two queries share the same
 // FROM / WHERE shape; running them sequentially keeps each plan
@@ -116,28 +134,35 @@ func (s *Store) AgentSummary(
 	if !ok {
 		return nil, fmt.Errorf("invalid period: %s", params.Period)
 	}
-	switch params.Bucket {
-	case "hour", "day", "week":
-	default:
+	unit, ok := truncUnit(params.Bucket)
+	if !ok || params.Bucket == "month" {
 		return nil, fmt.Errorf("invalid bucket: %s", params.Bucket)
 	}
 
 	end := time.Now().UTC()
 	start := end.Add(-dur)
+	d := s.d
 
-	costExpr := BuildCostAggregateSQL()
-	priceJoin := CostPriceJoinSQL()
+	costExpr := s.costAggregateSQL()
+	priceJoin := s.q.priceJoin()
+	errorFilter := s.errorEventFilter()
 
-	// Totals query. FILTER (WHERE ...) lets one pass over the
-	// joined rows produce each metric's filtered aggregate
-	// without splitting the query into N round-trips.
+	// Per-metric aggregates as CASE expressions (a FILTER clause has
+	// no SQLite spelling): tokens over the billed events, errors over
+	// errorEventFilter, latency percentiles over post_call rows only
+	// (the CASE yields NULL for the rest, which the percentile skips).
+	tokensAgg := "COALESCE(SUM(CASE WHEN " + tokenEventFilter + " THEN e.tokens_total END), 0)"
+	errorsAgg := "COUNT(CASE WHEN " + errorFilter + " THEN 1 END)"
+	postCallLatency := "CASE WHEN e.event_type = 'post_call' THEN e.latency_ms END"
+
+	// Totals query.
 	//
-	// The cost expression (BuildCostAggregateSQL) carries its own
-	// FILTER to the priced events (post_call, embeddings and failed
-	// streams' llm_error), and the price lookup (CostPriceJoinSQL)
-	// yields no row for any other event, so the query can scan every
-	// event of the agent. Tokens count the same calls and failed
-	// streams as the analytics tokens metric (tokenEventFilter).
+	// The cost expression (costAggregateSQL) carries its own filter to
+	// the priced events (post_call, embeddings and failed streams'
+	// llm_error), and the price lookup (queries.priceJoin) yields no
+	// row for any other event, so the query can scan every event of
+	// the agent. Tokens count the same calls and failed streams as the
+	// analytics tokens metric (tokenEventFilter).
 	//
 	// COUNT(DISTINCT session_id) is unfiltered: an agent's
 	// "sessions in the window" is every session that emitted at
@@ -146,19 +171,16 @@ func (s *Store) AgentSummary(
 	// AgentSummaryTotals's docstring.
 	totalsSQL := `
 		SELECT
-			COALESCE(SUM(e.tokens_total)
-				FILTER (WHERE ` + tokenEventFilter + `), 0) AS tokens,
-			COUNT(*) FILTER (WHERE ` + errorEventFilter + `) AS errors,
+			` + tokensAgg + ` AS tokens,
+			` + errorsAgg + ` AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
 			COALESCE(` + costExpr + `, 0) AS cost_usd,
-			COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY e.latency_ms)
-				FILTER (WHERE e.event_type = 'post_call'), 0) AS p50,
-			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY e.latency_ms)
-				FILTER (WHERE e.event_type = 'post_call'), 0) AS p95
+			COALESCE(` + d.Percentile("0.5", postCallLatency) + `, 0) AS p50,
+			COALESCE(` + d.Percentile("0.95", postCallLatency) + `, 0) AS p95
 		FROM events e
 		JOIN sessions s ON e.session_id = s.session_id
 		` + priceJoin + `
-		WHERE s.agent_id = $1::uuid
+		WHERE s.agent_id = $1
 		  AND e.occurred_at >= $2
 		  AND e.occurred_at < $3
 	`
@@ -170,10 +192,11 @@ func (s *Store) AgentSummary(
 		Series:  []AgentSummarySeriesPoint{},
 	}
 
+	agentID := uuidArg(params.AgentID)
 	var totals AgentSummaryTotals
 	var costUSD, p50, p95 float64
-	if err := s.pool.QueryRow(ctx, totalsSQL,
-		params.AgentID, start, end,
+	if err := s.reader().QueryRowContext(ctx, totalsSQL,
+		agentID, start, end,
 	).Scan(
 		&totals.Tokens,
 		&totals.Errors,
@@ -188,8 +211,8 @@ func (s *Store) AgentSummary(
 	totals.LatencyP50MS = int64(p50)
 	totals.LatencyP95MS = int64(p95)
 	coverage, err := s.costCoverage(ctx, start, end,
-		"JOIN sessions s ON e.session_id = s.session_id", "AND s.agent_id = $3::uuid",
-		params.AgentID)
+		"JOIN sessions s ON e.session_id = s.session_id", "AND s.agent_id = $3",
+		agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent summary: %w", err)
 	}
@@ -198,47 +221,40 @@ func (s *Store) AgentSummary(
 	totals.BillingModes = nonNil(coverage.BillingModes)
 	resp.Totals = totals
 
-	// Series query. The bucket name is validated against the
-	// hour/day/week whitelist above so the date_trunc literal is
-	// safe to interpolate. Buckets with no rows simply don't
-	// appear; the chart code handles the gap rather than the
-	// query padding with zeros.
-	//
-	//nolint:gosec // params.Bucket from the hour/day/week whitelist
-	// validated five lines above; never reaches this Sprintf with
-	// an unsanctioned value.
-	seriesSQL := fmt.Sprintf(`
+	// Series query. The bucket name was validated against the
+	// hour/day/week whitelist above, so the truncation unit is safe
+	// to render. Buckets with no rows simply don't appear; the chart
+	// code handles the gap rather than the query padding with zeros.
+	seriesSQL := `
 		SELECT
-			date_trunc('%s', e.occurred_at) AS bucket,
-			COALESCE(SUM(e.tokens_total)
-				FILTER (WHERE %s), 0) AS tokens,
-			COUNT(*) FILTER (WHERE %s) AS errors,
+			` + d.DateTrunc(unit, "e.occurred_at") + ` AS bucket,
+			` + tokensAgg + ` AS tokens,
+			` + errorsAgg + ` AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
-			COALESCE(%s, 0) AS cost_usd,
-			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY e.latency_ms)
-				FILTER (WHERE e.event_type = 'post_call'), 0) AS p95
+			COALESCE(` + costExpr + `, 0) AS cost_usd,
+			COALESCE(` + d.Percentile("0.95", postCallLatency) + `, 0) AS p95
 		FROM events e
 		JOIN sessions s ON e.session_id = s.session_id
-		%s
-		WHERE s.agent_id = $1::uuid
+		` + priceJoin + `
+		WHERE s.agent_id = $1
 		  AND e.occurred_at >= $2
 		  AND e.occurred_at < $3
 		GROUP BY bucket
 		ORDER BY bucket
-	`, params.Bucket, tokenEventFilter, errorEventFilter, costExpr, priceJoin)
+	`
 
-	rows, err := s.pool.Query(ctx, seriesSQL,
-		params.AgentID, start, end)
+	rows, err := s.reader().QueryContext(ctx, seriesSQL, agentID, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("agent summary series: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var pt AgentSummarySeriesPoint
+		var bucket storage.Time
 		var pCost, p95 float64
 		if err := rows.Scan(
-			&pt.TS,
+			&bucket,
 			&pt.Tokens,
 			&pt.Errors,
 			&pt.Sessions,
@@ -247,6 +263,7 @@ func (s *Store) AgentSummary(
 		); err != nil {
 			return nil, fmt.Errorf("agent summary series scan: %w", err)
 		}
+		pt.TS = bucket.Time.UTC()
 		pt.CostUSD = pCost
 		pt.LatencyP95MS = int64(p95)
 		resp.Series = append(resp.Series, pt)

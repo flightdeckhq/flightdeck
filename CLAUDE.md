@@ -157,10 +157,10 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     two schemas differ.
 
 35. **SQL lives only in each service's store packages, never in handlers.**
-    Those are `api/internal/store` (with the token lookups and revocation
-    `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
+    Those are `api/internal/store` (with the token lookups of
+    `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive`,
-    `ingestion/internal/otlpstage` and `workers/internal/writer`; `workers/internal/migrate` applies the
+    `ingestion/internal/otlpstage` and `workers/internal/writer`; the `storage` module applies the
     migration files. Stores open their database through the `storage`
     module (`storage.Open`, `storage.Dialect`, `storage.Bus`; the
     Storage section of ARCHITECTURE.md), never through pgx directly;
@@ -171,8 +171,7 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     - `workers/internal/processor/session.go`: session-row reads
       (`rowOwnerless`, `handleSessionGuard`, `sessionLookupState`);
     - `workers/internal/processor/event.go`: the `enrichSessionEnd`
-      queries;
-    - `api/internal/ws/hub.go`: the `LISTEN` / `UNLISTEN`.
+      queries.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.

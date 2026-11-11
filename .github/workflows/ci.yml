@@ -1053,7 +1053,9 @@ jobs:
       # archive for hours at a time: apt then spends ten minutes timing
       # out and the shard fails without running a test. So the system
       # packages are installed only when the browser does not start
-      # without them, and the launch check runs again afterwards.
+      # without them, and the launch check runs again afterwards. The
+      # check starts the same binary the suite uses (the `chromium`
+      # channel of playwright.config.ts, not the headless shell).
       - name: Install Playwright browsers
         working-directory: dashboard
         run: |
@@ -1061,7 +1063,7 @@ jobs:
           launch_check() {
             node -e "
               const { chromium } = require('@playwright/test');
-              chromium.launch().then(async (browser) => {
+              chromium.launch({ channel: 'chromium' }).then(async (browser) => {
                 const page = await browser.newPage();
                 await page.setContent('<title>ok</title>');
                 if ((await page.title()) !== 'ok') throw new Error('Chromium started but did not render');

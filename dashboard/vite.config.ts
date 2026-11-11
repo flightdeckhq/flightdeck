@@ -49,9 +49,12 @@ export default defineConfig({
     },
     // The paths are forwarded as sent, as the compose nginx does: the
     // services serve their routes under /api and /ingest themselves.
+    // The target is the flightdeck binary (`go run ./cmd/flightdeck`)
+    // or the compose stack's nginx, both on :4000; FLIGHTDECK_DEV_TARGET
+    // points the proxy elsewhere.
     proxy: {
-      "/api": { target: "http://localhost:8081" },
-      "/ingest": { target: "http://localhost:8080" },
+      "/api": { target: process.env.FLIGHTDECK_DEV_TARGET ?? "http://localhost:4000" },
+      "/ingest": { target: process.env.FLIGHTDECK_DEV_TARGET ?? "http://localhost:4000" },
     },
   },
 });

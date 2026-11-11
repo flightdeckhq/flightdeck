@@ -90,12 +90,12 @@ no single point of failure introduced into the agent's execution path.
          │                                │ GET   / (SPA static)
          ▼ ▼
 ┌──────────────────────────────────────────────────────────┐
-│                    nginx :4000                           │
+│          flightdeck :4000 (one process; router)          │
 │                                                          │
-│  /ingest/*  → ingestion:8080  (path as sent)             │
-│  /api/*     → api:8081        (path as sent)             │
-│  /          → dashboard:3000                             │
-│  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
+│  /ingest/*  → ingestion mux   (path as sent)             │
+│  /api/*     → query API mux   (path as sent)             │
+│  /          → embedded dashboard + /runtime-config.json  │
+│  /api/v1/stream  → query API  (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
         │                              │
         ▼ ▼
@@ -213,7 +213,13 @@ flightdeck/
 ├── SECURITY.md                 # Security policy: supported versions, reporting, capture posture
 ├── CODE_OF_CONDUCT.md
 ├── LICENSE                     # Apache-2.0
-├── Makefile                    # Root Makefile -- orchestrates all components
+├── Makefile                    # Root Makefile -- orchestrates all components; builds the flightdeck binary
+├── go.work                     # Go workspace: the root module, the storage module and the three service modules
+├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary (migrates from the storage module's embedded files)
+├── cmd/flightdeck/main.go      # The binary: flags, data dir, Postgres, embedded NATS, the three services, the router
+├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, secrets), bootstrap (token mode),
+│                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config)
+├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
@@ -10301,54 +10307,193 @@ too long to fit a tooltip — never paraphrased.
 
 ### Deployment
 
-Two deployment targets are supported:
+Flightdeck is one binary, `flightdeck` (the root Go module,
+`cmd/flightdeck`). It runs the ingestion API, the workers and the query
+API as goroutines of one process, serves the dashboard from the binary,
+and embeds its message bus. Postgres is the one external dependency
+(`--database-url`); the binary refuses to start without it.
 
-**Docker Compose (single host).** `make dev` brings up all 7 services
-(nginx, postgres, nats, ingestion, workers, api, dashboard) on the
-internal compose network. nginx exposes port 4000. The production
-overlay (`docker-compose.prod.yml`) terminates TLS at nginx on 443,
-redirects 80 → 443, and unsets `ENVIRONMENT=dev` so the seed `tok_dev`
-row is rejected.
+**Ports and routes.** One listener, `--listen`, default `127.0.0.1:4000`.
+The router serves `/` and every path with no other owner from the
+embedded dashboard bundle (`webui/dist`, filled by `make build-webui`
+from `dashboard/dist` without the source maps), falling back to
+`index.html` for the SPA's client-side routes (an `/assets/*` path that
+names no file is a 404, never `index.html`); `/assets/*` with a
+one-year immutable cache, since Vite hashes the file names;
+`/runtime-config.json`, generated (below) and sent with `Cache-Control:
+no-store`; `/investigate` as a permanent redirect to `/events`; `/api`
+and everything under it to the query API's handler; `/ingest` and
+everything under it to the ingestion handler, each path forwarded as
+sent (the services strip their own prefix; see Public path prefixes).
+A bare `/v1/...` is answered 404 with a hint naming the two prefixes, so
+a sensor pointed at the origin without `/ingest` learns why. When the
+ingestion handler answers without reading the request body (a body
+over the receivers' 4 MiB cap is refused with 413 unread), the router
+drains up to 16 MiB of it, the receivers' inflated-body cap, so the
+client receives the status rather than a connection reset, as it does
+behind the compose nginx, which reads the whole body itself. The
+dashboard responses carry the browser security headers the compose
+dashboard's nginx sets (`X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy`, the same
+`Content-Security-Policy`). The server has a 15-second header read
+timeout, a 120-second idle timeout and no server-wide write timeout,
+because `/api/v1/stream` is a WebSocket; instead the router sets the
+services' own per-request deadlines on the connection: the ingestion
+read and write timeouts (10 seconds each) on `/ingest`, the query
+API's read timeout (15 seconds) on `/api` except the WebSocket, so a
+client that stalls mid-body holds a connection no longer than it
+could with the standalone services. The query API's own 30-second
+REST timeout and the ingestion body limits still apply inside their
+handlers. A port already in use stops the start with the error and a
+`--listen` hint; a privileged port the process may not bind (`:80`
+and `:443` of `--domain`) with the remedy (root, `CAP_NET_BIND_SERVICE`
+or a higher `--listen` port). The sockets are bound before anything
+else, so either message arrives before any side effect. The three services' metrics listeners
+(ports 9102, 9103 and 9104, see Metrics) are off unless `--metrics` is
+given; the public port never serves `/metrics`.
 
-Every compose service logs through Docker's `json-file` driver with
-rotation: a container's log file is rotated at 20 MiB and five files
-are kept, so one container holds at most 100 MiB of logs and the seven
-at most 700 MiB. Without it the driver keeps a container's whole output
-in one file that grows until the disk is full, and the workers log a
-line for every event they drop, so a flood of bad events would fill the
-host disk through the log alone. 20 MiB and five files are the defaults
-of Docker's own rotating `local` driver; `json-file` is kept over
-`local` because `docker logs` reads both, while log shippers that tail
-container files read only `json-file`. The rotation is set in
-`docker-compose.yml` and applies under the dev and prod overlays alike;
-a daemon-wide `log-opts` in `/etc/docker/daemon.json` does not override
-it. Under Helm the kubelet rotates container logs
-(`containerLogMaxSize`, `containerLogMaxFiles`) and the chart sets
-nothing.
+**Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
+`~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
+mode 0700; an existing directory with a wider mode is used as it is and
+a warning names the `chmod`, since it holds the bus store and the
+secrets file. It holds `nats/`, the embedded JetStream store;
+`secrets.json` (mode 0600) with the JWT secret, generated once, and the
+dashboard token of the non-loopback mode below; and `acme/`, the TLS
+certificate cache. A `--database-url` is the only other state the
+binary needs, so a new data dir on an existing database is a working
+install.
+
+**Embedded NATS.** The binary starts a `nats-server` in process with
+JetStream on, `StoreDir=<data>/nats` and `DontListen`, so no port is
+opened for the bus, and ingestion and the workers connect to it through
+in-process connections (`nats.InProcessServer`). The `FLIGHTDECK`
+stream, its limits (72 hours, 5 GiB) and the durable consumer are the
+ones described under Worker / Event Processing; the JetStream store
+limit is set from the stream's size limit so the reservation never
+depends on free disk at start. `--nats-url` (`FLIGHTDECK_NATS_URL`)
+switches to an external server and starts no embedded one; several
+instances sharing a database (Helm) point at one external NATS, since
+each embedded server is a bus of its own.
+
+**Auth bootstrap.** The listen address decides the mode. Bound to a
+loopback address (`127.0.0.1`, `localhost`, `::1`), the binary runs the
+services with the development semantics the dev compose had
+(`ENVIRONMENT=dev`, set in process): the seeded `tok_dev` is accepted,
+`/runtime-config.json` returns it, the dev-only `DELETE
+/v1/directives/custom` route is mounted, and the start-up block prints
+the token. Bound to any other address, or started with `--domain`, the
+dev token is refused with the usual 401; on the first start the binary
+mints an `ftd_` access token named `Bootstrap token` through the
+query API's token store (stored salted and hashed in `access_tokens`
+like any other), prints it once in the start-up block, and keeps the
+plaintext in `secrets.json` so `/runtime-config.json` can hand it to the
+dashboard on every start. On a later start the stored token is
+validated against the database and re-minted if it no longer resolves
+(a new database under an old data dir). Serving the dashboard token
+from `/runtime-config.json` to anyone who can reach the origin is the
+same trust boundary the mounted `runtime-config.json` had: a
+non-loopback deployment protects the origin at the network edge or
+with `--domain`. Further tokens are minted in the Settings page.
+
+**TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
+the binary with certificates from Let's Encrypt (`acme/autocert`,
+HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
+and on `:80` to answer the ACME challenge and redirect every other GET
+or HEAD to `https://<domain>` with the same path and query, whatever
+`Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
+the binary serves plain HTTP.
+
+**Time zone.** The binary sets the process's local zone to UTC at
+start, as the compose containers have: the query API
+formats the timestamps it reads from Postgres in the process's zone,
+and its contract is RFC 3339 in UTC, whatever zone the host is in.
+
+**Start-up output.** One block on stdout: the version, the dashboard
+URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
+was printed), the data dir, the database (URL with the password
+masked) and the bus (embedded, with its store dir, or the external
+URL). Everything else is `slog` on stderr.
+
+**Tuning.** The services' tuning variables keep their names and
+defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
+`FLIGHTDECK_WORKER_POOL_SIZE`, `FLIGHTDECK_RECONCILER_INTERVAL_SECS`,
+`FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, `FLIGHTDECK_NATS_STREAM_*`,
+`FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS`, `FLIGHTDECK_CORS_ORIGIN`,
+`FLIGHTDECK_PRICING_PATH`, `SHUTDOWN_TIMEOUT_SECS`); the integration
+suite runs the binary with the same two overrides the dev compose
+sets.
+
+**Start order and shutdown.** The binary binds its port(s) first (so a
+busy or privileged port fails before anything is touched), prepares
+the data dir and secrets, connects to Postgres, applies the embedded
+migrations, starts the bus, then the three services together, then
+serves. On SIGINT or SIGTERM, or when a service or a listener fails,
+it stops in order: the HTTP server stops accepting and drains the
+requests in flight (which still have the services they are calling),
+then the services are cancelled and waited for (each joins its own
+loops: the ingestion assembler and the worker lanes finish their
+current message within `SHUTDOWN_TIMEOUT_SECS`), each step bounded by
+30 seconds; then the embedded NATS server and the database pool close,
+the bus last so every publish and acknowledgement before it has reached
+the store. A service's failure is the exit status's reason; a stop on
+a signal exits 0.
+
+**The `app` packages.** Each service exports `ingestion/app`,
+`workers/app` and `api/app`: `Config` (the service's tunables, the
+values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
+workers, the migrations `fs.FS`; a nil dependency is dialled from
+`Config`), `New`, `Run(ctx)` and, for ingestion and the API,
+`Handler()`. `Run` joins every goroutine it starts before it closes
+the connections it owns; the workers' `Run` does not migrate (the
+binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
+`app.Run`, and the compose dev overlay still runs them with `go run
+./cmd/` behind nginx on `:4000` for the dashboard hot-reload loop; the
+dashboard's Vite proxy forwards `/api` and `/ingest` to `:4000`, so
+`go run ./cmd/flightdeck` plus `npm run dev` in `dashboard/` is the
+other dev loop.
 
 **Helm chart (Kubernetes).** A Chart at `helm/` ships a values file
 covering image tags, replicas, HPA bounds, NATS JetStream PVC sizes,
 ingress configuration, and an `externalUrl` escape hatch for managed
 Postgres. The bundled Postgres StatefulSet is fine for small
 deployments; production should provide an external HA Postgres via
-`postgres.externalUrl`.
+`postgres.externalUrl`. The chart passes the `FLIGHTDECK` stream's
+settings to ingestion from `nats.jetstream.stream` (`maxAgeHours`,
+`maxSizeMiB`, `replicas`; see Worker / Event Processing > The
+FLIGHTDECK stream). Unset, `replicas` is 3 when `nats.replicas` is 3 or
+more and 1 otherwise: 3 copies keep a quorum through the loss of one
+server, while 2 copies need both servers for a quorum and so would stop
+the stream on either one's loss. A set `replicas` must be 1 to 5, not 2
+for that reason, and at most `nats.replicas`, and the render fails
+otherwise, as it does for an age under 1 hour, a size under 64 MiB, or
+a size above 75% of `nats.jetstream.fileStore.size` (read when it is a
+plain integer with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix).
+Each NATS server holds a full copy on its own PVC, so `maxSizeMiB`
+stays well under the 75% of free space a server reserves at most: 5120
+MiB on the 10Gi default volume, 30720 MiB on the 50Gi volume of
+`values.prod.yaml`. The ingestion pods carry a checksum of the three
+settings, so changing one rolls them and the new settings apply to the
+stream in place. The chart runs the per-service images.
 
-The chart passes the `FLIGHTDECK` stream's settings to ingestion from
-`nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
-Worker / Event Processing > The FLIGHTDECK stream). Unset, `replicas` is
-3 when `nats.replicas` is 3 or more and 1 otherwise: 3 copies keep a
-quorum through the loss of one server, while 2 copies need both servers
-for a quorum and so would stop the stream on either one's loss. A set
-`replicas` must be 1 to 5, not 2 for that reason, and at most
-`nats.replicas`, and the render fails otherwise, as it does for an age
-under 1 hour, a size under 64 MiB, or a size above 75% of
-`nats.jetstream.fileStore.size` (read when it is a plain integer with a
-`Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). Each NATS server holds a full copy on its own PVC, so
-`maxSizeMiB` stays well under the 75% of free space a server reserves
-at most: 5120 MiB on the 10Gi default volume, 30720 MiB on the 50Gi
-volume of `values.prod.yaml`. The ingestion pods carry a checksum of the
-three settings, so changing one rolls them and the new settings apply to
-the stream in place.
+**Compose.** `docker/docker-compose.yml` with the dev overlay
+(`make dev`) runs the seven-service topology (nginx, postgres, nats,
+ingestion, workers, api, dashboard) from source for contributors who
+want the dashboard's hot reload behind nginx on `:4000`; the production
+overlay terminates TLS at nginx. Every compose service logs through
+Docker's `json-file` driver with rotation: a container's log file is
+rotated at 20 MiB and five files are kept, so one container holds at
+most 100 MiB of logs and the seven at most 700 MiB. Without it the
+driver keeps a container's whole output in one file that grows until
+the disk is full, and the workers log a line for every event they drop,
+so a flood of bad events would fill the host disk through the log
+alone. 20 MiB and five files are the defaults of Docker's own rotating
+`local` driver; `json-file` is kept over `local` because `docker logs`
+reads both, while log shippers that tail container files read only
+`json-file`. The rotation is set in `docker-compose.yml` and applies
+under the dev and prod overlays alike; a daemon-wide `log-opts` in
+`/etc/docker/daemon.json` does not override it. Under Helm the kubelet
+rotates container logs (`containerLogMaxSize`, `containerLogMaxFiles`)
+and the chart sets nothing.
 
 **Public path prefixes.** Clients reach ingestion under `/ingest` and
 the query API under `/api` on one origin, and each service also accepts
@@ -10370,6 +10515,24 @@ The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).
 
 ### Environment variables
+
+**`flightdeck` binary:** flags win over environment variables, which win
+over the defaults.
+
+| Flag | Variable | Purpose |
+|---|---|---|
+| `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
+| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`) |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `nats/`, `secrets.json`, `acme/` |
+| `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
+| `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
+| `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
+
+The services' tuning variables below keep their names and defaults under
+the binary; `FLIGHTDECK_PORT`, `FLIGHTDECK_POSTGRES_URL`, `ENVIRONMENT`
+and `FLIGHTDECK_MIGRATIONS_DIR` are read by the standalone service
+binaries only, since the one binary derives them from its flags.
+
 
 **Ingestion API:**
 
@@ -10630,7 +10793,10 @@ targets:
 | `make playground-<script>` | Live-API regression demo for `<script>` |
 | `make playground-all` | All playground demos, skip those without API keys |
 | `make lint` | Per-component lint (ruff, golangci-lint, ESLint, mypy) |
-| `make build` | Docker images for ingestion, workers, api, dashboard |
+| `make build` | Builds every component, the `flightdeck` binary included |
+| `make build-webui` | Builds the dashboard and copies `dashboard/dist` (without source maps) into `webui/dist` for `go:embed` |
+| `make build-flightdeck` | `make build-webui`, then builds `bin/flightdeck` with the VERSION file's version |
+| `make run-flightdeck` | Runs the binary from source against `FLIGHTDECK_DATABASE_URL` |
 | `make release-prep VERSION=vX.Y.Z` | Test and lint, bump every version location, date the CHANGELOG, open the release PR |
 | `make release-tag VERSION=vX.Y.Z` | After the release PR merges: check the versions and push the tag (starts the release pipeline) |
 | `make version-check` | Check every version location matches the `VERSION` file |

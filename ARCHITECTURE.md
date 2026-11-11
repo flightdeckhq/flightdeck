@@ -216,8 +216,8 @@ flightdeck/
 ├── Makefile                    # Root Makefile -- orchestrates all components; builds the flightdeck binary
 ├── go.work                     # Go workspace: the root module, the storage module and the three service modules
 ├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary (migrates from the storage module's embedded files)
-├── cmd/flightdeck/main.go      # The binary: flags, data dir, Postgres, embedded NATS, the three services, the router
-├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, secrets), bootstrap (token mode),
+├── cmd/flightdeck/main.go      # The binary: flags, data dir, the database (SQLite file or Postgres), embedded NATS, the three services, the router
+├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, lock file, secrets), bootstrap (token mode),
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config)
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
@@ -5033,7 +5033,8 @@ Flightdeck runs on one of two database engines behind one boundary, the
 Go module `storage` (`github.com/flightdeckhq/flightdeck/storage`):
 
 - **SQLite** (default): one file, pure Go (`modernc.org/sqlite`, no cgo),
-  one process. `storage.Open(ctx, "sqlite://<path>")`.
+  one process. `storage.Open(ctx, "sqlite://<path>")`. The `flightdeck`
+  binary uses `<data dir>/flightdeck.db` unless told otherwise.
 - **Postgres**: the multi-process backend (Helm, several instances
   sharing a database). `storage.Open(ctx, "postgres://…")`, pgx as the
   `database/sql` driver.
@@ -5049,13 +5050,12 @@ against it. No pgx type and no SQLite driver symbol is used outside the
 `storage` module. Where a query differs between the two engines beyond
 what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
-SQL fragments are never templated beyond the dialect helpers. A store
-outside the boundary holds a pgx pool and runs on Postgres only
-(CLAUDE.md rule 35 lists the store packages). The query API runs wholly
-on the boundary: every store in `api/internal/store`, its token
-validator and the WebSocket hub, so it serves a SQLite file and a
-Postgres database alike; every ingestion store is inside it too, so the
-ingestion API runs whole on either backend. The one
+SQL fragments are never templated beyond the dialect helpers. Every
+store of the three services is inside the boundary (CLAUDE.md rule 35
+lists the store packages): the query API's stores, token validator and
+WebSocket hub, every ingestion store, and the workers' writer and
+processor, so each service, and the binary that runs the three on one
+handle, serves a SQLite file and a Postgres database alike. The one
 database error type a store inspects is read through
 `storage.ErrorClass`, which names a Postgres error by its SQLSTATE,
 table and constraint and any other error by its text, never by the
@@ -5142,8 +5142,14 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
 
 ### SQLite semantics
 
-- **File and connections.** The database URL is `sqlite://<path>`; the
-  path is percent-encoded into the `file:` URI SQLite opens, so a data
+- **File and connections.** The database URL is `sqlite://<path>`: the
+  path follows the scheme verbatim and nothing in the URL is
+  percent-encoded. `storage.SQLiteURL(path)` builds it and
+  `storage.SQLitePath(url)` reads it back, exact inverses; a caller
+  never assembles the URL through a URL library, which would escape the
+  path and name a second, empty database. The one encoding SQLite
+  needs happens inside `Open`: the path is percent-encoded into the
+  `file:` URI SQLite opens, so a data
   directory containing `#`, `?`, `%` or spaces opens the file at that
   path, and a Windows drive path (`C:\…`) becomes `file:///C:/…`. Every
   connection sets `journal_mode=WAL`, `busy_timeout=5000`,
@@ -5244,7 +5250,13 @@ the database sees every notification; on SQLite, in-process buffered
 channels, where a publisher waits for a subscriber whose buffer (256
 payloads) is full rather than dropping; the wait ends with the
 publisher's context or the subscriber's, and publishers never wait for
-each other.
+each other. An in-process bus is private to the code that holds it:
+services that must hear each other on SQLite share one `Bus` value
+(the `flightdeck` binary creates it and passes it to all three).
+`Close()` ends every subscription and returns once the bus holds no
+goroutine and no `LISTEN` connection; `Publish` and `Subscribe` then
+return `storage.ErrBusClosed`. Whoever created a bus closes it after
+its publishers and subscribers have stopped and before the database.
 
 ### Tests on both backends
 
@@ -10360,8 +10372,10 @@ too long to fit a tooltip — never paraphrased.
 Flightdeck is one binary, `flightdeck` (the root Go module,
 `cmd/flightdeck`). It runs the ingestion API, the workers and the query
 API as goroutines of one process, serves the dashboard from the binary,
-and embeds its message bus. Postgres is the one external dependency
-(`--database-url`); the binary refuses to start without it.
+and embeds its message bus and its database: with no flags it keeps
+everything in a SQLite file under the data dir and depends on nothing
+outside the process. `--database-url postgres://…` puts the data in a
+Postgres database instead (see Database below).
 
 **Ports and routes.** One listener, `--listen`, default `127.0.0.1:4000`.
 The router serves `/` and every path with no other owner from the
@@ -10405,13 +10419,65 @@ given; the public port never serves `/metrics`.
 **Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
 mode 0700; an existing directory with a wider mode is used as it is and
-a warning names the `chmod`, since it holds the bus store and the
-secrets file. It holds `nats/`, the embedded JetStream store;
-`secrets.json` (mode 0600) with the JWT secret, generated once, and the
-dashboard token of the non-loopback mode below; and `acme/`, the TLS
-certificate cache. A `--database-url` is the only other state the
-binary needs, so a new data dir on an existing database is a working
-install.
+a warning names the `chmod`, since it holds the database, the bus store
+and the secrets file. It holds `flightdeck.db`, the SQLite database
+(mode 0600, with SQLite's `flightdeck.db-wal` and `flightdeck.db-shm`
+beside it while the binary runs), absent when `--database-url` names
+another database; `nats/`, the embedded JetStream store; `secrets.json`
+(mode 0600) with the JWT secret, generated once, and the dashboard
+token of the non-loopback mode below; `acme/`, the TLS certificate
+cache; and the lock files below. With `--database-url postgres://…`
+the data dir holds no session data, so a new data dir on an existing
+Postgres database is a working install.
+
+**One process per data dir.** The running binary holds an exclusive
+operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
+Windows) on `<data dir>/flightdeck.lock`, and in SQLite mode a second
+one on `<database file>.lock`, taken before anything in the directory
+is written. A second `flightdeck` on the same data dir, or on the same
+SQLite file through `--database-url sqlite://…` from another data dir,
+exits at once with a message naming the directory or file and the PID
+that holds it (the holder writes its PID into the lock file). The
+default case is refused earlier, by the port. The kernel drops the lock
+when the process ends, however it ends, so a crash leaves no stale
+lock: the files stay and the next start locks them again. The lock is
+what makes SQLite mode safe: the single writer connection and the
+in-process storage bus (see Storage) are per process, so two processes
+on one file would write past both.
+
+**Database.** `--database-url` (`FLIGHTDECK_DATABASE_URL`) is optional.
+Without it the database is `sqlite://<data dir>/flightdeck.db`, created
+on the first start; the URL is built by `storage.SQLiteURL`, which
+carries the path verbatim, so a data dir with spaces, `#`, `?`, `%` or
+a Windows drive letter names one file everywhere. With it the binary
+accepts `postgres://…` or `postgresql://…` (the multi-instance backend:
+several binaries, each with a data dir of its own, may share one
+Postgres database) and `sqlite://<path>` (a SQLite file somewhere else;
+a relative path is resolved against the working directory), and
+refuses any other value at start with the accepted forms. The binary
+applies the embedded migrations of the backend (`storage.Migrate`)
+before anything else touches the database, so an empty database, a new
+SQLite file and a Postgres database an earlier version migrated are all
+brought to the current schema. It then opens **one** `storage.DB` and
+**one** `storage.Bus` for the process and hands both to the three
+services: on SQLite the handle owns the file's single writer
+connection and the bus is in-process, so every write of the three
+services queues on one connection and every notification reaches every
+subscriber. On Postgres the shared pool's connections carry the
+workers' `lock_timeout` (8 s) and the query API's `jit=off` as URL
+runtime parameters, the settings each service puts on a pool of its
+own: a statement that waits longer than that for a row lock would
+outlast its caller's deadline in any of the three services, and
+Postgres only considers the JIT for the query API's analytics queries.
+The migrations run without the lock timeout.
+
+**Backing up SQLite.** While the binary runs, copy the database with
+SQLite itself: `sqlite3 <data dir>/flightdeck.db "VACUUM INTO
+'/backup/flightdeck.db'"` (or the shell's `.backup` command) writes a
+consistent snapshot without stopping the binary. A plain file copy is
+only safe when the binary is stopped (a clean stop folds the
+write-ahead log into `flightdeck.db` and removes it); a copy taken
+while it runs must include `flightdeck.db-wal` and may still be torn.
 
 **Embedded NATS.** The binary starts a `nats-server` in process with
 JetStream on, `StoreDir=<data>/nats` and `DontListen`, so no port is
@@ -10455,14 +10521,15 @@ the binary serves plain HTTP.
 
 **Time zone.** The binary sets the process's local zone to UTC at
 start, as the compose containers have: the query API
-formats the timestamps it reads from Postgres in the process's zone,
+formats the timestamps it reads from the database in the process's zone,
 and its contract is RFC 3339 in UTC, whatever zone the host is in.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
-was printed), the data dir, the database (URL with the password
-masked) and the bus (embedded, with its store dir, or the external
-URL). Everything else is `slog` on stderr.
+was printed), the data dir, the database (the SQLite file's path, or
+the Postgres URL with the password masked, each followed by the
+engine's name) and the bus (embedded, with its store dir, or the
+external URL). Everything else is `slog` on stderr.
 
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
@@ -10475,25 +10542,42 @@ sets.
 
 **Start order and shutdown.** The binary binds its port(s) first (so a
 busy or privileged port fails before anything is touched), prepares
-the data dir and secrets, connects to Postgres, applies the embedded
-migrations, starts the bus, then the three services together, then
-serves. On SIGINT or SIGTERM, or when a service or a listener fails,
-it stops in order: the HTTP server stops accepting and drains the
-requests in flight (which still have the services they are calling),
-then the services are cancelled and waited for (each joins its own
-loops: the ingestion assembler and the worker lanes finish their
-current message within `SHUTDOWN_TIMEOUT_SECS`), each step bounded by
-30 seconds; then the embedded NATS server and the database pool close,
-the bus last so every publish and acknowledgement before it has reached
-the store. A service's failure is the exit status's reason; a stop on
-a signal exits 0.
+the data dir, takes its lock and reads the secrets, takes the SQLite
+file's lock (creating the file, mode 0600, when it is new), starts
+the embedded NATS server, applies the embedded migrations, opens the
+database and the storage bus, checks or mints the dashboard token,
+then starts the three services together and serves. On SIGINT or
+SIGTERM, or when a service or a listener fails, it stops in order:
+the HTTP server stops accepting and drains the requests in flight
+(which still have the services they are calling), then the services
+are cancelled and waited for (each joins its own loops: the ingestion
+assembler and the worker lanes finish their current message within
+`SHUTDOWN_TIMEOUT_SECS`), each step bounded by 30 seconds; then the
+storage bus closes (its subscriptions end and, on Postgres, its
+`LISTEN` connections close), then the database, then the NATS
+connections and the embedded NATS server, and last the lock files are
+released. The database closes as soon as nothing uses it and before
+the bus store, so on SQLite the write-ahead log is checkpointed into
+`flightdeck.db` and removed even when the NATS shutdown is slow:
+after a stop on a signal the data dir holds one database file, and
+the next start on it finds every stored session and event and, in
+the non-loopback mode, the same dashboard token. An event accepted
+(HTTP 200) and not yet stored when the stop begins stays in the
+`FLIGHTDECK` stream and is stored by the next start. A service's
+failure is the exit status's reason; a stop on a signal exits 0.
 
 **The `app` packages.** Each service exports `ingestion/app`,
 `workers/app` and `api/app`: `Config` (the service's tunables, the
-values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
-workers, the migrations `fs.FS`; a nil dependency is dialled from
-`Config`), `New`, `Run(ctx)` and, for ingestion and the API,
-`Handler()`. `Run` joins every goroutine it starts before it closes
+values its environment variables carry), `Deps` (a `*storage.DB`, a
+`storage.Bus` and, for ingestion and the workers, a `*nats.Conn`; a
+nil dependency is opened from `Config` and closed by the service, one
+the caller passes is left open), `New`, `Run(ctx)` and, for ingestion
+and the API, `Handler()`. A caller that runs more than one service in
+a process on SQLite passes the same `DB` and `Bus` to each, as the
+binary does: a `Bus` each service created for itself would be private
+to it. `api/app.DatabaseURL` and `workers/app.DatabaseURL` return the
+URL each service opens a pool of its own with (the Postgres runtime
+parameters above), for a caller that opens the shared one. `Run` joins every goroutine it starts before it closes
 the connections it owns; the workers' `Run` does not migrate (the
 binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
 `app.Run`, and the compose dev overlay still runs them with `go run
@@ -10572,8 +10656,8 @@ over the defaults.
 | Flag | Variable | Purpose |
 |---|---|---|
 | `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
-| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `nats/`, `secrets.json`, `acme/` |
+| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |

@@ -509,6 +509,11 @@ jobs:
     # embedded bus and serve the session back, stop cleanly.
     name: flightdeck binary
     runs-on: ubuntu-24.04
+    # The job takes about ten minutes (npm ci, the dashboard build, the
+    # lint, the -race tests that start the real binary, three smokes);
+    # twenty turns a start that wedges into a failure with its log
+    # instead of a run that sits until the six-hour default.
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine

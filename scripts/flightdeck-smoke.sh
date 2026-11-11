@@ -25,7 +25,9 @@ if [[ "${2:-}" == *"://"* ]]; then
 fi
 LISTEN="${2:-127.0.0.1:4100}"
 BASE="http://$LISTEN"
-TMP="$(mktemp -d)"
+# The physical path: the binary names its database by the real path,
+# and a system's temp dir can be behind a symbolic link.
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
 DATA="$TMP/data dir #1"
 LOG="$TMP/flightdeck.log"
 case "$DB_URL" in
@@ -41,6 +43,14 @@ READY_TIMEOUT_SECS=60
 # a failure.
 STORE_TIMEOUT_SECS=30
 
+# How long one HTTP request may take. The binary binds its port before
+# it opens and migrates the database, so a start that wedges there
+# accepts the connection and never answers: without a bound a single
+# curl would wait for ever and no other timeout here would be reached.
+# Every request of this script answers in milliseconds; five seconds
+# is slack for a loaded runner.
+REQUEST_TIMEOUT_SECS=5
+CURL=(curl --max-time "$REQUEST_TIMEOUT_SECS")
 # How long a second instance on the same data dir gets to refuse. It
 # must exit before doing any work; the bound turns a hang into a failure.
 REFUSE_TIMEOUT_SECS=20
@@ -69,14 +79,14 @@ start() {
   "${FLIGHTDECK[@]}" "${args[@]}" >>"$LOG" 2>&1 &
   PID=$!
   for _ in $(seq 1 "$READY_TIMEOUT_SECS"); do
-    if curl -sf -o /dev/null "$BASE/api/health"; then break; fi
+    if "${CURL[@]}" -sf -o /dev/null "$BASE/api/health"; then break; fi
     if ! kill -0 "$PID" 2>/dev/null; then
       echo "flightdeck exited before it was ready:"; cat "$LOG"; exit 1
     fi
     sleep 1
   done
-  curl -sf "$BASE/api/health" >/dev/null || { echo "no /api/health within ${READY_TIMEOUT_SECS}s"; cat "$LOG"; exit 1; }
-  curl -sf "$BASE/ingest/health" >/dev/null || { echo "no /ingest/health"; cat "$LOG"; exit 1; }
+  "${CURL[@]}" -sf "$BASE/api/health" >/dev/null || { echo "no /api/health within ${READY_TIMEOUT_SECS}s"; cat "$LOG"; exit 1; }
+  "${CURL[@]}" -sf "$BASE/ingest/health" >/dev/null || { echo "no /ingest/health"; cat "$LOG"; exit 1; }
 }
 
 stop() {
@@ -108,28 +118,28 @@ if [ -z "$DB_URL" ]; then
 fi
 
 echo "== dashboard and runtime config"
-curl -sf "$BASE/" | grep -q '<title>Flightdeck</title>' || { echo "/ is not the dashboard"; exit 1; }
-curl -sf "$BASE/events" | grep -q '<title>Flightdeck</title>' || { echo "/events did not fall back to the SPA"; exit 1; }
-curl -sf "$BASE/runtime-config.json" | grep -q '"access_token":"tok_dev"' || { echo "runtime-config.json lacks the token"; exit 1; }
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/events")
+"${CURL[@]}" -sf "$BASE/" | grep -q '<title>Flightdeck</title>' || { echo "/ is not the dashboard"; exit 1; }
+"${CURL[@]}" -sf "$BASE/events" | grep -q '<title>Flightdeck</title>' || { echo "/events did not fall back to the SPA"; exit 1; }
+"${CURL[@]}" -sf "$BASE/runtime-config.json" | grep -q '"access_token":"tok_dev"' || { echo "runtime-config.json lacks the token"; exit 1; }
+code=$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/events")
 [ "$code" = "404" ] || { echo "bare /v1/events answered $code, want 404"; exit 1; }
 
 echo "== one event through the pipeline"
 SID=$(cat /proc/sys/kernel/random/uuid)
 AID=$(cat /proc/sys/kernel/random/uuid)
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-resp=$(curl -sf -X POST "$BASE/ingest/v1/events" \
+resp=$("${CURL[@]}" -sf -X POST "$BASE/ingest/v1/events" \
   -H 'Authorization: Bearer tok_dev' -H 'Content-Type: application/json' \
   -d "{\"session_id\":\"$SID\",\"agent_id\":\"$AID\",\"agent_name\":\"smoke\",\"agent_type\":\"coding\",\"client_type\":\"flightdeck_sensor\",\"user\":\"smoke\",\"hostname\":\"smoke-host\",\"flavor\":\"flightdeck-smoke\",\"event_type\":\"session_start\",\"host\":\"smoke-host\",\"sensor_version\":\"0.0.0\",\"capture_prompts\":false,\"timestamp\":\"$NOW\",\"context\":{}}")
 echo "   ingest answered: $resp"
 for _ in $(seq 1 "$STORE_TIMEOUT_SECS"); do
-  if curl -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\""; then
+  if "${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\""; then
     echo "== session $SID stored and served"
     break
   fi
   sleep 1
 done
-curl -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\"" \
+"${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\"" \
   || { echo "session not visible within ${STORE_TIMEOUT_SECS}s"; cat "$LOG"; exit 1; }
 
 echo "== a second instance on the same data dir is refused"
@@ -165,7 +175,7 @@ fi
 
 echo "== restart on the same data dir"
 start
-curl -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\"" ||
+"${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\"" ||
   { echo "the session stored before the stop is gone after the restart"; cat "$LOG"; exit 1; }
 echo "   session $SID still served"
 stop

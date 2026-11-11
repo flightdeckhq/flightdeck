@@ -331,6 +331,57 @@ def test_a_stack_on_sqlite_names_no_postgres_container() -> None:
         assert fixtures.POSTGRES_CONTAINER
 
 
+@pytest.mark.parametrize(
+    ("base_url", "test_db", "sqlite_db", "refused_for"),
+    [
+        # The dev stack with its defaults, however it is spelled.
+        ("http://localhost:4000", "", "", None),
+        ("http://localhost:4000/", "", "", None),
+        ("http://127.0.0.1:4000", "", "", None),
+        # The binary with its database named.
+        ("http://localhost:4100", "fd_my_db", "", None),
+        ("http://localhost:4100", "", "/tmp/fd/data/flightdeck.db", None),
+        ("http://localhost:4000", "", "/tmp/fd/data/flightdeck.db", None),
+        # The binary with no database named: the helpers would write to
+        # the dev stack's database.
+        ("http://localhost:4100", "", "", "neither"),
+        ("http://127.0.0.1:4110/", "", "", "neither"),
+        ("http://example.test:4000", "", "", "neither"),
+        # Two databases named for one stack.
+        ("http://localhost:4100", "fd_my_db", "/tmp/fd/data/flightdeck.db", "both set"),
+    ],
+)
+def test_a_stack_that_is_not_the_dev_stack_must_name_its_database(
+    base_url: str, test_db: str, sqlite_db: str, refused_for: str | None
+) -> None:
+    error = fixtures.stack_configuration_error(base_url, test_db, sqlite_db)
+    if refused_for is None:
+        assert error is None
+        return
+    assert error is not None
+    assert refused_for in error
+    assert "FLIGHTDECK_TEST_DB" in error
+    assert "FLIGHTDECK_TEST_SQLITE_DB" in error
+
+
+def test_the_dev_stacks_worker_container_is_the_default_only_on_the_dev_stack() -> None:
+    """A run against the binary that sets no worker container must not
+    reach the dev stack's: the pause tests would pause its worker."""
+    assert (
+        fixtures.default_worker_container("http://localhost:4000") == "docker-workers-1"
+    )
+    assert (
+        fixtures.default_worker_container("http://127.0.0.1:4000/")
+        == "docker-workers-1"
+    )
+    assert fixtures.default_worker_container("http://localhost:4100") == ""
+    assert fixtures.default_worker_container("http://localhost:4110/") == ""
+    if fixtures.BASE_URL not in fixtures.DEV_STACK_BASE_URLS:
+        # This run is against the binary: whatever the environment set,
+        # the name is not the dev stack's.
+        assert fixtures.WORKER_CONTAINER != fixtures.DEV_STACK_WORKER_CONTAINER
+
+
 def test_a_missing_database_file_is_not_created(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -228,6 +228,12 @@ flightdeck/
 ├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
+├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
+├── scripts/install-gate.sh     # The from-scratch install gate's checks: health, token, one event, the dashboard
+├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
+├── install.sh                  # `curl | sh` installer: detect, download, verify, install
+├── install.ps1                 # `irm | iex` installer for Windows
+├── Dockerfile                  # The all-in-one image flightdeckhq/flightdeck (distroless, non-root)
 ├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
@@ -10642,6 +10648,45 @@ binaries only, since the one binary derives them from its flags.
 **Postgres:** standard Postgres environment plus the optional
 `POSTGRES_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB` for the bundled
 StatefulSet.
+
+### Install channels and release artifacts
+
+The `flightdeck` binary reaches users through these channels, all built
+from one release tag (RELEASING.md has the sequence):
+
+| Channel | Command | What it installs |
+|---|---|---|
+| Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
+| PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
+| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary with its defaults and logs to `$(brew --prefix)/var/log/flightdeck.log` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000`; `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+
+The release is produced by goreleaser (`.goreleaser.yaml`): the binary
+is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
+`windows` on `amd64` and `arm64` (the message bus, the dashboard and the
+database drivers are pure Go, so no C toolchain is needed), with the
+dashboard bundle built once beforehand and embedded. The archives are
+named `flightdeck_<os>_<arch>.tar.gz` (`.zip` on Windows) without the
+version, so `releases/latest/download/<asset>` resolves with no API
+call; the version is inside (`flightdeck --version` prints
+`flightdeck v<tag>`). `checksums.txt` carries the SHA-256 of every
+archive and both installers verify against it. `checksums.txt` is
+signed keyless with cosign (Sigstore): the signer is the release
+workflow's OIDC identity and the bundle `checksums.txt.sigstore.json`
+sits beside it. The installers verify that signature when `cosign` is
+installed on the machine and the download comes from the default
+repository URL; without cosign the signature is not checked and the
+installers say so, so the trust then rests on TLS to github.com and the
+archive's checksum guards against corruption only. That gap is stated in
+the installers' headers; closing it for everyone would need a verifier
+that needs no extra tool, which no package of the installers' size
+provides today. The GitHub release's
+notes are the tag's section of CHANGELOG.md (`scripts/release_notes.py`;
+a pre-release tag, `vX.Y.Z-rc.1`, takes the Unreleased section and is
+marked as a pre-release, which the Homebrew tap and the installers'
+`latest` skip). CI cross-builds the six binaries with `goreleaser build
+--snapshot` on every pull request and builds the Docker image, so a
+target that stops compiling fails the PR, not the release.
 
 ### Health checks
 

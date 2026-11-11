@@ -24,6 +24,7 @@ import pytest
 
 from .conftest import (
     API_URL,
+    SQLITE_DB,
     auth_headers,
     delete_flavor_data,
     exec_sql,
@@ -50,18 +51,39 @@ def _registry_ids() -> list[str]:
     return [entry["id"] for entry in data["client_types"]]
 
 
-@pytest.mark.parametrize(("table", "constraint"), CONSTRAINTS)
-def test_client_type_constraint_matches_registry(table: str, constraint: str) -> None:
+def _constraint_definition(table: str, constraint: str) -> str:
+    """The CHECK expression of a named constraint that is in force for
+    every row of ``table``.
+
+    Postgres keeps it in its catalog, where a constraint added NOT VALID
+    stays unvalidated until checked against the existing rows. SQLite has
+    no such state: a constraint is part of the table's definition and
+    holds for every row, so the expression is read from the CREATE TABLE
+    text.
+    """
     row = exec_sql(
         "SELECT convalidated, pg_get_constraintdef(oid) FROM pg_constraint "
         "WHERE conname = :'name' AND conrelid = :'table'::regclass",
+        sqlite="SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :table",
         name=constraint,
         table=table,
     )
+    if SQLITE_DB:
+        found = re.search(
+            rf"CONSTRAINT {re.escape(constraint)} CHECK \(([^()]*\([^()]*\))\)", row
+        )
+        assert found, f"constraint {constraint} not found in {table}"
+        return found.group(1)
     assert row, f"constraint {constraint} not found"
     validated, definition = row.split("|", 1)
     assert validated == "t", f"{constraint} is not validated"
-    values = re.findall(r"'([^']*)'::text", definition)
+    return definition
+
+
+@pytest.mark.parametrize(("table", "constraint"), CONSTRAINTS)
+def test_client_type_constraint_matches_registry(table: str, constraint: str) -> None:
+    definition = _constraint_definition(table, constraint)
+    values = re.findall(r"'([^']*)'", definition)
     assert sorted(values) == sorted(_registry_ids()), (
         f"{constraint} allows {sorted(values)}, the registry lists {sorted(_registry_ids())}"
     )

@@ -106,6 +106,11 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
         exec_sql(
             "UPDATE sessions SET last_seen_at = NOW() - CAST(:'ago' AS interval) "
             "WHERE session_id = :'sid'::uuid",
+            sqlite=(
+                "UPDATE sessions SET last_seen_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || :ago) "
+                "WHERE session_id = :sid"
+            ),
             ago=interval,
             sid=session_id,
         )
@@ -114,6 +119,11 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
             "UPDATE sessions SET state = :'state', "
             "last_seen_at = NOW() - CAST(:'ago' AS interval) "
             "WHERE session_id = :'sid'::uuid",
+            sqlite=(
+                "UPDATE sessions SET state = :state, last_seen_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || :ago) "
+                "WHERE session_id = :sid"
+            ),
             state=state,
             ago=interval,
             sid=session_id,

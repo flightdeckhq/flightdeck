@@ -27,6 +27,7 @@ from .conftest import (
     get_session,
     make_event,
     post_event,
+    query_rows,
     session_events,
     session_exists_in_fleet,
     wait_until,
@@ -148,15 +149,10 @@ def _post_directive_action(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
     """Query the directives table directly for a given session_id."""
-    raw = exec_sql(
-        "SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
-        "FROM directives d "
-        "WHERE d.session_id = :'sid'::uuid",
+    return query_rows(
+        "SELECT * FROM directives d WHERE d.session_id = :'sid'::uuid",
         sid=session_id,
     )
-    if not raw or raw == "null":
-        return []
-    return json.loads(raw)  # type: ignore[no-any-return]
 
 
 def _delete_custom_directive_by_fingerprint(fingerprint: str) -> None:

@@ -32,11 +32,11 @@ from .conftest import (
     auth_headers,
     delete_flavor_data,
     post_directive,
+    query_rows,
     wait_until,
 )
 from .test_sensor_e2e import (
     _force_reset_sensor,
-    _psql_json,
     _query_events_for_flavor,
 )
 
@@ -218,10 +218,8 @@ def test_an_sdk_run_lands_as_its_own_claude_agent_sdk_session(
     assert _content_status(str(first_call["id"])) == 200
     assert second_call["has_content"] is True
 
-    rows = _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) FROM sessions s "
-        "WHERE session_id = :'sid'",
-        sid=sdk_session,
+    rows = query_rows(
+        "SELECT * FROM sessions s WHERE session_id = :'sid'", sid=sdk_session
     )
     assert len(rows) == 1
     session = rows[0]
@@ -272,9 +270,8 @@ def test_a_stop_from_the_api_reaches_the_runs_tool_gate(
     async def step(options: Any) -> None:
         wait_until(
             lambda: bool(
-                _psql_json(
-                    "SELECT COALESCE(json_agg(session_id), '[]'::json) FROM sessions "
-                    "WHERE session_id = :'sid'",
+                query_rows(
+                    "SELECT session_id FROM sessions WHERE session_id = :'sid'",
                     sid=sdk_session,
                 )
             ),
@@ -309,10 +306,8 @@ def test_a_stop_from_the_api_reaches_the_runs_tool_gate(
     assert result["payload"]["directive_status"] == "acknowledged"
     end = next(e for e in events if e["event_type"] == "session_end")
     assert end["payload"]["close_reason"] == "directive_shutdown"
-    rows = _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) FROM sessions s "
-        "WHERE session_id = :'sid'",
-        sid=sdk_session,
+    rows = query_rows(
+        "SELECT * FROM sessions s WHERE session_id = :'sid'", sid=sdk_session
     )
     assert rows[0]["context"]["supports_directives"] is True
     assert rows[0]["state"] == "closed"

@@ -56,6 +56,7 @@ from .conftest import (
     TOKEN,
     delete_flavor_data,
     exec_sql,
+    query_rows,
     wait_until,
 )
 
@@ -134,26 +135,14 @@ def test_sdk_response_models_are_built_before_any_test_starts_a_thread() -> None
     assert openai.types.chat.ChatCompletion.__pydantic_complete__
 
 # ----------------------------------------------------------------------
-# DB helpers (direct psql via docker exec, mirroring conftest patterns)
+# DB helpers (rows read straight from the database through query_rows)
 # ----------------------------------------------------------------------
-
-
-def _psql_json(sql: str, **bindings: Any) -> Any:
-    """Run a SELECT that returns json_agg(...) and parse the result.
-    Forwards bindings to exec_sql; reference them as :'name' in the
-    SQL.
-    """
-    raw = exec_sql(sql, **bindings)
-    if not raw or raw == "null":
-        return []
-    return json.loads(raw)
 
 
 def _query_events_for_flavor(flavor: str) -> list[dict[str, Any]]:
     """Return all events for the given flavor in chronological order."""
-    return _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(e) ORDER BY e.occurred_at), "
-        "'[]'::json) FROM events e WHERE flavor = :'flavor'",
+    return query_rows(
+        "SELECT * FROM events e WHERE flavor = :'flavor' ORDER BY e.occurred_at",
         flavor=flavor,
     )
 
@@ -171,9 +160,8 @@ def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
     not on per-role sub-agent sessions. Filtering to the root
     keeps every existing context-asserting caller correct.
     """
-    rows = _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) "
-        "FROM sessions s WHERE flavor = :'flavor' "
+    rows = query_rows(
+        "SELECT * FROM sessions s WHERE flavor = :'flavor' "
         "AND parent_session_id IS NULL",
         flavor=flavor,
     )
@@ -182,18 +170,16 @@ def _query_session_for_flavor(flavor: str) -> dict[str, Any] | None:
 
 def _query_directives_for_session(session_id: str) -> list[dict[str, Any]]:
     """Return all directive rows for a session_id."""
-    return _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(d)), '[]'::json) "
-        "FROM directives d WHERE d.session_id = :'sid'::uuid",
+    return query_rows(
+        "SELECT * FROM directives d WHERE d.session_id = :'sid'::uuid",
         sid=session_id,
     )
 
 
 def _query_event_content_for_session(session_id: str) -> list[dict[str, Any]]:
     """Return all event_content rows for a session_id."""
-    return _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(c)), '[]'::json) "
-        "FROM event_content c WHERE c.session_id = :'sid'::uuid",
+    return query_rows(
+        "SELECT * FROM event_content c WHERE c.session_id = :'sid'::uuid",
         sid=session_id,
     )
 
@@ -1478,13 +1464,11 @@ _MT_STALL_SECS = 3.0
 
 def _directive_rows(session_id: str) -> list[dict[str, Any]]:
     """The session's directives: action, issued_at, delivered_at."""
-    rows: list[dict[str, Any]] = _psql_json(
-        "SELECT COALESCE(json_agg(row_to_json(d) ORDER BY d.issued_at), '[]'::json) "
-        "FROM (SELECT action, issued_at, delivered_at FROM directives "
-        "WHERE session_id = :'session_id'::uuid) d",
+    return query_rows(
+        "SELECT action, issued_at, delivered_at FROM directives "
+        "WHERE session_id = :'session_id'::uuid ORDER BY issued_at",
         session_id=session_id,
     )
-    return rows
 
 
 def _thread_errors(errors: list[tuple[int, BaseException]]) -> str:
@@ -2599,12 +2583,11 @@ def test_pattern_c_init_singleton_limitation(
 
 def _query_agent_ids_for_flavor(flavor: str) -> list[str]:
     """agent_id of every session row carrying ``flavor``."""
-    rows = _psql_json(
-        "SELECT COALESCE(json_agg(DISTINCT s.agent_id), '[]'::json) "
-        "FROM sessions s WHERE s.flavor = :'flavor'",
+    rows = query_rows(
+        "SELECT DISTINCT s.agent_id FROM sessions s WHERE s.flavor = :'flavor'",
         flavor=flavor,
     )
-    return [str(r) for r in rows]
+    return [str(r["agent_id"]) for r in rows]
 
 
 def _count_agent_rows(agent_ids: list[str]) -> int:
@@ -2615,6 +2598,7 @@ def _count_agent_rows(agent_ids: list[str]) -> int:
         exec_sql(
             "SELECT count(*) FROM agents "
             "WHERE agent_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            sqlite="SELECT count(*) FROM agents WHERE instr(:ids, agent_id) > 0",
             ids=",".join(agent_ids),
         )
     )

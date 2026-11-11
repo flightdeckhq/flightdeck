@@ -678,9 +678,15 @@ All notable changes to Flightdeck are documented here.
   the same number in both directories (`scripts/check-migration-pairs.sh`
   and a schema parity test keep them in step). `make test-go-db` runs the
   Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`). The
-  ingestion API's token validation and revocation listener are the first
-  store on the boundary: they run on either backend and learn of a
-  revoked token through the Bus.
+  ingestion API runs whole on either backend: token validation and the
+  revocation listener (which learns of a revoked token through the Bus),
+  session attachment and the re-attachment stamp, directive lookup, the
+  OpenTelemetry GenAI staging store and its assembler, and the Claude
+  Code OpenTelemetry session reads. On SQLite the one writer connection
+  stands in for Postgres' row locks: a claim, a mark or a sweep runs
+  after any ingest in progress commits instead of skipping the rows it
+  holds. Text neither backend can store (U+0000, an unpaired surrogate
+  escape) is replaced with U+FFFD on both.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

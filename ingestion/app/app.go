@@ -26,7 +26,6 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
 	"github.com/flightdeckhq/flightdeck/storage"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
 )
@@ -40,9 +39,8 @@ type Config struct {
 	// Empty means no listener: the caller mounts Handler() itself.
 	ListenAddr string
 	// PostgresURL is the database URL (FLIGHTDECK_POSTGRES_URL):
-	// postgres://... or sqlite://... for the stores on the storage
-	// boundary, which open it when Deps.DB is nil; the stores still on
-	// pgx dial it too when Deps.Pool is nil and it is Postgres.
+	// postgres://... or sqlite://..., opened through the storage
+	// boundary when Deps.DB is nil.
 	PostgresURL string
 	// NatsURL is dialled when Deps.NATS is nil.
 	NatsURL string
@@ -113,24 +111,14 @@ const (
 // minute of a deploy.
 const databaseConnectBudget = 60 * time.Second
 
-// unavailablePostgresURL is the pool target of the stores that have not
-// moved to the storage boundary when the database is SQLite: port 1 is
-// reserved and never listens, so every use fails fast with a connection
-// error. pgx parses the URL without connecting.
-const unavailablePostgresURL = "postgres://flightdeck@127.0.0.1:1/unavailable?sslmode=disable"
-
 // Deps are the connections the service runs on. A nil one is opened
 // from Config and closed when Run returns; one the caller passes is left
 // open, since the caller shares it. DB is the database through the
-// storage boundary (the token validator and its revocation bus); Pool
-// serves the stores still on pgx (directives, sessions, OTLP staging),
-// which have no database when DB is SQLite: a nil Pool then points at a
-// port nothing listens on, so a request that reaches one of them fails
-// with an error, and the GenAI assembler does not start. Both go when
-// the last store moves to the boundary.
+// storage boundary, SQLite or Postgres, which every store of the
+// service runs on: the token validator and its revocation bus,
+// directives, session attachment and the OTLP staging store.
 type Deps struct {
 	DB   *storage.DB
-	Pool *pgxpool.Pool
 	NATS *nats.Conn
 }
 
@@ -162,10 +150,8 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 type App struct {
 	cfg       Config
 	db        *storage.DB
-	pool      *pgxpool.Pool
 	nc        *nats.Conn
 	ownsDB    bool
-	ownsPool  bool
 	ownsNATS  bool
 	bus       storage.Bus
 	validator *auth.Validator
@@ -178,7 +164,7 @@ type App struct {
 // reconciles the FLIGHTDECK stream and builds the handlers. It starts no
 // goroutine; Run does.
 func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
-	a := &App{cfg: cfg, db: deps.DB, pool: deps.Pool, nc: deps.NATS}
+	a := &App{cfg: cfg, db: deps.DB, nc: deps.NATS}
 	if a.db == nil {
 		openCtx, cancel := context.WithTimeout(ctx, databaseConnectBudget)
 		db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
@@ -187,19 +173,6 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 			return nil, fmt.Errorf("database connection: %w", err)
 		}
 		a.db, a.ownsDB = db, true
-	}
-	if a.pool == nil {
-		poolURL := cfg.PostgresURL
-		if a.db.Backend != storage.Postgres {
-			poolURL = unavailablePostgresURL
-			slog.Warn("sqlite backend: directive polling, session attachment and OTLP staging are unavailable until their stores move to the storage boundary")
-		}
-		pool, err := pgxpool.New(ctx, poolURL)
-		if err != nil {
-			a.closeOwned()
-			return nil, fmt.Errorf("postgres connection: %w", err)
-		}
-		a.pool, a.ownsPool = pool, true
 	}
 	if a.nc == nil {
 		nc, err := nats.Connect(cfg.NatsURL)
@@ -222,14 +195,14 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 
 	a.bus = storage.NewBus(a.db)
 	a.validator = auth.NewValidator(a.db)
-	dirStore := &directiveAdapter{store: directive.NewStore(a.pool)}
-	sessAttacher := session.NewStore(a.pool)
+	dirStore := &directiveAdapter{store: directive.NewStore(a.db)}
+	sessAttacher := session.NewStore(a.db)
 
 	// OTLP resources are routed by scope: Claude Code through its
 	// dialect (which reads sessions through the same store that runs the
 	// attachment check), the recorded GenAI frameworks to the staging
 	// store the assembler drains, anything else counted as rejected.
-	stagingStore := otlpstage.NewStore(a.pool)
+	stagingStore := otlpstage.NewStore(a.db)
 	otlpDialect := handlers.NewOTLPRouter(handlers.NewClaudeCodeDialect(sessAttacher), stagingStore)
 	a.durations = metrics.NewRequestDurations()
 	a.srv = server.New(cfg.ListenAddr, a.validator, publisher, dirStore, sessAttacher, otlpDialect,
@@ -251,8 +224,8 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 func (a *App) Handler() http.Handler { return a.srv.Handler }
 
 // Run starts the background loops (token revocation listener, GenAI
-// assembler on Postgres, the metrics listener when configured, the HTTP
-// listener when ListenAddr is set) and blocks until ctx ends or a
+// assembler, the metrics listener when configured, the HTTP listener
+// when ListenAddr is set) and blocks until ctx ends or a
 // listener fails. It then shuts the listeners down, stops the loops and
 // waits for them (the assembly in progress finishes its chunk and
 // releases its lease), both within ShutdownTimeout, and closes the
@@ -274,10 +247,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	// Drop cached validations of a token as soon as its row is deleted.
 	spawn(func() { a.validator.ListenRevocations(runCtx, a.bus) })
-	if a.db.Backend == storage.Postgres {
-		// The staging store is not on the storage boundary yet.
-		spawn(func() { a.assembler.Run(runCtx) })
-	}
+	spawn(func() { a.assembler.Run(runCtx) })
 
 	g, gctx := errgroup.WithContext(runCtx)
 	if a.cfg.ListenAddr != "" {
@@ -347,10 +317,6 @@ func (a *App) closeOwned() {
 	if a.ownsNATS && a.nc != nil {
 		a.nc.Close()
 		a.nc, a.ownsNATS = nil, false
-	}
-	if a.ownsPool && a.pool != nil {
-		a.pool.Close()
-		a.pool, a.ownsPool = nil, false
 	}
 	if a.ownsDB && a.db != nil {
 		if err := a.db.Close(); err != nil {

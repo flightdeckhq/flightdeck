@@ -142,8 +142,15 @@ func command(args ...string) (*exec.Cmd, *lockedBuffer) {
 // serves. The child is killed when the test ends if it is still alive.
 func start(t *testing.T, listen, port, dataDir string, extra ...string) *child {
 	t.Helper()
+	return startWithEnv(t, nil, listen, port, dataDir, extra...)
+}
+
+// startWithEnv is start with extra environment variables for the child.
+func startWithEnv(t *testing.T, env []string, listen, port, dataDir string, extra ...string) *child {
+	t.Helper()
 	args := append([]string{"--listen", listen, "--data-dir", dataDir}, extra...)
 	cmd, out := command(args...)
+	cmd.Env = append(cmd.Env, env...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -616,6 +623,49 @@ func TestBinary_FleetFeedReachesTheWebSocketOnSQLite(t *testing.T) {
 				t.Fatalf("frame type %q for the new session, want session_start", frame.Type)
 			}
 			break
+		}
+	}
+	if err := c.stop(t, syscall.SIGINT); err != nil {
+		t.Fatalf("exit after SIGINT: %v\n%s", err, c.out.String())
+	}
+}
+
+// The query API's contract is RFC 3339 in UTC, and it formats the
+// timestamps it reads in the process's zone, so the binary makes that
+// zone UTC at start. Run on a host in another zone (TZ in the child's
+// environment), every timestamp it serves still ends in Z.
+func TestBinary_TimestampsAreUTCWhateverTheHostZone(t *testing.T) {
+	skipWithoutSignals(t)
+	if _, err := time.LoadLocation("Asia/Jerusalem"); err != nil {
+		t.Skip("no zone database on this host")
+	}
+	port := freePort(t)
+	c := startWithEnv(t, []string{"TZ=Asia/Jerusalem"}, "127.0.0.1:"+port, port, filepath.Join(t.TempDir(), "data"))
+	sid := newUUID(t)
+	c.postEvent(t, "tok_dev", sid, newUUID(t), "binary-utc-test", "session_start")
+	var detail struct {
+		Session struct {
+			StartedAt  string `json:"started_at"`
+			LastSeenAt string `json:"last_seen_at"`
+		} `json:"session"`
+		Events []struct {
+			OccurredAt string `json:"occurred_at"`
+		} `json:"events"`
+	}
+	waitFor(t, "the session stored", storeTimeout, func() bool {
+		return c.get(t, "/api/v1/sessions/"+sid, "tok_dev", &detail) == http.StatusOK && len(detail.Events) == 1
+	})
+	for name, ts := range map[string]string{
+		"started_at": detail.Session.StartedAt, "last_seen_at": detail.Session.LastSeenAt, "occurred_at": detail.Events[0].OccurredAt,
+	} {
+		parsed, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil || !strings.HasSuffix(ts, "Z") {
+			t.Errorf("%s = %q (%v), want RFC 3339 with a Z suffix", name, ts, err)
+			continue
+		}
+		// The instant is now, not now shifted by the zone's offset.
+		if d := time.Since(parsed); d < -time.Minute || d > storeTimeout+time.Minute {
+			t.Errorf("%s = %q is %s away from now", name, ts, d)
 		}
 	}
 	if err := c.stop(t, syscall.SIGINT); err != nil {

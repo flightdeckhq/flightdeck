@@ -95,20 +95,6 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 	}
 }
 
-func TestUseUTC(t *testing.T) {
-	loc, err := time.LoadLocation("Asia/Jerusalem")
-	if err != nil {
-		t.Skip("no zone database")
-	}
-	previous := time.Local
-	defer func() { time.Local = previous }()
-	time.Local = loc
-	useUTC()
-	if got := time.Now().Format(time.RFC3339); !strings.HasSuffix(got, "Z") {
-		t.Fatalf("time.Now() formats as %q, want a UTC Z suffix", got)
-	}
-}
-
 func TestServeErr(t *testing.T) {
 	if serveErr("x", nil) != nil || serveErr("x", http.ErrServerClosed) != nil {
 		t.Fatal("a closed server is not an error")

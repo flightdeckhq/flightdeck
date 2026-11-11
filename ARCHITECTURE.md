@@ -229,7 +229,7 @@ flightdeck/
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
-├── scripts/install-gate.sh     # The from-scratch install gate's checks: health, token, one event, the dashboard
+├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
 ├── install.sh                  # `curl | sh` installer: detect, download, verify, install
 ├── install.ps1                 # `irm | iex` installer for Windows
@@ -10885,9 +10885,9 @@ from one release tag (RELEASING.md has the sequence):
 |---|---|---|
 | Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
-| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary with its defaults and logs to `$(brew --prefix)/var/log/flightdeck.log` |
+| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000`; `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -10914,7 +10914,9 @@ a pre-release tag, `vX.Y.Z-rc.1`, takes the Unreleased section and is
 marked as a pre-release, which the Homebrew tap and the installers'
 `latest` skip). CI cross-builds the six binaries with `goreleaser build
 --snapshot` on every pull request and builds the Docker image, so a
-target that stops compiling fails the PR, not the release.
+target that stops compiling fails the PR, not the release. CI also runs
+the install gate's checks (below) on the binary it builds and on that
+image, started on a new volume with a read-only root filesystem.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the
@@ -10925,10 +10927,20 @@ completes, the install gate (`install-gate.yml`, also runnable by hand
 with a tag) installs the published artifacts on fresh runners, one leg
 per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
 `windows-2022`), through the channel under test (`install.sh`, `pip`
-and `uvx`, `docker run`, `brew`, `install.ps1`), and runs
-`scripts/install-gate.sh`: health, the token from the start-up block,
+and `uvx`, `docker run`, `brew` and `brew services`, `install.ps1`), and
+runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
+database and nothing else configured, since that is the install a new
+user makes: the script removes the binary's settings from its
+environment and requires the start-up block to name a SQLite database
+in the data dir. Then: health, the token from the start-up block,
 `/runtime-config.json`, the dashboard, one sensor-shaped event posted
-and read back by id and from the sessions list, a clean stop. A
+and read back by id and from the sessions list, a clean stop, and a
+restart on the same data dir (a new container on the same volume, a
+stop and start of the Homebrew service) after which the session is
+still served. The container's log must not carry the data dir's mode
+warning. One leg, linux-amd64, repeats the checks with `--database-url`
+against an empty Postgres in a service container, because Postgres
+stays a supported database; no other leg has a database to reach. A
 pre-release tag (`vX.Y.Z-rc.N`, pushed by hand) is the dry run: the same
 pipeline with the GitHub release marked pre-release, no formula, no
 `latest` image tag, no sensor publish; the gate's Homebrew leg then

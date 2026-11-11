@@ -19,7 +19,11 @@ uvx flightdeck-cli
 pipx run flightdeck-cli
 ```
 
-Open the URL it prints. The package has no Python dependencies and no
+Open the URL it prints. Nothing else needs installing or configuring:
+the binary keeps its data in a SQLite database under `~/.flightdeck`
+(`%LOCALAPPDATA%\flightdeck` on Windows), so a later run, `uvx` included,
+finds it again; `flightdeck --database-url postgres://…` uses a Postgres
+database instead. The package has no Python dependencies and no
 Python code beyond the shim that starts the binary; the version of the
 package is the version of the binary (`flightdeck --version`).
 

@@ -75,7 +75,8 @@ if it no longer describes the release. The PR's CI is the rest of the
 gate: it boots a fresh stack and applies every migration from scratch on
 Postgres 16 and 18, runs the integration suites and the full Playwright
 suite in both themes, cross-builds the six release binaries
-(`goreleaser build --snapshot`) and builds the Docker image.
+(`goreleaser build --snapshot`), builds the Docker image and runs the
+install gate's checks (step 4) on the binary and on that image.
 
 The playground (`make playground-all`) is **not** part of the gate: it
 calls the real provider APIs, costs money and needs live credentials.
@@ -147,27 +148,45 @@ When the Release workflow completes successfully,
 
 The gate installs what was just published on fresh runners, the way a
 user would, and runs `scripts/install-gate.sh` against it: start
-`flightdeck`, wait for `/ingest/health`, read the token from the
-start-up block, check `/runtime-config.json` and `GET /` (the
-dashboard), POST one sensor-shaped `session_start` to
-`/ingest/v1/events` with that token, read the session back from
-`GET /api/v1/sessions/{id}` and `GET /api/v1/sessions`, then stop it and
-require a clean exit.
+`flightdeck` with no database and nothing else configured (the script
+removes the binary's settings from its environment), wait for
+`/ingest/health`, read the token from the start-up block, require that
+block to name a SQLite database and `flightdeck.db` to be in the data
+dir, check `/runtime-config.json` and `GET /` (the dashboard), POST one
+sensor-shaped `session_start` to `/ingest/v1/events` with that token,
+read the session back from `GET /api/v1/sessions/{id}` and
+`GET /api/v1/sessions`, stop it and require a clean exit, then start it
+again on the same data dir and require the session to be served still.
 
 | Leg | Runner | Channel |
 |---|---|---|
-| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, clean `docker stop`) |
+| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run -p … -v <new volume>:/data flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, no data-dir warning in them, clean `docker stop`, then a new container on the same volume serves the session); the `install.sh` binary once more with `--database-url` on a Postgres service container |
 | linux-arm64 | ubuntu-24.04-arm | `install.sh` |
-| macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, then `brew services start flightdeck` must come up on `:4000` and log its start-up block |
+| macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, the checks on the installed binary, then `brew services start flightdeck`: the same checks against the service on `:4000` (start-up block read from its log), `~/.flightdeck/flightdeck.db` exists, and the session is served after `brew services stop` and `start` |
 | macos-amd64 | macos-15-intel | `install.sh` |
 | windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL (the `.zip`), then the checks under Git Bash |
 
-Every leg checks `flightdeck --version` prints `flightdeck <tag>`. Until
-the SQLite default lands, the binary needs a database: each leg starts
-a Postgres (a service container on Linux, Homebrew's `postgresql@16` on
-macOS, the PostgreSQL service the Windows image ships) and passes
-`FLIGHTDECK_DATABASE_URL`; `GATE_NEEDS_POSTGRES` at the top of the
-workflow turns that off once the binary runs bare.
+Every leg checks `flightdeck --version` prints `flightdeck <tag>`. No
+leg starts or names a database: the binary's default, a SQLite file in
+its data dir, is what a new user gets, so it is what the gate proves on
+every platform. Postgres stays a supported database, so one leg,
+linux-amd64, runs the checks a second time with `--database-url` against
+an empty Postgres in a service container (`GATE_EXPECT_DATABASE=Postgres`
+makes the script require a Postgres in the start-up block). On Windows
+the checks run under Git Bash, which cannot send the binary a Ctrl+C:
+the stop there ends the process outright, so that leg's restart also
+proves a start after a kill, and its exit status is not checked.
+
+On a pre-release tag the tap has no formula, so the macos-arm64 leg
+installs with `install.sh` and its `brew services` step does not run;
+that step runs on stable tags only.
+
+`scripts/install-gate.sh` is also run by CI on every pull request,
+against the binary it builds (SQLite, then Postgres) and against the
+image (a new volume, a read-only root filesystem, a second container on
+the same volume), so the script and the image's data dir are not first
+exercised on a tag. It runs locally the same way:
+`scripts/install-gate.sh run 127.0.0.1:4100 bin/flightdeck`.
 
 The gate runs after the publish, so a red leg means something was
 published that does not install or run on that platform. Fix forward
@@ -273,8 +292,12 @@ The pipeline needs these, each once:
   an expiry (a year at most) and note the date; a stable release fails
   at the formula step when it lapses, after the GitHub release exists
   (case 2 above). `brew services start flightdeck` runs the binary with
-  its defaults and no environment, so until the SQLite default lands it
-  cannot pass `FLIGHTDECK_DATABASE_URL`; the formula's caveats say so.
+  its defaults and no environment, which is a complete setup: loopback
+  `:4000` and the SQLite database in `~/.flightdeck`, the data dir a
+  `flightdeck` run by hand uses, so the two share one database. It
+  cannot pass `--database-url` or `FLIGHTDECK_DATABASE_URL`; a Homebrew
+  user on Postgres starts the binary from a terminal, and the formula's
+  caveats say so.
 - **PyPI trusted publishing** for `flightdeck-cli`, as a pending
   publisher at https://pypi.org/manage/account/publishing/ until the
   first publish creates the project: owner `flightdeckhq`, repository

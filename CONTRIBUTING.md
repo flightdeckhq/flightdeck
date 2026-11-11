@@ -289,9 +289,10 @@ the pull request; delete it then.
 The README is written for a user who runs Flightdeck from a release and
 points agents at it; everything a user needs stays there. Contributor
 steps (a clone, `make dev`, per-component commands, the playground) belong
-in this file. `scripts/readme-budget.sh` measures the README's command
-lines per section and its length against the budget in the script's header
-(CI runs it in the scripts job); when a README change goes over, move
+in this file. `scripts/readme-budget.sh` measures the README's commands
+per section and its length against the budget in the script's header
+(CI runs it in the `marketplace-schema` job, "Repo scripts and
+manifests"); when a README change goes over, move
 contributor steps here, never user-facing content. ARCHITECTURE.md
 describes the system as it is, CHANGELOG.md what changed per release, and
 DECISIONS.md the decisions a future contributor would otherwise relitigate

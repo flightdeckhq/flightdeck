@@ -5099,6 +5099,7 @@ the same result:
 | `JSONText(col, keys…)` | `col->'a'->>'b'` | `json_extract(col, '$.a.b')` |
 | `Upsert(conflict, update)` | `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` | same |
 | `Returning(cols…)` | `RETURNING …` | same |
+| `InsertionOrder(alias, idCol)` (an `ORDER BY` tie-break after a server-stamped timestamp) | `alias.idCol` | `alias.rowid` |
 | `Percentile(fraction, expr)` | `PERCENTILE_CONT(f) WITHIN GROUP (ORDER BY expr)` | `percentile_cont(expr, f)`, the registered aggregate below |
 | `SecondsBetween(a, b)` | `EXTRACT(EPOCH FROM (a - b))` | `ROUND((julianday(a) - julianday(b)) * 86400, 3)` (exact to the millisecond both carry) |
 | `DateOf(ts)` | `CAST(ts AS DATE)` | `date(ts)` |
@@ -5220,6 +5221,26 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   timestamp an expression computes (`MAX(ts)`, `DateTrunc`) has no
   declared type and comes back as text on SQLite: scan it through
   `storage.Time`, which accepts both shapes.
+- **Ties on a server-stamped timestamp.** Rows the server stamps in
+  the same millisecond carry the same timestamp on SQLite, which
+  happens under any burst (a sensor registering its custom directives,
+  two directives issued to one session); on Postgres such rows differ
+  by microseconds, and tie only when one transaction stamps them. A
+  query whose order among those rows is visible or decides something
+  (a newest-first list, an oldest-first pick) therefore ends its
+  `ORDER BY` with `Dialect.InsertionOrder`: on SQLite the table's
+  `rowid`, which every insert sets above all the rows the table
+  holds, so tied rows come back in the order they were written (the
+  order a finer clock would have given); on Postgres, which records
+  no insertion order, the id column, which keeps the order total and
+  repeatable. A random id alone is never the tie-break of such a
+  query on SQLite. The token, token-policy and custom-directive lists,
+  the MCP policy audit log and the pending-directive pick are ordered
+  this way. Where either tied row is a correct answer (the latest
+  session of an agent among two started in one millisecond, search
+  results of equal rank, the entries of one MCP policy, which one
+  transaction stamps alike on both engines) the query keeps a unique
+  id, or the scan order, as its tie-break.
 - **UUIDs** are `TEXT` in canonical lower-case hyphenated form, with a
   `CHECK` on every uuid column (lower-case, `8-4-4-4-12`, hexadecimal),
   so an upper-case or unhyphenated id cannot be stored and then missed

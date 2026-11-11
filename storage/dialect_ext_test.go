@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/url"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -312,6 +313,77 @@ func TestDialect_JSONArrayElements(t *testing.T) {
 		_ = rows.Close()
 		if len(got) != 2 || got[0] != "fs" || got[1] != "git" {
 			t.Errorf("object elements = %v, want [fs git]", got)
+		}
+	})
+}
+
+// Rows stamped with one timestamp come back in a total, repeatable
+// order with InsertionOrder as the tie-break: on SQLite the order they
+// were inserted in, whatever their ids; on Postgres, which keeps no
+// insertion order, by id.
+func TestDialect_InsertionOrderBreaksATimestampTie(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		createTable(t, db, "storagetest_dialect_tie",
+			"(id TEXT PRIMARY KEY, stamped_at TIMESTAMPTZ NOT NULL)",
+			"(id TEXT PRIMARY KEY, stamped_at TIMESTAMP NOT NULL)")
+		ctx := context.Background()
+		stamp := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+		// Inserted in an order that is neither ascending nor descending
+		// by id, so neither a lucky scan nor an id sort passes for
+		// insertion order.
+		inserted := []string{"m", "c", "x", "a", "q", "f", "z", "b"}
+		for _, id := range inserted {
+			mustExec(t, db, "INSERT INTO storagetest_dialect_tie (id, stamped_at) VALUES ($1, $2)", id, stamp)
+		}
+		// One row with a later stamp: the tie-break never overrides the
+		// timestamp.
+		mustExec(t, db, "INSERT INTO storagetest_dialect_tie (id, stamped_at) VALUES ('later', $1)", stamp.Add(time.Second))
+
+		read := func(direction string) []string {
+			t.Helper()
+			query := "SELECT t.id FROM storagetest_dialect_tie t ORDER BY t.stamped_at " + direction + ", " +
+				db.Dialect.InsertionOrder("t", "id") + " " + direction
+			rows, err := db.Reader().QueryContext(ctx, query)
+			if err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			defer func() { _ = rows.Close() }()
+			var ids []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, id)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			return ids
+		}
+
+		want := append([]string{}, inserted...)
+		if db.Backend == storage.Postgres {
+			slices.Sort(want)
+		}
+		asc := read("ASC")
+		if !slices.Equal(asc, append(append([]string{}, want...), "later")) {
+			t.Errorf("ascending: %v, want %v then later", asc, want)
+		}
+		slices.Reverse(want)
+		desc := read("DESC")
+		if !slices.Equal(desc, append([]string{"later"}, want...)) {
+			t.Errorf("descending: %v, want later then %v", desc, want)
+		}
+		if again := read("DESC"); !slices.Equal(again, desc) {
+			t.Errorf("the order changed between two reads: %v then %v", desc, again)
+		}
+
+		// Unqualified, for a statement with no alias.
+		if got := db.Dialect.InsertionOrder("", "id"); got != map[storage.Backend]string{
+			storage.SQLite: "rowid", storage.Postgres: "id",
+		}[db.Backend] {
+			t.Errorf("InsertionOrder(\"\", \"id\") = %q", got)
 		}
 	})
 }

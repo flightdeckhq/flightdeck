@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -129,6 +130,60 @@ func TestLookupPendingOnBothBackends(t *testing.T) {
 		}
 		if delivered != 4 {
 			t.Fatalf("%d directives marked delivered, want all 4", delivered)
+		}
+	})
+}
+
+// Directives issued at the same instant are delivered in a fixed order:
+// on SQLite, whose timestamps resolve a millisecond and so tie under
+// any burst, the order they were issued in; on Postgres, which keeps no
+// insertion order, by id. Without the tie-break the pick among them was
+// whatever the scan met first.
+func TestLookupPendingBreaksAnIssuedAtTie(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		s := NewStore(db)
+		flavor := "directive-tie-" + randomUUID(t)[:8]
+		session := randomUUID(t)
+		seedSession(t, db, session, flavor)
+
+		issuedAt := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+		const directives = 12
+		issued := make([]string, 0, directives)
+		for i := range directives {
+			// Alternately addressed to the flavor and to the session:
+			// the lookup reads the two kinds through different
+			// predicates, so the order the scan meets them in is not
+			// the order they were issued in.
+			addressee := session
+			if i%2 == 0 {
+				addressee = ""
+			}
+			issued = append(issued, seedDirective(t, db, addressee, flavor, "custom", issuedAt, `{"directive_name":"tie"}`))
+		}
+		// One issued earlier, seeded last: the tie-break never overrides
+		// the timestamp.
+		earlier := seedDirective(t, db, session, flavor, "shutdown", issuedAt.Add(-time.Second), "")
+
+		want := append([]string{}, issued...)
+		if db.Backend == storage.Postgres {
+			slices.Sort(want)
+		}
+		want = append([]string{earlier}, want...)
+
+		got := make([]string, 0, len(want))
+		for range want {
+			d, err := s.LookupPending(ctx, session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d == nil {
+				t.Fatalf("LookupPending returned nil after %d of %d directives", len(got), len(want))
+			}
+			got = append(got, d.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("delivered\n%v\nwant\n%v", got, want)
 		}
 	})
 }

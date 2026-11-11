@@ -146,6 +146,22 @@ func TestOpen_SQLiteCreatesFileWithWALAndForeignKeys(t *testing.T) {
 	if err := db.Reader().QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&rows); err != nil || rows != 1 {
 		t.Errorf("reader foreign_keys %d (%v), want 1", rows, err)
 	}
+	// Durability and concurrency settings of every connection, the
+	// writer's and the read pool's: write-ahead logging, and
+	// synchronous NORMAL (1), under which a committed transaction
+	// survives a crash of the process and the log is synced at each
+	// checkpoint.
+	const synchronousNormal = 1
+	for name, handle := range map[string]*sql.DB{"writer": db.DB, "reader": db.Reader()} {
+		var mode string
+		if err := handle.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+			t.Errorf("%s journal_mode %q (%v), want wal", name, mode, err)
+		}
+		var synchronous int
+		if err := handle.QueryRowContext(context.Background(), "PRAGMA synchronous").Scan(&synchronous); err != nil || synchronous != synchronousNormal {
+			t.Errorf("%s synchronous %d (%v), want %d (NORMAL)", name, synchronous, err, synchronousNormal)
+		}
+	}
 	if db.Reader() == db.DB {
 		t.Error("SQLite reader is the writer handle; want a separate pool")
 	}

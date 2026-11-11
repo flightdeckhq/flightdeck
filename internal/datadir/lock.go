@@ -43,7 +43,8 @@ func (e *InUseError) Error() string {
 func Acquire(path string) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open lock file %s: %w", path, err)
+		// The os error names the path.
+		return nil, fmt.Errorf("lock file: %w", err)
 	}
 	if err := lockFile(f); err != nil {
 		inUse := errors.Is(err, errLocked)
@@ -55,7 +56,8 @@ func Acquire(path string) (*Lock, error) {
 		if inUse {
 			return nil, &InUseError{Path: path, PID: pid}
 		}
-		return nil, fmt.Errorf("lock %s: %w (the directory must be on a filesystem that supports file locks, such as a local disk)", path, err)
+		return nil, fmt.Errorf("lock %s: %w (the directory must be on a local disk: a network share (NFS, SMB, a UNC path) "+
+			"supports neither this lock nor the SQLite database beside it)", path, err)
 	}
 	// The PID is for the message only; the lock is what excludes. A
 	// failed write leaves the lock held and the file empty.

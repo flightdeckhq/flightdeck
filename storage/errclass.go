@@ -60,7 +60,7 @@ func PermanentOpenError(err error) bool {
 	}
 	var sqErr *sqlite.Error
 	if errors.As(err, &sqErr) {
-		switch sqErr.Code() & 0xff {
+		switch sqErr.Code() & sqlitePrimaryCodeMask {
 		case sqliteBusy, sqliteLocked:
 			return false
 		}

@@ -8,9 +8,13 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// SQLite primary result codes (the low byte of an extended code) that
-// mean the statement's data was refused rather than the statement
-// failing for a transient reason.
+// sqlitePrimaryCodeMask keeps the primary result code of a SQLite
+// error: an extended code (SQLITE_CONSTRAINT_UNIQUE, SQLITE_BUSY_SNAPSHOT)
+// carries its primary code in the low byte.
+const sqlitePrimaryCodeMask = 0xff
+
+// SQLite primary result codes that mean the statement's data was
+// refused rather than the statement failing for a transient reason.
 const (
 	sqliteTooBig     = 18 // SQLITE_TOOBIG: a string or blob exceeds the size limit
 	sqliteConstraint = 19 // SQLITE_CONSTRAINT: NOT NULL, CHECK, UNIQUE, FOREIGN KEY
@@ -40,7 +44,7 @@ func IsDataError(err error) bool {
 	}
 	var sqErr *sqlite.Error
 	if errors.As(err, &sqErr) {
-		switch sqErr.Code() & 0xff {
+		switch sqErr.Code() & sqlitePrimaryCodeMask {
 		case sqliteTooBig, sqliteConstraint, sqliteMismatch:
 			return true
 		}

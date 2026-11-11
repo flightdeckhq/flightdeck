@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -63,6 +64,12 @@ const (
 	// exit. It must refuse before it does any work, so a few seconds
 	// would do; the bound covers a slow process start under -race.
 	refusalTimeout = 30 * time.Second
+	// forcedExitTimeout bounds how long the binary may take to end
+	// after a second signal. The test holds a request open so that the
+	// orderly stop would last the ten seconds of the ingestion read
+	// deadline; ending within half of that shows the second signal,
+	// not the drain, ended the process.
+	forcedExitTimeout = 5 * time.Second
 )
 
 func TestMain(m *testing.M) {
@@ -78,6 +85,14 @@ func skipWithoutSignals(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a child process cannot be sent SIGINT on Windows")
 	}
+}
+
+// tempDir is a temporary directory of the test with its symbolic links
+// resolved: the binary names its database by the real path, and a
+// system's temp dir can itself be behind a link.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	return realDir(t, t.TempDir())
 }
 
 // freePort returns a TCP port nothing listens on right now.
@@ -369,7 +384,7 @@ func sqliteFiles(t *testing.T, dataDir string) map[string]os.FileInfo {
 // mangle.
 func TestBinary_SQLiteKeepsEverythingAcrossAStopAndARestart(t *testing.T) {
 	skipWithoutSignals(t)
-	dataDir := filepath.Join(t.TempDir(), "data dir #1 50% ?x")
+	dataDir := filepath.Join(tempDir(t), "data dir #1 50% ?x")
 	port := freePort(t)
 	const flavor = "binary-restart-test"
 	const sessions, callsPerSession = 5, 20
@@ -472,7 +487,7 @@ func TestBinary_SQLiteKeepsEverythingAcrossAStopAndARestart(t *testing.T) {
 // stored before the kill is served.
 func TestBinary_SQLiteRecoversAfterAKill(t *testing.T) {
 	skipWithoutSignals(t)
-	dataDir := filepath.Join(t.TempDir(), "data")
+	dataDir := filepath.Join(tempDir(t), "data")
 	port := freePort(t)
 	const flavor = "binary-kill-test"
 
@@ -536,7 +551,7 @@ func refused(t *testing.T, args ...string) string {
 // the message names what is in use and who holds it.
 func TestBinary_ASecondInstanceIsRefused(t *testing.T) {
 	skipWithoutSignals(t)
-	dataDir := filepath.Join(t.TempDir(), "data")
+	dataDir := filepath.Join(tempDir(t), "data")
 	port := freePort(t)
 	first := start(t, "127.0.0.1:"+port, port, dataDir)
 	holder := fmt.Sprintf("pid %d", first.cmd.Process.Pid)
@@ -558,7 +573,7 @@ func TestBinary_ASecondInstanceIsRefused(t *testing.T) {
 	// Another port and another data dir, the same SQLite file: the
 	// database's lock refuses.
 	dbPath := filepath.Join(dataDir, datadir.DatabaseFile)
-	out = refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "other"),
+	out = refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(tempDir(t), "other"),
 		"--database-url", "sqlite://"+dbPath)
 	for _, want := range []string{"SQLite database " + dbPath, "in use by another flightdeck", holder} {
 		if !strings.Contains(out, want) {
@@ -581,6 +596,109 @@ func TestBinary_ASecondInstanceIsRefused(t *testing.T) {
 	}
 }
 
+// The lock on a SQLite file follows the file, not the name it was
+// reached by: a second instance that names the running instance's
+// database through a symbolic link, from a data dir of its own, is
+// refused like one that names it directly.
+func TestBinary_ASecondInstanceThroughASymbolicLinkIsRefused(t *testing.T) {
+	skipWithoutSignals(t)
+	base := tempDir(t)
+	dataDir := filepath.Join(base, "d1")
+	port := freePort(t)
+	first := start(t, "127.0.0.1:"+port, port, dataDir)
+	realDB := filepath.Join(dataDir, datadir.DatabaseFile)
+	link := filepath.Join(base, "sym.db")
+	if err := os.Symlink(realDB, link); err != nil {
+		t.Fatal(err)
+	}
+	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(base, "d2"),
+		"--database-url", "sqlite://"+link)
+	for _, want := range []string{"SQLite database " + realDB, "in use by another flightdeck", fmt.Sprintf("pid %d", first.cmd.Process.Pid)} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a second instance through a link: %q lacks %q", out, want)
+		}
+	}
+	// A data dir that is a link to the running instance's is refused
+	// by the data dir's own lock.
+	dirLink := filepath.Join(base, "d1-link")
+	if err := os.Symlink(dataDir, dirLink); err != nil {
+		t.Fatal(err)
+	}
+	out = refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", dirLink)
+	if !strings.Contains(out, "in use by another flightdeck") {
+		t.Errorf("a second instance on a link to the data dir: %q", out)
+	}
+	if err := first.stop(t, syscall.SIGINT); err != nil {
+		t.Fatalf("exit after SIGINT: %v\n%s", err, first.out.String())
+	}
+}
+
+// The first signal starts the orderly stop, which waits for the
+// requests in flight; a second signal ends the process at once. The
+// test holds a request open (headers sent, body never finished) so the
+// stop has something to wait for, and the data survives the forced
+// exit as it survives a kill.
+func TestBinary_ASecondSignalEndsASlowStop(t *testing.T) {
+	skipWithoutSignals(t)
+	dataDir := filepath.Join(tempDir(t), "data")
+	port := freePort(t)
+	c := start(t, "127.0.0.1:"+port, port, dataDir)
+	sid := newUUID(t)
+	c.postEvent(t, "tok_dev", sid, newUUID(t), "binary-second-signal-test", "session_start")
+	waitFor(t, "the event stored", storeTimeout, func() bool {
+		return c.storedEvents(t, "tok_dev", "binary-second-signal-test") == 1
+	})
+
+	conn, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := fmt.Fprint(conn, "POST /ingest/v1/events HTTP/1.1\r\nHost: localhost\r\n"+
+		"Authorization: Bearer tok_dev\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"session_id\":"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the notice that a second signal forces the exit", stopTimeout, func() bool {
+		return strings.Contains(c.out.String(), "a second Ctrl+C or signal ends the process at once")
+	})
+	select {
+	case err := <-c.done:
+		c.done <- err
+		t.Fatalf("the binary exited (%v) while a request was still open; the stop was not slow:\n%s", err, c.out.String())
+	default:
+	}
+	second := time.Now()
+	if err := c.cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-c.done:
+		c.done <- err
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("exit after the second signal: %v, want the process ended by the signal", err)
+		}
+		if status, ok := exit.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGINT {
+			t.Fatalf("exit after the second signal: %v, want ended by SIGINT", err)
+		}
+	case <-time.After(forcedExitTimeout):
+		t.Fatalf("the binary was still running %s after the second signal:\n%s", time.Since(second), c.out.String())
+	}
+
+	// What was stored before the forced exit is served by the next start.
+	again := start(t, "127.0.0.1:"+port, port, dataDir)
+	if got := again.storedEvents(t, "tok_dev", "binary-second-signal-test"); got != 1 {
+		t.Fatalf("%d events after the forced exit and a restart, want 1", got)
+	}
+	if err := again.stop(t, syscall.SIGINT); err != nil {
+		t.Fatalf("exit after SIGINT: %v\n%s", err, again.out.String())
+	}
+}
+
 // The dashboard's live feed on SQLite: the workers publish a session
 // change on the storage bus, the query API's hub hears it and pushes a
 // frame to the WebSocket. That only works when the two services share
@@ -588,7 +706,7 @@ func TestBinary_ASecondInstanceIsRefused(t *testing.T) {
 func TestBinary_FleetFeedReachesTheWebSocketOnSQLite(t *testing.T) {
 	skipWithoutSignals(t)
 	port := freePort(t)
-	c := start(t, "127.0.0.1:"+port, port, filepath.Join(t.TempDir(), "data"))
+	c := start(t, "127.0.0.1:"+port, port, filepath.Join(tempDir(t), "data"))
 
 	ws, resp, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+port+"/api/v1/stream?token=tok_dev", nil)
 	if err != nil {
@@ -640,7 +758,7 @@ func TestBinary_TimestampsAreUTCWhateverTheHostZone(t *testing.T) {
 		t.Skip("no zone database on this host")
 	}
 	port := freePort(t)
-	c := startWithEnv(t, []string{"TZ=Asia/Jerusalem"}, "127.0.0.1:"+port, port, filepath.Join(t.TempDir(), "data"))
+	c := startWithEnv(t, []string{"TZ=Asia/Jerusalem"}, "127.0.0.1:"+port, port, filepath.Join(tempDir(t), "data"))
 	sid := newUUID(t)
 	c.postEvent(t, "tok_dev", sid, newUUID(t), "binary-utc-test", "session_start")
 	var detail struct {
@@ -678,7 +796,7 @@ func TestBinary_TimestampsAreUTCWhateverTheHostZone(t *testing.T) {
 // reserved and refuses every connection, so no Postgres is needed.
 func TestBinary_WaitsForAnUnreachableDatabaseUntilASignal(t *testing.T) {
 	skipWithoutSignals(t)
-	cmd, out := command("--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "data"),
+	cmd, out := command("--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(tempDir(t), "data"),
 		"--database-url", "postgres://u:p@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -729,7 +847,7 @@ func TestBinary_WaitsForAnUnreachableDatabaseUntilASignal(t *testing.T) {
 // parse because the password holds a reserved character.
 func TestBinary_AnUnparsablePostgresURLIsRefusedWithoutItsPassword(t *testing.T) {
 	skipWithoutSignals(t)
-	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "data"),
+	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(tempDir(t), "data"),
 		"--database-url", "postgres://flightdeck:s3cret pass@localhost:5432/db%zz")
 	if strings.Contains(out, "s3cret") {
 		t.Errorf("the output repeats the password: %s", out)
@@ -743,8 +861,8 @@ func TestBinary_AnUnparsablePostgresURLIsRefusedWithoutItsPassword(t *testing.T)
 // included, and the data dir then holds no database of its own.
 func TestBinary_ExplicitSQLiteURL(t *testing.T) {
 	skipWithoutSignals(t)
-	dataDir := filepath.Join(t.TempDir(), "data")
-	dbDir := filepath.Join(t.TempDir(), "db dir")
+	dataDir := filepath.Join(tempDir(t), "data")
+	dbDir := filepath.Join(tempDir(t), "db dir")
 	if err := os.Mkdir(dbDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -766,8 +884,8 @@ func TestBinary_ExplicitSQLiteURL(t *testing.T) {
 
 	// A SQLite file in a directory that does not exist is refused with
 	// the path, not with SQLite's "unable to open database file".
-	missing := filepath.Join(t.TempDir(), "no such dir", "x.db")
-	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "d2"),
+	missing := filepath.Join(tempDir(t), "no such dir", "x.db")
+	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(tempDir(t), "d2"),
 		"--database-url", "sqlite://"+missing)
 	if !strings.Contains(out, missing) {
 		t.Errorf("a database in a missing directory: %q does not name %s", out, missing)

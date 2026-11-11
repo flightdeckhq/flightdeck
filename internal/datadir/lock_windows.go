@@ -9,6 +9,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// LockSupported reports that Acquire excludes a second process on this
+// platform.
+const LockSupported = true
+
 // lockOffsetHigh places the locked byte at offset 4 GiB, far past the
 // PID the holder writes at offset 0. Windows file locks are mandatory:
 // a locked range cannot be read by another process, and the process

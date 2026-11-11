@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,24 +16,6 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
 	"github.com/flightdeckhq/flightdeck/storage"
 )
-
-func TestMaskURL(t *testing.T) {
-	cases := map[string]string{
-		"postgres://flightdeck:flightdeck_dev@localhost:5432/fd?sslmode=disable": "postgres://flightdeck:***@localhost:5432/fd?sslmode=disable",
-		"postgres://flightdeck@localhost/fd":                                     "postgres://flightdeck@localhost/fd",
-		"nats://tok3n@nats:4222":                                                 "nats://tok3n@nats:4222",
-		"not a url at all":                                                       "not a url at all",
-		// A URL that does not parse is shown without anything that
-		// could be its password.
-		"postgres://flightdeck:pa ss@localhost:5432/db%zz": "postgres://…",
-		"%zz": "…",
-	}
-	for in, want := range cases {
-		if got := maskURL(in); got != want {
-			t.Errorf("maskURL(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
 
 func TestPublicURL(t *testing.T) {
 	host, _ := os.Hostname()
@@ -274,8 +257,24 @@ func TestConnectionURL_CarriesEveryServicesPostgresParameters(t *testing.T) {
 	}
 }
 
+// realDir is dir with its symbolic links resolved, the form the binary
+// names a database by (a test's temp dir is itself behind a link on
+// some systems).
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 func TestResolveDatabase(t *testing.T) {
-	layout := datadir.Layout{Root: "/data dir/#1", Database: "/data dir/#1/flightdeck.db"}
+	root := filepath.Join(realDir(t, t.TempDir()), "data dir #1")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	layout := datadir.Layout{Root: root, Database: filepath.Join(root, datadir.DatabaseFile)}
 
 	def, err := resolveDatabase("", layout)
 	if err != nil {
@@ -286,34 +285,133 @@ func TestResolveDatabase(t *testing.T) {
 		t.Errorf("no --database-url: %+v, want the SQLite file in the data dir", def)
 	}
 
-	pg, err := resolveDatabase("postgres://u:secret@h:5432/fd?sslmode=disable", layout)
+	pg, err := resolveDatabase("postgres://u:secret@h:5432/fd?sslmode=disable&password=alsosecret", layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pg.backend != storage.Postgres || pg.path != "" || pg.url != "postgres://u:secret@h:5432/fd?sslmode=disable" {
+	if pg.backend != storage.Postgres || pg.path != "" || pg.url != "postgres://u:secret@h:5432/fd?sslmode=disable&password=alsosecret" {
 		t.Errorf("postgres: %+v", pg)
 	}
 	if strings.Contains(pg.display, "secret") || !strings.Contains(pg.display, "u:***@h:5432/fd") {
-		t.Errorf("postgres display %q must mask the password", pg.display)
+		t.Errorf("postgres display %q must mask every password", pg.display)
+	}
+	// A URL that does not parse is displayed without its text.
+	bad, err := resolveDatabase("postgres://u:s3cret pass@h/db%zz", layout)
+	if err != nil || strings.Contains(bad.display, "s3cret") {
+		t.Errorf("unparsable postgres URL: display %q, err %v", bad.display, err)
 	}
 
 	// A relative SQLite path is resolved once, so the lock file, the
 	// start-up block and the storage module name one file.
-	wd, err := os.Getwd()
+	t.Chdir(root)
+	rel, err := resolveDatabase("sqlite://fd #2.db", layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rel, err := resolveDatabase("sqlite://some dir/fd #2.db", layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(wd, "some dir", "fd #2.db")
+	want := filepath.Join(root, "fd #2.db")
 	if rel.backend != storage.SQLite || rel.path != want || rel.display != want || storage.SQLitePath(rel.url) != want {
 		t.Errorf("relative sqlite: %+v, want path %q", rel, want)
 	}
 
 	if _, err := resolveDatabase("mysql://u@h/fd", layout); err == nil {
 		t.Error("a URL of no supported backend must be refused")
+	}
+	// A database in a directory that does not exist is refused by name.
+	missing := filepath.Join(root, "no such dir", "x.db")
+	if _, err := resolveDatabase("sqlite://"+missing, layout); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Errorf("a database in a missing directory: %v, want an error naming %s", err, missing)
+	}
+}
+
+// One database reached by different names is one database: a link to
+// the file, a link to its directory, a data dir that is itself a link,
+// and a link to a file that does not exist yet all resolve to the real
+// path, which is what the lock file is named after.
+func TestResolveDatabase_ResolvesSymbolicLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symbolic link needs a privilege on Windows")
+	}
+	base := realDir(t, t.TempDir())
+	realData := filepath.Join(base, "d1")
+	if err := os.Mkdir(realData, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realDB := filepath.Join(realData, datadir.DatabaseFile)
+	if err := os.WriteFile(realDB, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := func(target, name string) string {
+		t.Helper()
+		path := filepath.Join(base, name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	fileLink := link(realDB, "sym.db")
+	dirLink := link(realData, "d1-link")
+	chained := link(fileLink, "sym-of-sym.db")
+	relative := link(filepath.Join("d1", datadir.DatabaseFile), "relative.db")
+	other := datadir.Layout{Root: base, Database: filepath.Join(base, datadir.DatabaseFile)}
+
+	for name, url := range map[string]string{
+		"a link to the file":      "sqlite://" + fileLink,
+		"a link to its directory": "sqlite://" + filepath.Join(dirLink, datadir.DatabaseFile),
+		"a link to a link":        "sqlite://" + chained,
+		"a relative link":         "sqlite://" + relative,
+		"the real path":           "sqlite://" + realDB,
+	} {
+		got, err := resolveDatabase(url, other)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if got.path != realDB || storage.SQLitePath(got.url) != realDB || got.display != realDB {
+			t.Errorf("%s: %+v, want the real file %s", name, got, realDB)
+		}
+	}
+
+	// A data dir that is a link: its database is the real one.
+	linked := datadir.Layout{Root: dirLink, Database: filepath.Join(dirLink, datadir.DatabaseFile)}
+	if got, err := resolveDatabase("", linked); err != nil || got.path != realDB {
+		t.Errorf("a linked data dir: %+v, %v; want %s", got, err, realDB)
+	}
+
+	// A link to a file that does not exist yet resolves to where SQLite
+	// will create it, not to the link.
+	fresh := filepath.Join(realData, "fresh.db")
+	dangling := link(fresh, "dangling.db")
+	if got, err := resolveDatabase("sqlite://"+dangling, other); err != nil || got.path != fresh {
+		t.Errorf("a link to a file not yet created: %+v, %v; want %s", got, err, fresh)
+	}
+	// A link that points at itself is refused, not followed forever.
+	loop := filepath.Join(base, "loop.db")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveDatabase("sqlite://"+loop, other); err == nil {
+		t.Error("a link to itself was accepted")
+	}
+}
+
+// Each service's Postgres pool is a connection per processor within
+// the process's budget: the three pools, the root pool and the LISTEN
+// connections never add up to more than the budget, which is under the
+// 97 connections a default Postgres gives to ordinary clients.
+func TestPostgresServicePoolConns(t *testing.T) {
+	for cpus, want := range map[int]int{1: 4, 2: 4, 4: 4, 8: 8, 16: 16, 24: 24, 25: 25, 32: 25, 64: 25, 256: 25} {
+		got := postgresServicePoolConns(cpus)
+		if got != want {
+			t.Errorf("postgresServicePoolConns(%d) = %d, want %d", cpus, got, want)
+		}
+		if total := postgresServices*got + postgresRootPoolConns + postgresListenConns; total > postgresConnBudget {
+			t.Errorf("%d processors: %d connections in all, over the budget of %d", cpus, total, postgresConnBudget)
+		}
+	}
+	// Postgres' default max_connections less its superuser reserve.
+	const defaultClientConns = 100 - 3
+	if postgresConnBudget >= defaultClientConns {
+		t.Errorf("the budget of %d leaves nothing of a default server's %d for another client", postgresConnBudget, defaultClientConns)
 	}
 }
 

@@ -9,14 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -46,6 +46,49 @@ const shutdownTimeout = 30 * time.Second
 // lockSuffix names the lock file of a SQLite database: the database's
 // path with this suffix, beside the file it guards.
 const lockSuffix = ".lock"
+
+// The Postgres connections of one flightdeck process. Each service has
+// a pool of its own (storage.DB.Share), which alone would be
+// max(4, NumCPU) connections: three of them on a 32-core host, with the
+// root pool, come to 128 against the 100 a Postgres server accepts by
+// default, three of which it keeps for superusers. So the process has a
+// budget and divides it.
+const (
+	// postgresConnBudget is the most connections the process opens.
+	// Eighty leaves seventeen of the default's ninety-seven for
+	// everything else that talks to the server: a psql session, a
+	// backup, monitoring, a migration.
+	postgresConnBudget = 80
+	// postgresRootPoolConns caps the pool the binary opens first. After
+	// the start-up check of the dashboard token nothing uses it; two
+	// connections cover that check.
+	postgresRootPoolConns = 2
+	// postgresListenConns is the number of dedicated LISTEN connections
+	// the storage bus holds: the WebSocket hub's fleet subscription and
+	// the token-revocation subscriptions of the query API and of
+	// ingestion.
+	postgresListenConns = 3
+	// postgresServices is the number of service pools: ingestion, the
+	// workers, the query API.
+	postgresServices = 3
+	// postgresMinServicePoolConns is the floor of a service pool, the
+	// storage module's own floor for a small host.
+	postgresMinServicePoolConns = 4
+)
+
+// postgresServicePoolConns is the size of each service's Postgres pool
+// on a host with numCPU processors: a connection per processor, as the
+// storage module sizes a pool, no fewer than the floor and no more
+// than a third of what the budget leaves after the root pool and the
+// LISTEN connections (25).
+func postgresServicePoolConns(numCPU int) int {
+	share := (postgresConnBudget - postgresRootPoolConns - postgresListenConns) / postgresServices
+	return min(max(postgresMinServicePoolConns, numCPU), share)
+}
+
+// symlinkDepthLimit bounds how many dangling symbolic links realPath
+// follows by hand; the kernel itself gives up at forty.
+const symlinkDepthLimit = 40
 
 // databaseConnectBudget is how long the binary keeps trying to reach a
 // database that does not answer yet: a Postgres that starts beside it
@@ -143,6 +186,10 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if layout.Warning != "" {
 		slog.Warn(layout.Warning)
 	}
+	if !datadir.LockSupported {
+		slog.Warn("this platform has no file lock: a second flightdeck on this data dir or database will not be refused",
+			"os", runtime.GOOS)
+	}
 	// One process per data dir: the bus store and the secrets file have
 	// one owner. Taken before anything in the directory is written.
 	dirLock, err := datadir.Acquire(layout.Lock)
@@ -196,6 +243,22 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// The first signal starts the orderly stop below, which can take as
+	// long as its slowest request or message. From then on the signals
+	// have their default action again, so a second one ends the process
+	// at once: nothing is lost that a kill would not lose either, since
+	// the database recovers its write-ahead log and the stream
+	// redelivers what was not acknowledged.
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done():
+			stop()
+			slog.Info("stopping; a second Ctrl+C or signal ends the process at once")
+		case <-finished:
+		}
+	}()
 
 	// What is opened from here on is closed by the defers in reverse:
 	// the storage bus, the services' database handles and the database,
@@ -267,6 +330,16 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		handles[i] = h
 	}
 	ingDB, wrkDB, apiDB := handles[0], handles[1], handles[2]
+	if database.backend == storage.Postgres {
+		// Within the process's connection budget (see the constants).
+		db.SetMaxOpenConns(postgresRootPoolConns)
+		db.SetMaxIdleConns(postgresRootPoolConns)
+		perService := postgresServicePoolConns(runtime.NumCPU())
+		for _, h := range handles {
+			h.SetMaxOpenConns(perService)
+			h.SetMaxIdleConns(perService)
+		}
+	}
 	// One bus for the three. On Postgres it notifies through the
 	// workers' pool: they publish a notification for nearly every
 	// event, as they do through their own pool when they run alone.
@@ -343,33 +416,67 @@ type database struct {
 
 // resolveDatabase turns --database-url into the database of this run:
 // the SQLite file in the data dir when none is given, otherwise the URL
-// as given. A SQLite path is made absolute, so the lock file, the
-// start-up block and the storage module all name one file whatever the
-// working directory. The SQLite URL is built by the storage module's
-// own helper, which carries the path verbatim: a data dir with spaces,
-// "#", "?", "%" or a Windows drive letter names the same file in every
-// one of them.
+// as given. A SQLite path is made absolute and its symbolic links are
+// resolved, so the lock file, the start-up block and the storage module
+// all name the one real file, whatever the working directory and
+// whichever name the file was reached by: two processes that name one
+// database through different links then contend for one lock. The
+// SQLite URL is built by the storage module's own helper, which
+// carries the path verbatim: a data dir with spaces, "#", "?", "%" or
+// a Windows drive letter names the same file in every one of them.
 func resolveDatabase(rawURL string, layout datadir.Layout) (database, error) {
-	if rawURL == "" {
-		return database{
-			backend: storage.SQLite,
-			url:     storage.SQLiteURL(layout.Database),
-			path:    layout.Database,
-			display: layout.Database,
-		}, nil
+	path := layout.Database
+	if rawURL != "" {
+		backend, err := storage.BackendOf(rawURL)
+		if err != nil {
+			return database{}, err
+		}
+		if backend != storage.SQLite {
+			return database{backend: backend, url: rawURL, display: storage.MaskURL(rawURL)}, nil
+		}
+		if path, err = filepath.Abs(storage.SQLitePath(rawURL)); err != nil {
+			return database{}, fmt.Errorf("SQLite database path: %w", err)
+		}
 	}
-	backend, err := storage.BackendOf(rawURL)
+	resolved, err := realPath(path, symlinkDepthLimit)
 	if err != nil {
-		return database{}, err
+		return database{}, fmt.Errorf("SQLite database %s: %w", path, err)
 	}
-	if backend != storage.SQLite {
-		return database{backend: backend, url: rawURL, display: maskURL(rawURL)}, nil
+	return database{backend: storage.SQLite, url: storage.SQLiteURL(resolved), path: resolved, display: resolved}, nil
+}
+
+// realPath returns the absolute path with its symbolic links resolved:
+// those of the file when it exists; otherwise those of its directory,
+// where the file is about to be created. A link that points at a file
+// which does not exist yet is followed to the place the file will be
+// created, at most depth times.
+func realPath(path string, depth int) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
 	}
-	path, err := filepath.Abs(storage.SQLitePath(rawURL))
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
+		if depth <= 0 {
+			return "", fmt.Errorf("%s: too many symbolic links", path)
+		}
+		target, rerr := os.Readlink(path)
+		if rerr != nil {
+			return "", rerr
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		return realPath(target, depth-1)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
-		return database{}, fmt.Errorf("SQLite database path: %w", err)
+		// The os error names the directory that is missing.
+		return "", err
 	}
-	return database{backend: backend, url: storage.SQLiteURL(path), path: path, display: path}, nil
+	return filepath.Join(dir, filepath.Base(path)), nil
 }
 
 // connectionURL is the URL the process's database, and through it every
@@ -565,7 +672,7 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	if embedded {
 		p("  Bus         embedded NATS, store %s\n", layout.NATS)
 	} else {
-		p("  Bus         NATS at %s\n", maskURL(opts.NatsURL))
+		p("  Bus         NATS at %s\n", storage.MaskURL(opts.NatsURL))
 	}
 	p("\nPress Ctrl+C to stop.\n\n")
 }
@@ -592,25 +699,4 @@ func publicURL(opts cli.Options) string {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port)
-}
-
-// maskURL hides the password of a connection URL. A URL that does not
-// parse is shown as its scheme only: what follows may hold a password
-// this function cannot find.
-func maskURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		if scheme, _, found := strings.Cut(raw, "://"); found {
-			return scheme + "://…"
-		}
-		return "…"
-	}
-	if u.User == nil {
-		return raw
-	}
-	if _, has := u.User.Password(); has {
-		u.User = url.UserPassword(u.User.Username(), "***")
-	}
-	// url.String escapes the asterisks; show them as typed.
-	return strings.Replace(u.String(), "%2A%2A%2A", "***", 1)
 }

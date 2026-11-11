@@ -8,6 +8,10 @@ import (
 	"syscall"
 )
 
+// LockSupported reports that Acquire excludes a second process on this
+// platform.
+const LockSupported = true
+
 // lockFile takes an exclusive flock on f without waiting. flock locks
 // belong to the open file, so a second open of the same path, in this
 // process or another, is refused while f holds it.

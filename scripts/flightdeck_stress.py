@@ -93,13 +93,17 @@ class Client:
         self.host, self.port = host, port
         self.conn: http.client.HTTPConnection | None = None
 
-    def request(self, method: str, path: str, body: bytes | None = None) -> tuple[int, bytes]:
+    def request(
+        self, method: str, path: str, body: bytes | None = None
+    ) -> tuple[int, bytes]:
         headers = {"Authorization": f"Bearer {TOKEN}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         for attempt in (1, 2):
             if self.conn is None:
-                self.conn = http.client.HTTPConnection(self.host, self.port, timeout=HTTP_TIMEOUT_SECS)
+                self.conn = http.client.HTTPConnection(
+                    self.host, self.port, timeout=HTTP_TIMEOUT_SECS
+                )
             try:
                 self.conn.request(method, path, body=body, headers=headers)
                 resp = self.conn.getresponse()
@@ -157,12 +161,19 @@ def event(session_id: str, agent_id: str, flavor: str, event_type: str) -> bytes
         "event_type": event_type,
         "sensor_version": "0.0.0",
         "capture_prompts": False,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time() * 1000) % 1000:03d}Z",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        + f".{int(time.time() * 1000) % 1000:03d}Z",
     }
     if event_type == "session_start":
         payload["context"] = {}
     else:
-        payload.update(model="claude-sonnet-4-5", tokens_input=10, tokens_output=5, tokens_total=15, latency_ms=12)
+        payload.update(
+            model="claude-sonnet-4-5",
+            tokens_input=10,
+            tokens_output=5,
+            tokens_total=15,
+            latency_ms=12,
+        )
     return json.dumps(payload).encode()
 
 
@@ -171,7 +182,9 @@ def writer(host: str, port: int, flavor: str, events: int, stats: Stats) -> None
     session_id, agent_id = str(uuid.uuid4()), str(uuid.uuid4())
     try:
         for i in range(events):
-            body = event(session_id, agent_id, flavor, "session_start" if i == 0 else "post_call")
+            body = event(
+                session_id, agent_id, flavor, "session_start" if i == 0 else "post_call"
+            )
             try:
                 code, _ = client.request("POST", "/ingest/v1/events", body)
             except Exception as exc:  # noqa: BLE001 - every failure is counted
@@ -194,7 +207,9 @@ def read_paths(flavor: str) -> dict[str, str]:
     }
 
 
-def reader(host: str, port: int, flavor: str, stats: Stats, stop: threading.Event) -> None:
+def reader(
+    host: str, port: int, flavor: str, stats: Stats, stop: threading.Event
+) -> None:
     client = Client(host, port)
     paths = read_paths(flavor)
     try:
@@ -228,14 +243,18 @@ def percentile(values: list[float], pct: float) -> float:
 
 
 def stored_events(client: Client, flavor: str) -> int:
-    code, body = client.request("GET", f"/api/v1/events?from={EPOCH}&limit=1&flavor={flavor}")
+    code, body = client.request(
+        "GET", f"/api/v1/events?from={EPOCH}&limit=1&flavor={flavor}"
+    )
     if code != 200:
         raise RuntimeError(f"GET /api/v1/events: {code}")
     return int(json.loads(body)["total"])
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("binary")
     ap.add_argument("--database-url", default="")
     ap.add_argument("--listen", default="127.0.0.1:4100")
@@ -254,13 +273,19 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="flightdeck-stress-") as tmp:
         data = Path(tmp) / "data"
         log_path = Path(tmp) / "flightdeck.log"
-        env = {k: v for k, v in os.environ.items() if not k.startswith("FLIGHTDECK_") and k != "ENVIRONMENT"}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("FLIGHTDECK_") and k != "ENVIRONMENT"
+        }
         env["FLIGHTDECK_RATE_LIMIT_PER_MINUTE"] = RATE_LIMIT_PER_MINUTE
         cmd = [args.binary, "--listen", args.listen, "--data-dir", str(data)]
         if args.database_url:
             cmd += ["--database-url", args.database_url]
         with open(log_path, "wb") as log_file:
-            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+            proc = subprocess.Popen(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env
+            )
         try:
             probe = Client(host, port)
             deadline = time.monotonic() + READY_TIMEOUT_SECS
@@ -270,17 +295,24 @@ def main() -> int:
                     log("FAIL: flightdeck exited before it served")
                     return 1
                 try:
-                    if probe.request("GET", "/api/health")[0] == 200:
-                        break
-                except Exception:  # noqa: BLE001 - not listening yet
-                    pass
+                    ready = probe.request("GET", "/api/health")[0] == 200
+                except (OSError, http.client.HTTPException):
+                    ready = False  # not listening yet
+                if ready:
+                    break
                 if time.monotonic() > deadline:
                     log(log_path.read_text(errors="replace"))
                     log(f"FAIL: no /api/health within {READY_TIMEOUT_SECS}s")
                     return 1
                 time.sleep(0.2)
-            backend = "SQLite" if sqlite_default or args.database_url.startswith("sqlite://") else "Postgres"
-            log(f"== {args.sessions} sessions x {args.events} events, {args.readers} readers, on {backend}")
+            backend = (
+                "SQLite"
+                if sqlite_default or args.database_url.startswith("sqlite://")
+                else "Postgres"
+            )
+            log(
+                f"== {args.sessions} sessions x {args.events} events, {args.readers} readers, on {backend}"
+            )
 
             # Read latency with nothing else running, for comparison.
             idle = Stats()
@@ -297,17 +329,27 @@ def main() -> int:
             stop_wal = threading.Event()
             wal_peak = [0]
             threads = [
-                threading.Thread(target=reader, args=(host, port, flavor, stats, stop_readers), daemon=True)
+                threading.Thread(
+                    target=reader,
+                    args=(host, port, flavor, stats, stop_readers),
+                    daemon=True,
+                )
                 for _ in range(args.readers)
             ]
             if sqlite_default:
                 threads.append(
                     threading.Thread(
-                        target=wal_watch, args=(data / "flightdeck.db-wal", wal_peak, stop_wal), daemon=True
+                        target=wal_watch,
+                        args=(data / "flightdeck.db-wal", wal_peak, stop_wal),
+                        daemon=True,
                     )
                 )
             writers = [
-                threading.Thread(target=writer, args=(host, port, flavor, args.events, stats), daemon=True)
+                threading.Thread(
+                    target=writer,
+                    args=(host, port, flavor, args.events, stats),
+                    daemon=True,
+                )
                 for _ in range(args.sessions)
             ]
             began = time.monotonic()
@@ -319,7 +361,9 @@ def main() -> int:
                 # A backup taken while the load runs, the way the docs
                 # say to take one.
                 snapshot = Path(tmp) / "snapshot.db"
-                while stats.posted < expected // 4 and any(w.is_alive() for w in writers):
+                while stats.posted < expected // 4 and any(
+                    w.is_alive() for w in writers
+                ):
                     time.sleep(0.05)
                 src = sqlite3.connect(str(data / "flightdeck.db"), timeout=30)
                 try:
@@ -335,9 +379,13 @@ def main() -> int:
                 finally:
                     snap.close()
                 if check != [("ok",)]:
-                    failures.append(f"the VACUUM INTO snapshot fails integrity_check: {check[:3]}")
+                    failures.append(
+                        f"the VACUUM INTO snapshot fails integrity_check: {check[:3]}"
+                    )
                 if not 0 < snapshot_rows <= expected:
-                    failures.append(f"the snapshot holds {snapshot_rows} of this run's events")
+                    failures.append(
+                        f"the snapshot holds {snapshot_rows} of this run's events"
+                    )
 
             for w in writers:
                 w.join()
@@ -357,7 +405,8 @@ def main() -> int:
 
             # The sessions' own counters agree with the events.
             code, body = probe.request(
-                "GET", f"/api/v1/analytics?metric=tokens&group_by=flavor&range=7d&filter_flavor={flavor}"
+                "GET",
+                f"/api/v1/analytics?metric=tokens&group_by=flavor&range=7d&filter_flavor={flavor}",
             )
             tokens = None
             if code == 200:
@@ -372,16 +421,24 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 rc = proc.wait()
-                failures.append(f"flightdeck did not exit within {STOP_TIMEOUT_SECS}s of SIGINT")
+                failures.append(
+                    f"flightdeck did not exit within {STOP_TIMEOUT_SECS}s of SIGINT"
+                )
 
         text = log_path.read_text(errors="replace")
         busy = sum(text.count(s) for s in ("database is locked", "SQLITE_BUSY"))
         error_lines = [ln for ln in text.splitlines() if " ERROR " in ln]
-        left = sorted(p.name for p in data.glob("flightdeck.db-*")) if sqlite_default else []
+        left = (
+            sorted(p.name for p in data.glob("flightdeck.db-*"))
+            if sqlite_default
+            else []
+        )
 
         five_xx = sum(n for code, n in stats.statuses.items() if code >= 500)
         other = {code: n for code, n in stats.statuses.items() if code != 200}
-        log(f"   posted {stats.posted}/{expected} in {posted_in:.1f}s ({stats.posted / posted_in:.0f} events/s)")
+        log(
+            f"   posted {stats.posted}/{expected} in {posted_in:.1f}s ({stats.posted / posted_in:.0f} events/s)"
+        )
         log(f"   stored {stored}/{expected} after {stored_in:.1f}s")
         log(f"   responses: {dict(sorted(stats.statuses.items()))}")
         for name in sorted(stats.read_latency):
@@ -392,34 +449,50 @@ def main() -> int:
                 f"(idle p50={percentile(calm, 0.5) * 1000:.1f} ms max={max(calm) * 1000:.1f} ms)"
             )
         if sqlite_default:
-            log(f"   write-ahead log peak {wal_peak[0] / 1048576:.1f} MiB; snapshot held {snapshot_rows} events")
-        log(f"   exit status {rc}; ERROR lines {len(error_lines)}; locked-database lines {busy}")
+            log(
+                f"   write-ahead log peak {wal_peak[0] / 1048576:.1f} MiB; snapshot held {snapshot_rows} events"
+            )
+        log(
+            f"   exit status {rc}; ERROR lines {len(error_lines)}; locked-database lines {busy}"
+        )
 
         if stats.posted != expected:
             failures.append(f"{stats.posted} of {expected} events were accepted")
         if five_xx:
             failures.append(f"{five_xx} responses were 5xx")
         if other:
-            failures.append(f"responses other than 200: {other}; first errors: {stats.errors[:5]}")
+            failures.append(
+                f"responses other than 200: {other}; first errors: {stats.errors[:5]}"
+            )
         if stored != expected:
             failures.append(f"{stored} events stored, want exactly {expected}")
         if tokens is not None and tokens != 15 * (expected - args.sessions):
-            failures.append(f"analytics counts {tokens} tokens, want {15 * (expected - args.sessions)}")
+            failures.append(
+                f"analytics counts {tokens} tokens, want {15 * (expected - args.sessions)}"
+            )
         if busy:
             failures.append(f"the log reports a locked database {busy} times")
         if error_lines:
-            failures.append(f"{len(error_lines)} ERROR lines in the log, first: {error_lines[0][:300]}")
+            failures.append(
+                f"{len(error_lines)} ERROR lines in the log, first: {error_lines[0][:300]}"
+            )
         slowest = max((max(v) for v in stats.read_latency.values()), default=0.0)
         if slowest > READ_STALL_SECS:
-            failures.append(f"a read took {slowest:.2f}s while writes ran (limit {READ_STALL_SECS}s)")
+            failures.append(
+                f"a read took {slowest:.2f}s while writes ran (limit {READ_STALL_SECS}s)"
+            )
         if not stats.read_latency:
             failures.append("no read completed")
         if wal_peak[0] > WAL_LIMIT_BYTES:
-            failures.append(f"the write-ahead log grew to {wal_peak[0]} bytes (limit {WAL_LIMIT_BYTES})")
+            failures.append(
+                f"the write-ahead log grew to {wal_peak[0]} bytes (limit {WAL_LIMIT_BYTES})"
+            )
         if rc != 0:
             failures.append(f"flightdeck exited {rc} on SIGINT")
         if left:
-            failures.append(f"files left beside the database after a clean stop: {left}")
+            failures.append(
+                f"files left beside the database after a clean stop: {left}"
+            )
         if failures:
             sys.stdout.write(text[-4000:])
 

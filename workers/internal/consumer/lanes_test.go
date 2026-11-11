@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -248,6 +249,55 @@ func TestRun_ASessionStuckOnItsLaneDoesNotHoldTheOtherLanes(t *testing.T) {
 	poll(t, func() bool { return proc.has(stuck + ":0") }, "the stuck session once released")
 	cancel()
 	<-done
+}
+
+// A stop does not interrupt the message a lane is processing: it runs
+// to its end under a context the stop does not cancel, so a call whose
+// session counters are already written also gets its event row and its
+// acknowledgement. The session's next message, still queued, is not
+// started. The test runs in a synctest bubble, where "nothing more
+// happens" is a fact (every goroutine blocked), not a wait.
+func TestRun_AStopFinishesTheMessageInFlightAndStartsNoOther(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stuck := testSessionID(9999)
+		msgs := []*nats.Msg{eventMsg(stuck, "0"), eventMsg(stuck, "1")}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		proc := &blockingProcessor{stuck: stuck, release: make(chan struct{})}
+		c := &Consumer{poolSize: 2, processor: proc, processTimeout: time.Minute}
+		done := make(chan struct{})
+		go func() {
+			_ = c.run(ctx, oneShotFetch(ctx, msgs))
+			close(done)
+		}()
+		// The first message is in flight (its lane is blocked in
+		// Process); stop the run under it.
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("run returned while a message was still being processed")
+		default:
+		}
+		if proc.has(stuck + ":timeout") {
+			t.Fatal("the stop cancelled the message in flight")
+		}
+
+		close(proc.release)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("run did not return once the message in flight had finished")
+		}
+		if !proc.has(stuck+":0") || proc.has(stuck+":timeout") {
+			t.Fatalf("the message in flight must finish uncancelled, saw %v", proc.seen)
+		}
+		if proc.has(stuck + ":1") {
+			t.Fatal("a message queued behind the one in flight was started after the stop")
+		}
+	})
 }
 
 func TestRun_TheProcessingDeadlineFreesAStuckLane(t *testing.T) {

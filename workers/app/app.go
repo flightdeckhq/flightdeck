@@ -194,11 +194,11 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	spawn(func() { writer.New(db, bus).RunModelBackfill(runCtx) })
 
 	// The consumer returns an error only when setup fails; otherwise it
-	// runs the lanes until runCtx ends. Each message is processed under
-	// a context derived from runCtx, so cancelling it ends the work in
-	// flight (the statement or the wait it was in returns an error) and
-	// the message is left unacknowledged for NATS to redeliver; Start
-	// returns once every lane has observed the cancellation.
+	// runs the lanes until runCtx ends. A message a lane is processing
+	// at that moment is finished under its own deadline and
+	// acknowledged, so no call is left half applied; a message still
+	// queued in a lane is not started and NATS redelivers it. Start
+	// returns once every lane has finished.
 	consumerErr := make(chan error, 1)
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)
 	spawn(func() {
@@ -238,9 +238,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 			slog.Warn("metrics listener shutdown", "err", err)
 		}
 	}
-	// The lanes return once their cancelled in-flight work has ended
-	// (those messages are redelivered), and the reconciler and the
-	// backfill stop, before the database and NATS connections close.
+	// The lanes return once the message each was processing has
+	// finished, and the reconciler and the backfill stop, before the
+	// database and NATS connections close.
 	if !waitWithin(shutdownCtx, &loops) {
 		slog.Warn("consumer lanes or background loops did not stop before the shutdown timeout; closing the connections anyway")
 	}

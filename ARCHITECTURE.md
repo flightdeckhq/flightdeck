@@ -4616,6 +4616,15 @@ backend blocked after the client has given up. A lock held through all
 three deliveries (about 35 seconds) ends the message as
 `max_retries_exhausted`.
 
+When the worker stops (SIGINT, SIGTERM, the `flightdeck` binary
+shutting down) each lane finishes the message it is processing and
+acknowledges it: the stop does not cancel that message, whose
+ten-second deadline still bounds it. Processing a call is several
+statements (the session's counters, then the event row), and one
+interrupted between them would be redelivered and counted a second
+time. A message still queued in a lane has not been started; it stays
+unacknowledged and is redelivered when its ack wait ends.
+
 Events can still reach the worker out of order: a client's concurrent
 processes (the Claude Code plugin's hooks) can publish a session's events
 in a different order than they happened, and a message the worker asked
@@ -10563,7 +10572,14 @@ after a stop on a signal the data dir holds one database file, and
 the next start on it finds every stored session and event and, in
 the non-loopback mode, the same dashboard token. An event accepted
 (HTTP 200) and not yet stored when the stop begins stays in the
-`FLIGHTDECK` stream and is stored by the next start. A service's
+`FLIGHTDECK` stream and is stored, once, by the next start: a
+worker lane finishes the message it is processing when the stop
+begins (under that message's own 10-second deadline) and acknowledges
+it, so no call is left with its session counters written and its
+event row missing; messages still queued in a lane are not started,
+and the stream hands them out again once their 30-second
+acknowledgement wait has passed, so the next start may store its
+first events that long after it begins. A service's
 failure is the exit status's reason; a stop on a signal exits 0.
 
 **The `app` packages.** Each service exports `ingestion/app`,

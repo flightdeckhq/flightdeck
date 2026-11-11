@@ -1310,8 +1310,9 @@ jobs:
 
       # The README's command budget (scripts/readme-budget.sh): the
       # self-test pins the counting rule on fixtures, then the README
-      # is measured. A fence or a heredoc left open fails the step even
-      # in report mode, because the counts after it cannot be trusted.
+      # is measured. A fence or a heredoc left open, and a command in
+      # a fence tagged as a sample language, fail the step even in
+      # report mode, because the counts cannot be trusted.
       # Report mode until the single-binary README lands
       # within budget; that pull request drops --report so the budget
       # then fails the build.

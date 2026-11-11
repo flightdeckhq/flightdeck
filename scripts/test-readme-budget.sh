@@ -12,9 +12,12 @@
 # cmd, an untagged fence, tilde fences, a fence in a blockquote or a
 # list item, CRLF line endings); a chained line counts once per
 # segment, a pipeline once, a wrapped command once; separators inside
-# quotes and heredoc bodies do not count; a `###` subsection counts
-# into its `## ` section. A fence or a heredoc left open, an unknown
-# option and a second path are errors.
+# quotes and heredoc bodies do not count, except the body of a heredoc
+# that a shell reads; cmd and PowerShell fences continue on a caret
+# and a backtick and never on a backslash; a `###` subsection counts
+# into its `## ` section. A fence or a heredoc left open, a command in
+# a sample-language fence, an unknown option and a second path are
+# errors.
 #
 # Every count asserted here is non-zero except where a zero is the
 # point, so a counter that returns 0 for everything fails this test.
@@ -582,6 +585,67 @@ FIXTURE
 } >"$work/heredoc-body.md"
 rule 4 "heredoc bodies are not counted (<<WORD, <<'WORD', <<-\"WORD\")" <"$work/heredoc-body.md"
 
+# A heredoc that a shell reads is a script, not data: its lines are
+# commands. Each fixture counts the line that opens the heredoc and
+# the commands of its body.
+rule 4 "the body of a heredoc fed to a shell is counted" <<'FIXTURE'
+```bash
+bash <<EOF
+make build
+make install && make check
+EOF
+```
+FIXTURE
+
+# Nine: four opening lines, and bodies of one, two, one and one. The
+# shell is found behind ssh, a container exec, a pipe and sudo/env
+# with a path.
+rule 9 "remote, contained, piped and prefixed shells are shells" <<'FIXTURE'
+```bash
+ssh ops@example.invalid <<'EOF'
+flightdeck status
+EOF
+docker exec -i flightdeck sh <<EOF
+flightdeck stop; flightdeck start
+EOF
+cat <<EOF | sudo sh
+flightdeck status
+EOF
+sudo env FLIGHTDECK_PORT=4000 /bin/bash <<EOF
+flightdeck
+EOF
+```
+FIXTURE
+
+# Two: the opening line and one wrapped command. The comment and the
+# blank line of the body count as nothing, as they do outside it.
+rule 2 "a shell heredoc's body follows the same rules" <<'FIXTURE'
+```bash
+bash <<EOF
+# a comment
+
+helm install example \
+  --set a=b
+EOF
+```
+FIXTURE
+
+# A file name that contains a shell's name is not a shell: these three
+# write files and their bodies stay data.
+rule 3 "a heredoc written to a file is still data" <<'FIXTURE'
+```bash
+cat <<EOF > config.yaml
+note: make dev && make test
+EOF
+cat > install.sh <<EOF
+make dev; make test
+EOF
+tee ~/.ssh/config <<EOF
+Host example; make dev
+EOF
+```
+FIXTURE
+
 rule 2 "a here-string is not a heredoc" <<'FIXTURE'
 ```bash
 grep flightdeck <<<"$processes"
@@ -596,6 +660,104 @@ rule 2 "an open quote does not hide the next line" <<'FIXTURE'
 ```text
 /plugin install example   (don't skip this)
 /reload-plugins
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# Windows fences.
+# ---------------------------------------------------------------------
+
+# A trailing backslash is the end of a path, not a continuation.
+rule 2 "a trailing backslash does not join lines in a cmd fence" <<'FIXTURE'
+```cmd
+cd C:\Users\example\
+flightdeck.exe
+```
+FIXTURE
+
+rule 2 "nor in a powershell fence" <<'FIXTURE'
+```powershell
+cd C:\Users\example\
+flightdeck.exe
+```
+FIXTURE
+
+# Nor is it an escape: the separator after it still separates.
+rule 2 "a backslash does not escape a separator in a powershell fence" <<'FIXTURE'
+```pwsh
+cd C:\Users\example\; flightdeck.exe
+```
+FIXTURE
+
+rule 1 "a backtick continues a PowerShell command" <<'FIXTURE'
+```powershell
+Invoke-WebRequest https://example.invalid/flightdeck.zip `
+  -OutFile flightdeck.zip
+```
+FIXTURE
+
+rule 1 "a caret continues a cmd command" <<'FIXTURE'
+```cmd
+flightdeck.exe ^
+  --domain example.com
+```
+FIXTURE
+
+# Three: REM and :: lines are comments, and an apostrophe is not a
+# quote in cmd, so the & after it separates.
+rule 3 "cmd comments and apostrophes" <<'FIXTURE'
+```bat
+REM start the server & nothing else
+:: another comment
+flightdeck.exe
+echo don't close this window & flightdeck.exe status
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# Samples must be samples.
+# ---------------------------------------------------------------------
+
+# Each of these has one real command next to its sample, so the count
+# asserted is 1: the sample is not counted and does not fail the run.
+rule 1 "a JSON sample passes" <<'FIXTURE'
+```json
+{
+  "server": "http://localhost:4000",
+  "install": "curl -fsSL https://example.invalid/install.sh | sh"
+}
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a python sample with a command word inside a line passes" <<'FIXTURE'
+```python
+client = docker.from_env()  # docker run is what this replaces
+subprocess.run(["git", "status"])
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a key named like a command is not a command" <<'FIXTURE'
+```toml
+uv = { index = "example" }
+make = "gnu"
+```
+
+```yaml
+docker: true
+pip:
+  - example
+```
+
+```bash
+flightdeck
 ```
 FIXTURE
 
@@ -617,6 +779,26 @@ rule_error 'rule\.md:4: the heredoc <<EOF opened on this line is not terminated'
 cat >config.yaml <<EOF
 server: http://localhost:4000
 ```
+FIXTURE
+
+# A command block under a sample-language tag would count as nothing,
+# so it is refused. The command is on line 4 of each fixture.
+rule_error 'rule\.md:4: this line of a "json" fence starts like a command \(curl\)' "a command in a json fence is an error that names the line and the tag" <<'FIXTURE'
+```json
+curl -fsSL https://example.invalid/install.sh | sh
+```
+FIXTURE
+
+rule_error 'rule\.md:4: this line of a "ini" fence starts like a command \(\$\)' "a prompt in a sample fence is an error" <<'FIXTURE'
+```ini
+$ flightdeck --domain example.com
+```
+FIXTURE
+
+rule_error 'rule\.md:4: this line of a "md" fence starts like a command \(flightdeck\)' "an indented command in a sample fence is an error" <<'FIXTURE'
+- ```md
+  flightdeck --domain example.com
+  ```
 FIXTURE
 
 expect 2 "an unknown option is exit 2" --verbose "$work/good.md"

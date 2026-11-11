@@ -293,7 +293,11 @@ in this file. `scripts/readme-budget.sh` measures the README's commands
 per section and its length against the budget in the script's header
 (CI runs it in the `marketplace-schema` job, "Repo scripts and
 manifests"); when a README change goes over, move
-contributor steps here, never user-facing content. ARCHITECTURE.md
+contributor steps here, never user-facing content. A command block in the
+README must not carry a sample-language tag (`json`, `yaml`, `python` and
+the like), which the script does not count: tag it as the shell it is for
+(`bash`, `powershell`, `text`), or the script fails naming the line.
+ARCHITECTURE.md
 describes the system as it is, CHANGELOG.md what changed per release, and
 DECISIONS.md the decisions a future contributor would otherwise relitigate
 (the Engineering principles below, L1 and L2).

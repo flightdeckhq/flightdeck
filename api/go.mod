@@ -1,6 +1,6 @@
 module github.com/flightdeckhq/flightdeck/api
 
-go 1.27.3
+go 1.27.4
 
 // The storage module lives in this repository; the services build
 // against the checkout, not a published version.

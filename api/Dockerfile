@@ -2,7 +2,7 @@
 # Built from the repository root (docker build -f api/Dockerfile .):
 # api/go.mod replaces the storage module with ../storage, so both
 # modules must be in the build context.
-FROM golang:1.27.3-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
 COPY storage/go.mod storage/go.sum ./storage/

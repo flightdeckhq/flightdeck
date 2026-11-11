@@ -4,11 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/config"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 func TestFromEnv_MapsEveryField(t *testing.T) {
@@ -59,19 +61,22 @@ func TestTokenValid_NeverAcceptsTheDevTokenOrNothing(t *testing.T) {
 	}
 }
 
-// unreachableDSN parses but names a port nothing listens on; pgxpool
-// opens no connection until a query asks for one, so New works and the
-// handlers below never touch a database.
-const unreachableDSN = "postgres://flightdeck@127.0.0.1:1/none?sslmode=disable"
+// emptySQLiteURL names a fresh, unmigrated SQLite file: New opens it
+// (storage.Open pings, which needs no table) and the handlers below
+// never query it.
+func emptySQLiteURL(t *testing.T) string {
+	t.Helper()
+	return "sqlite://" + filepath.Join(t.TempDir(), "empty.db")
+}
 
 func TestHandler_HealthUnderBothPrefixesWithCORS(t *testing.T) {
-	a, err := New(context.Background(), Config{PostgresURL: unreachableDSN, CORSOrigin: "https://fd.example.com"}, Deps{})
+	a, err := New(context.Background(), Config{PostgresURL: emptySQLiteURL(t), CORSOrigin: "https://fd.example.com"}, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.closeOwned()
-	if !a.ownsPool {
-		t.Fatal("New with a nil Deps.Pool must open and own a pool")
+	if !a.ownsDB {
+		t.Fatal("New with a nil Deps.DB must open and own a database")
 	}
 	for _, path := range []string{"/health", "/api/health"} {
 		rec := httptest.NewRecorder()
@@ -93,21 +98,38 @@ func TestHandler_HealthUnderBothPrefixesWithCORS(t *testing.T) {
 	}
 }
 
-func TestNew_InjectedPoolIsNotOwned(t *testing.T) {
-	pool, err := NewPool(context.Background(), unreachableDSN)
+func TestNew_InjectedDBIsNotOwned(t *testing.T) {
+	db, err := storage.Open(context.Background(), emptySQLiteURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
-	a, err := New(context.Background(), Config{CORSOrigin: "*"}, Deps{Pool: pool})
+	defer func() { _ = db.Close() }()
+	a, err := New(context.Background(), Config{CORSOrigin: "*"}, Deps{DB: db})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.ownsPool || a.pool != pool {
-		t.Fatal("an injected pool must be used as is and never closed by the app")
+	if a.ownsDB || a.db != db {
+		t.Fatal("an injected database must be used as is and never closed by the app")
 	}
 	a.closeOwned()
-	if a.pool != pool {
-		t.Fatal("closeOwned must leave an injected pool alone")
+	if a.db != db {
+		t.Fatal("closeOwned must leave an injected database alone")
+	}
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("closeOwned closed the injected database: %v", err)
+	}
+}
+
+// A Postgres URL gets jit=off for the API's connections; a SQLite URL
+// is left alone, and an existing jit setting is kept.
+func TestWithJITOff(t *testing.T) {
+	for in, want := range map[string]string{
+		"postgres://u:p@h:5432/db?sslmode=disable": "postgres://u:p@h:5432/db?jit=off&sslmode=disable",
+		"postgres://u:p@h:5432/db":                 "postgres://u:p@h:5432/db?jit=off",
+		"postgres://u:p@h:5432/db?jit=on":          "postgres://u:p@h:5432/db?jit=on",
+	} {
+		if got := withJITOff(in); got != want {
+			t.Errorf("withJITOff(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

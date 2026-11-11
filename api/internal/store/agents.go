@@ -2,12 +2,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // AgentListParams carries every filter, sort, search, and pagination
@@ -25,7 +26,7 @@ type AgentListParams struct {
 	Hostname []string
 	UserName []string
 
-	// Runtime-context filters (derived from sessions.context JSONB
+	// Runtime-context filters (derived from sessions.context JSON
 	// via an EXISTS subquery — an agent matches if ANY of their
 	// sessions recorded the value).
 	//
@@ -43,8 +44,8 @@ type AgentListParams struct {
 	OS            []string
 	Orchestration []string
 
-	// Substring search across ``agent_name`` and ``hostname``. ILIKE
-	// '%'||q||'%'; case-insensitive. Empty string means no search.
+	// Substring search across ``agent_name`` and ``hostname``,
+	// case-insensitive. Empty string means no search.
 	Search string
 
 	// UpdatedSince filters on ``agents.last_seen_at >= UpdatedSince``.
@@ -67,9 +68,10 @@ type AgentListParams struct {
 
 // AllowedAgentSortColumns maps the handler-visible sort name to the
 // SQL expression that produces the ordering value. The state column
-// is special-cased: it's LATERAL-computed, so the ORDER BY works off
-// a CASE-over-ordinal wrapper that puts the most-engaged state first
-// in DESC ("active > idle > stale > closed > lost").
+// is special-cased: it's the rolled-up a.rollup_state (agentFrom), so
+// the ORDER BY works off a CASE-over-ordinal wrapper that puts the
+// most-engaged state first in DESC ("active > idle > stale > closed >
+// lost").
 var AllowedAgentSortColumns = map[string]string{
 	"last_seen_at":   "a.last_seen_at",
 	"first_seen_at":  "a.first_seen_at",
@@ -84,7 +86,7 @@ var AllowedAgentSortColumns = map[string]string{
 	// lost", high-to-low) and operator intuition ("sort by
 	// state desc = most-engaged agents at the top"). Unknown/empty
 	// states sort to 0 so they trail even ``lost`` under DESC.
-	"state": `(CASE rollup.state ` +
+	"state": `(CASE a.rollup_state ` +
 		`WHEN 'active' THEN 5 ` +
 		`WHEN 'idle' THEN 4 ` +
 		`WHEN 'stale' THEN 3 ` +
@@ -115,31 +117,24 @@ type AgentListResponse struct {
 func (s *Store) ListAgents(
 	ctx context.Context, params AgentListParams,
 ) (*AgentListResponse, error) {
-	conds, args := buildAgentFilterClause(params)
-
-	// LATERAL state rollup is the shared ``agentStateRollupSQL``
-	// (postgres.go) so /agents and /v1/search agree on each
-	// agent's rolled-up state. The clause is wrapped here so the
-	// shared SELECT can be reused under different JOIN kinds /
-	// aliases without baking the join into the constant.
-	rollupSQL := `
-		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE`
+	conds, args := buildAgentFilterClause(s.d, params)
 
 	whereSQL := ""
 	if len(conds) > 0 {
 		whereSQL = " WHERE " + strings.Join(conds, " AND ")
 	}
 
-	// Count query. Uses the same rollup + filters so state filters
-	// produce the right total. No LIMIT/OFFSET.
-	countQuery := `SELECT COUNT(*) FROM agents a` + rollupSQL + whereSQL
+	// Count query. Uses the same rollup (agentsWithStateSQL) +
+	// filters so state filters produce the right total. No
+	// LIMIT/OFFSET.
+	countQuery := `SELECT COUNT(*) FROM (` + agentsWithStateSQL + `) a` + whereSQL
 	var total int
-	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("count agents: %w", err)
 	}
 
 	// Sort + pagination. Resolve sort column (caller should have
-	// validated; panic on unknown makes a handler bug fail loudly).
+	// validated; an unknown value makes a handler bug fail loudly).
 	sortCol, ok := AllowedAgentSortColumns[normaliseSort(params.Sort)]
 	if !ok {
 		return nil, fmt.Errorf("unknown sort column %q", params.Sort)
@@ -162,52 +157,21 @@ func (s *Store) ListAgents(
 	limitPlaceholder := fmt.Sprintf("$%d", len(args)-1)
 	offsetPlaceholder := fmt.Sprintf("$%d", len(args))
 
-	selectQuery := `
-		SELECT
-			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
-			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
-			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state,
-			subagent.agent_role,
-			subagent.topology,
-			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name,
-			latest.telemetry
-		FROM agents a` + rollupSQL + `
-		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + whereSQL + `
+	selectQuery := s.agentProjection() + agentFrom + whereSQL + `
 		ORDER BY ` + sortCol + ` ` + direction + `, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 
-	rows, err := s.pool.Query(ctx, selectQuery, args...)
+	rows, err := s.reader().QueryContext(ctx, selectQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make([]AgentSummary, 0)
 	for rows.Next() {
-		var a AgentSummary
-		var rollupState *string
-		var topology *string
-		if err := rows.Scan(
-			&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
-			&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
-			&a.TotalSessions, &a.TotalTokens, &rollupState,
-			&a.AgentRole, &topology,
-			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
-			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
-			&a.Telemetry,
-		); err != nil {
+		a, err := scanAgentSummary(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
-		}
-		if rollupState != nil {
-			a.State = *rollupState
-		}
-		if topology != nil {
-			a.Topology = *topology
-		} else {
-			a.Topology = "lone"
 		}
 		result = append(result, a)
 	}
@@ -226,9 +190,7 @@ func (s *Store) ListAgents(
 
 // GetAgentByID returns a single agent with its rollup state. Returns
 // (nil, nil) when no row matches the id — the caller turns this into
-// a 404. Returns (nil, err) on malformed UUID (Postgres surfaces the
-// cast error; the caller maps that to a 400). Pattern mirrors
-// GetSession.
+// a 404. Pattern mirrors GetSession.
 //
 // Sole caller: AgentSummaryHandler, which calls this as a cheap
 // existence check before running the expensive summary aggregate so
@@ -236,53 +198,16 @@ func (s *Store) ListAgents(
 func (s *Store) GetAgentByID(
 	ctx context.Context, agentID string,
 ) (*AgentSummary, error) {
-	query := `
-		SELECT
-			a.agent_id::text, a.agent_name, a.agent_type, a.client_type,
-			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
-			a.total_sessions, a.total_tokens,
-			COALESCE(rollup.state, '') AS state,
-			subagent.agent_role,
-			subagent.topology,
-			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name,
-			latest.telemetry
-		FROM agents a
-		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE
-		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE
-		WHERE a.agent_id = $1::uuid
+	query := s.agentProjection() + agentFrom + `
+		WHERE a.agent_id = $1
 		LIMIT 1`
 
-	var a AgentSummary
-	var rollupState *string
-	var topology *string
-	err := s.pool.QueryRow(ctx, query, agentID).Scan(
-		&a.AgentID, &a.AgentName, &a.AgentType, &a.ClientType,
-		&a.UserName, &a.Hostname, &a.FirstSeenAt, &a.LastSeenAt,
-		&a.TotalSessions, &a.TotalTokens, &rollupState,
-		&a.AgentRole, &topology,
-		&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
-		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
-		&a.Telemetry,
-	)
+	a, err := scanAgentSummary(s.reader().QueryRowContext(ctx, query, uuidArg(agentID)))
 	if err != nil {
-		// pgx returns ErrNoRows as a sentinel; check via errors.Is
-		// so the path is robust across pgx versions and the bytes
-		// of the formatted error message. Matches the pattern used
-		// by every other ``ErrNoRows`` check in the store package.
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil //nolint:nilnil // "no match" is not an error
 		}
 		return nil, fmt.Errorf("get agent by id: %w", err)
-	}
-	if rollupState != nil {
-		a.State = *rollupState
-	}
-	if topology != nil {
-		a.Topology = *topology
-	} else {
-		a.Topology = "lone"
 	}
 	return &a, nil
 }
@@ -294,12 +219,11 @@ func (s *Store) GetAgentByID(
 // calls it once per broadcast. An unknown agent yields "".
 func (s *Store) GetAgentState(ctx context.Context, agentID string) (string, error) {
 	var state string
-	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(rollup.state, '')
+	err := s.reader().QueryRowContext(ctx, `
+		SELECT COALESCE(`+agentStateRollupSQL+`, '')
 		FROM agents a
-		LEFT JOIN LATERAL (`+agentStateRollupSQL+`) rollup ON TRUE
-		WHERE a.agent_id = $1::uuid`, agentID).Scan(&state)
-	if errors.Is(err, pgx.ErrNoRows) {
+		WHERE a.agent_id = $1`, uuidArg(agentID)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
@@ -309,19 +233,19 @@ func (s *Store) GetAgentState(ctx context.Context, agentID string) (string, erro
 }
 
 // buildAgentFilterClause produces the WHERE conditions and their
-// parameter args for an AgentListParams. Returned conds are joined
-// with AND by the caller; each cond uses placeholders that match the
-// args slice in order.
+// parameter args for an AgentListParams over the agentFrom row aliased
+// a. Returned conds are joined with AND by the caller; each cond uses
+// placeholders that match the args slice in order.
 //
 // Exported for tests so the filter layer can be exercised
-// independently of a live Postgres.
-func buildAgentFilterClause(params AgentListParams) (conds []string, args []any) {
+// independently of a live database.
+func buildAgentFilterClause(d storage.Dialect, params AgentListParams) (conds []string, args []any) {
 	addIn := func(col string, values []string) {
 		if len(values) == 0 {
 			return
 		}
-		args = append(args, values)
-		conds = append(conds, fmt.Sprintf("%s = ANY($%d::text[])", col, len(args)))
+		args = append(args, d.ArrayArg(values))
+		conds = append(conds, d.InArray(col, fmt.Sprintf("$%d", len(args))))
 	}
 
 	addIn("a.agent_type", params.AgentType)
@@ -329,12 +253,8 @@ func buildAgentFilterClause(params AgentListParams) (conds []string, args []any)
 	addIn("a.user_name", params.UserName)
 	addIn("a.hostname", params.Hostname)
 
-	// State is LATERAL-computed; filter lives on the rollup alias.
-	if len(params.State) > 0 {
-		args = append(args, params.State)
-		conds = append(conds,
-			fmt.Sprintf("rollup.state = ANY($%d::text[])", len(args)))
-	}
+	// State is the rolled-up column agentFrom computes.
+	addIn("a.rollup_state", params.State)
 
 	// Context-derived filters require an EXISTS subquery on sessions.
 	// An agent matches if ANY of its sessions recorded the value
@@ -343,7 +263,7 @@ func buildAgentFilterClause(params AgentListParams) (conds []string, args []any)
 	// docblock on `AgentListParams.OS` for the rationale).
 	//
 	// SAFETY: ``jsonKey`` is interpolated directly into the SQL
-	// because pgx does not parameterise JSONB extract keys. Every
+	// because a JSON path cannot be a bound parameter. Every
 	// caller below passes a compile-time string constant from the
 	// closed key set (``os``, ``orchestration``). NEVER pass user
 	// input or a value derived from request data here — that
@@ -353,23 +273,19 @@ func buildAgentFilterClause(params AgentListParams) (conds []string, args []any)
 		if len(values) == 0 {
 			return
 		}
-		args = append(args, values)
-		conds = append(conds, fmt.Sprintf(
+		args = append(args, d.ArrayArg(values))
+		conds = append(conds,
 			"EXISTS (SELECT 1 FROM sessions s "+
 				"WHERE s.agent_id = a.agent_id "+
-				"AND s.context->>'%s' = ANY($%d::text[]))",
-			jsonKey, len(args),
-		))
+				"AND "+d.InArray(d.JSONText("s.context", jsonKey), fmt.Sprintf("$%d", len(args)))+")")
 	}
 	addContextExists("os", params.OS)
 	addContextExists("orchestration", params.Orchestration)
 
 	if params.Search != "" {
-		args = append(args, "%"+params.Search+"%")
-		conds = append(conds, fmt.Sprintf(
-			"(a.agent_name ILIKE $%d OR a.hostname ILIKE $%d)",
-			len(args), len(args),
-		))
+		args = append(args, sanitizeQuery(params.Search))
+		p := fmt.Sprintf("$%d", len(args))
+		conds = append(conds, "("+d.ILike("a.agent_name", p)+" OR "+d.ILike("a.hostname", p)+")")
 	}
 
 	if params.UpdatedSince != nil {

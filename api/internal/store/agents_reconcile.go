@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // ReconcileResult captures what a ReconcileAgents call observed and
@@ -118,28 +118,30 @@ func (s *Store) ReconcileAgents(
 	}
 	var agents []agentSnap
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT agent_id::text, first_seen_at, last_seen_at, total_sessions, total_tokens
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT CAST(agent_id AS TEXT), first_seen_at, last_seen_at, total_sessions, total_tokens
 		FROM agents
 		ORDER BY agent_id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var a agentSnap
 		if err := rows.Scan(
 			&a.agentID, &a.firstSeenAt, &a.lastSeenAt,
 			&a.totalSessions, &a.totalTokens,
 		); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		agents = append(agents, a)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, fmt.Errorf("iterate agents: %w", err)
 	}
+	_ = rows.Close()
 
 	result.AgentsScanned = len(agents)
 
@@ -173,8 +175,8 @@ func (s *Store) ReconcileAgents(
 		// without depending on driver-level RowsAffected for multi-
 		// row DELETEs. The DELETE restates the predicate so a row
 		// promoted between SELECT and DELETE is silently skipped.
-		rows, err := s.pool.Query(ctx, `
-			SELECT agent_id::text
+		rows, err := s.reader().QueryContext(ctx, `
+			SELECT CAST(agent_id AS TEXT)
 			FROM agents
 			WHERE total_sessions = 0
 			  AND last_seen_at < $1
@@ -193,11 +195,11 @@ func (s *Store) ReconcileAgents(
 				}
 				candidates = append(candidates, id)
 			}
-			rows.Close()
+			_ = rows.Close()
 			for _, id := range candidates {
-				tag, derr := s.pool.Exec(ctx, `
+				res, derr := s.db.ExecContext(ctx, `
 					DELETE FROM agents
-					WHERE agent_id::text = $1
+					WHERE agent_id = $1
 					  AND total_sessions = 0
 					  AND last_seen_at < $2
 				`, id, cutoff)
@@ -206,7 +208,7 @@ func (s *Store) ReconcileAgents(
 						fmt.Sprintf("delete orphan %s: %v", id, derr))
 					continue
 				}
-				if tag.RowsAffected() > 0 {
+				if n, _ := res.RowsAffected(); n > 0 {
 					result.AgentsDeleted++
 				}
 			}
@@ -228,32 +230,33 @@ func (s *Store) reconcileOneAgent(
 	curFirstSeen, curLastSeen time.Time,
 	curSessions int, curTokens int64,
 ) (map[string]bool, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	// Rollback is a no-op after a successful Commit, so the defer is
 	// safe regardless of the success path.
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	// Ground truth from sessions. COALESCE on the SUM handles the
 	// zero-sessions case; MIN/MAX stay NULL-able and surface as
-	// pgtype-aware pointers so the orphan case is distinguishable
-	// from "ground truth equal to epoch".
+	// storage.Time so the orphan case is distinguishable from "ground
+	// truth equal to epoch" (an aggregate carries no column type on
+	// SQLite, so the text comes back and storage.Time parses it).
 	var (
 		trueSessions int
 		trueTokens   int64
-		trueMinStart *time.Time
-		trueMaxSeen  *time.Time
+		trueMinStart storage.Time
+		trueMaxSeen  storage.Time
 	)
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(tokens_used), 0),
 			MIN(started_at),
 			MAX(last_seen_at)
 		FROM sessions
-		WHERE agent_id = $1::uuid
+		WHERE agent_id = $1
 	`, agentID).Scan(&trueSessions, &trueTokens, &trueMinStart, &trueMaxSeen)
 	if err != nil {
 		return nil, fmt.Errorf("query ground truth: %w", err)
@@ -268,17 +271,17 @@ func (s *Store) reconcileOneAgent(
 	}
 	// Orphan case: MIN/MAX NULL. Leave first/last_seen_at untouched
 	// per conservative policy documented on ReconcileAgents.
-	if trueMinStart != nil && !trueMinStart.Equal(curFirstSeen) {
+	if trueMinStart.Valid && !trueMinStart.Time.Equal(curFirstSeen) {
 		corrected["first_seen_at"] = true
 	}
-	if trueMaxSeen != nil && !trueMaxSeen.Equal(curLastSeen) {
+	if trueMaxSeen.Valid && !trueMaxSeen.Time.Equal(curLastSeen) {
 		corrected["last_seen_at"] = true
 	}
 
 	if len(corrected) == 0 {
 		// Clean slate — no-op commit keeps the txid counter happy and
 		// exercises the commit path for symmetry in tests.
-		if err := tx.Commit(ctx); err != nil {
+		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit clean: %w", err)
 		}
 		return corrected, nil
@@ -287,27 +290,27 @@ func (s *Store) reconcileOneAgent(
 	// Build the UPDATE. For the two counters we always SET to the
 	// computed value; for the two timestamp columns we use COALESCE
 	// so NULL (orphan) leaves the column untouched.
-	var firstSeenArg, lastSeenArg *time.Time
+	var firstSeenArg, lastSeenArg any
 	if corrected["first_seen_at"] {
-		firstSeenArg = trueMinStart
+		firstSeenArg = trueMinStart.Time
 	}
 	if corrected["last_seen_at"] {
-		lastSeenArg = trueMaxSeen
+		lastSeenArg = trueMaxSeen.Time
 	}
 
-	_, err = tx.Exec(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE agents SET
 			total_sessions = $2,
 			total_tokens   = $3,
 			first_seen_at  = COALESCE($4, first_seen_at),
 			last_seen_at   = COALESCE($5, last_seen_at)
-		WHERE agent_id = $1::uuid
+		WHERE agent_id = $1
 	`, agentID, trueSessions, trueTokens, firstSeenArg, lastSeenArg)
 	if err != nil {
 		return nil, fmt.Errorf("update agent: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return corrected, nil

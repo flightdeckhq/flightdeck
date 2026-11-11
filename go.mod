@@ -5,8 +5,8 @@ go 1.27.4
 require (
 	github.com/flightdeckhq/flightdeck/api v0.0.0
 	github.com/flightdeckhq/flightdeck/ingestion v0.0.0
+	github.com/flightdeckhq/flightdeck/storage v0.0.0
 	github.com/flightdeckhq/flightdeck/workers v0.0.0
-	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.54.0
 	golang.org/x/crypto v0.58.0
@@ -16,7 +16,6 @@ require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/flightdeckhq/flightdeck/storage v0.0.0 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/spec v0.20.9 // indirect
@@ -28,6 +27,7 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect

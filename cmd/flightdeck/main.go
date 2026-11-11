@@ -153,14 +153,14 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := apiapp.NewPool(ctx, opts.DatabaseURL)
+	// The query API's handle, opened through the storage boundary (it
+	// pings, and waits a bounded time for a database that is still
+	// starting). The token bootstrap below reads and writes through it.
+	db, err := apiapp.OpenDB(ctx, opts.DatabaseURL)
 	if err != nil {
-		return err
-	}
-	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("cannot reach Postgres at %s: %w", maskURL(opts.DatabaseURL), err)
 	}
+	defer func() { _ = db.Close() }()
 
 	// The schema first, once, before any service or the token bootstrap
 	// touches the database: the migrations the storage module embeds,
@@ -169,7 +169,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return err
 	}
 
-	token, err := bootstrap.EnsureToken(ctx, pool, secrets, layout.Secrets, dev)
+	token, err := bootstrap.EnsureToken(ctx, db, secrets, layout.Secrets, dev)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if err != nil {
 		return err
 	}
-	apiApp, err := apiapp.New(ctx, apiCfg, apiapp.Deps{Pool: pool})
+	apiApp, err := apiapp.New(ctx, apiCfg, apiapp.Deps{DB: db})
 	if err != nil {
 		return err
 	}

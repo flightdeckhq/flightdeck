@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
-	"github.com/jackc/pgx/v5"
 )
 
 // EffectivePolicyHandler handles GET /v1/policy.
@@ -234,7 +233,7 @@ func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 			BlockAtPct: req.BlockAtPct,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, store.ErrPolicyNotFound) {
 				writeError(w, http.StatusNotFound, "policy not found")
 				return
 			}
@@ -267,7 +266,7 @@ func PolicyDeleteHandler(s store.Querier) http.HandlerFunc {
 		}
 		err := s.DeletePolicy(r.Context(), id)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, store.ErrPolicyNotFound) {
 				writeError(w, http.StatusNotFound, "policy not found")
 				return
 			}

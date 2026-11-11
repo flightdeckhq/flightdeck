@@ -6,6 +6,25 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **One `flightdeck` binary runs the whole control plane.** `flightdeck
+  --database-url postgres://...` starts the ingestion API, the workers and
+  the query API in one process on `127.0.0.1:4000`, with NATS JetStream
+  embedded (no port, store under `~/.flightdeck/nats`) and the dashboard
+  served from the binary; `/api` and `/ingest` are the two prefixes, as
+  behind the compose nginx. The schema migrations run at start from the
+  binary. On loopback the development token works and is printed; on any
+  other `--listen`, or with `--domain example.com` (TLS from Let's
+  Encrypt on :443, :80 redirecting), an `ftd_` token is minted on the
+  first start, printed once and kept in `~/.flightdeck/secrets.json` for
+  the dashboard. `--nats-url` uses an external NATS instead; `--metrics`
+  opens the services' metrics listeners. Postgres is still required; the
+  binary says so and names the compose database when none is given.
+  `make build-flightdeck` builds it, `go run ./cmd/flightdeck` runs it
+  from source, and the dashboard's Vite proxy now points at `:4000`, so
+  `npm run dev` in `dashboard/` works against the binary. Each service
+  also exports an `app` package (`ingestion/app`, `workers/app`,
+  `api/app`) the binary and the standalone services share.
+
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
   through the `storage` boundary: plain `database/sql` on either engine,
@@ -691,7 +710,15 @@ All notable changes to Flightdeck are documented here.
   stands in for Postgres' row locks: a claim, a mark or a sweep runs
   after any ingest in progress commits instead of skipping the rows it
   holds. Text neither backend can store (U+0000, an unpaired surrogate
-  escape) is replaced with U+FFFD on both.
+  escape) is replaced with U+FFFD on both. The workers run on either
+  backend too: every write of the event pipeline (agents, sessions,
+  events and their content, the reconciler, the orphan reaper, the
+  model-id backfill) and the processor's reads, with the JSON mutations
+  (the framework and MCP server appends) behaving identically on both,
+  and the fleet notifications go through the Bus. The workers apply the
+  embedded migrations at start, so `FLIGHTDECK_MIGRATIONS_DIR` and the
+  compose mount of the migrations directory are gone; every id the
+  workers store is canonical lower-case UUID text.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

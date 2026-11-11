@@ -61,6 +61,7 @@ from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
     # Constants
     API_HEALTH,
     API_URL,
+    BASE_URL,
     DEFAULT_AGENT_TYPE,
     DEFAULT_CLIENT_TYPE,
     DEFAULT_HOSTNAME,
@@ -114,6 +115,7 @@ from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
 __all__ = [
     "API_HEALTH",
     "API_URL",
+    "BASE_URL",
     "DEFAULT_AGENT_TYPE",
     "DEFAULT_CLIENT_TYPE",
     "DEFAULT_HOSTNAME",

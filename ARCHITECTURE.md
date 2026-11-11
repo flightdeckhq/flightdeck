@@ -90,12 +90,12 @@ no single point of failure introduced into the agent's execution path.
          │                                │ GET   / (SPA static)
          ▼ ▼
 ┌──────────────────────────────────────────────────────────┐
-│                    nginx :4000                           │
+│          flightdeck :4000 (one process; router)          │
 │                                                          │
-│  /ingest/*  → ingestion:8080  (path as sent)             │
-│  /api/*     → api:8081        (path as sent)             │
-│  /          → dashboard:3000                             │
-│  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
+│  /ingest/*  → ingestion mux   (path as sent)             │
+│  /api/*     → query API mux   (path as sent)             │
+│  /          → embedded dashboard + /runtime-config.json  │
+│  /api/v1/stream  → query API  (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
         │                              │
         ▼ ▼
@@ -167,8 +167,8 @@ no single point of failure introduced into the agent's execution path.
 │  Written by Query API:                                   │
 │    token_policies  custom_directives  access_tokens      │
 │                                                          │
-│  NOTIFY channel: flightdeck_fleet                        │
-│    Workers send NOTIFY after every event write and       │
+│  Bus channel: flightdeck_fleet (NOTIFY; in-process on    │
+│  SQLite). Workers publish after every event write and    │
 │    every session state change                            │
 │    Query API hub receives via LISTEN                     │
 └──────────────────────────────────────────────────────────┘
@@ -213,7 +213,13 @@ flightdeck/
 ├── SECURITY.md                 # Security policy: supported versions, reporting, capture posture
 ├── CODE_OF_CONDUCT.md
 ├── LICENSE                     # Apache-2.0
-├── Makefile                    # Root Makefile -- orchestrates all components
+├── Makefile                    # Root Makefile -- orchestrates all components; builds the flightdeck binary
+├── go.work                     # Go workspace: the root module, the storage module and the three service modules
+├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary (migrates from the storage module's embedded files)
+├── cmd/flightdeck/main.go      # The binary: flags, data dir, Postgres, embedded NATS, the three services, the router
+├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, secrets), bootstrap (token mode),
+│                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config)
+├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
@@ -375,13 +381,12 @@ flightdeck/
 │   ├── Makefile
 │   ├── Dockerfile
 │   ├── cmd/main.go             # Entry: app.LoadEnv, app.Migrate (FLIGHTDECK_MIGRATE_ONLY exits here), then app.Run
-│   ├── app/app.go              # The service as a library: Config, Deps (pool, NATS, migrations FS), Migrate, Run (Run does not migrate)
+│   ├── app/app.go              # The service as a library: Config, Deps (storage.DB, Bus, NATS), Migrate (the storage module's embedded set), Run (opens the database when none is injected; does not migrate)
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── consumer/nats.go    # JetStream consumer: waits for the stream, fetch loop, session_id check, ack handling
 │   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── logcap/logcap.go    # Named caps for payload strings written to log lines
-│   │   ├── migrate/migrate.go  # golang-migrate runner: applies storage/migrations/postgres at boot, from a directory (mounted at /migrations) or an embedded fs.FS
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
 │   │   ├── billing/billing.go    # Billing-mode defaults for LLM events
@@ -392,10 +397,13 @@ flightdeck/
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
 │   │   │   └── policy.go       # Threshold evaluation, directive emission
 │   │   ├── writer/
-│   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
-│   │   │   ├── pool.go         # pgx pool: statement lock timeout under the processing deadline
+│   │   │   ├── writer.go       # Upsert agents, sessions, events, event_content on storage.DB (shared SQL)
+│   │   │   ├── queries_postgres.go # The statements that differ per backend: jsonb operators, FOR UPDATE CTEs, xmax
+│   │   │   ├── queries_sqlite.go   # Their SQLite forms: json_* functions, IMMEDIATE transactions
+│   │   │   ├── db.go           # Database URL: Postgres lock timeout under the processing deadline
+│   │   │   ├── uuid.go         # Canonical lower-case ids on both backends
 │   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
-│   │   │   └── notify.go       # Postgres NOTIFY after each event write and session state change (real-time dashboard push)
+│   │   │   └── notify.go       # storage.Bus publish after each event write and session state change (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
 │   └── tests/
 │       ├── processor_test.go
@@ -3072,7 +3080,7 @@ and each asserts the same vector: `coding`, `omria`, `Omri-PC`,
 through two paths:
 
 - **Rollup path.** The worker's `UpsertAgent`
-  (`workers/internal/writer/postgres.go`) reads the agent identity
+  (`workers/internal/writer/writer.go`) reads the agent identity
   off the event payload (sensor- or plugin-stamped) and INSERTs
   the `agents` row keyed on `agent_id`. The same agent_id appears
   in every later `/v1/fleet` rollup response.
@@ -4391,8 +4399,9 @@ it twice, and nothing detects it, so an agent should report one way
 The worker's only HTTP surface is its metrics listener (see Metrics).
 It connects to NATS, consumes events from
 the `FLIGHTDECK` stream, processes them through the session state machine
-and policy evaluator, writes to Postgres, and emits `flightdeck_fleet`
-NOTIFY events.
+and policy evaluator, writes to the database through the storage
+boundary (SQLite or Postgres), and publishes `flightdeck_fleet`
+notifications on the storage Bus.
 
 ### The FLIGHTDECK stream
 
@@ -4830,7 +4839,7 @@ five focused functions:
    of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
    if the row is still held it gives up and logs that, at most one line a
    second per process. No attachment row.
-3. **`workers/internal/writer/postgres.go::UpsertSession`**.
+3. **`workers/internal/writer/writer.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
    `closed_seq` is greater than this start's stream sequence, which stays
@@ -4839,11 +4848,11 @@ five focused functions:
    let a lazy-created row absorb the real session_start data when it
    arrives. Real values are write-once; only the `"unknown"` sentinel is
    upgradable.
-4. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
+4. **`workers/internal/writer/writer.go::ReviveIfRevivable`**.
    State flip only: `{stale, lost} → active` plus `last_seen_at = NOW`.
    Called by `handleSessionGuard` before any non-`session_start` side
    effects run. No identity refresh, no attachment row.
-5. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
+5. **`workers/internal/writer/writer.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
    does not, with no `start_seq`: a straggler published after the run's
@@ -4911,12 +4920,15 @@ directives.
 
 ### Notify
 
-The worker sends a Postgres NOTIFY on `flightdeck_fleet` for every
-change an open dashboard has to see: each event it stores and each
-session state change it makes. The wire payload is `{session_id,
-event_type, event_id}` (`workers/internal/writer/notify.go`), one
-session per notification. A payload is about 130 bytes, far under
-Postgres's 8000-byte limit, so a large batch never needs splitting.
+The worker publishes on the storage Bus channel `flightdeck_fleet`
+(`storage.ChannelFleet`) for every change an open dashboard has to see:
+each event it stores and each session state change it makes. On
+Postgres the Bus is NOTIFY on that channel; on SQLite it is the
+in-process bus the services of the one binary share. The wire payload
+is `{session_id, event_type, event_id}`
+(`workers/internal/writer/notify.go`), one session per notification. A
+payload is about 130 bytes, far under Postgres's 8000-byte limit, so a
+large batch never needs splitting.
 
 | Sender | When | `event_type` | `event_id` |
 |---|---|---|---|
@@ -4930,28 +4942,88 @@ and no event was written. Carrying the event id otherwise lets the hub
 fetch exactly that event by primary key instead of re-reading the
 session's events and taking the newest, which races paired writes.
 
-Every notification is sent after the write it announces has committed,
-as its own statement; the reconciler and the reaper send a pass's
-notifications in one `pg_notify` statement for the batch, once per
-session, so a session that goes `stale` and `lost` in the same pass is
-announced once. Sending after the commit means the hub never reads a
-row before the change is visible. A failed notification is logged and
-the change stands; the dashboard shows it on its next fetch. The state
-machine therefore never depends on the notification channel: a full
-NOTIFY queue costs live updates, not stale, lost or closed transitions.
+Every notification is published after the write it announces has
+committed, as its own publish; the reconciler and the reaper publish a
+pass's notifications one after another, once per session, so a session
+that goes `stale` and `lost` in the same pass is announced once.
+Publishing after the commit means the hub never reads a row before the
+change is visible. A failed publish is logged and the change stands;
+the dashboard shows it on its next fetch. The state machine therefore
+never depends on the notification channel: a full NOTIFY queue or a
+slow subscriber costs live updates, not stale, lost or closed
+transitions.
 
-Postgres delivers notifications in commit order, and the hub handles
-them one at a time and re-reads the session row for each. Every
-broadcast therefore carries a row at least as new as the change that
-sent it, and since each change notifies after it commits, the hub's
-last read of a session follows its last change. A reconciler pass and
-an event that revives the same session serialize on the row lock: when
-the revival commits first, the reconciler's UPDATE re-checks its
-condition on the revived row, skips it and announces nothing; when the
-reconciler commits first, the event's own notification follows and the
-hub's re-read shows the session active again. A repeated broadcast of
-the same row is harmless, because the dashboard replaces the session
-row it holds.
+Both buses deliver in publication order (Postgres in commit order),
+and the hub handles notifications one at a time and re-reads the
+session row for each. Every broadcast therefore carries a row at least
+as new as the change that sent it, and since each change notifies after
+it commits, the hub's last read of a session follows its last change. A
+reconciler pass and an event that revives the same session serialize
+on the row (Postgres's row lock, or SQLite's single writer): when the
+revival commits first, the reconciler's UPDATE re-checks its condition
+on the revived row, skips it and announces nothing; when the reconciler
+commits first, the event's own notification follows and the hub's
+re-read shows the session active again. A repeated broadcast of the
+same row is harmless, because the dashboard replaces the session row it
+holds.
+
+### Database access
+
+The writer (`workers/internal/writer`) and the processor's own reads run
+on the storage boundary (see Storage): plain `database/sql` against
+`storage.DB`, so one code path serves SQLite and Postgres. Statements in
+the common subset of both dialects are shared, with the dialect's
+current-time and interval expressions filled in once at start-up; the
+statements that differ have a query set per backend
+(`queries_postgres.go`, `queries_sqlite.go`), chosen by `Backend`:
+
+- the session_start upsert (`UpsertSession`) and the call update
+  (`UpdateSessionFromCall`), whose framework append uses `jsonb_set` /
+  `jsonb_array_elements_text` / `split_part` on Postgres and `json_set`
+  / `json_insert` / `json_each` / `substr` + `instr` on SQLite, with the
+  same result (the dual-backend tests pin it);
+- the context upgrade and the MCP server append (jsonb operators vs.
+  JSON functions);
+- `BumpParentLastSeen`, `SettleSessionEnd` and the orphan reaper, one
+  data-modifying CTE with `FOR UPDATE` on Postgres and one `IMMEDIATE`
+  transaction (read, then guarded UPDATE) on SQLite, where the single
+  writer connection gives the same atomicity;
+- the model-id backfill, set-based through `unnest` on Postgres and
+  row by row inside the batch's transaction on SQLite;
+- the guard's read of the session row in `processor/session.go`, which
+  tests the context for `otel_trace_id` with `?` on Postgres and
+  `json_type` on SQLite.
+
+On SQLite `UpsertSession`'s claim and refresh run in one transaction,
+so the refresh never inserts (Postgres tells an insert from an update
+through `xmax`). Reads that need no transaction run on `db.Reader()`;
+inside a transaction every statement runs on the transaction, so no
+lane ever waits for the single writer connection it holds. Every id the
+writer stores is canonical lower-case UUID text (upper-case ids are
+lowered, an unhyphenated 32-digit id hyphenated), and an event without
+a client-minted id gets one from the writer rather than the database,
+so both backends store the one shape the SQLite schema's CHECK accepts.
+A content row the database refuses (invalid data, a broken constraint,
+a size limit; `storage.IsDataError`) is dropped and the event stored
+without it; any other failure is retried. The two backends are held to
+the same result by `workers/internal/processor/equivalence_test.go`,
+which opens both in one run (SQLite always, Postgres when
+`TEST_POSTGRES_URL` is set), drives one fixed event sequence through
+each — the lazy-create and late-framework appends, the MCP server
+append, a parent marked stale and revived by its child, a session
+marked stale, lost and reaped, an assembled OpenTelemetry session, a
+re-sent event, a model-id backfill — and compares the rows each leaves;
+two differences are normalised away because they are properties of the
+engines, not of the worker: JSON key order (Postgres
+`jsonb` reorders keys, SQLite stores the document as written, so
+documents compare as decoded values) and timestamp precision (Postgres
+keeps microseconds, SQLite milliseconds, so timestamps compare at the
+millisecond). The Postgres connections
+carry `lock_timeout` as a URL runtime parameter (`writer.DatabaseURL`,
+8 s, under the lane's 10 s processing deadline); SQLite has no row
+locks. The worker applies the embedded migrations of its backend at
+start (`storage.Migrate`), and `FLIGHTDECK_MIGRATE_ONLY=true` exits
+after them.
 
 ---
 
@@ -4977,13 +5049,12 @@ against it. No pgx type and no SQLite driver symbol is used outside the
 `storage` module. Where a query differs between the two engines beyond
 what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
-SQL fragments are never templated beyond the dialect helpers. A store
-outside the boundary holds a pgx pool and runs on Postgres only
-(CLAUDE.md rule 35 lists the store packages). The query API runs wholly
-on the boundary: every store in `api/internal/store`, its token
-validator and the WebSocket hub, so it serves a SQLite file and a
-Postgres database alike; every ingestion store is inside it too, so the
-ingestion API runs whole on either backend. The one
+SQL fragments are never templated beyond the dialect helpers. Every
+store of the three services is inside the boundary (CLAUDE.md rule 35
+lists the store packages): the query API's stores in
+`api/internal/store`, its token validator and the WebSocket hub, every
+ingestion store, and the workers' writer and processor. Each service
+therefore runs whole on a SQLite file and on a Postgres database. The one
 database error type a store inspects is read through
 `storage.ErrorClass`, which names a Postgres error by its SQLSTATE,
 table and constraint and any other error by its text, never by the
@@ -5148,9 +5219,11 @@ and description in both directories. `scripts/check-migration-pairs.sh`
 fails CI when the version lists differ, and the `storage` module's
 parity test opens both engines at their newest migration and fails when
 the tables, columns, nullability, primary keys or explicit indexes
-differ (the GIN index is the one allowed difference). The compose files
-mount the Postgres directory for the workers' runner and
-`helm/Makefile sync-migrations` copies it into the chart.
+differ (the GIN index is the one allowed difference). The workers apply
+the embedded set of their backend at start, so the compose files mount
+nothing; the Helm chart's migrations ConfigMap (`helm/Makefile
+sync-migrations`) still copies the Postgres directory and is unused by
+the workers.
 
 ### Bus
 
@@ -5973,15 +6046,16 @@ Changes reach the dashboard through a four-step notification chain on
 the storage Bus, fully decoupled from REST paths.
 
 1. **Worker write.** On each event,
-   `workers/internal/writer/postgres.go::InsertEvent` INSERTs into `events`
-   and RETURNS the generated UUID primary key. A session state change
+   `workers/internal/writer/writer.go::InsertEvent` INSERTs into `events`
+   and returns the row's UUID primary key. A session state change
    (the reconciler, the reaper, a parent revived by its child) updates
    the `sessions` row; the reaper also inserts its synthetic
    `session_end`.
-2. **NOTIFY publish.** The worker sends a Postgres NOTIFY on the
-   `flightdeck_fleet` channel with payload `{session_id, event_type,
-   event_id}`, one per changed session (see Worker / Event Processing →
-   Notify for who sends what, and when).
+2. **Bus publish.** The worker publishes on the storage Bus channel
+   `flightdeck_fleet` (Postgres NOTIFY, or the in-process bus on
+   SQLite) with payload `{session_id, event_type, event_id}`, one per
+   changed session (see Worker / Event Processing → Notify for who
+   sends what, and when).
 3. **Hub subscription + single-row fetch.** The API hub
    (`api/internal/ws/hub.go::listenOnce`) subscribes to `flightdeck_fleet`
    on the storage Bus (`storage.ChannelFleet`: a dedicated LISTEN
@@ -10282,54 +10356,193 @@ too long to fit a tooltip — never paraphrased.
 
 ### Deployment
 
-Two deployment targets are supported:
+Flightdeck is one binary, `flightdeck` (the root Go module,
+`cmd/flightdeck`). It runs the ingestion API, the workers and the query
+API as goroutines of one process, serves the dashboard from the binary,
+and embeds its message bus. Postgres is the one external dependency
+(`--database-url`); the binary refuses to start without it.
 
-**Docker Compose (single host).** `make dev` brings up all 7 services
-(nginx, postgres, nats, ingestion, workers, api, dashboard) on the
-internal compose network. nginx exposes port 4000. The production
-overlay (`docker-compose.prod.yml`) terminates TLS at nginx on 443,
-redirects 80 → 443, and unsets `ENVIRONMENT=dev` so the seed `tok_dev`
-row is rejected.
+**Ports and routes.** One listener, `--listen`, default `127.0.0.1:4000`.
+The router serves `/` and every path with no other owner from the
+embedded dashboard bundle (`webui/dist`, filled by `make build-webui`
+from `dashboard/dist` without the source maps), falling back to
+`index.html` for the SPA's client-side routes (an `/assets/*` path that
+names no file is a 404, never `index.html`); `/assets/*` with a
+one-year immutable cache, since Vite hashes the file names;
+`/runtime-config.json`, generated (below) and sent with `Cache-Control:
+no-store`; `/investigate` as a permanent redirect to `/events`; `/api`
+and everything under it to the query API's handler; `/ingest` and
+everything under it to the ingestion handler, each path forwarded as
+sent (the services strip their own prefix; see Public path prefixes).
+A bare `/v1/...` is answered 404 with a hint naming the two prefixes, so
+a sensor pointed at the origin without `/ingest` learns why. When the
+ingestion handler answers without reading the request body (a body
+over the receivers' 4 MiB cap is refused with 413 unread), the router
+drains up to 16 MiB of it, the receivers' inflated-body cap, so the
+client receives the status rather than a connection reset, as it does
+behind the compose nginx, which reads the whole body itself. The
+dashboard responses carry the browser security headers the compose
+dashboard's nginx sets (`X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy`, the same
+`Content-Security-Policy`). The server has a 15-second header read
+timeout, a 120-second idle timeout and no server-wide write timeout,
+because `/api/v1/stream` is a WebSocket; instead the router sets the
+services' own per-request deadlines on the connection: the ingestion
+read and write timeouts (10 seconds each) on `/ingest`, the query
+API's read timeout (15 seconds) on `/api` except the WebSocket, so a
+client that stalls mid-body holds a connection no longer than it
+could with the standalone services. The query API's own 30-second
+REST timeout and the ingestion body limits still apply inside their
+handlers. A port already in use stops the start with the error and a
+`--listen` hint; a privileged port the process may not bind (`:80`
+and `:443` of `--domain`) with the remedy (root, `CAP_NET_BIND_SERVICE`
+or a higher `--listen` port). The sockets are bound before anything
+else, so either message arrives before any side effect. The three services' metrics listeners
+(ports 9102, 9103 and 9104, see Metrics) are off unless `--metrics` is
+given; the public port never serves `/metrics`.
 
-Every compose service logs through Docker's `json-file` driver with
-rotation: a container's log file is rotated at 20 MiB and five files
-are kept, so one container holds at most 100 MiB of logs and the seven
-at most 700 MiB. Without it the driver keeps a container's whole output
-in one file that grows until the disk is full, and the workers log a
-line for every event they drop, so a flood of bad events would fill the
-host disk through the log alone. 20 MiB and five files are the defaults
-of Docker's own rotating `local` driver; `json-file` is kept over
-`local` because `docker logs` reads both, while log shippers that tail
-container files read only `json-file`. The rotation is set in
-`docker-compose.yml` and applies under the dev and prod overlays alike;
-a daemon-wide `log-opts` in `/etc/docker/daemon.json` does not override
-it. Under Helm the kubelet rotates container logs
-(`containerLogMaxSize`, `containerLogMaxFiles`) and the chart sets
-nothing.
+**Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
+`~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
+mode 0700; an existing directory with a wider mode is used as it is and
+a warning names the `chmod`, since it holds the bus store and the
+secrets file. It holds `nats/`, the embedded JetStream store;
+`secrets.json` (mode 0600) with the JWT secret, generated once, and the
+dashboard token of the non-loopback mode below; and `acme/`, the TLS
+certificate cache. A `--database-url` is the only other state the
+binary needs, so a new data dir on an existing database is a working
+install.
+
+**Embedded NATS.** The binary starts a `nats-server` in process with
+JetStream on, `StoreDir=<data>/nats` and `DontListen`, so no port is
+opened for the bus, and ingestion and the workers connect to it through
+in-process connections (`nats.InProcessServer`). The `FLIGHTDECK`
+stream, its limits (72 hours, 5 GiB) and the durable consumer are the
+ones described under Worker / Event Processing; the JetStream store
+limit is set from the stream's size limit so the reservation never
+depends on free disk at start. `--nats-url` (`FLIGHTDECK_NATS_URL`)
+switches to an external server and starts no embedded one; several
+instances sharing a database (Helm) point at one external NATS, since
+each embedded server is a bus of its own.
+
+**Auth bootstrap.** The listen address decides the mode. Bound to a
+loopback address (`127.0.0.1`, `localhost`, `::1`), the binary runs the
+services with the development semantics the dev compose had
+(`ENVIRONMENT=dev`, set in process): the seeded `tok_dev` is accepted,
+`/runtime-config.json` returns it, the dev-only `DELETE
+/v1/directives/custom` route is mounted, and the start-up block prints
+the token. Bound to any other address, or started with `--domain`, the
+dev token is refused with the usual 401; on the first start the binary
+mints an `ftd_` access token named `Bootstrap token` through the
+query API's token store (stored salted and hashed in `access_tokens`
+like any other), prints it once in the start-up block, and keeps the
+plaintext in `secrets.json` so `/runtime-config.json` can hand it to the
+dashboard on every start. On a later start the stored token is
+validated against the database and re-minted if it no longer resolves
+(a new database under an old data dir). Serving the dashboard token
+from `/runtime-config.json` to anyone who can reach the origin is the
+same trust boundary the mounted `runtime-config.json` had: a
+non-loopback deployment protects the origin at the network edge or
+with `--domain`. Further tokens are minted in the Settings page.
+
+**TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
+the binary with certificates from Let's Encrypt (`acme/autocert`,
+HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
+and on `:80` to answer the ACME challenge and redirect every other GET
+or HEAD to `https://<domain>` with the same path and query, whatever
+`Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
+the binary serves plain HTTP.
+
+**Time zone.** The binary sets the process's local zone to UTC at
+start, as the compose containers have: the query API
+formats the timestamps it reads from Postgres in the process's zone,
+and its contract is RFC 3339 in UTC, whatever zone the host is in.
+
+**Start-up output.** One block on stdout: the version, the dashboard
+URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
+was printed), the data dir, the database (URL with the password
+masked) and the bus (embedded, with its store dir, or the external
+URL). Everything else is `slog` on stderr.
+
+**Tuning.** The services' tuning variables keep their names and
+defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
+`FLIGHTDECK_WORKER_POOL_SIZE`, `FLIGHTDECK_RECONCILER_INTERVAL_SECS`,
+`FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, `FLIGHTDECK_NATS_STREAM_*`,
+`FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS`, `FLIGHTDECK_CORS_ORIGIN`,
+`FLIGHTDECK_PRICING_PATH`, `SHUTDOWN_TIMEOUT_SECS`); the integration
+suite runs the binary with the same two overrides the dev compose
+sets.
+
+**Start order and shutdown.** The binary binds its port(s) first (so a
+busy or privileged port fails before anything is touched), prepares
+the data dir and secrets, connects to Postgres, applies the embedded
+migrations, starts the bus, then the three services together, then
+serves. On SIGINT or SIGTERM, or when a service or a listener fails,
+it stops in order: the HTTP server stops accepting and drains the
+requests in flight (which still have the services they are calling),
+then the services are cancelled and waited for (each joins its own
+loops: the ingestion assembler and the worker lanes finish their
+current message within `SHUTDOWN_TIMEOUT_SECS`), each step bounded by
+30 seconds; then the embedded NATS server and the database pool close,
+the bus last so every publish and acknowledgement before it has reached
+the store. A service's failure is the exit status's reason; a stop on
+a signal exits 0.
+
+**The `app` packages.** Each service exports `ingestion/app`,
+`workers/app` and `api/app`: `Config` (the service's tunables, the
+values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
+workers, the migrations `fs.FS`; a nil dependency is dialled from
+`Config`), `New`, `Run(ctx)` and, for ingestion and the API,
+`Handler()`. `Run` joins every goroutine it starts before it closes
+the connections it owns; the workers' `Run` does not migrate (the
+binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
+`app.Run`, and the compose dev overlay still runs them with `go run
+./cmd/` behind nginx on `:4000` for the dashboard hot-reload loop; the
+dashboard's Vite proxy forwards `/api` and `/ingest` to `:4000`, so
+`go run ./cmd/flightdeck` plus `npm run dev` in `dashboard/` is the
+other dev loop.
 
 **Helm chart (Kubernetes).** A Chart at `helm/` ships a values file
 covering image tags, replicas, HPA bounds, NATS JetStream PVC sizes,
 ingress configuration, and an `externalUrl` escape hatch for managed
 Postgres. The bundled Postgres StatefulSet is fine for small
 deployments; production should provide an external HA Postgres via
-`postgres.externalUrl`.
+`postgres.externalUrl`. The chart passes the `FLIGHTDECK` stream's
+settings to ingestion from `nats.jetstream.stream` (`maxAgeHours`,
+`maxSizeMiB`, `replicas`; see Worker / Event Processing > The
+FLIGHTDECK stream). Unset, `replicas` is 3 when `nats.replicas` is 3 or
+more and 1 otherwise: 3 copies keep a quorum through the loss of one
+server, while 2 copies need both servers for a quorum and so would stop
+the stream on either one's loss. A set `replicas` must be 1 to 5, not 2
+for that reason, and at most `nats.replicas`, and the render fails
+otherwise, as it does for an age under 1 hour, a size under 64 MiB, or
+a size above 75% of `nats.jetstream.fileStore.size` (read when it is a
+plain integer with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix).
+Each NATS server holds a full copy on its own PVC, so `maxSizeMiB`
+stays well under the 75% of free space a server reserves at most: 5120
+MiB on the 10Gi default volume, 30720 MiB on the 50Gi volume of
+`values.prod.yaml`. The ingestion pods carry a checksum of the three
+settings, so changing one rolls them and the new settings apply to the
+stream in place. The chart runs the per-service images.
 
-The chart passes the `FLIGHTDECK` stream's settings to ingestion from
-`nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
-Worker / Event Processing > The FLIGHTDECK stream). Unset, `replicas` is
-3 when `nats.replicas` is 3 or more and 1 otherwise: 3 copies keep a
-quorum through the loss of one server, while 2 copies need both servers
-for a quorum and so would stop the stream on either one's loss. A set
-`replicas` must be 1 to 5, not 2 for that reason, and at most
-`nats.replicas`, and the render fails otherwise, as it does for an age
-under 1 hour, a size under 64 MiB, or a size above 75% of
-`nats.jetstream.fileStore.size` (read when it is a plain integer with a
-`Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). Each NATS server holds a full copy on its own PVC, so
-`maxSizeMiB` stays well under the 75% of free space a server reserves
-at most: 5120 MiB on the 10Gi default volume, 30720 MiB on the 50Gi
-volume of `values.prod.yaml`. The ingestion pods carry a checksum of the
-three settings, so changing one rolls them and the new settings apply to
-the stream in place.
+**Compose.** `docker/docker-compose.yml` with the dev overlay
+(`make dev`) runs the seven-service topology (nginx, postgres, nats,
+ingestion, workers, api, dashboard) from source for contributors who
+want the dashboard's hot reload behind nginx on `:4000`; the production
+overlay terminates TLS at nginx. Every compose service logs through
+Docker's `json-file` driver with rotation: a container's log file is
+rotated at 20 MiB and five files are kept, so one container holds at
+most 100 MiB of logs and the seven at most 700 MiB. Without it the
+driver keeps a container's whole output in one file that grows until
+the disk is full, and the workers log a line for every event they drop,
+so a flood of bad events would fill the host disk through the log
+alone. 20 MiB and five files are the defaults of Docker's own rotating
+`local` driver; `json-file` is kept over `local` because `docker logs`
+reads both, while log shippers that tail container files read only
+`json-file`. The rotation is set in `docker-compose.yml` and applies
+under the dev and prod overlays alike; a daemon-wide `log-opts` in
+`/etc/docker/daemon.json` does not override it. Under Helm the kubelet
+rotates container logs (`containerLogMaxSize`, `containerLogMaxFiles`)
+and the chart sets nothing.
 
 **Public path prefixes.** Clients reach ingestion under `/ingest` and
 the query API under `/api` on one origin, and each service also accepts
@@ -10352,6 +10565,24 @@ Constraint #4).
 
 ### Environment variables
 
+**`flightdeck` binary:** flags win over environment variables, which win
+over the defaults.
+
+| Flag | Variable | Purpose |
+|---|---|---|
+| `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
+| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`) |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `nats/`, `secrets.json`, `acme/` |
+| `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
+| `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
+| `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
+
+The services' tuning variables below keep their names and defaults under
+the binary; `FLIGHTDECK_PORT`, `FLIGHTDECK_POSTGRES_URL`, `ENVIRONMENT`
+and `FLIGHTDECK_MIGRATIONS_DIR` are read by the standalone service
+binaries only, since the one binary derives them from its flags.
+
+
 **Ingestion API:**
 
 | Variable | Purpose |
@@ -10370,10 +10601,10 @@ Constraint #4).
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Database URL (required): `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
-| `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
+| `FLIGHTDECK_MIGRATE_ONLY` | `true` applies the pending embedded migrations of the database's backend and exits without consuming |
 | `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks, 1 to 3600 (default 60); the worker refuses to start outside that range. The dev compose override sets 5 so the integration tests that wait for a tick stay short |
 | `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24, must be above 0; the worker refuses to start otherwise) |
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves `/metrics` (default 9102; `0` turns it off; the worker refuses to start outside 0 to 65535) |
@@ -10611,7 +10842,10 @@ targets:
 | `make playground-<script>` | Live-API regression demo for `<script>` |
 | `make playground-all` | All playground demos, skip those without API keys |
 | `make lint` | Per-component lint (ruff, golangci-lint, ESLint, mypy) |
-| `make build` | Docker images for ingestion, workers, api, dashboard |
+| `make build` | Builds every component, the `flightdeck` binary included |
+| `make build-webui` | Builds the dashboard and copies `dashboard/dist` (without source maps) into `webui/dist` for `go:embed` |
+| `make build-flightdeck` | `make build-webui`, then builds `bin/flightdeck` with the VERSION file's version |
+| `make run-flightdeck` | Runs the binary from source against `FLIGHTDECK_DATABASE_URL` |
 | `make release-prep VERSION=vX.Y.Z` | Test and lint, bump every version location, date the CHANGELOG, open the release PR |
 | `make release-tag VERSION=vX.Y.Z` | After the release PR merges: check the versions and push the tag (starts the release pipeline) |
 | `make version-check` | Check every version location matches the `VERSION` file |
@@ -10794,7 +11028,7 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
    `api/internal/auth`), `ingestion/internal/session`,
    `ingestion/internal/auth`, `ingestion/internal/directive`,
    `ingestion/internal/otlpstage` (the OTLP GenAI staging tables) and
-   `workers/internal/writer`; `workers/internal/migrate` applies the
+   `workers/internal/writer`; the `storage` module applies the
    migration files. The current places outside store packages that run
    SQL are `workers/internal/processor/policy.go` (token policy lookups
    and the directives it issues), `workers/internal/processor/session.go`

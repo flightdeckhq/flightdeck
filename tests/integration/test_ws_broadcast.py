@@ -17,9 +17,9 @@ import uuid
 import pytest
 from websockets.asyncio.client import connect
 
-from .conftest import TOKEN, exec_sql, make_event, post_event
+from .conftest import BASE_URL, TOKEN, exec_sql, make_event, post_event
 
-WS_URL = f"ws://localhost:4000/api/v1/stream?token={TOKEN}"
+WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
 
 # Both tests listen on the stack-wide ``/v1/stream`` hub, which
 # broadcasts every event the stack ingests; the parallel phase's event

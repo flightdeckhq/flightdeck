@@ -31,6 +31,11 @@ type queries interface {
 	// count) over every session's context, arrays unnested element by
 	// element.
 	contextFacets() string
+	// auditLogTieBreak orders audit-log rows that share an occurred_at,
+	// newest first. A policy change writes its rows within one
+	// millisecond, and the row id is a random UUID, so the timestamp
+	// alone does not order them.
+	auditLogTieBreak() string
 }
 
 func queriesFor(b storage.Backend) queries {
@@ -75,6 +80,11 @@ func (postgresQueries) frameworkLabels() string {
 }
 
 func (postgresQueries) frameworkLabelExpr() string { return "framework_labels.fw" }
+
+// auditLogTieBreak: occurred_at defaults to now(), the transaction's
+// start at microsecond precision, so two changes never share it; rows
+// of one change do, and the id keeps their order stable between reads.
+func (postgresQueries) auditLogTieBreak() string { return "a.id DESC" }
 
 // contextFacets: scalar values take the #>> '{}' branch (text of the
 // scalar), array values the jsonb_array_elements_text branch (one row

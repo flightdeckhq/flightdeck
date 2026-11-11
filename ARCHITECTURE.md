@@ -5071,10 +5071,12 @@ what `Dialect` renders, the store keeps two query sets
 (`queries_postgres.go`, `queries_sqlite.go`) and picks one by `Backend`;
 SQL fragments are never templated beyond the dialect helpers. Every
 store of the three services is inside the boundary (CLAUDE.md rule 35
-lists the store packages): the query API's stores, token validator and
-WebSocket hub, every ingestion store, and the workers' writer and
-processor, so each service, and the binary that runs the three on one
-handle, serves a SQLite file and a Postgres database alike. The one
+lists the store packages): the query API's stores in
+`api/internal/store`, its token validator and the WebSocket hub, every
+ingestion store, and the workers' writer and processor. Each service
+therefore runs whole on a SQLite file and on a Postgres database, and
+so does the `flightdeck` binary, which runs the three on one database.
+The one
 database error type a store inspects is read through
 `storage.ErrorClass`, which names a Postgres error by its SQLSTATE,
 table and constraint and any other error by its text, never by the

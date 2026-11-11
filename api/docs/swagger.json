@@ -517,7 +517,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Granularity: hour, day, week (default: day)",
+                        "description": "Granularity: hour, day, week (default: day). Each point's date is the UTC start of its bucket: YYYY-MM-DD for day and week, YYYY-MM-DDTHH:00Z for hour",
                         "name": "granularity",
                         "in": "query"
                     },

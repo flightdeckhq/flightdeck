@@ -39,6 +39,32 @@ func jsonObject(t *testing.T, v any) string {
 	return string(b)
 }
 
+// A context key whose value is JSON null, and a null inside an array,
+// are not facet values: they are skipped on both engines instead of
+// failing the whole facets read.
+func TestGetContextFacetsSkipJSONNull(t *testing.T) {
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		tag := randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, testNow(), testNow(), 1, 0)
+		seedSessionRow(t, s, randomUUID(t), agentID, "facets-null-"+tag, nil, nil,
+			`{"nullkey_`+tag+`": null, "arr_`+tag+`": [null, "x-`+tag+`"]}`, testNow(), 0)
+
+		facets, err := s.GetContextFacets(ctx)
+		if err != nil {
+			t.Fatalf("GetContextFacets: %v", err)
+		}
+		if got, ok := facets["nullkey_"+tag]; ok {
+			t.Errorf("a null-valued key is listed as a facet: %+v", got)
+		}
+		arr := facets["arr_"+tag]
+		if len(arr) != 1 || arr[0].Value != "x-"+tag || arr[0].Count != 1 {
+			t.Errorf("array with a null element: got %+v, want the one value x-%s counted once", arr, tag)
+		}
+	})
+}
+
 // GetContextFacets unnests array-typed context values element by
 // element: frameworks=["langchain/0.1.12","crewai/0.42.0"] shows as two
 // distinct facet values, each counted independently, never as the one

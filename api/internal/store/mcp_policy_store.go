@@ -499,9 +499,9 @@ func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, ev
 		  FROM mcp_policy_audit_log a
 		  LEFT JOIN mcp_policies p ON p.id = a.policy_id
 		 WHERE %s
-		 ORDER BY a.occurred_at DESC, a.id DESC
+		 ORDER BY a.occurred_at DESC, %s
 		 LIMIT $%d OFFSET $%d
-	`, strings.Join(conditions, " AND "), argIdx, argIdx+1)
+	`, strings.Join(conditions, " AND "), s.q.auditLogTieBreak(), argIdx, argIdx+1)
 
 	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {

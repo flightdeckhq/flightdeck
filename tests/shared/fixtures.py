@@ -17,6 +17,7 @@ on the test runner.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 from collections.abc import Iterator
@@ -29,12 +30,23 @@ from typing import Any, Callable, Literal
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
 
-INGESTION_URL = "http://localhost:4000/ingest"
-API_URL = "http://localhost:4000/api"
+# The stack under test. The defaults are the compose dev stack on
+# :4000. The flightdeck binary is tested by pointing
+# FLIGHTDECK_TEST_BASE_URL at it, with FLIGHTDECK_TEST_DB naming its
+# database (on the same Postgres container, which the psql helpers shell
+# into), FLIGHTDECK_TEST_WORKER_LOG naming the file its log goes to
+# (there is no worker container to read), and
+# FLIGHTDECK_TEST_WORKER_CONTAINER set empty, since there is no worker
+# container to pause: the tests that pause one skip.
+BASE_URL = os.environ.get("FLIGHTDECK_TEST_BASE_URL", "http://localhost:4000").rstrip("/")
+INGESTION_URL = f"{BASE_URL}/ingest"
+API_URL = f"{BASE_URL}/api"
 # The dev stack's container names are the contract for the helpers that
 # shell into it (psql below, the worker log reader).
-POSTGRES_CONTAINER = "docker-postgres-1"
-WORKER_CONTAINER = "docker-workers-1"
+POSTGRES_CONTAINER = os.environ.get("FLIGHTDECK_TEST_POSTGRES_CONTAINER", "docker-postgres-1")
+POSTGRES_DB = os.environ.get("FLIGHTDECK_TEST_DB", "flightdeck")
+WORKER_CONTAINER = os.environ.get("FLIGHTDECK_TEST_WORKER_CONTAINER", "docker-workers-1")
+WORKER_LOG_FILE = os.environ.get("FLIGHTDECK_TEST_WORKER_LOG", "")
 # A docker CLI call against a healthy daemon returns well within this;
 # the bound only keeps a hung daemon from stalling a poll forever.
 DOCKER_CLI_TIMEOUT_SECS = 20
@@ -472,7 +484,7 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
             "-U",
             "flightdeck",
             "-d",
-            "flightdeck",
+            POSTGRES_DB,
             "-t",
             "-c",
             sql,
@@ -532,7 +544,7 @@ def exec_sql(sql: str, **bindings: Any) -> str:
         "-U",
         "flightdeck",
         "-d",
-        "flightdeck",
+        POSTGRES_DB,
         "-t",
         "-A",
     ]
@@ -678,6 +690,8 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 def worker_is_paused() -> bool:
     """Whether the worker container is paused (left so by an interrupted test)."""
+    if not WORKER_CONTAINER:
+        return False
     paused = _docker("inspect", "-f", "{{.State.Paused}}", WORKER_CONTAINER)
     return paused.stdout.strip() == "true"
 
@@ -706,7 +720,15 @@ def worker_paused() -> Iterator[None]:
     Ctrl-C does and ``finally`` runs); a run killed outright is repaired
     by ``ensure_worker_running`` at the next session start. A failing
     unpause surfaces unless the block itself already failed.
+
+    Against the flightdeck binary (no worker container,
+    ``FLIGHTDECK_TEST_WORKER_CONTAINER`` empty) the test skips: the
+    worker is a goroutine of the one process and cannot be paused alone.
     """
+    if not WORKER_CONTAINER:
+        import pytest
+
+        pytest.skip("pausing the worker needs the compose worker container")
     previous = signal.signal(signal.SIGTERM, _abort_on_signal)
     try:
         _docker("pause", WORKER_CONTAINER)
@@ -779,7 +801,7 @@ def _row_locked(table: str, row_id: str, mode: LockMode) -> Iterator[None]:
         "-U",
         "flightdeck",
         "-d",
-        "flightdeck",
+        POSTGRES_DB,
         "-q",
         "-v",
         "ON_ERROR_STOP=1",
@@ -924,6 +946,8 @@ def worker_log_lines(
     applies on top. The daemon compares the stamp with its own clock, so
     a caller that must not miss a line takes the stamp before it posts.
     """
+    if WORKER_LOG_FILE:
+        return _worker_log_file_lines(needles, tail, since)
     args = ["logs", "--tail", str(tail)]
     if since is not None:
         if not isinstance(since, str):
@@ -935,6 +959,28 @@ def worker_log_lines(
         for line in (proc.stdout + proc.stderr).splitlines()
         if all(needle in line for needle in needles)
     ]
+
+
+def _worker_log_file_lines(
+    needles: tuple[str, ...], tail: int, since: str | float | None
+) -> list[str]:
+    """``worker_log_lines`` over the log file of the flightdeck binary.
+
+    The binary logs through slog's default handler, whose lines start
+    with a ``YYYY/MM/DD HH:MM:SS`` stamp in the process's zone, which the
+    binary sets to UTC; a ``time.time()`` ``since`` keeps the lines
+    stamped at or after it (minus the same margin the daemon path
+    allows). A string ``since`` (a docker
+    duration or RFC 3339 value) cannot be applied to a file and is
+    ignored, so a caller gets at most the ``tail`` bound it asked for.
+    """
+    with open(WORKER_LOG_FILE, encoding="utf-8", errors="replace") as fh:
+        lines = fh.read().splitlines()[-tail:]
+    if since is not None and not isinstance(since, str):
+        floor = time.gmtime(since - DOCKER_CLOCK_MARGIN_SECS)
+        floor_text = time.strftime("%Y/%m/%d %H:%M:%S", floor)
+        lines = [line for line in lines if line[:19] >= floor_text]
+    return [line for line in lines if all(needle in line for needle in needles)]
 
 
 def wait_for_state(
@@ -1004,7 +1050,7 @@ def directive_has_delivered_at(directive_id: str) -> bool:
             "-U",
             "flightdeck",
             "-d",
-            "flightdeck",
+            POSTGRES_DB,
             "-t",
             "-c",
             sql,
@@ -1229,7 +1275,7 @@ def get_agent_rollup(agent_id: str) -> dict[str, Any] | None:
             "-U",
             "flightdeck",
             "-d",
-            "flightdeck",
+            POSTGRES_DB,
             "-t",
             "-c",
             sql,
@@ -1262,7 +1308,7 @@ def _psql_exec(sql: str) -> None:
             "-U",
             "flightdeck",
             "-d",
-            "flightdeck",
+            POSTGRES_DB,
             "-v",
             "ON_ERROR_STOP=1",
             "-c",

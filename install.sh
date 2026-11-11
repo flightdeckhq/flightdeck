@@ -30,10 +30,12 @@
 #                           Downloads are HTTPS only, except from localhost; the
 #                           signature is checked only for the default URL, since
 #                           it names this repository's workflow as the signer.
-#   FLIGHTDECK_RELEASE_SIGNED_URL  the one URL whose checksums.txt the signature
-#                           check applies to (default: the repository URL above).
-#                           Only scripts/test-install-sh.sh sets it, to run the
-#                           cosign path against its local server with a fake cosign.
+#   FLIGHTDECK_RELEASE_SIGNED_URL  one more URL whose checksums.txt the signature
+#                           check applies to. The default repository URL is
+#                           always checked; this adds a URL, it never removes
+#                           one. Only scripts/test-install-sh.sh sets it, to run
+#                           the cosign path against its local server with a fake
+#                           cosign.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
@@ -150,9 +152,12 @@ sha256_of() {
 
 # verify_checksums_signature BASE DIR checks checksums.txt against its
 # Sigstore bundle when cosign is available and the release comes from
-# the default repository (the only signer the identity names).
+# the default repository (the only signer the identity names). The check
+# is skipped only for a release URL that is not the default one, so the
+# test hook FLIGHTDECK_RELEASE_SIGNED_URL can add a URL to verify and
+# cannot take verification away from the real repository.
 verify_checksums_signature() {
-  if [ "$REPO_URL" != "$SIGNED_URL" ]; then
+  if [ "$REPO_URL" != "$DEFAULT_REPO_URL" ] && [ "$REPO_URL" != "$SIGNED_URL" ]; then
     info "Signature of checksums.txt not checked: FLIGHTDECK_RELEASE_URL is not the flightdeckhq/flightdeck release"
     return 0
   fi

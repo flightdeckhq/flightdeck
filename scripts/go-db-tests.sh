@@ -72,6 +72,7 @@ DB_PACKAGES=(
   ingestion/app
   ingestion/internal/assembler
   ingestion/internal/auth
+  ingestion/internal/directive
   ingestion/internal/handlers
   ingestion/internal/otlpstage
   ingestion/internal/session
@@ -86,7 +87,12 @@ DB_PACKAGES=(
 # database through storage/storagetest.
 DUAL_PACKAGES=(
   ingestion/app
+  ingestion/internal/assembler
   ingestion/internal/auth
+  ingestion/internal/directive
+  ingestion/internal/handlers
+  ingestion/internal/otlpstage
+  ingestion/internal/session
   storage
   workers/app
   workers/internal/processor
@@ -265,7 +271,6 @@ run_pkg() {
       env -u FLIGHTDECK_POSTGRES_URL \
         FLIGHTDECK_TEST_BACKEND="$backend" \
         TEST_POSTGRES_URL="$dsn" \
-        TEST_ASSEMBLER_POSTGRES_URL="$dsn" \
         go test -count=1 -v "$dir"
   ) 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}

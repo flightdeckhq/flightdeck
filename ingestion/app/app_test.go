@@ -78,9 +78,8 @@ func TestLoadEnv_ReturnsTheEnvironmentsRefusalAsAnError(t *testing.T) {
 }
 
 // The handler checks below run on a SQLite database from storagetest
-// (a migrated file in the test's temp directory): the token validator
-// is on the storage boundary, and the pgx stores point at the
-// unavailable URL, which no health or auth check reaches.
+// (a migrated file in the test's temp directory), which every store of
+// the service runs on.
 
 // embeddedNATS runs a JetStream-enabled nats-server in the test process
 // with no listener and returns an in-process connection to it, so New
@@ -127,8 +126,8 @@ func TestHandler_HealthUnderBothPrefixesAndAuthBeforeAnyQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.closeOwned()
-	if a.ownsDB || !a.ownsPool || a.ownsNATS {
-		t.Fatalf("ownsDB=%v ownsPool=%v ownsNATS=%v: New owns what it opened (the unavailable pgx pool) and nothing else", a.ownsDB, a.ownsPool, a.ownsNATS)
+	if a.ownsDB || a.ownsNATS {
+		t.Fatalf("ownsDB=%v ownsNATS=%v: New owns nothing it was given", a.ownsDB, a.ownsNATS)
 	}
 	for _, path := range []string{"/health", "/ingest/health"} {
 		rec := httptest.NewRecorder()
@@ -154,7 +153,7 @@ func TestHandler_HealthUnderBothPrefixesAndAuthBeforeAnyQuery(t *testing.T) {
 	}
 }
 
-func TestNew_UnreachableNATSIsAnErrorAndTheOwnedPoolIsClosed(t *testing.T) {
+func TestNew_UnreachableNATSIsAnError(t *testing.T) {
 	cfg := testConfig()
 	cfg.NatsURL = "nats://127.0.0.1:1"
 	_, err := New(context.Background(), cfg, Deps{DB: storagetest.OpenSQLite(t)})

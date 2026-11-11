@@ -659,6 +659,11 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **Go 1.27.4.** The services, their images, the development stack and CI
+  build with Go 1.27.4, which fixes a `net/http` vulnerability in the
+  standard library (GO-2026-6859). No Flightdeck code path reaches the
+  affected function; the bump keeps the vulnerability scan green.
+
 - **One storage boundary, SQLite as the default backend.** A new Go module
   `storage` opens SQLite (`sqlite://<path>`, pure Go, WAL, one writer
   connection) or Postgres (`postgres://…`) behind `database/sql`, names

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +15,8 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/genai"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 )
 
 // ---- pure tests ----
@@ -284,14 +284,15 @@ func TestRunStopsOnCancel(t *testing.T) {
 
 // ---- database tests ----
 //
-// These run against a real Postgres at TEST_ASSEMBLER_POSTGRES_URL,
-// migrated through 000036, and skip when it is not set. The database must
-// be one of their own: an assembler claims every due trace in the
-// database, so it must share it neither with an ingestion process nor
-// with the otlpstage package's tests, which run concurrently under
-// go test ./... and whose 2001-dated traces this package's later clock
-// would find due. Each test stages under a token key of its own and
-// deletes its rows when it ends.
+// These run on every backend storagetest covers: SQLite always (a
+// fresh file per test) and Postgres when TEST_POSTGRES_URL names a
+// database. The Postgres database must be one of their own: an
+// assembler claims every due trace in the database, so it must share
+// it neither with an ingestion process nor with the otlpstage package's
+// tests, which run concurrently under go test ./... and whose
+// 2001-dated traces this package's later clock would find due
+// (scripts/go-db-tests.sh gives each package its own). Each test stages
+// under a token key of its own and deletes its rows when it ends.
 
 const (
 	pollTimeout  = 10 * time.Second
@@ -456,7 +457,7 @@ func (r *renewCounter) LoadTrace(ctx context.Context, key otlpstage.TraceKey) (o
 
 type env struct {
 	t        *testing.T
-	pool     *pgxpool.Pool
+	db       *storage.DB
 	store    *renewCounter
 	clock    *clock
 	bus      *recordingBus
@@ -465,40 +466,21 @@ type env struct {
 	token    string
 }
 
-func newEnv(t *testing.T, opts ...Option) *env {
+func newEnv(t *testing.T, db *storage.DB, opts ...Option) *env {
 	t.Helper()
-	dsn := os.Getenv("TEST_ASSEMBLER_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("no TEST_ASSEMBLER_POSTGRES_URL set; skipping DB test")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	var ok bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
-		WHERE table_name = 'otlp_spans' AND column_name = 'assembled_in')`).Scan(&ok); err != nil || !ok {
-		t.Fatalf("the test database is not migrated through 000036 (%v)", err)
-	}
 	c := &clock{now: testEpoch}
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	token := "assembler-test-" + hex.EncodeToString(b)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM otlp_traces WHERE token_key = $1`, token)
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM otlp_traces WHERE token_key = $1`, token)
 	})
-	store := &renewCounter{Store: otlpstage.NewStore(pool, otlpstage.WithClock(c.Now))}
+	store := &renewCounter{Store: otlpstage.NewStore(db, otlpstage.WithClock(c.Now))}
 	bus := &recordingBus{}
 	att := &recordingAttacher{}
 	opts = append([]Option{WithClock(c.Now)}, opts...)
 	return &env{
-		t: t, pool: pool, store: store, clock: c, bus: bus, attacher: att, token: token,
+		t: t, db: db, store: store, clock: c, bus: bus, attacher: att, token: token,
 		asm: New(store, handlers.NewOTLPPublisher(bus, att), opts...),
 	}
 }
@@ -574,12 +556,13 @@ func (e *env) load(key otlpstage.TraceKey) otlpstage.LoadedTrace {
 
 func (e *env) traceState(key otlpstage.TraceKey) (pending bool, owner *string, resolveAt time.Time, count int) {
 	e.t.Helper()
-	if err := e.pool.QueryRow(context.Background(), `
+	var at storage.Time
+	if err := e.db.Reader().QueryRowContext(context.Background(), `
 		SELECT pending, lease_owner, resolve_at, assembly_count FROM otlp_traces WHERE token_key = $1 AND trace_id = $2`,
-		key.TokenKey, key.TraceID[:]).Scan(&pending, &owner, &resolveAt, &count); err != nil {
+		key.TokenKey, key.TraceID[:]).Scan(&pending, &owner, &at, &count); err != nil {
 		e.t.Fatal(err)
 	}
-	return pending, owner, resolveAt.UTC(), count
+	return pending, owner, at.Time.UTC(), count
 }
 
 // agentRun is one agent with a model call and a tool call.
@@ -611,40 +594,42 @@ func types(evs []published) []string {
 // stamped with its token, without the attachment check on a first
 // start, and marked with its assembly; it is not claimed again.
 func TestAssemblesACompleteTrace(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	if out := e.tick(); len(out) != 0 {
-		t.Fatalf("assembled inside the root grace: %v", out)
-	}
-	e.clock.Advance(otlpstage.RootGrace)
-	out := e.tickOne()
-	if out.Reason != otlpstage.ReasonComplete || !out.Marked || out.Published != 4 || out.Refused != 0 {
-		t.Fatalf("outcome = %+v", out)
-	}
-	evs := e.bus.snapshot()
-	if got := strings.Join(types(evs), ","); got != "session_start,post_call,tool_call,session_end" {
-		t.Fatalf("published %s", got)
-	}
-	st := evs[0].payload
-	if st["token_id"] != e.token || st["token_name"] != "assembler test" || evs[0].subject != "events.session_start" {
-		t.Errorf("start = %s %v", evs[0].subject, st)
-	}
-	if len(e.attacher.checks()) != 0 {
-		t.Errorf("a first start ran the attachment check: %v", e.attacher.checks())
-	}
-	for _, f := range e.load(key).Facts {
-		if !f.Assembled || f.AssembledIn != 1 {
-			t.Errorf("record %x assembled=%v in=%d", f.SpanID, f.Assembled, f.AssembledIn)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		if out := e.tick(); len(out) != 0 {
+			t.Fatalf("assembled inside the root grace: %v", out)
 		}
-	}
-	if pending, _, _, count := e.traceState(key); pending || count != 1 {
-		t.Errorf("after the assembly pending=%v count=%d", pending, count)
-	}
-	e.clock.Advance(time.Hour / 2)
-	if out := e.tick(); len(out) != 0 {
-		t.Errorf("claimed again: %v", out)
-	}
+		e.clock.Advance(otlpstage.RootGrace)
+		out := e.tickOne()
+		if out.Reason != otlpstage.ReasonComplete || !out.Marked || out.Published != 4 || out.Refused != 0 {
+			t.Fatalf("outcome = %+v", out)
+		}
+		evs := e.bus.snapshot()
+		if got := strings.Join(types(evs), ","); got != "session_start,post_call,tool_call,session_end" {
+			t.Fatalf("published %s", got)
+		}
+		st := evs[0].payload
+		if st["token_id"] != e.token || st["token_name"] != "assembler test" || evs[0].subject != "events.session_start" {
+			t.Errorf("start = %s %v", evs[0].subject, st)
+		}
+		if len(e.attacher.checks()) != 0 {
+			t.Errorf("a first start ran the attachment check: %v", e.attacher.checks())
+		}
+		for _, f := range e.load(key).Facts {
+			if !f.Assembled || f.AssembledIn != 1 {
+				t.Errorf("record %x assembled=%v in=%d", f.SpanID, f.Assembled, f.AssembledIn)
+			}
+		}
+		if pending, _, _, count := e.traceState(key); pending || count != 1 {
+			t.Errorf("after the assembly pending=%v count=%d", pending, count)
+		}
+		e.clock.Advance(time.Hour / 2)
+		if out := e.tick(); len(out) != 0 {
+			t.Errorf("claimed again: %v", out)
+		}
+	})
 }
 
 // A Google ADK trace whose generate_content span lacks its log record is
@@ -652,478 +637,510 @@ func TestAssemblesACompleteTrace(t *testing.T) {
 // record arrives; one whose record never arrives is assembled at the
 // timeout.
 func TestADKDefersForItsLogRecords(t *testing.T) {
-	e := newEnv(t)
-	adk := func(key otlpstage.TraceKey) otlpstage.Record {
-		e.stage(key, "google_adk",
-			e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
-			e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
-				map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1}))
-		lr := otlpstage.Record{Fact: otlpstage.Fact{
-			SpanID: [8]byte{0xb0, 7: 2}, Kind: otlpstage.KindLog, ScopeName: "gcp.vertex.agent",
-			Name: "gen_ai.client.inference.operation.details", StartNs: e.clock.Now().UnixNano(), EndNs: e.clock.Now().UnixNano(),
-			Meta: json.RawMessage(`{"has_messages":false}`),
-		}}
-		return lr
-	}
-	staged := e.clock.Now()
-	withLog, withoutLog := e.key(), e.key()
-	lr := adk(withLog)
-	adk(withoutLog)
-	e.clock.Advance(otlpstage.RootGrace)
-	for _, out := range e.tick() {
-		if !out.Deferred || out.Marked {
-			t.Fatalf("an ADK trace missing its log record was assembled: %+v", out)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		adk := func(key otlpstage.TraceKey) otlpstage.Record {
+			e.stage(key, "google_adk",
+				e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+				e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
+					map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1}))
+			lr := otlpstage.Record{Fact: otlpstage.Fact{
+				SpanID: [8]byte{0xb0, 7: 2}, Kind: otlpstage.KindLog, ScopeName: "gcp.vertex.agent",
+				Name: "gen_ai.client.inference.operation.details", StartNs: e.clock.Now().UnixNano(), EndNs: e.clock.Now().UnixNano(),
+				Meta: json.RawMessage(`{"has_messages":false}`),
+			}}
+			return lr
 		}
-	}
-	for _, k := range []otlpstage.TraceKey{withLog, withoutLog} {
-		if _, owner, at, _ := e.traceState(k); owner != nil || !at.Equal(staged.Add(otlpstage.AdkLogWait)) {
-			t.Errorf("deferred to %v (owner %v), want 30s after the root %v", at, owner, staged.Add(otlpstage.AdkLogWait))
+		staged := e.clock.Now()
+		withLog, withoutLog := e.key(), e.key()
+		lr := adk(withLog)
+		adk(withoutLog)
+		e.clock.Advance(otlpstage.RootGrace)
+		for _, out := range e.tick() {
+			if !out.Deferred || out.Marked {
+				t.Fatalf("an ADK trace missing its log record was assembled: %+v", out)
+			}
 		}
-	}
+		for _, k := range []otlpstage.TraceKey{withLog, withoutLog} {
+			if _, owner, at, _ := e.traceState(k); owner != nil || !at.Equal(staged.Add(otlpstage.AdkLogWait)) {
+				t.Errorf("deferred to %v (owner %v), want 30s after the root %v", at, owner, staged.Add(otlpstage.AdkLogWait))
+			}
+		}
 
-	e.stage(withLog, "google_adk", lr)
-	e.clock.Advance(otlpstage.RootGrace)
-	out := e.tickOne()
-	if out.Key != withLog || out.Reason != otlpstage.ReasonComplete || !out.Marked {
-		t.Fatalf("after its log record: %+v", out)
-	}
+		e.stage(withLog, "google_adk", lr)
+		e.clock.Advance(otlpstage.RootGrace)
+		out := e.tickOne()
+		if out.Key != withLog || out.Reason != otlpstage.ReasonComplete || !out.Marked {
+			t.Fatalf("after its log record: %+v", out)
+		}
 
-	e.clock.Advance(otlpstage.AdkLogWait)
-	out = e.tickOne()
-	if out.Key != withoutLog || out.Reason != otlpstage.ReasonADKLogTimeout || !out.Marked {
-		t.Fatalf("at the log timeout: %+v", out)
-	}
+		e.clock.Advance(otlpstage.AdkLogWait)
+		out = e.tickOne()
+		if out.Key != withoutLog || out.Reason != otlpstage.ReasonADKLogTimeout || !out.Marked {
+			t.Fatalf("at the log timeout: %+v", out)
+		}
+	})
 }
 
 // A long trace is published in chunks with the lease renewed before
 // each, the first included, so the lease outlives a publish longer than
 // its TTL.
 func TestChunkedPublishRenewsTheLease(t *testing.T) {
-	e := newEnv(t, WithChunkSize(1))
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	// Each chunk takes most of a lease: four chunks take twice its TTL.
-	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
-	out := e.tickOne()
-	if !out.Marked || out.Chunks != 4 || out.Published != 4 {
-		t.Fatalf("outcome = %+v", out)
-	}
-	if e.store.renewed != 4 {
-		t.Errorf("%d renewals for 4 chunks, want one before each", e.store.renewed)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(1))
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		// Each chunk takes most of a lease: four chunks take twice its TTL.
+		e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+		out := e.tickOne()
+		if !out.Marked || out.Chunks != 4 || out.Published != 4 {
+			t.Fatalf("outcome = %+v", out)
+		}
+		if e.store.renewed != 4 {
+			t.Errorf("%d renewals for 4 chunks, want one before each", e.store.renewed)
+		}
+	})
 }
 
 // A lease lost mid-publish stops the assembly: nothing is marked, and
 // the next claim publishes every event again under the same ids.
 func TestLeaseLostMidPublish(t *testing.T) {
-	e := newEnv(t, WithChunkSize(2))
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.bus.after = func(n int) {
-		if n == 2 {
-			e.clock.Advance(otlpstage.LeaseTTL + time.Second)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(2))
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.bus.after = func(n int) {
+			if n == 2 {
+				e.clock.Advance(otlpstage.LeaseTTL + time.Second)
+			}
 		}
-	}
-	out := e.tickOne()
-	if !out.LeaseLost || out.Marked || out.Published != 2 {
-		t.Fatalf("outcome = %+v", out)
-	}
-	for _, f := range e.load(key).Facts {
-		if f.Assembled {
-			t.Fatal("a record was marked after the lease was lost")
+		out := e.tickOne()
+		if !out.LeaseLost || out.Marked || out.Published != 2 {
+			t.Fatalf("outcome = %+v", out)
 		}
-	}
-	first := e.bus.snapshot()
-	e.bus.reset()
-	out = e.tickOne()
-	if !out.Marked || out.Published != 4 {
-		t.Fatalf("the next claim: %+v", out)
-	}
-	again := e.bus.snapshot()
-	for i := range first {
-		if first[i].payload["id"] != again[i].payload["id"] {
-			t.Errorf("event %d republished as %v, was %v", i, again[i].payload["id"], first[i].payload["id"])
+		for _, f := range e.load(key).Facts {
+			if f.Assembled {
+				t.Fatal("a record was marked after the lease was lost")
+			}
 		}
-	}
+		first := e.bus.snapshot()
+		e.bus.reset()
+		out = e.tickOne()
+		if !out.Marked || out.Published != 4 {
+			t.Fatalf("the next claim: %+v", out)
+		}
+		again := e.bus.snapshot()
+		for i := range first {
+			if first[i].payload["id"] != again[i].payload["id"] {
+				t.Errorf("event %d republished as %v, was %v", i, again[i].payload["id"], first[i].payload["id"])
+			}
+		}
+	})
 }
 
 // Shutdown between chunks marks nothing and releases the lease, so the
 // trace is due at once for another process.
 func TestShutdownBetweenChunksReleases(t *testing.T) {
-	e := newEnv(t, WithChunkSize(2))
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	ctx, cancel := context.WithCancel(context.Background())
-	e.bus.after = func(n int) {
-		if n == 1 {
-			cancel() // mid-chunk: the chunk is still finished
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(2))
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		ctx, cancel := context.WithCancel(context.Background())
+		e.bus.after = func(n int) {
+			if n == 1 {
+				cancel() // mid-chunk: the chunk is still finished
+			}
 		}
-	}
-	outs := e.asm.Tick(ctx)
-	var out Outcome
-	for _, o := range outs {
-		if o.Key == key {
-			out = o
+		outs := e.asm.Tick(ctx)
+		var out Outcome
+		for _, o := range outs {
+			if o.Key == key {
+				out = o
+			}
 		}
-	}
-	if !out.Deferred || out.Marked || out.Published != 2 {
-		t.Fatalf("outcome = %+v, want the first chunk whole, then a release", out)
-	}
-	pending, owner, at, count := e.traceState(key)
-	if !pending || owner != nil || at.After(e.clock.Now()) || count != 0 {
-		t.Fatalf("after shutdown pending=%v owner=%v resolve_at=%v count=%d", pending, owner, at, count)
-	}
-	e.bus.reset()
-	if out := e.tickOne(); !out.Marked || out.Published != 4 {
-		t.Fatalf("another process's claim: %+v", out)
-	}
+		if !out.Deferred || out.Marked || out.Published != 2 {
+			t.Fatalf("outcome = %+v, want the first chunk whole, then a release", out)
+		}
+		pending, owner, at, count := e.traceState(key)
+		if !pending || owner != nil || at.After(e.clock.Now()) || count != 0 {
+			t.Fatalf("after shutdown pending=%v owner=%v resolve_at=%v count=%d", pending, owner, at, count)
+		}
+		e.bus.reset()
+		if out := e.tickOne(); !out.Marked || out.Published != 4 {
+			t.Fatalf("another process's claim: %+v", out)
+		}
+	})
 }
 
 // A record without capture staged between two chunks turns the trace
 // off: the sessions started after it carry capture_prompts=false and a
 // failed tool's message is the placeholder.
 func TestCaptureFlipBetweenChunks(t *testing.T) {
-	e := newEnv(t, WithChunkSize(1))
-	key := e.key()
-	failed := e.span(4, 3, "pydantic-ai", "execute_tool", "b", 3*time.Second, time.Second, map[string]any{"gen_ai.tool.name": "x", "error.type": "ValueError"})
-	failed.Status = 2
-	e.stage(key, "pydantic_ai",
-		e.span(1, 0, "pydantic-ai", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
-		e.span(2, 1, "pydantic-ai", "execute_tool", "a", 8*time.Second, 6*time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
-		withContent(e.span(3, 2, "pydantic-ai", "invoke_agent", "b", 7*time.Second, 5*time.Second, nil),
-			`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"secret question"}]}]}`),
-		withContent(failed, `{"error.message":"secret failure"}`),
-	)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.bus.after = func(n int) {
-		if n == 1 {
-			off := e.span(9, 1, "pydantic-ai", "chat", "a", time.Second, time.Second, nil)
-			off.Capture = false
-			e.stage(key, "pydantic_ai", off)
-		}
-	}
-	out := e.tickOne()
-	if !out.Marked {
-		t.Fatalf("outcome = %+v", out)
-	}
-	evs := e.bus.snapshot()
-	if evs[0].payload["capture_prompts"] != true || evs[1].payload["event_type"] != "session_start" || evs[1].payload["capture_prompts"] != false {
-		t.Errorf("starts: %v / %v", evs[0].payload["capture_prompts"], evs[1].payload["capture_prompts"])
-	}
-	for _, ev := range evs {
-		if ev.payload["event_type"] == "tool_call" && ev.payload["tool_name"] == "x" {
-			if msg := ev.payload["error"].(map[string]any)["message"]; msg != "<redacted>" {
-				t.Errorf("tool error message after capture went off = %v", msg)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(1))
+		key := e.key()
+		failed := e.span(4, 3, "pydantic-ai", "execute_tool", "b", 3*time.Second, time.Second, map[string]any{"gen_ai.tool.name": "x", "error.type": "ValueError"})
+		failed.Status = 2
+		e.stage(key, "pydantic_ai",
+			e.span(1, 0, "pydantic-ai", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+			e.span(2, 1, "pydantic-ai", "execute_tool", "a", 8*time.Second, 6*time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
+			withContent(e.span(3, 2, "pydantic-ai", "invoke_agent", "b", 7*time.Second, 5*time.Second, nil),
+				`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"secret question"}]}]}`),
+			withContent(failed, `{"error.message":"secret failure"}`),
+		)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.bus.after = func(n int) {
+			if n == 1 {
+				off := e.span(9, 1, "pydantic-ai", "chat", "a", time.Second, time.Second, nil)
+				off.Capture = false
+				e.stage(key, "pydantic_ai", off)
 			}
 		}
-		if ev.payload["has_content"] != false || ev.payload["incoming_message"] != nil {
-			t.Errorf("%v carries content", ev.payload["event_type"])
+		out := e.tickOne()
+		if !out.Marked {
+			t.Fatalf("outcome = %+v", out)
 		}
-	}
-	// The record staged during the claim keeps the trace due.
-	if pending, _, _, _ := e.traceState(key); !pending {
-		t.Error("the trace is not due after a record was staged during its assembly")
-	}
+		evs := e.bus.snapshot()
+		if evs[0].payload["capture_prompts"] != true || evs[1].payload["event_type"] != "session_start" || evs[1].payload["capture_prompts"] != false {
+			t.Errorf("starts: %v / %v", evs[0].payload["capture_prompts"], evs[1].payload["capture_prompts"])
+		}
+		for _, ev := range evs {
+			if ev.payload["event_type"] == "tool_call" && ev.payload["tool_name"] == "x" {
+				if msg := ev.payload["error"].(map[string]any)["message"]; msg != "<redacted>" {
+					t.Errorf("tool error message after capture went off = %v", msg)
+				}
+			}
+			if ev.payload["has_content"] != false || ev.payload["incoming_message"] != nil {
+				t.Errorf("%v carries content", ev.payload["event_type"])
+			}
+		}
+		// The record staged during the claim keeps the trace due.
+		if pending, _, _, _ := e.traceState(key); !pending {
+			t.Error("the trace is not due after a record was staged during its assembly")
+		}
+	})
 }
 
 // A record that arrives after its trace was assembled is published in a
 // re-attaching start (with the attachment check) and an end, and marked
 // with the second assembly.
 func TestLateRecordRevivesItsSession(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	if out := e.tickOne(); !out.Marked {
-		t.Fatalf("first assembly: %+v", out)
-	}
-	first := e.bus.snapshot()
-	e.bus.reset()
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		if out := e.tickOne(); !out.Marked {
+			t.Fatalf("first assembly: %+v", out)
+		}
+		first := e.bus.snapshot()
+		e.bus.reset()
 
-	e.stage(key, "pydantic_ai", e.span(5, 1, "pydantic-ai", "execute_tool", "a", 5*time.Second, time.Second,
-		map[string]any{"gen_ai.tool.name": "late"}))
-	e.clock.Advance(otlpstage.RootGrace)
-	out := e.tickOne()
-	if !out.Marked || out.Published != 3 {
-		t.Fatalf("late assembly: %+v", out)
-	}
-	evs := e.bus.snapshot()
-	if got := strings.Join(types(evs), ","); got != "session_start,tool_call,session_end" {
-		t.Fatalf("late assembly published %s", got)
-	}
-	if evs[0].payload["session_id"] != first[0].payload["session_id"] || evs[0].payload["id"] == first[0].payload["id"] {
-		t.Errorf("re-attach start %v of session %v", evs[0].payload["id"], evs[0].payload["session_id"])
-	}
-	if checks := e.attacher.checks(); len(checks) != 1 || checks[0] != evs[0].payload["session_id"] {
-		t.Errorf("attachment checks = %v, want the re-attaching start's", checks)
-	}
-	for _, f := range e.load(key).Facts {
-		want := 1
-		if f.SpanID[7] == 5 {
-			want = 2
+		e.stage(key, "pydantic_ai", e.span(5, 1, "pydantic-ai", "execute_tool", "a", 5*time.Second, time.Second,
+			map[string]any{"gen_ai.tool.name": "late"}))
+		e.clock.Advance(otlpstage.RootGrace)
+		out := e.tickOne()
+		if !out.Marked || out.Published != 3 {
+			t.Fatalf("late assembly: %+v", out)
 		}
-		if f.AssembledIn != want {
-			t.Errorf("record %d assembled in %d, want %d", f.SpanID[7], f.AssembledIn, want)
+		evs := e.bus.snapshot()
+		if got := strings.Join(types(evs), ","); got != "session_start,tool_call,session_end" {
+			t.Fatalf("late assembly published %s", got)
 		}
-	}
+		if evs[0].payload["session_id"] != first[0].payload["session_id"] || evs[0].payload["id"] == first[0].payload["id"] {
+			t.Errorf("re-attach start %v of session %v", evs[0].payload["id"], evs[0].payload["session_id"])
+		}
+		if checks := e.attacher.checks(); len(checks) != 1 || checks[0] != evs[0].payload["session_id"] {
+			t.Errorf("attachment checks = %v, want the re-attaching start's", checks)
+		}
+		for _, f := range e.load(key).Facts {
+			want := 1
+			if f.SpanID[7] == 5 {
+				want = 2
+			}
+			if f.AssembledIn != want {
+				t.Errorf("record %d assembled in %d, want %d", f.SpanID[7], f.AssembledIn, want)
+			}
+		}
+	})
 }
 
 // A failed publish releases the trace to be retried a second later,
 // marking nothing.
 func TestPublishFailureRetries(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.bus.fail = true
-	out := e.tickOne()
-	if !out.Deferred || out.Marked || out.Published != 0 {
-		t.Fatalf("outcome = %+v", out)
-	}
-	if _, owner, at, _ := e.traceState(key); owner != nil || !at.Equal(e.clock.Now().Add(RetryDelayMin)) {
-		t.Errorf("released to %v (owner %v), want a second later", at, owner)
-	}
-	e.bus.fail = false
-	if out := e.tick(); len(out) != 0 {
-		t.Fatalf("retried before its delay: %v", out)
-	}
-	e.clock.Advance(RetryDelayMin)
-	if out := e.tickOne(); !out.Marked || out.Published != 4 {
-		t.Fatalf("the retry: %+v", out)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.bus.fail = true
+		out := e.tickOne()
+		if !out.Deferred || out.Marked || out.Published != 0 {
+			t.Fatalf("outcome = %+v", out)
+		}
+		if _, owner, at, _ := e.traceState(key); owner != nil || !at.Equal(e.clock.Now().Add(RetryDelayMin)) {
+			t.Errorf("released to %v (owner %v), want a second later", at, owner)
+		}
+		e.bus.fail = false
+		if out := e.tick(); len(out) != 0 {
+			t.Fatalf("retried before its delay: %v", out)
+		}
+		e.clock.Advance(RetryDelayMin)
+		if out := e.tickOne(); !out.Marked || out.Published != 4 {
+			t.Fatalf("the retry: %+v", out)
+		}
+	})
 }
 
 // A trace that keeps failing to publish is retried after a delay that
 // doubles from RetryDelayMin up to RetryDelayMax, and starts again from
 // the minimum once it is published.
 func TestPublishFailureBacksOff(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.bus.fail = true
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, RetryDelayMax, RetryDelayMax}
-	for i, delay := range want {
-		if out := e.tickOne(); !out.Deferred || out.Marked {
-			t.Fatalf("failure %d: %+v", i+1, out)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.bus.fail = true
+		want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, RetryDelayMax, RetryDelayMax}
+		for i, delay := range want {
+			if out := e.tickOne(); !out.Deferred || out.Marked {
+				t.Fatalf("failure %d: %+v", i+1, out)
+			}
+			if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(delay)) {
+				t.Fatalf("failure %d released to %v, want %v later", i+1, at.Sub(e.clock.Now()), delay)
+			}
+			e.clock.Advance(delay)
 		}
-		if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(delay)) {
-			t.Fatalf("failure %d released to %v, want %v later", i+1, at.Sub(e.clock.Now()), delay)
+		e.bus.fail = false
+		if out := e.tickOne(); !out.Marked {
+			t.Fatalf("after the outage: %+v", out)
 		}
-		e.clock.Advance(delay)
-	}
-	e.bus.fail = false
-	if out := e.tickOne(); !out.Marked {
-		t.Fatalf("after the outage: %+v", out)
-	}
-	if n := len(e.asm.failures); n != 0 {
-		t.Errorf("%d traces still counted as failing after the publish", n)
-	}
+		if n := len(e.asm.failures); n != 0 {
+			t.Errorf("%d traces still counted as failing after the publish", n)
+		}
+	})
 }
 
 // A lease renewal that errors (the run context cancelled under it, or
 // the database) releases the lease at once instead of leaving it to
 // lapse, so another process can take the trace.
 func TestRenewalErrorReleasesTheLease(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.store.failRenew = true
-	out := e.tickOne()
-	if !out.Deferred || out.Marked || out.Published != 0 {
-		t.Fatalf("outcome = %+v", out)
-	}
-	if pending, owner, at, _ := e.traceState(key); !pending || owner != nil || at.After(e.clock.Now()) {
-		t.Fatalf("after the failed renewal pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
-	}
-	if out := e.tickOne(); !out.Marked {
-		t.Fatalf("the next claim: %+v", out)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.store.failRenew = true
+		out := e.tickOne()
+		if !out.Deferred || out.Marked || out.Published != 0 {
+			t.Fatalf("outcome = %+v", out)
+		}
+		if pending, owner, at, _ := e.traceState(key); !pending || owner != nil || at.After(e.clock.Now()) {
+			t.Fatalf("after the failed renewal pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
+		}
+		if out := e.tickOne(); !out.Marked {
+			t.Fatalf("the next claim: %+v", out)
+		}
+	})
 }
 
 // The leases of a claim's traces still waiting their turn are kept
 // alive while an earlier, long assembly runs, so they are assembled in
 // the same round rather than lapsing.
 func TestWaitingLeasesInABatchAreRenewed(t *testing.T) {
-	e := newEnv(t, WithChunkSize(1))
-	first, second := e.key(), e.key()
-	e.agentRun(first)
-	e.agentRun(second)
-	e.clock.Advance(otlpstage.RootGrace)
-	// Each chunk takes half a lease: one trace's four chunks take twice
-	// the TTL, which a waiting lease would not survive unrenewed.
-	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
-	outs := e.tick()
-	if len(outs) != 2 {
-		t.Fatalf("claimed %d traces, want both", len(outs))
-	}
-	for _, out := range outs {
-		if !out.Marked || out.Published != 4 || out.LeaseLost {
-			t.Errorf("trace %x: %+v", out.Key.TraceID[:2], out)
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(1))
+		first, second := e.key(), e.key()
+		e.agentRun(first)
+		e.agentRun(second)
+		e.clock.Advance(otlpstage.RootGrace)
+		// Each chunk takes half a lease: one trace's four chunks take twice
+		// the TTL, which a waiting lease would not survive unrenewed.
+		e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+		outs := e.tick()
+		if len(outs) != 2 {
+			t.Fatalf("claimed %d traces, want both", len(outs))
 		}
-	}
-	waited := outs[1].Key
-	// Its own four chunk renewals, plus at least one while it waited.
-	if n := e.store.renewedFor[waited]; n < 5 {
-		t.Errorf("the waiting trace's lease was renewed %d times, want at least 5", n)
-	}
+		for _, out := range outs {
+			if !out.Marked || out.Published != 4 || out.LeaseLost {
+				t.Errorf("trace %x: %+v", out.Key.TraceID[:2], out)
+			}
+		}
+		waited := outs[1].Key
+		// Its own four chunk renewals, plus at least one while it waited.
+		if n := e.store.renewedFor[waited]; n < 5 {
+			t.Errorf("the waiting trace's lease was renewed %d times, want at least 5", n)
+		}
+	})
 }
 
 // A waiting trace whose keep-alive renewal errors is released at once,
 // due now, rather than left to lapse; the next claim assembles it.
 func TestWaitingRenewalErrorReleases(t *testing.T) {
-	e := newEnv(t, WithChunkSize(1))
-	first, second := e.key(), e.key()
-	e.agentRun(first)
-	e.agentRun(second)
-	e.clock.Advance(otlpstage.RootGrace)
-	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
-	e.store.failWaiting = true
-	outs := e.tick()
-	if len(outs) != 2 || !outs[0].Marked || !outs[1].LeaseLost || outs[1].Published != 0 {
-		t.Fatalf("outcomes = %+v", outs)
-	}
-	waited := outs[1].Key
-	if pending, owner, at, _ := e.traceState(waited); !pending || owner != nil || at.After(e.clock.Now()) {
-		t.Fatalf("the waiting trace: pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
-	}
-	e.bus.after = nil
-	if out := e.tickOne(); out.Key != waited || !out.Marked {
-		t.Fatalf("the next claim: %+v", out)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(1))
+		first, second := e.key(), e.key()
+		e.agentRun(first)
+		e.agentRun(second)
+		e.clock.Advance(otlpstage.RootGrace)
+		e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+		e.store.failWaiting = true
+		outs := e.tick()
+		if len(outs) != 2 || !outs[0].Marked || !outs[1].LeaseLost || outs[1].Published != 0 {
+			t.Fatalf("outcomes = %+v", outs)
+		}
+		waited := outs[1].Key
+		if pending, owner, at, _ := e.traceState(waited); !pending || owner != nil || at.After(e.clock.Now()) {
+			t.Fatalf("the waiting trace: pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
+		}
+		e.bus.after = nil
+		if out := e.tickOne(); out.Key != waited || !out.Marked {
+			t.Fatalf("the next claim: %+v", out)
+		}
+	})
 }
 
 // A long chunk renews its lease after any publish slice that ends a
 // quarter of the TTL or more after the last renewal, so a slow bus never
 // lets the lease lapse inside one chunk.
 func TestLongChunkRenewsByTime(t *testing.T) {
-	e := newEnv(t, WithChunkSize(ChunkSize), WithPublishSlice(1))
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	// Each publish takes half a lease: the trace's four events take
-	// twice the TTL, all inside one chunk.
-	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
-	out := e.tickOne()
-	if !out.Marked || out.Chunks != 1 || out.Renewals != 3 || out.LeaseLost {
-		t.Fatalf("outcome = %+v, want one chunk renewed after each of its first three slices", out)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db, WithChunkSize(ChunkSize), WithPublishSlice(1))
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		// Each publish takes half a lease: the trace's four events take
+		// twice the TTL, all inside one chunk.
+		e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+		out := e.tickOne()
+		if !out.Marked || out.Chunks != 1 || out.Renewals != 3 || out.LeaseLost {
+			t.Fatalf("outcome = %+v, want one chunk renewed after each of its first three slices", out)
+		}
+	})
 }
 
 // A trace's failure count is dropped when it comes back not ready or
 // loses its lease, so a later failure starts the backoff again.
 func TestFailureCountDroppedWhenNotReadyOrLost(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.asm.failures[key] = 4
-	// Due now, as a retry would make it, though still inside its grace.
-	if _, err := e.pool.Exec(context.Background(), `UPDATE otlp_traces SET resolve_at = $3 WHERE token_key = $1 AND trace_id = $2`,
-		key.TokenKey, key.TraceID[:], e.clock.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if out := e.tickOne(); !out.Deferred || out.Marked {
-		t.Fatalf("inside the grace: %+v", out)
-	}
-	if _, counted := e.asm.failures[key]; counted {
-		t.Error("a trace that came back not ready keeps its failure count")
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.asm.failures[key] = 4
+		// Due now, as a retry would make it, though still inside its grace.
+		if _, err := e.db.ExecContext(context.Background(), `UPDATE otlp_traces SET resolve_at = $3 WHERE token_key = $1 AND trace_id = $2`,
+			key.TokenKey, key.TraceID[:], e.clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if out := e.tickOne(); !out.Deferred || out.Marked {
+			t.Fatalf("inside the grace: %+v", out)
+		}
+		if _, counted := e.asm.failures[key]; counted {
+			t.Error("a trace that came back not ready keeps its failure count")
+		}
 
-	e.clock.Advance(otlpstage.RootGrace)
-	e.asm.failures[key] = 4
-	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL + time.Second) }
-	if out := e.tickOne(); !out.LeaseLost {
-		t.Fatalf("lease lapse: %+v", out)
-	}
-	if _, counted := e.asm.failures[key]; counted {
-		t.Error("a trace that lost its lease keeps its failure count")
-	}
+		e.clock.Advance(otlpstage.RootGrace)
+		e.asm.failures[key] = 4
+		e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL + time.Second) }
+		if out := e.tickOne(); !out.LeaseLost {
+			t.Fatalf("lease lapse: %+v", out)
+		}
+		if _, counted := e.asm.failures[key]; counted {
+			t.Error("a trace that lost its lease keeps its failure count")
+		}
+	})
 }
 
 // A record staged between the claim and the load moves the trace's
 // timer earlier; releasing a trace that is not ready keeps that time,
 // since the release passes the claim's gen and sees it moved.
 func TestNotReadyReleaseKeepsARacingRecordsTime(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	// A Google ADK trace missing its log record: due 30 s after its root.
-	e.stage(key, "google_adk",
-		e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
-		e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
-			map[string]any{"gen_ai.usage.input_tokens": 5}))
-	e.clock.Advance(otlpstage.RootGrace)
-	e.store.beforeLoad = func(k otlpstage.TraceKey) {
-		// The racing record: staged after the claim read the trace,
-		// it makes the trace due RootGrace from now.
-		e.stage(k, "google_adk", e.span(3, 1, "gcp.vertex.agent", "execute_tool", "a", 2*time.Second, time.Second,
-			map[string]any{"gen_ai.tool.name": "t"}))
-	}
-	if out := e.tickOne(); !out.Deferred || out.Marked {
-		t.Fatalf("outcome = %+v", out)
-	}
-	if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(otlpstage.RootGrace)) {
-		t.Errorf("released to %v, want the racing record's %v, not the log wait",
-			at, e.clock.Now().Add(otlpstage.RootGrace))
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		// A Google ADK trace missing its log record: due 30 s after its root.
+		e.stage(key, "google_adk",
+			e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+			e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
+				map[string]any{"gen_ai.usage.input_tokens": 5}))
+		e.clock.Advance(otlpstage.RootGrace)
+		e.store.beforeLoad = func(k otlpstage.TraceKey) {
+			// The racing record: staged after the claim read the trace,
+			// it makes the trace due RootGrace from now.
+			e.stage(k, "google_adk", e.span(3, 1, "gcp.vertex.agent", "execute_tool", "a", 2*time.Second, time.Second,
+				map[string]any{"gen_ai.tool.name": "t"}))
+		}
+		if out := e.tickOne(); !out.Deferred || out.Marked {
+			t.Fatalf("outcome = %+v", out)
+		}
+		if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(otlpstage.RootGrace)) {
+			t.Errorf("released to %v, want the racing record's %v, not the log wait",
+				at, e.clock.Now().Add(otlpstage.RootGrace))
+		}
+	})
 }
 
 // A trace made due early (by a retry) is not judged quiet before its
 // quiet timeout: it is released to its own timer.
 func TestEarlyClaimWaitsForItsTimer(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.stage(key, "pydantic_ai", e.span(2, 1, "pydantic-ai", "chat", "", 5*time.Second, time.Second,
-		map[string]any{"gen_ai.usage.input_tokens": 1}))
-	last := e.clock.Now()
-	if _, err := e.pool.Exec(context.Background(), `UPDATE otlp_traces SET resolve_at = $3 WHERE token_key = $1 AND trace_id = $2`,
-		key.TokenKey, key.TraceID[:], e.clock.Now()); err != nil {
-		t.Fatal(err)
-	}
-	out := e.tickOne()
-	if !out.Deferred || out.Marked {
-		t.Fatalf("a rootless trace was assembled before its quiet timeout: %+v", out)
-	}
-	if _, _, at, _ := e.traceState(key); !at.Equal(last.Add(otlpstage.QuietTimeout)) {
-		t.Errorf("released to %v, want its quiet timeout %v", at, last.Add(otlpstage.QuietTimeout))
-	}
-	e.clock.Advance(otlpstage.QuietTimeout)
-	if out := e.tickOne(); out.Reason != otlpstage.ReasonQuiet || !out.Marked {
-		t.Fatalf("at the quiet timeout: %+v", out)
-	}
-	if evs := e.bus.snapshot(); len(evs) != 3 || evs[0].payload["context"].(map[string]any)["otel_assembly"] != "quiet" {
-		t.Errorf("quiet assembly published %v", types(evs))
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.stage(key, "pydantic_ai", e.span(2, 1, "pydantic-ai", "chat", "", 5*time.Second, time.Second,
+			map[string]any{"gen_ai.usage.input_tokens": 1}))
+		last := e.clock.Now()
+		if _, err := e.db.ExecContext(context.Background(), `UPDATE otlp_traces SET resolve_at = $3 WHERE token_key = $1 AND trace_id = $2`,
+			key.TokenKey, key.TraceID[:], e.clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+		out := e.tickOne()
+		if !out.Deferred || out.Marked {
+			t.Fatalf("a rootless trace was assembled before its quiet timeout: %+v", out)
+		}
+		if _, _, at, _ := e.traceState(key); !at.Equal(last.Add(otlpstage.QuietTimeout)) {
+			t.Errorf("released to %v, want its quiet timeout %v", at, last.Add(otlpstage.QuietTimeout))
+		}
+		e.clock.Advance(otlpstage.QuietTimeout)
+		if out := e.tickOne(); out.Reason != otlpstage.ReasonQuiet || !out.Marked {
+			t.Fatalf("at the quiet timeout: %+v", out)
+		}
+		if evs := e.bus.snapshot(); len(evs) != 3 || evs[0].payload["context"].(map[string]any)["otel_assembly"] != "quiet" {
+			t.Errorf("quiet assembly published %v", types(evs))
+		}
+	})
 }
 
 // The sweeps delete a trace past its retention.
 func TestSweepDeletesExpiredTraces(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	e.agentRun(key)
-	e.clock.Advance(otlpstage.RootGrace)
-	if out := e.tickOne(); !out.Marked {
-		t.Fatalf("outcome = %+v", out)
-	}
-	e.clock.Advance(otlpstage.CompleteRetention + time.Second)
-	e.asm.Sweep(context.Background())
-	var n int
-	if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM otlp_traces WHERE token_key = $1`, e.token).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Errorf("%d traces left after the sweep", n)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		e.agentRun(key)
+		e.clock.Advance(otlpstage.RootGrace)
+		if out := e.tickOne(); !out.Marked {
+			t.Fatalf("outcome = %+v", out)
+		}
+		e.clock.Advance(otlpstage.CompleteRetention + time.Second)
+		e.asm.Sweep(context.Background())
+		var n int
+		if err := e.db.Reader().QueryRowContext(context.Background(), `SELECT count(*) FROM otlp_traces WHERE token_key = $1`, e.token).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%d traces left after the sweep", n)
+		}
+	})
 }
 
 // contentRows is how many content rows a trace has staged.
 func (e *env) contentRows(key otlpstage.TraceKey) int {
 	e.t.Helper()
 	var n int
-	if err := e.pool.QueryRow(context.Background(),
+	if err := e.db.Reader().QueryRowContext(context.Background(),
 		`SELECT count(*) FROM otlp_span_content WHERE token_key = $1 AND trace_id = $2`,
 		key.TokenKey, key.TraceID[:]).Scan(&n); err != nil {
 		e.t.Fatal(err)
@@ -1137,63 +1154,65 @@ func (e *env) contentRows(key otlpstage.TraceKey) int {
 // message its parent sent it. The trace's content rows are deleted once
 // it is marked.
 func TestAssemblesStagedContent(t *testing.T) {
-	e := newEnv(t)
-	key := e.key()
-	call := func(id byte, startAgo time.Duration) otlpstage.Record {
-		return e.span(id, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", startAgo, time.Second,
-			map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1})
-	}
-	logOf := func(id byte, text string) otlpstage.Record {
-		r := e.span(id, 0, "gcp.vertex.agent", "", "", time.Second, 0, nil)
-		r.Kind, r.Name, r.Op = otlpstage.KindLog, genai.ADKDetailsEvent, ""
-		r.Meta = json.RawMessage(`{"has_messages":true}`)
-		return withContent(r, `{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"`+text+`"}]}]}`)
-	}
-	// The first call's log record arrives before any span, the second's
-	// after its span.
-	e.stage(key, "google_adk", logOf(2, "asked before"))
-	e.stage(key, "google_adk",
-		e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
-		call(2, 9*time.Second), call(3, 5*time.Second),
-		e.span(4, 1, "gcp.vertex.agent", "execute_tool", "a", 7*time.Second, time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
-		withContent(e.span(5, 4, "gcp.vertex.agent", "invoke_agent", "child", 7*time.Second, time.Second/2, nil),
-			`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"what the parent asked"}]}]}`),
-	)
-	e.stage(key, "google_adk", logOf(3, "asked after"))
-	if n := e.contentRows(key); n != 3 {
-		t.Fatalf("%d content rows staged, want 3", n)
-	}
-	e.clock.Advance(otlpstage.RootGrace)
-	if out := e.tickOne(); !out.Marked || out.Reason != otlpstage.ReasonComplete {
-		t.Fatalf("outcome = %+v", out)
-	}
-	var calls []string
-	var incoming any
-	for _, ev := range e.bus.snapshot() {
-		p := ev.payload
-		switch p["event_type"] {
-		case "post_call":
-			c, _ := p["content"].(map[string]any)
-			if p["has_content"] != true || c["provider"] != genai.ContentProvider {
-				t.Errorf("post_call content = %v", p["content"])
-				continue
-			}
-			calls = append(calls, fmtJSON(c["messages"]))
-		case "session_start":
-			if p["agent_role"] == "child" {
-				incoming = p["incoming_message"]
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		e := newEnv(t, db)
+		key := e.key()
+		call := func(id byte, startAgo time.Duration) otlpstage.Record {
+			return e.span(id, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", startAgo, time.Second,
+				map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1})
+		}
+		logOf := func(id byte, text string) otlpstage.Record {
+			r := e.span(id, 0, "gcp.vertex.agent", "", "", time.Second, 0, nil)
+			r.Kind, r.Name, r.Op = otlpstage.KindLog, genai.ADKDetailsEvent, ""
+			r.Meta = json.RawMessage(`{"has_messages":true}`)
+			return withContent(r, `{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"`+text+`"}]}]}`)
+		}
+		// The first call's log record arrives before any span, the second's
+		// after its span.
+		e.stage(key, "google_adk", logOf(2, "asked before"))
+		e.stage(key, "google_adk",
+			e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+			call(2, 9*time.Second), call(3, 5*time.Second),
+			e.span(4, 1, "gcp.vertex.agent", "execute_tool", "a", 7*time.Second, time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
+			withContent(e.span(5, 4, "gcp.vertex.agent", "invoke_agent", "child", 7*time.Second, time.Second/2, nil),
+				`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"what the parent asked"}]}]}`),
+		)
+		e.stage(key, "google_adk", logOf(3, "asked after"))
+		if n := e.contentRows(key); n != 3 {
+			t.Fatalf("%d content rows staged, want 3", n)
+		}
+		e.clock.Advance(otlpstage.RootGrace)
+		if out := e.tickOne(); !out.Marked || out.Reason != otlpstage.ReasonComplete {
+			t.Fatalf("outcome = %+v", out)
+		}
+		var calls []string
+		var incoming any
+		for _, ev := range e.bus.snapshot() {
+			p := ev.payload
+			switch p["event_type"] {
+			case "post_call":
+				c, _ := p["content"].(map[string]any)
+				if p["has_content"] != true || c["provider"] != genai.ContentProvider {
+					t.Errorf("post_call content = %v", p["content"])
+					continue
+				}
+				calls = append(calls, fmtJSON(c["messages"]))
+			case "session_start":
+				if p["agent_role"] == "child" {
+					incoming = p["incoming_message"]
+				}
 			}
 		}
-	}
-	if len(calls) != 2 || !strings.Contains(calls[0], "asked before") || !strings.Contains(calls[1], "asked after") {
-		t.Errorf("post_call messages = %v", calls)
-	}
-	if m, _ := incoming.(map[string]any); !strings.Contains(fmtJSON(m["body"]), "what the parent asked") {
-		t.Errorf("child incoming_message = %v", incoming)
-	}
-	if n := e.contentRows(key); n != 0 {
-		t.Errorf("%d content rows left after the mark", n)
-	}
+		if len(calls) != 2 || !strings.Contains(calls[0], "asked before") || !strings.Contains(calls[1], "asked after") {
+			t.Errorf("post_call messages = %v", calls)
+		}
+		if m, _ := incoming.(map[string]any); !strings.Contains(fmtJSON(m["body"]), "what the parent asked") {
+			t.Errorf("child incoming_message = %v", incoming)
+		}
+		if n := e.contentRows(key); n != 0 {
+			t.Errorf("%d content rows left after the mark", n)
+		}
+	})
 }
 
 func fmtJSON(v any) string {

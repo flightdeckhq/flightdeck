@@ -1,19 +1,20 @@
-// Package pgtext makes text and JSON Postgres can store, and describes a
-// database error without its data. Postgres text cannot hold U+0000, and
-// jsonb refuses the \u0000 escape and an unpaired UTF-16 surrogate escape
-// (\ud800 alone), all of which are valid JSON and valid Go strings. One
-// such character in a staged record or an event would fail the write of
-// the whole request or event on every retry, so ingestion replaces each
-// with U+FFFD, the replacement character, before anything is staged or
-// published.
+// Package pgtext makes text and JSON the database can store, and
+// describes a database error without its data. Postgres text cannot
+// hold U+0000, and jsonb refuses the \u0000 escape and an unpaired
+// UTF-16 surrogate escape (\ud800 alone), all of which are valid JSON
+// and valid Go strings; SQLite stores the bytes but its text functions
+// and its JSON validity check stop at a U+0000. One such character in
+// a staged record or an event would fail the write of the whole request
+// or event on every retry, or store a truncated value, so ingestion
+// replaces each with U+FFFD, the replacement character, before anything
+// is staged or published, on both backends.
 package pgtext
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // replacement is U+FFFD as a JSON escape: the same six bytes as the
@@ -111,28 +112,9 @@ func hex4(raw []byte, i int) (rune, bool) {
 }
 
 // ErrorClass describes a database error for a log line without any of
-// the data it was about: a Postgres error by its SQLSTATE code and the
-// table and constraint it names, never its message, detail or context
-// (which quote the rejected value), after the text of the layers that
-// wrapped it; any other error (a timeout, a lost connection), which
-// carries no data, as it is.
-// The no-data guarantee covers Postgres errors only: an error of any
-// other kind is logged as its own text.
+// the data it was about: storage.ErrorClass, kept here so the ingestion
+// packages that log a database failure name one package for both the
+// text they stage and the errors they report.
 func ErrorClass(err error) string {
-	if err == nil {
-		return ""
-	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return err.Error()
-	}
-	prefix := strings.TrimSuffix(err.Error(), pgErr.Error())
-	class := prefix + "postgres error SQLSTATE " + pgErr.Code
-	if pgErr.TableName != "" {
-		class += " table " + pgErr.TableName
-	}
-	if pgErr.ConstraintName != "" {
-		class += " constraint " + pgErr.ConstraintName
-	}
-	return class
+	return storage.ErrorClass(err)
 }

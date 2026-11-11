@@ -115,12 +115,12 @@ test-integration: ## Run integration tests (requires running stack)
 	$(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
 # test-go-db runs the Go tests that need Postgres (the ones gated on
-# TEST_POSTGRES_URL / TEST_ASSEMBLER_POSTGRES_URL) against the running
-# dev stack's Postgres, each package on a fresh database of its own
-# that the script creates, migrates and drops. It never touches the
-# `flightdeck` database. It also runs the Go tests gated on
-# TEST_NATS_URL against the stack's NATS, on streams of their own. CI
-# runs it in the integration job.
+# TEST_POSTGRES_URL) against the running dev stack's Postgres, each
+# package on a fresh database of its own that the script creates,
+# migrates and drops, and the storage-converted ones on SQLite as well.
+# It never touches the `flightdeck` database. It also runs the Go tests
+# gated on TEST_NATS_URL against the stack's NATS, on streams of their
+# own. CI runs it in the integration job.
 test-go-db: ## Run the Go tests that need Postgres or NATS (requires running stack)
 	./scripts/go-db-tests.sh
 

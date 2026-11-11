@@ -462,8 +462,11 @@ func decisionFromEntry(entryKind string, enforcement *string) string {
 	return "block"
 }
 
-// ListMCPPolicyAuditLog paginates audit-log rows for a policy.
-// eventType filter is applied when non-empty.
+// ListMCPPolicyAuditLog paginates audit-log rows for a policy, newest
+// first. eventType filter is applied when non-empty. Rows that share an
+// occurred_at (consecutive changes within one SQLite millisecond, the
+// rows of one change on either engine) keep a fixed order through the
+// dialect's insertion-order term, since the row id is a random UUID.
 func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, eventType string, from, to *time.Time, limit, offset int) ([]MCPPolicyAuditLog, error) {
 	conditions := []string{}
 	args := []any{}
@@ -499,9 +502,9 @@ func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, ev
 		  FROM mcp_policy_audit_log a
 		  LEFT JOIN mcp_policies p ON p.id = a.policy_id
 		 WHERE %s
-		 ORDER BY a.occurred_at DESC, %s
+		 ORDER BY a.occurred_at DESC, %s DESC
 		 LIMIT $%d OFFSET $%d
-	`, strings.Join(conditions, " AND "), s.q.auditLogTieBreak(), argIdx, argIdx+1)
+	`, strings.Join(conditions, " AND "), s.d.InsertionOrder("a", "id"), argIdx, argIdx+1)
 
 	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {

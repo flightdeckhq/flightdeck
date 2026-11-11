@@ -5263,8 +5263,9 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   order a finer clock would have given); on Postgres, which records
   no insertion order, the id column, which keeps the order total and
   repeatable. A random id alone is never the tie-break of such a
-  query on SQLite. The token, token-policy and custom-directive lists
-  and the pending-directive pick are ordered this way. Where either
+  query on SQLite. The token, token-policy and custom-directive lists,
+  the MCP policy audit log and the pending-directive pick are ordered
+  this way. Where either
   tied row is a correct answer (the latest
   session of an agent among two started in one millisecond, search
   results of equal rank, the entries of one MCP policy, which one

@@ -44,6 +44,16 @@ func TestEnsure_CreatesTheLayoutPrivately(t *testing.T) {
 	if l.Secrets != filepath.Join(l.Root, "secrets.json") {
 		t.Fatalf("secrets path %q", l.Secrets)
 	}
+	if l.Database != filepath.Join(l.Root, "flightdeck.db") || l.Lock != filepath.Join(l.Root, "flightdeck.lock") {
+		t.Fatalf("database %q, lock %q", l.Database, l.Lock)
+	}
+	// Ensure creates neither: the database is created when it is first
+	// opened, the lock file when the lock is taken.
+	for _, p := range []string{l.Database, l.Lock} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("Ensure created %s (stat: %v)", p, err)
+		}
+	}
 	// A second Ensure on the same directory is a no-op.
 	again, err := Ensure(root)
 	if err != nil {

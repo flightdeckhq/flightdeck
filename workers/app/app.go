@@ -99,6 +99,17 @@ type Deps struct {
 	NATS *nats.Conn
 }
 
+// DatabaseURL returns the URL the workers open their database with: a
+// Postgres URL gains the worker's lock timeout as a connection runtime
+// parameter (see writer.LockTimeout for why a statement must not wait
+// for a row lock past the lane's processing deadline); a SQLite URL is
+// returned unchanged, and a lock_timeout the operator put in the URL is
+// kept. A caller that shares one handle between this service and
+// others opens it with this URL, so the lanes keep the bound.
+func DatabaseURL(rawURL string) (string, error) {
+	return writer.DatabaseURL(rawURL)
+}
+
 // Migrate applies every pending embedded migration of the backend
 // Config.PostgresURL names. The migrator takes the URL as configured,
 // without the lock timeout Run's connections carry: a migration that
@@ -127,9 +138,9 @@ func Migrate(cfg Config, _ Deps) error {
 func Run(ctx context.Context, cfg Config, deps Deps) error {
 	db := deps.DB
 	if db == nil {
-		// The worker's Postgres connections carry its lock timeout
-		// (writer.DatabaseURL); a SQLite URL is unchanged.
-		dbURL, err := writer.DatabaseURL(cfg.PostgresURL)
+		// The worker's Postgres connections carry its lock timeout; a
+		// SQLite URL is unchanged.
+		dbURL, err := DatabaseURL(cfg.PostgresURL)
 		if err != nil {
 			return fmt.Errorf("database URL: %w", err)
 		}
@@ -144,7 +155,12 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	bus := deps.Bus
 	if bus == nil {
-		bus = storage.NewBus(db)
+		// Closed after the loops below have stopped and before the
+		// database it publishes through (defers run last in, first
+		// out).
+		owned := storage.NewBus(db)
+		defer func() { _ = owned.Close() }()
+		bus = owned
 	}
 	nc := deps.NATS
 	if nc == nil {

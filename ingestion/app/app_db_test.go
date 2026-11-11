@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -92,6 +93,63 @@ func TestRun_StopsOnCancelAndLeavesInjectedConnectionsOpen(t *testing.T) {
 		}
 		if _, err := http.Get(fmt.Sprintf("http://%s/health", cfg.ListenAddr)); err == nil {
 			t.Fatal("the listener is still serving after Run returned")
+		}
+	})
+}
+
+// The flightdeck binary passes the one bus its services share; the app
+// subscribes on it and leaves it open. A bus the app created itself is
+// closed when Run returns.
+func TestRun_LeavesAnInjectedBusOpenAndClosesItsOwn(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		nc := embeddedNATS(t)
+		run := func(deps Deps) *App {
+			t.Helper()
+			cfg := testConfig()
+			cfg.ListenAddr = freeAddr(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			a, err := New(ctx, cfg, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- a.Run(ctx) }()
+			waitHealthy(t, cfg.ListenAddr)
+			cancel()
+			if err := awaitRun(t, done); err != nil {
+				t.Fatal(err)
+			}
+			return a
+		}
+
+		injected := storage.NewBus(db)
+		t.Cleanup(func() { _ = injected.Close() })
+		a := run(Deps{DB: db, Bus: injected, NATS: nc})
+		if a.ownsBus || a.bus != injected {
+			t.Fatalf("ownsBus=%v: an injected bus is used as is and never owned", a.ownsBus)
+		}
+		if err := injected.Publish(context.Background(), "storagetest_after_run", "x"); err != nil {
+			t.Fatalf("the injected bus was closed by Run: %v", err)
+		}
+
+		b, err := New(context.Background(), testConfig(), Deps{DB: db, NATS: nc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		own := b.bus
+		if !b.ownsBus || own == nil {
+			t.Fatal("New must create and own a bus when none is injected")
+		}
+		b.closeOwned()
+		if b.bus != nil || b.ownsBus {
+			t.Fatal("closeOwned must close and forget the bus New created")
+		}
+		if err := own.Publish(context.Background(), "storagetest_after_run", "x"); !errors.Is(err, storage.ErrBusClosed) {
+			t.Fatalf("publish on the bus New created: %v, want ErrBusClosed", err)
+		}
+		if err := db.Reader().PingContext(context.Background()); err != nil {
+			t.Fatalf("closeOwned closed the injected database: %v", err)
 		}
 	})
 }

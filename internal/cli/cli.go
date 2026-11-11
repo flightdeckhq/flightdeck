@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // DefaultListen is the listener's default address. It is a loopback
@@ -24,9 +25,12 @@ const DefaultListen = "127.0.0.1:4000"
 type Options struct {
 	// Listen is the address of the one HTTP listener.
 	Listen string
-	// DatabaseURL is the Postgres DSN; required.
+	// DatabaseURL names the database: postgres://… (or postgresql://…)
+	// or sqlite://<path>. Empty means the SQLite file in the data dir,
+	// which the caller resolves once the data dir is known.
 	DatabaseURL string
-	// DataDir holds the NATS store, the secrets file and the TLS cache.
+	// DataDir holds the SQLite database, the NATS store, the secrets
+	// file and the TLS cache.
 	DataDir string
 	// NatsURL, when set, names an external NATS server; empty runs the
 	// embedded one.
@@ -54,9 +58,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	fs.StringVar(&o.Listen, "listen", envOr(env, "FLIGHTDECK_LISTEN", DefaultListen),
 		"address to serve the dashboard, /api and /ingest on; a loopback address enables the development token (env FLIGHTDECK_LISTEN)")
 	fs.StringVar(&o.DatabaseURL, "database-url", env("FLIGHTDECK_DATABASE_URL"),
-		"Postgres URL, postgres://user:password@host:5432/db?sslmode=disable (env FLIGHTDECK_DATABASE_URL)")
+		"database to use instead of the SQLite file in the data dir: a Postgres URL, postgres://user:password@host:5432/db?sslmode=disable, "+
+			"or another SQLite file, sqlite:///path/to/flightdeck.db (env FLIGHTDECK_DATABASE_URL)")
 	fs.StringVar(&o.DataDir, "data-dir", envOr(env, "FLIGHTDECK_DATA_DIR", datadir.Default()),
-		"directory for the message-bus store, the secrets file and the TLS cache (env FLIGHTDECK_DATA_DIR)")
+		"directory for the database ("+datadir.DatabaseFile+"), the message-bus store, the secrets file and the TLS cache (env FLIGHTDECK_DATA_DIR)")
 	fs.StringVar(&o.NatsURL, "nats-url", env("FLIGHTDECK_NATS_URL"),
 		"external NATS server URL; unset runs an embedded server with no port (env FLIGHTDECK_NATS_URL)")
 	fs.StringVar(&o.Domain, "domain", env("FLIGHTDECK_DOMAIN"),
@@ -69,7 +74,8 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		"start the services' metrics listeners on ports 9102 (workers), 9103 (ingestion) and 9104 (query API) (env FLIGHTDECK_METRICS)")
 	fs.BoolVar(&o.Version, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n\nRuns the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n\nFlags:\n")
+		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n\nRuns the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
+			"With no flags it serves on %s and keeps its data in a SQLite database under the data dir.\n\nFlags:\n", DefaultListen)
 		fs.PrintDefaults()
 	}
 
@@ -83,15 +89,43 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	if o.Version {
 		return o, nil
 	}
-	if strings.TrimSpace(o.DatabaseURL) == "" {
-		return Options{}, errors.New("no database configured: pass --database-url or set FLIGHTDECK_DATABASE_URL to a Postgres URL " +
-			"(a bundled SQLite database is coming; until then Flightdeck needs Postgres, for example the compose stack's " +
-			"postgres://flightdeck:flightdeck_dev@localhost:5432/flightdeck?sslmode=disable)")
+	o.DatabaseURL = strings.TrimSpace(o.DatabaseURL)
+	if err := checkDatabaseURL(o.DatabaseURL); err != nil {
+		return Options{}, err
 	}
 	if strings.TrimSpace(o.Listen) == "" {
 		return Options{}, errors.New("--listen must not be empty")
 	}
 	return o, nil
+}
+
+// checkDatabaseURL accepts an empty URL (the SQLite file in the data
+// dir), a Postgres URL and a sqlite:// URL that names a file, and
+// refuses anything else with the accepted forms. The message carries
+// the URL's scheme only: the rest may hold a password.
+func checkDatabaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	backend, err := storage.BackendOf(raw)
+	if err != nil {
+		scheme, _, found := strings.Cut(raw, "://")
+		if !found || scheme == "" {
+			scheme = "a value with no scheme"
+		} else {
+			scheme += "://"
+		}
+		return fmt.Errorf("--database-url (FLIGHTDECK_DATABASE_URL) got %s; it takes a Postgres URL "+
+			"(postgres://user:password@host:5432/db or postgresql://…) or a SQLite file (sqlite:///path/to/flightdeck.db). "+
+			"Leave it out to keep the data in %s under the data dir", scheme, datadir.DatabaseFile)
+	}
+	if backend == storage.SQLite {
+		if path := storage.SQLitePath(raw); path == "" || strings.HasPrefix(path, ":memory:") {
+			return errors.New("--database-url (FLIGHTDECK_DATABASE_URL) names no SQLite file: " +
+				"give a path after the scheme, for example sqlite:///var/lib/flightdeck/flightdeck.db")
+		}
+	}
+	return nil
 }
 
 func envOr(env func(string) string, key, def string) string {

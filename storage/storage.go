@@ -187,7 +187,7 @@ func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, e
 // BackendOf reports which backend a database URL names.
 func BackendOf(rawURL string) (Backend, error) {
 	switch {
-	case strings.HasPrefix(rawURL, "sqlite://"):
+	case strings.HasPrefix(rawURL, sqliteScheme):
 		return SQLite, nil
 	case strings.HasPrefix(rawURL, "postgres://"), strings.HasPrefix(rawURL, "postgresql://"):
 		return Postgres, nil
@@ -195,11 +195,27 @@ func BackendOf(rawURL string) (Backend, error) {
 	return "", ErrUnsupportedURL
 }
 
+// sqliteScheme is the prefix of every SQLite database URL.
+const sqliteScheme = "sqlite://"
+
 // SQLitePath returns the file path of a sqlite:// URL: everything after
 // the scheme, verbatim ("sqlite:///var/lib/fd.db" is "/var/lib/fd.db",
 // "sqlite://fd.db" is the relative "fd.db").
 func SQLitePath(rawURL string) string {
-	return strings.TrimPrefix(rawURL, "sqlite://")
+	return strings.TrimPrefix(rawURL, sqliteScheme)
+}
+
+// SQLiteURL returns the database URL of the SQLite file at path, the
+// inverse of SQLitePath: SQLitePath(SQLiteURL(p)) is p for every p. The
+// path follows the scheme byte for byte; nothing in it is
+// percent-encoded, because nothing reads it back as a URL. A path with
+// spaces, "#", "?", "%" or a Windows drive letter therefore names the
+// same file here and in Open (which does the one encoding SQLite needs,
+// in sqliteFileURI). Building the URL through net/url instead would
+// escape those characters, and Open would then create a second,
+// empty database at the escaped path.
+func SQLiteURL(path string) string {
+	return sqliteScheme + path
 }
 
 func openPostgres(rawURL string) (*DB, error) {

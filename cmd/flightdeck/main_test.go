@@ -54,9 +54,9 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 		t.Setenv(k, "inherited")
 	}
 	secrets := &datadir.Secrets{JWTSecret: "abc"}
-	opts := cli.Options{DatabaseURL: "postgres://x/db"}
+	opts := cli.Options{}
 
-	if err := setServiceEnv(opts, true, secrets); err != nil {
+	if err := setServiceEnv(opts, "postgres://x/db", true, secrets); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
@@ -75,7 +75,7 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 
 	opts.NatsURL = "nats://external:4222"
 	opts.Metrics = true
-	if err := setServiceEnv(opts, false, secrets); err != nil {
+	if err := setServiceEnv(opts, "sqlite:///data/flightdeck.db", false, secrets); err != nil {
 		t.Fatal(err)
 	}
 	if got := os.Getenv("ENVIRONMENT"); got != "" {
@@ -86,6 +86,10 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 	}
 	if got := os.Getenv("FLIGHTDECK_NATS_URL"); got != "nats://external:4222" {
 		t.Errorf("FLIGHTDECK_NATS_URL = %q", got)
+	}
+	// The services' database variable carries the URL of either backend.
+	if got := os.Getenv("FLIGHTDECK_POSTGRES_URL"); got != "sqlite:///data/flightdeck.db" {
+		t.Errorf("FLIGHTDECK_POSTGRES_URL = %q", got)
 	}
 }
 
@@ -120,8 +124,11 @@ func TestRun_UsageErrorsExitTwo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = devnull.Close() }()
-	if code := run(nil, devnull, devnull); code != 2 {
-		t.Fatalf("no database: exit %d, want 2", code)
+	if code := run([]string{"--database-url", "mysql://u:p@h/db"}, devnull, devnull); code != 2 {
+		t.Fatalf("a database of no supported kind: exit %d, want 2", code)
+	}
+	if code := run([]string{"serve"}, devnull, devnull); code != 2 {
+		t.Fatalf("a stray argument: exit %d, want 2", code)
 	}
 	if code := run([]string{"--version"}, devnull, devnull); code != 0 {
 		t.Fatalf("--version: exit %d, want 0", code)

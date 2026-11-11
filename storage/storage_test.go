@@ -161,7 +161,10 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(root, dir, "fd.db")
-			url := "sqlite://" + path
+			url := storage.SQLiteURL(path)
+			if got := storage.SQLitePath(url); got != path {
+				t.Fatalf("SQLitePath(SQLiteURL(%q)) = %q", path, got)
+			}
 			ctx := context.Background()
 			// The migrator opens the same path through the same DSN.
 			if err := storage.Migrate(ctx, url); err != nil {
@@ -189,6 +192,31 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// SQLiteURL and SQLitePath are inverses for every path shape a data
+// directory can have, Windows drive paths included: the URL carries the
+// path verbatim, so no character is escaped on the way in or decoded on
+// the way out.
+func TestSQLiteURL_RoundTripsEveryPath(t *testing.T) {
+	for _, path := range []string{
+		"/var/lib/flightdeck/flightdeck.db",
+		"relative/flightdeck.db",
+		"/home/o m/My Documents/flightdeck.db",
+		"/data/a#b/x?y/50%/%41/flightdeck.db",
+		`C:\Users\omria\AppData\Local\flightdeck\flightdeck.db`,
+		`C:\Users\O'Neil & Sons #1\AppData\Local\flightdeck\flightdeck.db`,
+		"C:/Users/omria/AppData/Local/flightdeck/flightdeck.db",
+		"/tmp/ünïcödé/flightdeck.db",
+	} {
+		url := storage.SQLiteURL(path)
+		if got := storage.SQLitePath(url); got != path {
+			t.Errorf("SQLitePath(SQLiteURL(%q)) = %q", path, got)
+		}
+		if b, err := storage.BackendOf(url); err != nil || b != storage.SQLite {
+			t.Errorf("BackendOf(SQLiteURL(%q)) = %q, %v", path, b, err)
+		}
 	}
 }
 

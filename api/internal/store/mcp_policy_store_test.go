@@ -12,8 +12,11 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/storage"
 )
@@ -385,6 +388,68 @@ func TestListMCPPolicyAuditLog(t *testing.T) {
 		// Most recent first
 		if logs[0].EventType != "policy_updated" {
 			t.Errorf("first log event_type = %q, want policy_updated", logs[0].EventType)
+		}
+	})
+}
+
+// Audit-log rows that share an occurred_at still list in a fixed order.
+// On SQLite the timestamp has millisecond precision, so consecutive
+// changes can share it, and the row id is a random UUID: the list must
+// then follow insertion order, newest first. On Postgres rows of one
+// change share the transaction's timestamp, and two reads must agree.
+func TestListMCPPolicyAuditLog_SameInstantRowsKeepAStableOrder(t *testing.T) {
+	// sameInstantRows is enough rows that a random tie-break would
+	// misorder at least one pair on all but one run in 20! (about 4e-19).
+	const sameInstantRows = 20
+	eachStore(t, func(t *testing.T, store *Store) {
+		ctx := context.Background()
+		flavor := uniqueFlavor(t)
+		t.Cleanup(func() { cleanupMCPPolicyByFlavor(t, store, flavor) })
+
+		policy, err := store.CreateMCPPolicy(ctx, flavor,
+			MCPPolicyMutation{BlockOnUncertainty: false}, nil, nil)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		// One instant for every row, later than the create's own row.
+		instant := testNow().Add(time.Hour).UTC().Truncate(time.Millisecond)
+		want := make([]string, 0, sameInstantRows)
+		for i := 0; i < sameInstantRows; i++ {
+			payload := fmt.Sprintf(`{"n": %d}`, i)
+			if _, err := store.db.ExecContext(ctx, `
+				INSERT INTO mcp_policy_audit_log (policy_id, event_type, payload, occurred_at)
+				VALUES ($1, 'policy_updated', $2, $3)`,
+				policy.ID, payload, instant); err != nil {
+				t.Fatalf("insert audit row %d: %v", i, err)
+			}
+			want = append([]string{payload}, want...) // newest first
+		}
+
+		list := func() []string {
+			logs, err := store.ListMCPPolicyAuditLog(ctx, "flavor", flavor, "policy_updated", nil, nil, 50, 0)
+			if err != nil {
+				t.Fatalf("list audit log: %v", err)
+			}
+			got := make([]string, 0, len(logs))
+			for _, l := range logs {
+				got = append(got, strings.ReplaceAll(string(l.Payload), " ", ""))
+			}
+			return got
+		}
+		first := list()
+		if len(first) != sameInstantRows {
+			t.Fatalf("listed %d rows, want %d", len(first), sameInstantRows)
+		}
+		if second := list(); !slices.Equal(first, second) {
+			t.Errorf("two reads disagree on the order:\n%v\n%v", first, second)
+		}
+		if store.db.Backend == storage.SQLite {
+			for i := range want {
+				want[i] = strings.ReplaceAll(want[i], " ", "")
+			}
+			if !slices.Equal(first, want) {
+				t.Errorf("order is not newest-inserted first:\n got %v\nwant %v", first, want)
+			}
 		}
 	})
 }

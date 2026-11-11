@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // RedactedToolErrorMessage replaces a plugin tool failure's error text
@@ -525,7 +526,10 @@ type Processor struct {
 	session *SessionProcessor
 	policy  *PolicyEvaluator
 	w       *writer.Writer
-	pool    *pgxpool.Pool
+	db      *storage.DB
+	// bus carries the fleet notifications the query API hub subscribes
+	// to: Postgres NOTIFY, or in-process channels on SQLite.
+	bus storage.Bus
 	// clearSequences is the database touch point of StreamReady; nil
 	// means the writer's own, and tests substitute a scripted one.
 	clearSequences func(ctx context.Context, lastSeq uint64) (int64, error)
@@ -604,15 +608,31 @@ func (p *Processor) awaitCapturePosture(ctx context.Context, e consumer.EventPay
 	return true, enabled, nil
 }
 
-// NewProcessor creates a fully wired Processor.
-func NewProcessor(pool *pgxpool.Pool) *Processor {
-	w := writer.New(pool)
+// NewProcessor creates a fully wired Processor on db, announcing the
+// changes it commits on bus.
+func NewProcessor(db *storage.DB, bus storage.Bus) *Processor {
+	w := writer.New(db, bus)
 	return &Processor{
-		session: NewSessionProcessor(w, pool),
-		policy:  NewPolicyEvaluator(pool),
+		session: NewSessionProcessor(w, db),
+		policy:  NewPolicyEvaluator(db),
 		w:       w,
-		pool:    pool,
+		db:      db,
+		bus:     bus,
 	}
+}
+
+// normalizeIDs lower-cases the event's UUID fields. Ingestion and the
+// consumer check their shape (8-4-4-4-12 hex digits, either case);
+// the stored form is canonical lower case on both backends, and every
+// lookup the processor makes compares the stored text, so an
+// upper-case id a direct publisher put on the bus must not miss the
+// row it names.
+func normalizeIDs(e *consumer.EventPayload) {
+	e.ID = strings.ToLower(e.ID)
+	e.SessionID = strings.ToLower(e.SessionID)
+	e.AgentID = strings.ToLower(e.AgentID)
+	e.ParentSessionID = strings.ToLower(e.ParentSessionID)
+	e.TokenID = strings.ToLower(e.TokenID)
 }
 
 // StreamReady runs once the consumer has the FLIGHTDECK stream: stored
@@ -652,8 +672,9 @@ func (p *Processor) afterSessionEnd(sessionID string, closed bool) {
 
 // Process handles a single event from NATS.
 func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error {
-	// Canonical model id, provider and billing defaults first, so the
-	// session's model and the stored event agree.
+	// Canonical ids, model id, provider and billing defaults first, so
+	// every lookup and the stored rows agree.
+	normalizeIDs(&e)
 	normalizeModelFields(&e)
 	// An event whose client-supplied id is already stored is a copy of
 	// one the worker has processed: a re-sent model call (the plugin
@@ -868,7 +889,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// row by primary key, avoiding the NOTIFY->SELECT race where
 	// GetSessionEvents + tail would return a later event under
 	// tight paired writes.
-	if err := writer.NotifyFleetChange(ctx, p.pool, e.SessionID, e.EventType, eventID); err != nil {
+	if err := writer.NotifyFleetChange(ctx, p.bus, e.SessionID, e.EventType, eventID); err != nil {
 		// Non-fatal: log but don't fail the event
 		slog.Warn("notify error", "err", logcap.Err(err))
 	}
@@ -914,10 +935,10 @@ func (p *Processor) enrichSessionEnd(
 		}
 	}
 	// policy_actions_summary — GROUP BY against the events table.
-	rows, err := p.pool.Query(ctx, `
+	rows, err := p.db.Reader().QueryContext(ctx, `
 		SELECT event_type, count(*)
 		FROM events
-		WHERE session_id = $1::uuid AND event_type IN (
+		WHERE session_id = $1 AND event_type IN (
 			'policy_warn', 'policy_degrade', 'policy_block',
 			'policy_mcp_warn', 'policy_mcp_block'
 		)
@@ -932,7 +953,7 @@ func (p *Processor) enrichSessionEnd(
 				summary[et] = n
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 		if len(summary) > 0 {
 			merged["policy_actions_summary"] = summary
 		}
@@ -943,9 +964,9 @@ func (p *Processor) enrichSessionEnd(
 	// last_event_id — the immediately-prior event's UUID for the
 	// dashboard's "what fired right before close" triage chip.
 	var lastID string
-	err = p.pool.QueryRow(ctx, `
-		SELECT id::text FROM events
-		WHERE session_id = $1::uuid
+	err = p.db.Reader().QueryRowContext(ctx, `
+		SELECT CAST(id AS TEXT) FROM events
+		WHERE session_id = $1
 		ORDER BY occurred_at DESC LIMIT 1
 	`, e.SessionID).Scan(&lastID)
 	if err == nil && lastID != "" {

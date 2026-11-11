@@ -6,49 +6,37 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
-// TestFrameworkDimensionUsesLateralUnnest guards the fix that made
+// TestFrameworkDimensionUnnestsLabels guards the fix that made
 // group_by=framework report real framework names instead of collapsing
 // every row to 'unknown'. The sensor writes framework versions to
-// sessions.context->'frameworks' (a JSONB array), so the dimension
-// expression must reference the unnested alias “fw“ and the
-// dimensionSource must contribute a LATERAL join fragment that the
-// FROM clause builder appends to the query.
-func TestFrameworkDimensionUsesLateralUnnest(t *testing.T) {
-	dim, ok := dimensions["framework"]
-	if !ok {
-		t.Fatalf("dimensions[\"framework\"] is missing")
-	}
-	if dim.exprEvents != "fw" || dim.exprSessions != "fw" {
-		t.Errorf(
-			"framework dimension must project the unnested alias ``fw``; got exprEvents=%q exprSessions=%q",
-			dim.exprEvents, dim.exprSessions,
-		)
-	}
-	if !dim.needsSessionJoin {
-		t.Error("framework dimension must set needsSessionJoin=true for event-based metrics")
-	}
-	if dim.fromExtras == "" {
-		t.Fatal("framework dimension must carry a LATERAL join in fromExtras")
-	}
-	if !strings.Contains(dim.fromExtras, "jsonb_array_elements_text") {
-		t.Errorf(
-			"framework fromExtras must unnest via jsonb_array_elements_text; got %q",
-			dim.fromExtras,
-		)
-	}
-	if !strings.Contains(dim.fromExtras, "s.context->'frameworks'") {
-		t.Errorf(
-			"framework fromExtras must read s.context->'frameworks'; got %q",
-			dim.fromExtras,
-		)
-	}
-	if !strings.Contains(dim.fromExtras, "LEFT JOIN LATERAL") {
-		t.Errorf(
-			"framework fromExtras must be LEFT JOIN LATERAL so sessions with no frameworks still produce an 'unknown' row; got %q",
-			dim.fromExtras,
-		)
+// sessions.context.frameworks (a JSON array), so on both backends the
+// dimension expression must be the per-backend label of the unnested
+// entry and the dimensionSource must contribute the unnest fragment
+// that the FROM clause builder appends to the query.
+func TestFrameworkDimensionUnnestsLabels(t *testing.T) {
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		dim, ok := st.dimensions()["framework"]
+		if !ok {
+			t.Fatalf("%s: dimensions[\"framework\"] is missing", b)
+		}
+		if dim.exprEvents != st.q.frameworkLabelExpr() || dim.exprSessions != st.q.frameworkLabelExpr() {
+			t.Errorf("%s: framework dimension must project the unnested label; got exprEvents=%q exprSessions=%q",
+				b, dim.exprEvents, dim.exprSessions)
+		}
+		if !dim.needsSessionJoin {
+			t.Errorf("%s: framework dimension must set needsSessionJoin=true for event-based metrics", b)
+		}
+		if dim.fromExtras != st.q.frameworkLabels() || dim.fromExtras == "" {
+			t.Errorf("%s: framework dimension must carry the unnest join in fromExtras; got %q", b, dim.fromExtras)
+		}
+		if !strings.Contains(dim.fromExtras, "frameworks") {
+			t.Errorf("%s: framework fromExtras must read context.frameworks; got %q", b, dim.fromExtras)
+		}
 	}
 }
 
@@ -57,12 +45,15 @@ func TestFrameworkDimensionUsesLateralUnnest(t *testing.T) {
 // dimension needs it, the dimensions map entry and this assertion
 // should be updated together.
 func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
-	for name, dim := range dimensions {
-		if name == "framework" {
-			continue
-		}
-		if dim.fromExtras != "" {
-			t.Errorf("dimensions[%q].fromExtras should be empty, got %q", name, dim.fromExtras)
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		for name, dim := range st.dimensions() {
+			if name == "framework" {
+				continue
+			}
+			if dim.fromExtras != "" {
+				t.Errorf("%s: dimensions[%q].fromExtras should be empty, got %q", b, name, dim.fromExtras)
+			}
 		}
 	}
 }
@@ -76,42 +67,47 @@ func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
 // with a meaningful term rather than the generic "unknown" the
 // other dims use.
 func TestSubAgentDimensionsBucketNullsAsRoot(t *testing.T) {
-	for _, name := range []string{"agent_role", "parent_session_id"} {
-		dim, ok := dimensions[name]
-		if !ok {
-			t.Fatalf("dimensions[%q] is missing", name)
-		}
-		// COALESCE-to-(root) baked into the expression itself so
-		// the outer COALESCE(<dim>, 'unknown') in the query builder
-		// never overrides the (root) label. Asserting on the
-		// expression text catches both regressions: (a) someone
-		// dropping the COALESCE, (b) someone changing the literal
-		// from "(root)" to "unknown".
-		for _, expr := range []string{dim.exprEvents, dim.exprSessions} {
-			if !strings.Contains(expr, "COALESCE") {
-				t.Errorf("dimensions[%q] expression must wrap the column in COALESCE; got %q", name, expr)
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		for _, name := range []string{"agent_role", "parent_session_id"} {
+			dim, ok := st.dimensions()[name]
+			if !ok {
+				t.Fatalf("%s: dimensions[%q] is missing", b, name)
 			}
-			if !strings.Contains(expr, "'(root)'") {
-				t.Errorf("dimensions[%q] expression must use '(root)' as null label; got %q", name, expr)
+			// COALESCE-to-(root) baked into the expression itself so
+			// the outer COALESCE(<dim>, 'unknown') in the query builder
+			// never overrides the (root) label. Asserting on the
+			// expression text catches both regressions: (a) someone
+			// dropping the COALESCE, (b) someone changing the literal
+			// from "(root)" to "unknown".
+			for _, expr := range []string{dim.exprEvents, dim.exprSessions} {
+				if !strings.Contains(expr, "COALESCE") {
+					t.Errorf("%s: dimensions[%q] expression must wrap the column in COALESCE; got %q", b, name, expr)
+				}
+				if !strings.Contains(expr, "'(root)'") {
+					t.Errorf("%s: dimensions[%q] expression must use '(root)' as null label; got %q", b, name, expr)
+				}
 			}
-		}
-		if !dim.needsSessionJoin {
-			t.Errorf("dimensions[%q] must set needsSessionJoin=true so events-based metrics can group by it", name)
+			if !dim.needsSessionJoin {
+				t.Errorf("%s: dimensions[%q] must set needsSessionJoin=true so events-based metrics can group by it", b, name)
+			}
 		}
 	}
 }
 
-// TestParentSessionIDDimensionCastsToText covers the postgres-
-// specific detail that parent_session_id is a UUID column and the
-// projection must cast to text before COALESCE so the result column
-// scans into a Go string. Catching the missing cast here is cheaper
-// than a 500 in production when an operator first opens the new
-// chart.
+// TestParentSessionIDDimensionCastsToText covers the detail that
+// parent_session_id is a UUID column on Postgres and the projection
+// must cast to text before COALESCE so the result column scans into a
+// Go string. Catching the missing cast here is cheaper than a 500 in
+// production when an operator first opens the new chart.
 func TestParentSessionIDDimensionCastsToText(t *testing.T) {
-	dim := dimensions["parent_session_id"]
-	for _, expr := range []string{dim.exprEvents, dim.exprSessions} {
-		if !strings.Contains(expr, "::text") {
-			t.Errorf("parent_session_id dimension must cast UUID to text before COALESCE; got %q", expr)
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		st := &Store{d: storage.DialectFor(b), q: queriesFor(b)}
+		dim := st.dimensions()["parent_session_id"]
+		for _, expr := range []string{dim.exprEvents, dim.exprSessions} {
+			if !strings.Contains(expr, "CAST(s.parent_session_id AS TEXT)") {
+				t.Errorf("%s: parent_session_id dimension must cast UUID to text before COALESCE; got %q", b, expr)
+			}
 		}
 	}
 }
@@ -122,24 +118,24 @@ func TestParentSessionIDDimensionCastsToText(t *testing.T) {
 // belt-and-suspenders that catches a future internal caller (Roadmap
 // landing page, analytics export job) that bypasses the handler.
 func TestQueryAnalytics_TwoDimRejectsIdenticalAxes(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	now := time.Now().UTC()
-	_, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
-		Metric:           "tokens",
-		GroupBy:          "flavor",
-		GroupBySecondary: "flavor",
-		Range:            "custom",
-		From:             now.Add(-time.Hour),
-		To:               now,
-		Granularity:      "day",
+	eachStore(t, func(t *testing.T, s *Store) {
+		now := time.Now().UTC()
+		_, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
+			Metric:           "tokens",
+			GroupBy:          "flavor",
+			GroupBySecondary: "flavor",
+			Range:            "custom",
+			From:             now.Add(-time.Hour),
+			To:               now,
+			Granularity:      "day",
+		})
+		if err == nil {
+			t.Fatal("expected error for primary == secondary group_by")
+		}
+		if !strings.Contains(err.Error(), "must differ") {
+			t.Errorf("expected 'must differ' error message; got %v", err)
+		}
 	})
-	if err == nil {
-		t.Fatal("expected error for primary == secondary group_by")
-	}
-	if !strings.Contains(err.Error(), "must differ") {
-		t.Errorf("expected 'must differ' error message; got %v", err)
-	}
 }
 
 // TestQueryAnalytics_TwoDimRejectsInvalidSecondary covers the
@@ -147,24 +143,24 @@ func TestQueryAnalytics_TwoDimRejectsIdenticalAxes(t *testing.T) {
 // dimensions whitelist as the primary. Anything outside the locked
 // list is a 400-equivalent error from the store.
 func TestQueryAnalytics_TwoDimRejectsInvalidSecondary(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	now := time.Now().UTC()
-	_, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
-		Metric:           "tokens",
-		GroupBy:          "flavor",
-		GroupBySecondary: "made_up_dim",
-		Range:            "custom",
-		From:             now.Add(-time.Hour),
-		To:               now,
-		Granularity:      "day",
+	eachStore(t, func(t *testing.T, s *Store) {
+		now := time.Now().UTC()
+		_, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
+			Metric:           "tokens",
+			GroupBy:          "flavor",
+			GroupBySecondary: "made_up_dim",
+			Range:            "custom",
+			From:             now.Add(-time.Hour),
+			To:               now,
+			Granularity:      "day",
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid secondary group_by")
+		}
+		if !strings.Contains(err.Error(), "secondary") {
+			t.Errorf("expected 'secondary' error message; got %v", err)
+		}
 	})
-	if err == nil {
-		t.Fatal("expected error for invalid secondary group_by")
-	}
-	if !strings.Contains(err.Error(), "secondary") {
-		t.Errorf("expected 'secondary' error message; got %v", err)
-	}
 }
 
 // TestQueryAnalytics_SingleDimRegression confirms that a single-dim
@@ -175,71 +171,71 @@ func TestQueryAnalytics_TwoDimRejectsInvalidSecondary(t *testing.T) {
 // struct must also reflect the contract so a future caller reading
 // .Breakdown.Length can rely on it being 0.
 func TestQueryAnalytics_SingleDimRegression(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-subagent-single-" + randomUUID(t)[:8]
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-subagent-single-" + randomUUID(t)[:8]
 
-	// Seed an agent first to satisfy the sessions.agent_id FK,
-	// then a session + a post_call event so the query has data
-	// to chart. State=closed so the row doesn't interact with
-	// the reconciler in the shared test DB.
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-1*time.Hour), now.Add(-30*time.Minute), 1, 100)
-	sessionID := randomUUID(t)
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (
-			session_id, agent_id, flavor, state,
-			started_at, last_seen_at, tokens_used,
-			agent_type, client_type
-		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
-			$4, $4, 100,
-			'production', 'flightdeck_sensor'
-		)
-	`, sessionID, agentID, flavor, now.Add(-30*time.Minute)); err != nil {
-		t.Fatalf("seed session: %v", err)
-	}
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO events (
-			id, session_id, flavor, event_type, model,
-			tokens_total, occurred_at, has_content
-		) VALUES (
-			gen_random_uuid(), $1::uuid, $2, 'post_call', 'claude-sonnet-4-6',
-			100, $3, false
-		)
-	`, sessionID, flavor, now.Add(-30*time.Minute)); err != nil {
-		t.Fatalf("seed event: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id = $1::uuid`, sessionID)
-	})
-
-	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric:      "tokens",
-		GroupBy:     "flavor",
-		Range:       "custom",
-		From:        now.Add(-time.Hour),
-		To:          now,
-		Granularity: "day",
-		// FilterFlavor scopes us to our seeded fixture so other
-		// concurrent test data in the shared dev DB doesn't bleed
-		// into the assertion.
-		FilterFlavor: flavor,
-	})
-	if err != nil {
-		t.Fatalf("QueryAnalytics: %v", err)
-	}
-	if len(resp.Series) != 1 {
-		t.Fatalf("expected 1 series, got %d", len(resp.Series))
-	}
-	for _, dp := range resp.Series[0].Data {
-		if dp.Breakdown != nil {
-			t.Errorf("single-dim DataPoint must have nil Breakdown; got %+v", dp.Breakdown)
+		// Seed an agent first to satisfy the sessions.agent_id FK,
+		// then a session + a post_call event so the query has data
+		// to chart. State=closed so the row doesn't interact with
+		// the reconciler in the shared test DB.
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-1*time.Hour), now.Add(-30*time.Minute), 1, 100)
+		sessionID := randomUUID(t)
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO sessions (
+				session_id, agent_id, flavor, state,
+				started_at, last_seen_at, tokens_used,
+				agent_type, client_type
+			) VALUES (
+				$1, $2, $3, 'closed',
+				$4, $4, 100,
+				'production', 'flightdeck_sensor'
+			)
+		`, sessionID, agentID, flavor, now.Add(-30*time.Minute)); err != nil {
+			t.Fatalf("seed session: %v", err)
 		}
-	}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO events (
+				id, session_id, flavor, event_type, model,
+				tokens_total, occurred_at, has_content
+			) VALUES (
+				gen_random_uuid(), $1, $2, 'post_call', 'claude-sonnet-4-6',
+				100, $3, false
+			)
+		`, sessionID, flavor, now.Add(-30*time.Minute)); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM events WHERE session_id = $1`, sessionID)
+		})
+
+		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric:      "tokens",
+			GroupBy:     "flavor",
+			Range:       "custom",
+			From:        now.Add(-time.Hour),
+			To:          now,
+			Granularity: "day",
+			// FilterFlavor scopes us to our seeded fixture so other
+			// concurrent test data in the shared dev DB doesn't bleed
+			// into the assertion.
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("QueryAnalytics: %v", err)
+		}
+		if len(resp.Series) != 1 {
+			t.Fatalf("expected 1 series, got %d", len(resp.Series))
+		}
+		for _, dp := range resp.Series[0].Data {
+			if dp.Breakdown != nil {
+				t.Errorf("single-dim DataPoint must have nil Breakdown; got %+v", dp.Breakdown)
+			}
+		}
+	})
 }
 
 // TestQueryAnalytics_TwoDimParentRoleBreakdown is the canonical
@@ -249,148 +245,148 @@ func TestQueryAnalytics_SingleDimRegression(t *testing.T) {
 // returns one series per parent (one in this case) whose DataPoints
 // carry a Breakdown[] with two entries summing to the row total.
 func TestQueryAnalytics_TwoDimParentRoleBreakdown(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	parentSessionID := randomUUID(t)
-	parentFlavor := "test-subagent-parent-" + randomUUID(t)[:8]
-	childResearcher := randomUUID(t)
-	childWriter := randomUUID(t)
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		parentSessionID := randomUUID(t)
+		parentFlavor := "test-subagent-parent-" + randomUUID(t)[:8]
+		childResearcher := randomUUID(t)
+		childWriter := randomUUID(t)
 
-	// Three agents (parent + two children) so the sessions.agent_id
-	// FKs all resolve. Each agent uses its own ID; the identity derivation
-	// creates a distinct agent_id per (5-tuple + role) pair so the
-	// child sessions land under fresh agents anyway.
-	parentAgentID := randomUUID(t)
-	researcherAgentID := randomUUID(t)
-	writerAgentID := randomUUID(t)
-	seedAgent(t, s, parentAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 0)
-	seedAgent(t, s, researcherAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 250)
-	seedAgent(t, s, writerAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 100)
+		// Three agents (parent + two children) so the sessions.agent_id
+		// FKs all resolve. Each agent uses its own ID; the identity derivation
+		// creates a distinct agent_id per (5-tuple + role) pair so the
+		// child sessions land under fresh agents anyway.
+		parentAgentID := randomUUID(t)
+		researcherAgentID := randomUUID(t)
+		writerAgentID := randomUUID(t)
+		seedAgent(t, s, parentAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 0)
+		seedAgent(t, s, researcherAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 250)
+		seedAgent(t, s, writerAgentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 1, 100)
 
-	// Parent session — closed root with no parent linkage.
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (
-			session_id, agent_id, flavor, state,
-			started_at, last_seen_at, tokens_used,
-			agent_type, client_type
-		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
-			$4, $4, 0,
-			'production', 'flightdeck_sensor'
-		)
-	`, parentSessionID, parentAgentID, parentFlavor, now.Add(-1*time.Hour)); err != nil {
-		t.Fatalf("seed parent: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id IN ($1::uuid, $2::uuid, $3::uuid)`,
-			parentSessionID, childResearcher, childWriter)
-	})
-
-	// Two child sessions under the same parent, different roles.
-	for _, c := range []struct {
-		id      string
-		agentID string
-		role    string
-		toks    int
-	}{
-		{childResearcher, researcherAgentID, "Researcher", 250},
-		{childWriter, writerAgentID, "Writer", 100},
-	} {
-		if _, err := s.pool.Exec(ctx, `
+		// Parent session — closed root with no parent linkage.
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (
 				session_id, agent_id, flavor, state,
 				started_at, last_seen_at, tokens_used,
-				agent_type, client_type,
-				parent_session_id, agent_role
+				agent_type, client_type
 			) VALUES (
-				$1::uuid, $2::uuid, $3, 'closed',
-				$4, $4, $5,
-				'production', 'flightdeck_sensor',
-				$6::uuid, $7
+				$1, $2, $3, 'closed',
+				$4, $4, 0,
+				'production', 'flightdeck_sensor'
 			)
-		`, c.id, c.agentID, parentFlavor+"-child", now.Add(-30*time.Minute), c.toks,
-			parentSessionID, c.role); err != nil {
-			t.Fatalf("seed child %s: %v", c.role, err)
+		`, parentSessionID, parentAgentID, parentFlavor, now.Add(-1*time.Hour)); err != nil {
+			t.Fatalf("seed parent: %v", err)
 		}
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO events (
-				id, session_id, flavor, event_type, model,
-				tokens_total, occurred_at, has_content
-			) VALUES (
-				gen_random_uuid(), $1::uuid, $2, 'post_call', 'claude-sonnet-4-6',
-				$3, $4, false
-			)
-		`, c.id, parentFlavor+"-child", c.toks, now.Add(-30*time.Minute)); err != nil {
-			t.Fatalf("seed event for %s: %v", c.role, err)
-		}
-	}
+		t.Cleanup(func() {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM events WHERE session_id IN ($1, $2, $3)`,
+				parentSessionID, childResearcher, childWriter)
+		})
 
-	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric:           "tokens",
-		GroupBy:          "parent_session_id",
-		GroupBySecondary: "agent_role",
-		Range:            "custom",
-		From:             now.Add(-2 * time.Hour),
-		To:               now,
-		Granularity:      "day",
-		// Restrict to children only so the (root) bucket from the
-		// parent session itself doesn't show up in the result.
-		FilterIsSubAgent: true,
+		// Two child sessions under the same parent, different roles.
+		for _, c := range []struct {
+			id      string
+			agentID string
+			role    string
+			toks    int
+		}{
+			{childResearcher, researcherAgentID, "Researcher", 250},
+			{childWriter, writerAgentID, "Writer", 100},
+		} {
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO sessions (
+					session_id, agent_id, flavor, state,
+					started_at, last_seen_at, tokens_used,
+					agent_type, client_type,
+					parent_session_id, agent_role
+				) VALUES (
+					$1, $2, $3, 'closed',
+					$4, $4, $5,
+					'production', 'flightdeck_sensor',
+					$6, $7
+				)
+			`, c.id, c.agentID, parentFlavor+"-child", now.Add(-30*time.Minute), c.toks,
+				parentSessionID, c.role); err != nil {
+				t.Fatalf("seed child %s: %v", c.role, err)
+			}
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO events (
+					id, session_id, flavor, event_type, model,
+					tokens_total, occurred_at, has_content
+				) VALUES (
+					gen_random_uuid(), $1, $2, 'post_call', 'claude-sonnet-4-6',
+					$3, $4, false
+				)
+			`, c.id, parentFlavor+"-child", c.toks, now.Add(-30*time.Minute)); err != nil {
+				t.Fatalf("seed event for %s: %v", c.role, err)
+			}
+		}
+
+		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric:           "tokens",
+			GroupBy:          "parent_session_id",
+			GroupBySecondary: "agent_role",
+			Range:            "custom",
+			From:             now.Add(-2 * time.Hour),
+			To:               now,
+			Granularity:      "day",
+			// Restrict to children only so the (root) bucket from the
+			// parent session itself doesn't show up in the result.
+			FilterIsSubAgent: true,
+		})
+		if err != nil {
+			t.Fatalf("QueryAnalytics: %v", err)
+		}
+
+		// Find the series for our parent.
+		var got *AnalyticsSeries
+		for i := range resp.Series {
+			if resp.Series[i].Dimension == parentSessionID {
+				got = &resp.Series[i]
+				break
+			}
+		}
+		if got == nil {
+			t.Fatalf("expected a series with dimension=%s; got %d series",
+				parentSessionID, len(resp.Series))
+		}
+
+		if len(got.Data) != 1 {
+			t.Fatalf("expected 1 DataPoint per parent in this window; got %d", len(got.Data))
+		}
+		dp := got.Data[0]
+		if len(dp.Breakdown) != 2 {
+			t.Fatalf("expected 2 breakdown entries (Researcher + Writer); got %d", len(dp.Breakdown))
+		}
+
+		// Sum-equals-Value invariant: DataPoint.Value must equal the
+		// sum of Breakdown[].Value within the same point. The
+		// dashboard relies on this to render either flat or stacked
+		// representations without re-summing client-side.
+		var bdSum float64
+		bdMap := map[string]float64{}
+		for _, b := range dp.Breakdown {
+			bdSum += b.Value
+			bdMap[b.Key] = b.Value
+		}
+		if dp.Value != bdSum {
+			t.Errorf("DataPoint.Value=%v should equal sum of Breakdown=%v", dp.Value, bdSum)
+		}
+		if bdMap["Researcher"] != 250 {
+			t.Errorf("Researcher tokens=%v, want 250", bdMap["Researcher"])
+		}
+		if bdMap["Writer"] != 100 {
+			t.Errorf("Writer tokens=%v, want 100", bdMap["Writer"])
+		}
+
+		// Wire metadata: GroupBy in the response must echo the request
+		// shape so the dashboard can re-derive the request from a
+		// reloaded URL.
+		if resp.GroupBy != "parent_session_id,agent_role" {
+			t.Errorf("response.GroupBy=%q, want %q", resp.GroupBy, "parent_session_id,agent_role")
+		}
 	})
-	if err != nil {
-		t.Fatalf("QueryAnalytics: %v", err)
-	}
-
-	// Find the series for our parent.
-	var got *AnalyticsSeries
-	for i := range resp.Series {
-		if resp.Series[i].Dimension == parentSessionID {
-			got = &resp.Series[i]
-			break
-		}
-	}
-	if got == nil {
-		t.Fatalf("expected a series with dimension=%s; got %d series",
-			parentSessionID, len(resp.Series))
-	}
-
-	if len(got.Data) != 1 {
-		t.Fatalf("expected 1 DataPoint per parent in this window; got %d", len(got.Data))
-	}
-	dp := got.Data[0]
-	if len(dp.Breakdown) != 2 {
-		t.Fatalf("expected 2 breakdown entries (Researcher + Writer); got %d", len(dp.Breakdown))
-	}
-
-	// Sum-equals-Value invariant: DataPoint.Value must equal the
-	// sum of Breakdown[].Value within the same point. The
-	// dashboard relies on this to render either flat or stacked
-	// representations without re-summing client-side.
-	var bdSum float64
-	bdMap := map[string]float64{}
-	for _, b := range dp.Breakdown {
-		bdSum += b.Value
-		bdMap[b.Key] = b.Value
-	}
-	if dp.Value != bdSum {
-		t.Errorf("DataPoint.Value=%v should equal sum of Breakdown=%v", dp.Value, bdSum)
-	}
-	if bdMap["Researcher"] != 250 {
-		t.Errorf("Researcher tokens=%v, want 250", bdMap["Researcher"])
-	}
-	if bdMap["Writer"] != 100 {
-		t.Errorf("Writer tokens=%v, want 100", bdMap["Writer"])
-	}
-
-	// Wire metadata: GroupBy in the response must echo the request
-	// shape so the dashboard can re-derive the request from a
-	// reloaded URL.
-	if resp.GroupBy != "parent_session_id,agent_role" {
-		t.Errorf("response.GroupBy=%q, want %q", resp.GroupBy, "parent_session_id,agent_role")
-	}
 }
 
 // TestQueryAnalytics_TwoDimEmptyResult verifies the response shape
@@ -400,28 +396,28 @@ func TestQueryAnalytics_TwoDimParentRoleBreakdown(t *testing.T) {
 // without a special-case for "missing series" vs "explicitly
 // empty".
 func TestQueryAnalytics_TwoDimEmptyResult(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	// Custom range strictly in the future → guaranteed zero rows.
-	now := time.Now().UTC()
-	resp, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
-		Metric:           "tokens",
-		GroupBy:          "parent_session_id",
-		GroupBySecondary: "agent_role",
-		Range:            "custom",
-		From:             now.Add(24 * time.Hour),
-		To:               now.Add(48 * time.Hour),
-		Granularity:      "day",
+	eachStore(t, func(t *testing.T, s *Store) {
+		// Custom range strictly in the future → guaranteed zero rows.
+		now := time.Now().UTC()
+		resp, err := s.QueryAnalytics(context.Background(), AnalyticsParams{
+			Metric:           "tokens",
+			GroupBy:          "parent_session_id",
+			GroupBySecondary: "agent_role",
+			Range:            "custom",
+			From:             now.Add(24 * time.Hour),
+			To:               now.Add(48 * time.Hour),
+			Granularity:      "day",
+		})
+		if err != nil {
+			t.Fatalf("QueryAnalytics empty: %v", err)
+		}
+		if len(resp.Series) != 0 {
+			t.Errorf("expected 0 series in empty window; got %d", len(resp.Series))
+		}
+		if resp.Totals.GrandTotal != 0 {
+			t.Errorf("expected grand_total=0 in empty window; got %v", resp.Totals.GrandTotal)
+		}
 	})
-	if err != nil {
-		t.Fatalf("QueryAnalytics empty: %v", err)
-	}
-	if len(resp.Series) != 0 {
-		t.Errorf("expected 0 series in empty window; got %d", len(resp.Series))
-	}
-	if resp.Totals.GrandTotal != 0 {
-		t.Errorf("expected grand_total=0 in empty window; got %v", resp.Totals.GrandTotal)
-	}
 }
 
 // TestQueryAnalytics_ConcurrentRequestsAreSafe runs the 2-dim path
@@ -432,43 +428,43 @@ func TestQueryAnalytics_TwoDimEmptyResult(t *testing.T) {
 // would manifest as randomly mis-bucketed rows or a crash under
 // load — neither shows up in single-threaded tests.
 func TestQueryAnalytics_ConcurrentRequestsAreSafe(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	now := time.Now().UTC()
-	params := AnalyticsParams{
-		Metric:           "tokens",
-		GroupBy:          "parent_session_id",
-		GroupBySecondary: "agent_role",
-		Range:            "custom",
-		From:             now.Add(-1 * time.Hour),
-		To:               now,
-		Granularity:      "day",
-	}
-
-	const goroutines = 8
-	const iterations = 5
-	var wg sync.WaitGroup
-	errCh := make(chan error, goroutines*iterations)
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				if _, err := s.QueryAnalytics(context.Background(), params); err != nil {
-					errCh <- err
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			t.Errorf("concurrent QueryAnalytics: %v", err)
+		now := time.Now().UTC()
+		params := AnalyticsParams{
+			Metric:           "tokens",
+			GroupBy:          "parent_session_id",
+			GroupBySecondary: "agent_role",
+			Range:            "custom",
+			From:             now.Add(-1 * time.Hour),
+			To:               now,
+			Granularity:      "day",
 		}
-	}
+
+		const goroutines = 8
+		const iterations = 5
+		var wg sync.WaitGroup
+		errCh := make(chan error, goroutines*iterations)
+		for i := 0; i < goroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < iterations; j++ {
+					if _, err := s.QueryAnalytics(context.Background(), params); err != nil {
+						errCh <- err
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			if err != nil {
+				t.Errorf("concurrent QueryAnalytics: %v", err)
+			}
+		}
+	})
 }
 
 // TestAppendBreakdownPoint_SumInvariant covers the in-memory fold
@@ -479,9 +475,9 @@ func TestAppendBreakdownPoint_SumInvariant(t *testing.T) {
 	bucket1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	bucket2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
 	series := &AnalyticsSeries{Dimension: "p1"}
-	appendBreakdownPoint(series, bucket1, "Researcher", 100)
-	appendBreakdownPoint(series, bucket1, "Writer", 50)
-	appendBreakdownPoint(series, bucket2, "Researcher", 25)
+	appendBreakdownPoint(series, bucket1, dayLabel, "Researcher", 100)
+	appendBreakdownPoint(series, bucket1, dayLabel, "Writer", 50)
+	appendBreakdownPoint(series, bucket2, dayLabel, "Researcher", 25)
 	if len(series.Data) != 2 {
 		t.Fatalf("expected 2 DataPoints; got %d", len(series.Data))
 	}
@@ -508,22 +504,22 @@ func seedSessionRow(
 ) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, agent_id, flavor, state, started_at, last_seen_at,
 			tokens_used, agent_type, client_type, parent_session_id,
 			agent_role, context
 		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed', $4, $4,
-			$5, 'production', 'flightdeck_sensor', $6::uuid,
-			$7, $8::jsonb
+			$1, $2, $3, 'closed', $4, $4,
+			$5, 'production', 'flightdeck_sensor', $6,
+			$7, $8
 		)
 	`, sessionID, agentID, flavor, startedAt, tokens, parentID, role, contextJSON); err != nil {
 		t.Fatalf("seed session %s: %v", sessionID, err)
 	}
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id = $1::uuid`, sessionID)
-		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE session_id = $1::uuid`, sessionID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM events WHERE session_id = $1`, sessionID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = $1`, sessionID)
 	})
 }
 
@@ -533,46 +529,46 @@ func seedSessionRow(
 // sub-agent metric grouped by framework failed with "column fw does
 // not exist".
 func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-subagent-framework-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 2, 300)
-	parentID := randomUUID(t)
-	childID := randomUUID(t)
-	researcher := "Researcher"
-	seedSessionRow(t, s, parentID, agentID, flavor, nil, nil,
-		`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-40*time.Minute), 100)
-	seedSessionRow(t, s, childID, agentID, flavor, &parentID, &researcher,
-		`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-39*time.Minute), 200)
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-subagent-framework-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 2, 300)
+		parentID := randomUUID(t)
+		childID := randomUUID(t)
+		researcher := "Researcher"
+		seedSessionRow(t, s, parentID, agentID, flavor, nil, nil,
+			`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-40*time.Minute), 100)
+		seedSessionRow(t, s, childID, agentID, flavor, &parentID, &researcher,
+			`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-39*time.Minute), 200)
 
-	for _, metric := range []string{
-		"parent_token_sum", "child_token_sum", "child_count", "parent_to_first_child_latency_ms",
-	} {
-		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-			Metric: metric, GroupBy: "framework", Range: "custom",
-			From: now.Add(-time.Hour), To: now, Granularity: "day",
+		for _, metric := range []string{
+			"parent_token_sum", "child_token_sum", "child_count", "parent_to_first_child_latency_ms",
+		} {
+			resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+				Metric: metric, GroupBy: "framework", Range: "custom",
+				From: now.Add(-time.Hour), To: now, Granularity: "day",
+				FilterFlavor: flavor,
+			})
+			if err != nil {
+				t.Fatalf("%s grouped by framework: %v", metric, err)
+			}
+			if len(resp.Series) != 1 || resp.Series[0].Dimension != "langgraph" {
+				t.Fatalf("%s: expected one series for langgraph, got %+v", metric, resp.Series)
+			}
+		}
+		// Two-dim shape with framework as the secondary axis takes the
+		// same join.
+		if _, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: "child_count", GroupBy: "flavor", GroupBySecondary: "framework",
+			Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
 			FilterFlavor: flavor,
-		})
-		if err != nil {
-			t.Fatalf("%s grouped by framework: %v", metric, err)
+		}); err != nil {
+			t.Fatalf("child_count flavor x framework: %v", err)
 		}
-		if len(resp.Series) != 1 || resp.Series[0].Dimension != "langgraph" {
-			t.Fatalf("%s: expected one series for langgraph, got %+v", metric, resp.Series)
-		}
-	}
-	// Two-dim shape with framework as the secondary axis takes the
-	// same join.
-	if _, err := s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric: "child_count", GroupBy: "flavor", GroupBySecondary: "framework",
-		Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
-		FilterFlavor: flavor,
-	}); err != nil {
-		t.Fatalf("child_count flavor x framework: %v", err)
-	}
+	})
 }
 
 // TestQueryAnalytics_FrameworkDimensionGroupsByLabel pins one series per
@@ -582,81 +578,81 @@ func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
 // (`langchain`), and both count under `langchain`, once per
 // session even when a session lists the label twice.
 func TestQueryAnalytics_FrameworkDimensionGroupsByLabel(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-framework-label-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 5, 500)
-	for i, contextJSON := range []string{
-		`{"frameworks": ["langchain/1.6.10"]}`,
-		`{"frameworks": ["langchain"]}`,
-		`{"frameworks": ["claude_agent_sdk/0.2.168", "langchain/1.4.4"]}`,
-		`{"frameworks": ["langchain/1.0.0", "langchain"]}`,
-		`{}`,
-	} {
-		seedSessionRow(t, s, randomUUID(t), agentID, flavor, nil, nil, contextJSON,
-			now.Add(-time.Duration(40-i)*time.Minute), 100)
-	}
-
-	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric: "sessions", GroupBy: "framework", Range: "custom",
-		From: now.Add(-time.Hour), To: now, Granularity: "day",
-		FilterFlavor: flavor,
-	})
-	if err != nil {
-		t.Fatalf("sessions grouped by framework: %v", err)
-	}
-	got := map[string]float64{}
-	for _, series := range resp.Series {
-		got[series.Dimension] = series.Total
-	}
-	want := map[string]float64{"langchain": 4, "claude_agent_sdk": 1, "unknown": 1}
-	if len(got) != len(want) {
-		t.Fatalf("series = %v, want %v", got, want)
-	}
-	for dim, total := range want {
-		if got[dim] != total {
-			t.Errorf("series %q total = %v, want %v (all series: %v)", dim, got[dim], total, got)
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-framework-label-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 5, 500)
+		for i, contextJSON := range []string{
+			`{"frameworks": ["langchain/1.6.10"]}`,
+			`{"frameworks": ["langchain"]}`,
+			`{"frameworks": ["claude_agent_sdk/0.2.168", "langchain/1.4.4"]}`,
+			`{"frameworks": ["langchain/1.0.0", "langchain"]}`,
+			`{}`,
+		} {
+			seedSessionRow(t, s, randomUUID(t), agentID, flavor, nil, nil, contextJSON,
+				now.Add(-time.Duration(40-i)*time.Minute), 100)
 		}
-	}
 
-	// The same labels on the secondary axis, which needs the framework
-	// unnest in its FROM clause whatever the primary is: a sessions
-	// metric (flavor x framework) and an events metric (model x
-	// framework, the events joined to their sessions).
-	for _, primary := range []string{"flavor", "model"} {
-		metric := "sessions"
-		if primary == "model" {
-			metric = "tokens"
-		}
-		two, err := s.QueryAnalytics(ctx, AnalyticsParams{
-			Metric: metric, GroupBy: primary, GroupBySecondary: "framework",
-			Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
+		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: "sessions", GroupBy: "framework", Range: "custom",
+			From: now.Add(-time.Hour), To: now, Granularity: "day",
 			FilterFlavor: flavor,
 		})
 		if err != nil {
-			t.Fatalf("%s grouped by %s x framework: %v", metric, primary, err)
+			t.Fatalf("sessions grouped by framework: %v", err)
 		}
-		if primary != "flavor" {
-			continue // no events were seeded; the query must only run
+		got := map[string]float64{}
+		for _, series := range resp.Series {
+			got[series.Dimension] = series.Total
 		}
-		keys := map[string]float64{}
-		for _, series := range two.Series {
-			for _, point := range series.Data {
-				for _, bucket := range point.Breakdown {
-					keys[bucket.Key] += bucket.Value
+		want := map[string]float64{"langchain": 4, "claude_agent_sdk": 1, "unknown": 1}
+		if len(got) != len(want) {
+			t.Fatalf("series = %v, want %v", got, want)
+		}
+		for dim, total := range want {
+			if got[dim] != total {
+				t.Errorf("series %q total = %v, want %v (all series: %v)", dim, got[dim], total, got)
+			}
+		}
+
+		// The same labels on the secondary axis, which needs the framework
+		// unnest in its FROM clause whatever the primary is: a sessions
+		// metric (flavor x framework) and an events metric (model x
+		// framework, the events joined to their sessions).
+		for _, primary := range []string{"flavor", "model"} {
+			metric := "sessions"
+			if primary == "model" {
+				metric = "tokens"
+			}
+			two, err := s.QueryAnalytics(ctx, AnalyticsParams{
+				Metric: metric, GroupBy: primary, GroupBySecondary: "framework",
+				Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
+				FilterFlavor: flavor,
+			})
+			if err != nil {
+				t.Fatalf("%s grouped by %s x framework: %v", metric, primary, err)
+			}
+			if primary != "flavor" {
+				continue // no events were seeded; the query must only run
+			}
+			keys := map[string]float64{}
+			for _, series := range two.Series {
+				for _, point := range series.Data {
+					for _, bucket := range point.Breakdown {
+						keys[bucket.Key] += bucket.Value
+					}
+				}
+			}
+			for dim, total := range want {
+				if keys[dim] != total {
+					t.Errorf("%s x framework: bucket %q = %v, want %v (all: %v)", primary, dim, keys[dim], total, keys)
 				}
 			}
 		}
-		for dim, total := range want {
-			if keys[dim] != total {
-				t.Errorf("%s x framework: bucket %q = %v, want %v (all: %v)", primary, dim, keys[dim], total, keys)
-			}
-		}
-	}
+	})
 }
 
 // TestQueryAnalytics_SubagentLatencySkipsChildlessParents pins the
@@ -666,52 +662,52 @@ func TestQueryAnalytics_FrameworkDimensionGroupsByLabel(t *testing.T) {
 // scan NULL into *float64") and the average reflects the real
 // parent only.
 func TestQueryAnalytics_SubagentLatencySkipsChildlessParents(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-subagent-latency-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 3, 300)
-	lonerID := randomUUID(t)
-	parentID := randomUUID(t)
-	childID := randomUUID(t)
-	writer := "Writer"
-	seedSessionRow(t, s, lonerID, agentID, flavor, nil, nil, `{}`, now.Add(-45*time.Minute), 100)
-	seedSessionRow(t, s, parentID, agentID, flavor, nil, nil, `{}`, now.Add(-40*time.Minute), 100)
-	seedSessionRow(t, s, childID, agentID, flavor, &parentID, &writer, `{}`,
-		now.Add(-40*time.Minute).Add(1500*time.Millisecond), 100)
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-subagent-latency-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 3, 300)
+		lonerID := randomUUID(t)
+		parentID := randomUUID(t)
+		childID := randomUUID(t)
+		writer := "Writer"
+		seedSessionRow(t, s, lonerID, agentID, flavor, nil, nil, `{}`, now.Add(-45*time.Minute), 100)
+		seedSessionRow(t, s, parentID, agentID, flavor, nil, nil, `{}`, now.Add(-40*time.Minute), 100)
+		seedSessionRow(t, s, childID, agentID, flavor, &parentID, &writer, `{}`,
+			now.Add(-40*time.Minute).Add(1500*time.Millisecond), 100)
 
-	// The loner alone: no parent spawned anything, so the metric has
-	// no series at all rather than a NULL row.
-	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
-		From: now.Add(-50 * time.Minute), To: now.Add(-42 * time.Minute), Granularity: "day",
-		FilterFlavor: flavor,
+		// The loner alone: no parent spawned anything, so the metric has
+		// no series at all rather than a NULL row.
+		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
+			From: now.Add(-50 * time.Minute), To: now.Add(-42 * time.Minute), Granularity: "day",
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("latency over childless window: %v", err)
+		}
+		if len(resp.Series) != 0 {
+			t.Fatalf("expected no series for a childless window, got %+v", resp.Series)
+		}
+
+		// Loner + parent in one bucket: the average is the parent's 1500ms.
+		resp, err = s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
+			From: now.Add(-time.Hour), To: now, Granularity: "day",
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("latency over mixed window: %v", err)
+		}
+		if len(resp.Series) != 1 || len(resp.Series[0].Data) != 1 {
+			t.Fatalf("expected one series with one bucket, got %+v", resp.Series)
+		}
+		if got := resp.Series[0].Data[0].Value; got < 1499 || got > 1501 {
+			t.Fatalf("expected ~1500ms latency, got %v", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("latency over childless window: %v", err)
-	}
-	if len(resp.Series) != 0 {
-		t.Fatalf("expected no series for a childless window, got %+v", resp.Series)
-	}
-
-	// Loner + parent in one bucket: the average is the parent's 1500ms.
-	resp, err = s.QueryAnalytics(ctx, AnalyticsParams{
-		Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
-		From: now.Add(-time.Hour), To: now, Granularity: "day",
-		FilterFlavor: flavor,
-	})
-	if err != nil {
-		t.Fatalf("latency over mixed window: %v", err)
-	}
-	if len(resp.Series) != 1 || len(resp.Series[0].Data) != 1 {
-		t.Fatalf("expected one series with one bucket, got %+v", resp.Series)
-	}
-	if got := resp.Series[0].Data[0].Value; got < 1499 || got > 1501 {
-		t.Fatalf("expected ~1500ms latency, got %v", got)
-	}
 }
 
 // TestQueryAnalytics_PeriodChangeComparesPreviousWindow pins
@@ -721,68 +717,68 @@ func TestQueryAnalytics_SubagentLatencySkipsChildlessParents(t *testing.T) {
 // in its outer scope, failed on most metric / dimension pairs and
 // silently reported a 0% change.
 func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-period-change-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-3*time.Hour), now.Add(-30*time.Minute), 1, 400)
-	sessionID := randomUUID(t)
-	seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-90*time.Minute), 400)
-	// The events name a model the test prices itself, so estimated
-	// cost does not depend on what the shared model_pricing table holds.
-	model := flavor + "-model"
-	seedPrice(t, s, model, 3, 15)
-	for _, ev := range []struct {
-		at     time.Time
-		tokens int
-	}{
-		{now.Add(-90 * time.Minute), 100}, // previous window
-		{now.Add(-30 * time.Minute), 300}, // current window
-	} {
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO events (
-				id, session_id, flavor, event_type, model, tokens_total,
-				tokens_input, tokens_output, latency_ms, occurred_at, has_content,
-				billing_mode
-			) VALUES (
-				gen_random_uuid(), $1::uuid, $2, 'post_call', $5,
-				$3, $3, 0, 250, $4, false, 'metered'
-			)
-		`, sessionID, flavor, ev.tokens, ev.at, model); err != nil {
-			t.Fatalf("seed event: %v", err)
-		}
-	}
-
-	for _, metric := range []string{"tokens", "latency_avg", "latency_p95", "estimated_cost"} {
-		for _, dim := range []string{"flavor", "model", "framework", "host", "agent_role"} {
-			resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-				Metric: metric, GroupBy: dim, Range: "custom",
-				From: now.Add(-time.Hour), To: now, Granularity: "day",
-				FilterFlavor: flavor,
-			})
-			if err != nil {
-				t.Fatalf("%s by %s: %v", metric, dim, err)
-			}
-			switch metric {
-			case "tokens":
-				if resp.Totals.PeriodChangePct < 199.9 || resp.Totals.PeriodChangePct > 200.1 {
-					t.Fatalf("tokens by %s: expected +200%% change, got %v", dim, resp.Totals.PeriodChangePct)
-				}
-			case "latency_avg", "latency_p95":
-				// Same latency in both windows: no change.
-				if resp.Totals.PeriodChangePct != 0 {
-					t.Fatalf("%s by %s: expected 0%% change, got %v", metric, dim, resp.Totals.PeriodChangePct)
-				}
-			case "estimated_cost":
-				if resp.Totals.PeriodChangePct <= 0 {
-					t.Fatalf("estimated_cost by %s: expected a positive change, got %v", dim, resp.Totals.PeriodChangePct)
-				}
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-period-change-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-3*time.Hour), now.Add(-30*time.Minute), 1, 400)
+		sessionID := randomUUID(t)
+		seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-90*time.Minute), 400)
+		// The events name a model the test prices itself, so estimated
+		// cost does not depend on what the shared model_pricing table holds.
+		model := flavor + "-model"
+		seedPrice(t, s, model, 3, 15)
+		for _, ev := range []struct {
+			at     time.Time
+			tokens int
+		}{
+			{now.Add(-90 * time.Minute), 100}, // previous window
+			{now.Add(-30 * time.Minute), 300}, // current window
+		} {
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO events (
+					id, session_id, flavor, event_type, model, tokens_total,
+					tokens_input, tokens_output, latency_ms, occurred_at, has_content,
+					billing_mode
+				) VALUES (
+					gen_random_uuid(), $1, $2, 'post_call', $5,
+					$3, $3, 0, 250, $4, false, 'metered'
+				)
+			`, sessionID, flavor, ev.tokens, ev.at, model); err != nil {
+				t.Fatalf("seed event: %v", err)
 			}
 		}
-	}
+
+		for _, metric := range []string{"tokens", "latency_avg", "latency_p95", "estimated_cost"} {
+			for _, dim := range []string{"flavor", "model", "framework", "host", "agent_role"} {
+				resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+					Metric: metric, GroupBy: dim, Range: "custom",
+					From: now.Add(-time.Hour), To: now, Granularity: "day",
+					FilterFlavor: flavor,
+				})
+				if err != nil {
+					t.Fatalf("%s by %s: %v", metric, dim, err)
+				}
+				switch metric {
+				case "tokens":
+					if resp.Totals.PeriodChangePct < 199.9 || resp.Totals.PeriodChangePct > 200.1 {
+						t.Fatalf("tokens by %s: expected +200%% change, got %v", dim, resp.Totals.PeriodChangePct)
+					}
+				case "latency_avg", "latency_p95":
+					// Same latency in both windows: no change.
+					if resp.Totals.PeriodChangePct != 0 {
+						t.Fatalf("%s by %s: expected 0%% change, got %v", metric, dim, resp.Totals.PeriodChangePct)
+					}
+				case "estimated_cost":
+					if resp.Totals.PeriodChangePct <= 0 {
+						t.Fatalf("estimated_cost by %s: expected a positive change, got %v", dim, resp.Totals.PeriodChangePct)
+					}
+				}
+			}
+		}
+	})
 }
 
 // seedPrice inserts a direct-platform model_pricing row for model and
@@ -790,7 +786,7 @@ func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
 func seedPrice(t *testing.T, s *Store, model string, input, output float64) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_pricing (model_id, platform, provider, input, output, cache_read,
 			cache_write_5m, cache_write_1h, source)
 		VALUES ($1, 'direct', 'other', $2, $3, $2, $2, $2, 'override')`,
@@ -798,6 +794,6 @@ func seedPrice(t *testing.T, s *Store, model string, input, output float64) {
 		t.Fatalf("seed price for %s: %v", model, err)
 	}
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, model)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, model)
 	})
 }

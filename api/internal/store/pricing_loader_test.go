@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 func writeTempYaml(t *testing.T, name, body string) string {
@@ -328,80 +328,69 @@ func TestPricingContentHash_IsStable(t *testing.T) {
 	}
 }
 
-// ---- Postgres ------------------------------------------------------------
-
-// pricingTestPool connects to the dev database when FLIGHTDECK_POSTGRES_URL
-// or TEST_POSTGRES_URL is set; the test is skipped otherwise.
-func pricingTestPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		dsn = os.Getenv("FLIGHTDECK_POSTGRES_URL")
-	}
-	if dsn == "" {
-		t.Skip("no TEST_POSTGRES_URL or FLIGHTDECK_POSTGRES_URL set; skipping DB test")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
+// ---- Database ------------------------------------------------------------
 
 func TestSyncPricingTable_WritesOnceThenSkips(t *testing.T) {
-	pool := pricingTestPool(t)
-	ctx := context.Background()
-	prevRows := pricingRows
-	t.Cleanup(func() {
-		// Leave the dev table holding the real price list again: the
-		// catalogue plus the repo's pricing.yaml, as the API loads it.
-		t.Setenv("FLIGHTDECK_PRICING_PATH", "../../../pricing.yaml")
-		LoadPricing()
-		if err := SyncPricingTable(ctx, pool); err != nil {
-			t.Errorf("restore model_pricing: %v", err)
+	eachStore(t, func(t *testing.T, s *Store) {
+		db := s.db
+		ctx := context.Background()
+		prevRows := pricingRows
+		t.Cleanup(func() {
+			// Leave the table holding the real price list again: the
+			// catalogue plus the repo's pricing.yaml, as the API loads it.
+			t.Setenv("FLIGHTDECK_PRICING_PATH", "../../../pricing.yaml")
+			LoadPricing()
+			if err := SyncPricingTable(ctx, db); err != nil {
+				t.Errorf("restore model_pricing: %v", err)
+			}
+			pricingRows = prevRows
+		})
+
+		pricingRows = sampleRows(t)
+		if err := SyncPricingTable(ctx, db); err != nil {
+			t.Fatalf("sync: %v", err)
 		}
-		pricingRows = prevRows
+		var count int
+		var input, tierInput, fast float64
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM model_pricing`).Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != len(pricingRows) {
+			t.Errorf("model_pricing has %d rows, want %d", count, len(pricingRows))
+		}
+		if err := db.QueryRowContext(ctx, `
+			SELECT CAST(input AS DOUBLE PRECISION), CAST(tier_input AS DOUBLE PRECISION),
+			       CAST(fast_multiplier AS DOUBLE PRECISION) FROM model_pricing
+			WHERE model_id = 'claude-sonnet-4-5' AND platform = 'direct'`).Scan(&input, &tierInput, &fast); err != nil {
+			t.Fatalf("read row: %v", err)
+		}
+		if !approx(input, 3) || !approx(tierInput, 6) || fast != 2 {
+			t.Errorf("row values wrong: input %v tier %v fast %v", input, tierInput, fast)
+		}
+		// deprecated_on is stored as a calendar date on both engines.
+		var deprecated string
+		if err := db.QueryRowContext(ctx, `
+			SELECT CAST(deprecated_on AS TEXT) FROM model_pricing
+			WHERE deprecated_on IS NOT NULL ORDER BY model_id LIMIT 1`).Scan(&deprecated); err == nil {
+			if len(deprecated) != len(time.DateOnly) {
+				t.Errorf("deprecated_on stored as %q, want YYYY-MM-DD", deprecated)
+			}
+		}
+
+		var loadedAt1, loadedAt2 storage.Time
+		if err := db.QueryRowContext(ctx, `SELECT loaded_at FROM model_pricing_meta`).Scan(&loadedAt1); err != nil {
+			t.Fatalf("meta: %v", err)
+		}
+		if err := SyncPricingTable(ctx, db); err != nil {
+			t.Fatalf("second sync: %v", err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT loaded_at FROM model_pricing_meta`).Scan(&loadedAt2); err != nil {
+			t.Fatalf("meta: %v", err)
+		}
+		if !loadedAt1.Time.Equal(loadedAt2.Time) {
+			t.Error("an unchanged price list must not rewrite the table")
+		}
 	})
-
-	pricingRows = sampleRows(t)
-	if err := SyncPricingTable(ctx, pool); err != nil {
-		t.Fatalf("sync: %v", err)
-	}
-	var count int
-	var input, tierInput, fast float64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM model_pricing`).Scan(&count); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if count != len(pricingRows) {
-		t.Errorf("model_pricing has %d rows, want %d", count, len(pricingRows))
-	}
-	if err := pool.QueryRow(ctx, `
-		SELECT input::float8, tier_input::float8, fast_multiplier::float8 FROM model_pricing
-		WHERE model_id = 'claude-sonnet-4-5' AND platform = 'direct'`).Scan(&input, &tierInput, &fast); err != nil {
-		t.Fatalf("read row: %v", err)
-	}
-	if !approx(input, 3) || !approx(tierInput, 6) || fast != 2 {
-		t.Errorf("row values wrong: input %v tier %v fast %v", input, tierInput, fast)
-	}
-
-	var loadedAt1, loadedAt2 string
-	if err := pool.QueryRow(ctx, `SELECT loaded_at::text FROM model_pricing_meta`).Scan(&loadedAt1); err != nil {
-		t.Fatalf("meta: %v", err)
-	}
-	if err := SyncPricingTable(ctx, pool); err != nil {
-		t.Fatalf("second sync: %v", err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT loaded_at::text FROM model_pricing_meta`).Scan(&loadedAt2); err != nil {
-		t.Fatalf("meta: %v", err)
-	}
-	if loadedAt1 != loadedAt2 {
-		t.Error("an unchanged price list must not rewrite the table")
-	}
 }
 
 func TestRetryUntilDone_RetriesUntilTheSyncSucceeds(t *testing.T) {

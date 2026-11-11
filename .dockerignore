@@ -1,9 +1,8 @@
 # Build context of the images built from the repository root: the
 # all-in-one image (Dockerfile, which needs the Go modules and the
 # dashboard's sources) and the service images that need the storage
-# module beside their own (ingestion/Dockerfile). Everything no build
-# reads stays out of the context; the per-service images with their own
-# context keep their own ignore files.
+# module beside their own (ingestion/Dockerfile, workers/Dockerfile,
+# api/Dockerfile). Everything no build reads stays out of the context.
 .git
 .github
 .claude

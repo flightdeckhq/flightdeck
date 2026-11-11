@@ -93,14 +93,14 @@ func seedSearchAgent(
 	ctx := context.Background()
 	agentID := randomUUID(t)
 	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO agents (
 			agent_id, agent_type, client_type, agent_name,
 			user_name, hostname,
 			first_seen_at, last_seen_at,
 			total_sessions, total_tokens
 		) VALUES (
-			$1::uuid, 'production', 'flightdeck_sensor', $2,
+			$1, 'production', 'flightdeck_sensor', $2,
 			$3, $4,
 			$5, $5, 0, 0
 		)
@@ -108,7 +108,7 @@ func seedSearchAgent(
 		t.Fatalf("seedSearchAgent: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM agents WHERE agent_id = $1::uuid`, agentID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM agents WHERE agent_id = $1`, agentID)
 	})
 	return agentID
 }
@@ -130,13 +130,13 @@ func seedSearchSessionWithEvents(
 	ctx := context.Background()
 	sessionID := randomUUID(t)
 	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, agent_id, flavor, state,
 			started_at, last_seen_at, tokens_used,
 			agent_type, client_type
 		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
+			$1, $2, $3, 'closed',
 			$4, $4, 0,
 			'coding', 'flightdeck_sensor'
 		)
@@ -147,12 +147,12 @@ func seedSearchSessionWithEvents(
 		// Stagger occurred_at so per-row ordering inside the
 		// fixture is deterministic.
 		ts := future.Add(time.Duration(i) * time.Second)
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO events (
 				id, session_id, flavor, event_type,
 				tool_name, model, occurred_at, has_content
 			) VALUES (
-				gen_random_uuid(), $1::uuid, $2, $3,
+				gen_random_uuid(), $1, $2, $3,
 				NULLIF($4, ''), NULLIF($5, ''), $6, false
 			)
 		`, sessionID, flavor, e.EventType, e.ToolName, e.Model, ts); err != nil {
@@ -160,403 +160,403 @@ func seedSearchSessionWithEvents(
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id = $1::uuid`, sessionID)
-		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE session_id = $1::uuid`, sessionID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM events WHERE session_id = $1`, sessionID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = $1`, sessionID)
 	})
 	return sessionID
 }
 
 func TestSearch_AgentMatchesHostnameAndUserName(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	hostMarker := "search-host-" + suffix
-	userMarker := "search-user-" + suffix
-	nameMarker := "search-name-" + suffix
+		suffix := randomUUID(t)[:8]
+		hostMarker := "search-host-" + suffix
+		userMarker := "search-user-" + suffix
+		nameMarker := "search-name-" + suffix
 
-	// Agent only matched by hostname (name and user are unrelated).
-	_ = seedSearchAgent(t, s,
-		"unrelated-name-"+suffix, hostMarker, "unrelated-user-"+suffix)
-	// Agent only matched by user_name.
-	_ = seedSearchAgent(t, s,
-		"other-name-"+suffix, "other-host-"+suffix, userMarker)
-	// Agent only matched by agent_name (parity sanity).
-	_ = seedSearchAgent(t, s,
-		nameMarker, "n-host-"+suffix, "n-user-"+suffix)
+		// Agent only matched by hostname (name and user are unrelated).
+		_ = seedSearchAgent(t, s,
+			"unrelated-name-"+suffix, hostMarker, "unrelated-user-"+suffix)
+		// Agent only matched by user_name.
+		_ = seedSearchAgent(t, s,
+			"other-name-"+suffix, "other-host-"+suffix, userMarker)
+		// Agent only matched by agent_name (parity sanity).
+		_ = seedSearchAgent(t, s,
+			nameMarker, "n-host-"+suffix, "n-user-"+suffix)
 
-	for _, q := range []string{hostMarker, userMarker, nameMarker} {
-		results, err := s.Search(ctx, q)
-		if err != nil {
-			t.Fatalf("Search(%q): %v", q, err)
+		for _, q := range []string{hostMarker, userMarker, nameMarker} {
+			results, err := s.Search(ctx, q)
+			if err != nil {
+				t.Fatalf("Search(%q): %v", q, err)
+			}
+			if len(results.Agents) == 0 {
+				t.Errorf("Search(%q): expected ≥1 agent hit, got 0", q)
+			}
 		}
-		if len(results.Agents) == 0 {
-			t.Errorf("Search(%q): expected ≥1 agent hit, got 0", q)
-		}
-	}
+	})
 }
 
 func TestSearch_AgentRankExactBeatsPrefixBeatsSubstring(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	exactQuery := "agent-rank-" + suffix
+		suffix := randomUUID(t)[:8]
+		exactQuery := "agent-rank-" + suffix
 
-	// Substring-only: query appears in the middle of agent_name.
-	subID := seedSearchAgent(t, s,
-		"x-"+exactQuery+"-y", "host-sub-"+suffix, "user-sub-"+suffix)
-	// Prefix-only: agent_name starts with query.
-	prefixID := seedSearchAgent(t, s,
-		exactQuery+"-tail", "host-pref-"+suffix, "user-pref-"+suffix)
-	// Exact: agent_name equals query.
-	exactID := seedSearchAgent(t, s,
-		exactQuery, "host-exact-"+suffix, "user-exact-"+suffix)
+		// Substring-only: query appears in the middle of agent_name.
+		subID := seedSearchAgent(t, s,
+			"x-"+exactQuery+"-y", "host-sub-"+suffix, "user-sub-"+suffix)
+		// Prefix-only: agent_name starts with query.
+		prefixID := seedSearchAgent(t, s,
+			exactQuery+"-tail", "host-pref-"+suffix, "user-pref-"+suffix)
+		// Exact: agent_name equals query.
+		exactID := seedSearchAgent(t, s,
+			exactQuery, "host-exact-"+suffix, "user-exact-"+suffix)
 
-	results, err := s.Search(ctx, exactQuery)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", exactQuery, err)
-	}
-	if len(results.Agents) < 3 {
-		t.Fatalf("expected 3 agent hits, got %d", len(results.Agents))
-	}
-	gotOrder := []string{
-		results.Agents[0].AgentID,
-		results.Agents[1].AgentID,
-		results.Agents[2].AgentID,
-	}
-	wantOrder := []string{exactID, prefixID, subID}
-	if !reflect.DeepEqual(gotOrder, wantOrder) {
-		t.Errorf("agent rank order: got %v, want %v", gotOrder, wantOrder)
-	}
+		results, err := s.Search(ctx, exactQuery)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", exactQuery, err)
+		}
+		if len(results.Agents) < 3 {
+			t.Fatalf("expected 3 agent hits, got %d", len(results.Agents))
+		}
+		gotOrder := []string{
+			results.Agents[0].AgentID,
+			results.Agents[1].AgentID,
+			results.Agents[2].AgentID,
+		}
+		wantOrder := []string{exactID, prefixID, subID}
+		if !reflect.DeepEqual(gotOrder, wantOrder) {
+			t.Errorf("agent rank order: got %v, want %v", gotOrder, wantOrder)
+		}
+	})
 }
 
 func TestSearch_AgentCrossFieldPrecedence(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	marker := "xfield-" + suffix
+		suffix := randomUUID(t)[:8]
+		marker := "xfield-" + suffix
 
-	// All three agents exact-match the query, each via a different
-	// field. agent_name (rank 0) outranks hostname (rank 1) outranks
-	// user_name (rank 2).
-	userID := seedSearchAgent(t, s,
-		"u-name-"+suffix, "u-host-"+suffix, marker)
-	hostID := seedSearchAgent(t, s,
-		"h-name-"+suffix, marker, "h-user-"+suffix)
-	nameID := seedSearchAgent(t, s,
-		marker, "n-host-"+suffix, "n-user-"+suffix)
+		// All three agents exact-match the query, each via a different
+		// field. agent_name (rank 0) outranks hostname (rank 1) outranks
+		// user_name (rank 2).
+		userID := seedSearchAgent(t, s,
+			"u-name-"+suffix, "u-host-"+suffix, marker)
+		hostID := seedSearchAgent(t, s,
+			"h-name-"+suffix, marker, "h-user-"+suffix)
+		nameID := seedSearchAgent(t, s,
+			marker, "n-host-"+suffix, "n-user-"+suffix)
 
-	results, err := s.Search(ctx, marker)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", marker, err)
-	}
-	if len(results.Agents) < 3 {
-		t.Fatalf("expected 3 agent hits, got %d", len(results.Agents))
-	}
-	gotOrder := []string{
-		results.Agents[0].AgentID,
-		results.Agents[1].AgentID,
-		results.Agents[2].AgentID,
-	}
-	wantOrder := []string{nameID, hostID, userID}
-	if !reflect.DeepEqual(gotOrder, wantOrder) {
-		t.Errorf("agent cross-field order: got %v, want %v", gotOrder, wantOrder)
-	}
+		results, err := s.Search(ctx, marker)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", marker, err)
+		}
+		if len(results.Agents) < 3 {
+			t.Fatalf("expected 3 agent hits, got %d", len(results.Agents))
+		}
+		gotOrder := []string{
+			results.Agents[0].AgentID,
+			results.Agents[1].AgentID,
+			results.Agents[2].AgentID,
+		}
+		wantOrder := []string{nameID, hostID, userID}
+		if !reflect.DeepEqual(gotOrder, wantOrder) {
+			t.Errorf("agent cross-field order: got %v, want %v", gotOrder, wantOrder)
+		}
+	})
 }
 
 func TestSearch_EventTypeLiteralMatch(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	agentID := seedSearchAgent(t, s,
-		"event-literal-"+suffix, "h-"+suffix, "u-"+suffix)
-	_ = seedSearchSessionWithEvents(t, s, agentID, "search-flavor-"+suffix,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "post_call", Model: "test-model-search-" + suffix},
-		})
+		suffix := randomUUID(t)[:8]
+		agentID := seedSearchAgent(t, s,
+			"event-literal-"+suffix, "h-"+suffix, "u-"+suffix)
+		_ = seedSearchSessionWithEvents(t, s, agentID, "search-flavor-"+suffix,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "post_call", Model: "test-model-search-" + suffix},
+			})
 
-	// Searching for the rare model substring uniquely identifies
-	// our fresh row and exercises the events path end-to-end.
-	results, err := s.Search(ctx, "test-model-search-"+suffix)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(results.Events) != 1 {
-		t.Fatalf("expected 1 event hit, got %d", len(results.Events))
-	}
-	if results.Events[0].EventType != "post_call" {
-		t.Errorf("EventType: got %q, want post_call", results.Events[0].EventType)
-	}
+		// Searching for the rare model substring uniquely identifies
+		// our fresh row and exercises the events path end-to-end.
+		results, err := s.Search(ctx, "test-model-search-"+suffix)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(results.Events) != 1 {
+			t.Fatalf("expected 1 event hit, got %d", len(results.Events))
+		}
+		if results.Events[0].EventType != "post_call" {
+			t.Errorf("EventType: got %q, want post_call", results.Events[0].EventType)
+		}
+	})
 }
 
 func TestSearch_EventTypeBareLiteralRanksFirst(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	agentID := seedSearchAgent(t, s,
-		"event-bare-"+suffix, "h-"+suffix, "u-"+suffix)
+		suffix := randomUUID(t)[:8]
+		agentID := seedSearchAgent(t, s,
+			"event-bare-"+suffix, "h-"+suffix, "u-"+suffix)
 
-	// Seed three events that all match the literal ``post_call``
-	// via different fields:
-	//   - event_type=post_call         → rank 0 (event_type exact)
-	//   - tool_name="post_call"        → rank 1 (tool_name exact)
-	//   - model="post_call-derivative" → rank 9 (model substring)
-	_ = seedSearchSessionWithEvents(t, s, agentID, "bare-"+suffix,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "post_call", Model: "uniqmodel-" + suffix},
-			{EventType: "tool_call", ToolName: "post_call", Model: "uniqmodel2-" + suffix},
-			{EventType: "tool_call", Model: "post_call-derivative-" + suffix},
-		})
+		// Seed three events that all match the literal ``post_call``
+		// via different fields:
+		//   - event_type=post_call         → rank 0 (event_type exact)
+		//   - tool_name="post_call"        → rank 1 (tool_name exact)
+		//   - model="post_call-derivative" → rank 9 (model substring)
+		_ = seedSearchSessionWithEvents(t, s, agentID, "bare-"+suffix,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "post_call", Model: "uniqmodel-" + suffix},
+				{EventType: "tool_call", ToolName: "post_call", Model: "uniqmodel2-" + suffix},
+				{EventType: "tool_call", Model: "post_call-derivative-" + suffix},
+			})
 
-	results, err := s.Search(ctx, "post_call")
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(results.Events) == 0 {
-		t.Fatalf("expected ≥1 event hit, got 0")
-	}
-	if results.Events[0].EventType != "post_call" {
-		t.Errorf("rank 0 row: want event_type=post_call, got %q (tool=%q model=%q)",
-			results.Events[0].EventType, results.Events[0].ToolName, results.Events[0].Model)
-	}
+		results, err := s.Search(ctx, "post_call")
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(results.Events) == 0 {
+			t.Fatalf("expected ≥1 event hit, got 0")
+		}
+		if results.Events[0].EventType != "post_call" {
+			t.Errorf("rank 0 row: want event_type=post_call, got %q (tool=%q model=%q)",
+				results.Events[0].EventType, results.Events[0].ToolName, results.Events[0].Model)
+		}
+	})
 }
 
 func TestSearch_CuratedTermReturnsMappedEventTypes(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	agentID := seedSearchAgent(t, s,
-		"curated-"+suffix, "h-"+suffix, "u-"+suffix)
+		suffix := randomUUID(t)[:8]
+		agentID := seedSearchAgent(t, s,
+			"curated-"+suffix, "h-"+suffix, "u-"+suffix)
 
-	// Seed one event for each curated llm type. Future-dated, so the
-	// query that opens the events group sees these rows ahead of the
-	// dev-DB pool.
-	_ = seedSearchSessionWithEvents(t, s, agentID, "curated-"+suffix,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "llm_error"},
-			{EventType: "post_call"},
-			{EventType: "pre_call"},
-		})
+		// Seed one event for each curated llm type. Future-dated, so the
+		// query that opens the events group sees these rows ahead of the
+		// dev-DB pool.
+		_ = seedSearchSessionWithEvents(t, s, agentID, "curated-"+suffix,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "llm_error"},
+				{EventType: "post_call"},
+				{EventType: "pre_call"},
+			})
 
-	results, err := s.Search(ctx, "LLM")
-	if err != nil {
-		t.Fatalf("Search(LLM): %v", err)
-	}
-	if len(results.Events) == 0 {
-		t.Fatalf("expected ≥1 event hit for LLM, got 0")
-	}
-	allowed := map[string]bool{
-		"pre_call": true, "post_call": true, "llm_error": true,
-	}
-	for _, e := range results.Events {
-		if !allowed[e.EventType] {
-			t.Errorf("LLM query returned event_type %q not in curated llm list", e.EventType)
+		results, err := s.Search(ctx, "LLM")
+		if err != nil {
+			t.Fatalf("Search(LLM): %v", err)
 		}
-	}
+		if len(results.Events) == 0 {
+			t.Fatalf("expected ≥1 event hit for LLM, got 0")
+		}
+		allowed := map[string]bool{
+			"pre_call": true, "post_call": true, "llm_error": true,
+		}
+		for _, e := range results.Events {
+			if !allowed[e.EventType] {
+				t.Errorf("LLM query returned event_type %q not in curated llm list", e.EventType)
+			}
+		}
+	})
 }
 
 func TestSearch_CuratedPolicyTermSurfacesPolicyEvents(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	agentID := seedSearchAgent(t, s,
-		"policy-curated-"+suffix, "h-"+suffix, "u-"+suffix)
-	_ = seedSearchSessionWithEvents(t, s, agentID, "policy-curated-"+suffix,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "policy_warn"},
-			{EventType: "policy_mcp_block"},
-		})
+		suffix := randomUUID(t)[:8]
+		agentID := seedSearchAgent(t, s,
+			"policy-curated-"+suffix, "h-"+suffix, "u-"+suffix)
+		_ = seedSearchSessionWithEvents(t, s, agentID, "policy-curated-"+suffix,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "policy_warn"},
+				{EventType: "policy_mcp_block"},
+			})
 
-	results, err := s.Search(ctx, "policy")
-	if err != nil {
-		t.Fatalf("Search(policy): %v", err)
-	}
-	if len(results.Events) == 0 {
-		t.Fatalf("expected ≥1 event hit, got 0")
-	}
-	allowed := map[string]bool{
-		"policy_warn": true, "policy_degrade": true, "policy_block": true,
-		"policy_mcp_warn": true, "policy_mcp_block": true,
-	}
-	for _, e := range results.Events {
-		if !allowed[e.EventType] {
-			t.Errorf("policy query returned event_type %q not in curated policy list", e.EventType)
+		results, err := s.Search(ctx, "policy")
+		if err != nil {
+			t.Fatalf("Search(policy): %v", err)
 		}
-	}
+		if len(results.Events) == 0 {
+			t.Fatalf("expected ≥1 event hit, got 0")
+		}
+		allowed := map[string]bool{
+			"policy_warn": true, "policy_degrade": true, "policy_block": true,
+			"policy_mcp_warn": true, "policy_mcp_block": true,
+		}
+		for _, e := range results.Events {
+			if !allowed[e.EventType] {
+				t.Errorf("policy query returned event_type %q not in curated policy list", e.EventType)
+			}
+		}
+	})
 }
 
 func TestSearch_AgentResultsAreCappedAtFive(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	marker := "cap-" + suffix
-	// Seed 6 agents whose names all contain the marker. Server cap
-	// is 5; a future change that removes or raises LIMIT trips
-	// this test before any caller depends on the new shape.
-	for i := 0; i < 6; i++ {
-		_ = seedSearchAgent(t, s,
-			marker+"-row-"+randomUUID(t)[:4],
-			"h-"+suffix, "u-"+suffix)
-	}
+		suffix := randomUUID(t)[:8]
+		marker := "cap-" + suffix
+		// Seed 6 agents whose names all contain the marker. Server cap
+		// is 5; a future change that removes or raises LIMIT trips
+		// this test before any caller depends on the new shape.
+		for i := 0; i < 6; i++ {
+			_ = seedSearchAgent(t, s,
+				marker+"-row-"+randomUUID(t)[:4],
+				"h-"+suffix, "u-"+suffix)
+		}
 
-	results, err := s.Search(ctx, marker)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", marker, err)
-	}
-	if len(results.Agents) != 5 {
-		t.Errorf("agents cap: want exactly 5, got %d", len(results.Agents))
-	}
+		results, err := s.Search(ctx, marker)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", marker, err)
+		}
+		if len(results.Agents) != 5 {
+			t.Errorf("agents cap: want exactly 5, got %d", len(results.Agents))
+		}
+	})
 }
 
 func TestSearch_AgentResultCarriesClientTypeAndState(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	marker := "ctype-" + suffix
-	agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
-	// One active session attaches a non-empty state to the rollup.
-	_ = seedSearchSessionWithEvents(t, s, agentID, marker,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "post_call"},
-		})
-	// Force the session row to ``active`` so the rollup picks it up
-	// (seedSearchSessionWithEvents inserts as ``closed``). One inline
-	// UPDATE keeps the helper shape stable for the other tests.
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE sessions SET state='active' WHERE agent_id=$1::uuid`,
-		agentID,
-	); err != nil {
-		t.Fatalf("force active: %v", err)
-	}
+		suffix := randomUUID(t)[:8]
+		marker := "ctype-" + suffix
+		agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
+		// One active session attaches a non-empty state to the rollup.
+		_ = seedSearchSessionWithEvents(t, s, agentID, marker,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "post_call"},
+			})
+		// Force the session row to ``active`` so the rollup picks it up
+		// (seedSearchSessionWithEvents inserts as ``closed``). One inline
+		// UPDATE keeps the helper shape stable for the other tests.
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE sessions SET state='active' WHERE agent_id=$1`,
+			agentID,
+		); err != nil {
+			t.Fatalf("force active: %v", err)
+		}
 
-	results, err := s.Search(ctx, marker)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", marker, err)
-	}
-	if len(results.Agents) == 0 {
-		t.Fatalf("expected ≥1 agent hit, got 0")
-	}
-	hit := results.Agents[0]
-	// seedSearchAgent uses client_type=flightdeck_sensor.
-	if hit.ClientType != "flightdeck_sensor" {
-		t.Errorf("ClientType: want flightdeck_sensor, got %q", hit.ClientType)
-	}
-	if hit.State != "active" {
-		t.Errorf("State: want active, got %q", hit.State)
-	}
+		results, err := s.Search(ctx, marker)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", marker, err)
+		}
+		if len(results.Agents) == 0 {
+			t.Fatalf("expected ≥1 agent hit, got 0")
+		}
+		hit := results.Agents[0]
+		// seedSearchAgent uses client_type=flightdeck_sensor.
+		if hit.ClientType != "flightdeck_sensor" {
+			t.Errorf("ClientType: want flightdeck_sensor, got %q", hit.ClientType)
+		}
+		if hit.State != "active" {
+			t.Errorf("State: want active, got %q", hit.State)
+		}
+	})
 }
 
 // A session hit carries its client_type, so the palette names the
 // client beside the session's source.
 func TestSearch_SessionCarriesClientType(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	flavor := "search-sess-ctype-" + suffix
-	agentID := seedSearchAgent(t, s, "a-"+suffix, "h-"+suffix, "u-"+suffix)
-	sessionID := seedSearchSessionWithEvents(t, s, agentID, flavor, nil)
+		suffix := randomUUID(t)[:8]
+		flavor := "search-sess-ctype-" + suffix
+		agentID := seedSearchAgent(t, s, "a-"+suffix, "h-"+suffix, "u-"+suffix)
+		sessionID := seedSearchSessionWithEvents(t, s, agentID, flavor, nil)
 
-	results, err := s.Search(ctx, flavor)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", flavor, err)
-	}
-	for _, sr := range results.Sessions {
-		if sr.SessionID == sessionID {
-			if sr.ClientType != "flightdeck_sensor" {
-				t.Errorf("ClientType: want flightdeck_sensor, got %q", sr.ClientType)
-			}
-			return
+		results, err := s.Search(ctx, flavor)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", flavor, err)
 		}
-	}
-	t.Fatalf("Search(%q): session %s not in results", flavor, sessionID)
+		for _, sr := range results.Sessions {
+			if sr.SessionID == sessionID {
+				if sr.ClientType != "flightdeck_sensor" {
+					t.Errorf("ClientType: want flightdeck_sensor, got %q", sr.ClientType)
+				}
+				return
+			}
+		}
+		t.Fatalf("Search(%q): session %s not in results", flavor, sessionID)
+	})
 }
 
 // An agent hit carries its latest session's context.telemetry, so the
 // palette can label an agent reported over OpenTelemetry; an agent
 // whose latest session names none carries nil.
 func TestSearch_AgentCarriesLatestTelemetry(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	otlpName := "search-otlp-" + suffix
-	pluginName := "search-plugin-" + suffix
-	otlpID := seedSearchAgent(t, s, otlpName, "h-"+suffix, "u-"+suffix)
-	pluginID := seedSearchAgent(t, s, pluginName, "h2-"+suffix, "u2-"+suffix)
-	// Registered after seedSearchAgent's cleanups, so it runs before
-	// them and the agents rows are free of sessions when deleted.
-	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx,
-			`DELETE FROM sessions WHERE agent_id = ANY($1::uuid[])`,
-			[]string{otlpID, pluginID})
-	})
-	now := time.Now().UTC()
-	seedSessionWithContext(t, s, otlpID, "production", "flightdeck_sensor",
-		now.Add(-time.Minute), `{"telemetry":"otlp"}`)
-	seedSessionWithContext(t, s, pluginID, "production", "flightdeck_sensor",
-		now.Add(-time.Minute), `{"os":"Linux"}`)
+		suffix := randomUUID(t)[:8]
+		otlpName := "search-otlp-" + suffix
+		pluginName := "search-plugin-" + suffix
+		otlpID := seedSearchAgent(t, s, otlpName, "h-"+suffix, "u-"+suffix)
+		pluginID := seedSearchAgent(t, s, pluginName, "h2-"+suffix, "u2-"+suffix)
+		// Registered after seedSearchAgent's cleanups, so it runs before
+		// them and the agents rows are free of sessions when deleted.
+		t.Cleanup(func() {
+			_, _ = s.db.ExecContext(ctx,
+				`DELETE FROM sessions WHERE `+s.d.InUUIDArray("agent_id", "$1"),
+				s.d.ArrayArg([]string{otlpID, pluginID}))
+		})
+		now := time.Now().UTC()
+		seedSessionWithContext(t, s, otlpID, "production", "flightdeck_sensor",
+			now.Add(-time.Minute), `{"telemetry":"otlp"}`)
+		seedSessionWithContext(t, s, pluginID, "production", "flightdeck_sensor",
+			now.Add(-time.Minute), `{"os":"Linux"}`)
 
-	for name, want := range map[string]string{otlpName: "otlp", pluginName: ""} {
-		results, err := s.Search(ctx, name)
-		if err != nil {
-			t.Fatalf("Search(%q): %v", name, err)
-		}
-		var got *SearchResultAgent
-		for i := range results.Agents {
-			if results.Agents[i].AgentName == name {
-				got = &results.Agents[i]
+		for name, want := range map[string]string{otlpName: "otlp", pluginName: ""} {
+			results, err := s.Search(ctx, name)
+			if err != nil {
+				t.Fatalf("Search(%q): %v", name, err)
+			}
+			var got *SearchResultAgent
+			for i := range results.Agents {
+				if results.Agents[i].AgentName == name {
+					got = &results.Agents[i]
+				}
+			}
+			if got == nil {
+				t.Fatalf("Search(%q): agent not in results", name)
+			}
+			switch {
+			case want == "" && got.Telemetry != nil:
+				t.Errorf("%s: telemetry want nil, got %q", name, *got.Telemetry)
+			case want != "" && (got.Telemetry == nil || *got.Telemetry != want):
+				t.Errorf("%s: telemetry want %q, got %v", name, want, got.Telemetry)
 			}
 		}
-		if got == nil {
-			t.Fatalf("Search(%q): agent not in results", name)
-		}
-		switch {
-		case want == "" && got.Telemetry != nil:
-			t.Errorf("%s: telemetry want nil, got %q", name, *got.Telemetry)
-		case want != "" && (got.Telemetry == nil || *got.Telemetry != want):
-			t.Errorf("%s: telemetry want %q, got %v", name, want, got.Telemetry)
-		}
-	}
+	})
 }
 
 func TestSearch_AgentStateParityWithListAgents(t *testing.T) {
@@ -564,128 +564,128 @@ func TestSearch_AgentStateParityWithListAgents(t *testing.T) {
 	// rolled-up state for the same agent. Both paths consume
 	// agentStateRollupSQL; this test seeds an agent with a mix of
 	// session states and asserts both APIs return the same value.
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	marker := "parity-" + suffix
-	agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
-	// Two sessions: one closed (older), one active (newer). The
-	// rollup says "active" iff any session is active, regardless of
-	// recency — so the parity test exercises the EXISTS branch.
-	_ = seedSearchSessionWithEvents(t, s, agentID, marker+"-closed",
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "post_call"},
-		})
-	activeSessionID := seedSearchSessionWithEvents(t, s, agentID, marker+"-active",
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "post_call"},
-		})
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE sessions SET state='active' WHERE session_id=$1::uuid`,
-		activeSessionID,
-	); err != nil {
-		t.Fatalf("force active: %v", err)
-	}
-
-	searchRes, err := s.Search(ctx, marker)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(searchRes.Agents) == 0 {
-		t.Fatalf("Search returned no agents")
-	}
-	searchState := ""
-	for _, a := range searchRes.Agents {
-		if a.AgentID == agentID {
-			searchState = a.State
-			break
+		suffix := randomUUID(t)[:8]
+		marker := "parity-" + suffix
+		agentID := seedSearchAgent(t, s, marker, "h-"+suffix, "u-"+suffix)
+		// Two sessions: one closed (older), one active (newer). The
+		// rollup says "active" iff any session is active, regardless of
+		// recency — so the parity test exercises the EXISTS branch.
+		_ = seedSearchSessionWithEvents(t, s, agentID, marker+"-closed",
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "post_call"},
+			})
+		activeSessionID := seedSearchSessionWithEvents(t, s, agentID, marker+"-active",
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "post_call"},
+			})
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE sessions SET state='active' WHERE session_id=$1`,
+			activeSessionID,
+		); err != nil {
+			t.Fatalf("force active: %v", err)
 		}
-	}
-	if searchState == "" {
-		t.Fatalf("Search did not return the seeded agent")
-	}
 
-	listRes, err := s.ListAgents(ctx, AgentListParams{
-		Search: marker,
-		Limit:  10,
+		searchRes, err := s.Search(ctx, marker)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(searchRes.Agents) == 0 {
+			t.Fatalf("Search returned no agents")
+		}
+		searchState := ""
+		for _, a := range searchRes.Agents {
+			if a.AgentID == agentID {
+				searchState = a.State
+				break
+			}
+		}
+		if searchState == "" {
+			t.Fatalf("Search did not return the seeded agent")
+		}
+
+		listRes, err := s.ListAgents(ctx, AgentListParams{
+			Search: marker,
+			Limit:  10,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		if len(listRes.Agents) == 0 {
+			t.Fatalf("ListAgents returned no agents")
+		}
+		listState := ""
+		for _, a := range listRes.Agents {
+			if a.AgentID == agentID {
+				listState = a.State
+				break
+			}
+		}
+		if listState == "" {
+			t.Fatalf("ListAgents did not return the seeded agent")
+		}
+
+		if searchState != listState {
+			t.Errorf("state parity broken: Search=%q ListAgents=%q (both must read the same rollup)",
+				searchState, listState)
+		}
+		if searchState != "active" {
+			t.Errorf("expected active state from the rollup, got %q", searchState)
+		}
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	if len(listRes.Agents) == 0 {
-		t.Fatalf("ListAgents returned no agents")
-	}
-	listState := ""
-	for _, a := range listRes.Agents {
-		if a.AgentID == agentID {
-			listState = a.State
-			break
-		}
-	}
-	if listState == "" {
-		t.Fatalf("ListAgents did not return the seeded agent")
-	}
-
-	if searchState != listState {
-		t.Errorf("state parity broken: Search=%q ListAgents=%q (both must read the same rollup)",
-			searchState, listState)
-	}
-	if searchState != "active" {
-		t.Errorf("expected active state from the rollup, got %q", searchState)
-	}
 }
 
 func TestSearch_EventCrossFieldPrecedence(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	suffix := randomUUID(t)[:8]
-	marker := "xfev-" + suffix
-	agentID := seedSearchAgent(t, s,
-		"xf-"+suffix, "h-"+suffix, "u-"+suffix)
+		suffix := randomUUID(t)[:8]
+		marker := "xfev-" + suffix
+		agentID := seedSearchAgent(t, s,
+			"xf-"+suffix, "h-"+suffix, "u-"+suffix)
 
-	// All three rows exact-match the marker, each via a different
-	// field. With cross-field precedence event_type > tool_name >
-	// model the row order should follow.
-	//
-	// event_type accepts any TEXT in this schema; we use the marker
-	// as the literal value.
-	_ = seedSearchSessionWithEvents(t, s, agentID, "xf-"+suffix,
-		[]struct {
-			EventType string
-			ToolName  string
-			Model     string
-		}{
-			{EventType: "tool_call", Model: marker},    // rank 2: model exact
-			{EventType: "tool_call", ToolName: marker}, // rank 1: tool_name exact
-			{EventType: marker},                        // rank 0: event_type exact
-		})
+		// All three rows exact-match the marker, each via a different
+		// field. With cross-field precedence event_type > tool_name >
+		// model the row order should follow.
+		//
+		// event_type accepts any TEXT in this schema; we use the marker
+		// as the literal value.
+		_ = seedSearchSessionWithEvents(t, s, agentID, "xf-"+suffix,
+			[]struct {
+				EventType string
+				ToolName  string
+				Model     string
+			}{
+				{EventType: "tool_call", Model: marker},    // rank 2: model exact
+				{EventType: "tool_call", ToolName: marker}, // rank 1: tool_name exact
+				{EventType: marker},                        // rank 0: event_type exact
+			})
 
-	results, err := s.Search(ctx, marker)
-	if err != nil {
-		t.Fatalf("Search(%q): %v", marker, err)
-	}
-	if len(results.Events) < 3 {
-		t.Fatalf("expected ≥3 event hits, got %d", len(results.Events))
-	}
-	if results.Events[0].EventType != marker {
-		t.Errorf("rank 0: want event_type=%q, got %q", marker, results.Events[0].EventType)
-	}
-	if results.Events[1].ToolName != marker {
-		t.Errorf("rank 1: want tool_name=%q, got %q", marker, results.Events[1].ToolName)
-	}
-	if results.Events[2].Model != marker {
-		t.Errorf("rank 2: want model=%q, got %q", marker, results.Events[2].Model)
-	}
+		results, err := s.Search(ctx, marker)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", marker, err)
+		}
+		if len(results.Events) < 3 {
+			t.Fatalf("expected ≥3 event hits, got %d", len(results.Events))
+		}
+		if results.Events[0].EventType != marker {
+			t.Errorf("rank 0: want event_type=%q, got %q", marker, results.Events[0].EventType)
+		}
+		if results.Events[1].ToolName != marker {
+			t.Errorf("rank 1: want tool_name=%q, got %q", marker, results.Events[1].ToolName)
+		}
+		if results.Events[2].Model != marker {
+			t.Errorf("rank 2: want model=%q, got %q", marker, results.Events[2].Model)
+		}
+	})
 }

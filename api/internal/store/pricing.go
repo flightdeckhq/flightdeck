@@ -3,7 +3,7 @@
 // The SQL that turns events into estimated cost (ARCHITECTURE.md, Cost
 // estimation). Every LLM event (post_call, embeddings, and an llm_error
 // that carries a failed stream's billed tokens) is priced from its
-// model_pricing row, found per event by CostPriceJoinSQL, with the
+// model_pricing row, found per event by queries.priceJoin, with the
 // formula in costRowSQL; only metered calls are counted, and a cost the
 // gateway or client reported is used in place of the estimate. The
 // expressions are built from constants and from the operator's
@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // failedStreamFilter matches an llm_error whose stream failed after the
@@ -61,23 +61,8 @@ const platformFamilySQL = `CASE
 
 // undatedModelSQL strips a trailing snapshot date (-20250929 or
 // -2025-11-13) from e.model, the fallback when the dated id has no
-// price of its own.
+// price of its own. regexp_replace spells the same on both engines.
 const undatedModelSQL = `regexp_replace(e.model, '-([0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$', '')`
-
-// CostPriceJoinSQL joins each LLM event aliased e to its model_pricing
-// row as mp: the exact id before the undated id, the platform family's
-// row before the direct one. Events without a price, and events that
-// are not LLM calls, get a NULL mp.
-func CostPriceJoinSQL() string {
-	return `LEFT JOIN LATERAL (
-		SELECT p.* FROM model_pricing p
-		WHERE ` + costEventFilter + `
-		  AND p.model_id IN (e.model, ` + undatedModelSQL + `)
-		  AND p.platform IN (` + platformFamilySQL + `, 'direct')
-		ORDER BY (p.model_id = e.model) DESC, (p.platform = 'direct') ASC
-		LIMIT 1
-	) mp ON TRUE`
-}
 
 // sqlString quotes s as a SQL string literal.
 func sqlString(s string) string {
@@ -105,9 +90,9 @@ var perModelMultipliers = map[string]map[string]string{
 // multiplier: the per-model column where there is one (the settings'
 // value standing in when the column is NULL), the settings' value
 // otherwise, and 1 for anything not listed.
-func multiplierSQL(field string, values map[string]float64) string {
+func multiplierSQL(d storage.Dialect, field string, values map[string]float64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CASE e.payload->>%s", sqlString(field))
+	fmt.Fprintf(&b, "CASE %s", d.JSONText("e.payload", field))
 	perModel := perModelMultipliers[field]
 	for _, value := range sortedKeys(values) {
 		if col, ok := perModel[value]; ok {
@@ -126,41 +111,41 @@ func multiplierSQL(field string, values map[string]float64) string {
 }
 
 // costRowSQL is the USD cost of one event aliased e priced by mp (see
-// CostPriceJoinSQL), following the formula in ARCHITECTURE.md: the
+// queries.priceJoin), following the formula in ARCHITECTURE.md: the
 // reported cost when there is one, else the token terms at the row's
 // rates (the context tier's above its threshold) times the multipliers,
 // plus the server-tool fees. Calls that are not metered cost 0; an
 // unpriced call is NULL, which SUM skips.
-func costRowSQL(settings PricingSettings) string {
-	// The payload counters are cast to numbers: ingestion rejects a
+func costRowSQL(d storage.Dialect, settings PricingSettings) string {
+	// The payload counters are read as numbers: ingestion rejects a
 	// non-integer tokens_cache_creation_1h or server_tool_use counter,
 	// and the worker decodes both into integer types before writing the
 	// payload, so a stored value is always numeric.
 	const (
-		in     = "COALESCE(e.tokens_input, 0)"
-		out    = "COALESCE(e.tokens_output, 0)"
-		read   = "COALESCE(e.tokens_cache_read, 0)"
-		write  = "COALESCE(e.tokens_cache_creation, 0)"
-		write1 = "LEAST(COALESCE((e.payload->>'tokens_cache_creation_1h')::bigint, 0), " + write + ")"
-		reason = "LEAST(COALESCE(e.tokens_reasoning, 0), " + out + ")"
+		in    = "COALESCE(e.tokens_input, 0)"
+		out   = "COALESCE(e.tokens_output, 0)"
+		read  = "COALESCE(e.tokens_cache_read, 0)"
+		write = "COALESCE(e.tokens_cache_creation, 0)"
 	)
+	write1 := d.Least("COALESCE("+d.JSONNumber("e.payload", "tokens_cache_creation_1h")+", 0)", write)
+	reason := d.Least("COALESCE(e.tokens_reasoning, 0)", out)
 	tiered := func(base, tier string) string {
 		return fmt.Sprintf(
 			"(CASE WHEN mp.tier_threshold_tokens IS NOT NULL AND %s > mp.tier_threshold_tokens"+
 				" THEN COALESCE(mp.%s, mp.%s) ELSE mp.%s END)", in, tier, base, base)
 	}
 	tokens := fmt.Sprintf(
-		"(GREATEST(%s - %s - %s, 0) * %s"+
+		"(%s * %s"+
 			" + %s * %s"+
-			" + GREATEST(%s - %s, 0) * %s"+
 			" + %s * %s"+
-			" + GREATEST(%s - %s, 0) * %s"+
+			" + %s * %s"+
+			" + %s * %s"+
 			" + %s * COALESCE(mp.reasoning, %s)) / 1000000.0",
-		in, read, write, tiered("input", "tier_input"),
+		d.Greatest(in+" - "+read+" - "+write, "0"), tiered("input", "tier_input"),
 		read, tiered("cache_read", "tier_cache_read"),
-		write, write1, tiered("cache_write_5m", "tier_cache_write_5m"),
+		d.Greatest(write+" - "+write1, "0"), tiered("cache_write_5m", "tier_cache_write_5m"),
 		write1, tiered("cache_write_1h", "tier_cache_write_1h"),
-		out, reason, tiered("output", "tier_output"),
+		d.Greatest(out+" - "+reason, "0"), tiered("output", "tier_output"),
 		reason, tiered("output", "tier_output"),
 	)
 
@@ -177,12 +162,12 @@ func costRowSQL(settings PricingSettings) string {
 	}
 	var factor strings.Builder
 	for _, field := range sortedKeys(fields) {
-		fmt.Fprintf(&factor, " * %s", multiplierSQL(field, fields[field]))
+		fmt.Fprintf(&factor, " * %s", multiplierSQL(d, field, fields[field]))
 	}
 	var fees strings.Builder
 	for _, tool := range sortedKeys(settings.ServerTools) {
-		fmt.Fprintf(&fees, " + COALESCE((e.payload->'server_tool_use'->>%s)::numeric, 0) * %.6f",
-			sqlString(tool), settings.ServerTools[tool])
+		fmt.Fprintf(&fees, " + COALESCE(%s, 0) * %.6f",
+			d.JSONNumber("e.payload", "server_tool_use", tool), settings.ServerTools[tool])
 	}
 
 	return fmt.Sprintf(
@@ -191,13 +176,14 @@ func costRowSQL(settings PricingSettings) string {
 	)
 }
 
-// BuildCostAggregateSQL is the estimated-cost aggregate over events
-// aliased e joined to their prices with CostPriceJoinSQL. It sums the
-// events costEventFilter selects only, so it is correct in a query over every event type (the
-// per-agent summary) as well as in one already limited to them.
-func BuildCostAggregateSQL() string {
-	return "COALESCE(SUM(" + costRowSQL(CurrentPricingSettings()) +
-		") FILTER (WHERE " + costEventFilter + "), 0)"
+// costAggregateSQL is the estimated-cost aggregate over events aliased
+// e joined to their prices with queries.priceJoin. It sums the events
+// costEventFilter selects only, so it is correct in a query over every
+// event type (the per-agent summary) as well as in one already limited
+// to them.
+func (s *Store) costAggregateSQL() string {
+	return "COALESCE(SUM(CASE WHEN " + costEventFilter + " THEN " +
+		costRowSQL(s.d, CurrentPricingSettings()) + " END), 0)"
 }
 
 // maxUnpricedModels bounds the models_unpriced list: a surface names a
@@ -249,15 +235,17 @@ func billingModesSQL(extraJoin, extraWhere string) string {
 // runs both over the shared test vectors so they cannot drift. Used for
 // rows whose events.provider is empty and for the session-level model.
 // providerCase substitutes {id} with the model column, an OpenAI-style
-// "ft:" fine-tune prefix stripped as the Go rule does.
+// "ft:" fine-tune prefix stripped as the Go rule does. regexp_like is
+// Postgres 15's spelling and the function the storage driver gives
+// SQLite, so the expression is the same on both engines.
 const ProviderCaseSQL = `CASE
-	WHEN {id} ~ '^(claude|anthropic\.)' THEN 'anthropic'
-	WHEN {id} ~ '^(gpt-|chatgpt-|o[1-9](-|$)|codex-|text-embedding-|dall-e-|gpt-image-|whisper-|tts-|omni-moderation|openai\.)' THEN 'openai'
-	WHEN {id} ~ '^(gemini|gemma)' THEN 'google'
-	WHEN {id} ~ '^grok' THEN 'xai'
-	WHEN {id} ~ '^(mistral|mixtral|codestral|ministral|pixtral|magistral|devstral|open-mistral|open-mixtral)' THEN 'mistral'
-	WHEN {id} ~ '^(llama|meta\.)' THEN 'meta'
-	WHEN {id} ~ '^deepseek' THEN 'deepseek'
+	WHEN regexp_like({id}, '^(claude|anthropic\.)') THEN 'anthropic'
+	WHEN regexp_like({id}, '^(gpt-|chatgpt-|o[1-9](-|$)|codex-|text-embedding-|dall-e-|gpt-image-|whisper-|tts-|omni-moderation|openai\.)') THEN 'openai'
+	WHEN regexp_like({id}, '^(gemini|gemma)') THEN 'google'
+	WHEN regexp_like({id}, '^grok') THEN 'xai'
+	WHEN regexp_like({id}, '^(mistral|mixtral|codestral|ministral|pixtral|magistral|devstral|open-mistral|open-mixtral)') THEN 'mistral'
+	WHEN regexp_like({id}, '^(llama|meta\.)') THEN 'meta'
+	WHEN regexp_like({id}, '^deepseek') THEN 'deepseek'
 	ELSE 'other'
 END`
 
@@ -284,17 +272,32 @@ func (s *Store) costCoverage(
 		{unpricedModelsSQL(extraJoin, extraWhere), &out.ModelsUnpriced},
 		{billingModesSQL(extraJoin, extraWhere), &out.BillingModes},
 	} {
-		rows, err := s.pool.Query(ctx, probe.sql, args...)
-		if err != nil {
-			return out, fmt.Errorf("cost coverage: %w", err)
-		}
-		values, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		values, err := s.queryStrings(ctx, probe.sql, args...)
 		if err != nil {
 			return out, fmt.Errorf("cost coverage: %w", err)
 		}
 		*probe.dest = values
 	}
 	return out, nil
+}
+
+// queryStrings runs a one-column query on the reader and returns the
+// column's values; nil when there is no row.
+func (s *Store) queryStrings(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.reader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var values []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		values = append(values, v)
+	}
+	return values, rows.Err()
 }
 
 // PricedModel is a model a token policy may degrade to.
@@ -308,7 +311,10 @@ type PricedModel struct {
 // model id), generating output (embedding models price none), not an
 // operator alias, not a fine-tune price key (`ft:<base>` prices every
 // fine-tune of a base model; a callable fine-tune id carries an org and
-// suffix after it), and not past their deprecation date.
+// suffix after it), and not past their deprecation date. deprecated_on
+// is stored as a YYYY-MM-DD date on both engines, so the text
+// comparison SQLite makes against CURRENT_DATE is the date comparison
+// Postgres makes.
 const degradeTargetWhere = `platform = 'direct' AND source <> 'alias' AND output > 0
 	AND model_id NOT LIKE 'ft:%'
 	AND (deprecated_on IS NULL OR deprecated_on > CURRENT_DATE)`
@@ -316,15 +322,23 @@ const degradeTargetWhere = `platform = 'direct' AND source <> 'alias' AND output
 // DegradeTargets lists the models a policy may degrade to, by provider
 // then model id.
 func (s *Store) DegradeTargets(ctx context.Context) ([]PricedModel, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.reader().QueryContext(ctx, `
 		SELECT model_id, provider FROM model_pricing
 		WHERE `+degradeTargetWhere+`
 		ORDER BY provider, model_id`)
 	if err != nil {
 		return nil, fmt.Errorf("degrade targets: %w", err)
 	}
-	models, err := pgx.CollectRows(rows, pgx.RowToStructByPos[PricedModel])
-	if err != nil {
+	defer func() { _ = rows.Close() }()
+	var models []PricedModel
+	for rows.Next() {
+		var m PricedModel
+		if err := rows.Scan(&m.ModelID, &m.Provider); err != nil {
+			return nil, fmt.Errorf("degrade targets: %w", err)
+		}
+		models = append(models, m)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("degrade targets: %w", err)
 	}
 	return models, nil
@@ -333,7 +347,7 @@ func (s *Store) DegradeTargets(ctx context.Context) ([]PricedModel, error) {
 // IsDegradeTarget reports whether modelID is one of DegradeTargets.
 func (s *Store) IsDegradeTarget(ctx context.Context, modelID string) (bool, error) {
 	var ok bool
-	err := s.pool.QueryRow(ctx, `
+	err := s.reader().QueryRowContext(ctx, `
 		SELECT EXISTS (SELECT 1 FROM model_pricing WHERE model_id = $1 AND `+degradeTargetWhere+`)`,
 		modelID).Scan(&ok)
 	if err != nil {

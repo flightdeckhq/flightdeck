@@ -32,7 +32,7 @@ func seedAgentForList(
 ) string {
 	t.Helper()
 	agentID := randomUUID(t)
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	firstSeen := opts.firstSeen
 	if firstSeen.IsZero() {
 		firstSeen = now.Add(-2 * time.Hour)
@@ -43,14 +43,14 @@ func seedAgentForList(
 	}
 
 	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO agents (
 			agent_id, agent_type, client_type, agent_name,
 			user_name, hostname,
 			first_seen_at, last_seen_at,
 			total_sessions, total_tokens
 		) VALUES (
-			$1::uuid, $2, $3, $4,
+			$1, $2, $3, $4,
 			$5, $6,
 			$7, $8,
 			$9, $10
@@ -65,24 +65,24 @@ func seedAgentForList(
 	}
 
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx,
-			`DELETE FROM sessions WHERE agent_id = $1::uuid`, agentID)
-		_, _ = s.pool.Exec(ctx,
-			`DELETE FROM agents WHERE agent_id = $1::uuid`, agentID)
+		_, _ = s.db.ExecContext(ctx,
+			`DELETE FROM sessions WHERE agent_id = $1`, agentID)
+		_, _ = s.db.ExecContext(ctx,
+			`DELETE FROM agents WHERE agent_id = $1`, agentID)
 	})
 
 	// Optional session seeding to exercise state rollup +
 	// context-filter paths.
 	if opts.sessionState != "" {
-		_, err := s.pool.Exec(ctx, `
+		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (
 				session_id, agent_id, flavor, state,
 				started_at, last_seen_at, tokens_used,
 				agent_type, client_type, context
 			) VALUES (
-				gen_random_uuid(), $1::uuid, $2, $3,
+				gen_random_uuid(), $1, $2, $3,
 				$4, $5, $6,
-				$7, $8, $9::jsonb
+				$7, $8, $9
 			)
 		`, agentID, "test-list-flavor", opts.sessionState,
 			lastSeen, lastSeen, opts.totalTokens,
@@ -126,423 +126,423 @@ func (o agentListOpts) sessionContextJSON() string {
 // --- Filter coverage ---
 
 func TestListAgents_FilterByAgentType(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	codingID := seedAgentForList(t, s, "test-list-coding-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "u1", hostname: "h1",
-	})
-	prodID := seedAgentForList(t, s, "test-list-prod-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "production", clientType: "flightdeck_sensor",
-		userName: "u2", hostname: "h2",
-	})
+		codingID := seedAgentForList(t, s, "test-list-coding-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "u1", hostname: "h1",
+		})
+		prodID := seedAgentForList(t, s, "test-list-prod-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "production", clientType: "flightdeck_sensor",
+			userName: "u2", hostname: "h2",
+		})
 
-	ctx := context.Background()
-	resp, err := s.ListAgents(ctx, AgentListParams{
-		AgentType: []string{"coding"},
-		Limit:     100,
+		ctx := context.Background()
+		resp, err := s.ListAgents(ctx, AgentListParams{
+			AgentType: []string{"coding"},
+			Limit:     100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, codingID, true)
+		assertContainsAgent(t, resp, prodID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, codingID, true)
-	assertContainsAgent(t, resp, prodID, false)
 }
 
 func TestListAgents_FilterByClientType(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	ccID := seedAgentForList(t, s, "test-list-cc-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-	sensorID := seedAgentForList(t, s, "test-list-sensor-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "production", clientType: "flightdeck_sensor",
-	})
+		ccID := seedAgentForList(t, s, "test-list-cc-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		sensorID := seedAgentForList(t, s, "test-list-sensor-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "production", clientType: "flightdeck_sensor",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		ClientType: []string{"claude_code"},
-		Limit:      100,
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			ClientType: []string{"claude_code"},
+			Limit:      100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, ccID, true)
+		assertContainsAgent(t, resp, sensorID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, ccID, true)
-	assertContainsAgent(t, resp, sensorID, false)
 }
 
 func TestListAgents_FilterByState_LateralRollup(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	activeID := seedAgentForList(t, s, "test-list-state-active-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code", sessionState: "active",
-	})
-	closedID := seedAgentForList(t, s, "test-list-state-closed-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code", sessionState: "closed",
-	})
+		activeID := seedAgentForList(t, s, "test-list-state-active-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code", sessionState: "active",
+		})
+		closedID := seedAgentForList(t, s, "test-list-state-closed-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code", sessionState: "closed",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		State: []string{"active"},
-		Limit: 100,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, activeID, true)
-	assertContainsAgent(t, resp, closedID, false)
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			State: []string{"active"},
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, activeID, true)
+		assertContainsAgent(t, resp, closedID, false)
 
-	// Second read, OR-within-dimension.
-	resp2, err := s.ListAgents(context.Background(), AgentListParams{
-		State: []string{"active", "closed"},
-		Limit: 100,
+		// Second read, OR-within-dimension.
+		resp2, err := s.ListAgents(context.Background(), AgentListParams{
+			State: []string{"active", "closed"},
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp2, activeID, true)
+		assertContainsAgent(t, resp2, closedID, true)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp2, activeID, true)
-	assertContainsAgent(t, resp2, closedID, true)
 }
 
 func TestListAgents_FilterByHostnameAndUser(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	matchID := seedAgentForList(t, s, "test-list-hu-match-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "alice", hostname: "host-alice",
-	})
-	missID := seedAgentForList(t, s, "test-list-hu-miss-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "bob", hostname: "host-bob",
-	})
+		matchID := seedAgentForList(t, s, "test-list-hu-match-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "alice", hostname: "host-alice",
+		})
+		missID := seedAgentForList(t, s, "test-list-hu-miss-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "bob", hostname: "host-bob",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		UserName: []string{"alice"},
-		Limit:    100,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, matchID, true)
-	assertContainsAgent(t, resp, missID, false)
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			UserName: []string{"alice"},
+			Limit:    100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, matchID, true)
+		assertContainsAgent(t, resp, missID, false)
 
-	// hostname filter independently.
-	resp2, err := s.ListAgents(context.Background(), AgentListParams{
-		Hostname: []string{"host-alice"},
-		Limit:    100,
+		// hostname filter independently.
+		resp2, err := s.ListAgents(context.Background(), AgentListParams{
+			Hostname: []string{"host-alice"},
+			Limit:    100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp2, matchID, true)
+		assertContainsAgent(t, resp2, missID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp2, matchID, true)
-	assertContainsAgent(t, resp2, missID, false)
 }
 
 func TestListAgents_FilterByContextOS_ExistsSubquery(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	linuxID := seedAgentForList(t, s, "test-list-os-linux-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		sessionState: "closed", os: "Linux",
-	})
-	macID := seedAgentForList(t, s, "test-list-os-mac-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		sessionState: "closed", os: "Darwin",
-	})
+		linuxID := seedAgentForList(t, s, "test-list-os-linux-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			sessionState: "closed", os: "Linux",
+		})
+		macID := seedAgentForList(t, s, "test-list-os-mac-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			sessionState: "closed", os: "Darwin",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		OS:    []string{"Linux"},
-		Limit: 100,
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			OS:    []string{"Linux"},
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, linuxID, true)
+		assertContainsAgent(t, resp, macID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, linuxID, true)
-	assertContainsAgent(t, resp, macID, false)
 }
 
 func TestListAgents_Search_AgentNameAndHostname(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	byNameID := seedAgentForList(t, s, "test-list-search-UniquelyNamed-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		hostname: "plain-host",
-	})
-	byHostID := seedAgentForList(t, s, "test-list-search-regular-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		hostname: "distinct-host-marker",
-	})
-	otherID := seedAgentForList(t, s, "test-list-search-nomatch-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		hostname: "elsewhere",
-	})
+		byNameID := seedAgentForList(t, s, "test-list-search-UniquelyNamed-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			hostname: "plain-host",
+		})
+		byHostID := seedAgentForList(t, s, "test-list-search-regular-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			hostname: "distinct-host-marker",
+		})
+		otherID := seedAgentForList(t, s, "test-list-search-nomatch-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			hostname: "elsewhere",
+		})
 
-	// Substring match in agent_name only.
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "UniquelyNamed",
-		Limit:  100,
-	})
-	if err != nil {
-		t.Fatalf("search agent_name: %v", err)
-	}
-	assertContainsAgent(t, resp, byNameID, true)
-	assertContainsAgent(t, resp, byHostID, false)
-	assertContainsAgent(t, resp, otherID, false)
+		// Substring match in agent_name only.
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "UniquelyNamed",
+			Limit:  100,
+		})
+		if err != nil {
+			t.Fatalf("search agent_name: %v", err)
+		}
+		assertContainsAgent(t, resp, byNameID, true)
+		assertContainsAgent(t, resp, byHostID, false)
+		assertContainsAgent(t, resp, otherID, false)
 
-	// Substring match in hostname only.
-	resp2, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "distinct-host-marker",
-		Limit:  100,
-	})
-	if err != nil {
-		t.Fatalf("search hostname: %v", err)
-	}
-	assertContainsAgent(t, resp2, byHostID, true)
-	assertContainsAgent(t, resp2, byNameID, false)
-	assertContainsAgent(t, resp2, otherID, false)
+		// Substring match in hostname only.
+		resp2, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "distinct-host-marker",
+			Limit:  100,
+		})
+		if err != nil {
+			t.Fatalf("search hostname: %v", err)
+		}
+		assertContainsAgent(t, resp2, byHostID, true)
+		assertContainsAgent(t, resp2, byNameID, false)
+		assertContainsAgent(t, resp2, otherID, false)
 
-	// Case-insensitive (ILIKE).
-	resp3, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "uniquelyNAMED", // mixed-case to prove ILIKE
-		Limit:  100,
+		// Case-insensitive (ILIKE).
+		resp3, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "uniquelyNAMED", // mixed-case to prove ILIKE
+			Limit:  100,
+		})
+		if err != nil {
+			t.Fatalf("search case-insensitive: %v", err)
+		}
+		assertContainsAgent(t, resp3, byNameID, true)
 	})
-	if err != nil {
-		t.Fatalf("search case-insensitive: %v", err)
-	}
-	assertContainsAgent(t, resp3, byNameID, true)
 }
 
 func TestListAgents_FilterByUpdatedSince(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	recentID := seedAgentForList(t, s, "test-list-since-recent-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		lastSeen: now.Add(-5 * time.Minute),
-	})
-	oldID := seedAgentForList(t, s, "test-list-since-old-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		lastSeen: now.Add(-24 * time.Hour),
-	})
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		recentID := seedAgentForList(t, s, "test-list-since-recent-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			lastSeen: now.Add(-5 * time.Minute),
+		})
+		oldID := seedAgentForList(t, s, "test-list-since-old-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			lastSeen: now.Add(-24 * time.Hour),
+		})
 
-	cutoff := now.Add(-1 * time.Hour)
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		UpdatedSince: &cutoff,
-		Limit:        100,
+		cutoff := now.Add(-1 * time.Hour)
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			UpdatedSince: &cutoff,
+			Limit:        100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, recentID, true)
+		assertContainsAgent(t, resp, oldID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, recentID, true)
-	assertContainsAgent(t, resp, oldID, false)
 }
 
 // --- Sort ---
 
 func TestListAgents_SortByAgentName_AscDesc(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	aID := seedAgentForList(t, s, "test-list-sort-aaa-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-	zID := seedAgentForList(t, s, "test-list-sort-zzz-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
+		aID := seedAgentForList(t, s, "test-list-sort-aaa-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		zID := seedAgentForList(t, s, "test-list-sort-zzz-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
 
-	asc, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "test-list-sort-",
-		Sort:   "agent_name", Order: "asc",
-		Limit: 100,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents asc: %v", err)
-	}
-	assertOrder(t, asc, []string{aID, zID})
+		asc, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "test-list-sort-",
+			Sort:   "agent_name", Order: "asc",
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents asc: %v", err)
+		}
+		assertOrder(t, asc, []string{aID, zID})
 
-	desc, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "test-list-sort-",
-		Sort:   "agent_name", Order: "desc",
-		Limit: 100,
+		desc, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "test-list-sort-",
+			Sort:   "agent_name", Order: "desc",
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents desc: %v", err)
+		}
+		assertOrder(t, desc, []string{zID, aID})
 	})
-	if err != nil {
-		t.Fatalf("ListAgents desc: %v", err)
-	}
-	assertOrder(t, desc, []string{zID, aID})
 }
 
 func TestListAgents_SortByTotalSessions(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	lowID := seedAgentForList(t, s, "test-list-ts-low-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		totalSessions: 1, totalTokens: 10,
-	})
-	highID := seedAgentForList(t, s, "test-list-ts-high-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		totalSessions: 99, totalTokens: 1000,
-	})
+		lowID := seedAgentForList(t, s, "test-list-ts-low-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			totalSessions: 1, totalTokens: 10,
+		})
+		highID := seedAgentForList(t, s, "test-list-ts-high-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			totalSessions: 99, totalTokens: 1000,
+		})
 
-	desc, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "test-list-ts-",
-		Sort:   "total_sessions", Order: "desc",
-		Limit: 100,
+		desc, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "test-list-ts-",
+			Sort:   "total_sessions", Order: "desc",
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertOrder(t, desc, []string{highID, lowID})
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertOrder(t, desc, []string{highID, lowID})
 }
 
 func TestListAgents_SortByStateOrdinal_ActiveFirstOnDesc(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	activeID := seedAgentForList(t, s, "test-list-ss-active-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code", sessionState: "active",
-	})
-	staleID := seedAgentForList(t, s, "test-list-ss-stale-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code", sessionState: "stale",
-	})
-	closedID := seedAgentForList(t, s, "test-list-ss-closed-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code", sessionState: "closed",
-	})
+		activeID := seedAgentForList(t, s, "test-list-ss-active-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code", sessionState: "active",
+		})
+		staleID := seedAgentForList(t, s, "test-list-ss-stale-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code", sessionState: "stale",
+		})
+		closedID := seedAgentForList(t, s, "test-list-ss-closed-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code", sessionState: "closed",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: "test-list-ss-",
-		Sort:   "state", Order: "desc",
-		Limit: 100,
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: "test-list-ss-",
+			Sort:   "state", Order: "desc",
+			Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		// DESC means "most-engaged state first" per ordinal CASE in
+		// store/agents.go: active (1) < stale (3) < closed (4).
+		assertOrder(t, resp, []string{activeID, staleID, closedID})
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	// DESC means "most-engaged state first" per ordinal CASE in
-	// store/agents.go: active (1) < stale (3) < closed (4).
-	assertOrder(t, resp, []string{activeID, staleID, closedID})
 }
 
 // --- Pagination ---
 
 func TestListAgents_Pagination_LimitOffsetTotal(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	// Seed 5 fixtures with a common search prefix so Total is
-	// deterministic regardless of other rows in the shared DB.
-	prefix := "test-list-page-" + randomUUID(t)[:8]
-	for i := 0; i < 5; i++ {
-		_ = seedAgentForList(t, s, prefix+"-"+randomUUID(t)[:6], agentListOpts{
-			agentType: "coding", clientType: "claude_code",
+		// Seed 5 fixtures with a common search prefix so Total is
+		// deterministic regardless of other rows in the shared DB.
+		prefix := "test-list-page-" + randomUUID(t)[:8]
+		for i := 0; i < 5; i++ {
+			_ = seedAgentForList(t, s, prefix+"-"+randomUUID(t)[:6], agentListOpts{
+				agentType: "coding", clientType: "claude_code",
+			})
+		}
+
+		ctx := context.Background()
+		resp, err := s.ListAgents(ctx, AgentListParams{
+			Search: prefix,
+			Limit:  2, Offset: 0,
 		})
-	}
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		if resp.Total != 5 {
+			t.Errorf("Total: want 5, got %d", resp.Total)
+		}
+		if len(resp.Agents) != 2 {
+			t.Errorf("Page 1 size: want 2, got %d", len(resp.Agents))
+		}
+		if !resp.HasMore {
+			t.Errorf("HasMore should be true on page 1")
+		}
 
-	ctx := context.Background()
-	resp, err := s.ListAgents(ctx, AgentListParams{
-		Search: prefix,
-		Limit:  2, Offset: 0,
+		resp2, err := s.ListAgents(ctx, AgentListParams{
+			Search: prefix,
+			Limit:  2, Offset: 4,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		if len(resp2.Agents) != 1 {
+			t.Errorf("Last page size: want 1, got %d", len(resp2.Agents))
+		}
+		if resp2.HasMore {
+			t.Errorf("HasMore should be false on the last page")
+		}
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	if resp.Total != 5 {
-		t.Errorf("Total: want 5, got %d", resp.Total)
-	}
-	if len(resp.Agents) != 2 {
-		t.Errorf("Page 1 size: want 2, got %d", len(resp.Agents))
-	}
-	if !resp.HasMore {
-		t.Errorf("HasMore should be true on page 1")
-	}
-
-	resp2, err := s.ListAgents(ctx, AgentListParams{
-		Search: prefix,
-		Limit:  2, Offset: 4,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	if len(resp2.Agents) != 1 {
-		t.Errorf("Last page size: want 1, got %d", len(resp2.Agents))
-	}
-	if resp2.HasMore {
-		t.Errorf("HasMore should be false on the last page")
-	}
 }
 
 // --- Combination (AND across dimensions, OR within) ---
 
 func TestListAgents_FilterCombination_AndAcrossDimensions(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	matchID := seedAgentForList(t, s, "test-list-combo-match-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "alice",
-	})
-	halfID := seedAgentForList(t, s, "test-list-combo-half-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "bob", // matches agent_type but not user
-	})
-	noneID := seedAgentForList(t, s, "test-list-combo-none-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "production", clientType: "flightdeck_sensor",
-		userName: "carol",
-	})
+		matchID := seedAgentForList(t, s, "test-list-combo-match-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "alice",
+		})
+		halfID := seedAgentForList(t, s, "test-list-combo-half-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "bob", // matches agent_type but not user
+		})
+		noneID := seedAgentForList(t, s, "test-list-combo-none-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "production", clientType: "flightdeck_sensor",
+			userName: "carol",
+		})
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		AgentType: []string{"coding"},
-		UserName:  []string{"alice"},
-		Limit:     100,
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			AgentType: []string{"coding"},
+			UserName:  []string{"alice"},
+			Limit:     100,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		assertContainsAgent(t, resp, matchID, true)
+		assertContainsAgent(t, resp, halfID, false)
+		assertContainsAgent(t, resp, noneID, false)
 	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	assertContainsAgent(t, resp, matchID, true)
-	assertContainsAgent(t, resp, halfID, false)
-	assertContainsAgent(t, resp, noneID, false)
 }
 
 // --- GetAgentByID ---
 
 func TestGetAgentByID_HitMiss(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	agentID := seedAgentForList(t, s, "test-byid-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-		userName: "alice", hostname: "host-byid",
-		sessionState: "active",
+		agentID := seedAgentForList(t, s, "test-byid-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+			userName: "alice", hostname: "host-byid",
+			sessionState: "active",
+		})
+
+		ctx := context.Background()
+		a, err := s.GetAgentByID(ctx, agentID)
+		if err != nil {
+			t.Fatalf("GetAgentByID: %v", err)
+		}
+		if a == nil {
+			t.Fatal("expected hit, got nil")
+		}
+		if a.AgentID != agentID {
+			t.Errorf("AgentID: want %s, got %s", agentID, a.AgentID)
+		}
+		if a.State != "active" {
+			t.Errorf("State rollup should be 'active', got %q", a.State)
+		}
+
+		// Miss — random UUID that matches nothing.
+		notExist := randomUUID(t)
+		a2, err := s.GetAgentByID(ctx, notExist)
+		if err != nil {
+			t.Fatalf("GetAgentByID miss: %v", err)
+		}
+		if a2 != nil {
+			t.Errorf("expected nil for missing id, got %+v", a2)
+		}
 	})
-
-	ctx := context.Background()
-	a, err := s.GetAgentByID(ctx, agentID)
-	if err != nil {
-		t.Fatalf("GetAgentByID: %v", err)
-	}
-	if a == nil {
-		t.Fatal("expected hit, got nil")
-	}
-	if a.AgentID != agentID {
-		t.Errorf("AgentID: want %s, got %s", agentID, a.AgentID)
-	}
-	if a.State != "active" {
-		t.Errorf("State rollup should be 'active', got %q", a.State)
-	}
-
-	// Miss — random UUID that matches nothing.
-	notExist := randomUUID(t)
-	a2, err := s.GetAgentByID(ctx, notExist)
-	if err != nil {
-		t.Fatalf("GetAgentByID miss: %v", err)
-	}
-	if a2 != nil {
-		t.Errorf("expected nil for missing id, got %+v", a2)
-	}
 }
 
 // --- Sub-agent rollup (agent_role + topology) ---
@@ -560,7 +560,7 @@ func seedSubagentLink(
 	t.Helper()
 	ctx := context.Background()
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	parentAgentID = seedAgentForList(t, s, parentName, agentListOpts{
 		agentType:  "production",
@@ -578,13 +578,13 @@ func seedSubagentLink(
 	})
 
 	parentSessionID = randomUUID(t)
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, agent_id, flavor, state,
 			started_at, last_seen_at, tokens_used,
 			agent_type, client_type
 		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
+			$1, $2, $3, 'closed',
 			$4, $4, 0,
 			'production', 'claude_code'
 		)
@@ -594,17 +594,17 @@ func seedSubagentLink(
 	}
 
 	childSessionID = randomUUID(t)
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, agent_id, flavor, state,
 			started_at, last_seen_at, tokens_used,
 			agent_type, client_type,
 			parent_session_id, agent_role
 		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
+			$1, $2, $3, 'closed',
 			$4, $4, 0,
 			'production', 'claude_code',
-			$5::uuid, $6
+			$5, $6
 		)
 	`, childSessionID, childAgentID, "test-subagent-child",
 		now.Add(-2*time.Minute), parentSessionID, childRole); err != nil {
@@ -638,61 +638,61 @@ func findAgent(resp *AgentListResponse, agentID string) *AgentSummary {
 // authority and is read-locked by the seed-paths in this test plus
 // the GetAgentFleet equivalent below.
 func TestListAgents_SubAgentRollupFields(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	loneID := seedAgentForList(t, s, "test-subagent-lone-"+randomUUID(t)[:8], agentListOpts{
-		agentType: "production", clientType: "claude_code",
-		sessionState: "closed",
-	})
-	parentID, childID, _, _ := seedSubagentLink(
-		t, s,
-		"test-subagent-parent-"+randomUUID(t)[:8],
-		"test-subagent-child-"+randomUUID(t)[:8],
-		"Researcher",
-	)
+		loneID := seedAgentForList(t, s, "test-subagent-lone-"+randomUUID(t)[:8], agentListOpts{
+			agentType: "production", clientType: "claude_code",
+			sessionState: "closed",
+		})
+		parentID, childID, _, _ := seedSubagentLink(
+			t, s,
+			"test-subagent-parent-"+randomUUID(t)[:8],
+			"test-subagent-child-"+randomUUID(t)[:8],
+			"Researcher",
+		)
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{Limit: 100})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-
-	lone := findAgent(resp, loneID)
-	if lone == nil {
-		t.Fatalf("lone agent missing from response")
-	}
-	if lone.Topology != "lone" {
-		t.Errorf("lone agent topology=%q, want %q", lone.Topology, "lone")
-	}
-	if lone.AgentRole != nil {
-		t.Errorf("lone agent agent_role=%v, want nil", *lone.AgentRole)
-	}
-
-	parent := findAgent(resp, parentID)
-	if parent == nil {
-		t.Fatalf("parent agent missing from response")
-	}
-	if parent.Topology != "parent" {
-		t.Errorf("parent agent topology=%q, want %q", parent.Topology, "parent")
-	}
-	if parent.AgentRole != nil {
-		t.Errorf("parent agent agent_role=%v, want nil", *parent.AgentRole)
-	}
-
-	child := findAgent(resp, childID)
-	if child == nil {
-		t.Fatalf("child agent missing from response")
-	}
-	if child.Topology != "child" {
-		t.Errorf("child agent topology=%q, want %q", child.Topology, "child")
-	}
-	if child.AgentRole == nil || *child.AgentRole != "Researcher" {
-		var got string
-		if child.AgentRole != nil {
-			got = *child.AgentRole
+		resp, err := s.ListAgents(context.Background(), AgentListParams{Limit: 100})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
 		}
-		t.Errorf("child agent agent_role=%q, want %q", got, "Researcher")
-	}
+
+		lone := findAgent(resp, loneID)
+		if lone == nil {
+			t.Fatalf("lone agent missing from response")
+		}
+		if lone.Topology != "lone" {
+			t.Errorf("lone agent topology=%q, want %q", lone.Topology, "lone")
+		}
+		if lone.AgentRole != nil {
+			t.Errorf("lone agent agent_role=%v, want nil", *lone.AgentRole)
+		}
+
+		parent := findAgent(resp, parentID)
+		if parent == nil {
+			t.Fatalf("parent agent missing from response")
+		}
+		if parent.Topology != "parent" {
+			t.Errorf("parent agent topology=%q, want %q", parent.Topology, "parent")
+		}
+		if parent.AgentRole != nil {
+			t.Errorf("parent agent agent_role=%v, want nil", *parent.AgentRole)
+		}
+
+		child := findAgent(resp, childID)
+		if child == nil {
+			t.Fatalf("child agent missing from response")
+		}
+		if child.Topology != "child" {
+			t.Errorf("child agent topology=%q, want %q", child.Topology, "child")
+		}
+		if child.AgentRole == nil || *child.AgentRole != "Researcher" {
+			var got string
+			if child.AgentRole != nil {
+				got = *child.AgentRole
+			}
+			t.Errorf("child agent agent_role=%q, want %q", got, "Researcher")
+		}
+	})
 }
 
 // TestGetAgentByID_SubAgentRollupFields verifies the second projection
@@ -701,47 +701,47 @@ func TestListAgents_SubAgentRollupFields(t *testing.T) {
 // projection would fire here too — this test exists to guard the
 // scan-side wiring, which is independent.
 func TestGetAgentByID_SubAgentRollupFields(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	parentID, childID, _, _ := seedSubagentLink(
-		t, s,
-		"test-subagent-byid-parent-"+randomUUID(t)[:8],
-		"test-subagent-byid-child-"+randomUUID(t)[:8],
-		"Writer",
-	)
+		parentID, childID, _, _ := seedSubagentLink(
+			t, s,
+			"test-subagent-byid-parent-"+randomUUID(t)[:8],
+			"test-subagent-byid-child-"+randomUUID(t)[:8],
+			"Writer",
+		)
 
-	parent, err := s.GetAgentByID(context.Background(), parentID)
-	if err != nil {
-		t.Fatalf("GetAgentByID parent: %v", err)
-	}
-	if parent == nil {
-		t.Fatalf("parent agent missing")
-	}
-	if parent.Topology != "parent" {
-		t.Errorf("parent topology=%q, want parent", parent.Topology)
-	}
-	if parent.AgentRole != nil {
-		t.Errorf("parent agent_role=%v, want nil", *parent.AgentRole)
-	}
-
-	child, err := s.GetAgentByID(context.Background(), childID)
-	if err != nil {
-		t.Fatalf("GetAgentByID child: %v", err)
-	}
-	if child == nil {
-		t.Fatalf("child agent missing")
-	}
-	if child.Topology != "child" {
-		t.Errorf("child topology=%q, want child", child.Topology)
-	}
-	if child.AgentRole == nil || *child.AgentRole != "Writer" {
-		var got string
-		if child.AgentRole != nil {
-			got = *child.AgentRole
+		parent, err := s.GetAgentByID(context.Background(), parentID)
+		if err != nil {
+			t.Fatalf("GetAgentByID parent: %v", err)
 		}
-		t.Errorf("child agent_role=%q, want Writer", got)
-	}
+		if parent == nil {
+			t.Fatalf("parent agent missing")
+		}
+		if parent.Topology != "parent" {
+			t.Errorf("parent topology=%q, want parent", parent.Topology)
+		}
+		if parent.AgentRole != nil {
+			t.Errorf("parent agent_role=%v, want nil", *parent.AgentRole)
+		}
+
+		child, err := s.GetAgentByID(context.Background(), childID)
+		if err != nil {
+			t.Fatalf("GetAgentByID child: %v", err)
+		}
+		if child == nil {
+			t.Fatalf("child agent missing")
+		}
+		if child.Topology != "child" {
+			t.Errorf("child topology=%q, want child", child.Topology)
+		}
+		if child.AgentRole == nil || *child.AgentRole != "Writer" {
+			var got string
+			if child.AgentRole != nil {
+				got = *child.AgentRole
+			}
+			t.Errorf("child agent_role=%q, want Writer", got)
+		}
+	})
 }
 
 // TestGetAgentFleet_SubAgentRollupFields covers the fleet endpoint's
@@ -750,50 +750,50 @@ func TestGetAgentByID_SubAgentRollupFields(t *testing.T) {
 // agentRollupSQL is shared but the surrounding scan loop is
 // duplicated, so this test guards the second scan.
 func TestGetAgentFleet_SubAgentRollupFields(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	parentID, childID, _, _ := seedSubagentLink(
-		t, s,
-		"test-subagent-fleet-parent-"+randomUUID(t)[:8],
-		"test-subagent-fleet-child-"+randomUUID(t)[:8],
-		"Reviewer",
-	)
+		parentID, childID, _, _ := seedSubagentLink(
+			t, s,
+			"test-subagent-fleet-parent-"+randomUUID(t)[:8],
+			"test-subagent-fleet-child-"+randomUUID(t)[:8],
+			"Reviewer",
+		)
 
-	agents, _, err := s.GetAgentFleet(context.Background(), 200, 0, "")
-	if err != nil {
-		t.Fatalf("GetAgentFleet: %v", err)
-	}
-
-	var seenParent, seenChild bool
-	for _, a := range agents {
-		if a.AgentID == parentID {
-			seenParent = true
-			if a.Topology != "parent" {
-				t.Errorf("fleet parent topology=%q, want parent", a.Topology)
-			}
-			if a.AgentRole != nil {
-				t.Errorf("fleet parent agent_role=%v, want nil", *a.AgentRole)
-			}
+		agents, _, err := s.GetAgentFleet(context.Background(), 200, 0, "")
+		if err != nil {
+			t.Fatalf("GetAgentFleet: %v", err)
 		}
-		if a.AgentID == childID {
-			seenChild = true
-			if a.Topology != "child" {
-				t.Errorf("fleet child topology=%q, want child", a.Topology)
-			}
-			if a.AgentRole == nil || *a.AgentRole != "Reviewer" {
-				var got string
-				if a.AgentRole != nil {
-					got = *a.AgentRole
+
+		var seenParent, seenChild bool
+		for _, a := range agents {
+			if a.AgentID == parentID {
+				seenParent = true
+				if a.Topology != "parent" {
+					t.Errorf("fleet parent topology=%q, want parent", a.Topology)
 				}
-				t.Errorf("fleet child agent_role=%q, want Reviewer", got)
+				if a.AgentRole != nil {
+					t.Errorf("fleet parent agent_role=%v, want nil", *a.AgentRole)
+				}
+			}
+			if a.AgentID == childID {
+				seenChild = true
+				if a.Topology != "child" {
+					t.Errorf("fleet child topology=%q, want child", a.Topology)
+				}
+				if a.AgentRole == nil || *a.AgentRole != "Reviewer" {
+					var got string
+					if a.AgentRole != nil {
+						got = *a.AgentRole
+					}
+					t.Errorf("fleet child agent_role=%q, want Reviewer", got)
+				}
 			}
 		}
-	}
-	if !seenParent || !seenChild {
-		t.Fatalf("seeded agents missing from fleet response: parent=%v child=%v",
-			seenParent, seenChild)
-	}
+		if !seenParent || !seenChild {
+			t.Fatalf("seeded agents missing from fleet response: parent=%v child=%v",
+				seenParent, seenChild)
+		}
+	})
 }
 
 // TestGetAgentFleet_RecentSessionsAttached exercises the
@@ -808,84 +808,84 @@ func TestGetAgentFleet_SubAgentRollupFields(t *testing.T) {
 // rollup is the contract that makes the row materialise regardless
 // of where the session sits in the global page.
 func TestGetAgentFleet_RecentSessionsAttached(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	agentID := seedAgentForList(t, s,
-		"test-recent-sessions-"+randomUUID(t)[:8],
-		agentListOpts{
-			agentType:  "production",
-			clientType: "claude_code",
-			userName:   "test-recent",
-			hostname:   "test-recent-host",
-			lastSeen:   now,
-		})
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		agentID := seedAgentForList(t, s,
+			"test-recent-sessions-"+randomUUID(t)[:8],
+			agentListOpts{
+				agentType:  "production",
+				clientType: "claude_code",
+				userName:   "test-recent",
+				hostname:   "test-recent-host",
+				lastSeen:   now,
+			})
 
-	// Seven sessions, spaced one hour apart, oldest first. The
-	// rollup must return the latest five in descending order.
-	sessionIDs := make([]string, 7)
-	for i := 0; i < 7; i++ {
-		sessionIDs[i] = randomUUID(t)
-		startedAt := now.Add(time.Duration(-i) * time.Hour)
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO sessions (
-				session_id, agent_id, flavor, state,
-				started_at, last_seen_at, tokens_used,
-				agent_type, client_type
-			) VALUES (
-				$1::uuid, $2::uuid, $3, 'closed',
-				$4, $4, $5,
-				'production', 'claude_code'
-			)
-		`, sessionIDs[i], agentID,
-			"test-recent-sessions",
-			startedAt, 100+i*10); err != nil {
-			t.Fatalf("seed session %d: %v", i, err)
-		}
-	}
-
-	agents, _, err := s.GetAgentFleet(ctx, 200, 0, "")
-	if err != nil {
-		t.Fatalf("GetAgentFleet: %v", err)
-	}
-
-	var found *AgentSummary
-	for i := range agents {
-		if agents[i].AgentID == agentID {
-			found = &agents[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("seeded agent %s missing from fleet", agentID)
-	}
-	if len(found.RecentSessions) != RecentSessionsPerAgent {
-		t.Fatalf("recent_sessions length=%d, want %d",
-			len(found.RecentSessions), RecentSessionsPerAgent)
-	}
-	// Descending started_at means sessionIDs[0..4] (i=0 is newest).
-	for i, rs := range found.RecentSessions {
-		if rs.SessionID != sessionIDs[i] {
-			t.Errorf("position %d session_id=%s, want %s",
-				i, rs.SessionID, sessionIDs[i])
-		}
-		if i > 0 {
-			prev := found.RecentSessions[i-1]
-			// This row's started_at must be at-or-before the
-			// previous row's (descending sort with equal-time
-			// tolerance).
-			if rs.StartedAt.After(prev.StartedAt) {
-				t.Errorf("recent_sessions not descending at %d: "+
-					"prev=%v this=%v", i, prev.StartedAt, rs.StartedAt)
+		// Seven sessions, spaced one hour apart, oldest first. The
+		// rollup must return the latest five in descending order.
+		sessionIDs := make([]string, 7)
+		for i := 0; i < 7; i++ {
+			sessionIDs[i] = randomUUID(t)
+			startedAt := now.Add(time.Duration(-i) * time.Hour)
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO sessions (
+					session_id, agent_id, flavor, state,
+					started_at, last_seen_at, tokens_used,
+					agent_type, client_type
+				) VALUES (
+					$1, $2, $3, 'closed',
+					$4, $4, $5,
+					'production', 'claude_code'
+				)
+			`, sessionIDs[i], agentID,
+				"test-recent-sessions",
+				startedAt, 100+i*10); err != nil {
+				t.Fatalf("seed session %d: %v", i, err)
 			}
 		}
-		if rs.AgentID == nil || *rs.AgentID != agentID {
-			t.Errorf("recent_sessions[%d] agent_id mismatch: got=%v",
-				i, rs.AgentID)
+
+		agents, _, err := s.GetAgentFleet(ctx, 200, 0, "")
+		if err != nil {
+			t.Fatalf("GetAgentFleet: %v", err)
 		}
-	}
+
+		var found *AgentSummary
+		for i := range agents {
+			if agents[i].AgentID == agentID {
+				found = &agents[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("seeded agent %s missing from fleet", agentID)
+		}
+		if len(found.RecentSessions) != RecentSessionsPerAgent {
+			t.Fatalf("recent_sessions length=%d, want %d",
+				len(found.RecentSessions), RecentSessionsPerAgent)
+		}
+		// Descending started_at means sessionIDs[0..4] (i=0 is newest).
+		for i, rs := range found.RecentSessions {
+			if rs.SessionID != sessionIDs[i] {
+				t.Errorf("position %d session_id=%s, want %s",
+					i, rs.SessionID, sessionIDs[i])
+			}
+			if i > 0 {
+				prev := found.RecentSessions[i-1]
+				// This row's started_at must be at-or-before the
+				// previous row's (descending sort with equal-time
+				// tolerance).
+				if rs.StartedAt.After(prev.StartedAt) {
+					t.Errorf("recent_sessions not descending at %d: "+
+						"prev=%v this=%v", i, prev.StartedAt, rs.StartedAt)
+				}
+			}
+			if rs.AgentID == nil || *rs.AgentID != agentID {
+				t.Errorf("recent_sessions[%d] agent_id mismatch: got=%v",
+					i, rs.AgentID)
+			}
+		}
+	})
 }
 
 // TestGetRecentSessionsByAgentIDs_FrameworkProjected guards the
@@ -894,74 +894,74 @@ func TestGetAgentFleet_RecentSessionsAttached(t *testing.T) {
 // — two with distinct bare-name frameworks, one with NULL framework
 // (direct-SDK) — and asserts the projection carries each verbatim.
 func TestGetRecentSessionsByAgentIDs_FrameworkProjected(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	agentID := seedAgentForList(t, s,
-		"test-recent-framework-"+randomUUID(t)[:8],
-		agentListOpts{
-			agentType:  "coding",
-			clientType: "flightdeck_sensor",
-			userName:   "test-framework",
-			hostname:   "test-framework-host",
-			lastSeen:   now,
-		})
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		agentID := seedAgentForList(t, s,
+			"test-recent-framework-"+randomUUID(t)[:8],
+			agentListOpts{
+				agentType:  "coding",
+				clientType: "flightdeck_sensor",
+				userName:   "test-framework",
+				hostname:   "test-framework-host",
+				lastSeen:   now,
+			})
 
-	// Newest-first: langchain, then crewai, then a NULL-framework
-	// direct-SDK session.
-	type seed struct {
-		sessionID string
-		framework *string
-	}
-	langchain, crewai := "langchain", "crewai"
-	seeds := []seed{
-		{randomUUID(t), &langchain},
-		{randomUUID(t), &crewai},
-		{randomUUID(t), nil},
-	}
-	for i, sd := range seeds {
-		startedAt := now.Add(time.Duration(-i) * time.Hour)
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO sessions (
-				session_id, agent_id, flavor, state,
-				started_at, last_seen_at, tokens_used,
-				agent_type, client_type, framework
-			) VALUES (
-				$1::uuid, $2::uuid, $3, 'closed',
-				$4, $4, 100,
-				'coding', 'flightdeck_sensor', $5
-			)
-		`, sd.sessionID, agentID, "test-recent-framework",
-			startedAt, sd.framework); err != nil {
-			t.Fatalf("seed session %d: %v", i, err)
+		// Newest-first: langchain, then crewai, then a NULL-framework
+		// direct-SDK session.
+		type seed struct {
+			sessionID string
+			framework *string
 		}
-	}
-
-	got, err := s.GetRecentSessionsByAgentIDs(
-		ctx, []string{agentID}, RecentSessionsPerAgent,
-	)
-	if err != nil {
-		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
-	}
-	rows := got[agentID]
-	if len(rows) != len(seeds) {
-		t.Fatalf("recent sessions len=%d, want %d", len(rows), len(seeds))
-	}
-	// Rows come back newest-first, matching the seed order.
-	for i, sd := range seeds {
-		r := rows[i]
-		switch {
-		case sd.framework == nil && r.Framework != nil:
-			t.Errorf("row %d framework=%q, want nil", i, *r.Framework)
-		case sd.framework != nil && r.Framework == nil:
-			t.Errorf("row %d framework=nil, want %q", i, *sd.framework)
-		case sd.framework != nil && *r.Framework != *sd.framework:
-			t.Errorf("row %d framework=%q, want %q",
-				i, *r.Framework, *sd.framework)
+		langchain, crewai := "langchain", "crewai"
+		seeds := []seed{
+			{randomUUID(t), &langchain},
+			{randomUUID(t), &crewai},
+			{randomUUID(t), nil},
 		}
-	}
+		for i, sd := range seeds {
+			startedAt := now.Add(time.Duration(-i) * time.Hour)
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO sessions (
+					session_id, agent_id, flavor, state,
+					started_at, last_seen_at, tokens_used,
+					agent_type, client_type, framework
+				) VALUES (
+					$1, $2, $3, 'closed',
+					$4, $4, 100,
+					'coding', 'flightdeck_sensor', $5
+				)
+			`, sd.sessionID, agentID, "test-recent-framework",
+				startedAt, sd.framework); err != nil {
+				t.Fatalf("seed session %d: %v", i, err)
+			}
+		}
+
+		got, err := s.GetRecentSessionsByAgentIDs(
+			ctx, []string{agentID}, RecentSessionsPerAgent,
+		)
+		if err != nil {
+			t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+		}
+		rows := got[agentID]
+		if len(rows) != len(seeds) {
+			t.Fatalf("recent sessions len=%d, want %d", len(rows), len(seeds))
+		}
+		// Rows come back newest-first, matching the seed order.
+		for i, sd := range seeds {
+			r := rows[i]
+			switch {
+			case sd.framework == nil && r.Framework != nil:
+				t.Errorf("row %d framework=%q, want nil", i, *r.Framework)
+			case sd.framework != nil && r.Framework == nil:
+				t.Errorf("row %d framework=nil, want %q", i, *sd.framework)
+			case sd.framework != nil && *r.Framework != *sd.framework:
+				t.Errorf("row %d framework=%q, want %q",
+					i, *r.Framework, *sd.framework)
+			}
+		}
+	})
 }
 
 // TestGetRecentSessionsByAgentIDs_ParentAgentIDProjected guards the
@@ -984,160 +984,160 @@ func TestGetRecentSessionsByAgentIDs_FrameworkProjected(t *testing.T) {
 // across runs and tip the /agents page past the pagination
 // footer threshold, breaking T61).
 func TestGetRecentSessionsByAgentIDs_ParentAgentIDProjected(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	suffix := randomUUID(t)[:8]
-	t.Cleanup(func() {
-		// Delete sessions first (FK), then agents. Both deletes
-		// are scoped by name prefix so they only touch rows this
-		// test created.
-		_, _ = s.pool.Exec(context.Background(),
-			`DELETE FROM sessions WHERE agent_id IN (
-				SELECT agent_id FROM agents
-				WHERE agent_name LIKE 'test-parentid-%' || $1
-			)`, suffix)
-		_, _ = s.pool.Exec(context.Background(),
-			`DELETE FROM agents WHERE agent_name LIKE 'test-parentid-%' || $1`,
-			suffix)
-	})
-	parentAgentID := seedAgentForList(t, s,
-		"test-parentid-parent-"+suffix,
-		agentListOpts{
-			agentType:  "coding",
-			clientType: "flightdeck_sensor",
-			userName:   "test-parentid",
-			hostname:   "test-parentid-host",
-			lastSeen:   now,
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		suffix := randomUUID(t)[:8]
+		t.Cleanup(func() {
+			// Delete sessions first (FK), then agents. Both deletes
+			// are scoped by name prefix so they only touch rows this
+			// test created.
+			_, _ = s.db.ExecContext(context.Background(),
+				`DELETE FROM sessions WHERE agent_id IN (
+					SELECT agent_id FROM agents
+					WHERE agent_name LIKE 'test-parentid-%' || $1
+				)`, suffix)
+			_, _ = s.db.ExecContext(context.Background(),
+				`DELETE FROM agents WHERE agent_name LIKE 'test-parentid-%' || $1`,
+				suffix)
 		})
-	childAgentA := seedAgentForList(t, s,
-		"test-parentid-child-a-"+suffix,
-		agentListOpts{
-			agentType:  "coding",
-			clientType: "flightdeck_sensor",
-			userName:   "test-parentid",
-			hostname:   "test-parentid-host",
-			lastSeen:   now,
-		})
-	childAgentB := seedAgentForList(t, s,
-		"test-parentid-child-b-"+suffix,
-		agentListOpts{
-			agentType:  "coding",
-			clientType: "flightdeck_sensor",
-			userName:   "test-parentid",
-			hostname:   "test-parentid-host",
-			lastSeen:   now,
-		})
+		parentAgentID := seedAgentForList(t, s,
+			"test-parentid-parent-"+suffix,
+			agentListOpts{
+				agentType:  "coding",
+				clientType: "flightdeck_sensor",
+				userName:   "test-parentid",
+				hostname:   "test-parentid-host",
+				lastSeen:   now,
+			})
+		childAgentA := seedAgentForList(t, s,
+			"test-parentid-child-a-"+suffix,
+			agentListOpts{
+				agentType:  "coding",
+				clientType: "flightdeck_sensor",
+				userName:   "test-parentid",
+				hostname:   "test-parentid-host",
+				lastSeen:   now,
+			})
+		childAgentB := seedAgentForList(t, s,
+			"test-parentid-child-b-"+suffix,
+			agentListOpts{
+				agentType:  "coding",
+				clientType: "flightdeck_sensor",
+				userName:   "test-parentid",
+				hostname:   "test-parentid-host",
+				lastSeen:   now,
+			})
 
-	parentSessionID := randomUUID(t)
-	childSessionA := randomUUID(t)
-	childSessionB := randomUUID(t)
+		parentSessionID := randomUUID(t)
+		childSessionA := randomUUID(t)
+		childSessionB := randomUUID(t)
 
-	// Parent session — no parent_session_id.
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO sessions (
-			session_id, agent_id, flavor, state,
-			started_at, last_seen_at, tokens_used,
-			agent_type, client_type
-		) VALUES (
-			$1::uuid, $2::uuid, $3, 'closed',
-			$4, $4, 100,
-			'coding', 'flightdeck_sensor'
-		)
-	`, parentSessionID, parentAgentID, "test-parentid-parent-"+suffix, now); err != nil {
-		t.Fatalf("seed parent session: %v", err)
-	}
-	// Child sessions — each points at the parent session via
-	// parent_session_id.
-	for _, child := range []struct {
-		sessionID string
-		agentID   string
-		flavor    string
-	}{
-		{childSessionA, childAgentA, "test-parentid-child-a-" + suffix},
-		{childSessionB, childAgentB, "test-parentid-child-b-" + suffix},
-	} {
-		if _, err := s.pool.Exec(ctx, `
+		// Parent session — no parent_session_id.
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (
 				session_id, agent_id, flavor, state,
 				started_at, last_seen_at, tokens_used,
-				agent_type, client_type, parent_session_id
+				agent_type, client_type
 			) VALUES (
-				$1::uuid, $2::uuid, $3, 'closed',
-				$4, $4, 50,
-				'coding', 'flightdeck_sensor', $5::uuid
+				$1, $2, $3, 'closed',
+				$4, $4, 100,
+				'coding', 'flightdeck_sensor'
 			)
-		`, child.sessionID, child.agentID, child.flavor, now, parentSessionID); err != nil {
-			t.Fatalf("seed child session %s: %v", child.sessionID, err)
+		`, parentSessionID, parentAgentID, "test-parentid-parent-"+suffix, now); err != nil {
+			t.Fatalf("seed parent session: %v", err)
 		}
-	}
-
-	got, err := s.GetRecentSessionsByAgentIDs(
-		ctx,
-		[]string{parentAgentID, childAgentA, childAgentB},
-		RecentSessionsPerAgent,
-	)
-	if err != nil {
-		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
-	}
-
-	// Parent's session: parent_session_id nil → parent_agent_id nil.
-	parentRows := got[parentAgentID]
-	if len(parentRows) != 1 {
-		t.Fatalf("parent rows len=%d, want 1", len(parentRows))
-	}
-	if parentRows[0].ParentSessionID != nil {
-		t.Errorf("parent ParentSessionID=%q, want nil", *parentRows[0].ParentSessionID)
-	}
-	if parentRows[0].ParentAgentID != nil {
-		t.Errorf("parent ParentAgentID=%q, want nil", *parentRows[0].ParentAgentID)
-	}
-
-	// Each child's session: parent_session_id points at parent's
-	// session; parent_agent_id is the parent agent.
-	for _, childAgent := range []string{childAgentA, childAgentB} {
-		childRows := got[childAgent]
-		if len(childRows) != 1 {
-			t.Fatalf("child %s rows len=%d, want 1", childAgent, len(childRows))
-		}
-		r := childRows[0]
-		if r.ParentSessionID == nil || *r.ParentSessionID != parentSessionID {
-			gotPSID := "<nil>"
-			if r.ParentSessionID != nil {
-				gotPSID = *r.ParentSessionID
+		// Child sessions — each points at the parent session via
+		// parent_session_id.
+		for _, child := range []struct {
+			sessionID string
+			agentID   string
+			flavor    string
+		}{
+			{childSessionA, childAgentA, "test-parentid-child-a-" + suffix},
+			{childSessionB, childAgentB, "test-parentid-child-b-" + suffix},
+		} {
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO sessions (
+					session_id, agent_id, flavor, state,
+					started_at, last_seen_at, tokens_used,
+					agent_type, client_type, parent_session_id
+				) VALUES (
+					$1, $2, $3, 'closed',
+					$4, $4, 50,
+					'coding', 'flightdeck_sensor', $5
+				)
+			`, child.sessionID, child.agentID, child.flavor, now, parentSessionID); err != nil {
+				t.Fatalf("seed child session %s: %v", child.sessionID, err)
 			}
-			t.Errorf("child %s ParentSessionID=%s, want %s",
-				childAgent, gotPSID, parentSessionID)
 		}
-		if r.ParentAgentID == nil || *r.ParentAgentID != parentAgentID {
-			gotPAID := "<nil>"
-			if r.ParentAgentID != nil {
-				gotPAID = *r.ParentAgentID
+
+		got, err := s.GetRecentSessionsByAgentIDs(
+			ctx,
+			[]string{parentAgentID, childAgentA, childAgentB},
+			RecentSessionsPerAgent,
+		)
+		if err != nil {
+			t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+		}
+
+		// Parent's session: parent_session_id nil → parent_agent_id nil.
+		parentRows := got[parentAgentID]
+		if len(parentRows) != 1 {
+			t.Fatalf("parent rows len=%d, want 1", len(parentRows))
+		}
+		if parentRows[0].ParentSessionID != nil {
+			t.Errorf("parent ParentSessionID=%q, want nil", *parentRows[0].ParentSessionID)
+		}
+		if parentRows[0].ParentAgentID != nil {
+			t.Errorf("parent ParentAgentID=%q, want nil", *parentRows[0].ParentAgentID)
+		}
+
+		// Each child's session: parent_session_id points at parent's
+		// session; parent_agent_id is the parent agent.
+		for _, childAgent := range []string{childAgentA, childAgentB} {
+			childRows := got[childAgent]
+			if len(childRows) != 1 {
+				t.Fatalf("child %s rows len=%d, want 1", childAgent, len(childRows))
 			}
-			t.Errorf("child %s ParentAgentID=%s, want %s",
-				childAgent, gotPAID, parentAgentID)
+			r := childRows[0]
+			if r.ParentSessionID == nil || *r.ParentSessionID != parentSessionID {
+				gotPSID := "<nil>"
+				if r.ParentSessionID != nil {
+					gotPSID = *r.ParentSessionID
+				}
+				t.Errorf("child %s ParentSessionID=%s, want %s",
+					childAgent, gotPSID, parentSessionID)
+			}
+			if r.ParentAgentID == nil || *r.ParentAgentID != parentAgentID {
+				gotPAID := "<nil>"
+				if r.ParentAgentID != nil {
+					gotPAID = *r.ParentAgentID
+				}
+				t.Errorf("child %s ParentAgentID=%s, want %s",
+					childAgent, gotPAID, parentAgentID)
+			}
 		}
-	}
+	})
 }
 
 // TestGetRecentSessionsByAgentIDs_Empty exercises the empty-input
 // short-circuit. Avoids needlessly round-tripping Postgres when the
 // caller hasn't filled the slice yet.
 func TestGetRecentSessionsByAgentIDs_Empty(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	got, err := s.GetRecentSessionsByAgentIDs(
-		context.Background(), nil, RecentSessionsPerAgent,
-	)
-	if err != nil {
-		t.Fatalf("empty input err: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("empty input map len=%d, want 0", len(got))
-	}
+		got, err := s.GetRecentSessionsByAgentIDs(
+			context.Background(), nil, RecentSessionsPerAgent,
+		)
+		if err != nil {
+			t.Fatalf("empty input err: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("empty input map len=%d, want 0", len(got))
+		}
+	})
 }
 
 // --- Assertion helpers ---
@@ -1197,15 +1197,15 @@ func seedSessionWithContext(
 ) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (
 			session_id, agent_id, flavor, state,
 			started_at, last_seen_at, tokens_used,
 			agent_type, client_type, context
 		) VALUES (
-			gen_random_uuid(), $1::uuid, $2, $3,
+			gen_random_uuid(), $1, $2, $3,
 			$4, $4, 0,
-			$5, $6, $7::jsonb
+			$5, $6, $7
 		)
 	`, agentID, "latest-context-test-flavor", "active",
 		startedAt, agentType, clientType, contextJSON)
@@ -1215,205 +1215,205 @@ func seedSessionWithContext(
 }
 
 func TestListAgents_LatestSessionContextProjected(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	// Seed one agent with TWO sessions where the LATER session
-	// carries a different os / branch / repo / orchestration /
-	// arch / python_version / process_name. The projection must
-	// return the LATER session's values.
-	agentName := "test-latest-context-latest-" + randomUUID(t)[:8]
-	agentID := seedAgentForList(t, s, agentName, agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	earlier := now.Add(-2 * time.Hour)
-	later := now.Add(-1 * time.Hour)
-	seedSessionWithContext(t, s, agentID, "coding", "claude_code", earlier,
-		`{"os":"Darwin","arch":"x86_64","git_branch":"old-branch",`+
-			`"git_repo":"old-repo","orchestration":"docker",`+
-			`"python_version":"3.10","process_name":"old.py"}`)
-	seedSessionWithContext(t, s, agentID, "coding", "claude_code", later,
-		`{"os":"Linux","arch":"arm64","git_branch":"main",`+
-			`"git_repo":"flightdeck","orchestration":"kubernetes",`+
-			`"python_version":"3.12","process_name":"new.py",`+
-			`"telemetry":"otlp"}`)
+		// Seed one agent with TWO sessions where the LATER session
+		// carries a different os / branch / repo / orchestration /
+		// arch / python_version / process_name. The projection must
+		// return the LATER session's values.
+		agentName := "test-latest-context-latest-" + randomUUID(t)[:8]
+		agentID := seedAgentForList(t, s, agentName, agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		earlier := now.Add(-2 * time.Hour)
+		later := now.Add(-1 * time.Hour)
+		seedSessionWithContext(t, s, agentID, "coding", "claude_code", earlier,
+			`{"os":"Darwin","arch":"x86_64","git_branch":"old-branch",`+
+				`"git_repo":"old-repo","orchestration":"docker",`+
+				`"python_version":"3.10","process_name":"old.py"}`)
+		seedSessionWithContext(t, s, agentID, "coding", "claude_code", later,
+			`{"os":"Linux","arch":"arm64","git_branch":"main",`+
+				`"git_repo":"flightdeck","orchestration":"kubernetes",`+
+				`"python_version":"3.12","process_name":"new.py",`+
+				`"telemetry":"otlp"}`)
 
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		Search: agentName,
-		Limit:  10,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	var got *AgentSummary
-	for i := range resp.Agents {
-		if resp.Agents[i].AgentID == agentID {
-			got = &resp.Agents[i]
-			break
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			Search: agentName,
+			Limit:  10,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
 		}
-	}
-	if got == nil {
-		t.Fatalf("agent %s not in response (size=%d)", agentID, len(resp.Agents))
-	}
-
-	mustEq := func(field, want string, got *string) {
-		t.Helper()
-		if got == nil {
-			t.Errorf("%s: want %q, got nil", field, want)
-			return
-		}
-		if *got != want {
-			t.Errorf("%s: want %q, got %q", field, want, *got)
-		}
-	}
-	mustEq("os", "Linux", got.OS)
-	mustEq("arch", "arm64", got.Arch)
-	mustEq("git_branch", "main", got.GitBranch)
-	mustEq("git_repo", "flightdeck", got.GitRepo)
-	mustEq("orchestration", "kubernetes", got.Orchestration)
-	mustEq("python_version", "3.12", got.PythonVersion)
-	mustEq("process_name", "new.py", got.ProcessName)
-	mustEq("telemetry", "otlp", got.Telemetry)
-}
-
-func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-
-	// An agent with no sessions at all: every runtime-context
-	// field must come back nil (no LATERAL row → null projection).
-	noSessName := "test-latest-context-no-sess-" + randomUUID(t)[:8]
-	noSessID := seedAgentForList(t, s, noSessName, agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-
-	// An agent whose latest session has an empty context object:
-	// every key is missing → every JSONB extract returns nil.
-	emptyName := "test-latest-context-empty-ctx-" + randomUUID(t)[:8]
-	emptyID := seedAgentForList(t, s, emptyName, agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-	seedSessionWithContext(t, s, emptyID, "coding", "claude_code",
-		time.Now().UTC().Add(-1*time.Hour), `{}`)
-
-	resp, err := s.ListAgents(context.Background(), AgentListParams{
-		Limit: 200,
-	})
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	check := func(name, id string) {
-		t.Helper()
 		var got *AgentSummary
 		for i := range resp.Agents {
-			if resp.Agents[i].AgentID == id {
+			if resp.Agents[i].AgentID == agentID {
 				got = &resp.Agents[i]
 				break
 			}
 		}
 		if got == nil {
-			t.Fatalf("%s (%s) not in response (size=%d)", name, id, len(resp.Agents))
+			t.Fatalf("agent %s not in response (size=%d)", agentID, len(resp.Agents))
 		}
-		if got.OS != nil || got.Arch != nil || got.GitBranch != nil ||
-			got.GitRepo != nil || got.Orchestration != nil ||
-			got.PythonVersion != nil || got.ProcessName != nil ||
-			got.Telemetry != nil {
-			t.Errorf("%s: expected all runtime-context fields nil, got "+
-				"os=%v arch=%v git_branch=%v git_repo=%v orchestration=%v "+
-				"python_version=%v process_name=%v telemetry=%v",
-				name, got.OS, got.Arch, got.GitBranch, got.GitRepo,
-				got.Orchestration, got.PythonVersion, got.ProcessName,
-				got.Telemetry)
+
+		mustEq := func(field, want string, got *string) {
+			t.Helper()
+			if got == nil {
+				t.Errorf("%s: want %q, got nil", field, want)
+				return
+			}
+			if *got != want {
+				t.Errorf("%s: want %q, got %q", field, want, *got)
+			}
 		}
-	}
-	check("no-sessions agent", noSessID)
-	check("empty-context agent", emptyID)
+		mustEq("os", "Linux", got.OS)
+		mustEq("arch", "arm64", got.Arch)
+		mustEq("git_branch", "main", got.GitBranch)
+		mustEq("git_repo", "flightdeck", got.GitRepo)
+		mustEq("orchestration", "kubernetes", got.Orchestration)
+		mustEq("python_version", "3.12", got.PythonVersion)
+		mustEq("process_name", "new.py", got.ProcessName)
+		mustEq("telemetry", "otlp", got.Telemetry)
+	})
+}
+
+func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
+	eachStore(t, func(t *testing.T, s *Store) {
+
+		// An agent with no sessions at all: every runtime-context
+		// field must come back nil (no LATERAL row → null projection).
+		noSessName := "test-latest-context-no-sess-" + randomUUID(t)[:8]
+		noSessID := seedAgentForList(t, s, noSessName, agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+
+		// An agent whose latest session has an empty context object:
+		// every key is missing → every JSONB extract returns nil.
+		emptyName := "test-latest-context-empty-ctx-" + randomUUID(t)[:8]
+		emptyID := seedAgentForList(t, s, emptyName, agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		seedSessionWithContext(t, s, emptyID, "coding", "claude_code",
+			time.Now().UTC().Add(-1*time.Hour), `{}`)
+
+		resp, err := s.ListAgents(context.Background(), AgentListParams{
+			Limit: 200,
+		})
+		if err != nil {
+			t.Fatalf("ListAgents: %v", err)
+		}
+		check := func(name, id string) {
+			t.Helper()
+			var got *AgentSummary
+			for i := range resp.Agents {
+				if resp.Agents[i].AgentID == id {
+					got = &resp.Agents[i]
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("%s (%s) not in response (size=%d)", name, id, len(resp.Agents))
+			}
+			if got.OS != nil || got.Arch != nil || got.GitBranch != nil ||
+				got.GitRepo != nil || got.Orchestration != nil ||
+				got.PythonVersion != nil || got.ProcessName != nil ||
+				got.Telemetry != nil {
+				t.Errorf("%s: expected all runtime-context fields nil, got "+
+					"os=%v arch=%v git_branch=%v git_repo=%v orchestration=%v "+
+					"python_version=%v process_name=%v telemetry=%v",
+					name, got.OS, got.Arch, got.GitBranch, got.GitRepo,
+					got.Orchestration, got.PythonVersion, got.ProcessName,
+					got.Telemetry)
+			}
+		}
+		check("no-sessions agent", noSessID)
+		check("empty-context agent", emptyID)
+	})
 }
 
 func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	// Parity with the ListAgents test above on the GetAgentFleet
-	// query path (the /v1/fleet endpoint that the /agents page
-	// actually consumes). Same fixture shape; only the call
-	// changes.
-	agentName := "test-latest-context-fleet-" + randomUUID(t)[:8]
-	agentID := seedAgentForList(t, s, agentName, agentListOpts{
-		agentType: "coding", clientType: "claude_code",
-	})
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
-		now.Add(-2*time.Hour),
-		`{"os":"Linux","git_branch":"feature-x","telemetry":"otlp"}`)
-	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
-		now.Add(-1*time.Hour),
-		`{"os":"Darwin","git_branch":"main","python_version":"3.12"}`)
+		// Parity with the ListAgents test above on the GetAgentFleet
+		// query path (the /v1/fleet endpoint that the /agents page
+		// actually consumes). Same fixture shape; only the call
+		// changes.
+		agentName := "test-latest-context-fleet-" + randomUUID(t)[:8]
+		agentID := seedAgentForList(t, s, agentName, agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		seedSessionWithContext(t, s, agentID, "coding", "claude_code",
+			now.Add(-2*time.Hour),
+			`{"os":"Linux","git_branch":"feature-x","telemetry":"otlp"}`)
+		seedSessionWithContext(t, s, agentID, "coding", "claude_code",
+			now.Add(-1*time.Hour),
+			`{"os":"Darwin","git_branch":"main","python_version":"3.12"}`)
 
-	agents, _, err := s.GetAgentFleet(context.Background(), 200, 0, "")
-	if err != nil {
-		t.Fatalf("GetAgentFleet: %v", err)
-	}
-	var got *AgentSummary
-	for i := range agents {
-		if agents[i].AgentID == agentID {
-			got = &agents[i]
-			break
+		agents, _, err := s.GetAgentFleet(context.Background(), 200, 0, "")
+		if err != nil {
+			t.Fatalf("GetAgentFleet: %v", err)
 		}
-	}
-	if got == nil {
-		t.Fatalf("agent %s not in fleet response (size=%d)", agentID, len(agents))
-	}
-	if got.OS == nil || *got.OS != "Darwin" {
-		t.Errorf("os: want Darwin, got %v", got.OS)
-	}
-	if got.GitBranch == nil || *got.GitBranch != "main" {
-		t.Errorf("git_branch: want main, got %v", got.GitBranch)
-	}
-	if got.PythonVersion == nil || *got.PythonVersion != "3.12" {
-		t.Errorf("python_version: want 3.12, got %v", got.PythonVersion)
-	}
-	// arch is absent in either context → must be nil
-	if got.Arch != nil {
-		t.Errorf("arch: want nil, got %v", got.Arch)
-	}
-	// telemetry is on the earlier session only: the latest run was
-	// not reported over OpenTelemetry, so the agent carries none.
-	if got.Telemetry != nil {
-		t.Errorf("telemetry: want nil (latest run has none), got %v", *got.Telemetry)
-	}
+		var got *AgentSummary
+		for i := range agents {
+			if agents[i].AgentID == agentID {
+				got = &agents[i]
+				break
+			}
+		}
+		if got == nil {
+			t.Fatalf("agent %s not in fleet response (size=%d)", agentID, len(agents))
+		}
+		if got.OS == nil || *got.OS != "Darwin" {
+			t.Errorf("os: want Darwin, got %v", got.OS)
+		}
+		if got.GitBranch == nil || *got.GitBranch != "main" {
+			t.Errorf("git_branch: want main, got %v", got.GitBranch)
+		}
+		if got.PythonVersion == nil || *got.PythonVersion != "3.12" {
+			t.Errorf("python_version: want 3.12, got %v", got.PythonVersion)
+		}
+		// arch is absent in either context → must be nil
+		if got.Arch != nil {
+			t.Errorf("arch: want nil, got %v", got.Arch)
+		}
+		// telemetry is on the earlier session only: the latest run was
+		// not reported over OpenTelemetry, so the agent carries none.
+		if got.Telemetry != nil {
+			t.Errorf("telemetry: want nil (latest run has none), got %v", *got.Telemetry)
+		}
+	})
 }
 
 func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
+	eachStore(t, func(t *testing.T, s *Store) {
 
-	agentName := "test-latest-context-byid-" + randomUUID(t)[:8]
-	agentID := seedAgentForList(t, s, agentName, agentListOpts{
-		agentType: "coding", clientType: "claude_code",
+		agentName := "test-latest-context-byid-" + randomUUID(t)[:8]
+		agentID := seedAgentForList(t, s, agentName, agentListOpts{
+			agentType: "coding", clientType: "claude_code",
+		})
+		seedSessionWithContext(t, s, agentID, "coding", "claude_code",
+			time.Now().UTC().Add(-30*time.Minute),
+			`{"os":"Linux","arch":"arm64","process_name":"main.py","telemetry":"otlp"}`)
+
+		got, err := s.GetAgentByID(context.Background(), agentID)
+		if err != nil {
+			t.Fatalf("GetAgentByID: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("GetAgentByID: nil result")
+		}
+		if got.OS == nil || *got.OS != "Linux" {
+			t.Errorf("os: want Linux, got %v", got.OS)
+		}
+		if got.Arch == nil || *got.Arch != "arm64" {
+			t.Errorf("arch: want arm64, got %v", got.Arch)
+		}
+		if got.ProcessName == nil || *got.ProcessName != "main.py" {
+			t.Errorf("process_name: want main.py, got %v", got.ProcessName)
+		}
+		if got.Telemetry == nil || *got.Telemetry != "otlp" {
+			t.Errorf("telemetry: want otlp, got %v", got.Telemetry)
+		}
 	})
-	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
-		time.Now().UTC().Add(-30*time.Minute),
-		`{"os":"Linux","arch":"arm64","process_name":"main.py","telemetry":"otlp"}`)
-
-	got, err := s.GetAgentByID(context.Background(), agentID)
-	if err != nil {
-		t.Fatalf("GetAgentByID: %v", err)
-	}
-	if got == nil {
-		t.Fatalf("GetAgentByID: nil result")
-	}
-	if got.OS == nil || *got.OS != "Linux" {
-		t.Errorf("os: want Linux, got %v", got.OS)
-	}
-	if got.Arch == nil || *got.Arch != "arm64" {
-		t.Errorf("arch: want arm64, got %v", got.Arch)
-	}
-	if got.ProcessName == nil || *got.ProcessName != "main.py" {
-		t.Errorf("process_name: want main.py, got %v", got.ProcessName)
-	}
-	if got.Telemetry == nil || *got.Telemetry != "otlp" {
-		t.Errorf("telemetry: want otlp, got %v", got.Telemetry)
-	}
 }

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/server"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -35,7 +36,8 @@ type Config struct {
 	// ListenAddr is the address of the service's own HTTP listener.
 	// Empty means no listener: the caller mounts Handler() itself.
 	ListenAddr string
-	// PostgresURL is dialled when Deps.Pool is nil.
+	// PostgresURL is the database URL (sqlite:// or postgres://) opened
+	// through the storage boundary when Deps.DB is nil.
 	PostgresURL string
 	// CORSOrigin is the Access-Control-Allow-Origin value: "*" or an
 	// absolute URL.
@@ -79,37 +81,66 @@ func LoadEnv() (cfg Config, err error) {
 // server.ReadTimeout).
 const ReadTimeout = server.ReadTimeout
 
-// Deps are the connections the service runs on. A nil Pool is opened
-// with NewPool from Config.PostgresURL and closed when Run returns; one
+// databaseConnectBudget is how long New keeps trying to reach the
+// database before giving up. storage.Open pings, so a database that is
+// a moment behind the service (compose starts both at once; a
+// Kubernetes rollout restarts them independently) would otherwise end
+// the process at once. Sixty seconds outlasts the compose Postgres
+// healthcheck's worst case (five tries, five seconds apart, plus the
+// start) while still failing a misconfigured URL within the first
+// minute of a deploy.
+const databaseConnectBudget = 60 * time.Second
+
+// Deps are the connections the service runs on. A nil DB is opened
+// with OpenDB from Config.PostgresURL and closed when Run returns; one
 // the caller passes is left open.
 type Deps struct {
-	Pool *pgxpool.Pool
+	DB *storage.DB
 }
 
-// NewPool opens the pool the query API runs on. Its queries are
-// interactive aggregations over an analytics window, and Postgres's JIT
-// compiles the long per-row cost expression on every query, which costs
-// more than it saves at these sizes (estimated cost over 100,000 events:
-// 780 ms with JIT, 250 ms without; 1,000,000 events: 2.6 s against
-// 2.3 s), so the connections run without it.
-func NewPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	poolConfig, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		return nil, fmt.Errorf("postgres connection config: %w", err)
+// OpenDB opens the database the query API runs on, through the storage
+// boundary, retrying a database that is not yet reachable for
+// databaseConnectBudget. On Postgres the connections run with the JIT
+// off: the API's queries are interactive aggregations over an analytics
+// window, and Postgres's JIT compiles the long per-row cost expression
+// on every query, which costs more than it saves at these sizes
+// (estimated cost over 100,000 events: 780 ms with JIT, 250 ms without;
+// 1,000,000 events: 2.6 s against 2.3 s).
+func OpenDB(ctx context.Context, rawURL string) (*storage.DB, error) {
+	if b, err := storage.BackendOf(rawURL); err == nil && b == storage.Postgres {
+		rawURL = withJITOff(rawURL)
 	}
-	poolConfig.ConnConfig.RuntimeParams["jit"] = "off"
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	openCtx, cancel := context.WithTimeout(ctx, databaseConnectBudget)
+	defer cancel()
+	db, err := storage.OpenRetry(openCtx, rawURL, databaseConnectBudget)
 	if err != nil {
-		return nil, fmt.Errorf("postgres connection: %w", err)
+		return nil, fmt.Errorf("database connection: %w", err)
 	}
-	return pool, nil
+	return db, nil
+}
+
+// withJITOff adds jit=off to a Postgres URL's query (pgx passes a query
+// parameter it does not know as a session runtime parameter). A URL
+// that does not parse is returned as is, for Open to refuse.
+func withJITOff(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	if q.Get("jit") == "" {
+		q.Set("jit", "off")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // App is a built query API.
 type App struct {
 	cfg       Config
-	pool      *pgxpool.Pool
-	ownsPool  bool
+	db        *storage.DB
+	ownsDB    bool
+	bus       storage.Bus
 	store     *store.Store
 	hub       *ws.Hub
 	validator *auth.Validator
@@ -117,7 +148,7 @@ type App struct {
 	durations *metrics.RequestDurations
 }
 
-// New connects (when Deps.Pool is nil), loads the price list and builds
+// New connects (when Deps.DB is nil), loads the price list and builds
 // the handlers. It starts no goroutine; Run does.
 func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 	// Build the price list from the embedded catalogue and the
@@ -125,17 +156,18 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 	// the service must not crash on a bad pricing file.
 	store.LoadPricing()
 
-	a := &App{cfg: cfg, pool: deps.Pool}
-	if a.pool == nil {
-		pool, err := NewPool(ctx, cfg.PostgresURL)
+	a := &App{cfg: cfg, db: deps.DB}
+	if a.db == nil {
+		db, err := OpenDB(ctx, cfg.PostgresURL)
 		if err != nil {
 			return nil, err
 		}
-		a.pool, a.ownsPool = pool, true
+		a.db, a.ownsDB = db, true
 	}
-	a.store = store.New(a.pool)
+	a.bus = storage.NewBus(a.db)
+	a.store = store.New(a.db, a.bus)
 	a.hub = ws.NewHub(a.store)
-	a.validator = auth.NewValidator(a.pool)
+	a.validator = auth.NewValidator(a.db)
 	a.durations = metrics.NewRequestDurations()
 	a.srv = server.New(cfg.ListenAddr, a.store, a.hub, a.validator, cfg.CORSOrigin, a.durations)
 	return a, nil
@@ -147,18 +179,18 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 func (a *App) Handler() http.Handler { return a.srv.Handler }
 
 // Run syncs the price table and the global MCP policy, starts the hub,
-// the NOTIFY and revocation listeners, the metrics listener when
+// the fleet and revocation subscriptions, the metrics listener when
 // configured and the HTTP listener when ListenAddr is set, and blocks
 // until ctx ends or a listener fails. It then shuts the listeners down,
 // waits for the background loops, both within ShutdownTimeout, and
-// closes the pool it opened.
+// closes the database it opened.
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer a.closeOwned()
 
 	// Every background loop returns when runCtx ends; they are joined
-	// before the pool they use is closed.
+	// before the database they use is closed.
 	var loops sync.WaitGroup
 	spawn := func(f func()) {
 		loops.Add(1)
@@ -169,16 +201,16 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Write the price list into model_pricing for the cost queries. On
-	// a fresh database the workers may not have created the table yet,
+	// a fresh database the migrator may not have created the table yet,
 	// so a failed first sync keeps retrying in the background; the
 	// table keeps its previous content until a sync succeeds.
-	if err := store.SyncPricingTable(runCtx, a.pool); err != nil {
+	if err := store.SyncPricingTable(runCtx, a.db); err != nil {
 		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
-		spawn(func() { store.RetryPricingSync(runCtx, a.pool) })
+		spawn(func() { store.RetryPricingSync(runCtx, a.db) })
 	}
 	// Ensure the empty blocklist global MCP policy exists before serving
 	// traffic. Best-effort: a migration also seeds this row, so a
-	// failure here (for example on a database the workers have not
+	// failure here (for example on a database that has not been
 	// migrated yet) leaves nothing missing once the migrations have run.
 	if err := a.store.EnsureGlobalMCPPolicy(runCtx); err != nil {
 		slog.Warn("ensure global mcp policy at boot failed",
@@ -190,9 +222,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	spawn(func() { a.hub.Run(runCtx) })
-	spawn(func() { a.hub.ListenNotify(runCtx, a.pool) })
+	spawn(func() { a.hub.ListenNotify(runCtx, a.bus) })
 	// Drop cached validations of a token as soon as its row is deleted.
-	spawn(func() { a.validator.ListenRevocations(runCtx, a.pool) })
+	spawn(func() { a.validator.ListenRevocations(runCtx, a.bus) })
 
 	g, gctx := errgroup.WithContext(runCtx)
 	if a.cfg.ListenAddr != "" {
@@ -223,7 +255,7 @@ func (a *App) Run(ctx context.Context) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 	defer shutdownCancel()
 	// The listeners stop taking requests and drain first, so a request
-	// in flight still has the hub and the pool it may need.
+	// in flight still has the hub and the database it may need.
 	if a.cfg.ListenAddr != "" {
 		if err := a.srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown error", "err", err)
@@ -235,9 +267,9 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	err := g.Wait()
-	cancel() // stops the hub and the NOTIFY and revocation listeners
+	cancel() // stops the hub and the fleet and revocation subscriptions
 	if !waitWithin(shutdownCtx, &loops) {
-		slog.Warn("background loops did not stop before the shutdown timeout; closing the pool anyway")
+		slog.Warn("background loops did not stop before the shutdown timeout; closing the database anyway")
 	}
 	slog.Info("query API stopped")
 	return err
@@ -259,9 +291,9 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 }
 
 func (a *App) closeOwned() {
-	if a.ownsPool && a.pool != nil {
-		a.pool.Close()
-		a.pool, a.ownsPool = nil, false
+	if a.ownsDB && a.db != nil {
+		_ = a.db.Close()
+		a.db, a.ownsDB = nil, false
 	}
 }
 
@@ -278,11 +310,11 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 // the production rules (an ftd_ token's salted hash; the development
 // token is refused here whatever the environment, since a bootstrap
 // token is never tok_dev).
-func TokenValid(ctx context.Context, pool *pgxpool.Pool, raw string) (bool, error) {
+func TokenValid(ctx context.Context, db *storage.DB, raw string) (bool, error) {
 	if raw == "" || raw == "tok_dev" {
 		return false, nil
 	}
-	res, err := auth.NewValidator(pool).Validate(ctx, raw)
+	res, err := auth.NewValidator(db).Validate(ctx, raw)
 	if err != nil {
 		return false, err
 	}
@@ -291,8 +323,8 @@ func TokenValid(ctx context.Context, pool *pgxpool.Pool, raw string) (bool, erro
 
 // MintToken creates an ftd_ access token named name through the token
 // store (salted hash and prefix stored, plaintext returned once).
-func MintToken(ctx context.Context, pool *pgxpool.Pool, name string) (string, error) {
-	created, err := store.New(pool).CreateAccessToken(ctx, name)
+func MintToken(ctx context.Context, db *storage.DB, name string) (string, error) {
+	created, err := store.New(db, storage.NewBus(db)).CreateAccessToken(ctx, name)
 	if err != nil {
 		return "", err
 	}

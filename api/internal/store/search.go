@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -20,7 +21,7 @@ import (
 // the palette's AgentRow can reuse the same identity primitives
 // the /agents table row uses (ClaudeCodeLogo for Claude Code
 // clients, AgentTypeBadge, AgentStatusBadge). State is derived
-// via the shared “agentStateRollupSQL“ LATERAL so /v1/search and
+// via the shared “agentStateRollupSQL“ so /v1/search and
 // /agents agree on the rolled-up state per agent.
 type SearchResultAgent struct {
 	AgentID    string `json:"agent_id"`
@@ -28,7 +29,9 @@ type SearchResultAgent struct {
 	AgentType  string `json:"agent_type"`
 	ClientType string `json:"client_type"`
 	State      string `json:"state"`
-	LastSeen   string `json:"last_seen"`
+	// LastSeen is the agent's last_seen_at as an RFC 3339 UTC
+	// timestamp.
+	LastSeen string `json:"last_seen"`
 	// Telemetry is the agent's latest session's `context.telemetry`
 	// ("otlp" for a session reported over OpenTelemetry), as on
 	// AgentSummary, so the palette labels the agent's source.
@@ -37,7 +40,8 @@ type SearchResultAgent struct {
 
 // SearchResultSession is a search hit on the sessions table.
 // Includes all fields needed to render a sessions table row in the
-// Investigate screen without a second round-trip per hit.
+// Investigate screen without a second round-trip per hit. The
+// timestamps are RFC 3339 UTC strings.
 type SearchResultSession struct {
 	SessionID  string                 `json:"session_id"`
 	Flavor     string                 `json:"flavor"`
@@ -55,7 +59,8 @@ type SearchResultSession struct {
 	ClientType string `json:"client_type"`
 }
 
-// SearchResultEvent is a search hit on the events table.
+// SearchResultEvent is a search hit on the events table. OccurredAt is
+// an RFC 3339 UTC string.
 type SearchResultEvent struct {
 	EventID    string `json:"event_id"`
 	SessionID  string `json:"session_id"`
@@ -74,7 +79,7 @@ type SearchResults struct {
 
 // curatedEventTypeTerms maps user-facing English terms to the
 // underlying event_type values they should match. Source of truth
-// for the events ILIKE expansion — a query like “LLM“ returns
+// for the events search expansion — a query like “LLM“ returns
 // every event whose event_type appears in this list under “llm“,
 // even though no event_type literally contains the substring
 // "LLM". Lookup keys are lowercased; values are matched verbatim
@@ -104,9 +109,8 @@ var curatedEventTypeTerms = map[string][]string{
 
 // expandCuratedTerms returns the event_type slice mapped from the
 // query, or nil when the query (case-insensitive) is not a known
-// curated term. pgx/v5 encodes a nil []string as SQL NULL, and
-// “event_type = ANY(NULL)“ is always false — so the curated arm
-// short-circuits to no-match while the ILIKE arms in the WHERE
+// curated term. An empty array binds as an empty set, so the curated
+// arm short-circuits to no-match while the pattern arms in the WHERE
 // still run. No rows are lost; the curated branch simply doesn't
 // contribute when the term is unknown.
 func expandCuratedTerms(query string) []string {
@@ -116,7 +120,8 @@ func expandCuratedTerms(query string) []string {
 // likeEscape escapes LIKE special characters (“\“, “%“, “_“)
 // so user input is matched literally instead of as wildcards.
 // Backslash is escaped first to avoid double-escaping the introduced
-// escapes.
+// escapes. Every LIKE the store issues declares ESCAPE '\'
+// (Dialect.ILike does), since SQLite has no default escape character.
 func likeEscape(q string) string {
 	escaped := strings.ReplaceAll(q, "\\", "\\\\")
 	escaped = strings.ReplaceAll(escaped, "%", "\\%")
@@ -124,22 +129,26 @@ func likeEscape(q string) string {
 	return escaped
 }
 
-// sanitizeQuery wraps the query for substring ILIKE matching.
+// sanitizeQuery wraps the query for substring matching.
 func sanitizeQuery(q string) string {
 	return "%" + likeEscape(q) + "%"
 }
 
-// sanitizePrefix builds a prefix ILIKE pattern (“q%“).
+// sanitizePrefix builds a prefix pattern (“q%“).
 func sanitizePrefix(q string) string {
 	return likeEscape(q) + "%"
 }
 
-// sanitizeExact builds an exact ILIKE pattern (the escaped query
-// with no wildcards). Used so the rank CASE in each query can
-// distinguish an exact case-insensitive match from a prefix or
-// substring match without juggling LOWER() on both sides.
+// sanitizeExact builds an exact pattern (the escaped query with no
+// wildcards). Used so the rank CASE in each query can distinguish an
+// exact case-insensitive match from a prefix or substring match.
 func sanitizeExact(q string) string {
 	return likeEscape(q)
+}
+
+// searchTime renders a timestamp for a search result.
+func searchTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // Search performs a cross-entity case-insensitive search across
@@ -166,11 +175,18 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	prefixPat := sanitizePrefix(query)
 	exactPat := sanitizeExact(query)
 	curated := expandCuratedTerms(query)
+	d := s.d
 	var results SearchResults
+
+	// $1 is the substring pattern, $2 the prefix pattern, $3 the exact
+	// pattern.
+	sub := func(expr string) string { return d.ILike(expr, "$1") }
+	prefix := func(expr string) string { return d.ILike(expr, "$2") }
+	exact := func(expr string) string { return d.ILike(expr, "$3") }
 
 	// Rename the derived context so the outer ``ctx`` parameter
 	// isn't shadowed — the closures below read ``gCtx`` explicitly,
-	// matching the pattern in postgres.go.
+	// matching the pattern in store.go.
 	g, gCtx := errgroup.WithContext(ctx)
 
 	// Search agents. agents.agent_name is the human-readable label;
@@ -179,51 +195,49 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// embed them (the sensor's per-host agents do embed user@host,
 	// but seeded / test / cloud agents often don't).
 	g.Go(func() error {
-		rows, err := s.pool.Query(gCtx, `
+		rows, err := s.reader().QueryContext(gCtx, `
 			SELECT
-				a.agent_id::text,
+				CAST(a.agent_id AS TEXT),
 				a.agent_name,
 				a.agent_type,
 				COALESCE(a.client_type, '') AS client_type,
-				COALESCE(rollup.state, '') AS state,
-				a.last_seen_at::text,
-				latest.telemetry
-			FROM agents a
-			LEFT JOIN LATERAL (`+agentStateRollupSQL+`) rollup ON TRUE
-			LEFT JOIN LATERAL (`+agentLatestContextSQL+`) latest ON TRUE
-			JOIN LATERAL (
-				SELECT
-					CASE
-						WHEN a.agent_name ILIKE $3 THEN 0
-						WHEN COALESCE(a.hostname, '') ILIKE $3 THEN 1
-						WHEN COALESCE(a.user_name, '') ILIKE $3 THEN 2
-						WHEN a.agent_name ILIKE $2 THEN 3
-						WHEN COALESCE(a.hostname, '') ILIKE $2 THEN 4
-						WHEN COALESCE(a.user_name, '') ILIKE $2 THEN 5
-						WHEN a.agent_name ILIKE $1 THEN 6
-						WHEN COALESCE(a.hostname, '') ILIKE $1 THEN 7
-						WHEN COALESCE(a.user_name, '') ILIKE $1 THEN 8
-						ELSE 99
-					END AS rank
-			) ranked ON TRUE
-			WHERE a.agent_name ILIKE $1
-			   OR COALESCE(a.hostname, '') ILIKE $1
-			   OR COALESCE(a.user_name, '') ILIKE $1
-			ORDER BY ranked.rank ASC, a.last_seen_at DESC
+				COALESCE(a.rollup_state, '') AS state,
+				a.last_seen_at,
+				`+d.JSONText("latest.context", "telemetry")+` AS telemetry,
+				CASE
+					WHEN `+exact("a.agent_name")+` THEN 0
+					WHEN `+exact("COALESCE(a.hostname, '')")+` THEN 1
+					WHEN `+exact("COALESCE(a.user_name, '')")+` THEN 2
+					WHEN `+prefix("a.agent_name")+` THEN 3
+					WHEN `+prefix("COALESCE(a.hostname, '')")+` THEN 4
+					WHEN `+prefix("COALESCE(a.user_name, '')")+` THEN 5
+					WHEN `+sub("a.agent_name")+` THEN 6
+					WHEN `+sub("COALESCE(a.hostname, '')")+` THEN 7
+					WHEN `+sub("COALESCE(a.user_name, '')")+` THEN 8
+					ELSE 99
+				END AS rank
+			`+agentFrom+`
+			WHERE `+sub("a.agent_name")+`
+			   OR `+sub("COALESCE(a.hostname, '')")+`
+			   OR `+sub("COALESCE(a.user_name, '')")+`
+			ORDER BY rank ASC, a.last_seen_at DESC
 			LIMIT 5
 		`, pattern, prefixPat, exactPat)
 		if err != nil {
 			return fmt.Errorf("search agents: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var a SearchResultAgent
+			var lastSeen time.Time
+			var rank int
 			if err := rows.Scan(
 				&a.AgentID, &a.AgentName, &a.AgentType,
-				&a.ClientType, &a.State, &a.LastSeen, &a.Telemetry,
+				&a.ClientType, &a.State, &lastSeen, &a.Telemetry, &rank,
 			); err != nil {
 				return fmt.Errorf("scan agent: %w", err)
 			}
+			a.LastSeen = searchTime(lastSeen)
 			results.Agents = append(results.Agents, a)
 		}
 		if err := rows.Err(); err != nil {
@@ -233,46 +247,46 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	})
 
 	// Search sessions — keep the existing breadth across core
-	// columns and context JSONB. Ranking promotes session_id /
-	// flavor / host / model exact hits ahead of the JSONB substring
+	// columns and context JSON. Ranking promotes session_id /
+	// flavor / host / model exact hits ahead of the JSON substring
 	// pool, so a UUID paste or a flavor literal lands first.
-	// Rows matched only via context-JSONB fall through to the ``ELSE
+	// Rows matched only via context JSON fall through to the ``ELSE
 	// 99`` sentinel and sort below all core-column matches — they
 	// still appear in the page, just under the more relevant hits.
 	g.Go(func() error {
-		rows, err := s.pool.Query(gCtx, `
-			SELECT session_id::text, flavor, host, state, started_at::text,
-			       ended_at::text, model, tokens_used, token_limit, context,
+		rows, err := s.reader().QueryContext(gCtx, `
+			SELECT session_id, flavor, host, state, started_at,
+			       ended_at, model, tokens_used, token_limit, context,
 			       client_type
 			FROM (
 				SELECT
-					session_id, flavor,
+					CAST(session_id AS TEXT) AS session_id, flavor,
 					COALESCE(host, '') AS host,
 					state, started_at, ended_at,
 					COALESCE(model, '') AS model,
 					tokens_used, token_limit, context,
 					COALESCE(client_type, '') AS client_type,
 					CASE
-						WHEN session_id::text ILIKE $3 THEN 0
-						WHEN flavor ILIKE $3 THEN 1
-						WHEN COALESCE(host, '') ILIKE $3 THEN 2
-						WHEN COALESCE(model, '') ILIKE $3 THEN 3
-						WHEN session_id::text ILIKE $2 THEN 4
-						WHEN flavor ILIKE $2 THEN 5
-						WHEN COALESCE(host, '') ILIKE $2 THEN 6
-						WHEN COALESCE(model, '') ILIKE $2 THEN 7
+						WHEN `+exact("CAST(session_id AS TEXT)")+` THEN 0
+						WHEN `+exact("flavor")+` THEN 1
+						WHEN `+exact("COALESCE(host, '')")+` THEN 2
+						WHEN `+exact("COALESCE(model, '')")+` THEN 3
+						WHEN `+prefix("CAST(session_id AS TEXT)")+` THEN 4
+						WHEN `+prefix("flavor")+` THEN 5
+						WHEN `+prefix("COALESCE(host, '')")+` THEN 6
+						WHEN `+prefix("COALESCE(model, '')")+` THEN 7
 						ELSE 99
 					END AS rank
 				FROM sessions
-				WHERE session_id::text ILIKE $1
-				   OR flavor ILIKE $1
-				   OR COALESCE(host, '') ILIKE $1
-				   OR COALESCE(model, '') ILIKE $1
-				   OR COALESCE(context->>'hostname', '') ILIKE $1
-				   OR COALESCE(context->>'os', '') ILIKE $1
-				   OR COALESCE(context->>'git_branch', '') ILIKE $1
-				   OR COALESCE(context->>'python_version', '') ILIKE $1
-				   OR COALESCE((context->'frameworks')::text, '') ILIKE $1
+				WHERE `+sub("CAST(session_id AS TEXT)")+`
+				   OR `+sub("flavor")+`
+				   OR `+sub("COALESCE(host, '')")+`
+				   OR `+sub("COALESCE(model, '')")+`
+				   OR `+sub("COALESCE("+d.JSONText("context", "hostname")+", '')")+`
+				   OR `+sub("COALESCE("+d.JSONText("context", "os")+", '')")+`
+				   OR `+sub("COALESCE("+d.JSONText("context", "git_branch")+", '')")+`
+				   OR `+sub("COALESCE("+d.JSONText("context", "python_version")+", '')")+`
+				   OR `+sub("COALESCE("+d.JSONText("context", "frameworks")+", '')")+`
 			) ranked
 			ORDER BY rank ASC, started_at DESC
 			LIMIT 5
@@ -280,19 +294,24 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 		if err != nil {
 			return fmt.Errorf("search sessions: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var sr SearchResultSession
-			var endedAt *string
+			var startedAt time.Time
+			var endedAt *time.Time
 			var contextRaw []byte
 			if err := rows.Scan(
-				&sr.SessionID, &sr.Flavor, &sr.Host, &sr.State, &sr.StartedAt,
+				&sr.SessionID, &sr.Flavor, &sr.Host, &sr.State, &startedAt,
 				&endedAt, &sr.Model, &sr.TokensUsed, &sr.TokenLimit, &contextRaw,
 				&sr.ClientType,
 			); err != nil {
 				return fmt.Errorf("scan session: %w", err)
 			}
-			sr.EndedAt = endedAt
+			sr.StartedAt = searchTime(startedAt)
+			if endedAt != nil {
+				ended := searchTime(*endedAt)
+				sr.EndedAt = &ended
+			}
 			if len(contextRaw) > 0 {
 				var v map[string]interface{}
 				if jsonErr := json.Unmarshal(contextRaw, &v); jsonErr == nil {
@@ -315,45 +334,47 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	// like ``LLM``/``policy``/``embedding`` return the right rows
 	// without any event_type literally containing those substrings.
 	g.Go(func() error {
-		rows, err := s.pool.Query(gCtx, `
-			SELECT id::text, session_id::text, event_type, tool_name, model, occurred_at::text
+		rows, err := s.reader().QueryContext(gCtx, `
+			SELECT id, session_id, event_type, tool_name, model, occurred_at
 			FROM (
 				SELECT
-					id, session_id, event_type,
+					CAST(id AS TEXT) AS id, CAST(session_id AS TEXT) AS session_id, event_type,
 					COALESCE(tool_name, '') AS tool_name,
 					COALESCE(model, '') AS model,
 					occurred_at,
 					CASE
-						WHEN event_type ILIKE $3 THEN 0
-						WHEN COALESCE(tool_name, '') ILIKE $3 THEN 1
-						WHEN COALESCE(model, '') ILIKE $3 THEN 2
-						WHEN event_type = ANY($4::text[]) THEN 3
-						WHEN event_type ILIKE $2 THEN 4
-						WHEN COALESCE(tool_name, '') ILIKE $2 THEN 5
-						WHEN COALESCE(model, '') ILIKE $2 THEN 6
-						WHEN event_type ILIKE $1 THEN 7
-						WHEN COALESCE(tool_name, '') ILIKE $1 THEN 8
-						WHEN COALESCE(model, '') ILIKE $1 THEN 9
+						WHEN `+exact("event_type")+` THEN 0
+						WHEN `+exact("COALESCE(tool_name, '')")+` THEN 1
+						WHEN `+exact("COALESCE(model, '')")+` THEN 2
+						WHEN `+d.InArray("event_type", "$4")+` THEN 3
+						WHEN `+prefix("event_type")+` THEN 4
+						WHEN `+prefix("COALESCE(tool_name, '')")+` THEN 5
+						WHEN `+prefix("COALESCE(model, '')")+` THEN 6
+						WHEN `+sub("event_type")+` THEN 7
+						WHEN `+sub("COALESCE(tool_name, '')")+` THEN 8
+						WHEN `+sub("COALESCE(model, '')")+` THEN 9
 						ELSE 99
 					END AS rank
 				FROM events
-				WHERE event_type ILIKE $1
-				   OR COALESCE(tool_name, '') ILIKE $1
-				   OR COALESCE(model, '') ILIKE $1
-				   OR event_type = ANY($4::text[])
+				WHERE `+sub("event_type")+`
+				   OR `+sub("COALESCE(tool_name, '')")+`
+				   OR `+sub("COALESCE(model, '')")+`
+				   OR `+d.InArray("event_type", "$4")+`
 			) ranked
 			ORDER BY rank ASC, occurred_at DESC
 			LIMIT 5
-		`, pattern, prefixPat, exactPat, curated)
+		`, pattern, prefixPat, exactPat, d.ArrayArg(curated))
 		if err != nil {
 			return fmt.Errorf("search events: %w", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var e SearchResultEvent
-			if err := rows.Scan(&e.EventID, &e.SessionID, &e.EventType, &e.ToolName, &e.Model, &e.OccurredAt); err != nil {
+			var occurredAt time.Time
+			if err := rows.Scan(&e.EventID, &e.SessionID, &e.EventType, &e.ToolName, &e.Model, &occurredAt); err != nil {
 				return fmt.Errorf("scan event: %w", err)
 			}
+			e.OccurredAt = searchTime(occurredAt)
 			results.Events = append(results.Events, e)
 		}
 		if err := rows.Err(); err != nil {

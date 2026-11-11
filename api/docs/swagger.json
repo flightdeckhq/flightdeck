@@ -517,7 +517,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Granularity: hour, day, week (default: day)",
+                        "description": "Granularity: hour, day, week (default: day). Each point's date is the UTC start of its bucket: YYYY-MM-DD for day and week, YYYY-MM-DDTHH:00Z for hour",
                         "name": "granularity",
                         "in": "query"
                     },
@@ -2939,7 +2939,7 @@
                     "type": "string"
                 },
                 "os": {
-                    "description": "Runtime-context slice from the agent's MOST RECENT session's\n`sessions.context` JSONB. An agent that ran across\nmultiple hosts / branches surfaces its latest session's values\nhere — facets are single-valued per agent. Each field is null\nwhen the latest session's context is absent or the JSONB key\nis missing. Sourced via one LATERAL JOIN per agent ordered by\nstarted_at DESC LIMIT 1; the per-agent overhead is bounded by\nthe page size. `Hostname` and `UserName` above remain the\nauthoritative single-valued slices for those two dims (sourced\nfrom agents-table columns); these are the JSONB-only\nslices the operator slices the roster by.",
+                    "description": "Runtime-context slice from the agent's MOST RECENT session's\n`sessions.context` JSON. An agent that ran across\nmultiple hosts / branches surfaces its latest session's values\nhere — facets are single-valued per agent. Each field is null\nwhen the latest session's context is absent or the JSON key\nis missing. Sourced via one correlated lookup of the agent's\nlatest session; the per-agent overhead is bounded by the page\nsize. `Hostname` and `UserName`\nabove remain the authoritative single-valued slices for those\ntwo dims (sourced from agents-table columns); these are the\nJSON-only slices the operator slices the roster by.",
                     "type": "string"
                 },
                 "process_name": {
@@ -3020,7 +3020,7 @@
                     "type": "integer"
                 },
                 "ts": {
-                    "description": "TS is the bucket's start, truncated to the requested\ngranularity (``date_trunc(bucket, occurred_at)``). Serialised\nas RFC 3339 / ISO 8601 by Go's default JSON encoder.",
+                    "description": "TS is the bucket's start, truncated to the requested\ngranularity. Serialised as RFC 3339 / ISO 8601 by Go's default\nJSON encoder.",
                     "type": "string"
                 }
             }
@@ -3760,6 +3760,7 @@
                     "type": "string"
                 },
                 "last_seen": {
+                    "description": "LastSeen is the agent's last_seen_at as an RFC 3339 UTC\ntimestamp.",
                     "type": "string"
                 },
                 "state": {
@@ -3910,7 +3911,7 @@
                     }
                 },
                 "context": {
-                    "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
+                    "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSON) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",
                     "type": "object",
                     "additionalProperties": {}
                 },

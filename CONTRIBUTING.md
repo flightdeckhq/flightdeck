@@ -453,16 +453,18 @@ make dev-reset              # Full reset (wipe volumes + apply migrations)
 ### Running migrations in remote environments
 
 For remote or production deployments, migrations are applied automatically by the workers
-service on startup. To run migrations without starting the full workers service:
+service on startup, from the set embedded in the binary for the database's backend
+(`storage/migrations/postgres/` or `storage/migrations/sqlite/`). To run migrations without
+starting the full workers service:
 
 ```bash
 FLIGHTDECK_MIGRATE_ONLY=true \
   FLIGHTDECK_POSTGRES_URL=<url> \
-  FLIGHTDECK_MIGRATIONS_DIR=<path> \
   ./workers
 ```
 
-The workers binary will apply all pending migrations and exit 0.
+The workers binary will apply all pending migrations and exit 0. The URL may be
+`postgres://…` or `sqlite://<path>`.
 
 In Kubernetes, the recommended pattern is an init container running the workers binary
 with `FLIGHTDECK_MIGRATE_ONLY=true` before the main workers deployment starts.

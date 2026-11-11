@@ -1,5 +1,5 @@
 // Package store -- analytics.go contains all analytics GROUP BY queries.
-// SQL lives only in this file and postgres.go per rule 35.
+// SQL lives only in this package per rule 35.
 package store
 
 import (
@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // AnalyticsParams holds validated query parameters for GET /v1/analytics.
@@ -51,9 +53,11 @@ type AnalyticsParams struct {
 	FilterIsSubAgent bool
 }
 
-// DataPoint is a single time series data point. “Breakdown“ carries
-// per-secondary-axis segments when the caller passes a two-dimension
-// “group_by“. Single-dim queries leave “Breakdown“
+// DataPoint is a single time series data point. Date is the bucket's
+// start in UTC: the calendar date (YYYY-MM-DD) for the day and week
+// granularities, the hour (YYYY-MM-DDTHH:00Z) for hour. “Breakdown“
+// carries per-secondary-axis segments when the caller passes a
+// two-dimension “group_by“. Single-dim queries leave “Breakdown“
 // nil — the JSON “omitempty“ keeps the wire shape byte-identical to
 // the single-dimension contract for those callers.
 type DataPoint struct {
@@ -110,15 +114,15 @@ type AnalyticsResponse struct {
 // dimensionSource describes how to project a group-by dimension. When
 // “needsSessionJoin“ is true and the metric's base table is events,
 // the generated query joins “sessions s“ to expose session-only
-// columns (host, agent_type) or the unnested framework array.
+// columns (host, agent_type) or the unnested framework labels.
 // “expr“ is the SQL fragment written into the SELECT list (may
 // reference “s.“). “team“ maps onto “flavor“ because there is
 // no team column yet.
 //
 // “fromExtras“ is appended verbatim to the FROM clause when non-
-// empty. Used by “framework“ to add a LEFT JOIN LATERAL over
-// “jsonb_array_elements_text“ so each label in
-// “sessions.context->'frameworks'“ (an entry's part before the “/“,
+// empty. Used by “framework“ to add the per-backend unnest
+// (queries.frameworkLabels) so each label in
+// “sessions.context.frameworks“ (an entry's part before the “/“,
 // once per session) becomes its own row, and sessions with no
 // frameworks still appear under “'unknown'“ via COALESCE.
 type dimensionSource struct {
@@ -139,72 +143,70 @@ type dimensionSource struct {
 	fromExtras string
 }
 
-// frameworkUnnest is the LATERAL unnest used by the “framework“
-// dimension. Every framework a session ran with is an entry of the
-// JSONB array “sessions.context->'frameworks'“, versioned
-// (“["langchain/0.1.12","crewai/0.42.0"]“) or bare (“["langchain"]“:
-// a framework the sensor detected after init(), or one reported
-// without a version). The dimension groups by the label before the
-// “/“, so one framework is one series whatever its version and
-// whichever way it was detected; each label counts once per session.
-// LEFT JOIN LATERAL so sessions with an empty or missing array still
-// produce one “NULL“ row that COALESCEs to “'unknown'“ instead of
-// being dropped. A session tagged “["crewai","langchain"]“
-// legitimately counts once under each framework -- totals across
-// frameworks can therefore exceed distinct sessions, which is the
-// honest answer for a multi-valued dimension.
-const frameworkUnnest = `LEFT JOIN LATERAL (
-		SELECT DISTINCT NULLIF(split_part(entry, '/', 1), '') AS fw
-		FROM jsonb_array_elements_text(
-			COALESCE(s.context->'frameworks', '[]'::jsonb)
-		) AS entry
-	) AS framework_labels ON TRUE`
+// AnalyticsDimensions lists the group_by values QueryAnalytics accepts
+// (CLAUDE.md rule 25), in a stable order.
+var AnalyticsDimensions = []string{
+	"flavor", "model", "framework", "host", "agent_type", "team", "provider",
+	"agent_role", "parent_session_id",
+}
 
-// dimensions maps group_by param values to their SQL projection. The
-// provider entry uses the shared ProviderCaseSQL from pricing.go so
-// the mapping stays in one place; model / flavor columns live on both
-// tables.
-var dimensions = map[string]dimensionSource{
-	"flavor": {exprEvents: "e.flavor", exprSessions: "s.flavor"},
-	"model":  {exprEvents: "e.model", exprSessions: "s.model"},
-	"framework": {
-		exprEvents:       "fw",
-		exprSessions:     "fw",
-		needsSessionJoin: true,
-		fromExtras:       frameworkUnnest,
-	},
-	"host":       {exprEvents: "s.host", exprSessions: "s.host", needsSessionJoin: true},
-	"agent_type": {exprEvents: "s.agent_type", exprSessions: "s.agent_type", needsSessionJoin: true},
-	// team maps to flavor until a real team field lands.
-	"team":     {exprEvents: "e.flavor", exprSessions: "s.flavor"},
-	"provider": {exprEvents: eventProviderSQL, exprSessions: providerCase("s.model")},
-	// Sub-agent observability dimensions. Both bake their
-	// COALESCE-to-(root) into the expression so the outer
-	// ``COALESCE(<dim>, 'unknown')`` in the query builder never
-	// overrides the (root) label. Standardising on (root) for these
-	// two dims matches the design spec (ARCHITECTURE.md analytics
-	// section + CLAUDE.md Rule 25) where
-	// "no parent" / "no role" is a meaningful bucket label, not
-	// the unknown-data fallback that ``unknown`` implies for the
-	// other dimensions.
-	//
-	// agent_role: framework-supplied role string (CrewAI Agent.role,
-	// LangGraph node name, Claude Code Task agent_type). NULL on
-	// root sessions and direct-SDK sessions.
-	"agent_role": {
-		exprEvents:       "COALESCE(s.agent_role, '(root)')",
-		exprSessions:     "COALESCE(s.agent_role, '(root)')",
-		needsSessionJoin: true,
-	},
-	// parent_session_id: parent session UUID, NULL on root + direct-
-	// SDK sessions. The ::text cast is the cheapest way to render
-	// UUIDs as strings; pgx scans the resulting column into a Go
-	// string without a custom unmarshaller.
-	"parent_session_id": {
-		exprEvents:       "COALESCE(s.parent_session_id::text, '(root)')",
-		exprSessions:     "COALESCE(s.parent_session_id::text, '(root)')",
-		needsSessionJoin: true,
-	},
+// dimensions maps group_by param values to their SQL projection for
+// this store's dialect. The provider entry uses the shared
+// ProviderCaseSQL from pricing.go so the mapping stays in one place;
+// model / flavor columns live on both tables.
+//
+// The framework dimension groups by the label before the "/" of every
+// entry of sessions.context.frameworks, versioned
+// ("langchain/0.1.12") or bare ("langchain"), so one framework is one
+// series whatever its version and whichever way it was detected; each
+// label counts once per session, and a session with an empty or
+// missing array still produces one NULL row that COALESCEs to
+// 'unknown' instead of being dropped. A session tagged
+// ["crewai","langchain"] legitimately counts once under each
+// framework -- totals across frameworks can therefore exceed distinct
+// sessions, which is the honest answer for a multi-valued dimension.
+func (s *Store) dimensions() map[string]dimensionSource {
+	fw := s.q.frameworkLabelExpr()
+	return map[string]dimensionSource{
+		"flavor": {exprEvents: "e.flavor", exprSessions: "s.flavor"},
+		"model":  {exprEvents: "e.model", exprSessions: "s.model"},
+		"framework": {
+			exprEvents:       fw,
+			exprSessions:     fw,
+			needsSessionJoin: true,
+			fromExtras:       s.q.frameworkLabels(),
+		},
+		"host":       {exprEvents: "s.host", exprSessions: "s.host", needsSessionJoin: true},
+		"agent_type": {exprEvents: "s.agent_type", exprSessions: "s.agent_type", needsSessionJoin: true},
+		// team maps to flavor until a real team field lands.
+		"team":     {exprEvents: "e.flavor", exprSessions: "s.flavor"},
+		"provider": {exprEvents: eventProviderSQL, exprSessions: providerCase("s.model")},
+		// Sub-agent observability dimensions. Both bake their
+		// COALESCE-to-(root) into the expression so the outer
+		// ``COALESCE(<dim>, 'unknown')`` in the query builder never
+		// overrides the (root) label. Standardising on (root) for these
+		// two dims matches the design spec (ARCHITECTURE.md analytics
+		// section + CLAUDE.md Rule 25) where
+		// "no parent" / "no role" is a meaningful bucket label, not
+		// the unknown-data fallback that ``unknown`` implies for the
+		// other dimensions.
+		//
+		// agent_role: framework-supplied role string (CrewAI Agent.role,
+		// LangGraph node name, Claude Code Task agent_type). NULL on
+		// root sessions and direct-SDK sessions.
+		"agent_role": {
+			exprEvents:       "COALESCE(s.agent_role, '(root)')",
+			exprSessions:     "COALESCE(s.agent_role, '(root)')",
+			needsSessionJoin: true,
+		},
+		// parent_session_id: parent session UUID, NULL on root + direct-
+		// SDK sessions, rendered as text.
+		"parent_session_id": {
+			exprEvents:       "COALESCE(CAST(s.parent_session_id AS TEXT), '(root)')",
+			exprSessions:     "COALESCE(CAST(s.parent_session_id AS TEXT), '(root)')",
+			needsSessionJoin: true,
+		},
+	}
 }
 
 // providerCase returns the canonical provider mapping as a SQL CASE
@@ -261,6 +263,14 @@ var subagentMetricNames = map[string]bool{
 	"parent_to_first_child_latency_ms": true,
 }
 
+// AnalyticsMetrics lists every metric QueryAnalytics accepts (CLAUDE.md
+// rule 26), in a stable order.
+var AnalyticsMetrics = []string{
+	"tokens", "sessions", "latency_avg", "latency_p50", "latency_p95",
+	"policy_events", "estimated_cost",
+	"parent_token_sum", "child_token_sum", "child_count", "parent_to_first_child_latency_ms",
+}
+
 // IsSubagentMetric reports whether the given metric name is in the
 // sub-agent set. Exported so handlers can validate the metric
 // against the union of the standard metrics map and this set
@@ -275,9 +285,10 @@ func IsSubagentMetric(metric string) bool {
 const tokenEventFilter = billedEventFilter
 
 // metricSpecs returns the specification for the requested metric.
-// “estimated_cost“ is computed from the static pricing table; see
+// “estimated_cost“ is computed from the pricing table; see
 // pricing.go.
-func metricSpecs() map[string]metricSpec {
+func (s *Store) metricSpecs() map[string]metricSpec {
+	d := s.d
 	return map[string]metricSpec{
 		"tokens": {
 			baseTable: "events", alias: "e",
@@ -298,17 +309,15 @@ func metricSpecs() map[string]metricSpec {
 		},
 		"latency_p50": {
 			baseTable: "events", alias: "e",
-			// PERCENTILE_CONT is an ordered-set aggregate and
-			// requires WITHIN GROUP; it returns NULL when the
-			// bucket is empty, so COALESCE to 0 for a clean zero
-			// series in charts.
-			agg:         "COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY e.latency_ms), 0)",
+			// The percentile is NULL when the bucket is empty, so
+			// COALESCE to 0 for a clean zero series in charts.
+			agg:         "COALESCE(" + d.Percentile("0.5", "e.latency_ms") + ", 0)",
 			timeCol:     "e.occurred_at",
 			whereClause: "e.event_type = 'post_call'",
 		},
 		"latency_p95": {
 			baseTable: "events", alias: "e",
-			agg:         "COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY e.latency_ms), 0)",
+			agg:         "COALESCE(" + d.Percentile("0.95", "e.latency_ms") + ", 0)",
 			timeCol:     "e.occurred_at",
 			whereClause: "e.event_type = 'post_call'",
 		},
@@ -320,8 +329,8 @@ func metricSpecs() map[string]metricSpec {
 		},
 		"estimated_cost": {
 			baseTable: "events", alias: "e",
-			agg:         BuildCostAggregateSQL(),
-			fromExtras:  CostPriceJoinSQL(),
+			agg:         s.costAggregateSQL(),
+			fromExtras:  s.q.priceJoin(),
 			timeCol:     "e.occurred_at",
 			whereClause: costEventFilter,
 		},
@@ -342,10 +351,11 @@ func metricSpecs() map[string]metricSpec {
 func appendBreakdownPoint(
 	series *AnalyticsSeries,
 	bucket time.Time,
+	layout string,
 	subDim string,
 	value float64,
 ) {
-	dateStr := bucket.Format("2006-01-02")
+	dateStr := bucket.Format(layout)
 	if n := len(series.Data); n > 0 && series.Data[n-1].Date == dateStr {
 		// Same primary × bucket → append to the existing point.
 		series.Data[n-1].Breakdown = append(
@@ -395,8 +405,107 @@ func timeRange(rangeStr string, from, to time.Time) (time.Time, time.Time) {
 	}
 }
 
+// Bucket label layouts: the calendar date for day and week buckets,
+// the UTC hour for hour buckets (DataPoint.Date).
+const (
+	dayLabel  = "2006-01-02"
+	hourLabel = "2006-01-02T15:00Z"
+)
+
+// bucketSQL is the time-bucket expression of a series and the layout
+// its label takes: timeCol truncated to the granularity, taken as a
+// UTC date (DateOf) for day and week so the buckets of both engines
+// are the same calendar days whatever the session time zone, and as
+// the truncated timestamp for hour.
+func (s *Store) bucketSQL(granularity, timeCol string) (expr, layout string, err error) {
+	unit, ok := truncUnit(granularity)
+	if !ok || unit == storage.TruncMonth {
+		return "", "", fmt.Errorf("invalid granularity: %s", granularity)
+	}
+	if unit == storage.TruncHour {
+		return s.d.DateTrunc(unit, timeCol), hourLabel, nil
+	}
+	return s.d.DateOf(s.d.DateTrunc(unit, timeCol)), dayLabel, nil
+}
+
+// seriesRow is one row of a series query, scanned on either shape.
+type seriesRow struct {
+	dim, subDim string
+	bucket      time.Time
+	value       float64
+}
+
+// scanSeriesRows walks a series query's rows into fn, with the
+// two-key or three-key shape. The bucket comes back as a date or
+// timestamptz on Postgres and as text on SQLite; storage.Time reads
+// every shape.
+func scanSeriesRows(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}, hasSecondary bool, fn func(seriesRow)) error {
+	for rows.Next() {
+		var r seriesRow
+		var bucket storage.Time
+		var err error
+		if hasSecondary {
+			err = rows.Scan(&r.dim, &r.subDim, &bucket, &r.value)
+		} else {
+			err = rows.Scan(&r.dim, &bucket, &r.value)
+		}
+		if err != nil {
+			return err
+		}
+		r.bucket = bucket.Time.UTC()
+		fn(r)
+	}
+	return rows.Err()
+}
+
+// foldSeries runs a series query and folds its rows into the response
+// series, in first-seen dimension order, labelling buckets with
+// layout, and returns the grand total.
+func (s *Store) foldSeries(ctx context.Context, query string, args []any, hasSecondary bool, layout string) ([]AnalyticsSeries, float64, error) {
+	rows, err := s.reader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	seriesMap := make(map[string]*AnalyticsSeries)
+	var order []string
+	var grandTotal float64
+	err = scanSeriesRows(rows, hasSecondary, func(r seriesRow) {
+		series, exists := seriesMap[r.dim]
+		if !exists {
+			series = &AnalyticsSeries{Dimension: r.dim}
+			seriesMap[r.dim] = series
+			order = append(order, r.dim)
+		}
+		if hasSecondary {
+			appendBreakdownPoint(series, r.bucket, layout, r.subDim, r.value)
+		} else {
+			series.Data = append(series.Data, DataPoint{
+				Date:  r.bucket.Format(layout),
+				Value: r.value,
+			})
+		}
+		series.Total += r.value
+		grandTotal += r.value
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	series := make([]AnalyticsSeries, 0, len(order))
+	for _, d := range order {
+		series = append(series, *seriesMap[d])
+	}
+	return series, grandTotal, nil
+}
+
 // QueryAnalytics runs the analytics query and returns the full response.
 func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*AnalyticsResponse, error) {
+	dimensions := s.dimensions()
 	dim, ok := dimensions[params.GroupBy]
 	if !ok {
 		return nil, fmt.Errorf("invalid group_by: %s", params.GroupBy)
@@ -431,10 +540,14 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	if subagentMetricNames[params.Metric] {
 		return s.querySubagentAnalytics(ctx, params, dim, secDim, hasSecondary)
 	}
-	specs := metricSpecs()
+	specs := s.metricSpecs()
 	spec, ok := specs[params.Metric]
 	if !ok {
 		return nil, fmt.Errorf("invalid metric: %s", params.Metric)
+	}
+	bucket, layout, err := s.bucketSQL(params.Granularity, spec.timeCol)
+	if err != nil {
+		return nil, err
 	}
 
 	start, end := timeRange(params.Range, params.From, params.To)
@@ -493,9 +606,9 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	if params.FilterAgentID != "" {
 		// agent_id lives on sessions; same join-on-demand pattern as
 		// FilterAgentType so event-based metrics can still narrow to
-		// one agent. The ::uuid cast keeps a malformed value (which
-		// the handler is supposed to have already rejected) from
-		// reaching the planner as a bare text comparison.
+		// one agent. The id is normalised to the canonical spelling
+		// both backends store (the handler has already validated its
+		// shape).
 		if spec.baseTable == "events" && !needsJoin {
 			fromClause = "events e JOIN sessions s ON e.session_id = s.session_id"
 			needsJoin = true
@@ -504,13 +617,13 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		if spec.baseTable == "sessions" {
 			aliasForFilter = spec.alias
 		}
-		filterSQL += fmt.Sprintf(" AND %s.agent_id = $%d::uuid", aliasForFilter, argIdx)
-		filterArgs = append(filterArgs, params.FilterAgentID)
+		filterSQL += fmt.Sprintf(" AND %s.agent_id = $%d", aliasForFilter, argIdx)
+		filterArgs = append(filterArgs, uuidArg(params.FilterAgentID))
 		argIdx++
 	}
 
-	// Append per-dimension FROM-clause extras (LATERAL unnest for
-	// framework) after any sessions JOIN has been materialised above.
+	// Append per-dimension FROM-clause extras (the framework unnest)
+	// after any sessions JOIN has been materialised above.
 	// fromExtras is a bare SQL fragment (whitespace-separated, no
 	// leading comma or AND) so it can be appended unchanged.
 	if dim.fromExtras != "" {
@@ -546,8 +659,8 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	}
 	if params.FilterParentSessionID != "" {
 		filterSQL += fmt.Sprintf(
-			" AND %s.parent_session_id = $%d::uuid", subagentAlias, argIdx)
-		filterArgs = append(filterArgs, params.FilterParentSessionID)
+			" AND %s.parent_session_id = $%d", subagentAlias, argIdx)
+		filterArgs = append(filterArgs, uuidArg(params.FilterParentSessionID))
 		// No argIdx++ here — the IS NOT NULL / EXISTS branches below
 		// don't bind a positional parameter. Adding a future filter
 		// that does bind requires re-introducing the increment in
@@ -596,8 +709,8 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		} else {
 			secDimExpr = secDim.exprSessions
 		}
-		// The secondary's FROM-clause extras (the framework LATERAL
-		// unnest), unless the primary already added the same fragment.
+		// The secondary's FROM-clause extras (the framework unnest),
+		// unless the primary already added the same fragment.
 		// Without them a framework secondary axis projects an alias no
 		// FROM item defines.
 		if secDim.fromExtras != "" && secDim.fromExtras != dim.fromExtras {
@@ -613,7 +726,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	// Two-dim shape: when ``hasSecondary``, the SELECT
 	// projects three keys (primary, secondary, bucket) and the GROUP
 	// BY follows. Single-dim queries take the original two-key
-	// shape. The fold loop below walks the rows once and dispatches
+	// shape. The fold loop walks the rows once and dispatches
 	// on row arity so the standard / two-dim paths share scan
 	// machinery rather than duplicating the cursor management.
 	//
@@ -622,79 +735,37 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	}
 	//nolint:gosec // dimExpr / secDimExpr from the validated
 	// whitelist; spec strings come from the metricSpecs map;
-	// params.Granularity is validated by the handler.
+	// params.Granularity is validated by the handler and bucketSQL.
 	var seriesSQL string
 	if hasSecondary {
 		seriesSQL = fmt.Sprintf(`
 			SELECT COALESCE(%s, 'unknown') AS dimension,
 			       COALESCE(%s, 'unknown') AS sub_dimension,
-			       date_trunc('%s', %s)::date AS bucket,
+			       %s AS bucket,
 			       %s AS value
 			FROM %s
 			WHERE %s%s >= $1 AND %s < $2 %s
 			GROUP BY dimension, sub_dimension, bucket
 			ORDER BY dimension, bucket, sub_dimension
-		`, dimExpr, secDimExpr, params.Granularity, spec.timeCol,
+		`, dimExpr, secDimExpr, bucket,
 			spec.agg, fromClause, whereAnd, spec.timeCol,
 			spec.timeCol, filterSQL)
 	} else {
 		seriesSQL = fmt.Sprintf(`
 			SELECT COALESCE(%s, 'unknown') AS dimension,
-			       date_trunc('%s', %s)::date AS bucket,
+			       %s AS bucket,
 			       %s AS value
 			FROM %s
 			WHERE %s%s >= $1 AND %s < $2 %s
 			GROUP BY dimension, bucket
 			ORDER BY dimension, bucket
-		`, dimExpr, params.Granularity, spec.timeCol, spec.agg, fromClause,
+		`, dimExpr, bucket, spec.agg, fromClause,
 			whereAnd, spec.timeCol, spec.timeCol, filterSQL)
 	}
 
-	rows, err := s.pool.Query(ctx, seriesSQL, filterArgs...)
+	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary, layout)
 	if err != nil {
 		return nil, fmt.Errorf("analytics query: %w", err)
-	}
-	defer rows.Close()
-
-	seriesMap := make(map[string]*AnalyticsSeries)
-	var order []string
-	var grandTotal float64
-
-	for rows.Next() {
-		var dimVal string
-		var subDimVal string
-		var bucket time.Time
-		var value float64
-		if hasSecondary {
-			if err := rows.Scan(&dimVal, &subDimVal, &bucket, &value); err != nil {
-				return nil, fmt.Errorf("analytics scan: %w", err)
-			}
-		} else {
-			if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
-				return nil, fmt.Errorf("analytics scan: %w", err)
-			}
-		}
-		series, exists := seriesMap[dimVal]
-		if !exists {
-			series = &AnalyticsSeries{Dimension: dimVal}
-			seriesMap[dimVal] = series
-			order = append(order, dimVal)
-		}
-		if hasSecondary {
-			appendBreakdownPoint(series, bucket, subDimVal, value)
-		} else {
-			series.Data = append(series.Data, DataPoint{
-				Date:  bucket.Format("2006-01-02"),
-				Value: value,
-			})
-		}
-		series.Total += value
-		grandTotal += value
-	}
-
-	series := make([]AnalyticsSeries, 0, len(order))
-	for _, d := range order {
-		series = append(series, *seriesMap[d])
 	}
 
 	// Previous-period grand total for period_change_pct: the same
@@ -808,11 +879,6 @@ const subagentRecursiveCTE = `
 	)
 `
 
-// subagentMetricExpr returns the per-session SQL expression for the
-// sub-agent metric. The CTE above projects “subtree_tokens“ onto
-// every session via the LEFT JOIN inside querySubagentAnalytics, and
-// the per-parent fan-out / latency expressions reference correlated
-// subqueries against the sessions table directly.
 // sumSeriesValues runs a series-shaped query (the SELECT list used by
 // the main and sub-agent series queries) over an alternate window and
 // returns the sum of its per-bucket values. The previous-period total
@@ -820,35 +886,22 @@ const subagentRecursiveCTE = `
 // every aggregate: a single whole-window AVG or percentile is not
 // comparable to a sum of per-bucket values.
 func (s *Store) sumSeriesValues(
-	ctx context.Context, sql string, args []any, hasSecondary bool,
+	ctx context.Context, query string, args []any, hasSecondary bool,
 ) (float64, error) {
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var total float64
-	for rows.Next() {
-		var dimVal, subDimVal string
-		var bucket time.Time
-		var value float64
-		if hasSecondary {
-			err = rows.Scan(&dimVal, &subDimVal, &bucket, &value)
-		} else {
-			err = rows.Scan(&dimVal, &bucket, &value)
-		}
-		if err != nil {
-			return 0, err
-		}
-		total += value
-	}
-	return total, rows.Err()
+	err = scanSeriesRows(rows, hasSecondary, func(r seriesRow) { total += r.value })
+	return total, err
 }
 
 // subagentMetricExpr returns the per-session SQL expression, the
 // aggregate and an extra WHERE fragment (empty for most metrics) for
 // the sub-agent metric.
-func subagentMetricExpr(metric string) (selectExpr, aggregate, whereExtra string) {
+func (s *Store) subagentMetricExpr(metric string) (selectExpr, aggregate, whereExtra string) {
 	switch metric {
 	case "parent_token_sum":
 		// Per-row: total tokens across this session's subtree.
@@ -872,11 +925,8 @@ func subagentMetricExpr(metric string) (selectExpr, aggregate, whereExtra string
 		// average is "across parents that actually spawned someone"
 		// and a bucket of childless sessions yields no row instead of
 		// a NULL the scanner cannot read.
-		return `EXTRACT(EPOCH FROM (
-		         (SELECT MIN(c.started_at) FROM sessions c
-		          WHERE c.parent_session_id = s.session_id)
-		         - s.started_at
-		     )) * 1000`, "AVG",
+		return s.d.SecondsBetween(`(SELECT MIN(c.started_at) FROM sessions c
+		          WHERE c.parent_session_id = s.session_id)`, "s.started_at") + " * 1000", "AVG",
 			" AND EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.session_id)"
 	}
 	return "", "", ""
@@ -889,9 +939,13 @@ func (s *Store) querySubagentAnalytics(
 	secDim dimensionSource,
 	hasSecondary bool,
 ) (*AnalyticsResponse, error) {
-	selectExpr, aggregate, whereExtra := subagentMetricExpr(params.Metric)
+	selectExpr, aggregate, whereExtra := s.subagentMetricExpr(params.Metric)
 	if selectExpr == "" {
 		return nil, fmt.Errorf("invalid sub-agent metric: %s", params.Metric)
+	}
+	bucket, layout, err := s.bucketSQL(params.Granularity, "s.started_at")
+	if err != nil {
+		return nil, err
 	}
 
 	start, end := timeRange(params.Range, params.From, params.To)
@@ -931,8 +985,8 @@ func (s *Store) querySubagentAnalytics(
 		argIdx++
 	}
 	if params.FilterAgentID != "" {
-		filterSQL += fmt.Sprintf(" AND s.agent_id = $%d::uuid", argIdx)
-		filterArgs = append(filterArgs, params.FilterAgentID)
+		filterSQL += fmt.Sprintf(" AND s.agent_id = $%d", argIdx)
+		filterArgs = append(filterArgs, uuidArg(params.FilterAgentID))
 		argIdx++
 	}
 	if params.FilterProvider != "" {
@@ -942,8 +996,8 @@ func (s *Store) querySubagentAnalytics(
 		argIdx++
 	}
 	if params.FilterParentSessionID != "" {
-		filterSQL += fmt.Sprintf(" AND s.parent_session_id = $%d::uuid", argIdx)
-		filterArgs = append(filterArgs, params.FilterParentSessionID)
+		filterSQL += fmt.Sprintf(" AND s.parent_session_id = $%d", argIdx)
+		filterArgs = append(filterArgs, uuidArg(params.FilterParentSessionID))
 		// No argIdx++ here — see comment in QueryAnalytics' main
 		// dispatch path for the same chain.
 	}
@@ -980,8 +1034,8 @@ func (s *Store) querySubagentAnalytics(
 	//
 	filterSQL += whereExtra
 
-	// The framework dimension projects an alias produced by a LATERAL
-	// unnest of sessions.context->'frameworks'; that join has to be in
+	// The framework dimension projects the label of the per-backend
+	// unnest of sessions.context.frameworks; that join has to be in
 	// the FROM clause here just as it is on the standard path.
 	fromClause := "sessions s LEFT JOIN subtree_tokens st ON st.root_id = s.session_id"
 	if dim.fromExtras != "" {
@@ -999,76 +1053,30 @@ func (s *Store) querySubagentAnalytics(
 			SELECT
 				COALESCE(%s, 'unknown') AS dimension,
 				COALESCE(%s, 'unknown') AS sub_dimension,
-				date_trunc('%s', s.started_at)::date AS bucket,
+				%s AS bucket,
 				COALESCE(%s(%s), 0) AS value
 			FROM %s
 			WHERE s.started_at >= $1 AND s.started_at < $2 %s
 			GROUP BY dimension, sub_dimension, bucket
 			ORDER BY dimension, bucket, sub_dimension
-		`, dimExpr, secDimExpr, params.Granularity, aggregate,
+		`, dimExpr, secDimExpr, bucket, aggregate,
 			selectExpr, fromClause, filterSQL)
 	} else {
 		seriesSQL = subagentRecursiveCTE + fmt.Sprintf(`
 			SELECT
 				COALESCE(%s, 'unknown') AS dimension,
-				date_trunc('%s', s.started_at)::date AS bucket,
+				%s AS bucket,
 				COALESCE(%s(%s), 0) AS value
 			FROM %s
 			WHERE s.started_at >= $1 AND s.started_at < $2 %s
 			GROUP BY dimension, bucket
 			ORDER BY dimension, bucket
-		`, dimExpr, params.Granularity, aggregate, selectExpr, fromClause, filterSQL)
+		`, dimExpr, bucket, aggregate, selectExpr, fromClause, filterSQL)
 	}
 
-	rows, err := s.pool.Query(ctx, seriesSQL, filterArgs...)
+	series, grandTotal, err := s.foldSeries(ctx, seriesSQL, filterArgs, hasSecondary, layout)
 	if err != nil {
 		return nil, fmt.Errorf("subagent analytics query: %w", err)
-	}
-	defer rows.Close()
-
-	seriesMap := make(map[string]*AnalyticsSeries)
-	var order []string
-	var grandTotal float64
-	for rows.Next() {
-		var dimVal string
-		var subDimVal string
-		var bucket time.Time
-		var value float64
-		if hasSecondary {
-			if err := rows.Scan(&dimVal, &subDimVal, &bucket, &value); err != nil {
-				return nil, fmt.Errorf("subagent analytics scan: %w", err)
-			}
-		} else {
-			if err := rows.Scan(&dimVal, &bucket, &value); err != nil {
-				return nil, fmt.Errorf("subagent analytics scan: %w", err)
-			}
-		}
-		series, exists := seriesMap[dimVal]
-		if !exists {
-			series = &AnalyticsSeries{Dimension: dimVal}
-			seriesMap[dimVal] = series
-			order = append(order, dimVal)
-		}
-		if hasSecondary {
-			appendBreakdownPoint(series, bucket, subDimVal, value)
-			series.Total += value
-			grandTotal += value
-			continue
-		}
-		series.Data = append(series.Data, DataPoint{
-			Date:  bucket.Format("2006-01-02"),
-			Value: value,
-		})
-		series.Total += value
-		grandTotal += value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("subagent analytics rows: %w", err)
-	}
-
-	series := make([]AnalyticsSeries, 0, len(order))
-	for _, d := range order {
-		series = append(series, *seriesMap[d])
 	}
 
 	// Period-over-period grand total: the same series query over the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 func TestMaskURL(t *testing.T) {
@@ -239,5 +241,103 @@ func TestBind_PlainModeBindsTheListenAddress(t *testing.T) {
 	busy := lns.plain.Addr().String()
 	if _, err := bind(cli.Options{Listen: busy}); err == nil || !strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("second bind of %s: %v", busy, err)
+	}
+}
+
+// The process's one handle is opened with the connection parameters
+// each service puts on a pool of its own; a SQLite URL passes through
+// byte for byte, whatever its path holds.
+func TestConnectionURL_CarriesEveryServicesPostgresParameters(t *testing.T) {
+	got, err := connectionURL("postgres://u:p%40ss@db.example:5432/fd?sslmode=require")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"jit=off", "lock_timeout=8000", "sslmode=require", "u:p%40ss@db.example:5432/fd"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("connectionURL = %q, lacks %q", got, want)
+		}
+	}
+	// What the operator set is kept.
+	got, err = connectionURL("postgresql://u@h/fd?jit=on&lock_timeout=500")
+	if err != nil || !strings.Contains(got, "jit=on") || !strings.Contains(got, "lock_timeout=500") {
+		t.Errorf("connectionURL = %q, %v; the operator's settings must win", got, err)
+	}
+	for _, same := range []string{
+		"sqlite:///home/o m/a#b/x?y/50%/flightdeck.db",
+		`sqlite://C:\Users\omria\AppData\Local\flightdeck\flightdeck.db`,
+	} {
+		if got, err := connectionURL(same); err != nil || got != same {
+			t.Errorf("connectionURL(%q) = %q, %v; want it unchanged", same, got, err)
+		}
+	}
+	if _, err := connectionURL("mysql://u@h/fd"); err == nil {
+		t.Error("a URL of no supported backend must be refused")
+	}
+}
+
+func TestResolveDatabase(t *testing.T) {
+	layout := datadir.Layout{Root: "/data dir/#1", Database: "/data dir/#1/flightdeck.db"}
+
+	def, err := resolveDatabase("", layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.backend != storage.SQLite || def.path != layout.Database || def.display != layout.Database ||
+		storage.SQLitePath(def.url) != layout.Database {
+		t.Errorf("no --database-url: %+v, want the SQLite file in the data dir", def)
+	}
+
+	pg, err := resolveDatabase("postgres://u:secret@h:5432/fd?sslmode=disable", layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pg.backend != storage.Postgres || pg.path != "" || pg.url != "postgres://u:secret@h:5432/fd?sslmode=disable" {
+		t.Errorf("postgres: %+v", pg)
+	}
+	if strings.Contains(pg.display, "secret") || !strings.Contains(pg.display, "u:***@h:5432/fd") {
+		t.Errorf("postgres display %q must mask the password", pg.display)
+	}
+
+	// A relative SQLite path is resolved once, so the lock file, the
+	// start-up block and the storage module name one file.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := resolveDatabase("sqlite://some dir/fd #2.db", layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(wd, "some dir", "fd #2.db")
+	if rel.backend != storage.SQLite || rel.path != want || rel.display != want || storage.SQLitePath(rel.url) != want {
+		t.Errorf("relative sqlite: %+v, want path %q", rel, want)
+	}
+
+	if _, err := resolveDatabase("mysql://u@h/fd", layout); err == nil {
+		t.Error("a URL of no supported backend must be refused")
+	}
+}
+
+func TestInUseMessagesNameTheHolderAndTheRemedy(t *testing.T) {
+	held := &datadir.InUseError{Path: "/d/flightdeck.lock", PID: 4242}
+	msg := dataDirInUse(held, "/d").Error()
+	for _, want := range []string{"data dir /d", "another flightdeck", "pid 4242", "--data-dir"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("%q lacks %q", msg, want)
+		}
+	}
+	msg = databaseInUse(&datadir.InUseError{Path: "/d/flightdeck.db.lock"}, "/d/flightdeck.db").Error()
+	for _, want := range []string{"SQLite database /d/flightdeck.db", "another flightdeck", "--database-url postgres://"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("%q lacks %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "pid") {
+		t.Errorf("%q names a pid the lock file did not give", msg)
+	}
+	// Any other lock failure is passed on as it is.
+	other := errors.New("open lock file: permission denied")
+	if dataDirInUse(other, "/d") != other || databaseInUse(other, "/d/x.db") != other {
+		t.Error("an error that is not InUseError must be returned unchanged")
 	}
 }

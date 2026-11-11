@@ -55,17 +55,18 @@ cleanup() {
 trap cleanup EXIT
 
 # The binary reads its settings from the environment too; a developer's
-# shell must not point this run at another database or data dir.
-flightdeck() {
-  env -u FLIGHTDECK_DATABASE_URL -u FLIGHTDECK_DATA_DIR -u FLIGHTDECK_LISTEN \
-    -u FLIGHTDECK_NATS_URL -u FLIGHTDECK_DOMAIN "$BIN" "$@"
-}
+# shell must not point this run at another database or data dir. An
+# array, not a function: env replaces itself with the binary, so the
+# PID of the background job is the binary's own, the one the signals
+# and the refusal message below are about.
+FLIGHTDECK=(env -u FLIGHTDECK_DATABASE_URL -u FLIGHTDECK_DATA_DIR -u FLIGHTDECK_LISTEN
+  -u FLIGHTDECK_NATS_URL -u FLIGHTDECK_DOMAIN "$BIN")
 
 start() {
   local args=(--listen "$LISTEN" --data-dir "$DATA")
   if [ -n "$DB_URL" ]; then args+=(--database-url "$DB_URL"); fi
   # Appended: the restart's output follows the first run's.
-  flightdeck "${args[@]}" >>"$LOG" 2>&1 &
+  "${FLIGHTDECK[@]}" "${args[@]}" >>"$LOG" 2>&1 &
   PID=$!
   for _ in $(seq 1 "$READY_TIMEOUT_SECS"); do
     if curl -sf -o /dev/null "$BASE/api/health"; then break; fi
@@ -136,7 +137,7 @@ port="${LISTEN##*:}"
 second_log="$TMP/second.log"
 second_args=(--listen "${LISTEN%:*}:$((port + 1))" --data-dir "$DATA")
 if [ -n "$DB_URL" ]; then second_args+=(--database-url "$DB_URL"); fi
-flightdeck "${second_args[@]}" >"$second_log" 2>&1 &
+"${FLIGHTDECK[@]}" "${second_args[@]}" >"$second_log" 2>&1 &
 second=$!
 for _ in $(seq 1 "$REFUSE_TIMEOUT_SECS"); do
   kill -0 "$second" 2>/dev/null || break

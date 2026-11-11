@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -193,6 +194,73 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Share gives a second service of the process a handle on the same
+// database: one writer for both, a read pool each on SQLite, and a
+// Close that leaves the original usable.
+func TestShare_OneWriterAReadPoolEachAndAnIndependentClose(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		shared, err := db.Share(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if shared.DB != db.DB {
+			t.Fatal("the shared handle has a writer of its own; the process must keep one")
+		}
+		if shared.Backend != db.Backend || shared.URL() != db.URL() {
+			t.Fatalf("shared handle is %s at %q, want %s at %q", shared.Backend, shared.URL(), db.Backend, db.URL())
+		}
+		switch db.Backend {
+		case storage.SQLite:
+			if shared.Reader() == db.Reader() || shared.Reader() == shared.DB {
+				t.Fatal("on SQLite the shared handle reads through a pool of its own")
+			}
+			if n := db.Stats().MaxOpenConnections; n != 1 {
+				t.Fatalf("the writer allows %d connections, want 1", n)
+			}
+			// The shared pool is a read pool: it cannot write.
+			if _, err := shared.Reader().ExecContext(ctx, "INSERT INTO token_policies (scope, scope_value) VALUES ('global', 'x')"); err == nil {
+				t.Fatal("a write through the shared read pool succeeded")
+			}
+		case storage.Postgres:
+			if shared.Reader() != db.Reader() {
+				t.Fatal("on Postgres the shared handle uses the one pool")
+			}
+		}
+
+		// A row written through either handle is read through the other.
+		scope := fmt.Sprintf("share-test-%d", time.Now().UnixNano())
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), "DELETE FROM token_policies WHERE scope_value LIKE $1", scope+"%")
+		})
+		mustExec(t, shared, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-a")
+		mustExec(t, db, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-b")
+		for name, h := range map[string]*storage.DB{"original": db, "shared": shared} {
+			var n int
+			if err := h.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM token_policies WHERE scope_value LIKE $1", scope+"%").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 2 {
+				t.Errorf("the %s handle reads %d of the 2 rows", name, n)
+			}
+		}
+
+		// Closing the shared handle leaves the original whole.
+		if err := shared.Close(); err != nil {
+			t.Fatalf("close the shared handle: %v", err)
+		}
+		mustExec(t, db, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-c")
+		if n := queryInt(t, db, "SELECT COUNT(*) FROM token_policies WHERE scope_value LIKE $1", scope+"%"); n != 3 {
+			t.Errorf("the original handle reads %d rows after the shared one closed, want 3", n)
+		}
+		if db.Backend == storage.SQLite {
+			if err := shared.Reader().PingContext(ctx); err == nil {
+				t.Error("the shared handle's read pool still answers after its Close")
+			}
+		}
+	})
 }
 
 // SQLiteURL and SQLitePath are inverses for every path shape a data

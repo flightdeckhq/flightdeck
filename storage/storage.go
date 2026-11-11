@@ -78,10 +78,12 @@ const (
 // without hiding a stuck process behind an endless wait.
 const sqliteBusyTimeoutMillis = 5000
 
-// sqliteReaderConns bounds the SQLite read pool. Readers never block
+// sqliteReaderConns bounds a SQLite read pool. Readers never block
 // each other or the writer in WAL mode, so the number only caps the
 // memory of idle connections; eight covers the dashboard's concurrent
-// fetches on a page load with the API's own background reads.
+// fetches on a page load with the API's own background reads. Each
+// handle has a pool of its own (see Share), so the eight are per
+// service.
 const sqliteReaderConns = 8
 
 // DB is an open database: the writer handle (the embedded *sql.DB),
@@ -115,6 +117,12 @@ type DB struct {
 	reader *sql.DB
 	// url is the URL Open received; the Postgres Bus dials it for LISTEN.
 	url string
+	// checkpointer resets the write-ahead log of a SQLite database
+	// (sqlite_checkpoint.go); nil on Postgres and on a shared handle.
+	checkpointer *walCheckpointer
+	// shared marks a handle made by Share: the writer (on Postgres, the
+	// pool) belongs to the handle it was made from, which closes it.
+	shared bool
 }
 
 // Open connects to the database named by url: "sqlite://<path>" opens
@@ -250,17 +258,55 @@ func openSQLite(rawURL string) (*DB, error) {
 	writer.SetConnMaxIdleTime(0)
 
 	db := &DB{DB: writer, reader: writer, Dialect: sqliteDialect{}, Backend: SQLite, url: rawURL}
-	reader, err := sql.Open(sqliteDriverName, sqliteDSN(path, false))
+	reader, err := openSQLiteReaders(path)
 	if err != nil {
 		_ = writer.Close()
+		return nil, err
+	}
+	db.reader = reader
+	db.checkpointer = startWALCheckpointer(writer, path)
+	return db, nil
+}
+
+// openSQLiteReaders opens a read pool on the SQLite file at path.
+func openSQLiteReaders(path string) (*sql.DB, error) {
+	reader, err := sql.Open(sqliteDriverName, sqliteDSN(path, false))
+	if err != nil {
 		return nil, fmt.Errorf("storage: open sqlite reader: %w", err)
 	}
 	reader.SetMaxOpenConns(sqliteReaderConns)
 	reader.SetMaxIdleConns(sqliteReaderConns)
 	reader.SetConnMaxLifetime(0)
 	reader.SetConnMaxIdleTime(0)
-	db.reader = reader
-	return db, nil
+	return reader, nil
+}
+
+// Share returns a handle on the same database for another service of
+// the same process. It writes through db's writer, so on SQLite the
+// process still has exactly one writer connection and every write
+// queues on it; it reads through a pool of its own, so one service's
+// slow reads (a dashboard's listings) never make another's wait for a
+// connection (the workers' point reads on every event). On Postgres
+// the handle uses db's pool for both, as db does.
+//
+// Close on the returned handle closes only what Share opened and
+// leaves db usable; db must stay open for as long as the handle is
+// used, and is closed after it.
+func (db *DB) Share(ctx context.Context) (*DB, error) {
+	shared := &DB{DB: db.DB, reader: db.reader, Dialect: db.Dialect, Backend: db.Backend, url: db.url, shared: true}
+	if db.Backend != SQLite {
+		return shared, nil
+	}
+	reader, err := openSQLiteReaders(SQLitePath(db.url))
+	if err != nil {
+		return nil, err
+	}
+	if err := reader.PingContext(ctx); err != nil {
+		_ = reader.Close()
+		return nil, fmt.Errorf("storage: ping sqlite reader: %w", err)
+	}
+	shared.reader = reader
+	return shared, nil
 }
 
 // sqliteDSN builds the modernc DSN for path. Every connection enables
@@ -333,8 +379,21 @@ func (db *DB) URL() string {
 	return db.url
 }
 
-// Close closes both handles.
+// Close closes both handles. On SQLite the last connection to close
+// checkpoints the write-ahead log into the database file and removes
+// it, so a closed database is one file.
 func (db *DB) Close() error {
+	if db.shared {
+		// The writer is not this handle's to close; a read pool of its
+		// own is.
+		if db.reader != db.DB {
+			return db.reader.Close()
+		}
+		return nil
+	}
+	if db.checkpointer != nil {
+		db.checkpointer.Stop()
+	}
 	err := db.DB.Close()
 	if db.reader != db.DB {
 		if rerr := db.reader.Close(); err == nil {

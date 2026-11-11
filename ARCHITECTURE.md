@@ -5073,7 +5073,7 @@ database with `storage.OpenRetry`, which retries with a doubling delay
 for a bounded budget (ingestion and the query API: 60 s) so a database that starts a
 moment after the service does not end the process. The Postgres pool is
 capped at max(4, NumCPU) connections, open and idle, idle ones closed
-after 30 minutes; the SQLite writer is one connection and the reader
+after 30 minutes; the SQLite writer is one connection and each read
 pool eight.
 
 **The common subset** both engines accept, written as is: `$1, $2, …`
@@ -5177,6 +5177,31 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   statement runs on the `Tx`, and a read that needs no transaction runs
   on `Reader()`. `sql.TxOptions.ReadOnly` is enforced by Postgres and
   ignored by SQLite. On Postgres both handles are the same pool.
+- **One writer, a read pool per service.** `DB.Share(ctx)` returns a
+  handle for another service of the same process: it writes through
+  the original's writer, so the process still has exactly one writer
+  connection, and on SQLite it reads through eight connections of its
+  own, so one service's slow reads (a dashboard's listings) never make
+  another's wait for a connection (the workers' point reads on every
+  event). Closing a shared handle closes only its read pool; the
+  original is closed after it. On Postgres a shared handle uses the
+  original's pool.
+- **The write-ahead log is reset by the writer.** SQLite's own
+  checkpoint copies the log into the database file every 1000 pages
+  without waiting, and starts the log file over only when everything
+  is copied and no reader is on the log. Under reads that overlap
+  every write that moment does not come, and the log grows without
+  bound (446 MiB for 10,000 events under eight readers in a tight
+  loop, measured). So once a second the writer handle looks at the
+  log's size and, above 16 MiB, runs `PRAGMA wal_checkpoint(TRUNCATE)`
+  on the writer connection with a one-second busy timeout: writes
+  queue behind it, reads are never held, and the log is emptied as
+  soon as the reads in flight have ended (new reads no longer use the
+  log once it is copied). A read that outlasts the timeout postpones
+  the reset; the next attempt waits twice as long as the last, up to
+  30 seconds, and a warning names the log's size after ten attempts
+  in a row. Closing the database stops the loop, and the last
+  connection to close folds the log into the file and removes it.
 - **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
   `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
@@ -5261,7 +5286,8 @@ payloads) is full rather than dropping; the wait ends with the
 publisher's context or the subscriber's, and publishers never wait for
 each other. An in-process bus is private to the code that holds it:
 services that must hear each other on SQLite share one `Bus` value
-(the `flightdeck` binary creates it and passes it to all three).
+(the `flightdeck` binary creates it and passes it to all three, as it
+does with the database: see `DB.Share` above).
 `Close()` ends every subscription and returns once the bus holds no
 goroutine and no `LISTEN` connection; `Publish` and `Subscribe` then
 return `storage.ErrBusClosed`. Whoever created a bus closes it after
@@ -10468,11 +10494,14 @@ applies the embedded migrations of the backend (`storage.Migrate`)
 before anything else touches the database, so an empty database, a new
 SQLite file and a Postgres database an earlier version migrated are all
 brought to the current schema. It then opens **one** `storage.DB` and
-**one** `storage.Bus` for the process and hands both to the three
-services: on SQLite the handle owns the file's single writer
-connection and the bus is in-process, so every write of the three
-services queues on one connection and every notification reaches every
-subscriber. On Postgres the shared pool's connections carry the
+**one** `storage.Bus` for the process and hands each of the three
+services the bus and a handle on that database (`DB.Share`): on
+SQLite the database owns the file's single writer connection and the
+bus is in-process, so every write of the three services queues on one
+connection and every notification reaches every subscriber, while
+each service reads through a pool of its own, so the dashboard's
+queries never hold up the workers' reads. On Postgres the three
+handles are the one pool, whose connections carry the
 workers' `lock_timeout` (8 s) and the query API's `jit=off` as URL
 runtime parameters, the settings each service puts on a pool of its
 own: a statement that waits longer than that for a row lock would

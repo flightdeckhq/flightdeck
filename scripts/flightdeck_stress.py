@@ -48,9 +48,12 @@ from pathlib import Path
 # serves; a cold CI runner does that in a few seconds.
 READY_TIMEOUT_SECS = 60
 # After the last POST is answered the workers still drain the stream.
-# The default load (10,000 events) is stored within seconds of the last
-# POST on a laptop; the bound turns a stall into a failure.
-STORE_TIMEOUT_SECS = 120
+# Under the default load (10,000 events, eight readers in a tight loop)
+# the binary stored about 100 events a second on SQLite and 325 on
+# Postgres (measured on a 32-core laptop: everything stored 98 to 110 s
+# and 31 s after the first POST). Five minutes covers a CI runner with
+# a few cores; the bound turns a stall into a failure.
+STORE_TIMEOUT_SECS = 300
 # The binary's own shutdown budget is 30 s per step.
 STOP_TIMEOUT_SECS = 90
 # A read that takes longer than this while writes run counts as stalled
@@ -60,11 +63,11 @@ STOP_TIMEOUT_SECS = 90
 # thread scheduling, and is far below what waiting for the 10,000-event
 # write queue would cost.
 READ_STALL_SECS = 2.0
-# SQLite checkpoints the write-ahead log every 1000 pages (about 4 MiB)
-# when no reader pins an older snapshot. Under constant reads a
-# checkpoint can be put off, so the log may grow past that; 256 MiB is
-# the size at which it would mean checkpoints are not happening at all
-# for this load (10,000 small events are a few MiB of pages).
+# The storage module resets the write-ahead log once it passes 16 MiB
+# and the reads in flight have ended. Under the default load the log
+# peaked at 40 to 77 MiB (measured); without the reset it reached
+# 446 MiB and kept growing with the load. 256 MiB therefore means the
+# log is no longer being reset.
 WAL_LIMIT_BYTES = 256 * 1024 * 1024
 # How often the write-ahead log's size is sampled.
 WAL_SAMPLE_SECS = 0.25

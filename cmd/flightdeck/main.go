@@ -186,8 +186,8 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	defer stop()
 
 	// What is opened from here on is closed by the defers in reverse:
-	// the storage bus, the database, the NATS connections, the embedded
-	// NATS server. The database therefore closes (on SQLite: its
+	// the storage bus, the services' database handles and the database,
+	// the NATS connections, the embedded NATS server. The database therefore closes (on SQLite: its
 	// write-ahead log checkpointed into the file) as soon as nothing
 	// uses it, before the slower NATS shutdown.
 
@@ -215,12 +215,12 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if err := storage.Migrate(ctx, database.url); err != nil {
 		return fmt.Errorf("database %s: %w", database.display, err)
 	}
-	// One handle and one storage bus for the whole process, injected
-	// into the three services. On SQLite that is the point: the handle
-	// holds the file's single writer connection, and the bus is
-	// in-process, so a service with a handle or a bus of its own would
-	// collide with the others' writes and never hear their
-	// notifications.
+	// One database and one storage bus for the whole process, injected
+	// into the three services. On SQLite that is the point: the
+	// database holds the file's single writer connection, and the bus
+	// is in-process, so a service that opened the file or made a bus
+	// for itself would collide with the others' writes and never hear
+	// their notifications.
 	connURL, err := connectionURL(database.url)
 	if err != nil {
 		return err
@@ -234,6 +234,19 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 			slog.Warn("database close", "err", err)
 		}
 	}()
+	// Each service gets a handle that shares the writer and, on SQLite,
+	// reads through a pool of its own: the dashboard's listing queries
+	// must not make the workers' per-event reads wait for a connection.
+	var handles [3]*storage.DB
+	for i := range handles {
+		h, err := db.Share(ctx)
+		if err != nil {
+			return fmt.Errorf("database %s: %w", database.display, err)
+		}
+		defer func() { _ = h.Close() }()
+		handles[i] = h
+	}
+	ingDB, wrkDB, apiDB := handles[0], handles[1], handles[2]
 	bus := storage.NewBus(db)
 	defer func() { _ = bus.Close() }()
 
@@ -242,11 +255,11 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return err
 	}
 
-	ingApp, err := ingestionapp.New(ctx, ingCfg, ingestionapp.Deps{DB: db, Bus: bus, NATS: ingNC})
+	ingApp, err := ingestionapp.New(ctx, ingCfg, ingestionapp.Deps{DB: ingDB, Bus: bus, NATS: ingNC})
 	if err != nil {
 		return err
 	}
-	apiApp, err := apiapp.New(ctx, apiCfg, apiapp.Deps{DB: db, Bus: bus})
+	apiApp, err := apiapp.New(ctx, apiCfg, apiapp.Deps{DB: apiDB, Bus: bus})
 	if err != nil {
 		return err
 	}
@@ -264,7 +277,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		{name: "ingestion", run: ingApp.Run},
 		{name: "query API", run: apiApp.Run},
 		{name: "workers", run: func(c context.Context) error {
-			return workersapp.Run(c, wrkCfg, workersapp.Deps{DB: db, Bus: bus, NATS: wrkNC})
+			return workersapp.Run(c, wrkCfg, workersapp.Deps{DB: wrkDB, Bus: bus, NATS: wrkNC})
 		}},
 	}
 	var srvs []*http.Server

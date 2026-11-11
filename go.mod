@@ -1,6 +1,6 @@
 module github.com/flightdeckhq/flightdeck
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/flightdeckhq/flightdeck/api v0.0.0

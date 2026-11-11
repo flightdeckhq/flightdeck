@@ -187,9 +187,10 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 
 	// What is opened from here on is closed by the defers in reverse:
 	// the storage bus, the services' database handles and the database,
-	// the NATS connections, the embedded NATS server. The database therefore closes (on SQLite: its
-	// write-ahead log checkpointed into the file) as soon as nothing
-	// uses it, before the slower NATS shutdown.
+	// the NATS connections, the embedded NATS server. The database
+	// therefore closes (on SQLite: its write-ahead log checkpointed
+	// into the file) as soon as nothing uses it, before the slower NATS
+	// shutdown.
 
 	// The NATS bus: embedded unless an external server is named.
 	var ingNC, wrkNC *nats.Conn
@@ -215,6 +216,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if err := storage.Migrate(ctx, database.url); err != nil {
 		return fmt.Errorf("database %s: %w", database.display, err)
 	}
+	slog.Info("database schema is current", "backend", database.backend)
 	// One database and one storage bus for the whole process, injected
 	// into the three services. On SQLite that is the point: the
 	// database holds the file's single writer connection, and the bus

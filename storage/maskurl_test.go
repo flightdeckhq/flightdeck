@@ -31,6 +31,22 @@ func TestMaskURL(t *testing.T) {
 		"nats://tok3n@nats:4222":   "nats://***@nats:4222",
 		"tls://tok3n@nats:4222":    "tls://***@nats:4222",
 		"nats://nats:4222":         "nats://nats:4222",
+		// A NATS server list: every server's token or password, with
+		// or without a scheme of its own, spaces kept.
+		"nats://tok3n@h:4222,nats://tok3n@h2:4222":        "nats://***@h:4222,nats://***@h2:4222",
+		"nats://tok3n@h:4222, tls://u:pw@h2:4222,h3:4222": "nats://***@h:4222, tls://u:***@h2:4222,h3:4222",
+		"nats://u:pw@h:4222,tok3n@h2:4222":                "nats://u:***@h:4222,***@h2:4222",
+		"nats://h:4222,nats://h2:4222":                    "nats://h:4222,nats://h2:4222",
+		// A Postgres URL lists its hosts under one userinfo and is
+		// not split.
+		"postgres://u:p@h1,h2/db?sslmode=disable": "postgres://u:***@h1,h2/db?sslmode=disable",
+		"postgres://u:p@h1:5432,h2:5432/db":       "postgres://u:***@h1:5432,h2:5432/db",
+		// A query separated by ";" (or by both).
+		"postgres://h/x?sslmode=disable;password=s3cret":          "postgres://h/x?sslmode=disable;password=***",
+		"postgres://h/x?password=s3cret;sslpassword=k&user=u;a=b": "postgres://h/x?password=***;sslpassword=***&user=u;a=b",
+		// A keyword/value DSN is not a URL and is returned as it is
+		// (the binary refuses a database value without a scheme).
+		"host=h user=u dbname=x": "host=h user=u dbname=x",
 		// A SQLite URL holds no secret and its path is not a URL path.
 		"sqlite:///home/o m/a#b/x?password=y/50%/flightdeck.db":  "sqlite:///home/o m/a#b/x?password=y/50%/flightdeck.db",
 		`sqlite://C:\Users\omria\AppData\Local\flightdeck\fd.db`: `sqlite://C:\Users\omria\AppData\Local\flightdeck\fd.db`,
@@ -47,7 +63,11 @@ func TestMaskURL(t *testing.T) {
 	// Whatever the input, no secret of these survives.
 	for _, in := range []string{
 		"postgres://u:hunter2@h/x?password=hunter2&sslpassword=hunter2",
+		"postgres://u:hunter2@h/x?sslmode=disable;password=hunter2;sslpassword=hunter2",
+		"postgres://u:hunter2@h1:5432,h2:5432/x?password=hunter2",
 		"nats://hunter2@h:4222",
+		"nats://a@h:4222,nats://hunter2@h2:4222,hunter2@h3:4222, nats://u:hunter2@h4:4222",
+		"nats://a@h:4222,nats://hunter2 @h2:4222/%zz",
 		"postgres://u:hunter2 @h/x%zz",
 	} {
 		if got := storage.MaskURL(in); strings.Contains(got, "hunter2") {

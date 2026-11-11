@@ -78,14 +78,18 @@ start() {
   # Appended: the restart's output follows the first run's.
   "${FLIGHTDECK[@]}" "${args[@]}" >>"$LOG" 2>&1 &
   PID=$!
-  for _ in $(seq 1 "$READY_TIMEOUT_SECS"); do
-    if "${CURL[@]}" -sf -o /dev/null "$BASE/api/health"; then break; fi
+  # A deadline, not a count of attempts: one attempt can itself take
+  # REQUEST_TIMEOUT_SECS, so counting them would stretch the wait.
+  local deadline=$((SECONDS + READY_TIMEOUT_SECS))
+  until "${CURL[@]}" -sf -o /dev/null "$BASE/api/health"; do
     if ! kill -0 "$PID" 2>/dev/null; then
       echo "flightdeck exited before it was ready:"; cat "$LOG"; exit 1
     fi
+    if ((SECONDS >= deadline)); then
+      echo "no /api/health within ${READY_TIMEOUT_SECS}s"; cat "$LOG"; exit 1
+    fi
     sleep 1
   done
-  "${CURL[@]}" -sf "$BASE/api/health" >/dev/null || { echo "no /api/health within ${READY_TIMEOUT_SECS}s"; cat "$LOG"; exit 1; }
   "${CURL[@]}" -sf "$BASE/ingest/health" >/dev/null || { echo "no /ingest/health"; cat "$LOG"; exit 1; }
 }
 
@@ -132,15 +136,14 @@ resp=$("${CURL[@]}" -sf -X POST "$BASE/ingest/v1/events" \
   -H 'Authorization: Bearer tok_dev' -H 'Content-Type: application/json' \
   -d "{\"session_id\":\"$SID\",\"agent_id\":\"$AID\",\"agent_name\":\"smoke\",\"agent_type\":\"coding\",\"client_type\":\"flightdeck_sensor\",\"user\":\"smoke\",\"hostname\":\"smoke-host\",\"flavor\":\"flightdeck-smoke\",\"event_type\":\"session_start\",\"host\":\"smoke-host\",\"sensor_version\":\"0.0.0\",\"capture_prompts\":false,\"timestamp\":\"$NOW\",\"context\":{}}")
 echo "   ingest answered: $resp"
-for _ in $(seq 1 "$STORE_TIMEOUT_SECS"); do
-  if "${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\""; then
-    echo "== session $SID stored and served"
-    break
+store_deadline=$((SECONDS + STORE_TIMEOUT_SECS))
+until "${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\""; do
+  if ((SECONDS >= store_deadline)); then
+    echo "session not visible within ${STORE_TIMEOUT_SECS}s"; cat "$LOG"; exit 1
   fi
   sleep 1
 done
-"${CURL[@]}" -sf -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions/$SID" | grep -q "\"session_id\":\"$SID\"" \
-  || { echo "session not visible within ${STORE_TIMEOUT_SECS}s"; cat "$LOG"; exit 1; }
+echo "== session $SID stored and served"
 
 echo "== a second instance on the same data dir is refused"
 port="${LISTEN##*:}"
@@ -149,15 +152,15 @@ second_args=(--listen "${LISTEN%:*}:$((port + 1))" --data-dir "$DATA")
 if [ -n "$DB_URL" ]; then second_args+=(--database-url "$DB_URL"); fi
 "${FLIGHTDECK[@]}" "${second_args[@]}" >"$second_log" 2>&1 &
 second=$!
-for _ in $(seq 1 "$REFUSE_TIMEOUT_SECS"); do
-  kill -0 "$second" 2>/dev/null || break
+refuse_deadline=$((SECONDS + REFUSE_TIMEOUT_SECS))
+while kill -0 "$second" 2>/dev/null; do
+  if ((SECONDS >= refuse_deadline)); then
+    kill -INT "$second" || true
+    wait "$second" || true
+    echo "a second flightdeck started on a data dir in use:"; cat "$second_log"; exit 1
+  fi
   sleep 1
 done
-if kill -0 "$second" 2>/dev/null; then
-  kill -INT "$second" || true
-  wait "$second" || true
-  echo "a second flightdeck started on a data dir in use:"; cat "$second_log"; exit 1
-fi
 if wait "$second"; then
   echo "a second flightdeck on a data dir in use exited 0:"; cat "$second_log"; exit 1
 fi

@@ -49,15 +49,15 @@ var ErrInvalidURL = errors.New("storage: the Postgres URL does not parse (percen
 // empty one.
 var ErrSQLiteNeedsFile = errors.New("storage: sqlite URL must name a file")
 
-// postgresMinOpenConns is the floor of the Postgres pool size; the pool
-// holds max(postgresMinOpenConns, NumCPU) connections, open and idle
+// PostgresMinOpenConns is the floor of the Postgres pool size; the pool
+// holds max(PostgresMinOpenConns, NumCPU) connections, open and idle
 // alike, the default pgxpool used before the storage boundary. The cap
 // matters because token validation runs before the rate limiter and an
 // unknown token is never cached: without it a burst of bad tokens
 // opens a connection per request and can exhaust the server's
 // max_connections. Four covers a small host; a CPU per connection is
 // as many queries as the process runs at once.
-const postgresMinOpenConns = 4
+const PostgresMinOpenConns = 4
 
 // postgresConnMaxIdleTime is how long an idle Postgres connection is
 // kept before it is closed (pgxpool's default). Long enough that the
@@ -243,7 +243,7 @@ func openPostgres(rawURL string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage: open postgres: %w", err)
 	}
-	conns := max(postgresMinOpenConns, runtime.NumCPU())
+	conns := max(PostgresMinOpenConns, runtime.NumCPU())
 	pool.SetMaxOpenConns(conns)
 	pool.SetMaxIdleConns(conns)
 	pool.SetConnMaxIdleTime(postgresConnMaxIdleTime)

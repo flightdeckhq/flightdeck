@@ -64,9 +64,14 @@ DEV_STACK_BASE_URLS = frozenset(
     {"http://localhost:4000", "http://127.0.0.1:4000", "http://[::1]:4000"}
 )
 DEV_STACK_WORKER_CONTAINER = "docker-workers-1"
+# The database the dev stack itself runs on, in the Postgres container
+# the SQL helpers shell into.
+DEV_STACK_DATABASE = "flightdeck"
 
 
-def stack_configuration_error(base_url: str, test_db: str, sqlite_db: str) -> str | None:
+def stack_configuration_error(
+    base_url: str, test_db: str, sqlite_db: str
+) -> str | None:
     """Why the fixtures must not run against ``base_url`` with these
     settings, or None when they may.
 
@@ -81,7 +86,16 @@ def stack_configuration_error(base_url: str, test_db: str, sqlite_db: str) -> st
             "FLIGHTDECK_TEST_DB and FLIGHTDECK_TEST_SQLITE_DB are both set; the stack "
             "under test has one database: set the one that names it"
         )
-    if base_url.rstrip("/") in DEV_STACK_BASE_URLS or test_db or sqlite_db:
+    on_dev_stack = base_url.rstrip("/") in DEV_STACK_BASE_URLS
+    if not on_dev_stack and test_db == DEV_STACK_DATABASE:
+        return (
+            f"FLIGHTDECK_TEST_DB is {DEV_STACK_DATABASE}, the dev stack's own database, "
+            f"while FLIGHTDECK_TEST_BASE_URL is {base_url}, which is not the dev stack: "
+            "the SQL helpers and the seeder would write to the dev stack's rows. Give "
+            "the stack under test a database of its own and name that one (or set "
+            "FLIGHTDECK_TEST_SQLITE_DB for a binary on SQLite)."
+        )
+    if on_dev_stack or test_db or sqlite_db:
         return None
     return (
         f"FLIGHTDECK_TEST_BASE_URL is {base_url}, which is not the dev stack "

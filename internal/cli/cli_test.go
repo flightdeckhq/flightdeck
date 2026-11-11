@@ -114,6 +114,65 @@ func TestParse_RefusesOtherDatabaseURLsNamingTheAcceptedForms(t *testing.T) {
 	}
 }
 
+// The usage text prints each flag's default. The database and NATS
+// URLs come from the environment and hold a password or a token, so
+// they are never a flag default: neither --help nor the usage printed
+// with an error repeats them, and they still apply when no flag is
+// given.
+func TestParse_UsageNeverPrintsASecretFromTheEnvironment(t *testing.T) {
+	env := envOf(map[string]string{
+		"FLIGHTDECK_DATABASE_URL": "postgres://u:secretpw@h/db?password=secretq",
+		"FLIGHTDECK_NATS_URL":     "nats://secrettoken@nats:4222",
+		"FLIGHTDECK_LISTEN":       "0.0.0.0:5000",
+		"FLIGHTDECK_DATA_DIR":     "/var/lib/flightdeck",
+		"FLIGHTDECK_DOMAIN":       "fd.example.com",
+	})
+	for name, args := range map[string][]string{
+		"--help":           {"--help"},
+		"-h":               {"-h"},
+		"a stray argument": {"serve"},
+		"an unknown flag":  {"--no-such-flag"},
+	} {
+		var out bytes.Buffer
+		_, err := Parse(args, env, &out)
+		if err == nil {
+			t.Errorf("%s: Parse succeeded", name)
+		}
+		text := out.String()
+		if err != nil {
+			text += err.Error()
+		}
+		for _, secret := range []string{"secretpw", "secretq", "secrettoken"} {
+			if strings.Contains(text, secret) {
+				t.Errorf("%s: the output repeats %q from the environment:\n%s", name, secret, text)
+			}
+		}
+		// What is not a secret is still shown as the default.
+		for _, shown := range []string{"0.0.0.0:5000", "/var/lib/flightdeck", "fd.example.com", "FLIGHTDECK_DATABASE_URL", "FLIGHTDECK_NATS_URL"} {
+			if !strings.Contains(text, shown) {
+				t.Errorf("%s: the usage lacks %q:\n%s", name, shown, text)
+			}
+		}
+	}
+
+	o, err := Parse(nil, env, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.DatabaseURL != "postgres://u:secretpw@h/db?password=secretq" || o.NatsURL != "nats://secrettoken@nats:4222" {
+		t.Fatalf("the environment's URLs were not applied: %+v", o)
+	}
+	// A flag wins over the environment, an empty one included: it asks
+	// for the default (SQLite in the data dir, the embedded NATS).
+	o, err = Parse([]string{"--database-url", "", "--nats-url="}, env, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.DatabaseURL != "" || o.NatsURL != "" {
+		t.Fatalf("an empty flag did not override the environment: %+v", o)
+	}
+}
+
 func TestParse_BadMetricsEnv(t *testing.T) {
 	_, err := Parse(nil, envOf(map[string]string{"FLIGHTDECK_METRICS": "yes please"}), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "FLIGHTDECK_METRICS") {

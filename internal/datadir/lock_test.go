@@ -115,3 +115,59 @@ func TestInUseError_WithoutAPID(t *testing.T) {
 		t.Fatalf("%q", msg)
 	}
 }
+
+// caseInsensitive reports whether dir is on a filesystem that looks
+// names up without regard to case (the default on macOS and Windows).
+func caseInsensitive(t *testing.T, dir string) bool {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "case-probe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(filepath.Join(dir, "CASE-PROBE"))
+	return err == nil
+}
+
+// On a filesystem that ignores case, two spellings of a path that
+// differ only in case are one file, so they are one lock file and the
+// second holder is refused whichever spelling it uses: the lock needs
+// no path comparison of its own. The test runs where the temp dir is
+// on such a filesystem (macOS, Windows) and skips elsewhere. It does
+// not hold on WSL's 9p mount of a Windows drive, where flock follows
+// the spelling; that mount cannot hold a data dir at all.
+func TestAcquire_SpellingsThatDifferInCaseAreOneLockWhereTheFilesystemIgnoresCase(t *testing.T) {
+	dir := t.TempDir()
+	if !caseInsensitive(t, dir) {
+		t.Skip("the temp dir is on a case-sensitive filesystem")
+	}
+	first, err := Acquire(filepath.Join(dir, "flightdeck.db.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	for _, spelling := range []string{"FLIGHTDECK.DB.LOCK", "Flightdeck.db.lock", "flightdeck.DB.lock"} {
+		second, err := Acquire(filepath.Join(dir, spelling))
+		var inUse *InUseError
+		if !errors.As(err, &inUse) {
+			if second != nil {
+				second.Release()
+			}
+			t.Fatalf("Acquire(%s) while flightdeck.db.lock is held: %v, want an *InUseError", spelling, err)
+		}
+		if inUse.PID != os.Getpid() {
+			t.Errorf("Acquire(%s): holder pid %d, want %d", spelling, inUse.PID, os.Getpid())
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locks := 0
+	for _, e := range entries {
+		if strings.EqualFold(e.Name(), "flightdeck.db.lock") {
+			locks++
+		}
+	}
+	if locks != 1 {
+		t.Fatalf("%d lock files for one name spelled four ways, want 1", locks)
+	}
+}

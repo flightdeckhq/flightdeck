@@ -57,13 +57,16 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	var o Options
 	fs.StringVar(&o.Listen, "listen", envOr(env, "FLIGHTDECK_LISTEN", DefaultListen),
 		"address to serve the dashboard, /api and /ingest on; a loopback address enables the development token (env FLIGHTDECK_LISTEN)")
-	fs.StringVar(&o.DatabaseURL, "database-url", env("FLIGHTDECK_DATABASE_URL"),
+	// The two URL flags are registered with no default and take their
+	// environment value after parsing: the usage text prints every
+	// flag's default, and these URLs hold a password or a token.
+	fs.StringVar(&o.DatabaseURL, "database-url", "",
 		"database to use instead of the SQLite file in the data dir: a Postgres URL, postgres://user:password@host:5432/db?sslmode=disable, "+
-			"or another SQLite file, sqlite:///path/to/flightdeck.db (env FLIGHTDECK_DATABASE_URL)")
+			"or another SQLite file, sqlite:///path/to/flightdeck.db (default: $FLIGHTDECK_DATABASE_URL, else the SQLite file in the data dir)")
 	fs.StringVar(&o.DataDir, "data-dir", envOr(env, "FLIGHTDECK_DATA_DIR", datadir.Default()),
 		"directory for the database ("+datadir.DatabaseFile+"), the message-bus store, the secrets file and the TLS cache (env FLIGHTDECK_DATA_DIR)")
-	fs.StringVar(&o.NatsURL, "nats-url", env("FLIGHTDECK_NATS_URL"),
-		"external NATS server URL; unset runs an embedded server with no port (env FLIGHTDECK_NATS_URL)")
+	fs.StringVar(&o.NatsURL, "nats-url", "",
+		"external NATS server URL (default: $FLIGHTDECK_NATS_URL, else an embedded server with no port)")
 	fs.StringVar(&o.Domain, "domain", env("FLIGHTDECK_DOMAIN"),
 		"public host name: serve HTTPS on :443 with a Let's Encrypt certificate and redirect :80 (env FLIGHTDECK_DOMAIN)")
 	metricsDefault, err := envBool(env, "FLIGHTDECK_METRICS")
@@ -85,6 +88,15 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	if fs.NArg() > 0 {
 		fs.Usage()
 		return Options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	// A flag given on the command line wins, an empty one included.
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if !given["database-url"] {
+		o.DatabaseURL = env("FLIGHTDECK_DATABASE_URL")
+	}
+	if !given["nats-url"] {
+		o.NatsURL = env("FLIGHTDECK_NATS_URL")
 	}
 	if o.Version {
 		return o, nil

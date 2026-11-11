@@ -10532,7 +10532,16 @@ through a link, or through a data dir that is a link, contends for
 the same lock. Two names that are not links to one another are not
 recognised as one file: a hard link, or the same file bind-mounted
 into two containers, each of which sees a lock file of its own. Run
-one container per database file. The kernel drops the lock
+one container per database file. A path spelled in another case is
+the same lock where the operating system takes the two spellings for
+one file: on Windows a second instance that names the data dir or the
+database in another case is refused (run there), and macOS's default
+filesystem ignores case the same way (not run there). It is not the
+same lock on WSL's mount of a Windows drive (`/mnt/c`), a 9p network
+filesystem on which `flock` follows the spelling; that mount cannot
+hold a data dir in any case, since it keeps no file modes and the
+binary refuses its own `secrets.json` on the second start. The kernel
+drops the lock
 when the process ends, however it ends, so a crash leaves no stale
 lock: the files stay and the next start locks them again. On a
 platform with neither `flock` nor `LockFileEx` the binary starts with
@@ -10675,7 +10684,10 @@ released. The first signal starts this stop; from then on the signals
 have their default action again, so a second Ctrl+C or signal during a
 slow drain ends the process at once, which costs what a kill costs
 (below) and nothing more: SQLite recovers its write-ahead log at the
-next start. The database closes as soon as nothing uses it and before
+next start. A process that was started with SIGINT ignored (a
+background job of a non-interactive shell, `nohup`, some CI runners)
+ignores it again after the first one, as its default action there is
+to be ignored; SIGTERM ends it. The database closes as soon as nothing uses it and before
 the bus store, so on SQLite the write-ahead log is checkpointed into
 `flightdeck.db` and removed even when the NATS shutdown is slow:
 after a stop on a signal the data dir holds one database file, and

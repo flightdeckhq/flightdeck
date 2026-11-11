@@ -347,6 +347,11 @@ def test_a_stack_on_sqlite_names_no_postgres_container() -> None:
         ("http://localhost:4100", "", "", "neither"),
         ("http://127.0.0.1:4110/", "", "", "neither"),
         ("http://example.test:4000", "", "", "neither"),
+        # The binary pointed at the dev stack's own database by name.
+        ("http://localhost:4100", "flightdeck", "", "dev stack's own database"),
+        ("http://127.0.0.1:4110/", "flightdeck", "", "dev stack's own database"),
+        # On the dev stack that name is the stack's database.
+        ("http://localhost:4000", "flightdeck", "", None),
         # Two databases named for one stack.
         ("http://localhost:4100", "fd_my_db", "/tmp/fd/data/flightdeck.db", "both set"),
     ],

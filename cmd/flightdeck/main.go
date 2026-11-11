@@ -71,19 +71,16 @@ const (
 	// postgresServices is the number of service pools: ingestion, the
 	// workers, the query API.
 	postgresServices = 3
-	// postgresMinServicePoolConns is the floor of a service pool, the
-	// storage module's own floor for a small host.
-	postgresMinServicePoolConns = 4
 )
 
 // postgresServicePoolConns is the size of each service's Postgres pool
 // on a host with numCPU processors: a connection per processor, as the
-// storage module sizes a pool, no fewer than the floor and no more
-// than a third of what the budget leaves after the root pool and the
-// LISTEN connections (25).
+// storage module sizes a pool, no fewer than that module's floor and
+// no more than a third of what the budget leaves after the root pool
+// and the LISTEN connections (25).
 func postgresServicePoolConns(numCPU int) int {
 	share := (postgresConnBudget - postgresRootPoolConns - postgresListenConns) / postgresServices
-	return min(max(postgresMinServicePoolConns, numCPU), share)
+	return min(max(storage.PostgresMinOpenConns, numCPU), share)
 }
 
 // symlinkDepthLimit bounds how many dangling symbolic links realPath
@@ -255,7 +252,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		select {
 		case <-ctx.Done():
 			stop()
-			slog.Info("stopping; a second Ctrl+C or signal ends the process at once")
+			slog.Info("stopping; a second Ctrl+C or signal ends the process at once (SIGTERM, if this process was started with SIGINT ignored)")
 		case <-finished:
 		}
 	}()

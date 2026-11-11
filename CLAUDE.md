@@ -163,9 +163,8 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     `ingestion/internal/otlpstage` and `workers/internal/writer`; the `storage` module applies the
     migration files. Stores open their database through the `storage`
     module (`storage.Open`, `storage.Dialect`, `storage.Bus`; the
-    Storage section of ARCHITECTURE.md), never through pgx directly;
-    stores not yet converted still hold a pgx pool. The current places
-    outside store packages that run SQL are:
+    Storage section of ARCHITECTURE.md), never through pgx directly.
+    The current places outside store packages that run SQL are:
     - `workers/internal/processor/policy.go`: token policy lookups and the
       directives it issues;
     - `workers/internal/processor/session.go`: session-row reads

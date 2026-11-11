@@ -10535,9 +10535,9 @@ the reason, the password never repeated. It then applies the embedded
 migrations of the backend (`storage.Migrate`) before any statement of
 a service runs, so an empty database, a new SQLite file and a Postgres
 database an earlier version migrated are all brought to the current
-schema. It opens **one** `storage.DB` and
-**one** `storage.Bus` for the process and hands each of the three
-services the bus and a handle on that database (`DB.Share`): on
+schema. That connection is the process's **one** `storage.DB`; the
+binary creates **one** `storage.Bus` beside it and hands each of the
+three services the bus and a handle on that database (`DB.Share`): on
 SQLite the database owns the file's single writer connection and the
 bus is in-process, so every write of the three services queues on one
 connection and every notification reaches every subscriber, while

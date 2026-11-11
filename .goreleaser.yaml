@@ -146,19 +146,28 @@ brews:
     test: |
       assert_match "flightdeck v#{version}", shell_output("#{bin}/flightdeck --version")
     # `brew services start flightdeck` runs the binary as a user agent
-    # with its defaults: 127.0.0.1:4000 and ~/.flightdeck as the data
-    # dir, logging to the Homebrew var directory.
+    # with no arguments and no environment, which is all it needs: it
+    # listens on 127.0.0.1:4000 and keeps its SQLite database in the
+    # default data dir, ~/.flightdeck. The stanza names no data dir
+    # under Homebrew's var on purpose: the service and a `flightdeck`
+    # typed in a terminal then use the same one, so a user has one
+    # database however it was started (the data dir's lock and the port
+    # let one of the two run at a time). Only the log goes to var.
     service: |
       run [opt_bin/"flightdeck"]
       keep_alive true
       log_path var/"log/flightdeck.log"
       error_log_path var/"log/flightdeck.log"
     caveats: |
-      Run `flightdeck` and open http://localhost:4000, or start it in the
-      background with `brew services start flightdeck` (the token is then in
-      #{var}/log/flightdeck.log and the data dir is ~/.flightdeck).
+      Run `flightdeck` and open http://localhost:4000. Nothing else is
+      needed: it keeps its data in a SQLite database in ~/.flightdeck.
 
-      flightdeck keeps its data in a SQLite database in the data dir. To
-      use a Postgres instead, run it as `flightdeck --database-url
-      postgres://...` (or export FLIGHTDECK_DATABASE_URL); `brew services`
-      cannot pass that, so start it from a terminal then.
+      To keep it running in the background, `brew services start flightdeck`
+      (without sudo). The service uses the same ~/.flightdeck, so it shows
+      what a `flightdeck` run by hand stored, and the other way round. Stop
+      one before starting the other: they share the port and the data dir.
+      The service's output, with the token, is in #{var}/log/flightdeck.log.
+
+      To use a Postgres instead, run `flightdeck --database-url postgres://...`
+      (or export FLIGHTDECK_DATABASE_URL) from a terminal; `brew services`
+      passes neither flags nor the environment.

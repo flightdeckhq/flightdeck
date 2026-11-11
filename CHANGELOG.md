@@ -16,9 +16,10 @@ All notable changes to Flightdeck are documented here.
   database instead, and `sqlite:///path/to/file.db` a SQLite file
   elsewhere; anything else is refused at start with the accepted forms.
   The schema migrations of either backend run at start from the binary.
-  The three services share one database handle and one notification
-  bus, so on SQLite every write queues on the file's single writer
-  connection. A second `flightdeck` on the same data dir or the same
+  The three services share one notification bus and one database: on
+  SQLite every write queues on the file's single writer connection and
+  each service reads through connections of its own; on Postgres each
+  service keeps a pool of its own. A second `flightdeck` on the same data dir or the same
   SQLite file exits at once, naming the process that holds it. A stop
   on Ctrl+C or SIGTERM closes the database cleanly (the write-ahead log
   is folded into the file), and the next start finds every session,

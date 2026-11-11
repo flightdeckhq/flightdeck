@@ -236,9 +236,11 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 			slog.Warn("database close", "err", err)
 		}
 	}()
-	// Each service gets a handle that shares the writer and, on SQLite,
-	// reads through a pool of its own: the dashboard's listing queries
-	// must not make the workers' per-event reads wait for a connection.
+	// Each service gets a handle of its own on that database, so the
+	// dashboard's listing queries cannot take the connections the
+	// workers need for every event: on SQLite the handles share the
+	// one writer and read through a pool each; on Postgres each is a
+	// pool, as each service has when it runs alone.
 	var handles [3]*storage.DB
 	for i := range handles {
 		h, err := db.Share(ctx)
@@ -249,7 +251,10 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		handles[i] = h
 	}
 	ingDB, wrkDB, apiDB := handles[0], handles[1], handles[2]
-	bus := storage.NewBus(db)
+	// One bus for the three. On Postgres it notifies through the
+	// workers' pool: they publish a notification for nearly every
+	// event, as they do through their own pool when they run alone.
+	bus := storage.NewBus(wrkDB)
 	defer func() { _ = bus.Close() }()
 
 	token, err := bootstrap.EnsureToken(ctx, db, secrets, layout.Secrets, dev)
@@ -351,14 +356,15 @@ func resolveDatabase(rawURL string, layout datadir.Layout) (database, error) {
 	return database{backend: backend, url: storage.SQLiteURL(path), path: path, display: path}, nil
 }
 
-// connectionURL is the URL the process's one database handle is opened
-// with. On Postgres it carries the connection parameters each service
-// sets on a pool of its own: the workers' lock timeout and the query
-// API's jit=off. Both hold for every statement of the shared pool, and
-// both are safe there: a statement that waits for a row lock past the
-// lock timeout would outlast its caller's own deadline in the other
-// two services as well, and the JIT only ever engages for the query
-// API's analytics queries. On SQLite the URL is unchanged. The
+// connectionURL is the URL the process's database, and through it every
+// service's handle, is opened with. On Postgres it carries the
+// connection parameters each service sets on its pool when it runs
+// alone: the workers' lock timeout and the query API's jit=off. Every
+// pool of the process carries both, and both are safe on all three: a
+// statement that waits for a row lock past the lock timeout would
+// outlast its caller's own deadline in the other two services as
+// well, and the JIT only ever engages for the query API's analytics
+// queries. On SQLite the URL is unchanged. The
 // migrations run on the plain URL: a migration that waits for a lock
 // must wait, not abort halfway.
 func connectionURL(rawURL string) (string, error) {

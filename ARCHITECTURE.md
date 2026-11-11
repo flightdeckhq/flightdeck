@@ -5180,12 +5180,16 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
 - **One writer, a read pool per service.** `DB.Share(ctx)` returns a
   handle for another service of the same process: it writes through
   the original's writer, so the process still has exactly one writer
-  connection, and on SQLite it reads through eight connections of its
-  own, so one service's slow reads (a dashboard's listings) never make
+  connection, and it reads through eight connections of its own, so
+  one service's slow reads (a dashboard's listings) never make
   another's wait for a connection (the workers' point reads on every
   event). Closing a shared handle closes only its read pool; the
-  original is closed after it. On Postgres a shared handle uses the
-  original's pool.
+  original is closed after it. On Postgres, which has no single
+  writer to share, `Share` opens a pool of its own on the same URL,
+  the pool each service has when it runs as a process: three services
+  on one pool sized for one stored a third as many events a second
+  under read load (84 against 245 for 5,000 events and eight readers,
+  one pool of four against three).
 - **The write-ahead log is reset by the writer.** SQLite's own
   checkpoint copies the log into the database file every 1000 pages
   without waiting, and starts the log file over only when everything
@@ -10500,11 +10504,13 @@ SQLite the database owns the file's single writer connection and the
 bus is in-process, so every write of the three services queues on one
 connection and every notification reaches every subscriber, while
 each service reads through a pool of its own, so the dashboard's
-queries never hold up the workers' reads. On Postgres the three
-handles are the one pool, whose connections carry the
+queries never hold up the workers' reads. On Postgres each handle is
+a pool of its own (max(4, NumCPU) connections, as when the service
+runs alone), the bus notifies through the workers' pool, and every
+pool's connections carry the
 workers' `lock_timeout` (8 s) and the query API's `jit=off` as URL
-runtime parameters, the settings each service puts on a pool of its
-own: a statement that waits longer than that for a row lock would
+runtime parameters, the settings each service puts on its pool when
+it runs alone: a statement that waits longer than that for a row lock would
 outlast its caller's deadline in any of the three services, and
 Postgres only considers the JIT for the query API's analytics queries.
 The migrations run without the lock timeout.
@@ -10621,8 +10627,8 @@ and the API, `Handler()`. A caller that runs more than one service in
 a process on SQLite passes the same `DB` and `Bus` to each, as the
 binary does: a `Bus` each service created for itself would be private
 to it. `api/app.DatabaseURL` and `workers/app.DatabaseURL` return the
-URL each service opens a pool of its own with (the Postgres runtime
-parameters above), for a caller that opens the shared one. `Run` joins every goroutine it starts before it closes
+URL each service opens its own database with (the Postgres runtime
+parameters above), for a caller that opens it for them. `Run` joins every goroutine it starts before it closes
 the connections it owns; the workers' `Run` does not migrate (the
 binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
 `app.Run`, and the compose dev overlay still runs them with `go run

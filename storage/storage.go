@@ -82,7 +82,7 @@ const sqliteBusyTimeoutMillis = 5000
 // each other or the writer in WAL mode, so the number only caps the
 // memory of idle connections; eight covers the dashboard's concurrent
 // fetches on a page load with the API's own background reads. Each
-// handle has a pool of its own (see Share), so the eight are per
+// handle has a read pool of its own (see Share), so the eight are per
 // service.
 const sqliteReaderConns = 8
 
@@ -120,8 +120,8 @@ type DB struct {
 	// checkpointer resets the write-ahead log of a SQLite database
 	// (sqlite_checkpoint.go); nil on Postgres and on a shared handle.
 	checkpointer *walCheckpointer
-	// shared marks a handle made by Share: the writer (on Postgres, the
-	// pool) belongs to the handle it was made from, which closes it.
+	// shared marks a SQLite handle made by Share: the writer belongs to
+	// the handle it was made from, which closes it.
 	shared bool
 }
 
@@ -282,20 +282,34 @@ func openSQLiteReaders(path string) (*sql.DB, error) {
 }
 
 // Share returns a handle on the same database for another service of
-// the same process. It writes through db's writer, so on SQLite the
-// process still has exactly one writer connection and every write
-// queues on it; it reads through a pool of its own, so one service's
-// slow reads (a dashboard's listings) never make another's wait for a
-// connection (the workers' point reads on every event). On Postgres
-// the handle uses db's pool for both, as db does.
+// the same process, so that one service's load cannot take the
+// connections another needs.
+//
+// On SQLite the handle writes through db's writer, so the process still
+// has exactly one writer connection and every write queues on it, and
+// reads through a pool of its own: a dashboard's slow listings never
+// make the workers' point reads on every event wait for a connection.
+// On Postgres, which has no single writer to share, the handle is a
+// pool of its own on the same URL, the pool each service has when it
+// runs as a process of its own. Three services on one pool sized for
+// one were measured storing a third as many events a second under
+// read load (84 against 245, 5,000 events, eight readers, pool of four
+// against three of four).
 //
 // Close on the returned handle closes only what Share opened and
-// leaves db usable; db must stay open for as long as the handle is
-// used, and is closed after it.
+// leaves db usable. On SQLite db must stay open for as long as the
+// handle is used, and is closed after it.
 func (db *DB) Share(ctx context.Context) (*DB, error) {
-	shared := &DB{DB: db.DB, reader: db.reader, Dialect: db.Dialect, Backend: db.Backend, url: db.url, shared: true}
 	if db.Backend != SQLite {
-		return shared, nil
+		pool, err := openPostgres(db.url)
+		if err != nil {
+			return nil, err
+		}
+		if err := pool.PingContext(ctx); err != nil {
+			_ = pool.Close()
+			return nil, fmt.Errorf("storage: ping %s: %w", db.Backend, err)
+		}
+		return pool, nil
 	}
 	reader, err := openSQLiteReaders(SQLitePath(db.url))
 	if err != nil {
@@ -305,8 +319,7 @@ func (db *DB) Share(ctx context.Context) (*DB, error) {
 		_ = reader.Close()
 		return nil, fmt.Errorf("storage: ping sqlite reader: %w", err)
 	}
-	shared.reader = reader
-	return shared, nil
+	return &DB{DB: db.DB, reader: reader, Dialect: db.Dialect, Backend: db.Backend, url: db.url, shared: true}, nil
 }
 
 // sqliteDSN builds the modernc DSN for path. Every connection enables
@@ -384,12 +397,8 @@ func (db *DB) URL() string {
 // it, so a closed database is one file.
 func (db *DB) Close() error {
 	if db.shared {
-		// The writer is not this handle's to close; a read pool of its
-		// own is.
-		if db.reader != db.DB {
-			return db.reader.Close()
-		}
-		return nil
+		// The writer is not this handle's to close; its read pool is.
+		return db.reader.Close()
 	}
 	if db.checkpointer != nil {
 		db.checkpointer.Stop()

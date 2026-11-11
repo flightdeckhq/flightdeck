@@ -197,23 +197,23 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 }
 
 // Share gives a second service of the process a handle on the same
-// database: one writer for both, a read pool each on SQLite, and a
-// Close that leaves the original usable.
-func TestShare_OneWriterAReadPoolEachAndAnIndependentClose(t *testing.T) {
+// database: on SQLite one writer for both and a read pool each, on
+// Postgres a pool each, and a Close that leaves the original usable.
+func TestShare_OneSQLiteWriterAPoolEachAndAnIndependentClose(t *testing.T) {
 	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
 		ctx := context.Background()
 		shared, err := db.Share(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if shared.DB != db.DB {
-			t.Fatal("the shared handle has a writer of its own; the process must keep one")
-		}
 		if shared.Backend != db.Backend || shared.URL() != db.URL() {
 			t.Fatalf("shared handle is %s at %q, want %s at %q", shared.Backend, shared.URL(), db.Backend, db.URL())
 		}
 		switch db.Backend {
 		case storage.SQLite:
+			if shared.DB != db.DB {
+				t.Fatal("the shared handle has a writer of its own; the process must keep one")
+			}
 			if shared.Reader() == db.Reader() || shared.Reader() == shared.DB {
 				t.Fatal("on SQLite the shared handle reads through a pool of its own")
 			}
@@ -225,8 +225,11 @@ func TestShare_OneWriterAReadPoolEachAndAnIndependentClose(t *testing.T) {
 				t.Fatal("a write through the shared read pool succeeded")
 			}
 		case storage.Postgres:
-			if shared.Reader() != db.Reader() {
-				t.Fatal("on Postgres the shared handle uses the one pool")
+			if shared.DB == db.DB || shared.Reader() != shared.DB {
+				t.Fatal("on Postgres the shared handle is one pool of its own")
+			}
+			if got, want := shared.Stats().MaxOpenConnections, db.Stats().MaxOpenConnections; got != want {
+				t.Fatalf("the shared pool allows %d connections, want the original's %d", got, want)
 			}
 		}
 
@@ -255,10 +258,8 @@ func TestShare_OneWriterAReadPoolEachAndAnIndependentClose(t *testing.T) {
 		if n := queryInt(t, db, "SELECT COUNT(*) FROM token_policies WHERE scope_value LIKE $1", scope+"%"); n != 3 {
 			t.Errorf("the original handle reads %d rows after the shared one closed, want 3", n)
 		}
-		if db.Backend == storage.SQLite {
-			if err := shared.Reader().PingContext(ctx); err == nil {
-				t.Error("the shared handle's read pool still answers after its Close")
-			}
+		if err := shared.Reader().PingContext(ctx); err == nil {
+			t.Error("the shared handle's own pool still answers after its Close")
 		}
 	})
 }

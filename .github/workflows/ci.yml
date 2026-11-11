@@ -290,12 +290,20 @@ jobs:
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04
+    # The service modules are built one at a time by their Dockerfiles
+    # and by the dev compose containers, where the root go.work does not
+    # exist. With the workspace on, go.work.sum satisfies a module whose
+    # own go.sum is incomplete and the gap only shows when a container
+    # boots. Turning the workspace off here makes this job see what the
+    # containers see; the root module uses its replace directives.
+    env:
+      GOWORK: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Install golangci-lint v2
         # Pinned to an immutable commit SHA (not a tag like @v2.11.4)
@@ -365,14 +373,25 @@ jobs:
       # on SQLite here (a temp file per test, no server); the Postgres
       # half and the schema parity test run in the integration job's
       # `make test-go-db`, which has a Postgres.
+      #
+      # -race also turns on the compiler's checkptr instrumentation,
+      # which makes the pure-Go SQLite (modernc.org/sqlite and the libc
+      # it is transpiled against) about ten times slower per statement:
+      # the ingestion store's write of its 10 000-record cap, 0.2 s
+      # uninstrumented, then outlasts the 2 s StageTimeout it enforces.
+      # checkptr is turned off for the modernc.org packages only, by
+      # package pattern; the race detector stays on everywhere and
+      # checkptr stays on for our own code. Every Go module whose
+      # SQLite half runs under -race takes the same flag.
       - name: Test storage (SQLite)
         working-directory: storage
-        run: go test ./... -v -race -count=1
+        run: go test ./... -v -race -count=1 -gcflags='modernc.org/...=-d=checkptr=0'
 
       - name: Test ingestion
         working-directory: ingestion
         run: |
           go test ./... -v -race \
+            -gcflags='modernc.org/...=-d=checkptr=0' \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -481,6 +500,78 @@ jobs:
           name: coverage-api
           path: api/coverage.html
           retention-days: 14
+
+  flightdeck:
+    # The one binary: the root module's lint and unit tests, the build
+    # with the dashboard bundle embedded, and scripts/flightdeck-smoke.sh
+    # against a Postgres service container: start, migrate an empty
+    # database, serve the dashboard, accept an event through the
+    # embedded bus and serve the session back, stop cleanly.
+    name: flightdeck binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flightdeck
+          POSTGRES_PASSWORD: flightdeck_dev
+          POSTGRES_DB: flightdeck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flightdeck"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Build the binary from a bare checkout (empty webui/dist)
+        # A fresh clone has only webui/dist/.gitkeep; go:embed's pattern
+        # must still match, so `go build` works before the dashboard is
+        # built (the router then answers 503 with build instructions).
+        run: |
+          test -f webui/dist/.gitkeep
+          test "$(ls -A webui/dist | wc -l)" = "1"
+          go build -o /dev/null ./cmd/flightdeck
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Build the dashboard bundle into webui/dist
+        run: make build-webui
+
+      - name: Install golangci-lint v2
+        # Same pin as the Go job above.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@793d05316077345337ae9a11ae05ec8f23edfe1b
+
+      - name: gofmt and golangci-lint (root module)
+        run: make lint-flightdeck
+
+      - name: Unit tests (root module)
+        run: go test -race ./cmd/... ./internal/... ./webui/...
+
+      - name: Build bin/flightdeck
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
+
+      - name: Smoke the binary against Postgres
+        run: scripts/flightdeck-smoke.sh ./bin/flightdeck 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable' 127.0.0.1:4000
 
   dashboard:
     name: Dashboard (TypeScript)
@@ -833,7 +924,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: |
             storage/go.sum
             ingestion/go.sum
@@ -871,9 +962,9 @@ jobs:
         run: make test-integration
 
       - name: Go tests that need Postgres or NATS
-        # The Go tests that read TEST_POSTGRES_URL or
-        # TEST_ASSEMBLER_POSTGRES_URL skip in the Go job, which has no
-        # database. This step runs them against this stack's Postgres,
+        # The Go tests that read TEST_POSTGRES_URL skip their Postgres
+        # half in the Go job, which has no database. This step runs
+        # them against this stack's Postgres,
         # so they run on both majors the matrix covers, and runs the
         # TEST_NATS_URL tests against this stack's NATS.
         # scripts/go-db-tests.sh gives each package a fresh database
@@ -1406,7 +1497,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: |
             go.sum
             go.work.sum

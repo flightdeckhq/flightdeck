@@ -2,13 +2,11 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // EventsParams defines filters for bulk event queries.
@@ -26,7 +24,7 @@ import (
 //
 // The slice filters (EventTypes, Models, ErrorTypes, …) OR within a
 // dimension and AND across dimensions. They back the `/events`
-// event-grain facet sidebar. The payload-JSONB filters extract from
+// event-grain facet sidebar. The payload-JSON filters extract from
 // the `events.payload` column; AgentID and Frameworks resolve through
 // a `sessions` subquery because the events table carries neither.
 type EventsParams struct {
@@ -55,16 +53,16 @@ type EventsParams struct {
 	// flattened key older plugin releases stored
 	// (expandMCPServerFilter).
 	MCPServers []string
-	// Terminal filters on the boolean `payload->>'terminal'`; nil
+	// Terminal filters on the boolean `payload.terminal`; nil
 	// means no terminal filter.
 	Terminal *bool
 	// Frameworks matches the bare `sessions.framework` OR any entry
-	// of the legacy versioned `sessions.context->'frameworks'` array.
+	// of the legacy versioned `sessions.context.frameworks` array.
 	Frameworks []string
 	// Session-context facet filters. Each one resolves via a
-	// `SELECT session_id FROM sessions WHERE context->>'<key>' = ANY($N)`
-	// subquery against the partial expression indexes added by
-	// migration 000024. Drives the 9 runtime-context dimensions
+	// `SELECT session_id FROM sessions WHERE <context key> IN (...)`
+	// subquery against the partial expression indexes on the
+	// context keys. Drives the 9 runtime-context dimensions
 	// on the /v1/events facet sidebar.
 	OSValues       []string
 	Archs          []string
@@ -75,9 +73,9 @@ type EventsParams struct {
 	Orchestrations []string
 	PythonVersions []string
 	ProcessNames   []string
-	// Query is a free-text ILIKE search powering the `/events` page
-	// top-of-page search bar. It matches the events table's
-	// `event_type`, `model`, and `session_id` (cast to text), plus
+	// Query is a free-text case-insensitive search powering the
+	// `/events` page top-of-page search bar. It matches the events
+	// table's `event_type`, `model`, and `session_id` (as text), plus
 	// the session-level `agent_name` / `framework` resolved through
 	// a `sessions` subquery (the events table carries neither).
 	// Empty means no free-text filter.
@@ -123,7 +121,7 @@ type EventFacets struct {
 	Terminal               []EventFacetValue `json:"terminal"`
 	// Runtime-context dimensions sourced from sessions.context.
 	// Each one is computed via the existing sessions JOIN; partial
-	// expression indexes from migration 000024 back the GROUP BY
+	// expression indexes on the context keys back the GROUP BY
 	// scans.
 	OS            []EventFacetValue `json:"os"`
 	Arch          []EventFacetValue `json:"arch"`
@@ -141,36 +139,41 @@ type EventFacets struct {
 // types it into the filter directly.
 const facetTopN = 50
 
-// facetExprAllowlist is the exhaustive set of SQL value expressions
-// GetEventFacets may GROUP BY. These are column names and JSONB paths,
-// which cannot be bound as query parameters — interpolating an
-// out-of-list (e.g. request-derived) expression would be SQL
-// injection. Every groupBy / groupBySessionsCol call MUST pass a
-// member of this set; a miss fails the request closed.
-var facetExprAllowlist = map[string]bool{
-	"event_type":                                      true,
-	"model":                                           true,
-	"payload->'error'->>'error_type'":                 true,
-	"payload->>'close_reason'":                        true,
-	"payload->>'estimated_via'":                       true,
-	"payload->>'originating_call_context'":            true,
-	mcpServerFacetExpr:                                true,
-	"payload->>'terminal'":                            true,
-	"payload->'policy_decision'->>'matched_entry_id'": true,
-	"s.agent_id::text":                                true,
-	"s.framework":                                     true,
-	// Runtime-context dimensions sourced from sessions.context.
-	// Each expression is also the partial-index key in migration
-	// 000024; the GROUP BY scan rides those indexes.
-	"s.context->>'os'":             true,
-	"s.context->>'arch'":           true,
-	"s.context->>'hostname'":       true,
-	"s.context->>'user'":           true,
-	"s.context->>'git_branch'":     true,
-	"s.context->>'git_repo'":       true,
-	"s.context->>'orchestration'":  true,
-	"s.context->>'python_version'": true,
-	"s.context->>'process_name'":   true,
+// eventFacetExprs is the exhaustive set of SQL value expressions
+// GetEventFacets may GROUP BY, keyed by facet name. These are column
+// names and JSON paths, which cannot be bound as query parameters —
+// interpolating an out-of-list (e.g. request-derived) expression would
+// be SQL injection. Every groupBy / groupBySessionsCol call MUST pass
+// a key of this map; a miss fails the request closed. The expressions
+// over `payload` read the filtered event set `f`; those over `s.`
+// read the joined sessions row.
+func (s *Store) eventFacetExprs() map[string]string {
+	d := s.d
+	return map[string]string{
+		"event_type":               "event_type",
+		"model":                    "model",
+		"error_type":               d.JSONText("payload", "error", "error_type"),
+		"close_reason":             d.JSONText("payload", "close_reason"),
+		"estimated_via":            d.JSONText("payload", "estimated_via"),
+		"originating_call_context": d.JSONText("payload", "originating_call_context"),
+		"mcp_server":               s.mcpServerFacetExpr(),
+		"terminal":                 d.JSONBoolText("payload", "terminal"),
+		"matched_entry_id":         d.JSONText("payload", "policy_decision", "matched_entry_id"),
+		"agent_id":                 "CAST(s.agent_id AS TEXT)",
+		"framework":                "s.framework",
+		// Runtime-context dimensions sourced from sessions.context.
+		// Each expression is also a partial-index key; the GROUP BY
+		// scan rides those indexes.
+		"os":             d.JSONText("s.context", "os"),
+		"arch":           d.JSONText("s.context", "arch"),
+		"hostname":       d.JSONText("s.context", "hostname"),
+		"user":           d.JSONText("s.context", "user"),
+		"git_branch":     d.JSONText("s.context", "git_branch"),
+		"git_repo":       d.JSONText("s.context", "git_repo"),
+		"orchestration":  d.JSONText("s.context", "orchestration"),
+		"python_version": d.JSONText("s.context", "python_version"),
+		"process_name":   d.JSONText("s.context", "process_name"),
+	}
 }
 
 // buildEventsWhere assembles the shared WHERE clause + args for both
@@ -178,15 +181,15 @@ var facetExprAllowlist = map[string]bool{
 // `$1..$N` placeholders against unqualified `events` columns, so the
 // clause embeds directly under `FROM events` (GetEvents) or
 // `FROM events <where>` wrapped as a subquery (GetEventFacets).
-func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
+func (s *Store) buildEventsWhere(params EventsParams) (conditions []string, args []any) {
+	d := s.d
 	argIdx := 1
 	addText := func(col string, vals []string) {
 		if len(vals) == 0 {
 			return
 		}
-		conditions = append(conditions,
-			fmt.Sprintf("%s = ANY($%d::text[])", col, argIdx))
-		args = append(args, vals)
+		conditions = append(conditions, d.InArray(col, fmt.Sprintf("$%d", argIdx)))
+		args = append(args, d.ArrayArg(vals))
 		argIdx++
 	}
 
@@ -208,66 +211,63 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 	}
 	if params.SessionID != "" {
 		conditions = append(conditions,
-			fmt.Sprintf("session_id = $%d::uuid", argIdx))
-		args = append(args, params.SessionID)
+			fmt.Sprintf("session_id = $%d", argIdx))
+		args = append(args, uuidArg(params.SessionID))
 		argIdx++
 	}
 	if params.AgentID != "" {
 		conditions = append(conditions, fmt.Sprintf(
 			"session_id IN (SELECT session_id FROM sessions "+
-				"WHERE agent_id = $%d::uuid)", argIdx))
-		args = append(args, params.AgentID)
+				"WHERE agent_id = $%d)", argIdx))
+		args = append(args, uuidArg(params.AgentID))
 		argIdx++
 	}
 	addText("event_type", params.EventTypes)
 	addText("model", params.Models)
-	addText("payload->'error'->>'error_type'", params.ErrorTypes)
-	addText("payload->>'close_reason'", params.CloseReasons)
-	addText("payload->>'estimated_via'", params.EstimatedVia)
-	addText("payload->'policy_decision'->>'matched_entry_id'",
+	addText(d.JSONText("payload", "error", "error_type"), params.ErrorTypes)
+	addText(d.JSONText("payload", "close_reason"), params.CloseReasons)
+	addText(d.JSONText("payload", "estimated_via"), params.EstimatedVia)
+	addText(d.JSONText("payload", "policy_decision", "matched_entry_id"),
 		params.MatchedEntryIDs)
-	addText("payload->>'originating_call_context'",
+	addText(d.JSONText("payload", "originating_call_context"),
 		params.OriginatingCallContexts)
-	addText("payload->>'server_name'", expandMCPServerFilter(params.MCPServers))
+	addText(d.JSONText("payload", "server_name"), expandMCPServerFilter(params.MCPServers))
 	if params.Terminal != nil {
-		// Compare as text against the partial index on
-		// payload->>'terminal'. A ::boolean cast predicate cannot use
-		// that index and turns a corrupt non-boolean payload into a
-		// 500 rather than a clean non-match.
+		// Compare as text ('true' / 'false'), the facet's value
+		// shape; a corrupt non-boolean payload is a clean non-match
+		// rather than a cast error.
 		conditions = append(conditions,
-			fmt.Sprintf("payload->>'terminal' = $%d", argIdx))
+			fmt.Sprintf("%s = $%d", d.JSONBoolText("payload", "terminal"), argIdx))
 		args = append(args, strconv.FormatBool(*params.Terminal))
 		argIdx++
 	}
 	if len(params.Frameworks) > 0 {
 		// Mirrors the /v1/sessions framework filter: match the bare
 		// `sessions.framework` name OR any element of the legacy
-		// versioned `context->'frameworks'` array. One placeholder,
+		// versioned `context.frameworks` array. One placeholder,
 		// referenced twice.
-		conditions = append(conditions, fmt.Sprintf(
-			"session_id IN (SELECT session_id FROM sessions "+
-				"WHERE framework = ANY($%d::text[]) "+
-				"OR COALESCE(context->'frameworks', '[]'::jsonb) "+
-				"?| $%d::text[])", argIdx, argIdx))
-		args = append(args, params.Frameworks)
+		conditions = append(conditions,
+			"session_id IN (SELECT s.session_id FROM sessions s WHERE "+
+				s.frameworkMatchSQL("s", fmt.Sprintf("$%d", argIdx))+")")
+		args = append(args, d.ArrayArg(params.Frameworks))
 		argIdx++
 	}
 	// Session-context facet filters. Each one resolves via a
-	// sessions subquery on the indexed ``context->>'<key>'``
-	// expression (migration 000024). Same shape as the
-	// Frameworks block above — `session_id IN (...)` against
-	// the filtered sessions. The ``addContextFilter`` closure
-	// guards against accidental SQL injection by validating the
-	// composed expression against the same ``facetExprAllowlist``
-	// the facet GROUP BY path uses — a future caller passing a
-	// request-derived key would fail closed at the boundary
-	// rather than relying on call-site discipline.
+	// sessions subquery on the indexed context key expression. Same
+	// shape as the Frameworks block above — `session_id IN (...)`
+	// against the filtered sessions. The ``addContextFilter`` closure
+	// guards against accidental SQL injection by validating the key
+	// against the same ``eventFacetExprs`` the facet GROUP BY path
+	// uses — a future caller passing a request-derived key would
+	// fail closed at the boundary rather than relying on call-site
+	// discipline.
+	facetExprs := s.eventFacetExprs()
 	addContextFilter := func(key string, vals []string) {
 		if len(vals) == 0 {
 			return
 		}
-		expr := "s.context->>'" + key + "'"
-		if !facetExprAllowlist[expr] {
+		expr, ok := facetExprs[key]
+		if !ok || expr != d.JSONText("s.context", key) {
 			// Defensive — every call site below passes a
 			// hardcoded key that IS in the allowlist. A miss
 			// here means someone added a new context filter
@@ -276,10 +276,10 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 			conditions = append(conditions, "1 = 0")
 			return
 		}
-		conditions = append(conditions, fmt.Sprintf(
-			"session_id IN (SELECT session_id FROM sessions "+
-				"WHERE context->>'%s' = ANY($%d::text[]))", key, argIdx))
-		args = append(args, vals)
+		conditions = append(conditions,
+			"session_id IN (SELECT s.session_id FROM sessions s "+
+				"WHERE "+d.InArray(expr, fmt.Sprintf("$%d", argIdx))+")")
+		args = append(args, d.ArrayArg(vals))
 		argIdx++
 	}
 	addContextFilter("os", params.OSValues)
@@ -294,26 +294,26 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 	if params.Query != "" {
 		// Free-text search for the `/events` page search bar. Matches
 		// the events-table columns directly (event_type, model, and
-		// session_id cast to text) and resolves agent_name / framework
+		// session_id as text) and resolves agent_name / framework
 		// — neither of which the events table carries — through a
 		// sessions subquery. One placeholder, referenced multiple
-		// times via %[1]s indexing (same shape as the Frameworks
-		// block above). There is no humanized "detail" column to
-		// search: the detail string is computed client-side.
+		// times (same shape as the Frameworks block above). There is
+		// no humanized "detail" column to search: the detail string
+		// is computed client-side.
 		pattern := sanitizeQuery(params.Query)
-		qPlaceholder := fmt.Sprintf("$%d", argIdx)
+		q := fmt.Sprintf("$%d", argIdx)
 		args = append(args, pattern)
 		argIdx++
-		conditions = append(conditions, fmt.Sprintf(`(
-			event_type ILIKE %[1]s
-			OR COALESCE(model, '') ILIKE %[1]s
-			OR session_id::text ILIKE %[1]s
+		conditions = append(conditions, `(
+			`+d.ILike("event_type", q)+`
+			OR `+d.ILike("COALESCE(model, '')", q)+`
+			OR `+d.ILike("CAST(session_id AS TEXT)", q)+`
 			OR session_id IN (
 				SELECT session_id FROM sessions
-				WHERE COALESCE(agent_name, '') ILIKE %[1]s
-				OR COALESCE(framework, '') ILIKE %[1]s
+				WHERE `+d.ILike("COALESCE(agent_name, '')", q)+`
+				OR `+d.ILike("COALESCE(framework, '')", q)+`
 			)
-		)`, qPlaceholder))
+		)`)
 	}
 	if !params.Before.IsZero() {
 		if params.BeforeID != "" {
@@ -322,9 +322,9 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 			// session/occurred_at index usable; the OR then admits
 			// the cursor's own timestamp only for smaller ids.
 			conditions = append(conditions, fmt.Sprintf(
-				"occurred_at <= $%[1]d AND (occurred_at < $%[1]d OR id < $%[2]d::uuid)",
+				"occurred_at <= $%[1]d AND (occurred_at < $%[1]d OR id < $%[2]d)",
 				argIdx, argIdx+1))
-			args = append(args, params.Before, params.BeforeID)
+			args = append(args, params.Before, uuidArg(params.BeforeID))
 			argIdx += 2
 		} else {
 			conditions = append(conditions,
@@ -339,20 +339,20 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 // GetEvents returns events matching the given filters with pagination.
 //
 // The COUNT(*) and the data SELECT run inside a single read-only
-// REPEATABLE READ transaction so the returned `total` and `events`
-// are consistent with the same snapshot. Concurrent inserts cannot
-// produce a state where len(events) > total or has_more lies.
+// snapshot transaction so the returned `total` and `events` are
+// consistent with the same snapshot. Concurrent inserts cannot produce
+// a state where len(events) > total or has_more lies.
 //
 // HasMore is computed from `Offset + Limit <= total` rather than from
 // `Offset + len(events) < total` so the semantics do not depend on
 // len(events) equalling Limit at every page boundary. Inside the
-// repeatable-read snapshot Total is fixed, so the comparison is exact.
+// snapshot Total is fixed, so the comparison is exact.
 //
 // Each returned Event carries the session-level identity attributes
 // (framework, client_type, agent_type) via a LEFT JOIN to `sessions`
 // on session_id -- the events table stores none of them.
 func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResponse, error) {
-	conditions, args := buildEventsWhere(params)
+	conditions, args := s.buildEventsWhere(params)
 
 	// Default ASC preserves pre-pagination callers (bulk history loader,
 	// Fleet historical events). Only ``desc`` flips the order.
@@ -363,19 +363,16 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 
 	where := "WHERE " + strings.Join(conditions, " AND ")
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.RepeatableRead,
-		AccessMode: pgx.ReadOnly,
-	})
+	tx, err := s.readTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	// Count total
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM events %s", where)
 	var total int
-	if err := tx.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := tx.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("count events: %w", err)
 	}
 
@@ -392,17 +389,14 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	//
 	// id breaks occurred_at ties, in the same direction, so the order
 	// is total: events often share a timestamp (a client stamping whole
-	// seconds, the reaper's session_end rows sharing one NOW()), and
-	// without the tiebreaker Postgres may order tied rows differently in
-	// each page's query, so an offset page could skip or repeat a row.
-	// The keyset cursor (Before, BeforeID) follows the same order.
+	// seconds, the reaper's session_end rows sharing one clock read),
+	// and without the tiebreaker the planner may order tied rows
+	// differently in each page's query, so an offset page could skip or
+	// repeat a row. The keyset cursor (Before, BeforeID) follows the
+	// same order.
 	limitIdx := len(args) + 1
 	querySQL := fmt.Sprintf(`
-		SELECT e.id::text, e.session_id::text, e.flavor, e.event_type, e.model,
-		       e.tokens_input, e.tokens_output, e.tokens_total,
-		       e.tokens_cache_read, e.tokens_cache_creation,
-		       `+tokenCostColumns("e.")+`,
-		       e.latency_ms, e.tool_name, e.has_content, e.payload, e.occurred_at,
+		SELECT `+eventColumns("e.")+`,
 		       s.framework, s.client_type, s.agent_type
 		FROM (
 			SELECT * FROM events
@@ -415,43 +409,28 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	`, where, orderDir, orderDir, limitIdx, limitIdx+1, orderDir, orderDir)
 	args = append(args, params.Limit, params.Offset)
 
-	rows, err := tx.Query(ctx, querySQL, args...)
+	rows, err := tx.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var events []Event
+	events := []Event{}
 	for rows.Next() {
-		var e Event
-		var payloadRaw []byte
-		if err := rows.Scan(
-			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
-			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
-			&e.TokensCacheRead, &e.TokensCacheCreation,
-			&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
-			&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
-			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
-			&e.Framework, &e.ClientType, &e.AgentType,
-		); err != nil {
+		var framework, clientType, agentType *string
+		e, err := scanEvent(rows, &framework, &clientType, &agentType)
+		if err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
-		if len(payloadRaw) > 0 {
-			var v map[string]any
-			if jsonErr := json.Unmarshal(payloadRaw, &v); jsonErr == nil && len(v) > 0 {
-				e.Payload = v
-			}
-		}
+		e.Framework, e.ClientType, e.AgentType = framework, clientType, agentType
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("events scan: %w", err)
 	}
-	if events == nil {
-		events = []Event{}
-	}
+	_ = rows.Close()
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
@@ -467,29 +446,27 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 // GetEventFacets returns per-dimension chip counts for the `/events`
 // facet sidebar, computed over the same filter set GetEvents would
 // apply. Each dimension is one GROUP BY over the filtered event set;
-// agent_id and framework join `sessions`. All run in one read-only
-// snapshot so the counts are mutually consistent.
+// agent_id, framework and the context dimensions join `sessions`. All
+// run in one read-only snapshot so the counts are mutually consistent.
 func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*EventFacets, error) {
-	conditions, args := buildEventsWhere(params)
+	conditions, args := s.buildEventsWhere(params)
 	where := "WHERE " + strings.Join(conditions, " AND ")
 	// The filtered event set, reused by every dimension query.
 	filtered := fmt.Sprintf("(SELECT * FROM events %s)", where)
+	exprs := s.eventFacetExprs()
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.RepeatableRead,
-		AccessMode: pgx.ReadOnly,
-	})
+	tx, err := s.readTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	// groupBy runs one facet GROUP BY: `valueExpr` is the dimension
+	// groupBy runs one facet GROUP BY: the named dimension's
 	// expression evaluated over the filtered event set `f`.
-	groupBy := func(valueExpr string) ([]EventFacetValue, error) {
-		if !facetExprAllowlist[valueExpr] {
-			return nil, fmt.Errorf(
-				"facet expression not allowlisted: %q", valueExpr)
+	groupBy := func(name string) ([]EventFacetValue, error) {
+		valueExpr, ok := exprs[name]
+		if !ok {
+			return nil, fmt.Errorf("facet expression not allowlisted: %q", name)
 		}
 		q := fmt.Sprintf(`
 			SELECT v, COUNT(*) AS c FROM (
@@ -503,11 +480,12 @@ func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*Event
 		return scanFacet(ctx, tx, q, args)
 	}
 	// groupBySessionsCol runs a facet GROUP BY over a `sessions`
-	// column reached by joining the filtered event set on session_id.
-	groupBySessionsCol := func(col string) ([]EventFacetValue, error) {
-		if !facetExprAllowlist[col] {
-			return nil, fmt.Errorf(
-				"facet expression not allowlisted: %q", col)
+	// expression reached by joining the filtered event set on
+	// session_id.
+	groupBySessionsCol := func(name string) ([]EventFacetValue, error) {
+		col, ok := exprs[name]
+		if !ok {
+			return nil, fmt.Errorf("facet expression not allowlisted: %q", name)
 		}
 		q := fmt.Sprintf(`
 			SELECT v, COUNT(*) AS c FROM (
@@ -524,104 +502,53 @@ func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*Event
 	}
 
 	facets := &EventFacets{}
-	var err2 error
-	if facets.EventType, err2 = groupBy("event_type"); err2 != nil {
-		return nil, err2
-	}
-	if facets.Model, err2 = groupBy("model"); err2 != nil {
-		return nil, err2
-	}
-	if facets.ErrorType, err2 = groupBy(
-		"payload->'error'->>'error_type'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.CloseReason, err2 = groupBy(
-		"payload->>'close_reason'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.EstimatedVia, err2 = groupBy(
-		"payload->>'estimated_via'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.MatchedEntryID, err2 = groupBy(
-		"payload->'policy_decision'->>'matched_entry_id'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.OriginatingCallContext, err2 = groupBy(
-		"payload->>'originating_call_context'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.MCPServer, err2 = groupBy(mcpServerFacetExpr); err2 != nil {
-		return nil, err2
-	}
-	if facets.Terminal, err2 = groupBy(
-		"payload->>'terminal'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.AgentID, err2 = groupBySessionsCol(
-		"s.agent_id::text"); err2 != nil {
-		return nil, err2
-	}
-	if facets.Framework, err2 = groupBySessionsCol(
-		"s.framework"); err2 != nil {
-		return nil, err2
-	}
-	// Runtime-context dimensions sourced from sessions.context.
-	// Each one is a single GROUP BY through the existing
-	// sessions JOIN; the
-	// partial expression indexes added by migration 000024 back
-	// the scan.
-	if facets.OS, err2 = groupBySessionsCol(
-		"s.context->>'os'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.Arch, err2 = groupBySessionsCol(
-		"s.context->>'arch'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.Hostname, err2 = groupBySessionsCol(
-		"s.context->>'hostname'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.User, err2 = groupBySessionsCol(
-		"s.context->>'user'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.GitBranch, err2 = groupBySessionsCol(
-		"s.context->>'git_branch'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.GitRepo, err2 = groupBySessionsCol(
-		"s.context->>'git_repo'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.Orchestration, err2 = groupBySessionsCol(
-		"s.context->>'orchestration'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.PythonVersion, err2 = groupBySessionsCol(
-		"s.context->>'python_version'"); err2 != nil {
-		return nil, err2
-	}
-	if facets.ProcessName, err2 = groupBySessionsCol(
-		"s.context->>'process_name'"); err2 != nil {
-		return nil, err2
+	for _, dim := range []struct {
+		dest *[]EventFacetValue
+		name string
+		run  func(string) ([]EventFacetValue, error)
+	}{
+		{&facets.EventType, "event_type", groupBy},
+		{&facets.Model, "model", groupBy},
+		{&facets.ErrorType, "error_type", groupBy},
+		{&facets.CloseReason, "close_reason", groupBy},
+		{&facets.EstimatedVia, "estimated_via", groupBy},
+		{&facets.MatchedEntryID, "matched_entry_id", groupBy},
+		{&facets.OriginatingCallContext, "originating_call_context", groupBy},
+		{&facets.MCPServer, "mcp_server", groupBy},
+		{&facets.Terminal, "terminal", groupBy},
+		{&facets.AgentID, "agent_id", groupBySessionsCol},
+		{&facets.Framework, "framework", groupBySessionsCol},
+		{&facets.OS, "os", groupBySessionsCol},
+		{&facets.Arch, "arch", groupBySessionsCol},
+		{&facets.Hostname, "hostname", groupBySessionsCol},
+		{&facets.User, "user", groupBySessionsCol},
+		{&facets.GitBranch, "git_branch", groupBySessionsCol},
+		{&facets.GitRepo, "git_repo", groupBySessionsCol},
+		{&facets.Orchestration, "orchestration", groupBySessionsCol},
+		{&facets.PythonVersion, "python_version", groupBySessionsCol},
+		{&facets.ProcessName, "process_name", groupBySessionsCol},
+	} {
+		values, err := dim.run(dim.name)
+		if err != nil {
+			return nil, err
+		}
+		*dim.dest = values
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 	return facets, nil
 }
 
 func scanFacet(
-	ctx context.Context, tx pgx.Tx, query string, args []any,
+	ctx context.Context, tx *sql.Tx, query string, args []any,
 ) ([]EventFacetValue, error) {
-	rows, err := tx.Query(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("event facet query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []EventFacetValue{}
 	for rows.Next() {
 		var fv EventFacetValue

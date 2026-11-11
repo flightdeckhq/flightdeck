@@ -39,10 +39,10 @@ func seedFailedStreamScenario(t *testing.T, s *Store, now time.Time) failedStrea
 	seedPrice(t, s, sc.model, 3, 15)
 	insert := func(eventType, model string, in, out *int, billing *string) {
 		t.Helper()
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output,
 				tokens_total, billing_mode, provider, occurred_at)
-			VALUES ($1::uuid, $2, $3, $4, $5::int, $6::int, $5::int + $6::int, $7, 'other', $8)`,
+			VALUES ($1, $2, $3, $4, CAST($5 AS INTEGER), CAST($6 AS INTEGER), CAST($5 AS INTEGER) + CAST($6 AS INTEGER), $7, 'other', $8)`,
 			sessionID, sc.flavor, eventType, model, in, out, billing, now.Add(-30*time.Minute)); err != nil {
 			t.Fatalf("seed %s: %v", eventType, err)
 		}
@@ -83,170 +83,170 @@ var failedStreamGroupBys = []struct {
 }
 
 func TestQueryAnalytics_TokensCountFailedStreams(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	sc := seedFailedStreamScenario(t, s, now)
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		sc := seedFailedStreamScenario(t, s, now)
 
-	// The metric counts what the session's counter holds.
-	want := float64(sc.billedTokens())
-	for _, tc := range failedStreamGroupBys {
-		p := tc.params
-		if tc.name == "agent filter" {
-			p.FilterAgentID = sc.agentID
-		}
-		resp, err := s.QueryAnalytics(ctx, sc.params("tokens", now, p))
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if resp.Totals.GrandTotal != want {
-			t.Errorf("%s: tokens = %v, want %v (the call, the embeddings and the failed stream)", tc.name, resp.Totals.GrandTotal, want)
-		}
-		for _, series := range resp.Series {
-			if series.Dimension == sc.noTokensModel {
-				t.Errorf("%s: the llm_error without tokens made a series of its own", tc.name)
+		// The metric counts what the session's counter holds.
+		want := float64(sc.billedTokens())
+		for _, tc := range failedStreamGroupBys {
+			p := tc.params
+			if tc.name == "agent filter" {
+				p.FilterAgentID = sc.agentID
+			}
+			resp, err := s.QueryAnalytics(ctx, sc.params("tokens", now, p))
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if resp.Totals.GrandTotal != want {
+				t.Errorf("%s: tokens = %v, want %v (the call, the embeddings and the failed stream)", tc.name, resp.Totals.GrandTotal, want)
+			}
+			for _, series := range resp.Series {
+				if series.Dimension == sc.noTokensModel {
+					t.Errorf("%s: the llm_error without tokens made a series of its own", tc.name)
+				}
 			}
 		}
-	}
+	})
 }
 
 func TestQueryAnalytics_EstimatedCostPricesFailedStreams(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	sc := seedFailedStreamScenario(t, s, now)
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		sc := seedFailedStreamScenario(t, s, now)
 
-	for _, tc := range failedStreamGroupBys {
-		p := tc.params
-		if tc.name == "agent filter" {
-			p.FilterAgentID = sc.agentID
+		for _, tc := range failedStreamGroupBys {
+			p := tc.params
+			if tc.name == "agent filter" {
+				p.FilterAgentID = sc.agentID
+			}
+			resp, err := s.QueryAnalytics(ctx, sc.params("estimated_cost", now, p))
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if math.Abs(resp.Totals.GrandTotal-sc.wantCost) > 1e-9 {
+				t.Errorf("%s: cost = %v, want %v (the failed stream priced like the call)", tc.name, resp.Totals.GrandTotal, sc.wantCost)
+			}
+			if slices.Contains(resp.ModelsUnpriced, sc.noTokensModel) {
+				t.Errorf("%s: an llm_error without tokens was reported unpriced: %v", tc.name, resp.ModelsUnpriced)
+			}
 		}
-		resp, err := s.QueryAnalytics(ctx, sc.params("estimated_cost", now, p))
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if math.Abs(resp.Totals.GrandTotal-sc.wantCost) > 1e-9 {
-			t.Errorf("%s: cost = %v, want %v (the failed stream priced like the call)", tc.name, resp.Totals.GrandTotal, sc.wantCost)
-		}
-		if slices.Contains(resp.ModelsUnpriced, sc.noTokensModel) {
-			t.Errorf("%s: an llm_error without tokens was reported unpriced: %v", tc.name, resp.ModelsUnpriced)
-		}
-	}
+	})
 }
 
 // The sub-agent token metrics read the session counter, which the worker
 // raises by a failed stream's tokens.
 func TestQueryAnalytics_SubagentTokenSumsFollowTheSessionCounter(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-failed-stream-tree-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now, 2, 0)
-	parentID, childID := randomUUID(t), randomUUID(t)
-	role := "researcher"
-	// The child's counter holds a 300-token call and a 1,740-token
-	// failed stream.
-	seedSessionRow(t, s, parentID, agentID, flavor, nil, nil, `{}`, now.Add(-time.Hour), 500)
-	seedSessionRow(t, s, childID, agentID, flavor, &parentID, &role, `{}`, now.Add(-50*time.Minute), 300+1740)
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-failed-stream-tree-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-2*time.Hour), now, 2, 0)
+		parentID, childID := randomUUID(t), randomUUID(t)
+		role := "researcher"
+		// The child's counter holds a 300-token call and a 1,740-token
+		// failed stream.
+		seedSessionRow(t, s, parentID, agentID, flavor, nil, nil, `{}`, now.Add(-time.Hour), 500)
+		seedSessionRow(t, s, childID, agentID, flavor, &parentID, &role, `{}`, now.Add(-50*time.Minute), 300+1740)
 
-	for metric, want := range map[string]float64{"parent_token_sum": 500 + 300 + 1740, "child_token_sum": 300 + 1740} {
-		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
-			Metric: metric, GroupBy: "agent_role", Range: "custom", Granularity: "day",
-			From: now.Add(-2 * time.Hour), To: now, FilterFlavor: flavor,
-		})
-		if err != nil {
-			t.Fatalf("%s: %v", metric, err)
-		}
-		var root float64
-		for _, series := range resp.Series {
-			if series.Dimension == "(root)" {
-				root = series.Total
+		for metric, want := range map[string]float64{"parent_token_sum": 500 + 300 + 1740, "child_token_sum": 300 + 1740} {
+			resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+				Metric: metric, GroupBy: "agent_role", Range: "custom", Granularity: "day",
+				From: now.Add(-2 * time.Hour), To: now, FilterFlavor: flavor,
+			})
+			if err != nil {
+				t.Fatalf("%s: %v", metric, err)
+			}
+			var root float64
+			for _, series := range resp.Series {
+				if series.Dimension == "(root)" {
+					root = series.Total
+				}
+			}
+			if root != want {
+				t.Errorf("%s for the parent = %v, want %v", metric, root, want)
 			}
 		}
-		if root != want {
-			t.Errorf("%s for the parent = %v, want %v", metric, root, want)
-		}
-	}
+	})
 }
 
 func TestAgentSummary_CountsFailedStreams(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	sc := seedFailedStreamScenario(t, s, now)
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		sc := seedFailedStreamScenario(t, s, now)
 
-	resp, err := s.AgentSummary(ctx, AgentSummaryParams{AgentID: sc.agentID, Period: "24h", Bucket: "hour"})
-	if err != nil {
-		t.Fatalf("summary: %v", err)
-	}
-	want := int64(sc.billedTokens())
-	if resp.Totals.Tokens != want {
-		t.Errorf("totals.tokens = %d, want %d", resp.Totals.Tokens, want)
-	}
-	if resp.Totals.Errors != 2 {
-		t.Errorf("totals.errors = %d, want 2 (both llm_error events)", resp.Totals.Errors)
-	}
-	if math.Abs(resp.Totals.CostUSD-sc.wantCost) > 1e-9 {
-		t.Errorf("totals.cost_usd = %v, want %v", resp.Totals.CostUSD, sc.wantCost)
-	}
-	if resp.Totals.PartialEstimate {
-		t.Errorf("an llm_error without tokens made the estimate partial: %v", resp.Totals.ModelsUnpriced)
-	}
-	var seriesTokens int64
-	for _, p := range resp.Series {
-		seriesTokens += p.Tokens
-	}
-	if seriesTokens != want {
-		t.Errorf("series tokens = %d, want %d", seriesTokens, want)
-	}
+		resp, err := s.AgentSummary(ctx, AgentSummaryParams{AgentID: sc.agentID, Period: "24h", Bucket: "hour"})
+		if err != nil {
+			t.Fatalf("summary: %v", err)
+		}
+		want := int64(sc.billedTokens())
+		if resp.Totals.Tokens != want {
+			t.Errorf("totals.tokens = %d, want %d", resp.Totals.Tokens, want)
+		}
+		if resp.Totals.Errors != 2 {
+			t.Errorf("totals.errors = %d, want 2 (both llm_error events)", resp.Totals.Errors)
+		}
+		if math.Abs(resp.Totals.CostUSD-sc.wantCost) > 1e-9 {
+			t.Errorf("totals.cost_usd = %v, want %v", resp.Totals.CostUSD, sc.wantCost)
+		}
+		if resp.Totals.PartialEstimate {
+			t.Errorf("an llm_error without tokens made the estimate partial: %v", resp.Totals.ModelsUnpriced)
+		}
+		var seriesTokens int64
+		for _, p := range resp.Series {
+			seriesTokens += p.Tokens
+		}
+		if seriesTokens != want {
+			t.Errorf("series tokens = %d, want %d", seriesTokens, want)
+		}
+	})
 }
 
 // A failed stream the sensor stamped local (or subscription) counts in
 // the token totals and costs nothing, though its model has a price.
 func TestQueryAnalytics_FailedStreamBilledLocallyCostsNothing(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-failed-stream-local-" + randomUUID(t)[:8]
-	agentID := randomUUID(t)
-	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now, 1, 0)
-	sessionID := randomUUID(t)
-	seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-time.Hour), 500)
-	model := flavor + "-model"
-	seedPrice(t, s, model, 3, 15)
-	for _, mode := range []string{"local", "subscription"} {
-		if _, err := s.pool.Exec(ctx, `
-			INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output,
-				tokens_total, billing_mode, provider, occurred_at)
-			VALUES ($1::uuid, $2, 'llm_error', $3, 200, 50, 250, $4, 'other', $5)`,
-			sessionID, flavor, model, mode, now.Add(-30*time.Minute)); err != nil {
-			t.Fatalf("seed %s llm_error: %v", mode, err)
+	eachStore(t, func(t *testing.T, s *Store) {
+		ctx := context.Background()
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		flavor := "test-failed-stream-local-" + randomUUID(t)[:8]
+		agentID := randomUUID(t)
+		seedAgent(t, s, agentID, now.Add(-2*time.Hour), now, 1, 0)
+		sessionID := randomUUID(t)
+		seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-time.Hour), 500)
+		model := flavor + "-model"
+		seedPrice(t, s, model, 3, 15)
+		for _, mode := range []string{"local", "subscription"} {
+			if _, err := s.db.ExecContext(ctx, `
+				INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output,
+					tokens_total, billing_mode, provider, occurred_at)
+				VALUES ($1, $2, 'llm_error', $3, 200, 50, 250, $4, 'other', $5)`,
+				sessionID, flavor, model, mode, now.Add(-30*time.Minute)); err != nil {
+				t.Fatalf("seed %s llm_error: %v", mode, err)
+			}
 		}
-	}
-	p := AnalyticsParams{
-		GroupBy: "model", Range: "custom", Granularity: "day",
-		From: now.Add(-time.Hour), To: now, FilterFlavor: flavor,
-	}
-	p.Metric = "tokens"
-	tokens, err := s.QueryAnalytics(ctx, p)
-	if err != nil {
-		t.Fatalf("tokens: %v", err)
-	}
-	if tokens.Totals.GrandTotal != 500 {
-		t.Errorf("tokens = %v, want 500", tokens.Totals.GrandTotal)
-	}
-	p.Metric = "estimated_cost"
-	cost, err := s.QueryAnalytics(ctx, p)
-	if err != nil {
-		t.Fatalf("cost: %v", err)
-	}
-	if cost.Totals.GrandTotal != 0 {
-		t.Errorf("cost = %v, want 0 (local and subscription are not metered)", cost.Totals.GrandTotal)
-	}
+		p := AnalyticsParams{
+			GroupBy: "model", Range: "custom", Granularity: "day",
+			From: now.Add(-time.Hour), To: now, FilterFlavor: flavor,
+		}
+		p.Metric = "tokens"
+		tokens, err := s.QueryAnalytics(ctx, p)
+		if err != nil {
+			t.Fatalf("tokens: %v", err)
+		}
+		if tokens.Totals.GrandTotal != 500 {
+			t.Errorf("tokens = %v, want 500", tokens.Totals.GrandTotal)
+		}
+		p.Metric = "estimated_cost"
+		cost, err := s.QueryAnalytics(ctx, p)
+		if err != nil {
+			t.Fatalf("cost: %v", err)
+		}
+		if cost.Totals.GrandTotal != 0 {
+			t.Errorf("cost = %v, want 0 (local and subscription are not metered)", cost.Totals.GrandTotal)
+		}
+	})
 }

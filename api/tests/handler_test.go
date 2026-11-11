@@ -16,7 +16,6 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5"
 )
 
 // --- Mock Store ---
@@ -313,7 +312,7 @@ func (m *mockStore) UpdatePolicy(_ context.Context, id string, p store.Policy) (
 			return &p, nil
 		}
 	}
-	return nil, pgx.ErrNoRows
+	return nil, store.ErrPolicyNotFound
 }
 
 func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
@@ -323,7 +322,7 @@ func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
 			return nil
 		}
 	}
-	return pgx.ErrNoRows
+	return store.ErrPolicyNotFound
 }
 
 // --- Token CRUD ---
@@ -862,7 +861,7 @@ func TestGetFleetFacetsErrorDoesNotFail(t *testing.T) {
 	// and returns an empty facet map, the rest of the response is
 	// unaffected.
 	s := &mockStore{
-		contextFacetsErr: pgx.ErrNoRows,
+		contextFacetsErr: store.ErrPolicyNotFound,
 	}
 	handler := handlers.FleetHandler(store.WrapStore(s))
 	req := httptest.NewRequest("GET", "/v1/fleet", nil)
@@ -1548,7 +1547,7 @@ func TestCreatePolicyEmptyScopeValue(t *testing.T) {
 }
 
 func TestDeletePolicyNotFound(t *testing.T) {
-	s := &mockStore{} // empty -- DeletePolicy will return pgx.ErrNoRows
+	s := &mockStore{} // empty -- DeletePolicy will return store.ErrPolicyNotFound
 	handler := handlers.PolicyDeleteHandler(store.WrapStore(s))
 	req := httptest.NewRequest("DELETE", "/v1/policies/00000000-0000-0000-0000-000000000000", nil)
 	req.SetPathValue("id", "00000000-0000-0000-0000-000000000000")

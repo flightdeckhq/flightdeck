@@ -16,7 +16,7 @@ import (
 func seedCloseReasonRuns(t *testing.T, s *Store) (agentID, reaped, open string) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	agentID = randomUUID(t)
 	seedAgent(t, s, agentID, now.Add(-30*time.Hour), now.Add(-time.Minute), 2, 0)
 
@@ -30,12 +30,12 @@ func seedCloseReasonRuns(t *testing.T, s *Store) (agentID, reaped, open string) 
 		{reaped, "closed", now.Add(-30 * time.Hour)},
 		{open, "active", now.Add(-10 * time.Minute)},
 	} {
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (
 				session_id, agent_id, flavor, state,
 				started_at, last_seen_at, tokens_used,
 				agent_type, client_type
-			) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $5, 0, 'coding', 'flightdeck_sensor')
+			) VALUES ($1, $2, $3, $4, $5, $5, 0, 'coding', 'flightdeck_sensor')
 		`, run.id, agentID, flavor, run.state, run.started); err != nil {
 			t.Fatalf("seed session: %v", err)
 		}
@@ -48,9 +48,9 @@ func seedCloseReasonRuns(t *testing.T, s *Store) (agentID, reaped, open string) 
 		`{"close_reason": "orphan_timeout"}`,
 		`{}`,
 	} {
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO events (session_id, flavor, event_type, payload, occurred_at)
-			VALUES ($1::uuid, $2, 'session_end', $3::jsonb, $4)
+			VALUES ($1, $2, 'session_end', $3, $4)
 		`, reaped, flavor, payload, now.Add(-time.Minute)); err != nil {
 			t.Fatalf("seed event: %v", err)
 		}
@@ -58,52 +58,52 @@ func seedCloseReasonRuns(t *testing.T, s *Store) (agentID, reaped, open string) 
 	// Registered after seedAgent's cleanup, so it runs first: the
 	// events go before the sessions they reference.
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id = ANY($1::uuid[])`,
-			[]string{reaped, open})
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM events WHERE `+s.d.InUUIDArray("session_id", "$1"),
+			s.d.ArrayArg([]string{reaped, open}))
 	})
 	return agentID, reaped, open
 }
 
 func TestGetSession_CloseReasons(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	_, reaped, open := seedCloseReasonRuns(t, s)
-	ctx := context.Background()
+	eachStore(t, func(t *testing.T, s *Store) {
+		_, reaped, open := seedCloseReasonRuns(t, s)
+		ctx := context.Background()
 
-	got, err := s.GetSession(ctx, reaped)
-	if err != nil || got == nil {
-		t.Fatalf("GetSession(reaped): %v, %v", got, err)
-	}
-	if want := []string{"normal_exit", "orphan_timeout"}; !reflect.DeepEqual(got.CloseReasons, want) {
-		t.Errorf("reaped close_reasons = %v, want %v", got.CloseReasons, want)
-	}
+		got, err := s.GetSession(ctx, reaped)
+		if err != nil || got == nil {
+			t.Fatalf("GetSession(reaped): %v, %v", got, err)
+		}
+		if want := []string{"normal_exit", "orphan_timeout"}; !reflect.DeepEqual(got.CloseReasons, want) {
+			t.Errorf("reaped close_reasons = %v, want %v", got.CloseReasons, want)
+		}
 
-	got, err = s.GetSession(ctx, open)
-	if err != nil || got == nil {
-		t.Fatalf("GetSession(open): %v, %v", got, err)
-	}
-	if got.CloseReasons == nil || len(got.CloseReasons) != 0 {
-		t.Errorf("open close_reasons = %#v, want an empty array", got.CloseReasons)
-	}
+		got, err = s.GetSession(ctx, open)
+		if err != nil || got == nil {
+			t.Fatalf("GetSession(open): %v, %v", got, err)
+		}
+		if got.CloseReasons == nil || len(got.CloseReasons) != 0 {
+			t.Errorf("open close_reasons = %#v, want an empty array", got.CloseReasons)
+		}
+	})
 }
 
 func TestGetRecentSessionsByAgentIDs_CloseReasons(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	agentID, reaped, open := seedCloseReasonRuns(t, s)
+	eachStore(t, func(t *testing.T, s *Store) {
+		agentID, reaped, open := seedCloseReasonRuns(t, s)
 
-	byAgent, err := s.GetRecentSessionsByAgentIDs(context.Background(), []string{agentID}, RecentSessionsPerAgent)
-	if err != nil {
-		t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
-	}
-	got := map[string][]string{}
-	for _, r := range byAgent[agentID] {
-		got[r.SessionID] = r.CloseReasons
-	}
-	if want := []string{"normal_exit", "orphan_timeout"}; !reflect.DeepEqual(got[reaped], want) {
-		t.Errorf("reaped close_reasons = %v, want %v", got[reaped], want)
-	}
-	if reasons, ok := got[open]; !ok || reasons == nil || len(reasons) != 0 {
-		t.Errorf("open close_reasons = %#v (present %v), want an empty array", reasons, ok)
-	}
+		byAgent, err := s.GetRecentSessionsByAgentIDs(context.Background(), []string{agentID}, RecentSessionsPerAgent)
+		if err != nil {
+			t.Fatalf("GetRecentSessionsByAgentIDs: %v", err)
+		}
+		got := map[string][]string{}
+		for _, r := range byAgent[agentID] {
+			got[r.SessionID] = r.CloseReasons
+		}
+		if want := []string{"normal_exit", "orphan_timeout"}; !reflect.DeepEqual(got[reaped], want) {
+			t.Errorf("reaped close_reasons = %v, want %v", got[reaped], want)
+		}
+		if reasons, ok := got[open]; !ok || reasons == nil || len(reasons) != 0 {
+			t.Errorf("open close_reasons = %#v (present %v), want an empty array", reasons, ok)
+		}
+	})
 }

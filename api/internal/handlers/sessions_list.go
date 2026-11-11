@@ -43,7 +43,7 @@ var validSessionStates = map[string]bool{
 // tokens_used, flavor} set so the
 // Investigate table can sort on the columns users actually scan
 // first (recency, model, host). The mapping to SQL expressions lives
-// in “store.allowedSorts“; this set mirrors the keys so the
+// in “the store's sortExpr“; this set mirrors the keys so the
 // handler can emit the 400 with the full allow-list.
 var validSessionSorts = map[string]bool{
 	"started_at":   true,
@@ -56,7 +56,7 @@ var validSessionSorts = map[string]bool{
 	// state sort uses a custom severity ordinal (S-TBL-2): ascending
 	// = active → idle → stale → lost → closed (most-needs-attention
 	// first); descending reverses. SQL CASE expression in
-	// store.allowedSorts.
+	// the store's sortExpr.
 	"state": true,
 }
 

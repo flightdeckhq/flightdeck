@@ -224,16 +224,16 @@ definitions:
       os:
         description: |-
           Runtime-context slice from the agent's MOST RECENT session's
-          `sessions.context` JSONB. An agent that ran across
+          `sessions.context` JSON. An agent that ran across
           multiple hosts / branches surfaces its latest session's values
           here — facets are single-valued per agent. Each field is null
-          when the latest session's context is absent or the JSONB key
-          is missing. Sourced via one LATERAL JOIN per agent ordered by
-          started_at DESC LIMIT 1; the per-agent overhead is bounded by
-          the page size. `Hostname` and `UserName` above remain the
-          authoritative single-valued slices for those two dims (sourced
-          from agents-table columns); these are the JSONB-only
-          slices the operator slices the roster by.
+          when the latest session's context is absent or the JSON key
+          is missing. Sourced via one correlated lookup of the agent's
+          latest session; the per-agent overhead is bounded by the page
+          size. `Hostname` and `UserName`
+          above remain the authoritative single-valued slices for those
+          two dims (sourced from agents-table columns); these are the
+          JSON-only slices the operator slices the roster by.
         type: string
       process_name:
         type: string
@@ -319,8 +319,8 @@ definitions:
       ts:
         description: |-
           TS is the bucket's start, truncated to the requested
-          granularity (``date_trunc(bucket, occurred_at)``). Serialised
-          as RFC 3339 / ISO 8601 by Go's default JSON encoder.
+          granularity. Serialised as RFC 3339 / ISO 8601 by Go's default
+          JSON encoder.
         type: string
     type: object
   store.AgentSummaryTotals:
@@ -848,6 +848,9 @@ definitions:
       client_type:
         type: string
       last_seen:
+        description: |-
+          LastSeen is the agent's last_seen_at as an RFC 3339 UTC
+          timestamp.
         type: string
       state:
         type: string
@@ -977,7 +980,7 @@ definitions:
         additionalProperties: {}
         description: |-
           Runtime context collected by the sensor at init() time and
-          stored once in sessions.context (JSONB) on the session_start
+          stored once in sessions.context (JSON) on the session_start
           event. Carries hostname, OS, git, orchestration, frameworks,
           etc. -- see sensor/flightdeck_sensor/core/context.py.
         type: object

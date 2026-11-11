@@ -1,7 +1,6 @@
 // Cost SQL tests (pricing.go). The formula, the price lookup and the
-// provider rule are SQL, so the meaningful tests run them against
-// Postgres (TEST_POSTGRES_URL / FLIGHTDECK_POSTGRES_URL; skipped
-// otherwise) with price rows the test owns. The catalogue and the
+// provider rule are SQL, so the meaningful tests run them against both
+// backends (eachStore) with price rows the test owns. The catalogue and the
 // loader are tested in pricing_catalogue_test.go and
 // pricing_loader_test.go.
 package store
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // costRates are the rates of a test price row, USD per million tokens.
@@ -43,32 +44,30 @@ type costFixture struct {
 	settings PricingSettings
 }
 
-func newCostFixture(t *testing.T, clientType string) *costFixture {
+func newCostFixture(t *testing.T, s *Store, clientType string) *costFixture {
 	t.Helper()
-	s, cleanup := newTestStore(t)
-	t.Cleanup(cleanup)
 	ctx := context.Background()
 	f := &costFixture{
 		t: t, s: s, session: randomUUID(t),
 		prefix:   "test-cost-" + randomUUID(t)[:8],
 		settings: defaultPricingSettings(),
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (session_id, flavor, agent_type, client_type, state, started_at, last_seen_at)
-		VALUES ($1::uuid, 'cost-test', 'production', $2, 'closed', NOW(), NOW())`,
-		f.session, clientType); err != nil {
+		VALUES ($1, 'cost-test', 'production', $2, 'closed', $3, $3)`,
+		f.session, clientType, testNow()); err != nil {
 		t.Fatalf("insert session: %v", err)
 	}
 	t.Cleanup(func() {
 		for _, q := range []string{
-			`DELETE FROM events WHERE session_id = $1::uuid`,
-			`DELETE FROM sessions WHERE session_id = $1::uuid`,
+			`DELETE FROM events WHERE session_id = $1`,
+			`DELETE FROM sessions WHERE session_id = $1`,
 		} {
-			if _, err := s.pool.Exec(ctx, q, f.session); err != nil {
+			if _, err := s.db.ExecContext(ctx, q, f.session); err != nil {
 				t.Errorf("cleanup: %v", err)
 			}
 		}
-		if _, err := s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id LIKE $1`, f.prefix+"%"); err != nil {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM model_pricing WHERE model_id LIKE $1`, f.prefix+"%"); err != nil {
 			t.Errorf("cleanup prices: %v", err)
 		}
 	})
@@ -78,7 +77,7 @@ func newCostFixture(t *testing.T, clientType string) *costFixture {
 // price inserts a model_pricing row for model (prefixed) on platform.
 func (f *costFixture) price(model, platform string, r costRates) {
 	f.t.Helper()
-	if _, err := f.s.pool.Exec(context.Background(), `
+	if _, err := f.s.db.ExecContext(context.Background(), `
 		INSERT INTO model_pricing (model_id, platform, provider, input, output, cache_read,
 			cache_write_5m, cache_write_1h, reasoning, tier_threshold_tokens, tier_input,
 			tier_output, priority_multiplier, fast_multiplier, source)
@@ -113,19 +112,19 @@ func (f *costFixture) cost(ev costEvent) *float64 {
 		costSource = nullable("agent")
 	}
 	var id string
-	if err := f.s.pool.QueryRow(ctx, `
+	if err := f.s.db.QueryRowContext(ctx, `
 		INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output,
 			tokens_total, tokens_cache_read, tokens_cache_creation, tokens_reasoning, billing_mode,
 			platform, cost_reported, cost_source, payload, occurred_at)
-		VALUES ($1::uuid, 'cost-test', 'post_call', $2, $3::int, $4::int, $3::int + $4::int, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
-		RETURNING id::text`,
+		VALUES ($1, 'cost-test', 'post_call', $2, CAST($3 AS INTEGER), CAST($4 AS INTEGER), CAST($3 AS INTEGER) + CAST($4 AS INTEGER), $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING CAST(id AS TEXT)`,
 		f.session, f.prefix+ev.model, ev.in, ev.out, ev.cacheRead, ev.cacheWrite, ev.reasoning,
-		nullable(ev.billing), nullable(ev.platform), ev.costReported, costSource, encoded).Scan(&id); err != nil {
+		nullable(ev.billing), nullable(ev.platform), ev.costReported, costSource, string(encoded), testNow()).Scan(&id); err != nil {
 		f.t.Fatalf("insert event: %v", err)
 	}
 	var got *float64
-	if err := f.s.pool.QueryRow(ctx,
-		`SELECT (`+costRowSQL(f.settings)+`)::float8 FROM events e `+CostPriceJoinSQL()+` WHERE e.id = $1::uuid`,
+	if err := f.s.db.Reader().QueryRowContext(ctx,
+		`SELECT CAST((`+costRowSQL(f.s.d, f.settings)+`) AS DOUBLE PRECISION) FROM events e `+f.s.q.priceJoin()+` WHERE e.id = $1`,
 		id).Scan(&got); err != nil {
 		f.t.Fatalf("cost query: %v", err)
 	}
@@ -149,74 +148,82 @@ func assertCost(t *testing.T, name string, got *float64, want float64) {
 var sonnetRates = costRates{input: 3, output: 15, cacheRead: 0.3, cacheWrite5m: 3.75, cacheWrite1h: 6}
 
 func TestCostRow_Formula(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	f.price("m", "direct", sonnetRates)
-	// 1,000 input = 500 uncached + 200 read + 300 written (100 for 1h);
-	// 500 output of which 100 reasoning (output rate, no reasoning rate).
-	got := f.cost(costEvent{
-		model: "m", billing: "metered", in: 1000, out: 500, cacheRead: 200,
-		cacheWrite: 300, cacheWrite1h: 100, reasoning: count(100),
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		f.price("m", "direct", sonnetRates)
+		// 1,000 input = 500 uncached + 200 read + 300 written (100 for 1h);
+		// 500 output of which 100 reasoning (output rate, no reasoning rate).
+		got := f.cost(costEvent{
+			model: "m", billing: "metered", in: 1000, out: 500, cacheRead: 200,
+			cacheWrite: 300, cacheWrite1h: 100, reasoning: count(100),
+		})
+		want := (500*3 + 200*0.3 + 200*3.75 + 100*6 + 400*15 + 100*15) / 1e6
+		assertCost(t, "formula", got, want)
 	})
-	want := (500*3 + 200*0.3 + 200*3.75 + 100*6 + 400*15 + 100*15) / 1e6
-	assertCost(t, "formula", got, want)
 }
 
 func TestCostRow_ReasoningRateAndTier(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	r := sonnetRates
-	r.reasoning = float(20)
-	r.tierThreshold = count(800)
-	r.tierInput, r.tierOutput = float(6), float(22.5)
-	f.price("m", "direct", r)
-	below := f.cost(costEvent{model: "m", billing: "metered", in: 800, out: 100, reasoning: count(40)})
-	assertCost(t, "below the tier", below, (800*3+60*15+40*20)/1e6)
-	above := f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100})
-	assertCost(t, "above the tier", above, (1000*6+100*22.5)/1e6)
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		r := sonnetRates
+		r.reasoning = float(20)
+		r.tierThreshold = count(800)
+		r.tierInput, r.tierOutput = float(6), float(22.5)
+		f.price("m", "direct", r)
+		below := f.cost(costEvent{model: "m", billing: "metered", in: 800, out: 100, reasoning: count(40)})
+		assertCost(t, "below the tier", below, (800*3+60*15+40*20)/1e6)
+		above := f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100})
+		assertCost(t, "above the tier", above, (1000*6+100*22.5)/1e6)
+	})
 }
 
 func TestCostRow_Multipliers(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	r := sonnetRates
-	r.priority, r.fast = float(1.75), float(2)
-	f.price("m", "direct", r)
-	base := 1000*3/1e6 + 100*15/1e6
-	for _, tc := range []struct {
-		name    string
-		payload map[string]any
-		factor  float64
-	}{
-		{"batch", map[string]any{"service_tier": "batch"}, 0.5},
-		{"priority from the row", map[string]any{"service_tier": "priority"}, 1.75},
-		{"fast from the row", map[string]any{"speed": "fast"}, 2},
-		{"US-only inference", map[string]any{"inference_geo": "us"}, 1.1},
-		{"regional endpoint", map[string]any{"inference_scope": "regional"}, 1.1},
-		{"combined", map[string]any{"service_tier": "batch", "inference_geo": "us"}, 0.55},
-		{"unknown value", map[string]any{"service_tier": "scale"}, 1},
-	} {
-		got := f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100, payload: tc.payload})
-		assertCost(t, tc.name, got, base*tc.factor)
-	}
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		r := sonnetRates
+		r.priority, r.fast = float(1.75), float(2)
+		f.price("m", "direct", r)
+		base := 1000*3/1e6 + 100*15/1e6
+		for _, tc := range []struct {
+			name    string
+			payload map[string]any
+			factor  float64
+		}{
+			{"batch", map[string]any{"service_tier": "batch"}, 0.5},
+			{"priority from the row", map[string]any{"service_tier": "priority"}, 1.75},
+			{"fast from the row", map[string]any{"speed": "fast"}, 2},
+			{"US-only inference", map[string]any{"inference_geo": "us"}, 1.1},
+			{"regional endpoint", map[string]any{"inference_scope": "regional"}, 1.1},
+			{"combined", map[string]any{"service_tier": "batch", "inference_geo": "us"}, 0.55},
+			{"unknown value", map[string]any{"service_tier": "scale"}, 1},
+		} {
+			got := f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100, payload: tc.payload})
+			assertCost(t, tc.name, got, base*tc.factor)
+		}
+	})
 }
 
 func TestCostRow_FeesReportedCostAndBilling(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	f.price("m", "direct", sonnetRates)
-	base := 1000*3/1e6 + 100*15/1e6
-	assertCost(t, "web search fee",
-		f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100,
-			payload: map[string]any{"server_tool_use": map[string]any{"web_search_requests": 2}}}),
-		base+0.02)
-	assertCost(t, "reported cost wins",
-		f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100, costReported: float(0.5)}), 0.5)
-	assertCost(t, "subscription is not spend",
-		f.cost(costEvent{model: "m", billing: "subscription", in: 1000, out: 100}), 0)
-	assertCost(t, "local is free",
-		f.cost(costEvent{model: "m", billing: "local", in: 1000, out: 100}), 0)
-	assertCost(t, "no billing mode on a sensor session is metered",
-		f.cost(costEvent{model: "m", in: 1000, out: 100}), base)
-	if got := f.cost(costEvent{model: "unknown", billing: "metered", in: 1000, out: 100}); got != nil {
-		t.Errorf("an unpriced call should be NULL, got %v", *got)
-	}
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		f.price("m", "direct", sonnetRates)
+		base := 1000*3/1e6 + 100*15/1e6
+		assertCost(t, "web search fee",
+			f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100,
+				payload: map[string]any{"server_tool_use": map[string]any{"web_search_requests": 2}}}),
+			base+0.02)
+		assertCost(t, "reported cost wins",
+			f.cost(costEvent{model: "m", billing: "metered", in: 1000, out: 100, costReported: float(0.5)}), 0.5)
+		assertCost(t, "subscription is not spend",
+			f.cost(costEvent{model: "m", billing: "subscription", in: 1000, out: 100}), 0)
+		assertCost(t, "local is free",
+			f.cost(costEvent{model: "m", billing: "local", in: 1000, out: 100}), 0)
+		assertCost(t, "no billing mode on a sensor session is metered",
+			f.cost(costEvent{model: "m", in: 1000, out: 100}), base)
+		if got := f.cost(costEvent{model: "unknown", billing: "metered", in: 1000, out: 100}); got != nil {
+			t.Errorf("an unpriced call should be NULL, got %v", *got)
+		}
+	})
 }
 
 // An event without a billing mode is priced by its session's client
@@ -226,126 +233,136 @@ func TestCostRow_NoBillingModeTakesTheRegistryDefault(t *testing.T) {
 	metered := 1000*3/1e6 + 100*15/1e6
 	for _, c := range readClientTypeRegistry(t) {
 		t.Run(c.ID, func(t *testing.T) {
-			f := newCostFixture(t, c.ID)
-			f.price("m", "direct", sonnetRates)
-			want := metered
-			if c.BillingMode == "subscription" {
-				want = 0
-			}
-			assertCost(t, c.ID+" default", f.cost(costEvent{model: "m", in: 1000, out: 100}), want)
+			eachStore(t, func(t *testing.T, s *Store) {
+				f := newCostFixture(t, s, c.ID)
+				f.price("m", "direct", sonnetRates)
+				want := metered
+				if c.BillingMode == "subscription" {
+					want = 0
+				}
+				assertCost(t, c.ID+" default", f.cost(costEvent{model: "m", in: 1000, out: 100}), want)
+			})
 		})
 	}
 }
 
 func TestCostRow_PriceLookupFallbacks(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	f.price("m", "direct", sonnetRates)
-	r := sonnetRates
-	r.input = 4
-	f.price("m", "bedrock", r)
-	direct := 1000 * 3 / 1e6
-	bedrock := 1000 * 4 / 1e6
-	assertCost(t, "bedrock row", f.cost(costEvent{model: "m", platform: "bedrock", billing: "metered", in: 1000}), bedrock)
-	assertCost(t, "bedrock-mantle is bedrock", f.cost(costEvent{model: "m", platform: "bedrock-mantle", billing: "metered", in: 1000}), bedrock)
-	assertCost(t, "vertex falls back to direct", f.cost(costEvent{model: "m", platform: "vertex", billing: "metered", in: 1000}), direct)
-	assertCost(t, "a gateway host prices direct", f.cost(costEvent{model: "m", platform: "gw.example.com", billing: "metered", in: 1000}), direct)
-	assertCost(t, "an undated id prices a dated snapshot", f.cost(costEvent{model: "m-20260115", billing: "metered", in: 1000}), direct)
-	assertCost(t, "an OpenAI-style date too", f.cost(costEvent{model: "m-2026-01-15", billing: "metered", in: 1000}), direct)
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		f.price("m", "direct", sonnetRates)
+		r := sonnetRates
+		r.input = 4
+		f.price("m", "bedrock", r)
+		direct := 1000 * 3 / 1e6
+		bedrock := 1000 * 4 / 1e6
+		assertCost(t, "bedrock row", f.cost(costEvent{model: "m", platform: "bedrock", billing: "metered", in: 1000}), bedrock)
+		assertCost(t, "bedrock-mantle is bedrock", f.cost(costEvent{model: "m", platform: "bedrock-mantle", billing: "metered", in: 1000}), bedrock)
+		assertCost(t, "vertex falls back to direct", f.cost(costEvent{model: "m", platform: "vertex", billing: "metered", in: 1000}), direct)
+		assertCost(t, "a gateway host prices direct", f.cost(costEvent{model: "m", platform: "gw.example.com", billing: "metered", in: 1000}), direct)
+		assertCost(t, "an undated id prices a dated snapshot", f.cost(costEvent{model: "m-20260115", billing: "metered", in: 1000}), direct)
+		assertCost(t, "an OpenAI-style date too", f.cost(costEvent{model: "m-2026-01-15", billing: "metered", in: 1000}), direct)
+	})
 }
 
 func TestCostAggregate_SumsOnlyLLMEvents(t *testing.T) {
-	agg := BuildCostAggregateSQL()
-	if !strings.Contains(agg, "FILTER (WHERE "+costEventFilter+")") {
-		t.Errorf("the aggregate must be limited to LLM events: %s", agg)
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		agg := (&Store{d: storage.DialectFor(b), q: queriesFor(b)}).costAggregateSQL()
+		if !strings.Contains(agg, "CASE WHEN "+costEventFilter+" THEN") {
+			t.Errorf("%s: the aggregate must be limited to LLM events: %s", b, agg)
+		}
 	}
 }
 
 func TestCostRow_IsValidWithoutSettings(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	f.settings = PricingSettings{}
-	f.price("m", "direct", sonnetRates)
-	assertCost(t, "no settings", f.cost(costEvent{model: "m", billing: "metered", in: 1000}), 1000*3/1e6)
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		f.settings = PricingSettings{}
+		f.price("m", "direct", sonnetRates)
+		assertCost(t, "no settings", f.cost(costEvent{model: "m", billing: "metered", in: 1000}), 1000*3/1e6)
+	})
 }
 
 // The SQL provider rule agrees with the worker's Go rule on every shared
 // test vector (workers/internal/modelid/testdata/vectors.json).
 func TestProviderCaseSQL_MatchesTheGoRule(t *testing.T) {
-	s, cleanup := newTestStore(t)
-	defer cleanup()
-	raw, err := os.ReadFile("../../../workers/internal/modelid/testdata/vectors.json")
-	if err != nil {
-		t.Fatalf("read vectors: %v", err)
-	}
-	var vectors struct {
-		Provider map[string]string `json:"provider"`
-	}
-	if err := json.Unmarshal(raw, &vectors); err != nil {
-		t.Fatalf("parse vectors: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for model, want := range vectors.Provider {
-		var got string
-		if err := s.pool.QueryRow(ctx,
-			`SELECT `+providerCase("t.model")+` FROM (SELECT $1::text AS model) t`, model).Scan(&got); err != nil {
-			t.Fatalf("provider SQL for %q: %v", model, err)
+	eachStore(t, func(t *testing.T, s *Store) {
+		raw, err := os.ReadFile("../../../workers/internal/modelid/testdata/vectors.json")
+		if err != nil {
+			t.Fatalf("read vectors: %v", err)
 		}
-		if got != want {
-			t.Errorf("SQL provider(%q) = %q, Go rule says %q", model, got, want)
+		var vectors struct {
+			Provider map[string]string `json:"provider"`
 		}
-	}
+		if err := json.Unmarshal(raw, &vectors); err != nil {
+			t.Fatalf("parse vectors: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for model, want := range vectors.Provider {
+			var got string
+			if err := s.db.Reader().QueryRowContext(ctx,
+				`SELECT `+providerCase("t.model")+` FROM (SELECT $1 AS model) t`, model).Scan(&got); err != nil {
+				t.Fatalf("provider SQL for %q: %v", model, err)
+			}
+			if got != want {
+				t.Errorf("SQL provider(%q) = %q, Go rule says %q", model, got, want)
+			}
+		}
+	})
 }
 
 func TestDegradeTargets_OnlyCurrentDirectChatModels(t *testing.T) {
-	f := newCostFixture(t, "flightdeck_sensor")
-	ctx := context.Background()
-	f.price("chat", "direct", sonnetRates)
-	f.price("chat-bedrock-only", "bedrock", sonnetRates)
-	embedding := sonnetRates
-	embedding.output = 0
-	f.price("embedding", "direct", embedding)
-	f.price("retired", "direct", sonnetRates)
-	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET deprecated_on = CURRENT_DATE - 1 WHERE model_id = $1`, f.prefix+"retired"); err != nil {
-		t.Fatalf("deprecate: %v", err)
-	}
-	f.price("alias", "direct", sonnetRates)
-	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET source = 'alias' WHERE model_id = $1`, f.prefix+"alias"); err != nil {
-		t.Fatalf("alias: %v", err)
-	}
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		ctx := context.Background()
+		f.price("chat", "direct", sonnetRates)
+		f.price("chat-bedrock-only", "bedrock", sonnetRates)
+		embedding := sonnetRates
+		embedding.output = 0
+		f.price("embedding", "direct", embedding)
+		f.price("retired", "direct", sonnetRates)
+		if _, err := f.s.db.ExecContext(ctx, `UPDATE model_pricing SET deprecated_on = CURRENT_DATE - 1 WHERE model_id = $1`, f.prefix+"retired"); err != nil {
+			t.Fatalf("deprecate: %v", err)
+		}
+		f.price("alias", "direct", sonnetRates)
+		if _, err := f.s.db.ExecContext(ctx, `UPDATE model_pricing SET source = 'alias' WHERE model_id = $1`, f.prefix+"alias"); err != nil {
+			t.Fatalf("alias: %v", err)
+		}
 
-	// A fine-tune price key starts with ft:, so it cannot carry the
-	// fixture prefix; it is seeded and removed by hand.
-	fineTune := "ft:" + f.prefix + "chat"
-	if _, err := f.s.pool.Exec(ctx, `INSERT INTO model_pricing (model_id, platform, provider, input, output,
-		cache_read, cache_write_5m, cache_write_1h, source)
-		VALUES ($1, 'direct', 'openai', 3, 15, 1.5, 3, 3, 'catalogue')`, fineTune); err != nil {
-		t.Fatalf("fine-tune row: %v", err)
-	}
-	t.Cleanup(func() { _, _ = f.s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, fineTune) })
+		// A fine-tune price key starts with ft:, so it cannot carry the
+		// fixture prefix; it is seeded and removed by hand.
+		fineTune := "ft:" + f.prefix + "chat"
+		if _, err := f.s.db.ExecContext(ctx, `INSERT INTO model_pricing (model_id, platform, provider, input, output,
+			cache_read, cache_write_5m, cache_write_1h, source)
+			VALUES ($1, 'direct', 'openai', 3, 15, 1.5, 3, 3, 'catalogue')`, fineTune); err != nil {
+			t.Fatalf("fine-tune row: %v", err)
+		}
+		t.Cleanup(func() { _, _ = f.s.db.ExecContext(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, fineTune) })
 
-	models, err := f.s.DegradeTargets(ctx)
-	if err != nil {
-		t.Fatalf("DegradeTargets: %v", err)
-	}
-	var mine []string
-	for _, m := range models {
-		if m.ModelID == fineTune {
-			t.Errorf("fine-tune price key %s offered as a degrade target", fineTune)
+		models, err := f.s.DegradeTargets(ctx)
+		if err != nil {
+			t.Fatalf("DegradeTargets: %v", err)
 		}
-		if strings.HasPrefix(m.ModelID, f.prefix) {
-			mine = append(mine, strings.TrimPrefix(m.ModelID, f.prefix))
+		var mine []string
+		for _, m := range models {
+			if m.ModelID == fineTune {
+				t.Errorf("fine-tune price key %s offered as a degrade target", fineTune)
+			}
+			if strings.HasPrefix(m.ModelID, f.prefix) {
+				mine = append(mine, strings.TrimPrefix(m.ModelID, f.prefix))
+			}
 		}
-	}
-	if len(mine) != 1 || mine[0] != "chat" {
-		t.Errorf("degrade targets = %v, want only the current direct chat model", mine)
-	}
-	for model, want := range map[string]bool{"chat": true, "embedding": false, "retired": false, "alias": false, "chat-bedrock-only": false} {
-		got, err := f.s.IsDegradeTarget(ctx, f.prefix+model)
-		if err != nil || got != want {
-			t.Errorf("IsDegradeTarget(%s) = %v, %v; want %v", model, got, err, want)
+		if len(mine) != 1 || mine[0] != "chat" {
+			t.Errorf("degrade targets = %v, want only the current direct chat model", mine)
 		}
-	}
-	if got, err := f.s.IsDegradeTarget(ctx, fineTune); err != nil || got {
-		t.Errorf("IsDegradeTarget(%s) = %v, %v; want false", fineTune, got, err)
-	}
+		for model, want := range map[string]bool{"chat": true, "embedding": false, "retired": false, "alias": false, "chat-bedrock-only": false} {
+			got, err := f.s.IsDegradeTarget(ctx, f.prefix+model)
+			if err != nil || got != want {
+				t.Errorf("IsDegradeTarget(%s) = %v, %v; want %v", model, got, err, want)
+			}
+		}
+		if got, err := f.s.IsDegradeTarget(ctx, fineTune); err != nil || got {
+			t.Errorf("IsDegradeTarget(%s) = %v, %v; want false", fineTune, got, err)
+		}
+	})
 }

@@ -10,20 +10,20 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // EnsureGlobalMCPPolicy is a boot-time idempotent retry. Migration
 // 000019 seeds the global empty-blocklist row at install time,
 // which closes the cold-boot race where api beat workers to a
-// fresh postgres and 500'd until manual restart. This hook stays as
+// fresh database and 500'd until manual restart. This hook stays as
 // a defensive noop for install paths where api may run before the
 // migrator (e.g. future operator-managed Helm charts). Race-safe
 // under read-committed because the unique index
@@ -31,16 +31,15 @@ import (
 // insert; the unique-violation is treated as "already created" and
 // the caller continues.
 func (s *Store) EnsureGlobalMCPPolicy(ctx context.Context) error {
-	const sql = `
+	const query = `
 		INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
-		SELECT 'global', NULL, 'blocklist', false
+		SELECT 'global', NULL, 'blocklist', FALSE
 		WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global')
 	`
-	if _, err := s.pool.Exec(ctx, sql); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Unique violation — a parallel API instance won the
-			// race. Treat as already-created.
+	if _, err := s.db.ExecContext(ctx, query); err != nil {
+		if storage.IsUniqueViolation(err) {
+			// A parallel API instance won the race. Treat as
+			// already-created.
 			return nil
 		}
 		return fmt.Errorf("ensure global mcp policy: %w", err)
@@ -69,17 +68,17 @@ func (s *Store) fetchPolicyByScope(ctx context.Context, scope, scopeValue string
 		modeNullable *string
 	)
 	const policySQL = `
-		SELECT id::text, scope, scope_value, mode, block_on_uncertainty,
+		SELECT CAST(id AS TEXT), scope, scope_value, mode, block_on_uncertainty,
 		       created_at, updated_at
 		  FROM mcp_policies
 		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2
 	`
-	err := s.pool.QueryRow(ctx, policySQL, scope, scopeValue).Scan(
+	err := s.reader().QueryRowContext(ctx, policySQL, scope, scopeValue).Scan(
 		&policy.ID, &policy.Scope, &scopeVal, &modeNullable,
 		&policy.BlockOnUncertainty,
 		&policy.CreatedAt, &policy.UpdatedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -97,18 +96,18 @@ func (s *Store) fetchPolicyByScope(ctx context.Context, scope, scopeValue string
 }
 
 func (s *Store) fetchEntries(ctx context.Context, policyID string) ([]MCPPolicyEntry, error) {
-	const sql = `
-		SELECT id::text, policy_id::text, server_url_canonical, server_name,
+	const query = `
+		SELECT CAST(id AS TEXT), CAST(policy_id AS TEXT), server_url_canonical, server_name,
 		       fingerprint, entry_kind, enforcement, created_at
 		  FROM mcp_policy_entries
 		 WHERE policy_id = $1
-		 ORDER BY created_at ASC
+		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(ctx, sql, policyID)
+	rows, err := s.reader().QueryContext(ctx, query, policyID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch mcp policy entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	entries := []MCPPolicyEntry{}
 	for rows.Next() {
@@ -137,31 +136,32 @@ func (s *Store) CreateMCPPolicy(
 	resolvedEntries []MCPPolicyEntry,
 	actorTokenID *string,
 ) (*MCPPolicy, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	// 1. INSERT mcp_policies
 	const insertSQL = `
 		INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
 		VALUES ('flavor', $1, NULL, $2)
-		RETURNING id::text, created_at, updated_at
+		RETURNING CAST(id AS TEXT), created_at, updated_at
 	`
 	var policy MCPPolicy
 	policy.Scope = "flavor"
 	policy.ScopeValue = &flavor
 	policy.BlockOnUncertainty = mut.BlockOnUncertainty
-	if err := tx.QueryRow(ctx, insertSQL, flavor, mut.BlockOnUncertainty).Scan(
-		&policy.ID, &policy.CreatedAt, &policy.UpdatedAt,
+	var created, updated storage.Time
+	if err := tx.QueryRowContext(ctx, insertSQL, flavor, mut.BlockOnUncertainty).Scan(
+		&policy.ID, &created, &updated,
 	); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if storage.IsUniqueViolation(err) {
 			return nil, ErrMCPPolicyAlreadyExists
 		}
 		return nil, fmt.Errorf("insert mcp policy: %w", err)
 	}
+	policy.CreatedAt, policy.UpdatedAt = created.Time, updated.Time
 
 	// 2. INSERT entries
 	persisted, err := insertEntries(ctx, tx, policy.ID, resolvedEntries)
@@ -176,15 +176,17 @@ func (s *Store) CreateMCPPolicy(
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit create policy: %w", err)
 	}
 	return &policy, nil
 }
 
 // UpdateMCPPolicy replaces the policy state — entries, mode (global
-// only), block_on_uncertainty — inside one transaction. SELECT FOR
-// UPDATE prevents lost-update races between concurrent PUTs. The
+// only), block_on_uncertainty — inside one transaction. The row is
+// locked for the transaction (SELECT FOR UPDATE on Postgres; on
+// SQLite the writer's IMMEDIATE transaction holds the database's one
+// write lock) so concurrent PUTs cannot lose an update. The
 // auditPayload extras dict carries handler-supplied annotations like
 // {"applied_template":"strict-baseline"}.
 func (s *Store) UpdateMCPPolicy(
@@ -195,28 +197,26 @@ func (s *Store) UpdateMCPPolicy(
 	actorTokenID *string,
 	auditPayloadExtras map[string]any,
 ) (*MCPPolicy, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	// 1. SELECT FOR UPDATE current row
-	const selectSQL = `
-		SELECT id::text, mode, block_on_uncertainty
+	// 1. Lock and read the current row
+	selectSQL := `
+		SELECT CAST(id AS TEXT), mode, block_on_uncertainty
 		  FROM mcp_policies
-		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2
-		 FOR UPDATE
-	`
+		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2` + s.q.forUpdate()
 	var (
 		policyID string
 		oldMode  *string
 		oldBOU   bool
 	)
-	if err := tx.QueryRow(ctx, selectSQL, scope, scopeValue).Scan(
+	if err := tx.QueryRowContext(ctx, selectSQL, scope, scopeValue).Scan(
 		&policyID, &oldMode, &oldBOU,
 	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrMCPPolicyNotFound
 		}
 		return nil, fmt.Errorf("lock mcp policy: %w", err)
@@ -224,11 +224,11 @@ func (s *Store) UpdateMCPPolicy(
 
 	// 2. UPDATE row (mode is only writable on global; the storage
 	// CHECK enforces this regardless of what the caller supplies).
-	const updateSQL = `
+	updateSQL := `
 		UPDATE mcp_policies
 		   SET mode = $1,
 		       block_on_uncertainty = $2,
-		       updated_at = NOW()
+		       updated_at = ` + s.d.Now() + `
 		 WHERE id = $3
 		RETURNING created_at, updated_at
 	`
@@ -247,11 +247,13 @@ func (s *Store) UpdateMCPPolicy(
 		newPolicy.Mode = mut.Mode
 	}
 	newPolicy.BlockOnUncertainty = mut.BlockOnUncertainty
-	if err := tx.QueryRow(ctx, updateSQL,
+	var created, updated storage.Time
+	if err := tx.QueryRowContext(ctx, updateSQL,
 		modeForWrite, mut.BlockOnUncertainty, policyID,
-	).Scan(&newPolicy.CreatedAt, &newPolicy.UpdatedAt); err != nil {
+	).Scan(&created, &updated); err != nil {
 		return nil, fmt.Errorf("update mcp policy: %w", err)
 	}
+	newPolicy.CreatedAt, newPolicy.UpdatedAt = created.Time, updated.Time
 	if scope == "global" {
 		// global keeps its existing mode as the new mode unless
 		// the caller supplied one
@@ -262,7 +264,7 @@ func (s *Store) UpdateMCPPolicy(
 
 	// 3. DELETE existing entries; INSERT new entries
 	const delEntriesSQL = `DELETE FROM mcp_policy_entries WHERE policy_id = $1`
-	if _, err := tx.Exec(ctx, delEntriesSQL, policyID); err != nil {
+	if _, err := tx.ExecContext(ctx, delEntriesSQL, policyID); err != nil {
 		return nil, fmt.Errorf("delete entries: %w", err)
 	}
 	persisted, err := insertEntries(ctx, tx, policyID, resolvedEntries)
@@ -277,7 +279,7 @@ func (s *Store) UpdateMCPPolicy(
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit update policy: %w", err)
 	}
 	return &newPolicy, nil
@@ -289,20 +291,18 @@ func (s *Store) UpdateMCPPolicy(
 // NULL — the audit row survives the deletion and an operator can
 // answer "who deleted what and when" later.
 func (s *Store) DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID *string) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	const lookupSQL = `
-		SELECT id::text FROM mcp_policies
-		 WHERE scope = 'flavor' AND scope_value = $1
-		 FOR UPDATE
-	`
+	lookupSQL := `
+		SELECT CAST(id AS TEXT) FROM mcp_policies
+		 WHERE scope = 'flavor' AND scope_value = $1` + s.q.forUpdate()
 	var policyID string
-	if err := tx.QueryRow(ctx, lookupSQL, flavor).Scan(&policyID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, lookupSQL, flavor).Scan(&policyID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrMCPPolicyNotFound
 		}
 		return fmt.Errorf("lock for delete: %w", err)
@@ -314,11 +314,11 @@ func (s *Store) DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID
 	}
 
 	const delSQL = `DELETE FROM mcp_policies WHERE id = $1`
-	if _, err := tx.Exec(ctx, delSQL, policyID); err != nil {
+	if _, err := tx.ExecContext(ctx, delSQL, policyID); err != nil {
 		return fmt.Errorf("delete policy: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete policy: %w", err)
 	}
 	return nil
@@ -345,7 +345,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 	// Step 1: flavor entry?
 	if flavor != "" {
 		const flavorEntrySQL = `
-			SELECT mp.id::text, mpe.entry_kind, mpe.enforcement
+			SELECT CAST(mp.id AS TEXT), mpe.entry_kind, mpe.enforcement
 			  FROM mcp_policies mp
 			  JOIN mcp_policy_entries mpe ON mpe.policy_id = mp.id
 			 WHERE mp.scope = 'flavor' AND mp.scope_value = $1
@@ -358,7 +358,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 			entryKind   string
 			enforcement *string
 		)
-		err := s.pool.QueryRow(ctx, flavorEntrySQL, flavor, canonicalURL).Scan(
+		err := s.reader().QueryRowContext(ctx, flavorEntrySQL, flavor, canonicalURL).Scan(
 			&policyID, &entryKind, &enforcement)
 		switch {
 		case err == nil:
@@ -369,14 +369,14 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 				Scope:        "flavor:" + flavor,
 				Fingerprint:  fingerprint,
 			}, nil
-		case !errors.Is(err, pgx.ErrNoRows):
+		case !errors.Is(err, sql.ErrNoRows):
 			return nil, fmt.Errorf("resolve flavor entry: %w", err)
 		}
 	}
 
 	// Step 2: global entry?
 	const globalEntrySQL = `
-		SELECT mp.id::text, mpe.entry_kind, mpe.enforcement
+		SELECT CAST(mp.id AS TEXT), mpe.entry_kind, mpe.enforcement
 		  FROM mcp_policies mp
 		  JOIN mcp_policy_entries mpe ON mpe.policy_id = mp.id
 		 WHERE mp.scope = 'global'
@@ -389,7 +389,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 		gEntryKind   string
 		gEnforcement *string
 	)
-	err := s.pool.QueryRow(ctx, globalEntrySQL, canonicalURL).Scan(
+	err := s.reader().QueryRowContext(ctx, globalEntrySQL, canonicalURL).Scan(
 		&gPolicyID, &gEntryKind, &gEnforcement)
 	switch {
 	case err == nil:
@@ -400,13 +400,13 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 			Scope:        "global",
 			Fingerprint:  fingerprint,
 		}, nil
-	case !errors.Is(err, pgx.ErrNoRows):
+	case !errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("resolve global entry: %w", err)
 	}
 
 	// Step 3: global mode default
 	const globalSQL = `
-		SELECT id::text, mode, block_on_uncertainty
+		SELECT CAST(id AS TEXT), mode, block_on_uncertainty
 		  FROM mcp_policies
 		 WHERE scope = 'global'
 	`
@@ -415,7 +415,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 		mMode     string
 		mBOU      bool
 	)
-	if err := s.pool.QueryRow(ctx, globalSQL).Scan(&mPolicyID, &mMode, &mBOU); err != nil {
+	if err := s.reader().QueryRowContext(ctx, globalSQL).Scan(&mPolicyID, &mMode, &mBOU); err != nil {
 		return nil, fmt.Errorf("resolve global mode default: %w", err)
 	}
 
@@ -429,7 +429,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fing
 			  FROM mcp_policies
 			 WHERE scope = 'flavor' AND scope_value = $1
 		`
-		_ = s.pool.QueryRow(ctx, fbouSQL, flavor).Scan(&flavorBOU)
+		_ = s.reader().QueryRowContext(ctx, fbouSQL, flavor).Scan(&flavorBOU)
 	}
 
 	decision := "allow"
@@ -494,38 +494,40 @@ func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, ev
 	args = append(args, limit, offset)
 
 	query := fmt.Sprintf(`
-		SELECT a.id::text, a.policy_id::text, a.event_type, a.actor::text,
+		SELECT CAST(a.id AS TEXT), CAST(a.policy_id AS TEXT), a.event_type, CAST(a.actor AS TEXT),
 		       a.payload, a.occurred_at
 		  FROM mcp_policy_audit_log a
 		  LEFT JOIN mcp_policies p ON p.id = a.policy_id
 		 WHERE %s
-		 ORDER BY a.occurred_at DESC
+		 ORDER BY a.occurred_at DESC, a.id DESC
 		 LIMIT $%d OFFSET $%d
 	`, strings.Join(conditions, " AND "), argIdx, argIdx+1)
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list audit log: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	logs := []MCPPolicyAuditLog{}
 	for rows.Next() {
 		var l MCPPolicyAuditLog
 		var policyID, actor *string
-		if err := rows.Scan(&l.ID, &policyID, &l.EventType, &actor, &l.Payload, &l.OccurredAt); err != nil {
+		var payloadRaw []byte
+		if err := rows.Scan(&l.ID, &policyID, &l.EventType, &actor, &payloadRaw, &l.OccurredAt); err != nil {
 			return nil, fmt.Errorf("scan audit log: %w", err)
 		}
 		l.PolicyID = policyID
 		l.Actor = actor
+		l.Payload = json.RawMessage(append([]byte(nil), payloadRaw...))
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
 }
 
 // granularityForPeriod maps the period query param to the
-// time-bucket granularity used by date_trunc / generate_series in
-// the metrics SQL: 24h → hour, 7d / 30d → day.
+// time-bucket granularity used by the metrics SQL: 24h → hour,
+// 7d / 30d → day.
 // Hour-level buckets at 30d would be 720 buckets per server which
 // is too noisy for a sparkline; day-level at 24h would be a single
 // data point which defeats the trend visualization.
@@ -536,29 +538,31 @@ func granularityForPeriod(period string) string {
 	return "day"
 }
 
-// granularityInterval returns the postgres interval string used in
-// the generate_series step size. Mirrors granularityForPeriod.
-func granularityInterval(granularity string) string {
+// bucketStep returns the width of a metrics bucket and truncates t to
+// its start, the way the SQL truncation does.
+func bucketStep(granularity string) (step time.Duration, trunc func(time.Time) time.Time) {
 	if granularity == "hour" {
-		return "1 hour"
+		return time.Hour, func(t time.Time) time.Time { return t.UTC().Truncate(time.Hour) }
 	}
-	return "1 day"
+	return 24 * time.Hour, func(t time.Time) time.Time {
+		t = t.UTC()
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	}
 }
 
 // GetMCPPolicyMetrics aggregates policy_mcp_warn / policy_mcp_block
 // events scoped to the flavor's policy. Returns BOTH time-bucketed
-// series (zero-filled via generate_series so the dashboard sparkline
-// renders honest gaps) AND per-server aggregate totals (used for the
-// header summary table). The aggregates are computed in the
-// SAME query as a separate windowed pass so the response stays
-// single-fetch.
+// series (zero-filled so the dashboard sparkline renders honest gaps)
+// AND per-server aggregate totals (used for the header summary
+// table).
 func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error) {
 	hours, err := periodToHours(period)
 	if err != nil {
 		return nil, err
 	}
 	granularity := granularityForPeriod(period)
-	interval := granularityInterval(granularity)
+	unit, _ := truncUnit(granularity)
+	step, trunc := bucketStep(granularity)
 
 	policyID, err := s.lookupPolicyID(ctx, scope, scopeValue)
 	if err != nil {
@@ -574,25 +578,33 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		}, nil
 	}
 
+	// The window is computed once here so the aggregates, the
+	// bucketed events and the zero-fill share one clock reading.
+	now := time.Now().UTC()
+	since := now.Add(-time.Duration(hours) * time.Hour)
+	d := s.d
+	fingerprint := d.JSONText("payload", "fingerprint")
+	serverName := d.JSONText("payload", "server_name")
+
 	// Aggregate per-server totals over the whole window. Powers the
 	// header summary table on the dashboard.
-	const aggregateSQL = `
+	aggregateSQL := `
 		SELECT event_type,
-		       payload->>'fingerprint'  AS fingerprint,
-		       payload->>'server_name'  AS server_name,
+		       ` + fingerprint + ` AS fingerprint,
+		       ` + serverName + ` AS server_name,
 		       COUNT(*) AS cnt
 		  FROM events
 		 WHERE event_type IN ('policy_mcp_warn', 'policy_mcp_block')
-		   AND payload->>'policy_id' = $1
-		   AND occurred_at >= NOW() - $2 * INTERVAL '1 hour'
+		   AND ` + d.JSONText("payload", "policy_id") + ` = $1
+		   AND occurred_at >= $2
 		 GROUP BY event_type, fingerprint, server_name
-		 ORDER BY cnt DESC
+		 ORDER BY cnt DESC, event_type ASC, fingerprint ASC, server_name ASC
 	`
-	aggRows, err := s.pool.Query(ctx, aggregateSQL, policyID, hours)
+	aggRows, err := s.reader().QueryContext(ctx, aggregateSQL, policyID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query metrics aggregates: %w", err)
 	}
-	defer aggRows.Close()
+	defer func() { _ = aggRows.Close() }()
 
 	metrics := &MCPPolicyMetrics{
 		Period:          period,
@@ -629,53 +641,45 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		return nil, fmt.Errorf("metrics aggregate rows: %w", err)
 	}
 
-	// Zero-filled time-bucket series. generate_series produces every
-	// timestamp in the window at the chosen granularity even when no
-	// matching event landed in that bucket — sparse data on a
-	// security dashboard would render a flat-then-spike as a gradual
-	// ramp, which misleads the operator.
-	bucketSQL := fmt.Sprintf(`
-		WITH window_buckets AS (
-			SELECT generate_series(
-				date_trunc('%s', NOW() - $2 * INTERVAL '1 hour'),
-				date_trunc('%s', NOW()),
-				INTERVAL '%s'
-			) AS bucket_ts
-		),
-		bucketed_events AS (
-			SELECT date_trunc('%s', occurred_at) AS bucket_ts,
-			       event_type,
-			       payload->>'fingerprint'  AS fingerprint,
-			       payload->>'server_name'  AS server_name,
-			       COUNT(*) AS cnt
-			  FROM events
-			 WHERE event_type IN ('policy_mcp_warn', 'policy_mcp_block')
-			   AND payload->>'policy_id' = $1
-			   AND occurred_at >= NOW() - $2 * INTERVAL '1 hour'
-			 GROUP BY bucket_ts, event_type, fingerprint, server_name
-		)
-		SELECT wb.bucket_ts,
-		       be.event_type,
-		       be.fingerprint,
-		       be.server_name,
-		       COALESCE(be.cnt, 0) AS cnt
-		  FROM window_buckets wb
-		  LEFT JOIN bucketed_events be ON be.bucket_ts = wb.bucket_ts
-		 ORDER BY wb.bucket_ts ASC, be.event_type ASC
-	`, granularity, granularity, interval, granularity)
+	// Zero-filled time-bucket series. Every bucket in the window at
+	// the chosen granularity is present even when no matching event
+	// landed in it — sparse data on a security dashboard would render
+	// a flat-then-spike as a gradual ramp, which misleads the operator.
+	// The buckets are generated here from the same window the query
+	// filters on; the query groups the events by the same truncation.
+	bucketSQL := `
+		SELECT ` + d.DateTrunc(unit, "occurred_at") + ` AS bucket_ts,
+		       event_type,
+		       ` + fingerprint + ` AS fingerprint,
+		       ` + serverName + ` AS server_name,
+		       COUNT(*) AS cnt
+		  FROM events
+		 WHERE event_type IN ('policy_mcp_warn', 'policy_mcp_block')
+		   AND ` + d.JSONText("payload", "policy_id") + ` = $1
+		   AND occurred_at >= $2
+		 GROUP BY bucket_ts, event_type, fingerprint, server_name
+		 ORDER BY bucket_ts ASC, event_type ASC, fingerprint ASC, server_name ASC
+	`
 
-	bucketRows, err := s.pool.Query(ctx, bucketSQL, policyID, hours)
+	bucketRows, err := s.reader().QueryContext(ctx, bucketSQL, policyID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query metrics buckets: %w", err)
 	}
-	defer bucketRows.Close()
+	defer func() { _ = bucketRows.Close() }()
 
 	bucketByTimestamp := make(map[time.Time]*MCPPolicyMetricsBucket)
-	bucketOrder := []time.Time{}
+	for ts := trunc(since); !ts.After(trunc(now)); ts = ts.Add(step) {
+		bucketByTimestamp[ts] = &MCPPolicyMetricsBucket{
+			Timestamp: ts,
+			Blocks:    []ServerCountBucket{},
+			Warns:     []ServerCountBucket{},
+		}
+		metrics.Buckets = append(metrics.Buckets, MCPPolicyMetricsBucket{})
+	}
 	for bucketRows.Next() {
 		var (
-			ts        time.Time
-			eventType *string
+			ts        storage.Time
+			eventType string
 			fp        *string
 			name      *string
 			count     int
@@ -683,22 +687,14 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		if err := bucketRows.Scan(&ts, &eventType, &fp, &name, &count); err != nil {
 			return nil, fmt.Errorf("scan metrics bucket row: %w", err)
 		}
-		// generate_series emits the timestamp UTC; preserve.
-		ts = ts.UTC()
-		entry, exists := bucketByTimestamp[ts]
+		entry, exists := bucketByTimestamp[ts.Time.UTC()]
 		if !exists {
-			entry = &MCPPolicyMetricsBucket{
-				Timestamp: ts,
-				Blocks:    []ServerCountBucket{},
-				Warns:     []ServerCountBucket{},
-			}
-			bucketByTimestamp[ts] = entry
-			bucketOrder = append(bucketOrder, ts)
-		}
-		// LEFT JOIN keeps empty slots — the row will have NULL
-		// event_type / fingerprint / name. Skip the empty pad row;
-		// the bucket is already in the map with empty slices.
-		if eventType == nil {
+			// Every event the query returns is at or after the
+			// window's start, so its bucket is at or after the first
+			// zero-filled one; only an event stamped after the clock
+			// reading the buckets end at (a client clock ahead of the
+			// server's) falls outside the series, and it is left out
+			// rather than given a bucket the window does not show.
 			continue
 		}
 		serverBucket := ServerCountBucket{Count: count}
@@ -708,7 +704,7 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 		if name != nil {
 			serverBucket.ServerName = *name
 		}
-		switch *eventType {
+		switch eventType {
 		case "policy_mcp_warn":
 			entry.Warns = append(entry.Warns, serverBucket)
 		case "policy_mcp_block":
@@ -718,8 +714,10 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 	if err := bucketRows.Err(); err != nil {
 		return nil, fmt.Errorf("metrics bucket rows: %w", err)
 	}
-	for _, ts := range bucketOrder {
-		metrics.Buckets = append(metrics.Buckets, *bucketByTimestamp[ts])
+	i := 0
+	for ts := trunc(since); !ts.After(trunc(now)); ts = ts.Add(step) {
+		metrics.Buckets[i] = *bucketByTimestamp[ts]
+		i++
 	}
 	return metrics, nil
 }
@@ -728,13 +726,13 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 // pair, or empty string when no policy exists. The metrics handler
 // uses this to short-circuit when no flavor policy has been created.
 func (s *Store) lookupPolicyID(ctx context.Context, scope, scopeValue string) (string, error) {
-	const sql = `
-		SELECT id::text FROM mcp_policies
+	const query = `
+		SELECT CAST(id AS TEXT) FROM mcp_policies
 		 WHERE scope = $1 AND COALESCE(scope_value, '') = $2
 	`
 	var id string
-	err := s.pool.QueryRow(ctx, sql, scope, scopeValue).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.reader().QueryRowContext(ctx, query, scope, scopeValue).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
@@ -745,19 +743,19 @@ func (s *Store) lookupPolicyID(ctx context.Context, scope, scopeValue string) (s
 
 // ----- private helpers -----------------------------------------
 
-func insertEntries(ctx context.Context, tx pgx.Tx, policyID string, entries []MCPPolicyEntry) ([]MCPPolicyEntry, error) {
+func insertEntries(ctx context.Context, tx *sql.Tx, policyID string, entries []MCPPolicyEntry) ([]MCPPolicyEntry, error) {
 	persisted := make([]MCPPolicyEntry, 0, len(entries))
-	const sql = `
+	const query = `
 		INSERT INTO mcp_policy_entries
 		    (policy_id, server_url_canonical, server_name, fingerprint,
 		     entry_kind, enforcement)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id::text, created_at
+		RETURNING CAST(id AS TEXT), created_at
 	`
 	for _, e := range entries {
 		var id string
-		var createdAt time.Time
-		if err := tx.QueryRow(ctx, sql,
+		var createdAt storage.Time
+		if err := tx.QueryRowContext(ctx, query,
 			policyID, e.ServerURLCanonical, e.ServerName, e.Fingerprint,
 			e.EntryKind, e.Enforcement,
 		).Scan(&id, &createdAt); err != nil {
@@ -765,13 +763,13 @@ func insertEntries(ctx context.Context, tx pgx.Tx, policyID string, entries []MC
 		}
 		e.ID = id
 		e.PolicyID = policyID
-		e.CreatedAt = createdAt
+		e.CreatedAt = createdAt.Time
 		persisted = append(persisted, e)
 	}
 	return persisted, nil
 }
 
-func insertAuditLog(ctx context.Context, tx pgx.Tx, policyID, eventType string, actor *string, mut MCPPolicyMutation, extras map[string]any) error {
+func insertAuditLog(ctx context.Context, tx *sql.Tx, policyID, eventType string, actor *string, mut MCPPolicyMutation, extras map[string]any) error {
 	payload := map[string]any{
 		"block_on_uncertainty": mut.BlockOnUncertainty,
 		"entry_count":          len(mut.Entries),
@@ -786,11 +784,16 @@ func insertAuditLog(ctx context.Context, tx pgx.Tx, policyID, eventType string, 
 	if err != nil {
 		return fmt.Errorf("marshal audit payload: %w", err)
 	}
-	const sql = `
+	var actorID *string
+	if actor != nil {
+		id := uuidArg(*actor)
+		actorID = &id
+	}
+	const query = `
 		INSERT INTO mcp_policy_audit_log (policy_id, event_type, actor, payload)
 		VALUES ($1, $2, $3, $4)
 	`
-	if _, err := tx.Exec(ctx, sql, policyID, eventType, actor, payloadJSON); err != nil {
+	if _, err := tx.ExecContext(ctx, query, policyID, eventType, actorID, string(payloadJSON)); err != nil {
 		return fmt.Errorf("insert audit log: %w", err)
 	}
 	return nil

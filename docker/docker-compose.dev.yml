@@ -20,15 +20,26 @@ services:
     # FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit the 1000 default.
     environment:
       FLIGHTDECK_RATE_LIMIT_PER_MINUTE: "1000000"
-    # `go run` cold-start in CI downloads all modules then compiles --
-    # observed at 60-90 s on a fresh GitHub Actions runner. The base
-    # compose healthcheck only allows 10 s start_period + 5*5 s retries
-    # = 35 s, which is fine for a warm local workstation but trips on
-    # cold CI runs and brings down `make dev`. Override the start
-    # window to 120 s here -- production uses prebuilt images that
-    # boot in <2 s and inherit the tight base healthcheck unchanged.
+    # `go run` on a cold cache downloads every module and then
+    # compiles them, and most of that time is one package: the pure-Go
+    # SQLite driver the storage module brings into every service
+    # (modernc.org/sqlite, the whole of SQLite as Go source). A cold
+    # build of this one service takes 46 s on two CPUs of a fast
+    # workstation; on a hosted CI runner, where the three services
+    # compile at once on four slower CPUs, ingestion began serving
+    # after about 155 s. The base compose healthcheck allows a 10 s
+    # start_period and 5 retries 5 s apart, 35 s in all, which suits
+    # the prebuilt production images (they boot in under 2 s and keep
+    # that tight check) and marks a compiling container unhealthy,
+    # which fails `make dev` with "dependency failed to start". The
+    # start window here is 300 s, about twice the slowest start
+    # observed; a probe that succeeds earlier ends the wait at once.
+    # Nothing else bounds this start more tightly: the CI jobs that
+    # boot the stack have no step timeout of their own, and the
+    # suites' 60 s health wait begins after compose has seen these
+    # containers healthy (nginx depends on them).
     healthcheck:
-      start_period: 120s
+      start_period: 300s
 
   workers:
     image: golang:1.27.4-alpine
@@ -67,10 +78,10 @@ services:
       # Without it, LoadPricing falls back to the safety map and cost
       # estimates cover only four models.
       - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
-    # See the matching comment on ``ingestion`` above. Same cold-start
-    # issue, same dev-only override.
+    # See the matching comment on ``ingestion`` above. Same cold
+    # compile of the SQLite driver, same dev-only start window.
     healthcheck:
-      start_period: 120s
+      start_period: 300s
 
   dashboard:
     image: node:24-alpine

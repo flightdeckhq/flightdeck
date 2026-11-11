@@ -862,17 +862,13 @@ to look up for a stack that already prints them).
 
 **Date:** 2026-11-11
 **Decision:** when the workers stop (a signal, the `flightdeck` binary
-shutting down) a lane's message in flight is processed to its end under
-its own ten-second deadline and acknowledged; the stop no longer cancels
-it. Messages still queued in a lane are not started and are redelivered
-when their ack wait ends.
-**Why:** processing a call is several statements (the session's
-counters, then the event row). Cancelled between them, the message was
-redelivered and its tokens counted twice: stopping the binary under load
-left a session at 315 tokens for 300 sent. The one binary is stopped
-with Ctrl+C far more often than a worker container was.
+shutting down) each lane processes its message in flight to the end,
+under its own ten-second deadline, and acknowledges it. Messages still
+queued in a lane are not started; the stream redelivers them.
+**Why:** a call is several statements (the session's counters, then the
+event row). Cancelled between them it was redelivered and counted
+twice: a stop under load left a session at 315 tokens for 300 sent.
 **Rejected alternative:** cancel the work in flight for a faster stop
-(the stop is already bounded by the message deadline, and a fast stop
-that miscounts is not a stop that loses nothing); one transaction around
-the whole message (the handlers also publish and read through other
-connections; a larger change than this defect needs).
+(it miscounts, and the stop is bounded by the message deadline anyway);
+one transaction per message (the handlers also read and publish through
+other connections; a larger change than this defect needs).

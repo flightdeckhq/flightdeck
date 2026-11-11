@@ -4625,6 +4625,16 @@ interrupted between them would be redelivered and counted a second
 time. A message still queued in a lane has not been started; it stays
 unacknowledged and is redelivered when its ack wait ends.
 
+A known limit remains for a worker that is killed rather than stopped
+(`kill -9`, the machine losing power, a second signal during the
+stop): if it dies after a call's counter updates and before the call's
+event row is written, the redelivered message applies the counters
+again. The session's `tokens_used` and its agent's `total_tokens` can
+then over-count by that one call, for each message that was in flight
+at that instant (at most one per lane). The `events` table holds the
+call once, so the analytics, which sum events, stay correct, and
+`POST /v1/admin/reconcile-agents` recomputes the agent totals.
+
 Events can still reach the worker out of order: a client's concurrent
 processes (the Claude Code plugin's hooks) can publish a session's events
 in a different order than they happened, and a message the worker asked
@@ -10499,7 +10509,12 @@ another database; `nats/`, the embedded JetStream store; `secrets.json`
 token of the non-loopback mode below; `acme/`, the TLS certificate
 cache; and the lock files below. With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
-Postgres database is a working install.
+Postgres database is a working install. The data dir must be on a
+local disk. SQLite's write-ahead log relies on shared memory and file
+locks that a network filesystem does not provide (NFS, SMB; on
+Windows a UNC path or a mapped network drive is the usual way to end
+up on one), and the binary's own lock needs the same; the lock error
+says so when the filesystem refuses the lock.
 
 **One process per data dir.** The running binary holds an exclusive
 operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
@@ -10509,9 +10524,19 @@ is written. A second `flightdeck` on the same data dir, or on the same
 SQLite file through `--database-url sqlite://…` from another data dir,
 exits at once with a message naming the directory or file and the PID
 that holds it (the holder writes its PID into the lock file). The
-default case is refused earlier, by the port. The kernel drops the lock
+default case is refused earlier, by the port. The database's lock file
+is named after the real path of the database: symbolic links are
+resolved first (those of the file, or of its directory when the file
+is yet to be created), so a second instance that reaches the file
+through a link, or through a data dir that is a link, contends for
+the same lock. Two names that are not links to one another are not
+recognised as one file: a hard link, or the same file bind-mounted
+into two containers, each of which sees a lock file of its own. Run
+one container per database file. The kernel drops the lock
 when the process ends, however it ends, so a crash leaves no stale
-lock: the files stay and the next start locks them again. The lock is
+lock: the files stay and the next start locks them again. On a
+platform with neither `flock` nor `LockFileEx` the binary starts with
+a warning that a second instance will not be refused. The lock is
 what makes SQLite mode safe: the single writer connection and the
 in-process storage bus (see Storage) are per process, so two processes
 on one file would write past both.
@@ -10543,8 +10568,15 @@ bus is in-process, so every write of the three services queues on one
 connection and every notification reaches every subscriber, while
 each service reads through a pool of its own, so the dashboard's
 queries never hold up the workers' reads. On Postgres each handle is
-a pool of its own (max(4, NumCPU) connections, as when the service
-runs alone), the bus notifies through the workers' pool, and every
+a pool of its own, the bus notifies through the workers' pool, and
+one process opens at most 80 connections: each service's pool is
+max(4, NumCPU) connections capped at 25, the pool the binary opens
+first (used only for the start-up token check) is 2, and the storage
+bus holds 3 `LISTEN` connections. A Postgres server accepts 100
+connections by default and keeps 3 for superusers, so the budget
+leaves 17 for a psql session, a backup or a migration; several
+instances on one database need `max_connections` raised by 80 each,
+or a connection pooler in front. Every
 pool's connections carry the
 workers' `lock_timeout` (8 s) and the query API's `jit=off` as URL
 runtime parameters, the settings each service puts on its pool when
@@ -10639,7 +10671,11 @@ assembler and the worker lanes finish their current message within
 storage bus closes (its subscriptions end and, on Postgres, its
 `LISTEN` connections close), then the database, then the NATS
 connections and the embedded NATS server, and last the lock files are
-released. The database closes as soon as nothing uses it and before
+released. The first signal starts this stop; from then on the signals
+have their default action again, so a second Ctrl+C or signal during a
+slow drain ends the process at once, which costs what a kill costs
+(below) and nothing more: SQLite recovers its write-ahead log at the
+next start. The database closes as soon as nothing uses it and before
 the bus store, so on SQLite the write-ahead log is checkpointed into
 `flightdeck.db` and removed even when the NATS shutdown is slow:
 after a stop on a signal the data dir holds one database file, and

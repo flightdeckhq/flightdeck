@@ -279,6 +279,15 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Tokens were counted twice when a worker stopped under load.** A
+  stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
+  the message each worker lane was processing; one cancelled after the
+  session's counters were written and before its event row was stored
+  was redelivered and counted again, so a session could show more
+  tokens than its events add up to. A stopping worker now finishes the
+  message in flight (D265). A worker that is killed can still
+  over-count by one call per lane; ARCHITECTURE states the limit.
+
 - **A failed sub-agent's error text stays out of its session with
   capture off.** The CrewAI, LangGraph and LlamaIndex wraps sent the
   exception's message on a failed child's `session_end` whatever

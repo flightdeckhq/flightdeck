@@ -96,6 +96,17 @@ container (the binary has none), and on SQLite the ones marked
 database session, something SQLite does not have. Mark a new test `postgres_only`
 only when no SQLite equivalent exists, and say why in the marker.
 
+The fixtures refuse to load for a stack that is not the dev stack unless one of
+those two variables names its database, and the worker container's name defaults
+to the dev stack's only on the dev stack: a run against the binary cannot write
+to the dev stack's `flightdeck` database or pause its worker by omission. Three
+dashboard files do not go through those fixtures and are for the dev stack only:
+`dashboard/tests/e2e/T149-fleet-follows-worker-state-changes.spec.ts`,
+`dashboard/tests/e2e/T150-agent-tokens-count-failed-streams.spec.ts` and
+`dashboard/tests/e2e/_tool-content-run.ts` name the `docker-postgres-1`
+container and the `flightdeck` database literally, so they must not be run
+against the binary, where they would write to the dev database instead.
+
 ### Go tests that need a database
 
 Some Go tests run SQL against a real database: the store packages, the staging
@@ -113,9 +124,8 @@ Postgres (ARCHITECTURE.md, Storage), and a test opens its database through
 SQLite needs no server: every test gets a fresh file in its temp directory,
 migrated from the embedded baseline, so `go test ./...` and the CI Go job run
 the SQLite half everywhere. The Postgres half skips without
-`TEST_POSTGRES_URL`. The `api` and `workers` store packages read
-`TEST_POSTGRES_URL` directly and run on Postgres only; the `storage` and
-`ingestion` packages run on both.
+`TEST_POSTGRES_URL`. Every store package of the three services and the
+`storage` module run on both.
 
 `make test-go-db` runs the lot against the running dev stack, and CI runs it in
 the integration job on both Postgres majors that job covers.

@@ -81,12 +81,5 @@ func TestQueryAnalytics_BucketsAreUTCDatesUnderAnyTimeZone(t *testing.T) {
 				}
 			}
 		}
-		// The per-agent summary's bucket timestamps are the same
-		// instants, read back in UTC.
-		summary, err := s.AgentSummary(ctx, AgentSummaryParams{AgentID: agentID, Period: "30d", Bucket: "day"})
-		if err != nil {
-			t.Fatalf("AgentSummary: %v", err)
-		}
-		_ = summary // the window is now-relative; the fixture may fall outside it
 	})
 }

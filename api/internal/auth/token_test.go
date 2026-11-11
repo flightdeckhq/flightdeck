@@ -138,6 +138,19 @@ func TestValidate_InvalidToken_Rejected(t *testing.T) {
 	}
 }
 
+// A validator built without a database answers a lookup with an error
+// and no acceptance, never a nil dereference.
+func TestValidate_NoDatabase_IsAnErrorNotAPanic(t *testing.T) {
+	v := NewValidator(nil)
+	res, err := v.Validate(context.Background(), "ftd_a3f8b00b1234567890abcdef01234567")
+	if err == nil {
+		t.Fatalf("Validate with no database: got %+v and no error", res)
+	}
+	if res.Valid {
+		t.Fatalf("Validate with no database accepted the token: %+v", res)
+	}
+}
+
 // --- Middleware behavior ---
 
 func TestMiddleware_RejectsMissingBearer(t *testing.T) {

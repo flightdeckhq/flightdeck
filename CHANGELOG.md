@@ -684,7 +684,15 @@ All notable changes to Flightdeck are documented here.
   stands in for Postgres' row locks: a claim, a mark or a sweep runs
   after any ingest in progress commits instead of skipping the rows it
   holds. Text neither backend can store (U+0000, an unpaired surrogate
-  escape) is replaced with U+FFFD on both.
+  escape) is replaced with U+FFFD on both. The workers run on either
+  backend too: every write of the event pipeline (agents, sessions,
+  events and their content, the reconciler, the orphan reaper, the
+  model-id backfill) and the processor's reads, with the JSON mutations
+  (the framework and MCP server appends) behaving identically on both,
+  and the fleet notifications go through the Bus. The workers apply the
+  embedded migrations at start, so `FLIGHTDECK_MIGRATIONS_DIR` and the
+  compose mount of the migrations directory are gone; every id the
+  workers store is canonical lower-case UUID text.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor

@@ -2,14 +2,14 @@ package processor
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -28,10 +28,12 @@ type CachedPolicy struct {
 }
 
 // PolicyEvaluator checks token thresholds after each post_call event.
-// Uses an in-memory cache to avoid per-event Postgres queries.
+// Uses an in-memory cache to avoid per-event database queries.
 // Cache is invalidated on policy_update directive and expires after policyCacheTTL.
+// Its SQL is the common subset of both dialects: reads run on the
+// database's read handle, the directive insert on the writer.
 type PolicyEvaluator struct {
-	pool    *pgxpool.Pool
+	db      *storage.DB
 	cache   map[string]*CachedPolicy
 	cacheMu sync.RWMutex
 	fired   map[string]map[string]bool // session_id -> directive_type -> fired
@@ -39,9 +41,9 @@ type PolicyEvaluator struct {
 }
 
 // NewPolicyEvaluator creates a PolicyEvaluator with an empty cache.
-func NewPolicyEvaluator(pool *pgxpool.Pool) *PolicyEvaluator {
+func NewPolicyEvaluator(db *storage.DB) *PolicyEvaluator {
 	return &PolicyEvaluator{
-		pool:  pool,
+		db:    db,
 		cache: make(map[string]*CachedPolicy),
 		fired: make(map[string]map[string]bool),
 	}
@@ -104,7 +106,7 @@ func (pe *PolicyEvaluator) getPolicy(ctx context.Context, flavor, sessionID stri
 		pe.cacheMu.Unlock()
 	}
 
-	// Cache miss or expired -- query Postgres with cascading lookup
+	// Cache miss or expired -- query the database with cascading lookup
 	policy := pe.loadPolicyFromDB(ctx, flavor, sessionID)
 	return policy
 }
@@ -134,13 +136,13 @@ func (pe *PolicyEvaluator) loadPolicyFromDB(ctx context.Context, flavor, session
 
 func (pe *PolicyEvaluator) queryPolicy(ctx context.Context, scope, scopeValue string) *CachedPolicy {
 	var cp CachedPolicy
-	err := pe.pool.QueryRow(ctx, `
+	err := pe.db.Reader().QueryRowContext(ctx, `
 		SELECT token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct
 		FROM token_policies WHERE scope = $1 AND scope_value = $2
 	`, scope, scopeValue).Scan(
 		&cp.TokenLimit, &cp.WarnAtPct, &cp.DegradeAtPct, &cp.DegradeTo, &cp.BlockAtPct,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
@@ -209,11 +211,11 @@ func (pe *PolicyEvaluator) CheckAndMarkFired(sessionID, directiveType string) bo
 func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error {
 	var tokensUsed int
 	var flavor string
-	err := pe.pool.QueryRow(ctx, `
-		SELECT tokens_used, flavor FROM sessions WHERE session_id = $1::uuid
+	err := pe.db.Reader().QueryRowContext(ctx, `
+		SELECT tokens_used, flavor FROM sessions WHERE session_id = $1
 	`, sessionID).Scan(&tokensUsed, &flavor)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		return err
@@ -270,9 +272,9 @@ func (pe *PolicyEvaluator) writeDirective(
 	if action == "shutdown" {
 		// Check if shutdown already pending
 		var exists bool
-		err := pe.pool.QueryRow(ctx, `
+		err := pe.db.Reader().QueryRowContext(ctx, `
 			SELECT EXISTS(SELECT 1 FROM directives
-			WHERE session_id = $1::uuid AND action = 'shutdown' AND delivered_at IS NULL)
+			WHERE session_id = $1 AND action = 'shutdown' AND delivered_at IS NULL)
 		`, sessionID).Scan(&exists)
 		if err != nil {
 			return err
@@ -282,8 +284,8 @@ func (pe *PolicyEvaluator) writeDirective(
 		}
 	}
 
-	query := `INSERT INTO directives (session_id, flavor, action, reason, degrade_to, issued_by) VALUES ($1::uuid, $2, $3, $4, $5, 'policy_evaluator')`
-	_, err := pe.pool.Exec(ctx, query, sessionID, flavor, action, reason, degradeTo)
+	query := `INSERT INTO directives (session_id, flavor, action, reason, degrade_to, issued_by) VALUES ($1, $2, $3, $4, $5, 'policy_evaluator')`
+	_, err := pe.db.ExecContext(ctx, query, sessionID, flavor, action, reason, degradeTo)
 	if err != nil {
 		return err
 	}

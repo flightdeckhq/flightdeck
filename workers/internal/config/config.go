@@ -27,11 +27,13 @@ const maxPort = 65535
 
 // Config holds all configuration for the worker service.
 type Config struct {
+	// PostgresURL is the database URL: postgres://… or sqlite://<path>.
+	// The variable keeps its historical name; the storage boundary
+	// opens whichever backend the scheme names.
 	PostgresURL         string
 	NatsURL             string
 	WorkerPoolSize      int
 	ShutdownTimeoutSecs int
-	MigrationsDir       string
 	// OrphanTimeoutHours is the silence window before the reconciler
 	// transitions a `lost` session to `closed` with
 	// close_reason="orphan_timeout". The plugin's SessionEnd /
@@ -81,7 +83,6 @@ func Load() Config {
 		NatsURL:                envOrDefault("FLIGHTDECK_NATS_URL", "nats://nats:4222"),
 		WorkerPoolSize:         envIntOrDefault("FLIGHTDECK_WORKER_POOL_SIZE", 10),
 		ShutdownTimeoutSecs:    envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
-		MigrationsDir:          envOrDefault("FLIGHTDECK_MIGRATIONS_DIR", "/migrations"),
 		OrphanTimeoutHours:     envIntOrDefault("FLIGHTDECK_ORPHAN_TIMEOUT_HOURS", 24),
 		ReconcilerIntervalSecs: envIntOrDefault("FLIGHTDECK_RECONCILER_INTERVAL_SECS", 60),
 		MetricsPort:            envIntOrDefault("FLIGHTDECK_METRICS_PORT", defaultMetricsPort),

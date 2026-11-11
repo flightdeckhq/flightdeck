@@ -167,8 +167,8 @@ no single point of failure introduced into the agent's execution path.
 │  Written by Query API:                                   │
 │    token_policies  custom_directives  access_tokens      │
 │                                                          │
-│  NOTIFY channel: flightdeck_fleet                        │
-│    Workers send NOTIFY after every event write and       │
+│  Bus channel: flightdeck_fleet (NOTIFY; in-process on    │
+│  SQLite). Workers publish after every event write and    │
 │    every session state change                            │
 │    Query API hub receives via LISTEN                     │
 └──────────────────────────────────────────────────────────┘
@@ -381,13 +381,12 @@ flightdeck/
 │   ├── Makefile
 │   ├── Dockerfile
 │   ├── cmd/main.go             # Entry: app.LoadEnv, app.Migrate (FLIGHTDECK_MIGRATE_ONLY exits here), then app.Run
-│   ├── app/app.go              # The service as a library: Config, Deps (pool, NATS, migrations FS), Migrate, Run (Run does not migrate)
+│   ├── app/app.go              # The service as a library: Config, Deps (storage.DB, Bus, NATS), Migrate (the storage module's embedded set), Run (opens the database when none is injected; does not migrate)
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── consumer/nats.go    # JetStream consumer: waits for the stream, fetch loop, session_id check, ack handling
 │   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── logcap/logcap.go    # Named caps for payload strings written to log lines
-│   │   ├── migrate/migrate.go  # golang-migrate runner: applies storage/migrations/postgres at boot, from a directory (mounted at /migrations) or an embedded fs.FS
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
 │   │   ├── billing/billing.go    # Billing-mode defaults for LLM events
@@ -398,10 +397,13 @@ flightdeck/
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
 │   │   │   └── policy.go       # Threshold evaluation, directive emission
 │   │   ├── writer/
-│   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
-│   │   │   ├── pool.go         # pgx pool: statement lock timeout under the processing deadline
+│   │   │   ├── writer.go       # Upsert agents, sessions, events, event_content on storage.DB (shared SQL)
+│   │   │   ├── queries_postgres.go # The statements that differ per backend: jsonb operators, FOR UPDATE CTEs, xmax
+│   │   │   ├── queries_sqlite.go   # Their SQLite forms: json_* functions, IMMEDIATE transactions
+│   │   │   ├── db.go           # Database URL: Postgres lock timeout under the processing deadline
+│   │   │   ├── uuid.go         # Canonical lower-case ids on both backends
 │   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
-│   │   │   └── notify.go       # Postgres NOTIFY after each event write and session state change (real-time dashboard push)
+│   │   │   └── notify.go       # storage.Bus publish after each event write and session state change (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
 │   └── tests/
 │       ├── processor_test.go
@@ -3076,7 +3078,7 @@ and each asserts the same vector: `coding`, `omria`, `Omri-PC`,
 through two paths:
 
 - **Rollup path.** The worker's `UpsertAgent`
-  (`workers/internal/writer/postgres.go`) reads the agent identity
+  (`workers/internal/writer/writer.go`) reads the agent identity
   off the event payload (sensor- or plugin-stamped) and INSERTs
   the `agents` row keyed on `agent_id`. The same agent_id appears
   in every later `/v1/fleet` rollup response.
@@ -4395,8 +4397,9 @@ it twice, and nothing detects it, so an agent should report one way
 The worker's only HTTP surface is its metrics listener (see Metrics).
 It connects to NATS, consumes events from
 the `FLIGHTDECK` stream, processes them through the session state machine
-and policy evaluator, writes to Postgres, and emits `flightdeck_fleet`
-NOTIFY events.
+and policy evaluator, writes to the database through the storage
+boundary (SQLite or Postgres), and publishes `flightdeck_fleet`
+notifications on the storage Bus.
 
 ### The FLIGHTDECK stream
 
@@ -4834,7 +4837,7 @@ five focused functions:
    of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
    if the row is still held it gives up and logs that, at most one line a
    second per process. No attachment row.
-3. **`workers/internal/writer/postgres.go::UpsertSession`**.
+3. **`workers/internal/writer/writer.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
    `closed_seq` is greater than this start's stream sequence, which stays
@@ -4843,11 +4846,11 @@ five focused functions:
    let a lazy-created row absorb the real session_start data when it
    arrives. Real values are write-once; only the `"unknown"` sentinel is
    upgradable.
-4. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
+4. **`workers/internal/writer/writer.go::ReviveIfRevivable`**.
    State flip only: `{stale, lost} → active` plus `last_seen_at = NOW`.
    Called by `handleSessionGuard` before any non-`session_start` side
    effects run. No identity refresh, no attachment row.
-5. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
+5. **`workers/internal/writer/writer.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
    does not, with no `start_seq`: a straggler published after the run's
@@ -4915,12 +4918,15 @@ directives.
 
 ### Notify
 
-The worker sends a Postgres NOTIFY on `flightdeck_fleet` for every
-change an open dashboard has to see: each event it stores and each
-session state change it makes. The wire payload is `{session_id,
-event_type, event_id}` (`workers/internal/writer/notify.go`), one
-session per notification. A payload is about 130 bytes, far under
-Postgres's 8000-byte limit, so a large batch never needs splitting.
+The worker publishes on the storage Bus channel `flightdeck_fleet`
+(`storage.ChannelFleet`) for every change an open dashboard has to see:
+each event it stores and each session state change it makes. On
+Postgres the Bus is NOTIFY on that channel; on SQLite it is the
+in-process bus the services of the one binary share. The wire payload
+is `{session_id, event_type, event_id}`
+(`workers/internal/writer/notify.go`), one session per notification. A
+payload is about 130 bytes, far under Postgres's 8000-byte limit, so a
+large batch never needs splitting.
 
 | Sender | When | `event_type` | `event_id` |
 |---|---|---|---|
@@ -4934,28 +4940,88 @@ and no event was written. Carrying the event id otherwise lets the hub
 fetch exactly that event by primary key instead of re-reading the
 session's events and taking the newest, which races paired writes.
 
-Every notification is sent after the write it announces has committed,
-as its own statement; the reconciler and the reaper send a pass's
-notifications in one `pg_notify` statement for the batch, once per
-session, so a session that goes `stale` and `lost` in the same pass is
-announced once. Sending after the commit means the hub never reads a
-row before the change is visible. A failed notification is logged and
-the change stands; the dashboard shows it on its next fetch. The state
-machine therefore never depends on the notification channel: a full
-NOTIFY queue costs live updates, not stale, lost or closed transitions.
+Every notification is published after the write it announces has
+committed, as its own publish; the reconciler and the reaper publish a
+pass's notifications one after another, once per session, so a session
+that goes `stale` and `lost` in the same pass is announced once.
+Publishing after the commit means the hub never reads a row before the
+change is visible. A failed publish is logged and the change stands;
+the dashboard shows it on its next fetch. The state machine therefore
+never depends on the notification channel: a full NOTIFY queue or a
+slow subscriber costs live updates, not stale, lost or closed
+transitions.
 
-Postgres delivers notifications in commit order, and the hub handles
-them one at a time and re-reads the session row for each. Every
-broadcast therefore carries a row at least as new as the change that
-sent it, and since each change notifies after it commits, the hub's
-last read of a session follows its last change. A reconciler pass and
-an event that revives the same session serialize on the row lock: when
-the revival commits first, the reconciler's UPDATE re-checks its
-condition on the revived row, skips it and announces nothing; when the
-reconciler commits first, the event's own notification follows and the
-hub's re-read shows the session active again. A repeated broadcast of
-the same row is harmless, because the dashboard replaces the session
-row it holds.
+Both buses deliver in publication order (Postgres in commit order),
+and the hub handles notifications one at a time and re-reads the
+session row for each. Every broadcast therefore carries a row at least
+as new as the change that sent it, and since each change notifies after
+it commits, the hub's last read of a session follows its last change. A
+reconciler pass and an event that revives the same session serialize
+on the row (Postgres's row lock, or SQLite's single writer): when the
+revival commits first, the reconciler's UPDATE re-checks its condition
+on the revived row, skips it and announces nothing; when the reconciler
+commits first, the event's own notification follows and the hub's
+re-read shows the session active again. A repeated broadcast of the
+same row is harmless, because the dashboard replaces the session row it
+holds.
+
+### Database access
+
+The writer (`workers/internal/writer`) and the processor's own reads run
+on the storage boundary (see Storage): plain `database/sql` against
+`storage.DB`, so one code path serves SQLite and Postgres. Statements in
+the common subset of both dialects are shared, with the dialect's
+current-time and interval expressions filled in once at start-up; the
+statements that differ have a query set per backend
+(`queries_postgres.go`, `queries_sqlite.go`), chosen by `Backend`:
+
+- the session_start upsert (`UpsertSession`) and the call update
+  (`UpdateSessionFromCall`), whose framework append uses `jsonb_set` /
+  `jsonb_array_elements_text` / `split_part` on Postgres and `json_set`
+  / `json_insert` / `json_each` / `substr` + `instr` on SQLite, with the
+  same result (the dual-backend tests pin it);
+- the context upgrade and the MCP server append (jsonb operators vs.
+  JSON functions);
+- `BumpParentLastSeen`, `SettleSessionEnd` and the orphan reaper, one
+  data-modifying CTE with `FOR UPDATE` on Postgres and one `IMMEDIATE`
+  transaction (read, then guarded UPDATE) on SQLite, where the single
+  writer connection gives the same atomicity;
+- the model-id backfill, set-based through `unnest` on Postgres and
+  row by row inside the batch's transaction on SQLite;
+- the guard's read of the session row in `processor/session.go`, which
+  tests the context for `otel_trace_id` with `?` on Postgres and
+  `json_type` on SQLite.
+
+On SQLite `UpsertSession`'s claim and refresh run in one transaction,
+so the refresh never inserts (Postgres tells an insert from an update
+through `xmax`). Reads that need no transaction run on `db.Reader()`;
+inside a transaction every statement runs on the transaction, so no
+lane ever waits for the single writer connection it holds. Every id the
+writer stores is canonical lower-case UUID text (upper-case ids are
+lowered, an unhyphenated 32-digit id hyphenated), and an event without
+a client-minted id gets one from the writer rather than the database,
+so both backends store the one shape the SQLite schema's CHECK accepts.
+A content row the database refuses (invalid data, a broken constraint,
+a size limit; `storage.IsDataError`) is dropped and the event stored
+without it; any other failure is retried. The two backends are held to
+the same result by `workers/internal/processor/equivalence_test.go`,
+which opens both in one run (SQLite always, Postgres when
+`TEST_POSTGRES_URL` is set), drives one fixed event sequence through
+each — the lazy-create and late-framework appends, the MCP server
+append, a parent marked stale and revived by its child, a session
+marked stale, lost and reaped, an assembled OpenTelemetry session, a
+re-sent event, a model-id backfill — and compares the rows each leaves;
+two differences are normalised away because they are properties of the
+engines, not of the worker: JSON key order (Postgres
+`jsonb` reorders keys, SQLite stores the document as written, so
+documents compare as decoded values) and timestamp precision (Postgres
+keeps microseconds, SQLite milliseconds, so timestamps compare at the
+millisecond). The Postgres connections
+carry `lock_timeout` as a URL runtime parameter (`writer.DatabaseURL`,
+8 s, under the lane's 10 s processing deadline); SQLite has no row
+locks. The worker applies the embedded migrations of its backend at
+start (`storage.Migrate`), and `FLIGHTDECK_MIGRATE_ONLY=true` exits
+after them.
 
 ---
 
@@ -5120,9 +5186,11 @@ and description in both directories. `scripts/check-migration-pairs.sh`
 fails CI when the version lists differ, and the `storage` module's
 parity test opens both engines at their newest migration and fails when
 the tables, columns, nullability, primary keys or explicit indexes
-differ (the GIN index is the one allowed difference). The compose files
-mount the Postgres directory for the workers' runner and
-`helm/Makefile sync-migrations` copies it into the chart.
+differ (the GIN index is the one allowed difference). The workers apply
+the embedded set of their backend at start, so the compose files mount
+nothing; the Helm chart's migrations ConfigMap (`helm/Makefile
+sync-migrations`) still copies the Postgres directory and is unused by
+the workers.
 
 ### Bus
 
@@ -5943,15 +6011,16 @@ Changes reach the dashboard through a four-step LISTEN / NOTIFY chain,
 fully decoupled from REST paths.
 
 1. **Worker write.** On each event,
-   `workers/internal/writer/postgres.go::InsertEvent` INSERTs into `events`
-   and RETURNS the generated UUID primary key. A session state change
+   `workers/internal/writer/writer.go::InsertEvent` INSERTs into `events`
+   and returns the row's UUID primary key. A session state change
    (the reconciler, the reaper, a parent revived by its child) updates
    the `sessions` row; the reaper also inserts its synthetic
    `session_end`.
-2. **NOTIFY publish.** The worker sends a Postgres NOTIFY on the
-   `flightdeck_fleet` channel with payload `{session_id, event_type,
-   event_id}`, one per changed session (see Worker / Event Processing →
-   Notify for who sends what, and when).
+2. **Bus publish.** The worker publishes on the storage Bus channel
+   `flightdeck_fleet` (Postgres NOTIFY, or the in-process bus on
+   SQLite) with payload `{session_id, event_type, event_id}`, one per
+   changed session (see Worker / Event Processing → Notify for who
+   sends what, and when).
 3. **Hub LISTEN + single-row fetch.** The API hub
    (`api/internal/ws/hub.go::listenOnce`) holds one pgx connection
    permanently subscribed to `flightdeck_fleet`. On each notification it
@@ -10483,10 +10552,10 @@ binaries only, since the one binary derives them from its flags.
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Database URL (required): `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
-| `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
+| `FLIGHTDECK_MIGRATE_ONLY` | `true` applies the pending embedded migrations of the database's backend and exits without consuming |
 | `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks, 1 to 3600 (default 60); the worker refuses to start outside that range. The dev compose override sets 5 so the integration tests that wait for a tick stay short |
 | `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24, must be above 0; the worker refuses to start otherwise) |
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves `/metrics` (default 9102; `0` turns it off; the worker refuses to start outside 0 to 65535) |
@@ -10910,7 +10979,7 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
    of `api/internal/auth`), `ingestion/internal/session`,
    `ingestion/internal/auth`, `ingestion/internal/directive`,
    `ingestion/internal/otlpstage` (the OTLP GenAI staging tables) and
-   `workers/internal/writer`; `workers/internal/migrate` applies the
+   `workers/internal/writer`; the `storage` module applies the
    migration files. The current places outside store packages that run
    SQL are `workers/internal/processor/policy.go` (token policy lookups
    and the directives it issues), `workers/internal/processor/session.go`

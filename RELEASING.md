@@ -7,11 +7,29 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 - **Major** (v1.0.0): Breaking API changes
 - **Minor** (v0.2.0): New features, backward-compatible
 - **Patch** (v0.1.1): Bug fixes
-- **Pre-release** (v0.1.0a1): not supported by the release script yet. The
-  sensor needs the PEP 440 form (`0.6.0rc1`) and the Helm chart the SemVer
-  form (`0.6.0-rc1`), so one `VERSION` string cannot serve both.
+- **Pre-release tag** (v0.9.0-rc.1): a dry run of the release pipeline
+  and the install gate on the version the files already carry (see
+  "Dry run" below). It is never written into the version locations: the
+  sensor needs the PEP 440 form (`0.9.0rc1`) and the Helm chart the
+  SemVer form (`0.9.0-rc1`), so one `VERSION` string cannot serve both.
 
-## Release Process
+## What a release ships
+
+One tag produces every artifact, all built from the same commit:
+
+| Artifact | Where | Built by |
+|---|---|---|
+| `flightdeck` binary for linux, darwin and windows on amd64 and arm64, as `flightdeck_<os>_<arch>.tar.gz` (`.zip` on Windows) with `checksums.txt` | the GitHub release | goreleaser (`.goreleaser.yaml`) |
+| Release notes | the GitHub release | the tag's section of CHANGELOG.md (`scripts/release_notes.py`) |
+| Homebrew formula `flightdeck` | [flightdeckhq/homebrew-tap](https://github.com/flightdeckhq/homebrew-tap) | goreleaser (stable tags only) |
+| `flightdeck-cli` wheels, one per platform, carrying the binary | PyPI | `packaging/pypi/build_wheels.py` |
+| `flightdeck-sensor` | PyPI | `python -m build` in `sensor/` |
+| `flightdeckhq/flightdeck` image, linux/amd64 and linux/arm64, `:<tag>` and `:latest` | Docker Hub | the root `Dockerfile` with buildx |
+
+`install.sh` and `install.ps1` download from the GitHub release and are
+served from this repository's `main`.
+
+## Release process
 
 The version lives in one place, the root `VERSION` file.
 `scripts/version.py` writes it into every other file that carries it: the
@@ -36,11 +54,10 @@ make release-prep VERSION=vX.Y.Z
 From a clean, up-to-date `main`, the script:
 1. Checks that `python3`, `gh`, `uv`, `golangci-lint`, `npm` and `go` are
    on `PATH`
-2. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
-   and `make lint` (mypy, ruff, golangci-lint, the dashboard's ESLint and
-   type-check) on `main`, before changing anything; it stops if either
-   fails. Both need the sensor venv and the dashboard's dependencies
-   (`make -C dashboard install`)
+2. Runs `make test` (sensor, Go services, the binary, plugin and
+   dashboard unit tests) and `make lint` on `main`, before changing
+   anything; it stops if either fails. Both need the sensor venv and the
+   dashboard's dependencies (`make -C dashboard install`)
 3. Creates the branch `release/vX.Y.Z`
 4. Writes `X.Y.Z` into `VERSION` and every version location (including
    `sensor/uv.lock`'s own entry, so CI's `uv sync --locked` accepts it)
@@ -57,7 +74,8 @@ Before merging, edit the release section's opening summary on the branch
 if it no longer describes the release. The PR's CI is the rest of the
 gate: it boots a fresh stack and applies every migration from scratch on
 Postgres 16 and 18, runs the integration suites and the full Playwright
-suite in both themes.
+suite in both themes, cross-builds the six release binaries
+(`goreleaser build --snapshot`) and builds the Docker image.
 
 The playground (`make playground-all`) is **not** part of the gate: it
 calls the real provider APIs, costs money and needs live credentials.
@@ -94,59 +112,189 @@ installs to the exact tested commit rather than the tag name, set
 `source.sha` on the marketplace entry in a follow-up PR once the tag
 exists (`claude plugin validate .` checks the file).
 
-### 2. GitHub Actions takes over
+### 3. GitHub Actions takes over
 
-Pushing the tag triggers `.github/workflows/release.yml`, which:
+Pushing the tag triggers `.github/workflows/release.yml`:
 
-- **Job 1 -- Scan Docker images:** First checks that the tag matches
-  `VERSION` and every version location; then builds the four images without
-  pushing them and scans each with Trivy. The release stops here, before
-  anything is published, if an image has a HIGH or CRITICAL
-  vulnerability with a fixed version available or a base image whose OS
-  has reached end of life. The job log names each failing image.
-- **Job 2 -- Publish sensor to PyPI:** Builds the wheel and sdist,
-  publishes via OIDC trusted publishing (no API key stored)
-- **Job 3 -- Build and push Docker images:** Builds and pushes four
-  images to Docker Hub under the `flightdeckhq` org:
-  - `flightdeckhq/flightdeck-ingestion`
-  - `flightdeckhq/flightdeck-workers`
-  - `flightdeckhq/flightdeck-api`
-  - `flightdeckhq/flightdeck-dashboard`
-- **Job 4 -- Create GitHub release:** Auto-generates release notes
+- **verify**: the tag matches `VERSION` and every version location
+  (`scripts/version.py check --tag`), then `govulncheck` runs on the
+  root module and on `api`, `ingestion`, `workers` and `storage`. A
+  known vulnerability in code the binaries reach stops the release
+  before anything is published.
+- **webui** (after verify): builds the dashboard bundle with read-only
+  permissions and hands it over as an artifact.
+- **goreleaser** (after webui): cross-compiles the six binaries with
+  the bundle embedded, writes the archives and `checksums.txt`, signs
+  `checksums.txt` keyless with cosign, creates the GitHub release with
+  the tag's CHANGELOG section as its notes and uploads the assets, and
+  pushes the Homebrew formula to the tap (stable tags only). The
+  binaries are kept as a workflow artifact.
+- **publish-cli** (after goreleaser): builds one `flightdeck-cli` wheel
+  per platform from those binaries and publishes them to PyPI through
+  OIDC trusted publishing (no API key stored).
+- **publish-sensor** (after verify, stable tags only): builds and
+  publishes `flightdeck-sensor` the same way.
+- **publish-docker** (after goreleaser): builds the image for
+  linux/amd64, scans it with Trivy (the release fails on a HIGH or
+  CRITICAL vulnerability with a fix available, or an end-of-life base),
+  then builds linux/amd64 and linux/arm64 and pushes
+  `flightdeckhq/flightdeck:<tag>` and, for a stable tag, `:latest`.
 
-### 3. Verify
+When the Release workflow completes successfully,
+`.github/workflows/install-gate.yml` starts on its own.
 
-- Check PyPI: https://pypi.org/project/flightdeck-sensor/
-- Check Docker Hub: https://hub.docker.com/u/flightdeckhq
-- Check GitHub: https://github.com/flightdeckhq/flightdeck/releases
-- In production deployments, migrations run automatically when workers
-  start -- verify the workers service starts successfully after deployment
+### 4. The install gate
 
-## If a Release Fails
+The gate installs what was just published on fresh runners, the way a
+user would, and runs `scripts/install-gate.sh` against it: start
+`flightdeck`, wait for `/ingest/health`, read the token from the
+start-up block, check `/runtime-config.json` and `GET /` (the
+dashboard), POST one sensor-shaped `session_start` to
+`/ingest/v1/events` with that token, read the session back from
+`GET /api/v1/sessions/{id}` and `GET /api/v1/sessions`, then stop it and
+require a clean exit.
 
-If the release pipeline fails mid-way:
+| Leg | Runner | Channel |
+|---|---|---|
+| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, clean `docker stop`) |
+| linux-arm64 | ubuntu-24.04-arm | `install.sh` |
+| macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, then `brew services start flightdeck` must come up on `:4000` and log its start-up block |
+| macos-amd64 | macos-15-intel | `install.sh` |
+| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL (the `.zip`), then the checks under Git Bash |
 
-1. **PyPI published but Docker failed:** If the failure was transient (a
-   registry or network error), re-run the failed jobs from the Actions
-   page: the PyPI step skips a version that already exists. If it needs a
-   code change, release a patch version (vX.Y.Z+1). Do not move the tag:
-   the published sensor was built from it.
+Every leg checks `flightdeck --version` prints `flightdeck <tag>`. Until
+the SQLite default lands, the binary needs a database: each leg starts
+a Postgres (a service container on Linux, Homebrew's `postgresql@16` on
+macOS, the PostgreSQL service the Windows image ships) and passes
+`FLIGHTDECK_DATABASE_URL`; `GATE_NEEDS_POSTGRES` at the top of the
+workflow turns that off once the binary runs bare.
 
-2. **Nothing published:** Fix the issue on `main` (through a PR), delete
-   the tag (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`) and
-   run `make release-tag VERSION=vX.Y.Z` again on the fixed `main`. Until
-   the tag is back, plugin installs fail (the marketplace entry points at
-   it), so keep the gap short.
-   A failed image scan always lands here. The fix is usually a newer
-   base image (`alpine`, `nginx`) or Go toolchain in the failing
-   image's Dockerfile, or a dependency bump for a finding in the Go
-   binary. The scan job's log says why each image failed: the package
-   and its fixed version, "Detected EOL OS" for an end-of-life base, or
-   the error if the vulnerability database could not be downloaded (a
-   re-run usually clears that one).
+The gate runs after the publish, so a red leg means something was
+published that does not install or run on that platform. Fix forward
+with a patch release; the next section says what not to do.
 
-3. **Everything published but release notes wrong:** Edit the GitHub
-   release manually.
+A gate run can be repeated by hand against any published tag from the
+Actions tab (**Install gate → Run workflow**, enter the tag) or with
+`gh workflow run install-gate.yml -f tag=vX.Y.Z`.
 
-Do not manually upload to PyPI or Docker Hub. Always go through the
-release pipeline to ensure consistency.
+### 5. Verify
+
+- The GitHub release has six archives, `checksums.txt` and the
+  CHANGELOG section as notes: https://github.com/flightdeckhq/flightdeck/releases
+- The tap's `Formula/flightdeck.rb` names the new version:
+  https://github.com/flightdeckhq/homebrew-tap
+- PyPI: https://pypi.org/project/flightdeck-cli/ and
+  https://pypi.org/project/flightdeck-sensor/
+- Docker Hub: https://hub.docker.com/r/flightdeckhq/flightdeck
+- The install gate is green on all five legs.
+
+## Dry run: a pre-release tag
+
+The pipeline and the gate can be exercised before a release, on the
+version the files already carry, by pushing a pre-release tag by hand
+(the release script refuses them on purpose):
+
+```bash
+git fetch origin && git checkout main && git pull --ff-only origin main
+python3 scripts/version.py check --tag v$(cat VERSION)-rc.1
+git tag -a v$(cat VERSION)-rc.1 -m "Dry run of the release pipeline"
+git push origin v$(cat VERSION)-rc.1
+```
+
+What a pre-release tag does differently: the GitHub release is marked
+as a pre-release (the installers' `latest` and the release page's
+"Latest" skip it), the Homebrew formula is not pushed (the macos-arm64
+leg of the gate installs with `install.sh` and says so), the Docker
+image gets `:<tag>` but not `:latest`, `flightdeck-sensor` is not
+published (its version would be the final `X.Y.Z`), and `flightdeck-cli`
+is published as the PEP 440 pre-release (`0.9.0rc1`), which `pip` and
+`uvx` do not pick without an exact pin. The release notes are the
+CHANGELOG's Unreleased section. The version guard still requires
+`X.Y.Z` to match `VERSION`.
+
+A second dry run after a fix is a new tag, `-rc.2`: PyPI never
+replaces a published file (the publish step skips a version that already
+exists, so a re-pushed `-rc.1` would silently keep the old wheels), and
+the installers cache nothing but would otherwise see two builds under
+one name.
+
+Clean up afterwards: delete the pre-release on GitHub if it should not
+stay visible (`gh release delete vX.Y.Z-rc.1 --cleanup-tag`). The PyPI
+pre-release and the Docker tag stay; neither is what a default install
+resolves to.
+
+## If a release fails
+
+Published artifacts are built from the tag; do not move the tag.
+
+1. **verify or goreleaser failed, nothing published:** the PyPI and
+   Docker jobs wait for goreleaser, so nothing has left the runner. Fix
+   the cause on `main` (through a PR), delete the tag and any partial
+   GitHub release (`gh release delete vX.Y.Z --cleanup-tag`, or `git tag
+   -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` when no release was
+   created) and run `make release-tag VERSION=vX.Y.Z` again on the fixed
+   `main`. Until the tag is back, plugin installs fail (the marketplace
+   entry points at it), so keep the gap short. govulncheck names the
+   module, the package and the fixed version; the fix is a dependency
+   bump.
+
+2. **The GitHub release exists but a later job failed** (a PyPI or
+   Docker Hub error, the image scan): if the failure was transient,
+   re-run the failed jobs from the Actions page. goreleaser replaces the
+   release's assets (`release.mode: replace`), the PyPI steps skip a
+   version that already exists, and the Docker push is idempotent. If it
+   needs a code change, release a patch version. A failed image scan
+   lands here: the fix is a newer base image digest in the `Dockerfile`
+   or a Go dependency bump. The install gate starts only when the
+   Release workflow succeeds, so after a re-run that turns it green,
+   run the gate by hand (`gh workflow run install-gate.yml -f
+   tag=vX.Y.Z`) if it did not start on its own.
+
+3. **The install gate is red:** something published does not install or
+   run on that platform. Read the leg's log (the gate prints the binary's
+   output on failure), fix on `main` and release a patch version. A
+   published artifact is never replaced in place.
+
+4. **Release notes wrong:** edit the GitHub release by hand, or fix
+   CHANGELOG.md on `main`; the notes are not regenerated.
+
+Do not upload to PyPI or Docker Hub by hand. Always go through the
+release pipeline so every channel carries the same build.
+
+## One-time setup (maintainer)
+
+The pipeline needs these, each once:
+
+- **Homebrew tap**: the repository `flightdeckhq/homebrew-tap` exists.
+  The secret `HOMEBREW_TAP_GITHUB_TOKEN` must hold a fine-grained
+  personal access token (or a GitHub App token) scoped to that one
+  repository with *Contents: read and write* and nothing else; the
+  workflow's `GITHUB_TOKEN` cannot push to another repository. Give it
+  an expiry (a year at most) and note the date; a stable release fails
+  at the formula step when it lapses, after the GitHub release exists
+  (case 2 above). `brew services start flightdeck` runs the binary with
+  its defaults and no environment, so until the SQLite default lands it
+  cannot pass `FLIGHTDECK_DATABASE_URL`; the formula's caveats say so.
+- **PyPI trusted publishing** for `flightdeck-cli`, as a pending
+  publisher at https://pypi.org/manage/account/publishing/ until the
+  first publish creates the project: owner `flightdeckhq`, repository
+  `flightdeck`, workflow `release.yml`, environment `pypi`. The same
+  settings exist for `flightdeck-sensor`.
+- **Docker Hub**: the secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
+  (already used by the per-service images) must be allowed to create
+  the repository `flightdeckhq/flightdeck` on the first push, or the
+  repository is created on Docker Hub first.
+- **GitHub environments** `pypi` and `docker-hub` exist; the release
+  jobs run under them so the Deployments panel shows where a version
+  shipped. Give each a deployment branch rule that allows tags matching
+  `v*` only, so a workflow on a branch can never reach the PyPI
+  trusted publisher or the Docker Hub credentials.
+- **checksums.txt signature**: no setup; the goreleaser job signs with
+  its own OIDC identity through `sigstore/cosign-installer`, and the
+  installers verify it when `cosign` is present. The identity the
+  installers accept ends in `@refs/tags/v…`, so only a tag push (this
+  workflow's only trigger) produces a signature they take; a signature
+  made from a branch, by hand or by another workflow is refused. The
+  dashboard bundle is built in a separate job without those scopes and
+  handed over as an artifact, so `npm ci` never runs next to the release
+  token or the OIDC token.

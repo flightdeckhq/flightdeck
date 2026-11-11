@@ -701,6 +701,15 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **One release pipeline builds every artifact from the tag.** A `vX.Y.Z`
+  tag runs goreleaser for the six binaries, the GitHub release (notes
+  from this file) and the Homebrew formula, publishes `flightdeck-cli`
+  and `flightdeck-sensor` to PyPI, scans and pushes the
+  `flightdeckhq/flightdeck` image, and then runs the install gate: the
+  published artifacts are installed on fresh Linux, macOS and Windows
+  runners through every channel, started, sent one event and read back.
+  `govulncheck` on the Go modules replaces the per-image scans. A
+  `vX.Y.Z-rc.N` tag is a dry run of the same pipeline.
 - **Go 1.27.4.** The services, their images, the development stack and CI
   build with Go 1.27.4, which fixes a `net/http` vulnerability in the
   standard library (GO-2026-6859). No Flightdeck code path reaches the
@@ -849,6 +858,14 @@ All notable changes to Flightdeck are documented here.
   only in case, at the top level, in `incoming_message` /
   `outgoing_message`, in `streaming` or in an `llm_error`'s `error`, is
   now refused with 400; any other unknown key is handled as before.
+
+### Removed
+
+- **The per-service Docker images are no longer published.**
+  `flightdeckhq/flightdeck-ingestion`, `-workers`, `-api` and
+  `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image;
+  the compose production overlay and the Helm chart move to it in a
+  following change.
 
 ## v0.8.0 — 2026-10-31
 

@@ -7,6 +7,7 @@ other file that carries the version gets it from here:
     python3 scripts/version.py set 0.6.0      # write it everywhere
     python3 scripts/version.py check          # every location matches VERSION
     python3 scripts/version.py check --tag v0.6.0   # ... and VERSION matches the tag
+    python3 scripts/version.py check --tag v0.6.0-rc.1   # a dry-run tag of that version
     python3 scripts/version.py changelog 0.6.0      # "## Unreleased" -> "## v0.6.0 -- <date>"
 
 ``check`` runs in CI and in the release workflow, so a location that
@@ -25,10 +26,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 
-# A release version: X.Y.Z. Pre-releases are not supported yet: the sensor
-# needs the PEP 440 form (0.6.0rc1) and the Helm chart the SemVer form
-# (0.6.0-rc1), so one string cannot serve every location.
+# A release version: X.Y.Z. Pre-release versions are not written into the
+# locations: the sensor needs the PEP 440 form (0.6.0rc1) and the Helm
+# chart the SemVer form (0.6.0-rc1), so one string cannot serve every
+# location.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+# A tag the release workflow accepts: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N
+# or -rc.N (v0.9.0-rc.1). A pre-release tag is a dry run of the release
+# pipeline and the install gate: it must name the version the files
+# carry, but the CHANGELOG need not be dated yet, since the release PR
+# that dates it comes after the dry run. The grammar is the one
+# packaging/pypi/build_wheels.py turns into a PEP 440 version, so a tag
+# this guard accepts never fails half-way through the pipeline;
+# test_version.py pins that the two agree.
+TAG_RE = re.compile(r"^v(?P<base>\d+\.\d+\.\d+)(?P<pre>-(?:alpha|beta|rc)\.\d+)?$")
 
 # (path, pattern, expected matches). Each pattern's ``v`` group is the
 # version text; set() replaces exactly that span. The expected count
@@ -80,12 +92,23 @@ def found_versions(path: str, pattern: str) -> list[str]:
 def check(tag: str | None) -> int:
     version = read_version()
     problems: list[str] = []
-    if tag is not None and tag != f"v{version}":
-        problems.append(
-            f"tag {tag} does not match VERSION {version} (expected v{version})"
-        )
+    prerelease = False
+    if tag is not None:
+        m = TAG_RE.match(tag)
+        if m is None:
+            problems.append(f"tag {tag} is not vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N")
+        elif m.group("base") != version:
+            problems.append(
+                f"tag {tag} does not match VERSION {version} (expected v{version})"
+            )
+        else:
+            prerelease = m.group("pre") is not None
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    if tag is not None and f"\n## v{version} — " not in changelog_text:
+    if (
+        tag is not None
+        and not prerelease
+        and f"\n## v{version} — " not in changelog_text
+    ):
         problems.append(f"CHANGELOG.md has no dated '## v{version} — ' section")
     for path, pattern, expected in LOCATIONS:
         found = found_versions(path, pattern)
@@ -145,7 +168,9 @@ def main() -> int:
     p_set.add_argument("version")
     p_check = sub.add_parser("check", help="fail if any location differs from VERSION")
     p_check.add_argument(
-        "--tag", help="also require VERSION to match this tag (vX.Y.Z)"
+        "--tag",
+        help="also require VERSION to match this tag (vX.Y.Z, or vX.Y.Z-<pre-release> "
+        "for a dry run, which needs no dated CHANGELOG section)",
     )
     p_log = sub.add_parser("changelog", help="date the Unreleased CHANGELOG section")
     p_log.add_argument("version")

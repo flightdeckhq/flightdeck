@@ -1,4 +1,5 @@
-// Package writer -- notify.go sends Postgres NOTIFY for real-time dashboard push.
+// Package writer -- notify.go announces committed changes on the storage
+// Bus for real-time dashboard push.
 package writer
 
 import (
@@ -7,13 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// fleetNotifyPayload is the wire format of every NOTIFY sent on the
-// flightdeck_fleet channel. EventID eliminates the hub
-// NOTIFY->SELECT race: without it the hub would re-query
+// fleetNotifyPayload is the wire format of every notification sent on
+// the flightdeck_fleet channel. EventID eliminates the hub
+// notify->SELECT race: without it the hub would re-query
 // GetSessionEvents and pick the tail, which breaks under tight
 // paired events (post_call followed by tool_call inside ~200 ms,
 // common after the plugin's PostToolUse flush) because the second
@@ -32,57 +33,42 @@ type fleetNotifyPayload struct {
 	EventID   string `json:"event_id"`
 }
 
-const notifyChannel = "flightdeck_fleet"
+// notifyChannel is the Bus channel the query API hub subscribes to.
+// On Postgres it is the NOTIFY channel of the same name; on SQLite the
+// in-process bus the services share.
+const notifyChannel = storage.ChannelFleet
 
-// NotifyFleetChange sends a Postgres NOTIFY on the flightdeck_fleet channel.
-// The query API hub LISTENs on this channel to broadcast WebSocket updates.
-// eventID must be the id returned by the preceding InsertEvent call so the
-// hub can fetch exactly the event that triggered the NOTIFY.
-func NotifyFleetChange(ctx context.Context, pool *pgxpool.Pool, sessionID, eventType, eventID string) error {
-	data, err := json.Marshal(fleetNotifyPayload{
+// NotifyFleetChange publishes one flightdeck_fleet notification. The
+// query API hub subscribes to this channel to broadcast WebSocket
+// updates. eventID must be the id returned by the preceding InsertEvent
+// call so the hub can fetch exactly the event that triggered the
+// notification.
+func NotifyFleetChange(ctx context.Context, bus storage.Bus, sessionID, eventType, eventID string) error {
+	return notifyFleet(ctx, bus, []fleetNotifyPayload{{
 		SessionID: sessionID,
 		EventType: eventType,
 		EventID:   eventID,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal notify payload: %w", err)
-	}
-	// Use pg_notify($1,$2) with bound parameters rather than a
-	// string-built NOTIFY. The payload embeds session_id/event_type,
-	// and a bound parameter cannot break out of the SQL statement even
-	// if an upstream validation is ever relaxed (defense in depth).
-	payload := string(data)
-	_, err = pool.Exec(ctx, "SELECT pg_notify($1, $2)", notifyChannel, payload)
-	if err != nil {
-		return fmt.Errorf("notify %s: %w", notifyChannel, err)
-	}
-	return nil
+	}})
 }
 
-// notifyFleet sends one flightdeck_fleet notification per payload in a
-// single statement, with the payloads bound as a text array (the same
-// defense as NotifyFleetChange's bound parameters). The statement runs
-// on its own, after the write it announces has committed, so the hub
-// never re-reads a session before the change is visible.
-func notifyFleet(ctx context.Context, q querier, payloads []fleetNotifyPayload) error {
-	if len(payloads) == 0 {
-		return nil
-	}
-	texts := make([]string, len(payloads))
-	for i, p := range payloads {
+// notifyFleet publishes one flightdeck_fleet notification per payload,
+// in order. The payload is a JSON document the bus carries whole, so
+// nothing in it can alter a statement. The publishes run on their own,
+// after the write they announce has committed, so the hub never
+// re-reads a session before the change is visible. Every payload is
+// attempted; the first failure is returned.
+func notifyFleet(ctx context.Context, bus storage.Bus, payloads []fleetNotifyPayload) error {
+	var first error
+	for _, p := range payloads {
 		data, err := json.Marshal(p)
 		if err != nil {
 			return fmt.Errorf("marshal notify payload: %w", err)
 		}
-		texts[i] = string(data)
+		if err := bus.Publish(ctx, notifyChannel, string(data)); err != nil && first == nil {
+			first = fmt.Errorf("notify %s: %w", notifyChannel, err)
+		}
 	}
-	if _, err := q.Exec(ctx,
-		"SELECT pg_notify($1, p) FROM unnest($2::text[]) AS p",
-		notifyChannel, texts,
-	); err != nil {
-		return fmt.Errorf("notify %s: %w", notifyChannel, err)
-	}
-	return nil
+	return first
 }
 
 // stateChanges returns the state-only payload of each distinct session
@@ -109,7 +95,7 @@ func stateChanges(idLists ...[]string) []fleetNotifyPayload {
 // shows the change on its next fetch, and the state machine never
 // depends on the notification channel.
 func (w *Writer) announce(ctx context.Context, what string, payloads []fleetNotifyPayload) {
-	if err := notifyFleet(ctx, w.pool, payloads); err != nil {
+	if err := notifyFleet(ctx, w.bus, payloads); err != nil {
 		slog.Warn("notify of committed session change failed",
 			"change", what, "sessions", len(payloads), "err", logcap.Err(err))
 	}

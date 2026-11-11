@@ -160,7 +160,7 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     Those are `api/internal/store` (with the token lookups and revocation
     `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive`,
-    `ingestion/internal/otlpstage` and `workers/internal/writer`; `workers/internal/migrate` applies the
+    `ingestion/internal/otlpstage` and `workers/internal/writer`; the `storage` module applies the
     migration files. Stores open their database through the `storage`
     module (`storage.Open`, `storage.Dialect`, `storage.Bus`; the
     Storage section of ARCHITECTURE.md), never through pgx directly;

@@ -5,7 +5,6 @@ go 1.27.4
 require (
 	github.com/flightdeckhq/flightdeck/api v0.0.0
 	github.com/flightdeckhq/flightdeck/ingestion v0.0.0
-	github.com/flightdeckhq/flightdeck/storage v0.0.0
 	github.com/flightdeckhq/flightdeck/workers v0.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats-server/v2 v2.15.2
@@ -17,6 +16,7 @@ require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/flightdeckhq/flightdeck/storage v0.0.0 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/spec v0.20.9 // indirect

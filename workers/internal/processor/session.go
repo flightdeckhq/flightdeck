@@ -3,18 +3,18 @@ package processor
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // identityFromEvent extracts the agent identity fields from an
@@ -31,10 +31,12 @@ func identityFromEvent(e consumer.EventPayload) writer.AgentIdentity {
 	}
 }
 
-// SessionProcessor manages the session state machine in Postgres.
+// SessionProcessor manages the session state machine in the database.
+// Its own reads run on the database's read handle; its writes go
+// through the writer.
 type SessionProcessor struct {
-	w    *writer.Writer
-	pool *pgxpool.Pool
+	w  *writer.Writer
+	db *storage.DB
 
 	// lookupSession, settleEnd and readOwner are the database reads and
 	// writes HandleSessionEnd makes for every end. Nil means the real
@@ -52,8 +54,8 @@ type SessionProcessor struct {
 var ErrEventDropped = errors.New("processor: event dropped")
 
 // NewSessionProcessor creates a SessionProcessor.
-func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor {
-	return &SessionProcessor{w: w, pool: pool}
+func NewSessionProcessor(w *writer.Writer, db *storage.DB) *SessionProcessor {
+	return &SessionProcessor{w: w, db: db}
 }
 
 func (sp *SessionProcessor) lookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
@@ -90,10 +92,10 @@ func (sp *SessionProcessor) rowOwnerless(ctx context.Context, sessionID string) 
 		return sp.readOwner(ctx, sessionID)
 	}
 	var ownerless bool
-	err := sp.pool.QueryRow(ctx,
-		"SELECT agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", sessionID,
+	err := sp.db.Reader().QueryRowContext(ctx,
+		"SELECT agent_id IS NULL FROM sessions WHERE session_id = $1", sessionID,
 	).Scan(&ownerless)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
@@ -110,7 +112,7 @@ func (sp *SessionProcessor) rowOwnerless(ctx context.Context, sessionID string) 
 //     adds the tokens of a call published before the end.
 //   - stale/lost -> warn + revive to active + advance last_seen_at.
 //     Caller proceeds with normal processing.
-//   - not-found (pgx.ErrNoRows) -> lazy-create a new row from
+//   - not-found (sql.ErrNoRows) -> lazy-create a new row from
 //     the event's best-effort identity fields, then caller proceeds.
 //     Without this the caller's UPDATE queries no-op silently and
 //     the subsequent InsertEvent FK-violates, so the event is
@@ -141,12 +143,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 	var state string
 	var unattributed, assembled bool
 	var closedSeq int64
-	err = sp.pool.QueryRow(ctx, `
-		SELECT state, agent_id IS NULL, COALESCE(closed_seq, 0),
-		       COALESCE(context ? 'otel_trace_id', false)
-		FROM sessions WHERE session_id = $1::uuid`, e.SessionID,
-	).Scan(&state, &unattributed, &closedSeq, &assembled)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = sp.db.Reader().QueryRowContext(ctx, sp.guardReadSQL(), e.SessionID).Scan(&state, &unattributed, &closedSeq, &assembled)
+	if errors.Is(err, sql.ErrNoRows) {
 		// Session never seen. Lazy-create from event fields.
 		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)
 		if tsErr != nil {
@@ -248,6 +246,31 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		sp.upgradeContextIfPresent(ctx, e)
 		return false, nil
 	}
+}
+
+// The guard's read, per backend: the row's state, whether no agent
+// owns it, its end sequence and whether its context carries the
+// otel_trace_id key (an assembled OpenTelemetry session). Postgres
+// tests the key with its `?` operator; SQLite with json_type, which is
+// NULL for a missing key and a type name (including 'null') for a
+// present one.
+const (
+	guardReadPostgresSQL = `
+		SELECT state, agent_id IS NULL, COALESCE(closed_seq, 0),
+		       COALESCE(context ? 'otel_trace_id', false)
+		FROM sessions WHERE session_id = $1`
+	guardReadSQLiteSQL = `
+		SELECT state, agent_id IS NULL, COALESCE(closed_seq, 0),
+		       json_type(context, '$.otel_trace_id') IS NOT NULL
+		FROM sessions WHERE session_id = $1`
+)
+
+// guardReadSQL is handleSessionGuard's read for the database's backend.
+func (sp *SessionProcessor) guardReadSQL() string {
+	if sp.db.Backend == storage.SQLite {
+		return guardReadSQLiteSQL
+	}
+	return guardReadPostgresSQL
 }
 
 // awaitsReattachment reports whether a call that found its session
@@ -421,10 +444,10 @@ const (
 // rather than mistaking an outage for an orphan.
 func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
 	var state string
-	err := sp.pool.QueryRow(ctx,
-		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
+	err := sp.db.Reader().QueryRowContext(ctx,
+		"SELECT state FROM sessions WHERE session_id = $1", sessionID,
 	).Scan(&state)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return sessionLookupMissing, nil
 	}
 	if err != nil {

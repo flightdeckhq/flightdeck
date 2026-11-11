@@ -91,28 +91,50 @@ const ReadTimeout = server.ReadTimeout
 // minute of a deploy.
 const databaseConnectBudget = 60 * time.Second
 
-// Deps are the connections the service runs on. A nil DB is opened
-// with OpenDB from Config.PostgresURL and closed when Run returns; one
-// the caller passes is left open.
+// Deps are the connections the service runs on. A nil one is created
+// from Config and closed when Run returns; one the caller passes is left
+// open, since the caller shares it. DB is opened with OpenDB from
+// Config.PostgresURL. Bus carries the fleet notifications the hub
+// subscribes to and the token revocations the store publishes, and
+// defaults to the bus of DB's kind. On SQLite that bus is in-process,
+// so a caller that runs the workers or ingestion in the same process
+// must pass the one bus they share: a bus of the API's own would never
+// hear what the workers publish.
 type Deps struct {
-	DB *storage.DB
+	DB  *storage.DB
+	Bus storage.Bus
+}
+
+// DatabaseURL returns the URL the query API opens its database with: a
+// Postgres URL gains jit=off as a connection runtime parameter (pgx
+// passes a URL query key it does not know to the server as one, so
+// every connection of the pool carries it); a SQLite URL, or a URL
+// that does not parse, is returned unchanged. A jit setting the
+// operator put in the URL is kept.
+//
+// The JIT is off because the API's queries are interactive aggregations
+// over an analytics window, and Postgres's JIT compiles the long
+// per-row cost expression on every query, which costs more than it
+// saves at these sizes (estimated cost over 100,000 events: 780 ms with
+// JIT, 250 ms without; 1,000,000 events: 2.6 s against 2.3 s). A caller
+// that shares one handle between this service and others opens it with
+// this URL: the setting only matters to a query Postgres costs above
+// its JIT threshold, which the other services' point reads and
+// single-row writes never reach.
+func DatabaseURL(rawURL string) string {
+	if b, err := storage.BackendOf(rawURL); err != nil || b != storage.Postgres {
+		return rawURL
+	}
+	return withJITOff(rawURL)
 }
 
 // OpenDB opens the database the query API runs on, through the storage
-// boundary, retrying a database that is not yet reachable for
-// databaseConnectBudget. On Postgres the connections run with the JIT
-// off: the API's queries are interactive aggregations over an analytics
-// window, and Postgres's JIT compiles the long per-row cost expression
-// on every query, which costs more than it saves at these sizes
-// (estimated cost over 100,000 events: 780 ms with JIT, 250 ms without;
-// 1,000,000 events: 2.6 s against 2.3 s).
+// boundary and with DatabaseURL's connection parameters, retrying a
+// database that is not yet reachable for databaseConnectBudget.
 func OpenDB(ctx context.Context, rawURL string) (*storage.DB, error) {
-	if b, err := storage.BackendOf(rawURL); err == nil && b == storage.Postgres {
-		rawURL = withJITOff(rawURL)
-	}
 	openCtx, cancel := context.WithTimeout(ctx, databaseConnectBudget)
 	defer cancel()
-	db, err := storage.OpenRetry(openCtx, rawURL, databaseConnectBudget)
+	db, err := storage.OpenRetry(openCtx, DatabaseURL(rawURL), databaseConnectBudget)
 	if err != nil {
 		return nil, fmt.Errorf("database connection: %w", err)
 	}
@@ -141,6 +163,7 @@ type App struct {
 	db        *storage.DB
 	ownsDB    bool
 	bus       storage.Bus
+	ownsBus   bool
 	store     *store.Store
 	hub       *ws.Hub
 	validator *auth.Validator
@@ -148,15 +171,16 @@ type App struct {
 	durations *metrics.RequestDurations
 }
 
-// New connects (when Deps.DB is nil), loads the price list and builds
-// the handlers. It starts no goroutine; Run does.
+// New connects (when Deps.DB is nil), creates the bus (when Deps.Bus is
+// nil), loads the price list and builds the handlers. It starts no
+// goroutine; Run does.
 func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 	// Build the price list from the embedded catalogue and the
 	// pricing.yaml overrides. A bad pricing.yaml is logged and ignored:
 	// the service must not crash on a bad pricing file.
 	store.LoadPricing()
 
-	a := &App{cfg: cfg, db: deps.DB}
+	a := &App{cfg: cfg, db: deps.DB, bus: deps.Bus}
 	if a.db == nil {
 		db, err := OpenDB(ctx, cfg.PostgresURL)
 		if err != nil {
@@ -164,7 +188,9 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 		}
 		a.db, a.ownsDB = db, true
 	}
-	a.bus = storage.NewBus(a.db)
+	if a.bus == nil {
+		a.bus, a.ownsBus = storage.NewBus(a.db), true
+	}
 	a.store = store.New(a.db, a.bus)
 	a.hub = ws.NewHub(a.store)
 	a.validator = auth.NewValidator(a.db)
@@ -183,7 +209,7 @@ func (a *App) Handler() http.Handler { return a.srv.Handler }
 // configured and the HTTP listener when ListenAddr is set, and blocks
 // until ctx ends or a listener fails. It then shuts the listeners down,
 // waits for the background loops, both within ShutdownTimeout, and
-// closes the database it opened.
+// closes the bus it created and the database it opened.
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -290,7 +316,13 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 	}
 }
 
+// closeOwned closes what New created: the bus first (its subscribers
+// have stopped), then the database the bus publishes through.
 func (a *App) closeOwned() {
+	if a.ownsBus && a.bus != nil {
+		_ = a.bus.Close()
+		a.bus, a.ownsBus = nil, false
+	}
 	if a.ownsDB && a.db != nil {
 		_ = a.db.Close()
 		a.db, a.ownsDB = nil, false

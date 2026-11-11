@@ -115,10 +115,15 @@ const databaseConnectBudget = 60 * time.Second
 // from Config and closed when Run returns; one the caller passes is left
 // open, since the caller shares it. DB is the database through the
 // storage boundary, SQLite or Postgres, which every store of the
-// service runs on: the token validator and its revocation bus,
-// directives, session attachment and the OTLP staging store.
+// service runs on: the token validator, directives, session attachment
+// and the OTLP staging store. Bus carries the token revocations the
+// validator subscribes to and defaults to the bus of DB's kind. On
+// SQLite that bus is in-process, so a caller that runs the query API
+// (which publishes a revocation when a token is deleted) in the same
+// process must pass the one bus they share.
 type Deps struct {
 	DB   *storage.DB
+	Bus  storage.Bus
 	NATS *nats.Conn
 }
 
@@ -153,6 +158,7 @@ type App struct {
 	nc        *nats.Conn
 	ownsDB    bool
 	ownsNATS  bool
+	ownsBus   bool
 	bus       storage.Bus
 	validator *auth.Validator
 	assembler *assembler.Assembler
@@ -164,7 +170,7 @@ type App struct {
 // reconciles the FLIGHTDECK stream and builds the handlers. It starts no
 // goroutine; Run does.
 func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
-	a := &App{cfg: cfg, db: deps.DB, nc: deps.NATS}
+	a := &App{cfg: cfg, db: deps.DB, nc: deps.NATS, bus: deps.Bus}
 	if a.db == nil {
 		openCtx, cancel := context.WithTimeout(ctx, databaseConnectBudget)
 		db, err := storage.OpenRetry(openCtx, cfg.PostgresURL, databaseConnectBudget)
@@ -193,7 +199,9 @@ func New(ctx context.Context, cfg Config, deps Deps) (*App, error) {
 		return nil, fmt.Errorf("NATS publisher setup: %w", err)
 	}
 
-	a.bus = storage.NewBus(a.db)
+	if a.bus == nil {
+		a.bus, a.ownsBus = storage.NewBus(a.db), true
+	}
 	a.validator = auth.NewValidator(a.db)
 	dirStore := &directiveAdapter{store: directive.NewStore(a.db)}
 	sessAttacher := session.NewStore(a.db)
@@ -313,10 +321,18 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 	}
 }
 
+// closeOwned closes what New created: the NATS connection, the bus (its
+// subscriber has stopped), then the database.
 func (a *App) closeOwned() {
 	if a.ownsNATS && a.nc != nil {
 		a.nc.Close()
 		a.nc, a.ownsNATS = nil, false
+	}
+	if a.ownsBus && a.bus != nil {
+		if err := a.bus.Close(); err != nil {
+			slog.Warn("bus close", "err", err)
+		}
+		a.bus, a.ownsBus = nil, false
 	}
 	if a.ownsDB && a.db != nil {
 		if err := a.db.Close(); err != nil {

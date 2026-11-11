@@ -35,7 +35,9 @@ func DatabaseURL(rawURL string) (string, error) {
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("parse postgres url: %w", err)
+		// The parse error quotes the URL, password included; it is
+		// left out.
+		return "", fmt.Errorf("postgres url: %w", storage.ErrInvalidURL)
 	}
 	q := u.Query()
 	if q.Get("lock_timeout") == "" {

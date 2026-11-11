@@ -878,3 +878,18 @@ loopback (a remote reverse tunnel on `localhost` would receive `tok_dev`
 silently; the caller chose that server and must choose the token); keep
 both arguments required (the quickstart stays at two values the user has
 to look up for a stack that already prints them).
+
+## D265 -- A stopping worker finishes the message each lane is processing
+
+**Date:** 2026-11-11
+**Decision:** when the workers stop (a signal, the `flightdeck` binary
+shutting down) each lane processes its message in flight to the end,
+under its own ten-second deadline, and acknowledges it. Messages still
+queued in a lane are not started; the stream redelivers them.
+**Why:** a call is several statements (the session's counters, then the
+event row). Cancelled between them it was redelivered and counted
+twice: a stop under load left a session at 315 tokens for 300 sent.
+**Rejected alternative:** cancel the work in flight for a faster stop
+(it miscounts, and the stop is bounded by the message deadline anyway);
+one transaction per message (the handlers also read and publish through
+other connections; a larger change than this defect needs).

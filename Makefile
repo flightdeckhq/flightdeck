@@ -66,7 +66,7 @@ build-flightdeck: build-webui ## Build bin/flightdeck with the VERSION file's ve
 run-flightdeck: ## Run the binary from source; pass flags with ARGS="--listen 127.0.0.1:4100"
 	go run ./cmd/flightdeck $(ARGS)
 
-test-flightdeck: ## Unit tests of the root module (the binary's packages)
+test-flightdeck: ## Tests of the root module: the binary's packages, and the real binary on SQLite (stop, restart, second instance)
 	go test $(GO_ROOT_PKGS)
 
 lint-flightdeck: ## gofmt and golangci-lint on the root module

@@ -123,7 +123,7 @@ FRESH_CLOSED_ENDED_AGO_S = 3
 # edge boundary between the SQL UPDATE and the dashboard's render.
 SUBAGENT_REFRESH_OFFSET_SEC = 30
 
-# Per-call timeout for the ``docker exec docker-postgres-1 psql``
+# Per-call timeout for the ``docker exec <POSTGRES_CONTAINER> psql``
 # round-trips this script issues for state pins and timestamp
 # updates. Local psql calls complete in well under 200 ms; the
 # 10 s ceiling is a generous belt-and-braces guard for a stalled

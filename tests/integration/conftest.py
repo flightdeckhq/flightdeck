@@ -62,6 +62,7 @@ from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
     API_HEALTH,
     API_URL,
     BASE_URL,
+    DB_TIMESTAMP_RESOLUTION_US,
     DEFAULT_AGENT_TYPE,
     DEFAULT_CLIENT_TYPE,
     DEFAULT_HOSTNAME,
@@ -71,6 +72,7 @@ from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
     INGESTION_URL,
     MAX_WAIT_SECS,
     POLL_INTERVAL,
+    SQLITE_DB,
     TOKEN,
     # Public helpers
     agent_row_locked,
@@ -94,9 +96,11 @@ from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
     post_event,
     post_heartbeat,
     query_directives,
+    query_rows,
     session_events,
     session_exists_in_fleet,
     session_row_locked,
+    sqlite_timestamp,
     wait_for_services,
     wait_for_session_in_fleet,
     wait_for_state,
@@ -116,6 +120,7 @@ __all__ = [
     "API_HEALTH",
     "API_URL",
     "BASE_URL",
+    "DB_TIMESTAMP_RESOLUTION_US",
     "DEFAULT_AGENT_TYPE",
     "DEFAULT_CLIENT_TYPE",
     "DEFAULT_HOSTNAME",
@@ -125,6 +130,7 @@ __all__ = [
     "INGESTION_URL",
     "MAX_WAIT_SECS",
     "POLL_INTERVAL",
+    "SQLITE_DB",
     "TOKEN",
     "agent_row_locked",
     "auth_headers",
@@ -147,9 +153,11 @@ __all__ = [
     "post_event",
     "post_heartbeat",
     "query_directives",
+    "query_rows",
     "session_events",
     "session_exists_in_fleet",
     "session_row_locked",
+    "sqlite_timestamp",
     "wait_for_session_in_fleet",
     "wait_for_state",
     "wait_until",
@@ -250,6 +258,28 @@ def pytest_configure(config: pytest.Config) -> None:
         "test-integration` runs the rest of the suite in parallel under "
         "pytest-xdist and these one at a time afterwards.",
     )
+    config.addinivalue_line(
+        "markers",
+        "postgres_only(reason): the test needs something only Postgres has "
+        "(a row lock held by a second session, a catalog table) and has no "
+        "SQLite counterpart. It skips, with the reason, when the suite runs "
+        "against a binary on SQLite (FLIGHTDECK_TEST_SQLITE_DB).",
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip the ``postgres_only`` tests, each with its stated reason, when
+    the stack under test stores in SQLite."""
+    for item in items:
+        marker = item.get_closest_marker("postgres_only")
+        if marker is None:
+            continue
+        if len(marker.args) != 1 or not isinstance(marker.args[0], str):
+            raise pytest.UsageError(
+                f"{item.nodeid}: postgres_only takes the reason as its one argument"
+            )
+        if SQLITE_DB:
+            item.add_marker(pytest.mark.skip(reason=f"Postgres only: {marker.args[0]}"))
 
 
 # Hosts an integration test may connect to: the dev stack is published on

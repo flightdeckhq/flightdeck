@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -88,6 +89,56 @@ func TestRun_StopsOnCancelAndLeavesAnInjectedDBOpen(t *testing.T) {
 	})
 }
 
+// The flightdeck binary passes the one bus its services share. The
+// store publishes on that bus (a deleted token is announced there, so
+// the ingestion validator in the same process hears it on SQLite, where
+// each bus is private to whoever created it), and Run leaves it open.
+func TestRun_PublishesOnTheInjectedBusAndLeavesItOpen(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		bus := storage.NewBus(db)
+		t.Cleanup(func() { _ = bus.Close() })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		a, err := New(ctx, Config{CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{DB: db, Bus: bus})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.ownsBus || a.ownsDB {
+			t.Fatalf("ownsBus=%v ownsDB=%v: New owns nothing it was given", a.ownsBus, a.ownsDB)
+		}
+		revoked, err := bus.Subscribe(ctx, storage.ChannelAccessTokenRevoked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- a.Run(ctx) }()
+
+		created, err := a.store.CreateAccessToken(ctx, "injected-bus-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.store.DeleteAccessToken(ctx, created.ID); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case id := <-revoked:
+			if id != created.ID {
+				t.Fatalf("revocation of %q announced, want %q", id, created.ID)
+			}
+		case <-time.After(runTimeout):
+			t.Fatal("the deleted token was not announced on the injected bus")
+		}
+
+		cancel()
+		if err := awaitRun(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Publish(context.Background(), "storagetest_after_run", "x"); err != nil {
+			t.Fatalf("the injected bus was closed by Run: %v", err)
+		}
+	})
+}
+
 func TestRun_ClosesTheDBItOpened(t *testing.T) {
 	for _, b := range storagetest.Backends(t) {
 		t.Run(string(b), func(t *testing.T) {
@@ -108,7 +159,10 @@ func TestRun_ClosesTheDBItOpened(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			owned := a.db
+			owned, ownedBus := a.db, a.bus
+			if !a.ownsBus {
+				t.Fatal("New must own the bus it created")
+			}
 			done := make(chan error, 1)
 			go func() { done <- a.Run(ctx) }()
 			waitHealthy(t, addr)
@@ -116,8 +170,11 @@ func TestRun_ClosesTheDBItOpened(t *testing.T) {
 			if err := awaitRun(t, done); err != nil {
 				t.Fatal(err)
 			}
-			if a.db != nil || a.ownsDB {
-				t.Fatal("Run must close and forget the database it opened")
+			if a.db != nil || a.ownsDB || a.bus != nil || a.ownsBus {
+				t.Fatal("Run must close and forget the database it opened and the bus it created")
+			}
+			if err := ownedBus.Publish(context.Background(), "storagetest_after_run", "x"); !errors.Is(err, storage.ErrBusClosed) {
+				t.Fatalf("publish on the bus Run created: %v, want ErrBusClosed", err)
 			}
 			if err := owned.PingContext(context.Background()); err == nil {
 				t.Fatal("the database Run opened still answers after Run returned")

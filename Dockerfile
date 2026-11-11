@@ -5,9 +5,11 @@
 # process) on a distroless base, as a non-root user.
 #
 #   docker run -d --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck-data:/data \
-#     -e FLIGHTDECK_DATABASE_URL='postgres://user:password@host:5432/flightdeck?sslmode=disable' \
 #     flightdeckhq/flightdeck
 #   docker logs flightdeck     # the start-up block with the dashboard token
+#
+# The database is a SQLite file in /data. To use a Postgres instead, add
+#   -e FLIGHTDECK_DATABASE_URL='postgres://user:password@host:5432/flightdeck?sslmode=disable'
 #
 # Publish the port on 127.0.0.1 (as above) unless other machines should
 # reach it: the dashboard token is served to anyone who can reach the

@@ -29,11 +29,13 @@ type Directive struct {
 // Store reads and marks directives.
 type Store struct {
 	db *storage.DB
+	// takePending is queryTakePending for db's backend.
+	takePending string
 }
 
 // NewStore creates a directive Store.
 func NewStore(db *storage.DB) *Store {
-	return &Store{db: db}
+	return &Store{db: db, takePending: queryTakePending(db.Dialect)}
 }
 
 // queryTakePending marks the oldest undelivered directive addressed to
@@ -45,7 +47,13 @@ func NewStore(db *storage.DB) *Store {
 // repeats delivered_at IS NULL, so on Postgres (READ COMMITTED) the
 // lookup that waited on the row lock re-checks the updated row and
 // updates nothing, and on SQLite the one writer runs them in turn.
-const queryTakePending = `
+//
+// Directives issued at the same instant are delivered in the order they
+// were issued: issued_at resolves one millisecond on SQLite, where two
+// directives for one session can share it, so the dialect's insertion
+// order breaks the tie (on Postgres, their ids).
+func queryTakePending(d storage.Dialect) string {
+	return `
 	UPDATE directives
 	SET delivered_at = $1
 	WHERE id = (
@@ -54,11 +62,12 @@ const queryTakePending = `
 			SELECT flavor FROM sessions WHERE session_id = $2
 		)))
 		AND delivered_at IS NULL
-		ORDER BY issued_at ASC
+		ORDER BY issued_at ASC, ` + d.InsertionOrder("", "id") + ` ASC
 		LIMIT 1
 	)
 	AND delivered_at IS NULL
 	RETURNING CAST(id AS TEXT), action, COALESCE(reason, ''), degrade_to, grace_period_ms, payload`
+}
 
 // LookupPending returns the oldest undelivered directive for a session:
 // one addressed to the session, or one addressed to its flavor with no
@@ -73,7 +82,7 @@ func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive
 	// Lower case: the canonical form the SQLite CHECK enforces, and the
 	// one Postgres' uuid type normalises to; the handlers accept hex
 	// digits of either case.
-	err := s.db.QueryRowContext(ctx, queryTakePending, time.Now().UTC(), strings.ToLower(sessionID)).
+	err := s.db.QueryRowContext(ctx, s.takePending, time.Now().UTC(), strings.ToLower(sessionID)).
 		Scan(&d.ID, &d.Action, &d.Reason, &d.DegradeTo, &d.GracePeriodMs, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

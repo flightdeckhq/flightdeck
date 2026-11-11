@@ -1154,11 +1154,13 @@ func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]
 	return out, nil
 }
 
-// GetPolicies returns all policies ordered by creation date (newest first).
+// GetPolicies returns all policies ordered by creation date (newest
+// first); policies created at the same instant keep that order among
+// themselves through the dialect's insertion order.
 func (s *Store) GetPolicies(ctx context.Context) ([]Policy, error) {
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT `+policyColumns+`
-		FROM token_policies ORDER BY created_at DESC
+		FROM token_policies ORDER BY created_at DESC, `+s.d.InsertionOrder("", "id")+` DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("get policies: %w", err)
@@ -1549,7 +1551,11 @@ func (s *Store) DeleteCustomDirectivesByNamePrefix(ctx context.Context, namePref
 	return n, nil
 }
 
-// GetCustomDirectives returns all custom directives, optionally filtered by flavor.
+// GetCustomDirectives returns all custom directives, optionally
+// filtered by flavor, the most recently registered first. A sensor
+// registers its directives in one burst, so on SQLite, where
+// registered_at resolves one millisecond, they share a timestamp: the
+// dialect's insertion order keeps the last registered first among them.
 func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]CustomDirective, error) {
 	query := `
 		SELECT CAST(id AS TEXT), fingerprint, name, COALESCE(description, ''), flavor,
@@ -1560,7 +1566,7 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 		query += ` WHERE flavor = $1`
 		args = append(args, flavor)
 	}
-	query += ` ORDER BY registered_at DESC`
+	query += ` ORDER BY registered_at DESC, ` + s.d.InsertionOrder("", "id") + ` DESC`
 	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get custom directives: %w", err)

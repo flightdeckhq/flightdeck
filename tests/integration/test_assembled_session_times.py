@@ -39,7 +39,10 @@ def _ago(minutes: float) -> datetime:
 
 
 def _db_now() -> str:
-    return exec_sql("SELECT clock_timestamp()")
+    return exec_sql(
+        "SELECT clock_timestamp()",
+        sqlite="SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+    )
 
 
 class _Run:
@@ -118,11 +121,12 @@ class _Run:
         assert column in {"started_at", "ended_at"} and op in {"=", "<=", ">="}
         return (
             exec_sql(
-                f"SELECT ({column} {op} :'v'::timestamptz)::text FROM sessions WHERE session_id = :'sid'::uuid",
+                "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid "
+                f"AND {column} {op} :'v'::timestamptz",
                 v=value,
                 sid=self.sid,
             )
-            == "true"
+            == "1"
         )
 
     def delete(self) -> None:

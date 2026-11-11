@@ -99,6 +99,20 @@ type Dialect interface {
 	// backends.
 	Returning(cols ...string) string
 
+	// InsertionOrder is an ORDER BY term that breaks a tie between rows
+	// of the table aliased alias (unqualified when alias is empty)
+	// whose sort keys are equal: append it after a timestamp the server
+	// stamps, with the same direction. SQLite timestamps resolve one
+	// millisecond, so rows written in the same millisecond tie on such
+	// a column, and a random id says nothing about which came first;
+	// there the term is the table's rowid, which every insert sets
+	// above all the rows the table holds, so the order is the order of
+	// insertion. Postgres keeps no insertion order and resolves a
+	// microsecond; there the term is idCol, which makes the order total
+	// and repeatable, though not chronological, in the rare tie (rows
+	// stamped by one transaction).
+	InsertionOrder(alias, idCol string) string
+
 	// Percentile is the continuous percentile aggregate of expr at
 	// fraction (a SQL numeric literal such as "0.95"): PERCENTILE_CONT
 	// WITHIN GROUP on Postgres, the percentile_cont function the
@@ -268,6 +282,10 @@ func jsonbPath(col string, path []string) string {
 	return b.String()
 }
 
+func (postgresDialect) InsertionOrder(alias, idCol string) string {
+	return qualified(alias, idCol)
+}
+
 func (postgresDialect) Percentile(fraction, expr string) string {
 	return fmt.Sprintf("PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY %s)", fraction, expr)
 }
@@ -399,6 +417,10 @@ func sqliteJSONType(col string, path []string) string {
 	return fmt.Sprintf("json_type(%s, %s)", col, jsonPathLiteral(path))
 }
 
+func (sqliteDialect) InsertionOrder(alias, _ string) string {
+	return qualified(alias, "rowid")
+}
+
 func (sqliteDialect) Percentile(fraction, expr string) string {
 	return fmt.Sprintf("percentile_cont(%s, %s)", expr, fraction)
 }
@@ -454,6 +476,15 @@ func (sqliteDialect) JSONElementText(alias string) string {
 
 func (sqliteDialect) Least(a, b string) string    { return fmt.Sprintf("MIN(%s, %s)", a, b) }
 func (sqliteDialect) Greatest(a, b string) string { return fmt.Sprintf("MAX(%s, %s)", a, b) }
+
+// qualified names col in the table aliased alias, or bare when there
+// is no alias.
+func qualified(alias, col string) string {
+	if alias == "" {
+		return col
+	}
+	return alias + "." + col
+}
 
 // sqlQuote renders s as a single-quoted SQL string literal. The helpers
 // take key names from code, never from user input; the quoting keeps a

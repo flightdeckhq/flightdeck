@@ -39,6 +39,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,15 @@ from ..otlp.replay import (
     genai_trace_ids,
     rewrite_genai,
 )
-from .conftest import API_URL, INGESTION_URL, auth_headers, exec_sql, wait_until
+from .conftest import (
+    API_URL,
+    DB_TIMESTAMP_RESOLUTION_US,
+    INGESTION_URL,
+    auth_headers,
+    exec_sql,
+    query_rows,
+    wait_until,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "otlp"
 JSON = "application/json"
@@ -69,8 +78,13 @@ REPLAY_LEAD_NS = 1_000_000_000
 
 # How close a session's started_at and ended_at must be to its agent
 # span's start and end: Postgres stores microseconds, and rounds the
-# nanosecond timestamps it is sent.
-TIME_TOLERANCE_US = 2
+# nanosecond timestamps it is sent; SQLite stores milliseconds, cutting
+# the rest off.
+TIME_TOLERANCE_US = max(2, DB_TIMESTAMP_RESOLUTION_US)
+# The origin stored timestamps are counted from, and the unit they are
+# counted in.
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+US_PER_SECOND = 1_000_000
 
 
 @dataclass
@@ -323,26 +337,30 @@ def post(path: str, content_type: str, body: bytes) -> tuple[int, int, str]:
 # Reading what was stored
 
 
-def _json_rows(sql: str, **bindings: Any) -> list[dict[str, Any]]:
-    out = exec_sql(
-        f"SELECT coalesce(json_agg(r), '[]'::json) FROM ({sql}) r", **bindings
-    )
-    return json.loads(out or "[]")  # type: ignore[no-any-return]
+def _epoch_us(stamp: str | None) -> int | None:
+    """A stored timestamp as whole microseconds since the epoch."""
+    if stamp is None:
+        return None
+    return (datetime.fromisoformat(stamp) - EPOCH) // timedelta(microseconds=1)
 
 
 def stored_sessions(flavor: str) -> list[dict[str, Any]]:
-    return _json_rows(
+    """The flavor's session rows, with their start and end also as
+    microseconds since the epoch (``started_us``, ``ended_us``)."""
+    rows = query_rows(
         "SELECT session_id, agent_name, agent_role, parent_session_id, state, client_type,"
-        " framework, capture_prompts, context,"
-        " (extract(epoch FROM started_at) * 1000000)::bigint AS started_us,"
-        " (extract(epoch FROM ended_at) * 1000000)::bigint AS ended_us"
+        " framework, capture_prompts, context, started_at, ended_at"
         " FROM sessions WHERE flavor = :'flavor'",
         flavor=flavor,
     )
+    for row in rows:
+        row["started_us"] = _epoch_us(row["started_at"])
+        row["ended_us"] = _epoch_us(row["ended_at"])
+    return rows
 
 
 def stored_events(flavor: str) -> list[dict[str, Any]]:
-    return _json_rows(
+    return query_rows(
         "SELECT session_id, event_type, tokens_input, tokens_output, tool_name"
         " FROM events WHERE flavor = :'flavor' ORDER BY occurred_at, id",
         flavor=flavor,
@@ -355,13 +373,14 @@ def content_rows(session_ids: list[str]) -> int:
     return int(
         exec_sql(
             "SELECT count(*) FROM event_content WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            sqlite="SELECT count(*) FROM event_content WHERE instr(:ids, session_id) > 0",
             ids=",".join(session_ids),
         )
     )
 
 
 def stored_event_rows(flavor: str) -> list[dict[str, Any]]:
-    return _json_rows(
+    return query_rows(
         "SELECT e.id, e.session_id, e.event_type, e.has_content, e.payload,"
         " s.parent_session_id"
         " FROM events e JOIN sessions s USING (session_id)"
@@ -375,6 +394,10 @@ def staged_rows(trace_hex: str) -> tuple[int, int]:
     out = exec_sql(
         "SELECT (SELECT count(*) FROM otlp_spans WHERE trace_id = decode(:'tid', 'hex'))"
         " || ',' || (SELECT count(*) FROM otlp_span_content WHERE trace_id = decode(:'tid', 'hex'))",
+        sqlite=(
+            "SELECT (SELECT count(*) FROM otlp_spans WHERE trace_id = unhex(:tid))"
+            " || ',' || (SELECT count(*) FROM otlp_span_content WHERE trace_id = unhex(:tid))"
+        ),
         tid=trace_hex,
     )
     spans, content = out.strip().split(",")
@@ -394,14 +417,34 @@ def fetch_content(event_id: str) -> tuple[int, dict[str, Any] | None]:
 
 
 def staged_trace(trace_hex: str) -> dict[str, Any] | None:
-    rows = _json_rows(
-        "SELECT root_seen_at IS NOT NULL AS root_seen, pending, assembly_count, assembly_reason,"
-        " extract(epoch FROM resolve_at - now()) AS due_in_secs,"
-        " extract(epoch FROM resolve_at - root_seen_at) AS due_after_root_secs"
-        " FROM otlp_traces WHERE trace_id = decode(:'tid', 'hex')",
+    """The staging row of a trace: whether its root was seen
+    (``root_seen``), and how long from the database's clock
+    (``due_in_secs``) and from the root's arrival
+    (``due_after_root_secs``) its assembly is due."""
+    rows = query_rows(
+        "SELECT root_seen_at, resolve_at, now() AS db_now, pending, assembly_count,"
+        " assembly_reason FROM otlp_traces WHERE trace_id = decode(:'tid', 'hex')",
+        sqlite=(
+            "SELECT root_seen_at, resolve_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS db_now,"
+            " pending, assembly_count, assembly_reason"
+            " FROM otlp_traces WHERE trace_id = unhex(:tid)"
+        ),
         tid=trace_hex,
     )
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    row = rows[0]
+    resolve_us = _epoch_us(row["resolve_at"])
+    root_us = _epoch_us(row["root_seen_at"])
+    assert resolve_us is not None, row
+    now_us = _epoch_us(row["db_now"])
+    assert now_us is not None, row
+    row["root_seen"] = root_us is not None
+    row["due_in_secs"] = (resolve_us - now_us) / US_PER_SECOND
+    row["due_after_root_secs"] = (
+        None if root_us is None else (resolve_us - root_us) / US_PER_SECOND
+    )
+    return row
 
 
 def wait_assembled(
@@ -457,19 +500,44 @@ def delete_replay(flavor: str, trace_ids: set[str]) -> None:
     ids = [s["session_id"] for s in stored_sessions(flavor)]
     if ids:
         joined = ",".join(ids)
-        for sql in (
-            "DELETE FROM event_content WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])",
-            "DELETE FROM events WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+        # Each statement with its SQLite spelling. The last removes the
+        # sessions and the agents they leave without one: SQLite has no
+        # data-modifying CTE, so there the agents whose every session is
+        # listed go first, in a transaction that checks its foreign keys
+        # at commit, and the sessions after them.
+        for sql, sqlite in (
             (
-                "WITH gone AS (DELETE FROM sessions WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])"
-                " RETURNING agent_id) DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g"
-                " WHERE a.agent_id = g.agent_id AND NOT EXISTS (SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id)"
+                "DELETE FROM event_content WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+                "DELETE FROM event_content WHERE instr(:ids, session_id) > 0",
+            ),
+            (
+                "DELETE FROM events WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+                "DELETE FROM events WHERE instr(:ids, session_id) > 0",
+            ),
+            (
+                (
+                    "WITH gone AS (DELETE FROM sessions WHERE session_id = ANY(string_to_array(:'ids', ',')::uuid[])"
+                    " RETURNING agent_id) DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g"
+                    " WHERE a.agent_id = g.agent_id AND NOT EXISTS (SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id)"
+                ),
+                (
+                    "PRAGMA defer_foreign_keys = ON",
+                    (
+                        "DELETE FROM agents WHERE agent_id IN"
+                        " (SELECT agent_id FROM sessions WHERE instr(:ids, session_id) > 0)"
+                        " AND NOT EXISTS (SELECT 1 FROM sessions o WHERE o.agent_id = agents.agent_id"
+                        " AND instr(:ids, o.session_id) = 0)"
+                    ),
+                    "DELETE FROM sessions WHERE instr(:ids, session_id) > 0",
+                ),
             ),
         ):
-            exec_sql(sql, ids=joined)
+            exec_sql(sql, sqlite=sqlite, ids=joined)
     for tid in trace_ids:
         exec_sql(
-            "DELETE FROM otlp_traces WHERE trace_id = decode(:'tid', 'hex')", tid=tid
+            "DELETE FROM otlp_traces WHERE trace_id = decode(:'tid', 'hex')",
+            sqlite="DELETE FROM otlp_traces WHERE trace_id = unhex(:tid)",
+            tid=tid,
         )
 
 

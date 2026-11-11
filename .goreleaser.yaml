@@ -158,7 +158,7 @@ brews:
       background with `brew services start flightdeck` (the token is then in
       #{var}/log/flightdeck.log and the data dir is ~/.flightdeck).
 
-      Until the bundled SQLite database ships, flightdeck needs a Postgres:
-      run it as `flightdeck --database-url postgres://...` (or export
-      FLIGHTDECK_DATABASE_URL); `brew services` cannot pass that, so start it
-      from a terminal for now.
+      flightdeck keeps its data in a SQLite database in the data dir. To
+      use a Postgres instead, run it as `flightdeck --database-url
+      postgres://...` (or export FLIGHTDECK_DATABASE_URL); `brew services`
+      cannot pass that, so start it from a terminal then.

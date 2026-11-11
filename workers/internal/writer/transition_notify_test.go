@@ -250,6 +250,8 @@ func (r refusingBus) Subscribe(context.Context, string) (<-chan string, error) {
 	return nil, nil
 }
 
+func (r refusingBus) Close() error { return nil }
+
 // Nothing moved, nothing sent: an empty batch publishes nothing.
 func TestNotifyFleet_EmptyBatchSendsNothing(t *testing.T) {
 	if err := notifyFleet(context.Background(), refusingBus{t}, nil); err != nil {

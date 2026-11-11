@@ -120,8 +120,5 @@ func openMigrated(t testing.TB, url string) *storage.DB {
 
 // redact keeps a Postgres password out of test output.
 func redact(url string) string {
-	if b, _ := storage.BackendOf(url); b == storage.Postgres {
-		return "postgres://…"
-	}
-	return url
+	return storage.MaskURL(url)
 }

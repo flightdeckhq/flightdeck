@@ -99,6 +99,17 @@ type Deps struct {
 	NATS *nats.Conn
 }
 
+// DatabaseURL returns the URL the workers open their database with: a
+// Postgres URL gains the worker's lock timeout as a connection runtime
+// parameter (see writer.LockTimeout for why a statement must not wait
+// for a row lock past the lane's processing deadline); a SQLite URL is
+// returned unchanged, and a lock_timeout the operator put in the URL is
+// kept. A caller that shares one handle between this service and
+// others opens it with this URL, so the lanes keep the bound.
+func DatabaseURL(rawURL string) (string, error) {
+	return writer.DatabaseURL(rawURL)
+}
+
 // Migrate applies every pending embedded migration of the backend
 // Config.PostgresURL names. The migrator takes the URL as configured,
 // without the lock timeout Run's connections carry: a migration that
@@ -127,9 +138,9 @@ func Migrate(cfg Config, _ Deps) error {
 func Run(ctx context.Context, cfg Config, deps Deps) error {
 	db := deps.DB
 	if db == nil {
-		// The worker's Postgres connections carry its lock timeout
-		// (writer.DatabaseURL); a SQLite URL is unchanged.
-		dbURL, err := writer.DatabaseURL(cfg.PostgresURL)
+		// The worker's Postgres connections carry its lock timeout; a
+		// SQLite URL is unchanged.
+		dbURL, err := DatabaseURL(cfg.PostgresURL)
 		if err != nil {
 			return fmt.Errorf("database URL: %w", err)
 		}
@@ -144,7 +155,12 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	bus := deps.Bus
 	if bus == nil {
-		bus = storage.NewBus(db)
+		// Closed after the loops below have stopped and before the
+		// database it publishes through (defers run last in, first
+		// out).
+		owned := storage.NewBus(db)
+		defer func() { _ = owned.Close() }()
+		bus = owned
 	}
 	nc := deps.NATS
 	if nc == nil {
@@ -178,11 +194,11 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	spawn(func() { writer.New(db, bus).RunModelBackfill(runCtx) })
 
 	// The consumer returns an error only when setup fails; otherwise it
-	// runs the lanes until runCtx ends. Each message is processed under
-	// a context derived from runCtx, so cancelling it ends the work in
-	// flight (the statement or the wait it was in returns an error) and
-	// the message is left unacknowledged for NATS to redeliver; Start
-	// returns once every lane has observed the cancellation.
+	// runs the lanes until runCtx ends. A message a lane is processing
+	// at that moment is finished under its own deadline and
+	// acknowledged, so no call is left half applied; a message still
+	// queued in a lane is not started and NATS redelivers it. Start
+	// returns once every lane has finished.
 	consumerErr := make(chan error, 1)
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)
 	spawn(func() {
@@ -222,9 +238,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 			slog.Warn("metrics listener shutdown", "err", err)
 		}
 	}
-	// The lanes return once their cancelled in-flight work has ended
-	// (those messages are redelivered), and the reconciler and the
-	// backfill stop, before the database and NATS connections close.
+	// The lanes return once the message each was processing has
+	// finished, and the reconciler and the backfill stop, before the
+	// database and NATS connections close.
 	if !waitWithin(shutdownCtx, &loops) {
 		slog.Warn("consumer lanes or background loops did not stop before the shutdown timeout; closing the connections anyway")
 	}

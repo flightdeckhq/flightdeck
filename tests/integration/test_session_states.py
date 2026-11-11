@@ -63,8 +63,17 @@ RECONCILER_NEGATIVE_WAIT_SECS = 2 * RECONCILER_INTERVAL_SECS + PROCESSING_SLACK_
 
 # Poll cadence for the negative waits. They can only end early by
 # observing the misfire, so once a second bounds how late a misfire is
-# noticed without hammering Postgres through psql for the whole window.
+# noticed without querying the database for the whole window.
 RECONCILER_NEGATIVE_POLL_SECS = 1
+
+# Why the tests that hold a row through agent_row_locked or
+# session_row_locked run on Postgres only: the lock they hold blocks one
+# writer of one row while the others proceed, and SQLite has a single
+# writer for the whole database, so there is no such state to produce.
+ROW_LOCK_NEEDS_POSTGRES = (
+    "holds one row locked from a second database session while other "
+    "writers proceed; SQLite has one writer and no row locks"
+)
 
 
 def _force_state(session_id: str, state: str) -> None:
@@ -82,7 +91,7 @@ def _force_state(session_id: str, state: str) -> None:
 
 
 def _read_session_row(session_id: str) -> dict[str, str]:
-    """Read state / last_seen_at / tokens_used straight from Postgres."""
+    """Read state / last_seen_at / tokens_used straight from the database."""
     raw = exec_sql(
         "SELECT state, last_seen_at, tokens_used FROM sessions "
         "WHERE session_id = :'sid'::uuid",
@@ -386,6 +395,11 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     silence = exec_sql(
         "SELECT EXTRACT(EPOCH FROM (ended_at - last_seen_at))::bigint "
         "FROM sessions WHERE session_id = :'sid'::uuid",
+        sqlite=(
+            "SELECT CAST(strftime('%s', ended_at) AS INTEGER) "
+            "- CAST(strftime('%s', last_seen_at) AS INTEGER) "
+            "FROM sessions WHERE session_id = :sid"
+        ),
         sid=sid,
     ).strip()
     assert int(silence) >= 24 * 60 * 60, (
@@ -505,7 +519,7 @@ def _read_session_identity(session_id: str) -> dict[str, str]:
 
     Returns "" for NULL columns so callers can assert on sentinel
     values without juggling None. context is returned as the raw
-    JSONB text ("{}" or "null" -- psql -A renders JSONB verbatim).
+    JSON text as the database renders it ("{}" or "null").
     """
     raw = exec_sql(
         "SELECT flavor, agent_type, "
@@ -1026,6 +1040,7 @@ def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> No
 # up to the lock timeout, and every session routed to that worker
 # waits behind it, so this runs with the stack to itself.
 @pytest.mark.exclusive
+@pytest.mark.postgres_only(ROW_LOCK_NEEDS_POSTGRES)
 def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
     """Force the worst order: the previous run's end and the new run's
     end are both processed before the re-attaching session_start. The
@@ -1111,6 +1126,10 @@ def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
 
     closed = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = ANY(:'ids'::uuid[]) AND state = 'closed'",
+        sqlite=(
+            "SELECT COUNT(*) FROM sessions WHERE instr(:ids, session_id) > 0 "
+            "AND state = 'closed'"
+        ),
         ids="{" + ",".join(ending) + "}",
     )
     assert closed == str(len(ending)), (
@@ -1119,6 +1138,10 @@ def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
     live = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = ANY(:'ids'::uuid[]) "
         "AND state = 'active' AND tokens_used = :tokens",
+        sqlite=(
+            "SELECT COUNT(*) FROM sessions WHERE instr(:ids, session_id) > 0 "
+            "AND state = 'active' AND tokens_used = :tokens"
+        ),
         ids="{" + ",".join(resuming) + "}",
         tokens=PROBE_CALL_TOKENS,
     )
@@ -1186,6 +1209,7 @@ def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> N
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
+@pytest.mark.postgres_only(ROW_LOCK_NEEDS_POSTGRES)
 def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
     """The re-attachment stamp must not wait for a session row another
     writer holds: with the row locked for the whole request, the
@@ -1212,6 +1236,7 @@ def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
 # up to the lock timeout, and every session routed to that worker
 # waits behind it, so this runs with the stack to itself.
 @pytest.mark.exclusive
+@pytest.mark.postgres_only(ROW_LOCK_NEEDS_POSTGRES)
 def test_reattaching_start_is_stamped_while_an_event_insert_shares_its_row() -> None:
     """The stamp must pass the KEY SHARE lock an in-flight event insert
     holds on the session row through the foreign key, since a busy
@@ -1315,6 +1340,7 @@ def test_a_call_published_after_the_end_cannot_keep_the_session_open() -> None:
 # up to the lock timeout, and every session routed to that worker
 # waits behind it, so this runs with the stack to itself.
 @pytest.mark.exclusive
+@pytest.mark.postgres_only(ROW_LOCK_NEEDS_POSTGRES)
 @pytest.mark.parametrize(
     "closed_seq_sql", ["NULL", "start_seq - 1"], ids=["unsequenced", "older"]
 )

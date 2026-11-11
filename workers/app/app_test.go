@@ -65,3 +65,25 @@ func TestMigrate_RefusesAnUnsupportedURL(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// DatabaseURL is the URL a caller that shares one handle with the
+// workers opens it with: the lock timeout on Postgres, a SQLite URL
+// byte for byte (its path is verbatim; re-encoding it would name
+// another file).
+func TestDatabaseURL_AddsTheLockTimeoutOnPostgresOnly(t *testing.T) {
+	got, err := DatabaseURL("postgres://u:p@h/db?sslmode=disable")
+	if err != nil || !strings.Contains(got, "lock_timeout=8000") || !strings.Contains(got, "sslmode=disable") {
+		t.Fatalf("DatabaseURL = %q, %v", got, err)
+	}
+	for _, same := range []string{
+		"sqlite:///home/o m/a#b/x?y/50%/flightdeck.db",
+		`sqlite://C:\Users\omria\AppData\Local\flightdeck\flightdeck.db`,
+	} {
+		if got, err := DatabaseURL(same); err != nil || got != same {
+			t.Errorf("DatabaseURL(%q) = %q, %v; want it unchanged", same, got, err)
+		}
+	}
+	if _, err := DatabaseURL("mysql://u:p@h/db"); err == nil {
+		t.Error("a URL of no supported backend must be refused")
+	}
+}

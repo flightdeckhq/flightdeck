@@ -2,6 +2,7 @@ package writer
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -55,4 +56,16 @@ func TestDatabaseURL_LockTimeoutReachesPostgres(t *testing.T) {
 			t.Fatalf("lock_timeout = %q, want 8s", timeout)
 		}
 	})
+}
+
+// A Postgres URL that does not parse is refused without its text: the
+// parse error would quote the URL, password included.
+func TestDatabaseURL_UnparsableURLIsRefusedWithoutItsPassword(t *testing.T) {
+	_, err := DatabaseURL("postgres://worker:s3cret pass@localhost:5432/db%zz")
+	if !errors.Is(err, storage.ErrInvalidURL) {
+		t.Fatalf("err = %v, want storage.ErrInvalidURL", err)
+	}
+	if strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("the error repeats the password: %v", err)
+	}
 }

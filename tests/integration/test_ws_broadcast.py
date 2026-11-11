@@ -41,6 +41,11 @@ def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:
         "SELECT id FROM events WHERE session_id = :'sid'::uuid "
         "AND event_type = ANY(string_to_array(:'types', ',')) "
         "ORDER BY occurred_at ASC",
+        sqlite=(
+            "SELECT id FROM events WHERE session_id = :sid "
+            "AND instr(',' || :types || ',', ',' || event_type || ',') > 0 "
+            "ORDER BY occurred_at ASC"
+        ),
         sid=session_id,
         types=",".join(event_types),
     )

@@ -216,8 +216,8 @@ flightdeck/
 ├── Makefile                    # Root Makefile -- orchestrates all components; builds the flightdeck binary
 ├── go.work                     # Go workspace: the root module, the storage module and the three service modules
 ├── go.mod                      # Root module github.com/flightdeckhq/flightdeck: the one `flightdeck` binary (migrates from the storage module's embedded files)
-├── cmd/flightdeck/main.go      # The binary: flags, data dir, Postgres, embedded NATS, the three services, the router
-├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, secrets), bootstrap (token mode),
+├── cmd/flightdeck/main.go      # The binary: flags, data dir, the database (SQLite file or Postgres), embedded NATS, the three services, the router
+├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, lock file, secrets), bootstrap (token mode),
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config)
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
@@ -4623,6 +4623,25 @@ backend blocked after the client has given up. A lock held through all
 three deliveries (about 35 seconds) ends the message as
 `max_retries_exhausted`.
 
+When the worker stops (SIGINT, SIGTERM, the `flightdeck` binary
+shutting down) each lane finishes the message it is processing and
+acknowledges it: the stop does not cancel that message, whose
+ten-second deadline still bounds it. Processing a call is several
+statements (the session's counters, then the event row), and one
+interrupted between them would be redelivered and counted a second
+time. A message still queued in a lane has not been started; it stays
+unacknowledged and is redelivered when its ack wait ends.
+
+A known limit remains for a worker that is killed rather than stopped
+(`kill -9`, the machine losing power, a second signal during the
+stop): if it dies after a call's counter updates and before the call's
+event row is written, the redelivered message applies the counters
+again. The session's `tokens_used` and its agent's `total_tokens` can
+then over-count by that one call, for each message that was in flight
+at that instant (at most one per lane). The `events` table holds the
+call once, so the analytics, which sum events, stay correct, and
+`POST /v1/admin/reconcile-agents` recomputes the agent totals.
+
 Events can still reach the worker out of order: a client's concurrent
 processes (the Claude Code plugin's hooks) can publish a session's events
 in a different order than they happened, and a message the worker asked
@@ -5040,7 +5059,8 @@ Flightdeck runs on one of two database engines behind one boundary, the
 Go module `storage` (`github.com/flightdeckhq/flightdeck/storage`):
 
 - **SQLite** (default): one file, pure Go (`modernc.org/sqlite`, no cgo),
-  one process. `storage.Open(ctx, "sqlite://<path>")`.
+  one process. `storage.Open(ctx, "sqlite://<path>")`. The `flightdeck`
+  binary uses `<data dir>/flightdeck.db` unless told otherwise.
 - **Postgres**: the multi-process backend (Helm, several instances
   sharing a database). `storage.Open(ctx, "postgres://…")`, pgx as the
   `database/sql` driver.
@@ -5061,16 +5081,29 @@ store of the three services is inside the boundary (CLAUDE.md rule 35
 lists the store packages): the query API's stores in
 `api/internal/store`, its token validator and the WebSocket hub, every
 ingestion store, and the workers' writer and processor. Each service
-therefore runs whole on a SQLite file and on a Postgres database. The one
+therefore runs whole on a SQLite file and on a Postgres database, and
+so does the `flightdeck` binary, which runs the three on one database.
+The one
 database error type a store inspects is read through
 `storage.ErrorClass`, which names a Postgres error by its SQLSTATE,
 table and constraint and any other error by its text, never by the
 data it refused. `storage.Open` pings; a service opens its
 database with `storage.OpenRetry`, which retries with a doubling delay
-for a bounded budget (ingestion and the query API: 60 s) so a database that starts a
-moment after the service does not end the process. The Postgres pool is
+for a bounded budget (60 s for ingestion, the workers and the query
+API alike, and for the `flightdeck` binary, which opens the database
+for the three) so a database that starts a moment after the service
+does not end the process. The budget is spent only on a failure that
+another attempt can get past: a refused or timed-out connection, a
+host name that does not resolve yet, a server that answers that it is
+starting up or has no connection to spare. `storage.PermanentOpenError`
+names the failures that are returned at once: Postgres refusing the
+credentials (SQLSTATE class 28) or the database name (3D000), a URL
+that cannot be accepted (an unsupported scheme, a `sqlite://` URL with
+no file, a Postgres URL that does not parse, reported without the URL's
+text since it holds the password), and any failure to open a SQLite
+file other than its being locked for the moment. The Postgres pool is
 capped at max(4, NumCPU) connections, open and idle, idle ones closed
-after 30 minutes; the SQLite writer is one connection and the reader
+after 30 minutes; the SQLite writer is one connection and each read
 pool eight.
 
 **The common subset** both engines accept, written as is: `$1, $2, …`
@@ -5096,6 +5129,7 @@ the same result:
 | `JSONText(col, keys…)` | `col->'a'->>'b'` | `json_extract(col, '$.a.b')` |
 | `Upsert(conflict, update)` | `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` | same |
 | `Returning(cols…)` | `RETURNING …` | same |
+| `InsertionOrder(alias, idCol)` (an `ORDER BY` tie-break after a server-stamped timestamp) | `alias.idCol` | `alias.rowid` |
 | `Percentile(fraction, expr)` | `PERCENTILE_CONT(f) WITHIN GROUP (ORDER BY expr)` | `percentile_cont(expr, f)`, the registered aggregate below |
 | `SecondsBetween(a, b)` | `EXTRACT(EPOCH FROM (a - b))` | `ROUND((julianday(a) - julianday(b)) * 86400, 3)` (exact to the millisecond both carry) |
 | `DateOf(ts)` | `CAST(ts AS DATE)` | `date(ts)` |
@@ -5148,8 +5182,14 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
 
 ### SQLite semantics
 
-- **File and connections.** The database URL is `sqlite://<path>`; the
-  path is percent-encoded into the `file:` URI SQLite opens, so a data
+- **File and connections.** The database URL is `sqlite://<path>`: the
+  path follows the scheme verbatim and nothing in the URL is
+  percent-encoded. `storage.SQLiteURL(path)` builds it and
+  `storage.SQLitePath(url)` reads it back, exact inverses; a caller
+  never assembles the URL through a URL library, which would escape the
+  path and name a second, empty database. The one encoding SQLite
+  needs happens inside `Open`: the path is percent-encoded into the
+  `file:` URI SQLite opens, so a data
   directory containing `#`, `?`, `%` or spaces opens the file at that
   path, and a Windows drive path (`C:\…`) becomes `file:///C:/…`. Every
   connection sets `journal_mode=WAL`, `busy_timeout=5000`,
@@ -5168,6 +5208,35 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   statement runs on the `Tx`, and a read that needs no transaction runs
   on `Reader()`. `sql.TxOptions.ReadOnly` is enforced by Postgres and
   ignored by SQLite. On Postgres both handles are the same pool.
+- **One writer, a read pool per service.** `DB.Share(ctx)` returns a
+  handle for another service of the same process: it writes through
+  the original's writer, so the process still has exactly one writer
+  connection, and it reads through eight connections of its own, so
+  one service's slow reads (a dashboard's listings) never make
+  another's wait for a connection (the workers' point reads on every
+  event). Closing a shared handle closes only its read pool; the
+  original is closed after it. On Postgres, which has no single
+  writer to share, `Share` opens a pool of its own on the same URL,
+  the pool each service has when it runs as a process: three services
+  on one pool sized for one stored a third as many events a second
+  under read load (84 against 245 for 5,000 events and eight readers,
+  one pool of four against three).
+- **The write-ahead log is reset by the writer.** SQLite's own
+  checkpoint copies the log into the database file every 1000 pages
+  without waiting, and starts the log file over only when everything
+  is copied and no reader is on the log. Under reads that overlap
+  every write that moment does not come, and the log grows without
+  bound (446 MiB for 10,000 events under eight readers in a tight
+  loop, measured). So once a second the writer handle looks at the
+  log's size and, above 16 MiB, runs `PRAGMA wal_checkpoint(TRUNCATE)`
+  on the writer connection with a one-second busy timeout: writes
+  queue behind it, reads are never held, and the log is emptied as
+  soon as the reads in flight have ended (new reads no longer use the
+  log once it is copied). A read that outlasts the timeout postpones
+  the reset; the next attempt waits twice as long as the last, up to
+  30 seconds, and a warning names the log's size after ten attempts
+  in a row. Closing the database stops the loop, and the last
+  connection to close folds the log into the file and removes it.
 - **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
   `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
@@ -5182,6 +5251,27 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   timestamp an expression computes (`MAX(ts)`, `DateTrunc`) has no
   declared type and comes back as text on SQLite: scan it through
   `storage.Time`, which accepts both shapes.
+- **Ties on a server-stamped timestamp.** Rows the server stamps in
+  the same millisecond carry the same timestamp on SQLite, which
+  happens under any burst (a sensor registering its custom directives,
+  two directives issued to one session); on Postgres such rows differ
+  by microseconds, and tie only when one transaction stamps them. A
+  query whose order among those rows is visible or decides something
+  (a newest-first list, an oldest-first pick) therefore ends its
+  `ORDER BY` with `Dialect.InsertionOrder`: on SQLite the table's
+  `rowid`, which every insert sets above all the rows the table
+  holds, so tied rows come back in the order they were written (the
+  order a finer clock would have given); on Postgres, which records
+  no insertion order, the id column, which keeps the order total and
+  repeatable. A random id alone is never the tie-break of such a
+  query on SQLite. The token, token-policy and custom-directive lists,
+  the MCP policy audit log and the pending-directive pick are ordered
+  this way. Where either
+  tied row is a correct answer (the latest
+  session of an agent among two started in one millisecond, search
+  results of equal rank, the entries of one MCP policy, which one
+  transaction stamps alike on both engines) the query keeps a unique
+  id, or the scan order, as its tie-break.
 - **UUIDs** are `TEXT` in canonical lower-case hyphenated form, with a
   `CHECK` on every uuid column (lower-case, `8-4-4-4-12`, hexadecimal),
   so an upper-case or unhyphenated id cannot be stored and then missed
@@ -5250,7 +5340,14 @@ the database sees every notification; on SQLite, in-process buffered
 channels, where a publisher waits for a subscriber whose buffer (256
 payloads) is full rather than dropping; the wait ends with the
 publisher's context or the subscriber's, and publishers never wait for
-each other.
+each other. An in-process bus is private to the code that holds it:
+services that must hear each other on SQLite share one `Bus` value
+(the `flightdeck` binary creates it and passes it to all three, as it
+does with the database: see `DB.Share` above).
+`Close()` ends every subscription and returns once the bus holds no
+goroutine and no `LISTEN` connection; `Publish` and `Subscribe` then
+return `storage.ErrBusClosed`. Whoever created a bus closes it after
+its publishers and subscribers have stopped and before the database.
 
 ### Tests on both backends
 
@@ -10366,8 +10463,10 @@ too long to fit a tooltip — never paraphrased.
 Flightdeck is one binary, `flightdeck` (the root Go module,
 `cmd/flightdeck`). It runs the ingestion API, the workers and the query
 API as goroutines of one process, serves the dashboard from the binary,
-and embeds its message bus. Postgres is the one external dependency
-(`--database-url`); the binary refuses to start without it.
+and embeds its message bus and its database: with no flags it keeps
+everything in a SQLite file under the data dir and depends on nothing
+outside the process. `--database-url postgres://…` puts the data in a
+Postgres database instead (see Database below).
 
 **Ports and routes.** One listener, `--listen`, default `127.0.0.1:4000`.
 The router serves `/` and every path with no other owner from the
@@ -10411,13 +10510,107 @@ given; the public port never serves `/metrics`.
 **Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
 mode 0700; an existing directory with a wider mode is used as it is and
-a warning names the `chmod`, since it holds the bus store and the
-secrets file. It holds `nats/`, the embedded JetStream store;
-`secrets.json` (mode 0600) with the JWT secret, generated once, and the
-dashboard token of the non-loopback mode below; and `acme/`, the TLS
-certificate cache. A `--database-url` is the only other state the
-binary needs, so a new data dir on an existing database is a working
-install.
+a warning names the `chmod`, since it holds the database, the bus store
+and the secrets file. It holds `flightdeck.db`, the SQLite database
+(mode 0600, with SQLite's `flightdeck.db-wal` and `flightdeck.db-shm`
+beside it while the binary runs), absent when `--database-url` names
+another database; `nats/`, the embedded JetStream store; `secrets.json`
+(mode 0600) with the JWT secret, generated once, and the dashboard
+token of the non-loopback mode below; `acme/`, the TLS certificate
+cache; and the lock files below. With `--database-url postgres://…`
+the data dir holds no session data, so a new data dir on an existing
+Postgres database is a working install. The data dir must be on a
+local disk. SQLite's write-ahead log relies on shared memory and file
+locks that a network filesystem does not provide (NFS, SMB; on
+Windows a UNC path or a mapped network drive is the usual way to end
+up on one), and the binary's own lock needs the same; the lock error
+says so when the filesystem refuses the lock.
+
+**One process per data dir.** The running binary holds an exclusive
+operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
+Windows) on `<data dir>/flightdeck.lock`, and in SQLite mode a second
+one on `<database file>.lock`, taken before anything in the directory
+is written. A second `flightdeck` on the same data dir, or on the same
+SQLite file through `--database-url sqlite://…` from another data dir,
+exits at once with a message naming the directory or file and the PID
+that holds it (the holder writes its PID into the lock file). The
+default case is refused earlier, by the port. The database's lock file
+is named after the real path of the database: symbolic links are
+resolved first (those of the file, or of its directory when the file
+is yet to be created), so a second instance that reaches the file
+through a link, or through a data dir that is a link, contends for
+the same lock. Two names that are not links to one another are not
+recognised as one file: a hard link, or the same file bind-mounted
+into two containers, each of which sees a lock file of its own. Run
+one container per database file. A path spelled in another case is
+the same lock where the operating system takes the two spellings for
+one file: on Windows a second instance that names the data dir or the
+database in another case is refused (run there), and macOS's default
+filesystem ignores case the same way (not run there). It is not the
+same lock on WSL's mount of a Windows drive (`/mnt/c`), a 9p network
+filesystem on which `flock` follows the spelling; that mount cannot
+hold a data dir in any case, since it keeps no file modes and the
+binary refuses its own `secrets.json` on the second start. The kernel
+drops the lock
+when the process ends, however it ends, so a crash leaves no stale
+lock: the files stay and the next start locks them again. On a
+platform with neither `flock` nor `LockFileEx` the binary starts with
+a warning that a second instance will not be refused. The lock is
+what makes SQLite mode safe: the single writer connection and the
+in-process storage bus (see Storage) are per process, so two processes
+on one file would write past both.
+
+**Database.** `--database-url` (`FLIGHTDECK_DATABASE_URL`) is optional.
+Without it the database is `sqlite://<data dir>/flightdeck.db`, created
+on the first start; the URL is built by `storage.SQLiteURL`, which
+carries the path verbatim, so a data dir with spaces, `#`, `?`, `%` or
+a Windows drive letter names one file everywhere. With it the binary
+accepts `postgres://…` or `postgresql://…` (the multi-instance backend:
+several binaries, each with a data dir of its own, may share one
+Postgres database) and `sqlite://<path>` (a SQLite file somewhere else;
+a relative path is resolved against the working directory), and
+refuses any other value at start with the accepted forms. The binary
+connects first (`storage.OpenRetry`): a Postgres that does not answer
+yet, as when compose starts both together, is waited for up to 60
+seconds, each attempt logged, and a signal ends the wait; a refused
+password, a database that does not exist, a URL that does not parse
+or a SQLite file that cannot be opened ends the start at once with
+the reason, the password never repeated. It then applies the embedded
+migrations of the backend (`storage.Migrate`) before any statement of
+a service runs, so an empty database, a new SQLite file and a Postgres
+database an earlier version migrated are all brought to the current
+schema. That connection is the process's **one** `storage.DB`; the
+binary creates **one** `storage.Bus` beside it and hands each of the
+three services the bus and a handle on that database (`DB.Share`): on
+SQLite the database owns the file's single writer connection and the
+bus is in-process, so every write of the three services queues on one
+connection and every notification reaches every subscriber, while
+each service reads through a pool of its own, so the dashboard's
+queries never hold up the workers' reads. On Postgres each handle is
+a pool of its own, the bus notifies through the workers' pool, and
+one process opens at most 80 connections: each service's pool is
+max(4, NumCPU) connections capped at 25, the pool the binary opens
+first (used only for the start-up token check) is 2, and the storage
+bus holds 3 `LISTEN` connections. A Postgres server accepts 100
+connections by default and keeps 3 for superusers, so the budget
+leaves 17 for a psql session, a backup or a migration; several
+instances on one database need `max_connections` raised by 80 each,
+or a connection pooler in front. Every
+pool's connections carry the
+workers' `lock_timeout` (8 s) and the query API's `jit=off` as URL
+runtime parameters, the settings each service puts on its pool when
+it runs alone: a statement that waits longer than that for a row lock would
+outlast its caller's deadline in any of the three services, and
+Postgres only considers the JIT for the query API's analytics queries.
+The migrations run without the lock timeout.
+
+**Backing up SQLite.** While the binary runs, copy the database with
+SQLite itself: `sqlite3 <data dir>/flightdeck.db "VACUUM INTO
+'/backup/flightdeck.db'"` (or the shell's `.backup` command) writes a
+consistent snapshot without stopping the binary. A plain file copy is
+only safe when the binary is stopped (a clean stop folds the
+write-ahead log into `flightdeck.db` and removes it); a copy taken
+while it runs must include `flightdeck.db-wal` and may still be torn.
 
 **Embedded NATS.** The binary starts a `nats-server` in process with
 JetStream on, `StoreDir=<data>/nats` and `DontListen`, so no port is
@@ -10461,14 +10654,15 @@ the binary serves plain HTTP.
 
 **Time zone.** The binary sets the process's local zone to UTC at
 start, as the compose containers have: the query API
-formats the timestamps it reads from Postgres in the process's zone,
+formats the timestamps it reads from the database in the process's zone,
 and its contract is RFC 3339 in UTC, whatever zone the host is in.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
-was printed), the data dir, the database (URL with the password
-masked) and the bus (embedded, with its store dir, or the external
-URL). Everything else is `slog` on stderr.
+was printed), the data dir, the database (the SQLite file's path, or
+the Postgres URL with the password masked, each followed by the
+engine's name) and the bus (embedded, with its store dir, or the
+external URL). Everything else is `slog` on stderr.
 
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
@@ -10481,25 +10675,57 @@ sets.
 
 **Start order and shutdown.** The binary binds its port(s) first (so a
 busy or privileged port fails before anything is touched), prepares
-the data dir and secrets, connects to Postgres, applies the embedded
-migrations, starts the bus, then the three services together, then
-serves. On SIGINT or SIGTERM, or when a service or a listener fails,
-it stops in order: the HTTP server stops accepting and drains the
-requests in flight (which still have the services they are calling),
-then the services are cancelled and waited for (each joins its own
-loops: the ingestion assembler and the worker lanes finish their
-current message within `SHUTDOWN_TIMEOUT_SECS`), each step bounded by
-30 seconds; then the embedded NATS server and the database pool close,
-the bus last so every publish and acknowledgement before it has reached
-the store. A service's failure is the exit status's reason; a stop on
-a signal exits 0.
+the data dir, takes its lock and reads the secrets, takes the SQLite
+file's lock (creating the file, mode 0600, when it is new), starts
+the embedded NATS server, opens the database (waiting for one that is
+not up yet), applies the embedded migrations, creates the storage
+bus, checks or mints the dashboard token,
+then starts the three services together and serves. On SIGINT or
+SIGTERM, or when a service or a listener fails, it stops in order:
+the HTTP server stops accepting and drains the requests in flight
+(which still have the services they are calling), then the services
+are cancelled and waited for (each joins its own loops: the ingestion
+assembler and the worker lanes finish their current message within
+`SHUTDOWN_TIMEOUT_SECS`), each step bounded by 30 seconds; then the
+storage bus closes (its subscriptions end and, on Postgres, its
+`LISTEN` connections close), then the database, then the NATS
+connections and the embedded NATS server, and last the lock files are
+released. The first signal starts this stop; from then on the signals
+have their default action again, so a second Ctrl+C or signal during a
+slow drain ends the process at once, which costs what a kill costs
+(below) and nothing more: SQLite recovers its write-ahead log at the
+next start. A process that was started with SIGINT ignored (a
+background job of a non-interactive shell, `nohup`, some CI runners)
+ignores it again after the first one, as its default action there is
+to be ignored; SIGTERM ends it. The database closes as soon as nothing uses it and before
+the bus store, so on SQLite the write-ahead log is checkpointed into
+`flightdeck.db` and removed even when the NATS shutdown is slow:
+after a stop on a signal the data dir holds one database file, and
+the next start on it finds every stored session and event and, in
+the non-loopback mode, the same dashboard token. An event accepted
+(HTTP 200) and not yet stored when the stop begins stays in the
+`FLIGHTDECK` stream and is stored, once, by the next start: a
+worker lane finishes the message it is processing when the stop
+begins (under that message's own 10-second deadline) and acknowledges
+it, so no call is left with its session counters written and its
+event row missing; messages still queued in a lane are not started,
+and the stream hands them out again once their 30-second
+acknowledgement wait has passed, so the next start may store its
+first events that long after it begins. A service's
+failure is the exit status's reason; a stop on a signal exits 0.
 
 **The `app` packages.** Each service exports `ingestion/app`,
 `workers/app` and `api/app`: `Config` (the service's tunables, the
-values its environment variables carry), `Deps` (a `*pgxpool.Pool`, a `*nats.Conn` and, for the
-workers, the migrations `fs.FS`; a nil dependency is dialled from
-`Config`), `New`, `Run(ctx)` and, for ingestion and the API,
-`Handler()`. `Run` joins every goroutine it starts before it closes
+values its environment variables carry), `Deps` (a `*storage.DB`, a
+`storage.Bus` and, for ingestion and the workers, a `*nats.Conn`; a
+nil dependency is opened from `Config` and closed by the service, one
+the caller passes is left open), `New`, `Run(ctx)` and, for ingestion
+and the API, `Handler()`. A caller that runs more than one service in
+a process on SQLite passes the same `DB` and `Bus` to each, as the
+binary does: a `Bus` each service created for itself would be private
+to it. `api/app.DatabaseURL` and `workers/app.DatabaseURL` return the
+URL each service opens its own database with (the Postgres runtime
+parameters above), for a caller that opens it for them. `Run` joins every goroutine it starts before it closes
 the connections it owns; the workers' `Run` does not migrate (the
 binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
 `app.Run`, and the compose dev overlay still runs them with `go run
@@ -10578,8 +10804,8 @@ over the defaults.
 | Flag | Variable | Purpose |
 |---|---|---|
 | `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
-| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `nats/`, `secrets.json`, `acme/` |
+| `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
@@ -10962,7 +11188,17 @@ Swagger UI matches the latest annotations.
 ### Integration tests
 
 `tests/integration/` runs against the live dev stack (real NATS, real
-Postgres) via `make test-integration`:
+Postgres) via `make test-integration`, and against the `flightdeck`
+binary on either backend: `FLIGHTDECK_TEST_BASE_URL` names the stack,
+and the helpers that read and write the database directly
+(`tests/shared/fixtures.py`) use `psql` in the Postgres container
+(`FLIGHTDECK_TEST_DB` names the database) or, when
+`FLIGHTDECK_TEST_SQLITE_DB` names the binary's `flightdeck.db`,
+Python's `sqlite3` on that file. A test that needs something only
+Postgres has (a row lock held from a second database session) is
+marked `postgres_only` with its reason and skips on SQLite; a test
+that pauses the worker container skips against the binary, which has
+none. CONTRIBUTING.md has the commands. The suite covers:
 
 - `test_pipeline.py` — POST event → fleet → session detail → events
 - `test_session_states.py` — active → idle → stale → lost → revive

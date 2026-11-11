@@ -32,6 +32,7 @@ from .conftest import (
     auth_headers,
     delete_flavor_data,
     exec_sql,
+    query_rows,
     wait_until,
 )
 from .test_sensor_e2e import _force_reset_sensor
@@ -185,13 +186,8 @@ def _agent(name: str, **kwargs: Any) -> Any:
 # ---- the stored rows -------------------------------------------------------
 
 
-def _rows(sql: str, **bindings: Any) -> list[dict[str, Any]]:
-    out = exec_sql(f"SELECT coalesce(json_agg(r), '[]'::json) FROM ({sql}) r", **bindings)
-    return json.loads(out or "[]")  # type: ignore[no-any-return]
-
-
 def _sessions(flavor: str) -> list[dict[str, Any]]:
-    return _rows(
+    return query_rows(
         "SELECT session_id::text, parent_session_id::text, agent_role, state, context,"
         " ended_at IS NOT NULL AS ended FROM sessions WHERE flavor = :'flavor'"
         " ORDER BY started_at",
@@ -200,7 +196,7 @@ def _sessions(flavor: str) -> list[dict[str, Any]]:
 
 
 def _events(flavor: str) -> list[dict[str, Any]]:
-    return _rows(
+    return query_rows(
         "SELECT id::text, session_id::text, event_type, model, tool_name, has_content, payload"
         " FROM events WHERE flavor = :'flavor' ORDER BY occurred_at",
         flavor=flavor,
@@ -261,6 +257,7 @@ def _content_rows(event_ids: list[str]) -> int:
         exec_sql(
             "SELECT count(*) FROM event_content"
             " WHERE event_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            sqlite="SELECT count(*) FROM event_content WHERE instr(:ids, event_id) > 0",
             ids=",".join(event_ids),
         )
     )

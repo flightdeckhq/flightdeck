@@ -514,6 +514,11 @@ jobs:
     # embedded bus and serve the session back, stop cleanly.
     name: flightdeck binary
     runs-on: ubuntu-24.04
+    # The job takes about ten minutes (npm ci, the dashboard build, the
+    # lint, the -race tests that start the real binary, three smokes);
+    # twenty turns a start that wedges into a failure with its log
+    # instead of a run that sits until the six-hour default.
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -570,13 +575,31 @@ jobs:
         run: make lint-flightdeck
 
       - name: Unit tests (root module)
-        run: go test -race ./cmd/... ./internal/... ./webui/...
+        # cmd/flightdeck's tests start the real binary (the test
+        # executable re-executes itself) on SQLite: stop and restart,
+        # kill and restart, a second instance, the fleet feed. The
+        # child is built with -race too, hence the checkptr exemption
+        # for the pure-Go SQLite, as in the Go job above.
+        run: go test -race -count=1 -gcflags='modernc.org/...=-d=checkptr=0' ./cmd/... ./internal/... ./webui/...
 
       - name: Build bin/flightdeck
         run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
 
+      - name: Smoke the binary on its default database (SQLite)
+        # No database URL: the first-run path of a user who configures
+        # nothing.
+        run: scripts/flightdeck-smoke.sh ./bin/flightdeck 127.0.0.1:4000
+
       - name: Smoke the binary against Postgres
         run: scripts/flightdeck-smoke.sh ./bin/flightdeck 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable' 127.0.0.1:4000
+
+      - name: Concurrency smoke on SQLite
+        # Twenty sessions of a hundred events each while four readers
+        # hit the query API: every event stored once, no 5xx, no locked
+        # database, the write-ahead log bounded, a clean stop. Sized to
+        # finish in about a minute on a runner; the script's defaults
+        # are the larger load its header describes.
+        run: python3 scripts/flightdeck_stress.py ./bin/flightdeck --listen 127.0.0.1:4000 --sessions 20 --events 100 --readers 4
 
   dashboard:
     name: Dashboard (TypeScript)
@@ -1532,7 +1555,7 @@ jobs:
   # the all-in-one Docker image is built from the root Dockerfile, so a
   # platform or an image that stops building fails here and not on the
   # tag. The binaries are not run: the `flightdeck` job above smokes the
-  # native build against Postgres.
+  # native build on SQLite and against Postgres.
   release-snapshot:
     name: Release snapshot (six binaries, Docker image)
     runs-on: ubuntu-24.04

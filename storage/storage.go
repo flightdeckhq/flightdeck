@@ -38,21 +38,26 @@ const (
 // neither sqlite nor postgres.
 var ErrUnsupportedURL = errors.New("storage: database URL must start with sqlite:// or postgres://")
 
+// ErrInvalidURL is returned by Open for a Postgres URL that does not
+// parse. The message does not quote the URL, which holds the password;
+// the usual cause is a reserved character in it.
+var ErrInvalidURL = errors.New("storage: the Postgres URL does not parse (percent-encode reserved characters in the password, @ as %40)")
+
 // ErrSQLiteNeedsFile is returned by Open for a sqlite:// URL that names
 // no file (empty or :memory:): an in-memory database is private to one
 // connection, so the read pool and the migrator would each see an
 // empty one.
 var ErrSQLiteNeedsFile = errors.New("storage: sqlite URL must name a file")
 
-// postgresMinOpenConns is the floor of the Postgres pool size; the pool
-// holds max(postgresMinOpenConns, NumCPU) connections, open and idle
+// PostgresMinOpenConns is the floor of the Postgres pool size; the pool
+// holds max(PostgresMinOpenConns, NumCPU) connections, open and idle
 // alike, the default pgxpool used before the storage boundary. The cap
 // matters because token validation runs before the rate limiter and an
 // unknown token is never cached: without it a burst of bad tokens
 // opens a connection per request and can exhaust the server's
 // max_connections. Four covers a small host; a CPU per connection is
 // as many queries as the process runs at once.
-const postgresMinOpenConns = 4
+const PostgresMinOpenConns = 4
 
 // postgresConnMaxIdleTime is how long an idle Postgres connection is
 // kept before it is closed (pgxpool's default). Long enough that the
@@ -78,10 +83,12 @@ const (
 // without hiding a stuck process behind an endless wait.
 const sqliteBusyTimeoutMillis = 5000
 
-// sqliteReaderConns bounds the SQLite read pool. Readers never block
+// sqliteReaderConns bounds a SQLite read pool. Readers never block
 // each other or the writer in WAL mode, so the number only caps the
 // memory of idle connections; eight covers the dashboard's concurrent
-// fetches on a page load with the API's own background reads.
+// fetches on a page load with the API's own background reads. Each
+// handle has a read pool of its own (see Share), so the eight are per
+// service.
 const sqliteReaderConns = 8
 
 // DB is an open database: the writer handle (the embedded *sql.DB),
@@ -115,6 +122,12 @@ type DB struct {
 	reader *sql.DB
 	// url is the URL Open received; the Postgres Bus dials it for LISTEN.
 	url string
+	// checkpointer resets the write-ahead log of a SQLite database
+	// (sqlite_checkpoint.go); nil on Postgres and on a shared handle.
+	checkpointer *walCheckpointer
+	// shared marks a SQLite handle made by Share: the writer belongs to
+	// the handle it was made from, which closes it.
+	shared bool
 }
 
 // Open connects to the database named by url: "sqlite://<path>" opens
@@ -153,9 +166,11 @@ func Open(ctx context.Context, rawURL string) (*DB, error) {
 // answer is retried with a doubling delay until it does or budget has
 // elapsed, each attempt logged at warn, so a service that starts a
 // moment before its database (compose, a Kubernetes rollout) comes up
-// instead of exiting. A URL Open can never accept (unsupported scheme,
-// sqlite without a file) is not retried. The last error is returned
-// when the budget runs out or ctx ends.
+// instead of exiting. A failure that another attempt cannot fix
+// (PermanentOpenError: a URL Open can never accept, credentials or a
+// database name Postgres refuses, a SQLite file that cannot be opened)
+// is returned at once. The last error is returned when the budget runs
+// out or ctx ends.
 func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, error) {
 	deadline := time.Now().Add(budget)
 	delay := openRetryInitialDelay
@@ -164,7 +179,7 @@ func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, e
 		if err == nil {
 			return db, nil
 		}
-		if errors.Is(err, ErrUnsupportedURL) || errors.Is(err, ErrSQLiteNeedsFile) {
+		if PermanentOpenError(err) {
 			return nil, err
 		}
 		remaining := time.Until(deadline)
@@ -187,7 +202,7 @@ func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, e
 // BackendOf reports which backend a database URL names.
 func BackendOf(rawURL string) (Backend, error) {
 	switch {
-	case strings.HasPrefix(rawURL, "sqlite://"):
+	case strings.HasPrefix(rawURL, sqliteScheme):
 		return SQLite, nil
 	case strings.HasPrefix(rawURL, "postgres://"), strings.HasPrefix(rawURL, "postgresql://"):
 		return Postgres, nil
@@ -195,22 +210,40 @@ func BackendOf(rawURL string) (Backend, error) {
 	return "", ErrUnsupportedURL
 }
 
+// sqliteScheme is the prefix of every SQLite database URL.
+const sqliteScheme = "sqlite://"
+
 // SQLitePath returns the file path of a sqlite:// URL: everything after
 // the scheme, verbatim ("sqlite:///var/lib/fd.db" is "/var/lib/fd.db",
 // "sqlite://fd.db" is the relative "fd.db").
 func SQLitePath(rawURL string) string {
-	return strings.TrimPrefix(rawURL, "sqlite://")
+	return strings.TrimPrefix(rawURL, sqliteScheme)
+}
+
+// SQLiteURL returns the database URL of the SQLite file at path, the
+// inverse of SQLitePath: SQLitePath(SQLiteURL(p)) is p for every p. The
+// path follows the scheme byte for byte; nothing in it is
+// percent-encoded, because nothing reads it back as a URL. A path with
+// spaces, "#", "?", "%" or a Windows drive letter therefore names the
+// same file here and in Open (which does the one encoding SQLite needs,
+// in sqliteFileURI). Building the URL through net/url instead would
+// escape those characters, and Open would then create a second,
+// empty database at the escaped path.
+func SQLiteURL(path string) string {
+	return sqliteScheme + path
 }
 
 func openPostgres(rawURL string) (*DB, error) {
 	if _, err := url.Parse(rawURL); err != nil {
-		return nil, fmt.Errorf("storage: parse postgres URL: %w", err)
+		// The parse error quotes the URL, password included; it is
+		// left out.
+		return nil, ErrInvalidURL
 	}
 	pool, err := sql.Open("pgx", rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("storage: open postgres: %w", err)
 	}
-	conns := max(postgresMinOpenConns, runtime.NumCPU())
+	conns := max(PostgresMinOpenConns, runtime.NumCPU())
 	pool.SetMaxOpenConns(conns)
 	pool.SetMaxIdleConns(conns)
 	pool.SetConnMaxIdleTime(postgresConnMaxIdleTime)
@@ -234,17 +267,68 @@ func openSQLite(rawURL string) (*DB, error) {
 	writer.SetConnMaxIdleTime(0)
 
 	db := &DB{DB: writer, reader: writer, Dialect: sqliteDialect{}, Backend: SQLite, url: rawURL}
-	reader, err := sql.Open(sqliteDriverName, sqliteDSN(path, false))
+	reader, err := openSQLiteReaders(path)
 	if err != nil {
 		_ = writer.Close()
+		return nil, err
+	}
+	db.reader = reader
+	db.checkpointer = startWALCheckpointer(writer, path)
+	return db, nil
+}
+
+// openSQLiteReaders opens a read pool on the SQLite file at path.
+func openSQLiteReaders(path string) (*sql.DB, error) {
+	reader, err := sql.Open(sqliteDriverName, sqliteDSN(path, false))
+	if err != nil {
 		return nil, fmt.Errorf("storage: open sqlite reader: %w", err)
 	}
 	reader.SetMaxOpenConns(sqliteReaderConns)
 	reader.SetMaxIdleConns(sqliteReaderConns)
 	reader.SetConnMaxLifetime(0)
 	reader.SetConnMaxIdleTime(0)
-	db.reader = reader
-	return db, nil
+	return reader, nil
+}
+
+// Share returns a handle on the same database for another service of
+// the same process, so that one service's load cannot take the
+// connections another needs.
+//
+// On SQLite the handle writes through db's writer, so the process still
+// has exactly one writer connection and every write queues on it, and
+// reads through a pool of its own: a dashboard's slow listings never
+// make the workers' point reads on every event wait for a connection.
+// On Postgres, which has no single writer to share, the handle is a
+// pool of its own on the same URL, the pool each service has when it
+// runs as a process of its own. Three services on one pool sized for
+// one were measured storing a third as many events a second under
+// read load (84 against 245, 5,000 events, eight readers, pool of four
+// against three of four).
+//
+// Close on the returned handle closes only what Share opened and
+// leaves db usable. On SQLite db must stay open for as long as the
+// handle is used, and is closed after it.
+func (db *DB) Share(ctx context.Context) (*DB, error) {
+	if db.Backend != SQLite {
+		pool, err := openPostgres(db.url)
+		if err != nil {
+			return nil, err
+		}
+		if err := pool.PingContext(ctx); err != nil {
+			_ = pool.Close()
+			return nil, fmt.Errorf("storage: ping %s: %w", db.Backend, err)
+		}
+		return pool, nil
+	}
+	reader, err := openSQLiteReaders(SQLitePath(db.url))
+	if err != nil {
+		return nil, err
+	}
+	if err := reader.PingContext(ctx); err != nil {
+		_ = reader.Close()
+		return nil, fmt.Errorf("storage: ping sqlite reader: %w", err)
+	}
+	return &DB{DB: db.DB, reader: reader, Dialect: db.Dialect, Backend: db.Backend, url: db.url, shared: true}, nil
 }
 
 // sqliteDSN builds the modernc DSN for path. Every connection enables
@@ -317,8 +401,17 @@ func (db *DB) URL() string {
 	return db.url
 }
 
-// Close closes both handles.
+// Close closes both handles. On SQLite the last connection to close
+// checkpoints the write-ahead log into the database file and removes
+// it, so a closed database is one file.
 func (db *DB) Close() error {
+	if db.shared {
+		// The writer is not this handle's to close; its read pool is.
+		return db.reader.Close()
+	}
+	if db.checkpointer != nil {
+		db.checkpointer.Stop()
+	}
 	err := db.DB.Close()
 	if db.reader != db.DB {
 		if rerr := db.reader.Close(); err == nil {

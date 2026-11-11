@@ -29,7 +29,14 @@ import respx
 
 import flightdeck_sensor
 
-from .conftest import INGESTION_URL, TOKEN, delete_flavor_data, exec_sql, wait_until
+from .conftest import (
+    INGESTION_URL,
+    TOKEN,
+    delete_flavor_data,
+    exec_sql,
+    query_rows,
+    wait_until,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,13 +46,8 @@ OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 STORED_TIMEOUT_SECS = 20.0
 
 
-def _rows(sql: str, **bindings: Any) -> list[dict[str, Any]]:
-    out = exec_sql(f"SELECT coalesce(json_agg(r), '[]'::json) FROM ({sql}) r", **bindings)
-    return json.loads(out or "[]")  # type: ignore[no-any-return]
-
-
 def _sessions(flavor: str) -> list[dict[str, Any]]:
-    return _rows(
+    return query_rows(
         "SELECT session_id::text, parent_session_id::text, agent_role, state, tokens_used"
         " FROM sessions WHERE flavor = :'flavor'",
         flavor=flavor,
@@ -53,7 +55,7 @@ def _sessions(flavor: str) -> list[dict[str, Any]]:
 
 
 def _events(flavor: str) -> list[dict[str, Any]]:
-    return _rows(
+    return query_rows(
         "SELECT id::text, session_id::text, event_type, tool_name, has_content, payload"
         " FROM events WHERE flavor = :'flavor' ORDER BY occurred_at",
         flavor=flavor,
@@ -268,7 +270,7 @@ def test_react_agent_tool_call_is_stored_once(sensor_flavor: str, llama: tuple[A
     assert tool["session_id"] == root_id
     assert tool["tool_name"] == "multiply"
     assert tool["has_content"] is True
-    content = _rows(
+    content = query_rows(
         "SELECT tool_input, tool_output FROM event_content WHERE event_id = :'id'",
         id=tool["id"],
     )

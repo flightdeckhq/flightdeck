@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -145,6 +146,22 @@ func TestOpen_SQLiteCreatesFileWithWALAndForeignKeys(t *testing.T) {
 	if err := db.Reader().QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&rows); err != nil || rows != 1 {
 		t.Errorf("reader foreign_keys %d (%v), want 1", rows, err)
 	}
+	// Durability and concurrency settings of every connection, the
+	// writer's and the read pool's: write-ahead logging, and
+	// synchronous NORMAL (1), under which a committed transaction
+	// survives a crash of the process and the log is synced at each
+	// checkpoint.
+	const synchronousNormal = 1
+	for name, handle := range map[string]*sql.DB{"writer": db.DB, "reader": db.Reader()} {
+		var mode string
+		if err := handle.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+			t.Errorf("%s journal_mode %q (%v), want wal", name, mode, err)
+		}
+		var synchronous int
+		if err := handle.QueryRowContext(context.Background(), "PRAGMA synchronous").Scan(&synchronous); err != nil || synchronous != synchronousNormal {
+			t.Errorf("%s synchronous %d (%v), want %d (NORMAL)", name, synchronous, err, synchronousNormal)
+		}
+	}
 	if db.Reader() == db.DB {
 		t.Error("SQLite reader is the writer handle; want a separate pool")
 	}
@@ -161,7 +178,10 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(root, dir, "fd.db")
-			url := "sqlite://" + path
+			url := storage.SQLiteURL(path)
+			if got := storage.SQLitePath(url); got != path {
+				t.Fatalf("SQLitePath(SQLiteURL(%q)) = %q", path, got)
+			}
 			ctx := context.Background()
 			// The migrator opens the same path through the same DSN.
 			if err := storage.Migrate(ctx, url); err != nil {
@@ -189,6 +209,99 @@ func TestOpen_SQLitePathWithURIReservedCharacters(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Share gives a second service of the process a handle on the same
+// database: on SQLite one writer for both and a read pool each, on
+// Postgres a pool each, and a Close that leaves the original usable.
+func TestShare_OneSQLiteWriterAPoolEachAndAnIndependentClose(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		shared, err := db.Share(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if shared.Backend != db.Backend || shared.URL() != db.URL() {
+			t.Fatalf("shared handle is %s at %q, want %s at %q", shared.Backend, shared.URL(), db.Backend, db.URL())
+		}
+		switch db.Backend {
+		case storage.SQLite:
+			if shared.DB != db.DB {
+				t.Fatal("the shared handle has a writer of its own; the process must keep one")
+			}
+			if shared.Reader() == db.Reader() || shared.Reader() == shared.DB {
+				t.Fatal("on SQLite the shared handle reads through a pool of its own")
+			}
+			if n := db.Stats().MaxOpenConnections; n != 1 {
+				t.Fatalf("the writer allows %d connections, want 1", n)
+			}
+			// The shared pool is a read pool: it cannot write.
+			if _, err := shared.Reader().ExecContext(ctx, "INSERT INTO token_policies (scope, scope_value) VALUES ('global', 'x')"); err == nil {
+				t.Fatal("a write through the shared read pool succeeded")
+			}
+		case storage.Postgres:
+			if shared.DB == db.DB || shared.Reader() != shared.DB {
+				t.Fatal("on Postgres the shared handle is one pool of its own")
+			}
+			if got, want := shared.Stats().MaxOpenConnections, db.Stats().MaxOpenConnections; got != want {
+				t.Fatalf("the shared pool allows %d connections, want the original's %d", got, want)
+			}
+		}
+
+		// A row written through either handle is read through the other.
+		scope := fmt.Sprintf("share-test-%d", time.Now().UnixNano())
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), "DELETE FROM token_policies WHERE scope_value LIKE $1", scope+"%")
+		})
+		mustExec(t, shared, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-a")
+		mustExec(t, db, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-b")
+		for name, h := range map[string]*storage.DB{"original": db, "shared": shared} {
+			var n int
+			if err := h.Reader().QueryRowContext(ctx, "SELECT COUNT(*) FROM token_policies WHERE scope_value LIKE $1", scope+"%").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 2 {
+				t.Errorf("the %s handle reads %d of the 2 rows", name, n)
+			}
+		}
+
+		// Closing the shared handle leaves the original whole.
+		if err := shared.Close(); err != nil {
+			t.Fatalf("close the shared handle: %v", err)
+		}
+		mustExec(t, db, "INSERT INTO token_policies (scope, scope_value) VALUES ('flavor', $1)", scope+"-c")
+		if n := queryInt(t, db, "SELECT COUNT(*) FROM token_policies WHERE scope_value LIKE $1", scope+"%"); n != 3 {
+			t.Errorf("the original handle reads %d rows after the shared one closed, want 3", n)
+		}
+		if err := shared.Reader().PingContext(ctx); err == nil {
+			t.Error("the shared handle's own pool still answers after its Close")
+		}
+	})
+}
+
+// SQLiteURL and SQLitePath are inverses for every path shape a data
+// directory can have, Windows drive paths included: the URL carries the
+// path verbatim, so no character is escaped on the way in or decoded on
+// the way out.
+func TestSQLiteURL_RoundTripsEveryPath(t *testing.T) {
+	for _, path := range []string{
+		"/var/lib/flightdeck/flightdeck.db",
+		"relative/flightdeck.db",
+		"/home/o m/My Documents/flightdeck.db",
+		"/data/a#b/x?y/50%/%41/flightdeck.db",
+		`C:\Users\omria\AppData\Local\flightdeck\flightdeck.db`,
+		`C:\Users\O'Neil & Sons #1\AppData\Local\flightdeck\flightdeck.db`,
+		"C:/Users/omria/AppData/Local/flightdeck/flightdeck.db",
+		"/tmp/ünïcödé/flightdeck.db",
+	} {
+		url := storage.SQLiteURL(path)
+		if got := storage.SQLitePath(url); got != path {
+			t.Errorf("SQLitePath(SQLiteURL(%q)) = %q", path, got)
+		}
+		if b, err := storage.BackendOf(url); err != nil || b != storage.SQLite {
+			t.Errorf("BackendOf(SQLiteURL(%q)) = %q, %v", path, b, err)
+		}
 	}
 }
 

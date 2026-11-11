@@ -57,13 +57,15 @@ type CreatedAccessTokenResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ListAccessTokens returns every access_tokens row sorted by creation time.
-// The output excludes token_hash and salt.
+// ListAccessTokens returns every access_tokens row, newest first.
+// Tokens created at the same instant (created_at resolves one
+// millisecond on SQLite) keep that order among themselves through the
+// dialect's insertion order. The output excludes token_hash and salt.
 func (s *Store) ListAccessTokens(ctx context.Context) ([]AccessTokenRow, error) {
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT CAST(id AS TEXT), name, prefix, created_at, last_used_at
 		FROM access_tokens
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, `+s.d.InsertionOrder("", "id")+` DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)

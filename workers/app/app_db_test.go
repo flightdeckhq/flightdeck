@@ -92,9 +92,14 @@ func TestRun_DoesNotMigrateAndLeavesInjectedConnectionsOpen(t *testing.T) {
 	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
 		nc := embeddedNATS(t)
 		before := schemaVersion(t, db.URL())
-		runUntilCancelled(t, testConfig(), Deps{DB: db, Bus: storage.NewBus(db), NATS: nc})
+		bus := storage.NewBus(db)
+		t.Cleanup(func() { _ = bus.Close() })
+		runUntilCancelled(t, testConfig(), Deps{DB: db, Bus: bus, NATS: nc})
 		if after := schemaVersion(t, db.URL()); after != before {
 			t.Fatalf("schema version went from %d to %d: Run migrated", before, after)
+		}
+		if err := bus.Publish(context.Background(), "storagetest_after_run", "x"); err != nil {
+			t.Fatalf("the injected bus was closed by Run: %v", err)
 		}
 		if err := db.PingContext(context.Background()); err != nil {
 			t.Fatalf("the injected database was closed by Run: %v", err)

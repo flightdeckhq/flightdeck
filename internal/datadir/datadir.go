@@ -1,5 +1,6 @@
 // Package datadir manages the flightdeck binary's data directory: its
-// default location, its creation, and the secrets file it holds.
+// default location, its creation, the lock that keeps a second process
+// out of it, and the secrets file it holds.
 package datadir
 
 import (
@@ -31,12 +32,21 @@ func Default() string {
 	return filepath.Join(home, ".flightdeck")
 }
 
+// DatabaseFile and LockFile are the names of the SQLite database and of
+// the lock file inside a data directory.
+const (
+	DatabaseFile = "flightdeck.db"
+	LockFile     = "flightdeck.lock"
+)
+
 // Layout names the paths under a data directory.
 type Layout struct {
-	Root    string
-	NATS    string // the embedded JetStream store
-	Secrets string // secrets.json
-	ACME    string // the TLS certificate cache
+	Root     string
+	Database string // flightdeck.db, the SQLite database when no --database-url is given
+	Lock     string // flightdeck.lock, held by the running process (see Acquire)
+	NATS     string // the embedded JetStream store
+	Secrets  string // secrets.json
+	ACME     string // the TLS certificate cache
 	// Warning is set when the directory exists with a mode wider than
 	// 0700 (not on Windows): the bus store and the secrets file inside
 	// are then readable by other users of the machine. The caller logs
@@ -54,10 +64,12 @@ func Ensure(dir string) (Layout, error) {
 		return Layout{}, fmt.Errorf("data dir %q: %w", dir, err)
 	}
 	l := Layout{
-		Root:    abs,
-		NATS:    filepath.Join(abs, "nats"),
-		Secrets: filepath.Join(abs, "secrets.json"),
-		ACME:    filepath.Join(abs, "acme"),
+		Root:     abs,
+		Database: filepath.Join(abs, DatabaseFile),
+		Lock:     filepath.Join(abs, LockFile),
+		NATS:     filepath.Join(abs, "nats"),
+		Secrets:  filepath.Join(abs, "secrets.json"),
+		ACME:     filepath.Join(abs, "acme"),
 	}
 	for _, p := range []string{l.Root, l.NATS, l.ACME} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
@@ -70,10 +82,28 @@ func Ensure(dir string) (Layout, error) {
 			return Layout{}, fmt.Errorf("stat %s: %w", l.Root, err)
 		}
 		if perm := info.Mode().Perm(); perm&0o077 != 0 {
-			l.Warning = fmt.Sprintf("data dir %s has mode %04o; it holds the message-bus store and secrets.json and should be 0700 (chmod 700 %s)", l.Root, perm, l.Root)
+			l.Warning = fmt.Sprintf("data dir %s has mode %04o; it holds the database, the message-bus store and secrets.json and should be 0700 (chmod 700 %s)", l.Root, perm, l.Root)
 		}
 	}
 	return l, nil
+}
+
+// CreatePrivate creates path as an empty file with mode 0600 when
+// nothing is there, and leaves an existing file as it is. The binary
+// calls it for its SQLite database before SQLite opens the file: SQLite
+// would create it with the process's umask (0644 on most systems), and
+// it gives the write-ahead log and shared-memory files beside the
+// database the database's own mode, so creating the database private
+// keeps all three private. An empty file is a new database to SQLite.
+func CreatePrivate(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	return nil
 }
 
 // Secrets is the content of secrets.json.

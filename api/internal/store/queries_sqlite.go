@@ -50,12 +50,6 @@ func sqliteFrameworkLabelFor(alias string) string {
 
 func (sqliteQueries) frameworkLabelExpr() string { return sqliteFrameworkLabel }
 
-// auditLogTieBreak: occurred_at has millisecond precision, so a change
-// and the one after it can share it. The rowid is the insertion order
-// (the table has a text primary key, so SQLite assigns ascending
-// rowids), which puts the later change first.
-func (sqliteQueries) auditLogTieBreak() string { return "a.rowid DESC" }
-
 // contextFacets: json_each over each document gives key, value and
 // type; array values are unnested with a second json_each. Booleans
 // render as 'true' / 'false' (json_each gives 1 / 0), the text Postgres'

@@ -120,8 +120,28 @@ func TestNew_InjectedDBIsNotOwned(t *testing.T) {
 	}
 }
 
-// A Postgres URL gets jit=off for the API's connections; a SQLite URL
-// is left alone, and an existing jit setting is kept.
+// DatabaseURL adds the API's connection parameter to a Postgres URL and
+// returns every other URL byte for byte: a SQLite URL carries its path
+// verbatim, so parsing and re-encoding it would name another file.
+func TestDatabaseURL_ChangesPostgresURLsOnly(t *testing.T) {
+	if got, want := DatabaseURL("postgresql://u:p@h/db"), "postgresql://u:p@h/db?jit=off"; got != want {
+		t.Errorf("DatabaseURL = %q, want %q", got, want)
+	}
+	for _, same := range []string{
+		"sqlite:///var/lib/flightdeck/flightdeck.db",
+		"sqlite:///home/o m/a#b/x?y/50%/flightdeck.db",
+		`sqlite://C:\Users\omria\AppData\Local\flightdeck\flightdeck.db`,
+		"mysql://u:p@h/db",
+		"",
+	} {
+		if got := DatabaseURL(same); got != same {
+			t.Errorf("DatabaseURL(%q) = %q, want it unchanged", same, got)
+		}
+	}
+}
+
+// A Postgres URL gets jit=off for the API's connections, and an
+// existing jit setting is kept.
 func TestWithJITOff(t *testing.T) {
 	for in, want := range map[string]string{
 		"postgres://u:p@h:5432/db?sslmode=disable": "postgres://u:p@h:5432/db?jit=off&sslmode=disable",

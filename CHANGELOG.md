@@ -6,24 +6,40 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
-- **One `flightdeck` binary runs the whole control plane.** `flightdeck
-  --database-url postgres://...` starts the ingestion API, the workers and
-  the query API in one process on `127.0.0.1:4000`, with NATS JetStream
-  embedded (no port, store under `~/.flightdeck/nats`) and the dashboard
-  served from the binary; `/api` and `/ingest` are the two prefixes, as
-  behind the compose nginx. The schema migrations run at start from the
-  binary. On loopback the development token works and is printed; on any
-  other `--listen`, or with `--domain example.com` (TLS from Let's
-  Encrypt on :443, :80 redirecting), an `ftd_` token is minted on the
-  first start, printed once and kept in `~/.flightdeck/secrets.json` for
-  the dashboard. `--nats-url` uses an external NATS instead; `--metrics`
-  opens the services' metrics listeners. Postgres is still required; the
-  binary says so and names the compose database when none is given.
-  `make build-flightdeck` builds it, `go run ./cmd/flightdeck` runs it
-  from source, and the dashboard's Vite proxy now points at `:4000`, so
-  `npm run dev` in `dashboard/` works against the binary. Each service
-  also exports an `app` package (`ingestion/app`, `workers/app`,
-  `api/app`) the binary and the standalone services share.
+- **One `flightdeck` binary runs the whole control plane, with nothing
+  to configure.** `flightdeck` starts the ingestion API, the workers and
+  the query API in one process on `127.0.0.1:4000`, with the database
+  (SQLite, in `~/.flightdeck/flightdeck.db`), NATS JetStream (no port,
+  store under `~/.flightdeck/nats`) and the dashboard all inside the
+  binary; `/api` and `/ingest` are the two prefixes, as behind the
+  compose nginx. `--database-url postgres://...` uses a Postgres
+  database instead, and `sqlite:///path/to/file.db` a SQLite file
+  elsewhere; anything else is refused at start with the accepted forms.
+  The schema migrations of either backend run at start from the binary.
+  A Postgres that is still starting is waited for up to a minute; a
+  wrong password, a database that does not exist or a URL that does
+  not parse ends the start at once, with the reason and without the
+  password.
+  The three services share one notification bus and one database: on
+  SQLite every write queues on the file's single writer connection and
+  each service reads through connections of its own; on Postgres each
+  service keeps a pool of its own. A second `flightdeck` on the same data dir or the same
+  SQLite file exits at once, naming the process that holds it. A stop
+  on Ctrl+C or SIGTERM closes the database cleanly (the write-ahead log
+  is folded into the file), and the next start finds every session,
+  event and token. Back the SQLite file up with `sqlite3
+  ~/.flightdeck/flightdeck.db "VACUUM INTO '/backup/flightdeck.db'"`.
+  On loopback the development token works and is printed; on any other
+  `--listen`, or with `--domain example.com` (TLS from Let's Encrypt on
+  :443, :80 redirecting), an `ftd_` token is minted on the first start,
+  printed once and kept in `~/.flightdeck/secrets.json` for the
+  dashboard. `--nats-url` uses an external NATS instead; `--metrics`
+  opens the services' metrics listeners. `make build-flightdeck` builds
+  it, `go run ./cmd/flightdeck` runs it from source, and the
+  dashboard's Vite proxy now points at `:4000`, so `npm run dev` in
+  `dashboard/` works against the binary. Each service also exports an
+  `app` package (`ingestion/app`, `workers/app`, `api/app`) the binary
+  and the standalone services share.
 
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
@@ -278,6 +294,15 @@ All notable changes to Flightdeck are documented here.
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed
+
+- **Tokens were counted twice when a worker stopped under load.** A
+  stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
+  the message each worker lane was processing; one cancelled after the
+  session's counters were written and before its event row was stored
+  was redelivered and counted again, so a session could show more
+  tokens than its events add up to. A stopping worker now finishes the
+  message in flight (D265). A worker that is killed can still
+  over-count by one call per lane; ARCHITECTURE states the limit.
 
 - **A failed sub-agent's error text stays out of its session with
   capture off.** The CrewAI, LangGraph and LlamaIndex wraps sent the

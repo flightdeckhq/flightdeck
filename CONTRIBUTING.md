@@ -62,6 +62,40 @@ hand, seed first (`make seed-e2e`), then:
 ./sensor/.venv/bin/python -m pytest tests/integration -m "exclusive"
 ```
 
+The same suite runs against the `flightdeck` binary, on SQLite and on Postgres.
+Start the binary on a port and a data dir of its own with the two overrides the
+dev stack sets, then point the suite at it:
+
+```bash
+make build-flightdeck
+mkdir -p /tmp/fd-it
+FLIGHTDECK_RATE_LIMIT_PER_MINUTE=1000000 FLIGHTDECK_RECONCILER_INTERVAL_SECS=5 \
+  bin/flightdeck --listen 127.0.0.1:4100 --data-dir /tmp/fd-it/data > /tmp/fd-it/flightdeck.log 2>&1 &
+
+export FLIGHTDECK_TEST_BASE_URL=http://localhost:4100
+export FLIGHTDECK_TEST_WORKER_LOG=/tmp/fd-it/flightdeck.log     # the binary's log stands in for the worker container's
+export FLIGHTDECK_TEST_WORKER_CONTAINER=                         # no worker container to pause
+export FLIGHTDECK_TEST_SQLITE_DB=/tmp/fd-it/data/flightdeck.db   # the SQL helpers open this file
+./sensor/.venv/bin/python tests/e2e-fixtures/seed.py
+./sensor/.venv/bin/python -m pytest tests/integration -p no:respx -n 4 --dist load -m "not manual and not exclusive"
+./sensor/.venv/bin/python -m pytest tests/integration -p no:respx -m "exclusive"
+```
+
+For the binary on Postgres, start it with `--database-url postgres://…/<your_db>`
+(a database of your own, never `flightdeck`) and set `FLIGHTDECK_TEST_DB=<your_db>`
+in place of `FLIGHTDECK_TEST_SQLITE_DB`. The tests reach the database through the
+helpers in `tests/shared/fixtures.py` (`exec_sql`, `query_rows`): with
+`FLIGHTDECK_TEST_SQLITE_DB` set they run on that file through Python's `sqlite3`,
+otherwise through `psql` in the Postgres container. A statement written for
+Postgres is translated for SQLite when it keeps to the small subset the helper
+documents; anything else takes the SQLite statement explicitly (`sqlite=`), and
+the helper refuses to run half-translated SQL. Two kinds of test skip against the
+binary, each with its reason in the pytest summary: the ones that pause the worker
+container (the binary has none), and on SQLite the ones marked
+`@pytest.mark.postgres_only("<reason>")`, which hold a row lock from a second
+database session, something SQLite does not have. Mark a new test `postgres_only`
+only when no SQLite equivalent exists, and say why in the marker.
+
 ### Go tests that need a database
 
 Some Go tests run SQL against a real database: the store packages, the staging

@@ -11027,7 +11027,17 @@ Swagger UI matches the latest annotations.
 ### Integration tests
 
 `tests/integration/` runs against the live dev stack (real NATS, real
-Postgres) via `make test-integration`:
+Postgres) via `make test-integration`, and against the `flightdeck`
+binary on either backend: `FLIGHTDECK_TEST_BASE_URL` names the stack,
+and the helpers that read and write the database directly
+(`tests/shared/fixtures.py`) use `psql` in the Postgres container
+(`FLIGHTDECK_TEST_DB` names the database) or, when
+`FLIGHTDECK_TEST_SQLITE_DB` names the binary's `flightdeck.db`,
+Python's `sqlite3` on that file. A test that needs something only
+Postgres has (a row lock held from a second database session) is
+marked `postgres_only` with its reason and skips on SQLite; a test
+that pauses the worker container skips against the binary, which has
+none. CONTRIBUTING.md has the commands. The suite covers:
 
 - `test_pipeline.py` — POST event → fleet → session detail → events
 - `test_session_states.py` — active → idle → stale → lost → revive

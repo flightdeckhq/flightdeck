@@ -1046,9 +1046,34 @@ jobs:
         working-directory: dashboard
         run: npm ci
 
+      # The browser comes from the Playwright CDN. `--with-deps` would
+      # also install Chromium's system libraries and fonts through apt,
+      # but the runner image already carries what Chromium needs, and
+      # the hosted runners have lost name resolution for the Ubuntu
+      # archive for hours at a time: apt then spends ten minutes timing
+      # out and the shard fails without running a test. So the system
+      # packages are installed only when the browser does not start
+      # without them, and the launch check runs again afterwards.
       - name: Install Playwright browsers
         working-directory: dashboard
-        run: npx playwright install --with-deps chromium
+        run: |
+          npx playwright install chromium
+          launch_check() {
+            node -e "
+              const { chromium } = require('@playwright/test');
+              chromium.launch().then(async (browser) => {
+                const page = await browser.newPage();
+                await page.setContent('<title>ok</title>');
+                if ((await page.title()) !== 'ok') throw new Error('Chromium started but did not render');
+                await browser.close();
+              }).catch((err) => { console.error(err); process.exit(1); });
+            "
+          }
+          if ! launch_check; then
+            echo "::warning::Chromium did not start on the runner image alone; installing its system packages"
+            npx playwright install-deps chromium
+            launch_check
+          fi
 
       - name: Boot the dev stack, the dashboard serving its production bundle
         run: |

@@ -2,12 +2,12 @@ package writer
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/billing"
 	"github.com/flightdeckhq/flightdeck/workers/internal/modelid"
 )
@@ -58,11 +58,12 @@ type backfillRow struct {
 // events belong to get the canonical id in sessions.model when it
 // still holds the raw one.
 //
-// Batches are claimed with FOR UPDATE SKIP LOCKED, so several workers
-// share the work, and a restart resumes where it stopped. It returns
-// when no rows are left or ctx is done. A failed batch is retried with
-// exponential backoff; one that keeps failing ends the run, which the
-// next worker start repeats.
+// On Postgres batches are claimed with FOR UPDATE SKIP LOCKED, so
+// several workers share the work; on SQLite each batch is one write
+// transaction on the single writer. A restart resumes where it
+// stopped. It returns when no rows are left or ctx is done. A failed
+// batch is retried with exponential backoff; one that keeps failing
+// ends the run, which the next worker start repeats.
 func (w *Writer) RunModelBackfill(ctx context.Context) {
 	total := 0
 	for {
@@ -118,31 +119,48 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // backfillModelBatch rewrites up to limit events in one transaction and
 // returns how many it rewrote.
 func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error) {
-	tx, err := w.pool.Begin(ctx)
+	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin backfill batch: %w", err)
 	}
 	// A no-op once Commit has succeeded.
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.Query(ctx, `
-		SELECT e.id::text, e.occurred_at, e.session_id::text, e.model, e.event_type,
-		       COALESCE(s.client_type, '')
-		FROM events e
-		LEFT JOIN sessions s ON s.session_id = e.session_id
-		WHERE e.model IS NOT NULL AND e.model_requested IS NULL
-		ORDER BY e.occurred_at
-		LIMIT $1
-		FOR UPDATE OF e SKIP LOCKED
-	`, limit)
+	batch, err := w.selectBackfillBatch(ctx, tx, limit)
 	if err != nil {
-		return 0, fmt.Errorf("select backfill batch: %w", err)
+		return 0, err
 	}
-	batch, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (backfillRow, error) {
+	if len(batch) == 0 {
+		return 0, nil
+	}
+	if w.db.Backend == storage.SQLite {
+		err = backfillUpdateSQLite(ctx, tx, batch)
+	} else {
+		err = backfillUpdatePostgres(ctx, tx, batch)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit backfill batch: %w", err)
+	}
+	return len(batch), nil
+}
+
+// selectBackfillBatch reads the next batch of events to rewrite, on the
+// transaction, with the rewritten values computed from each raw id.
+func (w *Writer) selectBackfillBatch(ctx context.Context, tx *sql.Tx, limit int) ([]backfillRow, error) {
+	rows, err := tx.QueryContext(ctx, w.q.backfillSelect, limit)
+	if err != nil {
+		return nil, fmt.Errorf("select backfill batch: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var batch []backfillRow
+	for rows.Next() {
 		var b backfillRow
 		var eventType, clientType string
-		if err := r.Scan(&b.id, &b.occurredAt, &b.sessionID, &b.raw, &eventType, &clientType); err != nil {
-			return b, err
+		if err := rows.Scan(&b.id, &b.occurredAt, &b.sessionID, &b.raw, &eventType, &clientType); err != nil {
+			return nil, fmt.Errorf("read backfill batch: %w", err)
 		}
 		c := modelid.Canonicalize(b.raw)
 		b.model, b.scope = c.Model, c.InferenceScope
@@ -152,15 +170,19 @@ func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error)
 		if billing.Applies(eventType) {
 			b.billing = billing.DefaultMode(clientType)
 		}
-		return b, nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("read backfill batch: %w", err)
+		batch = append(batch, b)
 	}
-	if len(batch) == 0 {
-		return 0, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read backfill batch: %w", err)
 	}
+	return batch, nil
+}
 
+// backfillUpdatePostgres rewrites the batch's events and their sessions
+// in two set-based statements. Values a client already sent (provider,
+// billing_mode, platform, inference_scope) are kept; only empty ones
+// are filled.
+func backfillUpdatePostgres(ctx context.Context, tx *sql.Tx, batch []backfillRow) error {
 	cols := struct {
 		ids, sessions, raws, models, providers, billings, scopes []string
 		times                                                    []time.Time
@@ -176,9 +198,7 @@ func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error)
 		cols.scopes = append(cols.scopes, b.scope)
 	}
 
-	// Values a client already sent (provider, billing_mode, platform,
-	// inference_scope) are kept; only empty ones are filled.
-	if _, err := tx.Exec(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE events e
 		SET model_requested = u.raw,
 		    model           = NULLIF(u.model, ''),
@@ -193,7 +213,7 @@ func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error)
 		     AS u(id, occurred_at, raw, model, provider, billing, scope)
 		WHERE e.id = u.id AND e.occurred_at = u.occurred_at
 	`, cols.ids, cols.times, cols.raws, cols.models, cols.providers, cols.billings, cols.scopes); err != nil {
-		return 0, fmt.Errorf("update backfill batch: %w", err)
+		return fmt.Errorf("update backfill batch: %w", err)
 	}
 
 	// A session's model is the raw id of one of its events; replace it
@@ -202,15 +222,15 @@ func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error)
 	// different workers can share sessions, so their rows are locked in
 	// session_id order first: two workers then queue for a shared
 	// session instead of each holding one the other needs.
-	if _, err := tx.Exec(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		SELECT 1 FROM sessions
 		WHERE session_id = ANY($1::uuid[])
 		ORDER BY session_id
 		FOR UPDATE
 	`, cols.sessions); err != nil {
-		return 0, fmt.Errorf("lock backfill sessions: %w", err)
+		return fmt.Errorf("lock backfill sessions: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions s
 		SET model = u.model
 		FROM (SELECT DISTINCT session_id, raw, model
@@ -218,11 +238,50 @@ func (w *Writer) backfillModelBatch(ctx context.Context, limit int) (int, error)
 		      WHERE model <> '' AND model <> raw) AS u
 		WHERE s.session_id = u.session_id AND s.model = u.raw
 	`, cols.sessions, cols.raws, cols.models); err != nil {
-		return 0, fmt.Errorf("update backfill sessions: %w", err)
+		return fmt.Errorf("update backfill sessions: %w", err)
 	}
+	return nil
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit backfill batch: %w", err)
+// backfillUpdateSQLite rewrites the batch's events and their sessions
+// row by row inside the batch's transaction; a thousand single-row
+// statements in one SQLite transaction take milliseconds, and no other
+// writer runs meanwhile. The same values are kept and filled as on
+// Postgres.
+func backfillUpdateSQLite(ctx context.Context, tx *sql.Tx, batch []backfillRow) error {
+	for _, b := range batch {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events
+			SET model_requested = $3,
+			    model           = NULLIF($4, ''),
+			    provider        = COALESCE(provider, NULLIF($5, '')),
+			    billing_mode    = COALESCE(billing_mode, NULLIF($6, '')),
+			    platform        = COALESCE(platform, json_extract(payload, '$.provider_metadata.platform')),
+			    payload         = CASE
+			        WHEN $7 = '' OR json_type(payload, '$.inference_scope') IS NOT NULL THEN payload
+			        ELSE json_set(COALESCE(payload, '{}'), '$.inference_scope', $7)
+			    END
+			WHERE id = $1 AND occurred_at = $2
+		`, b.id, b.occurredAt, b.raw, b.model, b.provider, b.billing, b.scope); err != nil {
+			return fmt.Errorf("update backfill batch: %w", err)
+		}
 	}
-	return len(batch), nil
+	type sessionModel struct{ sessionID, raw, model string }
+	seen := make(map[sessionModel]struct{})
+	for _, b := range batch {
+		if b.model == "" || b.model == b.raw {
+			continue
+		}
+		k := sessionModel{b.sessionID, b.raw, b.model}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET model = $3 WHERE session_id = $1 AND model = $2`,
+			k.sessionID, k.raw, k.model); err != nil {
+			return fmt.Errorf("update backfill sessions: %w", err)
+		}
+	}
+	return nil
 }

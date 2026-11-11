@@ -1,7 +1,7 @@
 // Unit tests for the context-filter helper. These exercise the pure
-// SQL-generation function without touching Postgres -- the actual
-// WHERE execution is covered by the integration suite against a real
-// DB. The point here is: for every AllowedContextFilterKeys entry
+// SQL-generation function for both dialects without a database -- the
+// actual WHERE execution is covered by the integration suite against a
+// real DB. The point here is: for every AllowedContextFilterKeys entry
 // (one test each) the generated clause has the right shape, placeholder
 // indices advance correctly, and the arg slice extends with the input
 // values in order.
@@ -10,7 +10,17 @@ package store
 import (
 	"regexp"
 	"testing"
+
+	"github.com/flightdeckhq/flightdeck/storage"
 )
+
+// bothDialects runs fn once per dialect, as a subtest.
+func bothDialects(t *testing.T, fn func(t *testing.T, d storage.Dialect)) {
+	t.Helper()
+	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
+		t.Run(string(b), func(t *testing.T) { fn(t, storage.DialectFor(b)) })
+	}
+}
 
 // runFilterRoundTripTest exercises BuildContextFilterClause for one
 // allowed key: a single value, two values (multi-select), and the
@@ -19,14 +29,19 @@ import (
 // coverage count matches the per-facet coverage on the dashboard side.
 func runFilterRoundTripTest(t *testing.T, key string) {
 	t.Helper()
+	bothDialects(t, func(t *testing.T, d storage.Dialect) { runFilterRoundTripTestOn(t, d, key) })
+}
+
+func runFilterRoundTripTestOn(t *testing.T, d storage.Dialect, key string) {
+	t.Helper()
 	t.Run("single value", func(t *testing.T) {
 		clause, args, idx, err := BuildContextFilterClause(
-			key, []string{"alice"}, []any{"prior-arg"}, 2,
+			d, key, []string{"alice"}, []any{"prior-arg"}, 2,
 		)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		wantClause := "s.context->>'" + key + "' IN ($2)"
+		wantClause := d.JSONText("s.context", key) + " IN ($2)"
 		if clause != wantClause {
 			t.Errorf("clause = %q, want %q", clause, wantClause)
 		}
@@ -40,13 +55,13 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 
 	t.Run("multi value", func(t *testing.T) {
 		clause, args, idx, err := BuildContextFilterClause(
-			key, []string{"alice", "bob", "carol"}, []any{}, 1,
+			d, key, []string{"alice", "bob", "carol"}, []any{}, 1,
 		)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
 		// Placeholders advance in order; value list preserved order too.
-		re := regexp.MustCompile(`^s\.context->>'` + regexp.QuoteMeta(key) + `' IN \(\$1, \$2, \$3\)$`)
+		re := regexp.MustCompile(`^` + regexp.QuoteMeta(d.JSONText("s.context", key)) + ` IN \(\$1, \$2, \$3\)$`)
 		if !re.MatchString(clause) {
 			t.Errorf("clause shape wrong: %q", clause)
 		}
@@ -60,7 +75,7 @@ func runFilterRoundTripTest(t *testing.T, key string) {
 
 	t.Run("empty values is a no-op", func(t *testing.T) {
 		clause, args, idx, err := BuildContextFilterClause(
-			key, nil, []any{"prior"}, 5,
+			d, key, nil, []any{"prior"}, 5,
 		)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
@@ -125,7 +140,7 @@ func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 // lets callers surface a 500 instead of crashing the goroutine.
 func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 	clause, _, _, err := BuildContextFilterClause(
-		"evil_key", []string{"x"}, nil, 1,
+		storage.DialectFor(storage.Postgres), "evil_key", []string{"x"}, nil, 1,
 	)
 	if err == nil {
 		t.Fatal("expected error on unknown key, got nil")
@@ -140,7 +155,7 @@ func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 // through a $N placeholder, never get inlined into the WHERE
 // fragment. The clause shape is a literal "key IN ($1, $2, ...)"
 // with placeholder indices only -- the values themselves stay in
-// the args slice where pgx escapes them. A future contributor that
+// the args slice where the driver binds them. A future contributor that
 // breaks this contract (e.g. by string-formatting a value into the
 // clause) trips this test.
 func TestBuildContextFilterClause_SQLInjectionInValuesParameterized(t *testing.T) {
@@ -151,22 +166,24 @@ func TestBuildContextFilterClause_SQLInjectionInValuesParameterized(t *testing.T
 		"\\' UNION SELECT NULL --",
 		"%' OR 1=1 --",
 	}
-	for _, payload := range injectionPayloads {
-		clause, args, _, err := BuildContextFilterClause(
-			"user", []string{payload}, []any{}, 1,
-		)
-		if err != nil {
-			t.Fatalf("payload %q: unexpected err: %v", payload, err)
+	bothDialects(t, func(t *testing.T, d storage.Dialect) {
+		for _, payload := range injectionPayloads {
+			clause, args, _, err := BuildContextFilterClause(
+				d, "user", []string{payload}, []any{}, 1,
+			)
+			if err != nil {
+				t.Fatalf("payload %q: unexpected err: %v", payload, err)
+			}
+			// Clause must reference only $N placeholders, never the
+			// payload bytes themselves.
+			if clause != d.JSONText("s.context", "user")+" IN ($1)" {
+				t.Errorf("payload %q produced clause %q -- value leaked into WHERE fragment instead of being parameterized", payload, clause)
+			}
+			// Args slice carries the raw payload (the driver binds it
+			// at execute time); this is the contract.
+			if len(args) != 1 || args[0] != payload {
+				t.Errorf("payload %q: args = %v, want [%q]", payload, args, payload)
+			}
 		}
-		// Clause must reference only $N placeholders, never the
-		// payload bytes themselves.
-		if clause != "s.context->>'user' IN ($1)" {
-			t.Errorf("payload %q produced clause %q -- value leaked into WHERE fragment instead of being parameterized", payload, clause)
-		}
-		// Args slice carries the raw payload (pgx will escape it
-		// at execute time); this is the contract.
-		if len(args) != 1 || args[0] != payload {
-			t.Errorf("payload %q: args = %v, want [%q]", payload, args, payload)
-		}
-	}
+	})
 }

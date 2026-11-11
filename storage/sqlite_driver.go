@@ -26,7 +26,12 @@ func FormatTime(t time.Time) string {
 }
 
 func init() {
-	sql.Register(sqliteDriverName, &sqliteDriver{inner: &sqlite.Driver{}})
+	// The functions in sqlite_functions.go attach to modernc's default
+	// driver instance, so the wrapper opens its connections through
+	// that instance rather than a fresh one.
+	inner := defaultSQLiteDriver()
+	registerSQLiteFunctions()
+	sql.Register(sqliteDriverName, &sqliteDriver{inner: inner})
 }
 
 // sqliteDriver wraps modernc's driver so every time.Time argument is
@@ -34,7 +39,8 @@ func init() {
 // String() format, which neither sorts with nor parses as the format
 // the schema's defaults and date functions produce. Reading needs no
 // wrapper: modernc parses TEXT in TIMESTAMP-declared columns into
-// time.Time, and TimeLayout is one of the shapes it accepts.
+// time.Time, and TimeLayout is one of the shapes it accepts. The
+// connections also carry the SQL functions of sqlite_functions.go.
 type sqliteDriver struct {
 	inner *sqlite.Driver
 }

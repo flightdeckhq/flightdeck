@@ -5,35 +5,22 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 )
 
-// The lifecycle tests run against a migrated database (TEST_POSTGRES_URL,
-// provided by scripts/go-db-tests.sh); the loops Run starts open
-// LISTEN connections and run queries, which a dummy DSN cannot serve.
+// The lifecycle tests run against a migrated database on every covered
+// backend (storagetest.Each); the loops Run starts subscribe to the bus
+// and run queries, which a dummy URL cannot serve.
 
 // runTimeout bounds how long a test waits for Run to return after the
 // context is cancelled: ShutdownTimeout plus margin for the test box.
 const runTimeout = 20 * time.Second
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("no TEST_POSTGRES_URL set; skipping DB test")
-	}
-	pool, err := NewPool(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
 
 // freeAddr returns a loopback address nothing listens on right now.
 func freeAddr(t *testing.T) string {
@@ -75,79 +62,117 @@ func awaitRun(t *testing.T, done <-chan error) error {
 	}
 }
 
-func TestRun_StopsOnCancelAndLeavesAnInjectedPoolOpen(t *testing.T) {
-	pool := testPool(t)
-	addr := freeAddr(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	a, err := New(ctx, Config{ListenAddr: addr, CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{Pool: pool})
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- a.Run(ctx) }()
-	waitHealthy(t, addr)
+func TestRun_StopsOnCancelAndLeavesAnInjectedDBOpen(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		addr := freeAddr(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		a, err := New(ctx, Config{ListenAddr: addr, CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{DB: db})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- a.Run(ctx) }()
+		waitHealthy(t, addr)
 
-	cancel()
-	if err := awaitRun(t, done); err != nil {
-		t.Fatalf("Run returned %v on a cancelled context, want nil", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("the injected pool was closed by Run: %v", err)
-	}
-	if _, err := http.Get(fmt.Sprintf("http://%s/health", addr)); err == nil {
-		t.Fatal("the listener is still serving after Run returned")
-	}
+		cancel()
+		if err := awaitRun(t, done); err != nil {
+			t.Fatalf("Run returned %v on a cancelled context, want nil", err)
+		}
+		if err := db.PingContext(context.Background()); err != nil {
+			t.Fatalf("the injected database was closed by Run: %v", err)
+		}
+		if _, err := http.Get(fmt.Sprintf("http://%s/health", addr)); err == nil {
+			t.Fatal("the listener is still serving after Run returned")
+		}
+	})
 }
 
-func TestRun_ClosesThePoolItOpened(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("no TEST_POSTGRES_URL set; skipping DB test")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	addr := freeAddr(t)
-	a, err := New(ctx, Config{ListenAddr: addr, PostgresURL: dsn, CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owned := a.pool
-	done := make(chan error, 1)
-	go func() { done <- a.Run(ctx) }()
-	waitHealthy(t, addr)
-	cancel()
-	if err := awaitRun(t, done); err != nil {
-		t.Fatal(err)
-	}
-	if a.pool != nil || a.ownsPool {
-		t.Fatal("Run must close and forget the pool it opened")
-	}
-	if err := owned.Ping(context.Background()); err == nil {
-		t.Fatal("the pool Run opened still answers after Run returned")
+func TestRun_ClosesTheDBItOpened(t *testing.T) {
+	for _, b := range storagetest.Backends(t) {
+		t.Run(string(b), func(t *testing.T) {
+			var rawURL string
+			switch b {
+			case storage.SQLite:
+				rawURL = "sqlite://" + filepath.Join(t.TempDir(), "flightdeck.db")
+			case storage.Postgres:
+				rawURL = storagetest.PostgresURL(t)
+			}
+			if err := storage.Migrate(context.Background(), rawURL); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			addr := freeAddr(t)
+			a, err := New(ctx, Config{ListenAddr: addr, PostgresURL: rawURL, CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owned := a.db
+			done := make(chan error, 1)
+			go func() { done <- a.Run(ctx) }()
+			waitHealthy(t, addr)
+			cancel()
+			if err := awaitRun(t, done); err != nil {
+				t.Fatal(err)
+			}
+			if a.db != nil || a.ownsDB {
+				t.Fatal("Run must close and forget the database it opened")
+			}
+			if err := owned.PingContext(context.Background()); err == nil {
+				t.Fatal("the database Run opened still answers after Run returned")
+			}
+		})
 	}
 }
 
 func TestRun_ListenerBindFailureIsReturned(t *testing.T) {
-	pool := testPool(t)
-	busy, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = busy.Close() }()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	a, err := New(ctx, Config{ListenAddr: busy.Addr().String(), CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{Pool: pool})
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- a.Run(ctx) }()
-	err = awaitRun(t, done)
-	if err == nil || !strings.Contains(err.Error(), "query API server") {
-		t.Fatalf("Run on a busy port returned %v, want the listener's error", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("the injected pool was closed: %v", err)
-	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		busy, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = busy.Close() }()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		a, err := New(ctx, Config{ListenAddr: busy.Addr().String(), CORSOrigin: "*", ShutdownTimeout: 10 * time.Second}, Deps{DB: db})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- a.Run(ctx) }()
+		err = awaitRun(t, done)
+		if err == nil || !strings.Contains(err.Error(), "query API server") {
+			t.Fatalf("Run on a busy port returned %v, want the listener's error", err)
+		}
+		if err := db.PingContext(context.Background()); err != nil {
+			t.Fatalf("the injected database was closed: %v", err)
+		}
+	})
+}
+
+// The bootstrap helpers mint a token through the store and validate it
+// through the validator on both backends.
+func TestMintAndValidateToken(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		raw, err := MintToken(ctx, db, "bootstrap-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM access_tokens WHERE name = 'bootstrap-test'`)
+		})
+		if !strings.HasPrefix(raw, "ftd_") {
+			t.Fatalf("minted token %q lacks the ftd_ prefix", raw)
+		}
+		ok, err := TokenValid(ctx, db, raw)
+		if err != nil || !ok {
+			t.Fatalf("TokenValid(minted) = %v, %v", ok, err)
+		}
+		ok, err = TokenValid(ctx, db, "ftd_00000000000000000000000000000000")
+		if err != nil || ok {
+			t.Fatalf("TokenValid(unknown) = %v, %v", ok, err)
+		}
+	})
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // devAccessTokenName is the reserved name of the seed row written by
@@ -58,15 +60,15 @@ type CreatedAccessTokenResponse struct {
 // ListAccessTokens returns every access_tokens row sorted by creation time.
 // The output excludes token_hash and salt.
 func (s *Store) ListAccessTokens(ctx context.Context) ([]AccessTokenRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, name, prefix, created_at, last_used_at
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT CAST(id AS TEXT), name, prefix, created_at, last_used_at
 		FROM access_tokens
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]AccessTokenRow, 0)
 	for rows.Next() {
@@ -123,12 +125,12 @@ func (s *Store) CreateAccessToken(ctx context.Context, name string) (*CreatedAcc
 
 	var (
 		id        string
-		createdAt time.Time
+		createdAt storage.Time
 	)
-	err := s.pool.QueryRow(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO access_tokens (name, token_hash, salt, prefix)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id::text, created_at
+		RETURNING CAST(id AS TEXT), created_at
 	`, name, hash, salt, prefix).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
@@ -139,14 +141,21 @@ func (s *Store) CreateAccessToken(ctx context.Context, name string) (*CreatedAcc
 		Name:      name,
 		Prefix:    prefix,
 		RawToken:  raw,
-		CreatedAt: createdAt,
+		CreatedAt: createdAt.Time,
 	}, nil
 }
 
 // DeleteAccessToken removes an access_tokens row by id. The tok_dev seed row
 // is protected -- attempts return ErrDevAccessTokenProtected so the handler
 // can surface 403. Missing ids return ErrAccessTokenNotFound → 404.
+//
+// After the delete commits, the token id is published on
+// AccessTokenRevokedChannel so every validator drops its cached
+// acceptance of the token at once. On Postgres the row's trigger
+// publishes the same id for a delete made outside the API; the
+// validators tolerate the duplicate.
 func (s *Store) DeleteAccessToken(ctx context.Context, id string) error {
+	id = uuidArg(id)
 	protected, err := s.isDevAccessTokenID(ctx, id)
 	if err != nil {
 		return err
@@ -154,12 +163,17 @@ func (s *Store) DeleteAccessToken(ctx context.Context, id string) error {
 	if protected {
 		return ErrDevAccessTokenProtected
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM access_tokens WHERE id = $1::uuid`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM access_tokens WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete token: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrAccessTokenNotFound
+	}
+	if err := s.bus.Publish(ctx, AccessTokenRevokedChannel, id); err != nil {
+		// The row is gone; a cached validation of it expires with
+		// the validator's TTL.
+		slog.Warn("token revocation not published", "token_id", id, "err", err)
 	}
 	return nil
 }
@@ -171,6 +185,7 @@ func (s *Store) RenameAccessToken(ctx context.Context, id, newName string) (*Acc
 	if newName == "" {
 		return nil, ErrAccessTokenNameRequired
 	}
+	id = uuidArg(id)
 	protected, err := s.isDevAccessTokenID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -180,17 +195,23 @@ func (s *Store) RenameAccessToken(ctx context.Context, id, newName string) (*Acc
 	}
 
 	var t AccessTokenRow
-	err = s.pool.QueryRow(ctx, `
+	var createdAt, lastUsedAt storage.Time
+	err = s.db.QueryRowContext(ctx, `
 		UPDATE access_tokens
 		SET name = $2
-		WHERE id = $1::uuid
-		RETURNING id::text, name, prefix, created_at, last_used_at
-	`, id, newName).Scan(&t.ID, &t.Name, &t.Prefix, &t.CreatedAt, &t.LastUsedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+		WHERE id = $1
+		RETURNING CAST(id AS TEXT), name, prefix, created_at, last_used_at
+	`, id, newName).Scan(&t.ID, &t.Name, &t.Prefix, &createdAt, &lastUsedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAccessTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("rename token: %w", err)
+	}
+	t.CreatedAt = createdAt.Time
+	if lastUsedAt.Valid {
+		lu := lastUsedAt.Time
+		t.LastUsedAt = &lu
 	}
 	return &t, nil
 }
@@ -201,10 +222,10 @@ func (s *Store) RenameAccessToken(ctx context.Context, id, newName string) (*Acc
 // extra round-trip.
 func (s *Store) isDevAccessTokenID(ctx context.Context, id string) (bool, error) {
 	var name string
-	err := s.pool.QueryRow(ctx,
-		`SELECT name FROM access_tokens WHERE id = $1::uuid`, id,
+	err := s.reader().QueryRowContext(ctx,
+		`SELECT name FROM access_tokens WHERE id = $1`, id,
 	).Scan(&name)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrAccessTokenNotFound
 	}
 	if err != nil {

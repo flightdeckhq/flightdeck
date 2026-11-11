@@ -2,40 +2,25 @@ package app
 
 import (
 	"context"
-	"os"
-	"strings"
+	"path/filepath"
 	"testing"
-	"testing/fstest"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
 
-// The lifecycle tests run against a migrated database (TEST_POSTGRES_URL,
-// provided by scripts/go-db-tests.sh): the reconciler and the backfill
-// query the schema. The bus is an embedded nats-server with no listener
-// and no FLIGHTDECK stream, so the consumer waits for the stream until
-// the context ends, as it does when the workers start before ingestion.
+// The lifecycle tests run against a migrated database on every covered
+// backend (storagetest): the reconciler and the backfill query the
+// schema. The bus is an embedded nats-server with no listener and no
+// FLIGHTDECK stream, so the consumer waits for the stream until the
+// context ends, as it does when the workers start before ingestion.
 
 // runTimeout bounds how long a test waits for Run to return after the
 // context is cancelled: ShutdownTimeout plus margin for the test box.
 const runTimeout = 20 * time.Second
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("no TEST_POSTGRES_URL set; skipping DB test")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
 
 func embeddedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
@@ -59,11 +44,11 @@ func embeddedNATS(t *testing.T) *nats.Conn {
 	return nc
 }
 
-func schemaVersion(t *testing.T, pool *pgxpool.Pool) int {
+func schemaVersion(t *testing.T, url string) uint {
 	t.Helper()
-	var version int
-	if err := pool.QueryRow(context.Background(), "SELECT version FROM schema_migrations").Scan(&version); err != nil {
-		t.Fatal(err)
+	version, dirty, err := storage.SchemaVersion(context.Background(), url)
+	if err != nil || dirty {
+		t.Fatalf("schema version: %d dirty=%v err=%v", version, dirty, err)
 	}
 	return version
 }
@@ -77,58 +62,79 @@ func testConfig() Config {
 	}
 }
 
-func TestRun_DoesNotMigrateAndLeavesInjectedConnectionsOpen(t *testing.T) {
-	pool := testPool(t)
-	nc := embeddedNATS(t)
-	before := schemaVersion(t, pool)
-	// A migration that cannot apply: Run must never read Deps.Migrations.
-	bad := fstest.MapFS{
-		"000999_bad.up.sql":   {Data: []byte("THIS IS NOT SQL;")},
-		"000999_bad.down.sql": {Data: []byte("THIS IS NOT SQL;")},
-	}
-	// Run spawns its loops before it watches the context, so cancelling
-	// at once still exercises the start, the join and the close; the
-	// assertions below need none of the loops to have done any work.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+// startGrace is how long runUntilCancelled lets Run start before the
+// context ends. Run must open the configured database (when none is
+// injected) and spawn its loops under a live context, so the context
+// cannot be cancelled in advance; the loops themselves only wait for
+// the stream, so the grace need only cover the open and the spawn,
+// which take milliseconds, and the join and the close run after it.
+const startGrace = 2 * time.Second
+
+// runUntilCancelled runs Run on a context that ends after startGrace
+// and checks Run returns cleanly within the shutdown timeout.
+func runUntilCancelled(t *testing.T, cfg Config, deps Deps) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), startGrace)
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testConfig(), Deps{Pool: pool, NATS: nc, Migrations: bad}) }()
+	go func() { done <- Run(ctx, cfg, deps) }()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("Run returned %v on a cancelled context, want nil", err)
 		}
-	case <-time.After(runTimeout):
+	case <-time.After(startGrace + runTimeout):
 		t.Fatalf("Run did not return within %s of the context ending", runTimeout)
-	}
-	if after := schemaVersion(t, pool); after != before {
-		t.Fatalf("schema version went from %d to %d: Run migrated", before, after)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("the injected pool was closed by Run: %v", err)
-	}
-	if !nc.IsConnected() {
-		t.Fatal("the injected NATS connection was closed by Run")
 	}
 }
 
-func TestMigrate_AppliesTheBadFileAndFails(t *testing.T) {
-	// The counterpart of the test above: Migrate does read
-	// Deps.Migrations, so the same bad file is an error here (and leaves
-	// the version untouched, since golang-migrate applies nothing).
-	pool := testPool(t)
-	before := schemaVersion(t, pool)
-	bad := fstest.MapFS{
-		"000999_bad.up.sql":   {Data: []byte("THIS IS NOT SQL;")},
-		"000999_bad.down.sql": {Data: []byte("THIS IS NOT SQL;")},
+func TestRun_DoesNotMigrateAndLeavesInjectedConnectionsOpen(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		nc := embeddedNATS(t)
+		before := schemaVersion(t, db.URL())
+		runUntilCancelled(t, testConfig(), Deps{DB: db, Bus: storage.NewBus(db), NATS: nc})
+		if after := schemaVersion(t, db.URL()); after != before {
+			t.Fatalf("schema version went from %d to %d: Run migrated", before, after)
+		}
+		if err := db.PingContext(context.Background()); err != nil {
+			t.Fatalf("the injected database was closed by Run: %v", err)
+		}
+		if !nc.IsConnected() {
+			t.Fatal("the injected NATS connection was closed by Run")
+		}
+	})
+}
+
+// With no database injected, Run opens the configured URL itself (the
+// standalone binary's path) on either backend and closes it again.
+func TestRun_OpensTheConfiguredDatabaseWhenNoneIsInjected(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		cfg := testConfig()
+		cfg.PostgresURL = db.URL()
+		runUntilCancelled(t, cfg, Deps{NATS: embeddedNATS(t)})
+	})
+}
+
+// Migrate on a fresh SQLite file creates the schema; on a migrated
+// database it is a no-op that leaves the version where it is.
+func TestMigrate_AppliesTheEmbeddedSetOfTheURLsBackend(t *testing.T) {
+	url := "sqlite://" + filepath.Join(t.TempDir(), "fresh.db")
+	if v := schemaVersion(t, url); v != 0 {
+		t.Fatalf("a new file reports version %d, want 0", v)
 	}
-	err := Migrate(Config{PostgresURL: os.Getenv("TEST_POSTGRES_URL")}, Deps{Migrations: bad})
-	if err == nil || !strings.Contains(err.Error(), "database migration") {
-		t.Fatalf("err = %v", err)
+	if err := Migrate(Config{PostgresURL: url}, Deps{}); err != nil {
+		t.Fatalf("migrate: %v", err)
 	}
-	// golang-migrate marks the failed version dirty; put the row back so
-	// the package's other tests and the script's checks see a clean schema.
-	if _, err := pool.Exec(context.Background(), "UPDATE schema_migrations SET version = $1, dirty = false", before); err != nil {
-		t.Fatal(err)
+	if v := schemaVersion(t, url); v == 0 {
+		t.Fatal("no migration applied")
 	}
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		before := schemaVersion(t, db.URL())
+		if err := Migrate(Config{PostgresURL: db.URL()}, Deps{}); err != nil {
+			t.Fatalf("migrate a current database: %v", err)
+		}
+		if after := schemaVersion(t, db.URL()); after != before {
+			t.Fatalf("version moved from %d to %d on a current database", before, after)
+		}
+	})
 }

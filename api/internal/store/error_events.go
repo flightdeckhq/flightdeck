@@ -12,8 +12,10 @@ import "regexp"
 // `e`. The session listing's error_types aggregate and error_type
 // filter and the agent summary's errors count all use this one
 // predicate so they cannot drift apart.
-const errorEventFilter = "(e.event_type = 'llm_error' OR " +
-	"(e.event_type = 'tool_call' AND jsonb_typeof(e.payload->'error') = 'object'))"
+func (s *Store) errorEventFilter() string {
+	return "(e.event_type = 'llm_error' OR " +
+		"(e.event_type = 'tool_call' AND " + s.d.JSONTypeOf("e.payload", "error") + " = 'object'))"
+}
 
 // mcpServerFacetExpr is the /v1/events mcp_server facet's value
 // expression. Claude Code keys a server bundled with a plugin as
@@ -23,9 +25,13 @@ const errorEventFilter = "(e.event_type = 'llm_error' OR " +
 // the plugin does (the plugin name runs up to the first underscore and
 // neither part is empty; the flattened form holds no colon), so one
 // server is one facet value across the upgrade. Any other server name
-// is returned unchanged.
-const mcpServerFacetExpr = `regexp_replace(payload->>'server_name', ` +
-	`'^plugin_([^_:]+)_([^:]+)$', 'plugin:\1:\2')`
+// is returned unchanged. regexp_replace spells the same on both
+// engines (Postgres 15+, and the function the storage driver gives
+// SQLite).
+func (s *Store) mcpServerFacetExpr() string {
+	return `regexp_replace(` + s.d.JSONText("payload", "server_name") + `, ` +
+		`'^plugin_([^_:]+)_([^:]+)$', 'plugin:\1:\2')`
+}
 
 // pluginServerKey matches a colon-form plugin server key and captures
 // its plugin and server parts, the inverse of mcpServerFacetExpr.

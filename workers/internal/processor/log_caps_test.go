@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/logcap"
-	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 )
 
 // oversizedLen is the size of the hostile value below: the NATS payload
@@ -44,64 +44,72 @@ func (b *lockedBuffer) linesWith(substr string) []string {
 }
 
 // A session_start whose parent_session_id is a megabyte of non-UUID text
-// fails Postgres's uuid cast, and both the writer's error and Postgres's
-// quote the whole input. The worker's log line for the failed parent
-// lookup carries the id and the error capped, not the megabyte.
+// fails on both backends, and the worker's log lines carry the id and
+// the error capped, never the megabyte. On Postgres the parent lookup
+// fails the uuid cast, and both the writer's error and Postgres's quote
+// the whole input; on SQLite the lookup finds no such row and the
+// parent stub's insert fails the uuid CHECK, whose message quotes
+// nothing, so the cap is proven on the stub's log line.
 func TestHandleSessionStart_CapsAHugeParentIDOnItsLogLine(t *testing.T) {
-	pool := dbPool(t)
-	ctx := context.Background()
+	each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
 
-	var logs lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+		var logs lockedBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
 
-	sessionID, agentID := randomID(t), randomID(t)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM sessions WHERE session_id = $1::uuid`, sessionID)
-		_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE agent_id = $1::uuid`, agentID)
-	})
+		sessionID := randomID(t)
+		agentID := randomID(t)
+		cleanupSession(t, db, sessionID)
+		t.Cleanup(func() { _, _ = db.ExecContext(ctx, `DELETE FROM agents WHERE agent_id = $1`, agentID) })
 
-	const marker = "PARENTMARKER"
-	parent := marker + strings.Repeat("p", oversizedLen-len(marker))
-	sp := NewSessionProcessor(writer.New(pool), pool)
-	err := sp.HandleSessionStart(ctx, consumer.EventPayload{
-		SessionID: sessionID, EventType: "session_start",
-		Flavor: "processor-test-log-caps", AgentType: "coding",
-		AgentID: agentID, ClientType: "flightdeck_sensor",
-		AgentName: "processor-test-log-caps", User: "test", Hostname: "test-host",
-		ParentSessionID: parent,
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-	})
-	if err == nil {
-		t.Fatal("a session_start with a malformed parent_session_id was stored")
-	}
-	// The returned error quotes the whole id; the consumer caps it on the
-	// line it logs. Pin the premise so the cap below is not vacuous.
-	if !strings.Contains(err.Error(), parent) {
-		t.Fatalf("Postgres no longer quotes the bad input; the error is %.200s", err.Error())
-	}
-
-	lines := logs.linesWith("parent session lookup failed")
-	if len(lines) != 1 {
-		t.Fatalf("logged %d parent lookup lines, want 1", len(lines))
-	}
-	line := lines[0]
-	// The capped id, the capped error and a few short keys.
-	const maxLineLen = logcap.MaxID + logcap.MaxErr + 512
-	if len(line) > maxLineLen {
-		t.Fatalf("the parent lookup line is %d bytes, want at most %d", len(line), maxLineLen)
-	}
-	for _, want := range []string{
-		"session_id=" + sessionID,
-		`parent_session_id="` + marker,
-		// The writer's error names the id before Postgres's text, so
-		// the capped error keeps that much of it.
-		`err="session exists ` + marker,
-		"…(1048576 bytes)",
-	} {
-		if !strings.Contains(line, want) {
-			t.Errorf("the parent lookup line lacks %q: %.300s", want, line)
+		const marker = "PARENTMARKER"
+		parent := marker + strings.Repeat("p", oversizedLen-len(marker))
+		sp := newTestSessionProcessor(db)
+		err := sp.HandleSessionStart(ctx, consumer.EventPayload{
+			SessionID: sessionID, EventType: "session_start",
+			Flavor: "processor-test-log-caps", AgentType: "coding",
+			AgentID: agentID, ClientType: "flightdeck_sensor",
+			AgentName: "processor-test-log-caps", User: "test", Hostname: "test-host",
+			ParentSessionID: parent,
+			Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		})
+		if err == nil {
+			t.Fatal("a session_start with a malformed parent_session_id was stored")
 		}
-	}
+
+		logLine, wantErrPrefix := "parent session lookup failed", `err="session exists `+marker
+		if db.Backend == storage.SQLite {
+			logLine, wantErrPrefix = "upsert parent stub failed", `err="upsert parent stub `
+		} else if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(parent)) {
+			// The returned error quotes the whole id (lower-cased by the
+			// writer's id normalisation); the consumer caps it on the line
+			// it logs. Pin the premise so the cap below is not vacuous.
+			t.Fatalf("Postgres no longer quotes the bad input; the error is %.200s", err.Error())
+		}
+
+		lines := logs.linesWith(logLine)
+		if len(lines) != 1 {
+			t.Fatalf("logged %d %q lines, want 1", len(lines), logLine)
+		}
+		line := lines[0]
+		// The capped id, the capped error and a few short keys.
+		const maxLineLen = logcap.MaxID + logcap.MaxErr + 512
+		if len(line) > maxLineLen {
+			t.Fatalf("the %q line is %d bytes, want at most %d", logLine, len(line), maxLineLen)
+		}
+		for _, want := range []string{
+			"session_id=" + sessionID,
+			`parent_session_id="` + marker,
+			// The writer's error names the id before the database's text,
+			// so the capped error keeps that much of it.
+			wantErrPrefix,
+			"…(1048576 bytes)",
+		} {
+			if !strings.Contains(line, want) {
+				t.Errorf("the %q line lacks %q: %.300s", logLine, want, line)
+			}
+		}
+	})
 }

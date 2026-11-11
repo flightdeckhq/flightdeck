@@ -836,6 +836,27 @@ two from drifting.
 embedded Postgres (a 40 MB download and a child process to manage); a
 query builder or ORM (hides the SQL the stores are tuned on).
 
+## D263 -- One release pipeline ships the binary through goreleaser; the per-service images retire
+
+**Date:** 2026-11-08
+**Decision:** a version tag builds the `flightdeck` binary for `linux`,
+`darwin` and `windows` on `amd64` and `arm64` with goreleaser and
+publishes it as GitHub release archives with `checksums.txt`, a formula
+in `flightdeckhq/homebrew-tap` (stable tags only), platform wheels on
+PyPI as `flightdeck-cli` (`flightdeck` is an unrelated project), and one
+multi-arch Docker image `flightdeckhq/flightdeck`. `install.sh` and
+`install.ps1` download from the release and verify the checksum. The
+four per-service images (`flightdeck-ingestion`, `-workers`, `-api`,
+`-dashboard`) are no longer published; a from-scratch install gate runs
+every channel on fresh runners after each release.
+**Why:** one artifact per platform is what the one-binary topology
+promises; maintaining both image sets would keep the old topology alive.
+**Rejected alternative:** a Homebrew cask (no `brew services` stanza,
+which the formula's background mode needs); a PEP 541 transfer of the
+`flightdeck` PyPI name (months, uncertain); maturin or a native build for
+the wheels (the binary is prebuilt, the wheel only carries it); keeping
+the per-service images for one deprecation release (no external users).
+
 ## D264 -- The sensor defaults to the local control plane and its dev token, on loopback only
 
 **Date:** 2026-11-08

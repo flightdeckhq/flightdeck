@@ -47,6 +47,18 @@ const shutdownTimeout = 30 * time.Second
 // path with this suffix, beside the file it guards.
 const lockSuffix = ".lock"
 
+// databaseConnectBudget is how long the binary keeps trying to reach a
+// database that does not answer yet: a Postgres that starts beside it
+// (compose brings both up at once; a Kubernetes rollout restarts them
+// independently) refuses connections for its first seconds. Sixty
+// seconds is the budget the three services use when they run alone; it
+// outlasts the compose Postgres healthcheck's worst case and still
+// fails a wrong host within the first minute. It is spent only on a
+// database that may yet come up: a refused password, a database that
+// does not exist, a URL that does not parse or a SQLite file that
+// cannot be opened ends the start at once.
+const databaseConnectBudget = 60 * time.Second
+
 func main() {
 	useUTC()
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -211,23 +223,21 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		defer wrkNC.Close()
 	}
 
-	// The schema first, once, before any service or the token bootstrap
-	// touches the database: the embedded migrations of its backend.
-	if err := storage.Migrate(ctx, database.url); err != nil {
-		return fmt.Errorf("database %s: %w", database.display, err)
-	}
-	slog.Info("database schema is current", "backend", database.backend)
 	// One database and one storage bus for the whole process, injected
 	// into the three services. On SQLite that is the point: the
 	// database holds the file's single writer connection, and the bus
 	// is in-process, so a service that opened the file or made a bus
 	// for itself would collide with the others' writes and never hear
 	// their notifications.
+	//
+	// Opening it is the first contact with the database: a server that
+	// is still starting is waited for, a failure that waiting cannot
+	// fix is returned at once (storage.PermanentOpenError).
 	connURL, err := connectionURL(database.url)
 	if err != nil {
 		return err
 	}
-	db, err := storage.Open(ctx, connURL)
+	db, err := storage.OpenRetry(ctx, connURL, databaseConnectBudget)
 	if err != nil {
 		return fmt.Errorf("database %s: %w", database.display, err)
 	}
@@ -236,6 +246,12 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 			slog.Warn("database close", "err", err)
 		}
 	}()
+	// The schema next, once, before any statement of a service or of
+	// the token bootstrap runs: the embedded migrations of the backend.
+	if err := storage.Migrate(ctx, database.url); err != nil {
+		return fmt.Errorf("database %s: %w", database.display, err)
+	}
+	slog.Info("database schema is current", "backend", database.backend)
 	// Each service gets a handle of its own on that database, so the
 	// dashboard's listing queries cannot take the connections the
 	// workers need for every event: on SQLite the handles share the
@@ -578,10 +594,18 @@ func publicURL(opts cli.Options) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
-// maskURL hides the password of a connection URL.
+// maskURL hides the password of a connection URL. A URL that does not
+// parse is shown as its scheme only: what follows may hold a password
+// this function cannot find.
 func maskURL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
+	if err != nil {
+		if scheme, _, found := strings.Cut(raw, "://"); found {
+			return scheme + "://…"
+		}
+		return "…"
+	}
+	if u.User == nil {
 		return raw
 	}
 	if _, has := u.User.Password(); has {

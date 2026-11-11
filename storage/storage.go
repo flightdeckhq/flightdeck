@@ -38,6 +38,11 @@ const (
 // neither sqlite nor postgres.
 var ErrUnsupportedURL = errors.New("storage: database URL must start with sqlite:// or postgres://")
 
+// ErrInvalidURL is returned by Open for a Postgres URL that does not
+// parse. The message does not quote the URL, which holds the password;
+// the usual cause is a reserved character in it.
+var ErrInvalidURL = errors.New("storage: the Postgres URL does not parse (percent-encode reserved characters in the password, @ as %40)")
+
 // ErrSQLiteNeedsFile is returned by Open for a sqlite:// URL that names
 // no file (empty or :memory:): an in-memory database is private to one
 // connection, so the read pool and the migrator would each see an
@@ -161,9 +166,11 @@ func Open(ctx context.Context, rawURL string) (*DB, error) {
 // answer is retried with a doubling delay until it does or budget has
 // elapsed, each attempt logged at warn, so a service that starts a
 // moment before its database (compose, a Kubernetes rollout) comes up
-// instead of exiting. A URL Open can never accept (unsupported scheme,
-// sqlite without a file) is not retried. The last error is returned
-// when the budget runs out or ctx ends.
+// instead of exiting. A failure that another attempt cannot fix
+// (PermanentOpenError: a URL Open can never accept, credentials or a
+// database name Postgres refuses, a SQLite file that cannot be opened)
+// is returned at once. The last error is returned when the budget runs
+// out or ctx ends.
 func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, error) {
 	deadline := time.Now().Add(budget)
 	delay := openRetryInitialDelay
@@ -172,7 +179,7 @@ func OpenRetry(ctx context.Context, rawURL string, budget time.Duration) (*DB, e
 		if err == nil {
 			return db, nil
 		}
-		if errors.Is(err, ErrUnsupportedURL) || errors.Is(err, ErrSQLiteNeedsFile) {
+		if PermanentOpenError(err) {
 			return nil, err
 		}
 		remaining := time.Until(deadline)
@@ -228,7 +235,9 @@ func SQLiteURL(path string) string {
 
 func openPostgres(rawURL string) (*DB, error) {
 	if _, err := url.Parse(rawURL); err != nil {
-		return nil, fmt.Errorf("storage: parse postgres URL: %w", err)
+		// The parse error quotes the URL, password included; it is
+		// left out.
+		return nil, ErrInvalidURL
 	}
 	pool, err := sql.Open("pgx", rawURL)
 	if err != nil {

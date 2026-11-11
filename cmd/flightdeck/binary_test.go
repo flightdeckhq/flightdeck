@@ -673,6 +673,72 @@ func TestBinary_TimestampsAreUTCWhateverTheHostZone(t *testing.T) {
 	}
 }
 
+// A Postgres that does not answer yet is waited for (it may be starting
+// beside the binary), and a signal ends the wait at once. Port 1 is
+// reserved and refuses every connection, so no Postgres is needed.
+func TestBinary_WaitsForAnUnreachableDatabaseUntilASignal(t *testing.T) {
+	skipWithoutSignals(t)
+	cmd, out := command("--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "data"),
+		"--database-url", "postgres://u:p@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		default:
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	})
+	exited := false
+	waitFor(t, "a retry of the unreachable database", startTimeout, func() bool {
+		select {
+		case err := <-done:
+			done <- err
+			exited = true
+			return true
+		default:
+		}
+		return strings.Contains(out.String(), "database not reachable, retrying")
+	})
+	if exited {
+		t.Fatalf("the binary gave up on a refused connection without waiting:\n%s", out.String())
+	}
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		done <- err
+		if err == nil {
+			t.Fatalf("a start that never reached its database exited 0:\n%s", out.String())
+		}
+	case <-time.After(refusalTimeout):
+		t.Fatalf("the binary kept waiting for the database after SIGINT:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "postgres://u:***@127.0.0.1:1/x") {
+		t.Errorf("the error does not name the database with its password masked:\n%s", out.String())
+	}
+}
+
+// A database URL that waiting cannot fix ends the start at once, and
+// the message never repeats the password: here a URL that does not
+// parse because the password holds a reserved character.
+func TestBinary_AnUnparsablePostgresURLIsRefusedWithoutItsPassword(t *testing.T) {
+	skipWithoutSignals(t)
+	out := refused(t, "--listen", "127.0.0.1:"+freePort(t), "--data-dir", filepath.Join(t.TempDir(), "data"),
+		"--database-url", "postgres://flightdeck:s3cret pass@localhost:5432/db%zz")
+	if strings.Contains(out, "s3cret") {
+		t.Errorf("the output repeats the password: %s", out)
+	}
+	if !strings.Contains(out, "does not parse") || !strings.Contains(out, "percent-encode") {
+		t.Errorf("the output does not say what is wrong with the URL: %s", out)
+	}
+}
+
 // An explicit sqlite:// URL is served from that file, relative paths
 // included, and the data dir then holds no database of its own.
 func TestBinary_ExplicitSQLiteURL(t *testing.T) {

@@ -5070,8 +5070,19 @@ database error type a store inspects is read through
 table and constraint and any other error by its text, never by the
 data it refused. `storage.Open` pings; a service opens its
 database with `storage.OpenRetry`, which retries with a doubling delay
-for a bounded budget (ingestion and the query API: 60 s) so a database that starts a
-moment after the service does not end the process. The Postgres pool is
+for a bounded budget (60 s for ingestion, the workers and the query
+API alike, and for the `flightdeck` binary, which opens the database
+for the three) so a database that starts a moment after the service
+does not end the process. The budget is spent only on a failure that
+another attempt can get past: a refused or timed-out connection, a
+host name that does not resolve yet, a server that answers that it is
+starting up or has no connection to spare. `storage.PermanentOpenError`
+names the failures that are returned at once: Postgres refusing the
+credentials (SQLSTATE class 28) or the database name (3D000), a URL
+that cannot be accepted (an unsupported scheme, a `sqlite://` URL with
+no file, a Postgres URL that does not parse, reported without the URL's
+text since it holds the password), and any failure to open a SQLite
+file other than its being locked for the moment. The Postgres pool is
 capped at max(4, NumCPU) connections, open and idle, idle ones closed
 after 30 minutes; the SQLite writer is one connection and each read
 pool eight.
@@ -5234,9 +5245,9 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   order a finer clock would have given); on Postgres, which records
   no insertion order, the id column, which keeps the order total and
   repeatable. A random id alone is never the tie-break of such a
-  query on SQLite. The token, token-policy and custom-directive lists,
-  the MCP policy audit log and the pending-directive pick are ordered
-  this way. Where either tied row is a correct answer (the latest
+  query on SQLite. The token, token-policy and custom-directive lists
+  and the pending-directive pick are ordered this way. Where either
+  tied row is a correct answer (the latest
   session of an agent among two started in one millisecond, search
   results of equal rank, the entries of one MCP policy, which one
   transaction stamps alike on both engines) the query keeps a unique
@@ -10515,10 +10526,16 @@ several binaries, each with a data dir of its own, may share one
 Postgres database) and `sqlite://<path>` (a SQLite file somewhere else;
 a relative path is resolved against the working directory), and
 refuses any other value at start with the accepted forms. The binary
-applies the embedded migrations of the backend (`storage.Migrate`)
-before anything else touches the database, so an empty database, a new
-SQLite file and a Postgres database an earlier version migrated are all
-brought to the current schema. It then opens **one** `storage.DB` and
+connects first (`storage.OpenRetry`): a Postgres that does not answer
+yet, as when compose starts both together, is waited for up to 60
+seconds, each attempt logged, and a signal ends the wait; a refused
+password, a database that does not exist, a URL that does not parse
+or a SQLite file that cannot be opened ends the start at once with
+the reason, the password never repeated. It then applies the embedded
+migrations of the backend (`storage.Migrate`) before any statement of
+a service runs, so an empty database, a new SQLite file and a Postgres
+database an earlier version migrated are all brought to the current
+schema. It opens **one** `storage.DB` and
 **one** `storage.Bus` for the process and hands each of the three
 services the bus and a handle on that database (`DB.Share`): on
 SQLite the database owns the file's single writer connection and the
@@ -10609,8 +10626,9 @@ sets.
 busy or privileged port fails before anything is touched), prepares
 the data dir, takes its lock and reads the secrets, takes the SQLite
 file's lock (creating the file, mode 0600, when it is new), starts
-the embedded NATS server, applies the embedded migrations, opens the
-database and the storage bus, checks or mints the dashboard token,
+the embedded NATS server, opens the database (waiting for one that is
+not up yet), applies the embedded migrations, creates the storage
+bus, checks or mints the dashboard token,
 then starts the three services together and serves. On SIGINT or
 SIGTERM, or when a service or a listener fails, it stops in order:
 the HTTP server stops accepting and drains the requests in flight

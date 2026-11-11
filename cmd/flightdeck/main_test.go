@@ -22,6 +22,10 @@ func TestMaskURL(t *testing.T) {
 		"postgres://flightdeck@localhost/fd":                                     "postgres://flightdeck@localhost/fd",
 		"nats://tok3n@nats:4222":                                                 "nats://tok3n@nats:4222",
 		"not a url at all":                                                       "not a url at all",
+		// A URL that does not parse is shown without anything that
+		// could be its password.
+		"postgres://flightdeck:pa ss@localhost:5432/db%zz": "postgres://…",
+		"%zz": "…",
 	}
 	for in, want := range cases {
 		if got := maskURL(in); got != want {
@@ -258,6 +262,15 @@ func TestConnectionURL_CarriesEveryServicesPostgresParameters(t *testing.T) {
 	}
 	if _, err := connectionURL("mysql://u@h/fd"); err == nil {
 		t.Error("a URL of no supported backend must be refused")
+	}
+	// A Postgres URL that does not parse is refused without its text,
+	// which holds the password, and as an error that is not retried.
+	_, err = connectionURL("postgres://flightdeck:s3cret pass@localhost:5432/db%zz")
+	if err == nil || !storage.PermanentOpenError(err) {
+		t.Errorf("an unparsable URL: %v, want a permanent error", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("the error repeats the password: %v", err)
 	}
 }
 

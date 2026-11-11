@@ -16,6 +16,10 @@ All notable changes to Flightdeck are documented here.
   database instead, and `sqlite:///path/to/file.db` a SQLite file
   elsewhere; anything else is refused at start with the accepted forms.
   The schema migrations of either backend run at start from the binary.
+  A Postgres that is still starting is waited for up to a minute; a
+  wrong password, a database that does not exist or a URL that does
+  not parse ends the start at once, with the reason and without the
+  password.
   The three services share one notification bus and one database: on
   SQLite every write queues on the file's single writer connection and
   each service reads through connections of its own; on Postgres each

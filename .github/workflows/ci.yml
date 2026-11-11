@@ -336,7 +336,7 @@ jobs:
             unformatted="$(cd "$m" && gofmt -l .)"
             if [ -n "$unformatted" ]; then
               echo "::error::gofmt reports unformatted files in $m (run gofmt -w . there):"
-              echo "$unformatted" | sed "s|^|  $m/|"
+              while IFS= read -r file; do echo "  $m/$file"; done <<<"$unformatted"
               status=1
             fi
           done
@@ -552,7 +552,7 @@ jobs:
         # built (the router then answers 503 with build instructions).
         run: |
           test -f webui/dist/.gitkeep
-          test "$(ls -A webui/dist | wc -l)" = "1"
+          test "$(find webui/dist -mindepth 1 -maxdepth 1 | wc -l)" = "1"
           go build -o /dev/null ./cmd/flightdeck
 
       - name: Install dashboard dependencies
@@ -1532,7 +1532,8 @@ jobs:
             ls dist/flightdeck_${target}*/flightdeck >/dev/null
           done
           ls dist/flightdeck_windows_amd64*/flightdeck.exe dist/flightdeck_windows_arm64*/flightdeck.exe >/dev/null
-          ./dist/flightdeck_linux_amd64*/flightdeck --version
+          native=(./dist/flightdeck_linux_amd64*/flightdeck)
+          "${native[0]}" --version
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1

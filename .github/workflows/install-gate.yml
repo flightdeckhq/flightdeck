@@ -132,6 +132,8 @@ jobs:
       # (what main serves once the tag's commit is on main).
       - name: install.sh (curl | sh)
         run: |
+          # A failed download or installer fails here, not at the grep.
+          set -o pipefail
           test ! -e /usr/local/bin/flightdeck
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh | tee "$RUNNER_TEMP/install.log"
           grep -q 'Signature of checksums.txt verified' "$RUNNER_TEMP/install.log"
@@ -250,6 +252,8 @@ jobs:
       - name: install.sh (curl | sh)
         if: matrix.channel == 'install.sh' || env.PRERELEASE == 'true'
         run: |
+          # A failed download fails the step: sh exits 0 on empty input.
+          set -o pipefail
           if [ "${{ matrix.channel }}" = brew ]; then
             echo "::warning::$TAG is a pre-release, which the tap does not carry; this leg installs with install.sh"
           fi

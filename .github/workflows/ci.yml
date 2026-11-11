@@ -1379,9 +1379,11 @@ jobs:
   # silently break the one-command install. Validates JSON + required
   # fields (name, version, plugins[].source.ref) so a future bump that
   # forgets to update the ref pinning surfaces in CI rather than at
-  # install time.
+  # install time. The job also runs the checks of the repository's own
+  # scripts (version locations, the pricing refresh, the README command
+  # budget), which is why its display name is wider than its id.
   marketplace-schema:
-    name: Marketplace manifest schema
+    name: Repo scripts and manifests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1414,6 +1416,19 @@ jobs:
       # entry, unsupported CPU, unknown version, plain-HTTP host).
       - name: install.sh against a local release server
         run: scripts/test-install-sh.sh
+
+      # The README's command budget (scripts/readme-budget.sh): the
+      # self-test pins the counting rule on fixtures, then the README
+      # is measured. A fence or a heredoc left open, and a command in
+      # a fence tagged as a sample language, fail the step even in
+      # report mode, because the counts cannot be trusted.
+      # Report mode until the single-binary README lands
+      # within budget; that pull request drops --report so the budget
+      # then fails the build.
+      - name: README command budget
+        run: |
+          scripts/test-readme-budget.sh
+          scripts/readme-budget.sh --report
 
       - name: Validate marketplace.json structure
         run: |

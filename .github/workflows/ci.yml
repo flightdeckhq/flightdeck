@@ -1525,7 +1525,7 @@ jobs:
   # the all-in-one Docker image is built from the root Dockerfile, so a
   # platform or an image that stops building fails here and not on the
   # tag. The binaries are not run: the `flightdeck` job above smokes the
-  # native build against Postgres.
+  # native build on SQLite and against Postgres.
   release-snapshot:
     name: Release snapshot (six binaries, Docker image)
     runs-on: ubuntu-24.04

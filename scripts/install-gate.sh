@@ -10,8 +10,9 @@
 #   scripts/install-gate.sh run <listen> <binary> [flag...]
 #       Starts <binary> --listen <listen> --data-dir <fresh temp dir>
 #       [flag...] with its output in a log, checks it, stops it with
-#       SIGINT and requires a clean exit. The database comes from the
-#       environment (FLIGHTDECK_DATABASE_URL) while the binary needs one.
+#       SIGINT and requires a clean exit. The database is the binary's
+#       default, a SQLite file in that data dir, unless the environment
+#       names another (FLIGHTDECK_DATABASE_URL).
 #   scripts/install-gate.sh check <base-url> <log-command...>
 #       Checks a server somebody else started (a container): the
 #       start-up block is read from the output of <log-command>, for

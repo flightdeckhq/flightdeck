@@ -15,7 +15,7 @@ FAKE="$WORK/release"
 PORT="${TEST_INSTALL_PORT:-8765}"
 TAG=v0.0.1-test
 cleanup() {
-  [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
+  if [[ -n "${HTTP_PID:-}" ]]; then kill "$HTTP_PID" 2>/dev/null || true; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -50,6 +50,8 @@ printf 'x' >>"$FAKE/releases/download/v0.0.1-bad/flightdeck_darwin_arm64.tar.gz"
 # A release whose checksums.txt forgot an asset.
 cp -R "$FAKE/releases/latest/download" "$FAKE/releases/download/v0.0.1-noentry"
 grep -v 'flightdeck_linux_amd64\|flightdeck_darwin_arm64' "$FAKE/releases/latest/download/checksums.txt" >"$FAKE/releases/download/v0.0.1-noentry/checksums.txt"
+# The script itself, served for the piped case as raw.githubusercontent.com serves it.
+cp "$INSTALL_SH" "$FAKE/install.sh"
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 -d "$FAKE" >"$WORK/http.log" 2>&1 &
 HTTP_PID=$!
@@ -75,7 +77,7 @@ expect_fail() {
 echo "== install.sh against http://127.0.0.1:$PORT"
 
 echo "-- latest, INSTALL_DIR, piped (curl | sh)"
-cat "$INSTALL_SH" | INSTALL_DIR="$WORK/inst1" sh >"$WORK/out1" 2>&1 || { cat "$WORK/out1"; exit 1; }
+curl -fsSL "http://127.0.0.1:$PORT/install.sh" | INSTALL_DIR="$WORK/inst1" sh >"$WORK/out1" 2>&1 || { cat "$WORK/out1"; exit 1; }
 grep -q 'Checksum verified' "$WORK/out1"
 grep -q 'Signature of checksums.txt not checked: FLIGHTDECK_RELEASE_URL' "$WORK/out1"
 test -x "$WORK/inst1/flightdeck"
@@ -167,9 +169,42 @@ test ! -e "$WORK/inst11/flightdeck"
 expect_fail "a missing bundle aborts the install" "404" \
   -- env "$SIGNED" PATH="$WORK/fakecosign:$PATH" VERSION=v0.0.1-noentry INSTALL_DIR="$WORK/inst12" sh "$INSTALL_SH"
 # Without cosign on PATH the same signed URL installs and says the
-# signature was not checked.
-env "$SIGNED" PATH="/usr/bin:/bin" INSTALL_DIR="$WORK/inst13" sh "$INSTALL_SH" >"$WORK/out13" 2>&1 || { cat "$WORK/out13"; exit 1; }
+# signature was not checked. The PATH is a directory holding only the
+# tools the installer runs, so a cosign the machine has (in /usr/bin on
+# some runners) cannot be found.
+mkdir -p "$WORK/nocosign"
+for tool in sh uname curl wget sha256sum shasum openssl cut grep sed tar gzip mktemp rm mkdir install cp chmod sysctl; do
+  if tool_path="$(command -v "$tool")"; then ln -s "$tool_path" "$WORK/nocosign/$tool"; fi
+done
+test ! -e "$WORK/nocosign/cosign"
+env "$SIGNED" PATH="$WORK/nocosign" INSTALL_DIR="$WORK/inst13" sh "$INSTALL_SH" >"$WORK/out13" 2>&1 || { cat "$WORK/out13"; exit 1; }
 grep -q 'not checked: cosign is not installed' "$WORK/out13"
+"$WORK/inst13/flightdeck" --version | grep -q "^flightdeck $TAG"
 pass "without cosign the installer says the signature was not checked"
+
+echo "-- the default repository is always signature-checked"
+# FLIGHTDECK_RELEASE_SIGNED_URL adds a URL to check; it cannot take the
+# check away from the default repository. A curl stand-in serves the
+# default repository's URLs from the tampered local release (bundle BAD),
+# so an installer that skipped the signature would stop at the checksum
+# instead.
+mkdir -p "$WORK/fakecurl"
+cat >"$WORK/fakecurl/curl" <<'FAKE'
+#!/bin/sh
+dest=
+while [ $# -gt 1 ]; do
+  case "$1" in -o) dest="$2"; shift ;; esac
+  shift
+done
+case "$1" in
+  https://github.com/flightdeckhq/flightdeck/*) cp "$FAKE_RELEASE_ROOT/${1#https://github.com/flightdeckhq/flightdeck/}" "$dest" ;;
+  *) echo "fake curl: unexpected URL $1" >&2; exit 22 ;;
+esac
+FAKE
+chmod 0755 "$WORK/fakecurl/curl"
+expect_fail "a bad signature on the default repository aborts, whatever the signed-URL hook says" "is not signed by the flightdeckhq/flightdeck release workflow" \
+  -- env -u FLIGHTDECK_RELEASE_URL FLIGHTDECK_RELEASE_SIGNED_URL="http://127.0.0.1:$PORT" FAKE_RELEASE_ROOT="$FAKE" \
+  PATH="$WORK/fakecurl:$WORK/fakecosign:$PATH" VERSION=v0.0.1-bad INSTALL_DIR="$WORK/inst14" sh "$INSTALL_SH"
+test ! -e "$WORK/inst14/flightdeck"
 
 echo "INSTALL.SH TESTS OK"

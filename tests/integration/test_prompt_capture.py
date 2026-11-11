@@ -22,6 +22,7 @@ from .conftest import (
     exec_sql,
     make_event,
     post_event,
+    query_rows,
     session_exists_in_fleet,
     wait_until,
     worker_paused,
@@ -54,14 +55,20 @@ def _query_event_content_rows(event_id: str) -> int:
 
 def _get_event_ids(session_id: str) -> list[str]:
     """Get event IDs for a session."""
-    raw = exec_sql(
-        "SELECT COALESCE(json_agg(id::text), '[]'::json) FROM events "
+    rows = query_rows(
+        "SELECT id FROM events "
         "WHERE session_id = :'sid'::uuid AND event_type = 'post_call'",
         sid=session_id,
     )
-    if not raw or raw == "null":
-        return []
-    return json.loads(raw)
+    return [str(row["id"]) for row in rows]
+
+
+def _has_content(event_id: str) -> bool:
+    """The stored event row's has_content flag."""
+    (row,) = query_rows(
+        "SELECT has_content FROM events WHERE id = :'eid'::uuid", eid=event_id
+    )
+    return bool(row["has_content"])
 
 
 def test_capture_off_no_row_and_404() -> None:
@@ -265,11 +272,7 @@ def test_content_the_database_rejects_lands_the_event_without_content() -> None:
             "tools": None,
         }
     )
-    has_content = exec_sql(
-        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
-        eid=eid,
-    )
-    assert has_content == "f", f"event still claims content: has_content={has_content!r}"
+    assert not _has_content(eid), "event still claims content"
     assert _query_event_content_rows(eid) == 0
     assert _get_event_content(eid) is None
 
@@ -317,11 +320,7 @@ def test_nul_in_content_is_stored_as_the_replacement_character() -> None:
     event_ids = _get_event_ids(sid)
     assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
     eid = event_ids[0]
-    has_content = exec_sql(
-        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
-        eid=eid,
-    )
-    assert has_content == "t", f"event does not claim its content: {has_content!r}"
+    assert _has_content(eid), "event does not claim its content"
     assert _query_event_content_rows(eid) == 1
     result = _get_event_content(eid)
     assert result is not None, "content endpoint answered 404"
@@ -365,11 +364,7 @@ def test_has_content_without_a_content_blob_is_stored_as_no_content() -> None:
 
     event_ids = _get_event_ids(sid)
     assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
-    has_content = exec_sql(
-        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
-        eid=event_ids[0],
-    )
-    assert has_content == "f", f"event claims content it never sent: has_content={has_content!r}"
+    assert not _has_content(event_ids[0]), "event claims content it never sent"
     assert _get_event_content(event_ids[0]) is None
 
 

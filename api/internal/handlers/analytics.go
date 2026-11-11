@@ -80,7 +80,7 @@ var validGranularities = map[string]bool{
 // @Param        range            query  string  false  "Time range: today, 7d, 30d, 90d, custom (default: 30d)"
 // @Param        from             query  string  false  "Start time ISO 8601 (required when range=custom)"
 // @Param        to               query  string  false  "End time ISO 8601 (required when range=custom)"
-// @Param        granularity      query  string  false  "Granularity: hour, day, week (default: day)"
+// @Param        granularity      query  string  false  "Granularity: hour, day, week (default: day). Each point's date is the UTC start of its bucket: YYYY-MM-DD for day and week, YYYY-MM-DDTHH:00Z for hour"
 // @Param        filter_flavor    query  string  false  "Filter to specific flavor"
 // @Param        filter_model     query  string  false  "Filter to specific model"
 // @Param        filter_agent_type query string  false  "Filter to specific agent_type"

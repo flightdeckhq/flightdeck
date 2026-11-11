@@ -725,10 +725,15 @@ func (c *Consumer) run(ctx context.Context, fetch func() ([]*nats.Msg, error)) e
 					return
 				}
 				// A message left in the lane at shutdown is not
-				// processed: unacknowledged, it is redelivered when the
-				// ack wait expires.
+				// started: unacknowledged and untouched, it is
+				// redelivered when the ack wait expires. The message a
+				// lane is processing when the shutdown begins is
+				// finished, under its own deadline, and acknowledged:
+				// processing is several statements (the session's
+				// counters, then the event row), and one interrupted
+				// between them would be redelivered and counted again.
 				if ctx.Err() == nil {
-					pctx, cancel := context.WithTimeout(ctx, c.processDeadline())
+					pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.processDeadline())
 					c.handle(pctx, e.msg, e.event, id)
 					cancel()
 				}

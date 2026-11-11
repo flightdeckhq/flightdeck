@@ -24,6 +24,7 @@ import pytest
 from websockets.asyncio.client import ClientConnection, connect
 
 from .conftest import (
+    BASE_URL,
     TOKEN,
     delete_flavor_data,
     exec_sql,
@@ -36,7 +37,7 @@ from .test_session_states import PROCESSING_SLACK_SECS, RECONCILER_POSITIVE_WAIT
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-WS_URL = f"ws://localhost:4000/api/v1/stream?token={TOKEN}"
+WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
 
 # The tests listen on the stack-wide stream, which broadcasts everything
 # the stack ingests; under the parallel phase's event rate the hub can
@@ -105,6 +106,11 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
         exec_sql(
             "UPDATE sessions SET last_seen_at = NOW() - CAST(:'ago' AS interval) "
             "WHERE session_id = :'sid'::uuid",
+            sqlite=(
+                "UPDATE sessions SET last_seen_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || :ago) "
+                "WHERE session_id = :sid"
+            ),
             ago=interval,
             sid=session_id,
         )
@@ -113,6 +119,11 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
             "UPDATE sessions SET state = :'state', "
             "last_seen_at = NOW() - CAST(:'ago' AS interval) "
             "WHERE session_id = :'sid'::uuid",
+            sqlite=(
+                "UPDATE sessions SET state = :state, last_seen_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || :ago) "
+                "WHERE session_id = :sid"
+            ),
             state=state,
             ago=interval,
             sid=session_id,

@@ -7,34 +7,58 @@
 // response is written, so it cannot wait on the NATS → worker hop.
 //
 // Store reads and (for closed/lost revivals) mutates the sessions row
-// directly in Postgres, mirroring the directive.Store pattern already
-// used for synchronous directive lookup. See ARCHITECTURE.md (session
-// attachment flow).
+// directly through the storage boundary, mirroring the directive.Store
+// pattern already used for synchronous directive lookup, and so runs
+// on SQLite and Postgres alike. See ARCHITECTURE.md (session attachment
+// flow).
 package session
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
-// Store performs synchronous session attachment against Postgres.
+// Store performs synchronous session attachment against the database.
 type Store struct {
-	pool *pgxpool.Pool
+	db *storage.DB
+	// otlpSessionQuery and otlpEndsQuery are the backend's query set,
+	// chosen once at construction.
+	otlpSessionQuery string
+	otlpEndsQuery    string
 }
 
 // NewStore creates a session Store.
-func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+func NewStore(db *storage.DB) *Store {
+	s := &Store{db: db}
+	switch db.Backend {
+	case storage.Postgres:
+		s.otlpSessionQuery = queryOTLPSessionPostgres
+	default:
+		s.otlpSessionQuery = fmt.Sprintf(queryOTLPSessionSQLite,
+			db.Dialect.JSONText("context", "claude_code_session_id"),
+			db.Dialect.JSONText("context", "telemetry"))
+	}
+	s.otlpEndsQuery = fmt.Sprintf(queryOTLPSessionEnds, db.Dialect.InUUIDArray("e.session_id", "$1"),
+		db.Dialect.InUUIDArray("s.session_id", "$1"))
+	return s
+}
+
+// canonical returns a session id as the stores compare it: lower case,
+// the canonical form the SQLite CHECK enforces and Postgres' uuid type
+// normalises to. The handlers accept hex digits of either case.
+func canonical(sessionID string) string {
+	return strings.ToLower(sessionID)
 }
 
 // Attach implements the ingestion-side session-attachment protocol.
@@ -51,18 +75,18 @@ func NewStore(pool *pgxpool.Pool) *Store {
 //     (true, priorState, nil). The caller does not log (the sensor is
 //     simply resuming).
 //
-// On any other Postgres error, the function returns (false, "", err)
+// On any other database error, the function returns (false, "", err)
 // and the caller MUST fall back to attached=false rather than block
 // the ingestion path -- the attached flag is informational, not
 // load-bearing.
 func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, error) {
+	sessionID = canonical(sessionID)
 	var priorState string
-	err := s.pool.QueryRow(
-		ctx,
-		`SELECT state FROM sessions WHERE session_id = $1::uuid`,
+	err := s.db.Reader().QueryRowContext(ctx,
+		`SELECT state FROM sessions WHERE session_id = $1`,
 		sessionID,
 	).Scan(&priorState)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, "", nil
 	}
 	if err != nil {
@@ -83,12 +107,12 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		// session_attachments.
 		// closed_seq goes with ended_at: the row is no longer closed by
 		// any session_end, so the worker's ordering rules start afresh.
-		if _, err := s.pool.Exec(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			UPDATE sessions
 			SET state = 'active',
 			    ended_at = NULL,
 			    closed_seq = NULL
-			WHERE session_id = $1::uuid
+			WHERE session_id = $1
 		`, sessionID); err != nil {
 			return false, priorState, fmt.Errorf("revive session %s: %w", sessionID, err)
 		}
@@ -99,9 +123,9 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 	// driven agent re-attached. Migration 000009 replaced the earlier
 	// single-column last_attached_at design with this table because
 	// the column only preserved the most recent timestamp.
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO session_attachments (session_id)
-		VALUES ($1::uuid)
+		VALUES ($1)
 	`, sessionID); err != nil {
 		return false, priorState, fmt.Errorf("record attachment for %s: %w", sessionID, err)
 	}
@@ -129,47 +153,106 @@ type OTLPSession struct {
 	ReportedElsewhere bool
 }
 
-// LookupOTLPSession reads, in one round trip, the state and agent_role
-// of the session row sessionID, whether the run's root session
-// rootSessionID is stored,
-// and whether another client reports the Claude Code session
-// claudeCodeSessionID. The plugin's rows are found by a containment
-// query on sessions.context, which the sessions_context_gin index
-// serves; the Agent SDK's by primary key, and only when the Claude Code
-// id is a canonical UUID (Claude Code's always are).
-func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID, claudeCodeSessionID string) (OTLPSession, error) {
-	doc, err := json.Marshal(map[string]string{"claude_code_session_id": claudeCodeSessionID})
-	if err != nil {
-		return OTLPSession{}, fmt.Errorf("encode claude_code_session_id: %w", err)
-	}
-	var sdkSessionID *string
-	if canonicalUUID.MatchString(claudeCodeSessionID) {
-		sdkSessionID = &claudeCodeSessionID
-	}
-	var out OTLPSession
-	err = s.pool.QueryRow(ctx, `
+// The OTLP session lookup, per backend. On Postgres the plugin's rows
+// are found by a containment query on sessions.context, which the
+// sessions_context_gin index serves; the third argument is the JSON
+// document to contain. On SQLite the same key is read with
+// json_extract (the two %s are the dialect's JSON reads of
+// context.claude_code_session_id and context.telemetry) and the third
+// argument is the Claude Code session id itself; the whole table is
+// scanned, which the single-process database can afford. Both compare
+// uuid columns with the ids bound as text; a NULL fourth argument (the
+// Claude Code id is not a UUID) matches no row on either.
+const (
+	queryOTLPSessionPostgres = `
 		SELECT
 		  COALESCE(own.state, ''),
 		  COALESCE(own.agent_role, ''),
-		  EXISTS (SELECT 1 FROM sessions WHERE session_id = $2::uuid),
+		  EXISTS (SELECT 1 FROM sessions WHERE session_id = $2),
 		  EXISTS (
 		    SELECT 1 FROM sessions
-		    WHERE context @> $3::jsonb
+		    WHERE context @> CAST($3 AS jsonb)
 		      AND client_type IN ('claude_code', 'claude_agent_sdk')
 		      AND NOT context @> '{"telemetry": "otlp"}'::jsonb
 		  )
 		  OR EXISTS (
 		    SELECT 1 FROM sessions
-		    WHERE session_id = $4::uuid AND client_type = 'claude_agent_sdk'
+		    WHERE session_id = $4 AND client_type = 'claude_agent_sdk'
 		  )
 		FROM (SELECT 1) AS one
-		LEFT JOIN sessions AS own ON own.session_id = $1::uuid
-	`, sessionID, rootSessionID, string(doc), sdkSessionID).Scan(&out.State, &out.AgentRole, &out.RootStored, &out.ReportedElsewhere)
+		LEFT JOIN sessions AS own ON own.session_id = $1`
+	queryOTLPSessionSQLite = `
+		SELECT
+		  COALESCE(own.state, ''),
+		  COALESCE(own.agent_role, ''),
+		  EXISTS (SELECT 1 FROM sessions WHERE session_id = $2),
+		  EXISTS (
+		    SELECT 1 FROM sessions
+		    WHERE %s = $3
+		      AND client_type IN ('claude_code', 'claude_agent_sdk')
+		      AND %s IS NOT 'otlp'
+		  )
+		  OR EXISTS (
+		    SELECT 1 FROM sessions
+		    WHERE session_id = $4 AND client_type = 'claude_agent_sdk'
+		  )
+		FROM (SELECT 1) AS one
+		LEFT JOIN sessions AS own ON own.session_id = $1`
+)
+
+// LookupOTLPSession reads, in one round trip, the state and agent_role
+// of the session row sessionID, whether the run's root session
+// rootSessionID is stored, and whether another client reports the
+// Claude Code session claudeCodeSessionID (see the queries above). The
+// Agent SDK's row is looked up by primary key, and only when the Claude
+// Code id is a canonical UUID (Claude Code's always are).
+func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID, claudeCodeSessionID string) (OTLPSession, error) {
+	var sdkSessionID *string
+	if canonicalUUID.MatchString(claudeCodeSessionID) {
+		id := canonical(claudeCodeSessionID)
+		sdkSessionID = &id
+	}
+	var contained any = claudeCodeSessionID
+	if s.db.Backend == storage.Postgres {
+		doc, err := json.Marshal(map[string]string{"claude_code_session_id": claudeCodeSessionID})
+		if err != nil {
+			return OTLPSession{}, fmt.Errorf("encode claude_code_session_id: %w", err)
+		}
+		contained = string(doc)
+	}
+	var out OTLPSession
+	err := s.db.Reader().QueryRowContext(ctx, s.otlpSessionQuery,
+		canonical(sessionID), canonical(rootSessionID), contained, sdkSessionID,
+	).Scan(&out.State, &out.AgentRole, &out.RootStored, &out.ReportedElsewhere)
 	if err != nil {
 		return OTLPSession{}, fmt.Errorf("look up OTLP session %s: %w", sessionID, err)
 	}
 	return out, nil
 }
+
+// queryOTLPSessionEnds reads the closed sessions among the ids and
+// their ends (see OTLPSessionEnds). The two %s are the dialect's
+// membership test of a uuid column in the bound id array. The latest
+// start and end of each session's events come from one aggregate pass
+// over its events (events_session_idx leads with session_id), left
+// joined so a session without events still answers with its ended_at;
+// the CASE form of the conditional maximum is common to both backends.
+const queryOTLPSessionEnds = `
+	SELECT CAST(s.session_id AS TEXT),
+	       CASE WHEN ev.last_start IS NULL OR ev.last_end >= ev.last_start
+	            THEN COALESCE(ev.last_end, s.ended_at)
+	            ELSE s.ended_at END
+	FROM sessions AS s
+	LEFT JOIN (
+	  SELECT e.session_id,
+	         max(CASE WHEN e.event_type = 'session_end' THEN e.occurred_at END) AS last_end,
+	         max(CASE WHEN e.event_type = 'session_start' THEN e.occurred_at END) AS last_start
+	  FROM events AS e
+	  WHERE %s
+	    AND e.event_type IN ('session_start', 'session_end')
+	  GROUP BY e.session_id
+	) AS ev ON ev.session_id = s.session_id
+	WHERE %s AND s.state = 'closed'`
 
 // OTLPSessionEnds reads, in one round trip, which of the sessions
 // sessionIDs are closed, and when each ended as its client dated the
@@ -188,40 +271,27 @@ func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID,
 // so, and the row's ended_at, which the close just set, stands in. That
 // is on the worker's clock, later than the end, so a late record still
 // reads as late.
-//
-// Only closed sessions reach the lateral read, which takes the
-// session's latest start and end from its events (events_session_idx
-// leads with session_id) in one pass.
 func (s *Store) OTLPSessionEnds(ctx context.Context, sessionIDs []string) (map[string]time.Time, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT s.session_id::text,
-		       CASE WHEN ev.last_start IS NULL OR ev.last_end >= ev.last_start
-		            THEN COALESCE(ev.last_end, s.ended_at)
-		            ELSE s.ended_at END
-		FROM sessions AS s
-		CROSS JOIN LATERAL (
-		  SELECT max(e.occurred_at) FILTER (WHERE e.event_type = 'session_end') AS last_end,
-		         max(e.occurred_at) FILTER (WHERE e.event_type = 'session_start') AS last_start
-		  FROM events AS e
-		  WHERE e.session_id = s.session_id
-		    AND e.event_type IN ('session_start', 'session_end')
-		) AS ev
-		WHERE s.session_id = ANY($1::uuid[]) AND s.state = 'closed'
-	`, sessionIDs)
+	ids := make([]string, len(sessionIDs))
+	for i, id := range sessionIDs {
+		ids[i] = canonical(id)
+	}
+	rows, err := s.db.Reader().QueryContext(ctx, s.otlpEndsQuery, s.db.Dialect.ArrayArg(ids))
 	if err != nil {
 		return nil, fmt.Errorf("read OTLP session ends: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ends := make(map[string]time.Time, len(sessionIDs))
 	for rows.Next() {
 		var id string
-		var ended *time.Time
+		// The end is an aggregate on SQLite, read back as text.
+		var ended storage.Time
 		if err := rows.Scan(&id, &ended); err != nil {
 			return nil, fmt.Errorf("read OTLP session ends: %w", err)
 		}
 		ends[id] = time.Time{}
-		if ended != nil {
-			ends[id] = *ended
+		if ended.Valid {
+			ends[id] = ended.Time
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -231,7 +301,7 @@ func (s *Store) OTLPSessionEnds(ctx context.Context, sessionIDs []string) (map[s
 }
 
 // canonicalUUID matches the canonical 8-4-4-4-12 hex form, which the
-// ::uuid cast accepts.
+// uuid columns accept.
 var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // RecordStart stamps the stream sequence of a re-attaching session_start
@@ -252,24 +322,27 @@ var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-
 // The stamp is best effort and must not queue behind other writers of
 // the row: many clients re-attaching one session id at once would
 // otherwise serialise every request on that row's lock and slow the
-// whole ingestion path. A row another writer holds is therefore skipped
-// (FOR NO KEY UPDATE SKIP LOCKED: the stamp writes no key column, so it
-// conflicts only with other row updates, not with the KEY SHARE locks
-// the worker's event inserts take through the sessions foreign key)
-// and tried again after each pause in recordStartRetryDelays, which
-// together cover the chain of row updates the worker may be applying
-// (the previous run's end, this start, the first call) at several
-// milliseconds of commit latency each. A row still held after that is
-// logged and left to the worker's own ordering rules, which remain the
-// backstop; calls of the new run that the worker handles before the
-// start's own revive are then stored without rolling their tokens up.
+// whole ingestion path. On Postgres a row another writer holds is
+// therefore skipped (FOR NO KEY UPDATE SKIP LOCKED: the stamp writes no
+// key column, so it conflicts only with other row updates, not with the
+// KEY SHARE locks the worker's event inserts take through the sessions
+// foreign key) and tried again after each pause in
+// recordStartRetryDelays, which together cover the chain of row updates
+// the worker may be applying (the previous run's end, this start, the
+// first call) at several milliseconds of commit latency each. A row
+// still held after that is logged and left to the worker's own ordering
+// rules, which remain the backstop; calls of the new run that the worker
+// handles before the start's own revive are then stored without rolling
+// their tokens up. On SQLite writers never hold a row against each
+// other (one writer connection, transactions begin IMMEDIATE), so the
+// stamp applies on its first attempt whenever the row exists.
 func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
 	// Zero means unknown; a sequence beyond the bigint range (which no
 	// stream reaches) is treated the same rather than wrapped.
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
-	return stampWithRetry(ctx, sessionID, int64(seq), recordStartRetryDelays, s.recordStart, stampGiveUps)
+	return stampWithRetry(ctx, canonical(sessionID), int64(seq), recordStartRetryDelays, s.recordStart, stampGiveUps)
 }
 
 // stampFunc is one attempt of the re-attachment stamp. applied is false
@@ -368,37 +441,90 @@ func (g *giveUpSampler) note(sessionID string, startSeq int64) {
 	)
 }
 
+// queryRecordStartPostgres is the stamp as one statement: the CTE takes
+// the row's lock or skips it, the UPDATE stamps the sequence and
+// revives a row closed by an earlier end, and RETURNING reports the
+// revival from the row's state before the update. No row is returned
+// when the row is held or gone.
+const queryRecordStartPostgres = `
+	WITH before AS (
+		SELECT session_id, state, closed_seq
+		FROM sessions
+		WHERE session_id = $1
+		FOR NO KEY UPDATE SKIP LOCKED
+	)
+	UPDATE sessions AS s
+	SET start_seq = GREATEST(s.start_seq, CAST($2 AS bigint)),
+	    state = CASE WHEN before.state = 'closed'
+	                  AND (before.closed_seq IS NULL OR before.closed_seq < $2)
+	                 THEN 'active' ELSE s.state END,
+	    ended_at = CASE WHEN before.state = 'closed'
+	                     AND (before.closed_seq IS NULL OR before.closed_seq < $2)
+	                    THEN NULL ELSE s.ended_at END,
+	    closed_seq = CASE WHEN before.state = 'closed'
+	                       AND (before.closed_seq IS NULL OR before.closed_seq < $2)
+	                      THEN NULL ELSE s.closed_seq END
+	FROM before
+	WHERE s.session_id = before.session_id
+	RETURNING before.state = 'closed'
+	          AND (before.closed_seq IS NULL OR before.closed_seq < $2)`
+
 // recordStart runs the stamp once; startSeq is already range-checked by
 // RecordStart.
 func (s *Store) recordStart(ctx context.Context, sessionID string, startSeq int64) (revived, applied bool, err error) {
-	err = s.pool.QueryRow(ctx, `
-		WITH before AS (
-			SELECT session_id, state, closed_seq
-			FROM sessions
-			WHERE session_id = $1::uuid
-			FOR NO KEY UPDATE SKIP LOCKED
-		)
-		UPDATE sessions AS s
-		SET start_seq = GREATEST(s.start_seq, $2::bigint),
-		    state = CASE WHEN before.state = 'closed'
-		                  AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
-		                 THEN 'active' ELSE s.state END,
-		    ended_at = CASE WHEN before.state = 'closed'
-		                     AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
-		                    THEN NULL ELSE s.ended_at END,
-		    closed_seq = CASE WHEN before.state = 'closed'
-		                       AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
-		                      THEN NULL ELSE s.closed_seq END
-		FROM before
-		WHERE s.session_id = before.session_id
-		RETURNING before.state = 'closed'
-		          AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
-	`, sessionID, startSeq).Scan(&revived)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if s.db.Backend == storage.Postgres {
+		return s.recordStartPostgres(ctx, sessionID, startSeq)
+	}
+	return s.recordStartSQLite(ctx, sessionID, startSeq)
+}
+
+func (s *Store) recordStartPostgres(ctx context.Context, sessionID string, startSeq int64) (revived, applied bool, err error) {
+	err = s.db.QueryRowContext(ctx, queryRecordStartPostgres, sessionID, startSeq).Scan(&revived)
+	if errors.Is(err, sql.ErrNoRows) {
 		// The row is held by another transaction (skipped) or gone.
 		return false, false, nil
 	}
 	if err != nil {
+		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	return revived, true, nil
+}
+
+// recordStartSQLite is the stamp on SQLite: a read and a write in one
+// transaction, which begins IMMEDIATE and so holds the database's one
+// write lock from the read on; no other writer can change the row in
+// between, and none is skipped. SQLite's RETURNING cannot read the
+// row's state before the update, so the revival is decided in Go from
+// the read.
+func (s *Store) recordStartSQLite(ctx context.Context, sessionID string, startSeq int64) (revived, applied bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		state     string
+		closedSeq sql.NullInt64
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT state, closed_seq FROM sessions WHERE session_id = $1`, sessionID).Scan(&state, &closedSeq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	revived = state == "closed" && (!closedSeq.Valid || closedSeq.Int64 < startSeq)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sessions
+		SET start_seq = CASE WHEN start_seq IS NULL OR start_seq < $2 THEN $2 ELSE start_seq END,
+		    state = CASE WHEN $3 THEN 'active' ELSE state END,
+		    ended_at = CASE WHEN $3 THEN NULL ELSE ended_at END,
+		    closed_seq = CASE WHEN $3 THEN NULL ELSE closed_seq END
+		WHERE session_id = $1`, sessionID, startSeq, revived); err != nil {
+		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	if err := tx.Commit(); err != nil {
 		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
 	}
 	return revived, true, nil

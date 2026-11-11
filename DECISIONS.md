@@ -802,6 +802,24 @@ calls to children needs an ingestion fallback first.
 swallows exceptions); `llm_error` or `policy_block` for a guardrail (not a
 model failure or a Flightdeck policy); per-child attribution now.
 
+## D261 -- Flightdeck ships as one binary: the three services in-process, NATS and the dashboard embedded, one topology everywhere
+
+**Date:** 2026-11-07
+**Decision:** `flightdeck` (root module, `cmd/flightdeck`) runs ingestion,
+the workers and the query API in one process behind one listener
+(default `127.0.0.1:4000`): `/` is the embedded dashboard, `/ingest/*`
+and `/api/*` reach the two muxes, bare `/v1/*` is not served. NATS runs
+embedded (JetStream, no port, store under the data dir) unless
+`--nats-url` names a server; migrations are embedded and run at start.
+Each service exports an `app` package (`Run`, `Handler`) the binary
+composes. On loopback the dev token works; elsewhere or with `--domain`
+(TLS via ACME) an `ftd_` token is minted once into `<data>/secrets.json`.
+**Why:** the try-it path was the contributor path (clone, compile seven
+containers, 5-15 minutes); one process, nothing to configure, one topology.
+**Rejected alternative:** an all-in-one container under supervisord (a
+second topology, Docker-only); better per-service images (no laptop or
+Windows path); nginx as the edge (three routes and autocert replace it).
+
 ## D262 -- SQLite is the default storage, Postgres the second backend, behind one `storage` boundary
 
 **Date:** 2026-11-07
@@ -817,3 +835,61 @@ two from drifting.
 **Rejected alternative:** SQLite only (loses the Helm scale path);
 embedded Postgres (a 40 MB download and a child process to manage); a
 query builder or ORM (hides the SQL the stores are tuned on).
+
+## D263 -- One release pipeline ships the binary through goreleaser; the per-service images retire
+
+**Date:** 2026-11-08
+**Decision:** a version tag builds the `flightdeck` binary for `linux`,
+`darwin` and `windows` on `amd64` and `arm64` with goreleaser and
+publishes it as GitHub release archives with `checksums.txt`, a formula
+in `flightdeckhq/homebrew-tap` (stable tags only), platform wheels on
+PyPI as `flightdeck-cli` (`flightdeck` is an unrelated project), and one
+multi-arch Docker image `flightdeckhq/flightdeck`. `install.sh` and
+`install.ps1` download from the release and verify the checksum. The
+four per-service images (`flightdeck-ingestion`, `-workers`, `-api`,
+`-dashboard`) are no longer published; a from-scratch install gate runs
+every channel on fresh runners after each release.
+**Why:** one artifact per platform is what the one-binary topology
+promises; maintaining both image sets would keep the old topology alive.
+**Rejected alternative:** a Homebrew cask (no `brew services` stanza,
+which the formula's background mode needs); a PEP 541 transfer of the
+`flightdeck` PyPI name (months, uncertain); maturin or a native build for
+the wheels (the binary is prebuilt, the wheel only carries it); keeping
+the per-service images for one deprecation release (no external users).
+
+## D264 -- The sensor defaults to the local control plane and its dev token, on loopback only
+
+**Date:** 2026-11-08
+**Decision:** `flightdeck_sensor.init()` takes no required arguments.
+`server` resolves kwarg, then `FLIGHTDECK_SERVER`, then
+`http://localhost:4000/ingest`; `token` resolves kwarg, then
+`FLIGHTDECK_TOKEN`, then `tok_dev`, and the token default applies only
+when the server was defaulted too and its host is loopback. init logs one
+WARNING when the dev token is in use. A server given by kwarg or
+environment without a token raises `ConfigurationError` (a `ValueError`)
+naming both variables; the sensor never sends `tok_dev` to a server the
+caller chose.
+**Why:** the quickstart is `pip install flightdeck-sensor`, `init()`,
+`patch()` against the `flightdeck` binary, which accepts `tok_dev` only
+when bound to loopback; the sensor's gate mirrors the server's, so the
+pair works on one machine and nowhere else.
+**Rejected alternative:** default the token whenever the server is
+loopback (a remote reverse tunnel on `localhost` would receive `tok_dev`
+silently; the caller chose that server and must choose the token); keep
+both arguments required (the quickstart stays at two values the user has
+to look up for a stack that already prints them).
+
+## D265 -- A stopping worker finishes the message each lane is processing
+
+**Date:** 2026-11-11
+**Decision:** when the workers stop (a signal, the `flightdeck` binary
+shutting down) each lane processes its message in flight to the end,
+under its own ten-second deadline, and acknowledges it. Messages still
+queued in a lane are not started; the stream redelivers them.
+**Why:** a call is several statements (the session's counters, then the
+event row). Cancelled between them it was redelivered and counted
+twice: a stop under load left a session at 315 tokens for 300 sent.
+**Rejected alternative:** cancel the work in flight for a faster stop
+(it miscounts, and the stop is bounded by the message deadline anyway);
+one transaction per message (the handlers also read and publish through
+other connections; a larger change than this defect needs).

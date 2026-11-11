@@ -11,10 +11,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // directiveClientTypes are the client types whose supports_directives
@@ -48,12 +50,12 @@ type AgentDirectiveTargetQuery struct {
 // whose flavor or context.frameworks marks a Claude Code session: the
 // dashboard's isClaudeCodeSession for a row with no client_type, so an
 // old plugin row is never treated as a run that acts on directives.
-const sessionMarksClaudeCodeSQL = `(s.flavor = 'claude-code' OR EXISTS (
-		SELECT 1
-		FROM jsonb_array_elements_text(CASE
-			WHEN jsonb_typeof(s.context->'frameworks') = 'array' THEN s.context->'frameworks'
-			ELSE '[]'::jsonb END) AS fw(name)
-		WHERE fw.name LIKE 'claude-code%'))`
+func sessionMarksClaudeCodeSQL(d storage.Dialect) string {
+	return `(s.flavor = 'claude-code' OR EXISTS (
+			SELECT 1
+			FROM ` + d.JSONArrayElements(d.JSONArray("s.context", "frameworks"), "fw") + `
+			WHERE ` + d.JSONElementText("fw") + ` LIKE 'claude-code%'))`
+}
 
 // agentDirectiveTargetsSQL returns the session ids of agent $1's live
 // runs that can act on a directive, oldest first. A run takes a
@@ -63,26 +65,29 @@ const sessionMarksClaudeCodeSQL = `(s.flavor = 'claude-code' OR EXISTS (
 // run custom handlers (client type in $3, customDirectiveClientTypes,
 // with the same fallback) and run under a flavor that registered
 // fingerprint $5. A non-empty $6 keeps the runs of that flavor.
-const agentDirectiveTargetsSQL = `
-	SELECT s.session_id::text
+func agentDirectiveTargetsSQL(d storage.Dialect) string {
+	marksClaudeCode := sessionMarksClaudeCodeSQL(d)
+	return `
+	SELECT CAST(s.session_id AS TEXT)
 	FROM sessions s
-	WHERE s.agent_id = $1::uuid
+	WHERE s.agent_id = $1
 	  AND s.state IN ('active', 'idle')
-	  AND ($6::text = '' OR s.flavor = $6::text)
+	  AND ($6 = '' OR s.flavor = $6)
 	  AND CASE
-	        WHEN jsonb_typeof(s.context->'supports_directives') = 'boolean'
-	          THEN (s.context->>'supports_directives')::boolean
-	        WHEN s.client_type IS NOT NULL THEN s.client_type = ANY($2::text[])
-	        ELSE NOT ` + sessionMarksClaudeCodeSQL + `
+	        WHEN ` + d.JSONTypeOf("s.context", "supports_directives") + ` = 'boolean'
+	          THEN ` + d.JSONIsTrue("s.context", "supports_directives") + `
+	        WHEN s.client_type IS NOT NULL THEN ` + d.InArray("s.client_type", "$2") + `
+	        ELSE NOT ` + marksClaudeCode + `
 	      END
-	  AND (NOT $4::boolean OR (
+	  AND (NOT $4 OR (
 	        CASE
-	          WHEN s.client_type IS NOT NULL THEN s.client_type = ANY($3::text[])
-	          ELSE NOT ` + sessionMarksClaudeCodeSQL + `
+	          WHEN s.client_type IS NOT NULL THEN ` + d.InArray("s.client_type", "$3") + `
+	          ELSE NOT ` + marksClaudeCode + `
 	        END
 	        AND s.flavor IN (
-	          SELECT cd.flavor FROM custom_directives cd WHERE cd.fingerprint = $5::text)))
+	          SELECT cd.flavor FROM custom_directives cd WHERE cd.fingerprint = $5)))
 	ORDER BY s.started_at, s.session_id`
+}
 
 // GetDirectiveTargetsForAgent returns the session ids of the live runs
 // of q.AgentID that a directive addressed to the agent reaches, oldest
@@ -91,14 +96,22 @@ func (s *Store) GetDirectiveTargetsForAgent(ctx context.Context, q AgentDirectiv
 	if q.Custom && q.Fingerprint == "" {
 		return nil, errors.New("directive targets: a custom directive needs its fingerprint")
 	}
-	rows, err := s.pool.Query(ctx, agentDirectiveTargetsSQL,
-		q.AgentID, directiveClientTypes, customDirectiveClientTypes,
+	rows, err := s.reader().QueryContext(ctx, agentDirectiveTargetsSQL(s.d),
+		uuidArg(q.AgentID), s.d.ArrayArg(directiveClientTypes), s.d.ArrayArg(customDirectiveClientTypes),
 		q.Custom, q.Fingerprint, q.Flavor)
 	if err != nil {
 		return nil, fmt.Errorf("directive targets for agent %s: %w", q.AgentID, err)
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan directive targets for agent %s: %w", q.AgentID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("scan directive targets for agent %s: %w", q.AgentID, err)
 	}
 	return ids, nil
@@ -111,12 +124,12 @@ func (s *Store) CreateDirectives(ctx context.Context, tmpl Directive, sessionIDs
 	if len(sessionIDs) == 0 {
 		return nil, errors.New("create directives: no sessions")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create directives: begin: %w", err)
 	}
 	// A no-op once the transaction commits.
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	created := make([]Directive, 0, len(sessionIDs))
 	for _, sid := range sessionIDs {
@@ -128,33 +141,56 @@ func (s *Store) CreateDirectives(ctx context.Context, tmpl Directive, sessionIDs
 		}
 		created = append(created, *row)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("create directives: commit: %w", err)
 	}
 	return created, nil
 }
 
-// rowQuerier is the QueryRow method the pool and a transaction share,
+// rowQuerier is the QueryRowContext method *sql.DB and *sql.Tx share,
 // so one directive and a set of them insert through the same statement.
 type rowQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // insertDirective inserts one directive row and returns it as stored.
+// The session id is normalised to the canonical lower-case form both
+// backends store; the payload is bound as JSON text.
 func insertDirective(ctx context.Context, q rowQuerier, d Directive) (*Directive, error) {
+	var sessionID *string
+	if d.SessionID != nil {
+		id := uuidArg(*d.SessionID)
+		sessionID = &id
+	}
+	var payload any
+	if d.Payload != nil {
+		payload = jsonArg(*d.Payload)
+	}
 	var result Directive
-	err := q.QueryRow(ctx, `
+	var issuedAt storage.Time
+	var deliveredAt storage.Time
+	var payloadRaw []byte
+	err := q.QueryRowContext(ctx, `
 		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by, payload)
 		VALUES ($1, $2, $3, $4, $5, 'dashboard', $6)
-		RETURNING id::text, session_id::text, flavor, action, reason, degrade_to,
+		RETURNING CAST(id AS TEXT), CAST(session_id AS TEXT), flavor, action, reason, degrade_to,
 		          grace_period_ms, issued_by, issued_at, delivered_at, payload
-	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs, d.Payload).Scan(
+	`, sessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs, payload).Scan(
 		&result.ID, &result.SessionID, &result.Flavor, &result.Action, &result.Reason,
-		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &result.IssuedAt,
-		&result.DeliveredAt, &result.Payload,
+		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &issuedAt,
+		&deliveredAt, &payloadRaw,
 	)
 	if err != nil {
 		return nil, err
+	}
+	result.IssuedAt = issuedAt.Time
+	if deliveredAt.Valid {
+		t := deliveredAt.Time
+		result.DeliveredAt = &t
+	}
+	if payloadRaw != nil {
+		raw := json.RawMessage(append([]byte(nil), payloadRaw...))
+		result.Payload = &raw
 	}
 	return &result, nil
 }

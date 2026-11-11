@@ -1,25 +1,30 @@
-// Package ws provides a WebSocket hub that broadcasts Postgres NOTIFY
-// events to all connected dashboard clients.
+// Package ws provides a WebSocket hub that broadcasts the fleet
+// notifications of the storage Bus to all connected dashboard clients.
 package ws
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
+	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// notifyReconnectDelay is how long listenOnce waits before re-acquiring a
-// pool connection after the Postgres LISTEN loop drops — fast enough to
-// recover quickly, slow enough not to hammer a database that is restarting.
+// notifyReconnectDelay is how long ListenNotify waits before subscribing
+// again after its subscription fails or closes (on Postgres, the LISTEN
+// connection dropped) — fast enough to recover quickly, slow enough not
+// to hammer a database that is restarting.
 const notifyReconnectDelay = 3 * time.Second
+
+// errSubscriptionClosed is the listener's reason for resubscribing when
+// the bus closed its channel before the context ended.
+var errSubscriptionClosed = errors.New("fleet subscription closed")
 
 // broadcastChannelBuffer bounds each client's outbound queue. A slow
 // WebSocket client that backs up beyond this many fleet updates is dropped
@@ -163,7 +168,7 @@ func WritePump(client *Client) {
 	}
 }
 
-// notifyPayload is the raw payload from Postgres NOTIFY. EventID
+// notifyPayload is the raw payload of a fleet notification. EventID
 // gives the hub a deterministic pointer to the triggering event:
 // without it, listenOnce would call GetSessionEvents and pick the
 // tail, which races with concurrent inserts whenever paired events
@@ -197,44 +202,23 @@ type fleetUpdate struct {
 	AgentState string         `json:"agent_state,omitempty"`
 }
 
-// listenOnce acquires a connection, issues LISTEN, and blocks reading
-// notifications until an error occurs or ctx is cancelled. It
-// issues UNLISTEN before release so a recycled pool conn does
-// not surface stale subscriptions to an unrelated caller.
-func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
-	conn, err := pool.Acquire(ctx)
+// listenOnce subscribes to the fleet channel and broadcasts every
+// notification until the subscription closes or ctx is cancelled.
+func (h *Hub) listenOnce(ctx context.Context, bus storage.Bus) error {
+	ch, err := bus.Subscribe(ctx, store.NotifyChannel)
 	if err != nil {
-		return fmt.Errorf("acquire conn for LISTEN: %w", err)
+		return fmt.Errorf("subscribe: %w", err)
 	}
-	defer func() {
-		// Use a fresh background context with a small timeout: the
-		// caller's ctx is typically already cancelled when we hit
-		// this path, and UNLISTEN over a cancelled context would
-		// no-op. We want the cleanup to land regardless.
-		uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if _, uErr := conn.Exec(uctx, fmt.Sprintf("UNLISTEN %s", pgx.Identifier{store.NotifyChannel}.Sanitize())); uErr != nil {
-			slog.Debug("UNLISTEN failed during release", "err", uErr)
-		}
-		conn.Release()
-	}()
-
-	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", pgx.Identifier{store.NotifyChannel}.Sanitize()))
-	if err != nil {
-		return fmt.Errorf("LISTEN failed: %w", err)
-	}
-
-	slog.Info("listening on Postgres NOTIFY", "channel", store.NotifyChannel)
-
-	for {
-		notification, err := conn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			return fmt.Errorf("wait for notification: %w", err)
-		}
-		if msg := h.fleetMessage(ctx, notification.Payload); msg != nil {
+	slog.Info("listening for fleet notifications", "channel", store.NotifyChannel)
+	for payload := range ch {
+		if msg := h.fleetMessage(ctx, payload); msg != nil {
 			h.Broadcast(msg)
 		}
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errSubscriptionClosed
 }
 
 // fleetMessage turns one flightdeck_fleet notification into the
@@ -361,18 +345,18 @@ func (h *Hub) fleetMessage(ctx context.Context, payload string) []byte {
 	return msg
 }
 
-// ListenNotify subscribes to the Postgres NOTIFY channel with automatic
-// reconnection on failure. Blocks until ctx is cancelled.
-func (h *Hub) ListenNotify(ctx context.Context, pool *pgxpool.Pool) {
+// ListenNotify subscribes to the fleet channel of bus with automatic
+// resubscription on failure. Blocks until ctx is cancelled.
+func (h *Hub) ListenNotify(ctx context.Context, bus storage.Bus) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := h.listenOnce(ctx, pool); err != nil {
+		if err := h.listenOnce(ctx, bus); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("NOTIFY listener error, reconnecting", "delay", notifyReconnectDelay, "err", err)
+			slog.Error("fleet notification listener error, resubscribing", "delay", notifyReconnectDelay, "err", err)
 			select {
 			case <-ctx.Done():
 				return

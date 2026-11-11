@@ -2,8 +2,10 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/storage"
@@ -119,6 +121,113 @@ func TestBus_PublishReachesEverySubscriber(t *testing.T) {
 		expectClosed(t, a)
 		expectClosed(t, b)
 		expectClosed(t, other)
+	})
+}
+
+// Close ends the subscriptions that are still open, refuses new work
+// and can be called twice; on both implementations.
+func TestBus_CloseEndsSubscriptionsAndRefusesNewWork(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		bus := storage.NewBus(db)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		const channel = "storagetest_bus_close"
+
+		open, err := bus.Subscribe(ctx, channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A subscription whose context already ended is unwound by the
+		// time Close returns, too.
+		endedCtx, endSub := context.WithCancel(ctx)
+		ended, err := bus.Subscribe(endedCtx, channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		endSub()
+
+		if err := bus.Publish(ctx, channel, "before"); err != nil {
+			t.Fatal(err)
+		}
+		if got := receive(t, open); got != "before" {
+			t.Errorf("got %q", got)
+		}
+
+		closed := make(chan error, 1)
+		go func() { closed <- bus.Close() }()
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		case <-time.After(busDeadline):
+			t.Fatal("Close did not return")
+		}
+		// Close has returned, so both channels are closed already: no
+		// goroutine of the bus is left to close them later.
+		for name, ch := range map[string]<-chan string{"open": open, "ended": ended} {
+			select {
+			case _, ok := <-ch:
+				if ok {
+					// A payload buffered before the close may still
+					// be read; the close follows it.
+					expectClosed(t, ch)
+				}
+			default:
+				t.Errorf("%s subscription still open after Close returned", name)
+			}
+		}
+
+		if err := bus.Publish(ctx, channel, "after"); !errors.Is(err, storage.ErrBusClosed) {
+			t.Errorf("Publish after Close: %v, want ErrBusClosed", err)
+		}
+		if _, err := bus.Subscribe(ctx, channel); !errors.Is(err, storage.ErrBusClosed) {
+			t.Errorf("Subscribe after Close: %v, want ErrBusClosed", err)
+		}
+		if err := bus.Close(); err != nil {
+			t.Errorf("second Close: %v", err)
+		}
+	})
+}
+
+// Close releases a publisher that is waiting on a subscriber's full
+// buffer; the publisher is not left blocked on a bus nobody reads. The
+// test runs in a synctest bubble so "the publisher is waiting" is a
+// fact (every goroutine blocked) rather than a guess about timing.
+func TestInProcessBus_CloseReleasesABlockedPublisher(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bus := storage.NewInProcessBus()
+		ch, err := bus.Subscribe(context.Background(), "c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 256; i++ {
+			if err := bus.Publish(context.Background(), "c", "x"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		blocked := make(chan error, 1)
+		go func() { blocked <- bus.Publish(context.Background(), "c", "overflow") }()
+		synctest.Wait()
+		select {
+		case err := <-blocked:
+			t.Fatalf("publisher returned %v with the subscriber's buffer full", err)
+		default:
+		}
+
+		if err := bus.Close(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case err := <-blocked:
+			if err != nil {
+				t.Fatalf("publisher released by Close returned %v", err)
+			}
+		default:
+			t.Fatal("publisher still blocked after Close")
+		}
+		expectClosed(t, ch)
 	})
 }
 

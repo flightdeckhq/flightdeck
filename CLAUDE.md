@@ -157,22 +157,20 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     two schemas differ.
 
 35. **SQL lives only in each service's store packages, never in handlers.**
-    Those are `api/internal/store` (with the token lookups and revocation
-    `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
+    Those are `api/internal/store` (with the token lookups of
+    `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive`,
-    `ingestion/internal/otlpstage` and `workers/internal/writer`; `workers/internal/migrate` applies the
+    `ingestion/internal/otlpstage` and `workers/internal/writer`; the `storage` module applies the
     migration files. Stores open their database through the `storage`
     module (`storage.Open`, `storage.Dialect`, `storage.Bus`; the
-    Storage section of ARCHITECTURE.md), never through pgx directly;
-    stores not yet converted still hold a pgx pool. The current places
-    outside store packages that run SQL are:
+    Storage section of ARCHITECTURE.md), never through pgx directly.
+    The current places outside store packages that run SQL are:
     - `workers/internal/processor/policy.go`: token policy lookups and the
       directives it issues;
     - `workers/internal/processor/session.go`: session-row reads
       (`rowOwnerless`, `handleSessionGuard`, `sessionLookupState`);
     - `workers/internal/processor/event.go`: the `enrichSessionEnd`
-      queries;
-    - `api/internal/ws/hub.go`: the `LISTEN` / `UNLISTEN`.
+      queries.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.
@@ -277,14 +275,12 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
        changes: rebuild the affected container(s) so the dev stack is
        running branch HEAD, then run the component's full test suite
        (unit + integration) locally. Don't push until green.
-     - The project's dev stack (`make dev`, `scripts/dev-stack.sh`)
-       runs Postgres and NATS from `docker/docker-compose.dev.yml` and
-       the `flightdeck` binary built from the checkout on
-       `127.0.0.1:4000`. The binary is built at `make dev`, so after a
-       Go change run `make down && make dev` (or `make dev-reset` for a
-       clean database); after a dashboard change run `make build-webui`
-       first, since the dashboard is embedded in the binary. A stack
-       started before your edit does NOT reflect them.
+     - The project's dev stack uses the `docker-compose.dev.yml`
+       override (mounts source, runs `go run ./cmd/` / vite dev) — a
+       plain `docker compose up --build` without the override rebuilds
+       a stale prod-image layer and will NOT reflect your edits. Use
+       `make dev` or `docker compose -f docker-compose.yml -f
+       docker-compose.dev.yml up --build -d <service>`.
      - Exempt: pure docs, comments, type-only fixes, and formatting
        passes that cannot change runtime behavior.
 

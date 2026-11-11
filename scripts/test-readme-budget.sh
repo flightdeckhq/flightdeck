@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
-# Self-test of scripts/readme-budget.sh on fixture READMEs: a README
-# within budget passes and its counts are the expected ones; one over
-# the Quickstart budget, one over the total, one over the line budget
-# and one missing a budgeted section each fail and name the reason;
-# --report prints the same counts and exits 0 on the over-budget file.
-# The fixtures pin the counting rule: bash, sh, shell, console and text
-# fences count, python and yaml fences do not, blank and comment lines
-# inside a fence do not, and an indented fence inside a list item does.
+# Self-test of scripts/readme-budget.sh on fixture READMEs.
 #
-# Usage: scripts/test-readme-budget.sh   (CI runs it in the scripts job)
+# The budgets: a README within budget passes and its counts are the
+# expected ones; one over the Quickstart budget, one over the
+# Self-hosting budget, one over the total, one over the line budget and
+# one missing a budgeted section each fail and name the reason;
+# --report prints the same counts and exits 0 on an over-budget file.
+#
+# The counting rule, one fixture per clause of the script's header:
+# every fence counts unless its language is a sample (powershell, zsh,
+# cmd, an untagged fence, tilde fences, a fence in a blockquote or a
+# list item, CRLF line endings); a chained line counts once per
+# segment, a pipeline once, a wrapped command once; separators inside
+# quotes and heredoc bodies do not count, except the body of a heredoc
+# that a shell reads; cmd and PowerShell fences continue on a caret
+# and a backtick and never on a backslash; a `###` subsection counts
+# into its `## ` section. A fence or a heredoc left open, a command in
+# a sample-language fence, an unknown option and a second path are
+# errors.
+#
+# Every count asserted here is non-zero except where a zero is the
+# point, so a counter that returns 0 for everything fails this test.
+#
+# Usage: scripts/test-readme-budget.sh   (CI runs it in the
+# marketplace-schema job, "Repo scripts and manifests")
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,11 +61,57 @@ expect_output() {
   fi
 }
 
-# A README within budget. Quickstart: 3 counted lines (bash, text and
-# an indented sh fence in a list); the python fence, the comment and the
+# rule <count> <description>: reads the body of a Quickstart section on
+# stdin, measures a README made of it and asserts the section's count.
+# It runs in report mode, because a rule fixture may be over budget and
+# only its count is under test.
+rule() {
+  local want="$1" what="$2" rc=0
+  {
+    echo "## Quickstart"
+    echo
+    cat
+    echo
+    echo "## Self-hosting"
+  } >"$work/rule.md"
+  "$BUDGET" --report "$work/rule.md" >"$work/out" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ] && grep -Eq -- "^  Quickstart +$want \(budget" "$work/out"; then
+    echo "ok: $what (counts $want)"
+  else
+    fail "$what: exit $rc, want a Quickstart count of $want:"
+    sed 's/^/    /' "$work/out" >&2
+  fi
+}
+
+# rule_error <pattern> <description>: as rule, for a body the script
+# must refuse to measure: exit 1 and a message matching the pattern,
+# in report mode as well, since a count that cannot be trusted is not
+# a report.
+rule_error() {
+  local pattern="$1" what="$2" rc=0
+  {
+    echo "## Quickstart"
+    echo
+    cat
+  } >"$work/rule.md"
+  "$BUDGET" --report "$work/rule.md" >"$work/out" 2>&1 || rc=$?
+  if [ "$rc" -eq 1 ] && grep -Eq -- "$pattern" "$work/out"; then
+    echo "ok: $what (exit 1)"
+  else
+    fail "$what: exit $rc, want 1 and '$pattern':"
+    sed 's/^/    /' "$work/out" >&2
+  fi
+}
+
+# ---------------------------------------------------------------------
+# The budgets.
+# ---------------------------------------------------------------------
+
+# A README within budget. Quickstart: 3 commands (bash, text and an
+# indented sh fence in a list); the python fence, the comment and the
 # blank line are not counted. Self-hosting: 4 (console and bash fences;
 # the yaml fence is not counted). Preamble: 0.
-cat >"$work/good.md" <<'EOF'
+cat >"$work/good.md" <<'FIXTURE'
 # Fixture
 
 Some text before the first section.
@@ -101,7 +162,7 @@ helm install example
 ## License
 
 Apache 2.0.
-EOF
+FIXTURE
 
 expect 0 "a README within budget passes" "$work/good.md"
 expect_output '^ +3 +Quickstart$' "Quickstart counts 3 (bash, text and an indented sh fence; python, comments and blanks excluded)"
@@ -111,7 +172,7 @@ expect_output 'Total +7 \(budget' "the total is 7"
 expect_output 'README within budget' "the verdict is printed"
 
 # Over the Quickstart budget: one bash fence with four commands.
-cat >"$work/quickstart.md" <<'EOF'
+cat >"$work/quickstart.md" <<'FIXTURE'
 ## Quickstart
 
 ```bash
@@ -126,11 +187,34 @@ open http://localhost:4000
 ```bash
 flightdeck --domain example.com
 ```
-EOF
+FIXTURE
 expect 1 "four Quickstart commands fail" "$work/quickstart.md"
-expect_output 'OVER BUDGET: Quickstart has 4 command lines, budget 3' "the failure names Quickstart and the counts"
+expect_output 'OVER BUDGET: Quickstart has 4 commands, budget 3' "the failure names Quickstart and the counts"
 expect 0 "--report prints the same file without failing" --report "$work/quickstart.md"
 expect_output 'report mode: not failing' "--report says so"
+
+# Over the Self-hosting budget: seven commands, the last two chained on
+# one line, so a line count of six would have let it through.
+cat >"$work/selfhosting.md" <<'FIXTURE'
+## Quickstart
+
+```bash
+flightdeck
+```
+
+## Self-hosting
+
+```bash
+flightdeck --domain example.com
+flightdeck --database-url postgres://u:p@h/db
+docker run example
+docker compose up -d
+helm install example
+export FLIGHTDECK_TOKEN=ftd_example && flightdeck status
+```
+FIXTURE
+expect 1 "seven Self-hosting commands fail" "$work/selfhosting.md"
+expect_output 'OVER BUDGET: Self-hosting has 7 commands, budget 6' "the failure names Self-hosting and the counts"
 
 # Over the total budget while every section is within its own: 21
 # commands spread over sections with no per-section budget.
@@ -154,7 +238,7 @@ expect_output 'report mode: not failing' "--report says so"
   echo '```'
 } >"$work/total.md"
 expect 1 "21 commands in total fail" "$work/total.md"
-expect_output 'OVER BUDGET: 21 command lines in total, budget 20' "the failure names the total"
+expect_output 'OVER BUDGET: 21 commands in total, budget 20' "the failure names the total"
 
 # Over the line budget with no commands at all.
 {
@@ -165,21 +249,32 @@ expect_output 'OVER BUDGET: 21 command lines in total, budget 20' "the failure n
 expect 1 "301 lines fail" "$work/long.md"
 expect_output 'OVER BUDGET: 301 lines, budget 300' "the failure names the line count"
 
+# The same 301 lines with no newline after the last one: the last line
+# is still a line. Counting newline characters would see 300 and pass.
+{
+  echo "## Quickstart"
+  echo "## Self-hosting"
+  for i in $(seq 1 298); do echo "line $i"; done
+  printf 'line 299'
+} >"$work/long-no-newline.md"
+expect 1 "301 lines fail without a trailing newline" "$work/long-no-newline.md"
+expect_output 'OVER BUDGET: 301 lines, budget 300' "the last line counts without its newline"
+
 # A README without a budgeted section fails: the budget cannot be
 # measured, and a renamed heading must not pass silently.
-cat >"$work/nosection.md" <<'EOF'
+cat >"$work/nosection.md" <<'FIXTURE'
 ## Try it
 
 ```bash
 flightdeck
 ```
-EOF
+FIXTURE
 expect 1 "a README without the budgeted sections fails" "$work/nosection.md"
 expect_output 'no "## Quickstart" section' "the failure names the missing section"
 
 # The section heading is matched case-insensitively and a fence with
 # attributes after the language still counts.
-cat >"$work/case.md" <<'EOF'
+cat >"$work/case.md" <<'FIXTURE'
 ## QUICKSTART
 
 ```bash {.copy}
@@ -191,12 +286,533 @@ flightdeck
 ```shell
 flightdeck --domain example.com
 ```
-EOF
+FIXTURE
 expect 0 "headings match case-insensitively and a fence with attributes counts" "$work/case.md"
 expect_output 'Quickstart +1 \(budget' "QUICKSTART is read as Quickstart"
 expect_output 'Self-hosting +1 \(budget' "Self-Hosting is read as Self-hosting"
 
+# A `###` subsection is part of its `## ` section: its commands count
+# against that section's budget and it gets no row of its own.
+cat >"$work/subsection.md" <<'FIXTURE'
+## Quickstart
+
+```bash
+flightdeck
+```
+
+### Coding agents
+
+```text
+/plugin install example
+```
+
+### Production agents
+
+```bash
+pip install example
+```
+
+## Self-hosting
+
+### Docker
+
+```bash
+docker run example
+```
+FIXTURE
+expect 0 "subsections count into their section" "$work/subsection.md"
+expect_output '^ +3 +Quickstart$' "Quickstart counts the commands of its two subsections (3)"
+expect_output '^ +1 +Self-hosting$' "Self-hosting counts the command of its subsection (1)"
+if grep -Eq 'Coding agents|Production agents|Docker' "$work/out"; then
+  fail "a ### subsection got a row of its own:"
+  sed 's/^/    /' "$work/out" >&2
+else
+  echo "ok: a ### subsection has no row of its own"
+fi
+
+# ---------------------------------------------------------------------
+# Which fences count.
+# ---------------------------------------------------------------------
+
+rule 1 "a powershell fence counts" <<'FIXTURE'
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+FIXTURE
+
+rule 1 "an untagged fence counts" <<'FIXTURE'
+```
+flightdeck
+```
+FIXTURE
+
+rule 1 "a zsh fence counts" <<'FIXTURE'
+```zsh
+flightdeck
+```
+FIXTURE
+
+rule 4 "ps1, cmd, shell-session and unknown tags count" <<'FIXTURE'
+```ps1
+flightdeck.exe
+```
+
+```cmd
+flightdeck.exe
+```
+
+```shell-session
+$ flightdeck
+```
+
+```some-future-shell
+flightdeck
+```
+FIXTURE
+
+rule 1 "a tilde fence counts" <<'FIXTURE'
+~~~bash
+flightdeck
+~~~
+FIXTURE
+
+# A fence closes on its own character only: the backticks inside a
+# tilde fence are content.
+rule 2 "a tilde fence is not closed by backticks" <<'FIXTURE'
+~~~
+```
+flightdeck
+~~~
+FIXTURE
+
+# A fence closes on a run at least as long as the one that opened it:
+# the three-backtick lines inside a four-backtick fence are content.
+rule 3 "a four-backtick fence is not closed by three" <<'FIXTURE'
+````bash
+```
+flightdeck
+```
+````
+FIXTURE
+
+rule 2 "a fence in a blockquote counts" <<'FIXTURE'
+> A note:
+>
+> ```bash
+> flightdeck
+> flightdeck status
+> ```
+FIXTURE
+
+rule 2 "a fence that opens on a list marker's line counts" <<'FIXTURE'
+- ```bash
+  flightdeck
+  ```
+1. ```bash
+   flightdeck status
+   ```
+FIXTURE
+
+# The end of a blockquote closes a fence left open inside it, as it
+# does when the page is rendered, so the text after it is not counted
+# and the next fence opens normally.
+rule 2 "a blockquote that ends closes its fence" <<'FIXTURE'
+> ```bash
+> flightdeck
+This paragraph is outside the quote.
+
+```bash
+flightdeck status
+```
+FIXTURE
+
+rule 1 "inline code written with three backticks is not a fence" <<'FIXTURE'
+Run ```flightdeck``` and then:
+```bash
+flightdeck status
+```
+FIXTURE
+
+# No sample language counts, whatever its body looks like. This is the
+# one fixture whose expected count is zero.
+rule 0 "sample-language fences are not counted" <<'FIXTURE'
+```python
+import flightdeck_sensor; flightdeck_sensor.init()
+```
+
+```YAML
+run: make dev && make test
+```
+
+```json
+{"cmd": "a && b; c"}
+```
+
+```toml
+cmd = "a && b"
+```
+
+```go
+x := a && b
+```
+
+```diff
++ make dev && make test
+```
+
+```dockerfile
+RUN make dev && make test
+```
+
+```sql
+SELECT 1; SELECT 2;
+```
+FIXTURE
+
+# CRLF line endings: the fences still open and close, the headings are
+# still found (the run is not in report mode, so a missing section
+# would fail it) and the counts are the same as with LF.
+awk '{ printf "%s\r\n", $0 }' >"$work/crlf.md" <<'FIXTURE'
+## Quickstart
+
+```bash
+flightdeck
+flightdeck status && flightdeck stop
+```
+
+## Self-hosting
+
+```bash
+helm install example \
+  --set a=b
+```
+FIXTURE
+if [ "$(tr -d '\r' <"$work/crlf.md" | wc -c)" -eq "$(wc -c <"$work/crlf.md")" ]; then
+  fail "the CRLF fixture has no carriage returns"
+fi
+expect 0 "a README with CRLF line endings is measured" "$work/crlf.md"
+expect_output '^ +3 +Quickstart$' "CRLF: Quickstart counts 3"
+expect_output '^ +1 +Self-hosting$' "CRLF: a wrapped command counts 1"
+
+# ---------------------------------------------------------------------
+# What a command is.
+# ---------------------------------------------------------------------
+
+rule 6 "&&, || and ; each separate commands" <<'FIXTURE'
+```bash
+make build && make install && make check; make clean
+test -f config.yaml || touch config.yaml
+```
+FIXTURE
+
+rule 3 "a lone & separates commands and a trailing one does not add one" <<'FIXTURE'
+```bash
+flightdeck & flightdeck status
+flightdeck &
+```
+FIXTURE
+
+rule 2 "separators inside quotes are not split" <<'FIXTURE'
+```bash
+echo "one; two && three || four" 'five; six & seven'
+sh -c 'make build && make install'
+```
+FIXTURE
+
+rule 3 "a pipeline is one command, and the & of a redirection is not a separator" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+flightdeck 2>&1 | tee flightdeck.log
+flightdeck &>flightdeck.log
+```
+FIXTURE
+
+rule 1 ";; is not a separator" <<'FIXTURE'
+```bash
+case "$1" in start) flightdeck ;; esac
+```
+FIXTURE
+
+rule 2 "a trailing comment hides the separators after it, and # inside a word does not start one" <<'FIXTURE'
+```bash
+flightdeck   # then: flightdeck status; flightdeck stop
+open http://localhost:4000/#/fleet
+```
+FIXTURE
+
+rule 1 "a command wrapped with backslashes counts once" <<'FIXTURE'
+```bash
+helm install flightdeck helm/ \
+  --namespace flightdeck --create-namespace \
+  --set api.corsOrigin="https://flightdeck.example.com"
+```
+FIXTURE
+
+rule 3 "the segments of a wrapped line are counted after joining" <<'FIXTURE'
+```bash
+git clone https://example.invalid/repo \
+  && cd repo \
+  && make dev
+```
+FIXTURE
+
+rule 2 "prompts are stripped, on continuation lines as well" <<'FIXTURE'
+```console
+$ flightdeck \
+>   --domain example.com
+$ flightdeck status
+```
+FIXTURE
+
+# Heredoc bodies are data. Four commands open or follow the heredocs;
+# none of the body lines counts, chained or not.
+{
+  cat <<'FIXTURE'
+```bash
+cat >config.yaml <<EOF
+server: http://localhost:4000
+note: make dev && make test; make clean
+EOF
+cat >notes.txt <<'END_NOTES'
+one; two
+END_NOTES
+FIXTURE
+  printf 'cat >indented.txt <<-"TABBED"\n\tthree && four\n\tTABBED\n'
+  cat <<'FIXTURE'
+flightdeck
+```
+FIXTURE
+} >"$work/heredoc-body.md"
+rule 4 "heredoc bodies are not counted (<<WORD, <<'WORD', <<-\"WORD\")" <"$work/heredoc-body.md"
+
+# A heredoc that a shell reads is a script, not data: its lines are
+# commands. Each fixture counts the line that opens the heredoc and
+# the commands of its body.
+rule 4 "the body of a heredoc fed to a shell is counted" <<'FIXTURE'
+```bash
+bash <<EOF
+make build
+make install && make check
+EOF
+```
+FIXTURE
+
+# Nine: four opening lines, and bodies of one, two, one and one. The
+# shell is found behind ssh, a container exec, a pipe and sudo/env
+# with a path.
+rule 9 "remote, contained, piped and prefixed shells are shells" <<'FIXTURE'
+```bash
+ssh ops@example.invalid <<'EOF'
+flightdeck status
+EOF
+docker exec -i flightdeck sh <<EOF
+flightdeck stop; flightdeck start
+EOF
+cat <<EOF | sudo sh
+flightdeck status
+EOF
+sudo env FLIGHTDECK_PORT=4000 /bin/bash <<EOF
+flightdeck
+EOF
+```
+FIXTURE
+
+# Two: the opening line and one wrapped command. The comment and the
+# blank line of the body count as nothing, as they do outside it.
+rule 2 "a shell heredoc's body follows the same rules" <<'FIXTURE'
+```bash
+bash <<EOF
+# a comment
+
+helm install example \
+  --set a=b
+EOF
+```
+FIXTURE
+
+# A file name that contains a shell's name is not a shell: these three
+# write files and their bodies stay data.
+rule 3 "a heredoc written to a file is still data" <<'FIXTURE'
+```bash
+cat <<EOF > config.yaml
+note: make dev && make test
+EOF
+cat > install.sh <<EOF
+make dev; make test
+EOF
+tee ~/.ssh/config <<EOF
+Host example; make dev
+EOF
+```
+FIXTURE
+
+rule 2 "a here-string is not a heredoc" <<'FIXTURE'
+```bash
+grep flightdeck <<<"$processes"
+flightdeck
+```
+FIXTURE
+
+# A multi-line quoted string is counted line by line: a quote left
+# open is closed at the end of its line, so an apostrophe in a text
+# fence cannot swallow the commands after it.
+rule 2 "an open quote does not hide the next line" <<'FIXTURE'
+```text
+/plugin install example   (don't skip this)
+/reload-plugins
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# Windows fences.
+# ---------------------------------------------------------------------
+
+# A trailing backslash is the end of a path, not a continuation.
+rule 2 "a trailing backslash does not join lines in a cmd fence" <<'FIXTURE'
+```cmd
+cd C:\Users\example\
+flightdeck.exe
+```
+FIXTURE
+
+rule 2 "nor in a powershell fence" <<'FIXTURE'
+```powershell
+cd C:\Users\example\
+flightdeck.exe
+```
+FIXTURE
+
+# Nor is it an escape: the separator after it still separates.
+rule 2 "a backslash does not escape a separator in a powershell fence" <<'FIXTURE'
+```pwsh
+cd C:\Users\example\; flightdeck.exe
+```
+FIXTURE
+
+rule 1 "a backtick continues a PowerShell command" <<'FIXTURE'
+```powershell
+Invoke-WebRequest https://example.invalid/flightdeck.zip `
+  -OutFile flightdeck.zip
+```
+FIXTURE
+
+rule 1 "a caret continues a cmd command" <<'FIXTURE'
+```cmd
+flightdeck.exe ^
+  --domain example.com
+```
+FIXTURE
+
+# Three: REM and :: lines are comments, and an apostrophe is not a
+# quote in cmd, so the & after it separates.
+rule 3 "cmd comments and apostrophes" <<'FIXTURE'
+```bat
+REM start the server & nothing else
+:: another comment
+flightdeck.exe
+echo don't close this window & flightdeck.exe status
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# Samples must be samples.
+# ---------------------------------------------------------------------
+
+# Each of these has one real command next to its sample, so the count
+# asserted is 1: the sample is not counted and does not fail the run.
+rule 1 "a JSON sample passes" <<'FIXTURE'
+```json
+{
+  "server": "http://localhost:4000",
+  "install": "curl -fsSL https://example.invalid/install.sh | sh"
+}
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a python sample with a command word inside a line passes" <<'FIXTURE'
+```python
+client = docker.from_env()  # docker run is what this replaces
+subprocess.run(["git", "status"])
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a key named like a command is not a command" <<'FIXTURE'
+```toml
+uv = { index = "example" }
+make = "gnu"
+```
+
+```yaml
+docker: true
+pip:
+  - example
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# What is refused.
+# ---------------------------------------------------------------------
+
+# The fence opens on line 5 of the fixture (the rule helpers put the
+# heading and a blank line first).
+rule_error 'rule\.md:5: the code fence opened on this line is never closed' "an unclosed fence is an error that names its line" <<'FIXTURE'
+Text.
+
+```bash
+flightdeck
+FIXTURE
+
+rule_error 'rule\.md:4: the heredoc <<EOF opened on this line is not terminated' "a heredoc left open at the end of its fence is an error" <<'FIXTURE'
+```bash
+cat >config.yaml <<EOF
+server: http://localhost:4000
+```
+FIXTURE
+
+# A command block under a sample-language tag would count as nothing,
+# so it is refused. The command is on line 4 of each fixture.
+rule_error 'rule\.md:4: this line of a "json" fence starts like a command \(curl\)' "a command in a json fence is an error that names the line and the tag" <<'FIXTURE'
+```json
+curl -fsSL https://example.invalid/install.sh | sh
+```
+FIXTURE
+
+rule_error 'rule\.md:4: this line of a "ini" fence starts like a command \(\$\)' "a prompt in a sample fence is an error" <<'FIXTURE'
+```ini
+$ flightdeck --domain example.com
+```
+FIXTURE
+
+rule_error 'rule\.md:4: this line of a "md" fence starts like a command \(flightdeck\)' "an indented command in a sample fence is an error" <<'FIXTURE'
+- ```md
+  flightdeck --domain example.com
+  ```
+FIXTURE
+
+expect 2 "an unknown option is exit 2" --verbose "$work/good.md"
+expect_output 'unknown option: --verbose' "the failure names the option"
+expect_output '^usage: scripts/readme-budget.sh' "and prints the usage line"
+
+expect 2 "a second path is exit 2" "$work/good.md" "$work/case.md"
+expect_output 'more than one README path' "the failure says so"
+expect_output '^usage: scripts/readme-budget.sh' "and prints the usage line"
+
 expect 2 "a missing file is exit 2" "$work/does-not-exist.md"
+
+expect 0 "--help exits 0" --help
+expect_output '^Usage: scripts/readme-budget.sh' "and prints the header"
 
 if [ "$status" -ne 0 ]; then
   echo "readme-budget self-test FAILED" >&2

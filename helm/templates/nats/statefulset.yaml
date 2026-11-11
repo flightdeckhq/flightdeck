@@ -1,4 +1,4 @@
-{{- if include "flightdeck.natsEnabled" . -}}
+{{- if .Values.nats.enabled -}}
 {{- $component := "nats" -}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -45,7 +45,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           # JetStream enabled via CLI flag so NATS works without a config
-          # file.
+          # file. Matches docker/docker-compose.yml behaviour.
           args:
             - "--jetstream"
             - "--store_dir"
@@ -59,25 +59,29 @@ spec:
             {{- if gt (int .Values.nats.replicas) 1 }}
             - "--cluster_name"
             - {{ include "flightdeck.natsServiceName" . | quote }}
-            # The routes authenticate with the token too, so the cluster
-            # port is not a way around client auth.
+            # With a token set, routes authenticate with it too, so the
+            # cluster port is not a way around client auth.
             - "--cluster"
             - "nats://{{ include "flightdeck.natsRouteAuth" . }}0.0.0.0:{{ .Values.nats.clusterPort }}"
             - "--routes"
             - {{ include "flightdeck.natsRoutes" . | quote }}
             {{- end }}
+            {{- if .Values.nats.auth.token }}
             - "--auth"
             - "$(NATS_TOKEN)"
+            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- if .Values.nats.auth.token }}
             - name: NATS_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "flightdeck.secretName" . }}
                   key: FLIGHTDECK_NATS_TOKEN
+            {{- end }}
           ports:
             - name: client
               containerPort: {{ .Values.nats.clientPort }}

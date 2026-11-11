@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -39,7 +40,18 @@ type Bus interface {
 	// treats a close before ctx is done as a gap: it re-reads the
 	// state it caches and subscribes again.
 	Subscribe(ctx context.Context, channel string) (<-chan string, error)
+
+	// Close ends every subscription (their channels close, as when a
+	// subscription is lost) and returns once the bus holds nothing
+	// open: no goroutine and, on Postgres, no LISTEN connection. After
+	// Close, Publish and Subscribe return ErrBusClosed. The owner of
+	// the bus calls it once its publishers and subscribers have
+	// stopped, before it closes the database; a second call is a no-op.
+	Close() error
 }
+
+// ErrBusClosed is returned by Publish and Subscribe on a closed bus.
+var ErrBusClosed = errors.New("storage: bus is closed")
 
 // NewBus returns the bus matching the database: in-process on SQLite,
 // Postgres LISTEN/NOTIFY on Postgres, where other processes on the
@@ -64,11 +76,18 @@ const busBuffer = 256
 type InProcessBus struct {
 	mu   sync.Mutex
 	subs map[string]map[*inProcessSub]struct{}
+	// closed and stop end the bus: Close sets one and closes the other
+	// under mu, and waits on wg for every subscription to unwind.
+	closed bool
+	stop   chan struct{}
+	wg     sync.WaitGroup
 }
 
 type inProcessSub struct {
-	ch   chan string
-	done <-chan struct{}
+	ch chan string
+	// done is closed when the subscription ends (its context, or the
+	// bus closing), before the channel is.
+	done chan struct{}
 	// mu orders sends before the close: publishers hold it shared
 	// while they send, so any number of them deliver (or wait on their
 	// own context) at once, and the unsubscribe takes it exclusively
@@ -82,7 +101,10 @@ type inProcessSub struct {
 
 // NewInProcessBus returns an empty in-process bus.
 func NewInProcessBus() *InProcessBus {
-	return &InProcessBus{subs: make(map[string]map[*inProcessSub]struct{})}
+	return &InProcessBus{
+		subs: make(map[string]map[*inProcessSub]struct{}),
+		stop: make(chan struct{}),
+	}
 }
 
 // Publish hands payload to every subscriber of channel. It waits for a
@@ -93,6 +115,10 @@ func NewInProcessBus() *InProcessBus {
 // publisher, or the same subscriber's unsubscribe, needs.
 func (b *InProcessBus) Publish(ctx context.Context, channel, payload string) error {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrBusClosed
+	}
 	targets := make([]*inProcessSub, 0, len(b.subs[channel]))
 	for s := range b.subs[channel] {
 		targets = append(targets, s)
@@ -126,28 +152,54 @@ func (s *inProcessSub) send(ctx context.Context, payload string) error {
 }
 
 // Subscribe registers a subscriber of channel; the returned channel is
-// closed when ctx is done.
+// closed when ctx is done or the bus is closed.
 func (b *InProcessBus) Subscribe(ctx context.Context, channel string) (<-chan string, error) {
-	s := &inProcessSub{ch: make(chan string, busBuffer), done: ctx.Done()}
+	s := &inProcessSub{ch: make(chan string, busBuffer), done: make(chan struct{})}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, ErrBusClosed
+	}
 	if b.subs[channel] == nil {
 		b.subs[channel] = make(map[*inProcessSub]struct{})
 	}
 	b.subs[channel][s] = struct{}{}
+	// Counted under mu, so Close (which sets closed under mu before it
+	// waits) never misses a subscription that registered first.
+	b.wg.Add(1)
 	b.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
+		defer b.wg.Done()
+		select {
+		case <-ctx.Done():
+		case <-b.stop:
+		}
 		b.mu.Lock()
 		delete(b.subs[channel], s)
 		if len(b.subs[channel]) == 0 {
 			delete(b.subs, channel)
 		}
 		b.mu.Unlock()
+		// Release a publisher waiting on the full buffer, then close
+		// the channel once no send is in flight.
+		close(s.done)
 		s.mu.Lock()
 		s.closed = true
 		close(s.ch)
 		s.mu.Unlock()
 	}()
 	return s.ch, nil
+}
+
+// Close ends every subscription and waits for each to unwind.
+func (b *InProcessBus) Close() error {
+	b.mu.Lock()
+	if !b.closed {
+		b.closed = true
+		close(b.stop)
+	}
+	b.mu.Unlock()
+	b.wg.Wait()
+	return nil
 }

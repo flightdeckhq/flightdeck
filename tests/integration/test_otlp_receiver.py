@@ -19,8 +19,10 @@ import gzip
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,14 @@ import pytest
 
 from ..otlp.fixture_checks import _fields
 from ..otlp.replay import is_mapped, latest_time_ns, record_attributes, rewrite_logs
-from .conftest import INGESTION_URL, TOKEN, delete_flavor_data
+from .conftest import (
+    API_URL,
+    INGESTION_URL,
+    TOKEN,
+    auth_headers,
+    delete_flavor_data,
+    wait_until,
+)
 
 FIXTURES = (
     Path(__file__).resolve().parents[1] / "fixtures" / "otlp" / "claude-code-2.1.316"
@@ -71,10 +80,77 @@ def _requests(*, logs: bool) -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
+# The cleanup waits for the worker before it deletes: a test here ends
+# on the export's reply, while the events the export produced are still
+# on the bus. The stored-event count of the flavor is read this often,
+SETTLE_POLL_SECS = 0.05
+# and the pipeline counts as settled once the count has held still this
+# long: the worker stores an event in milliseconds, so the events of one
+# export never arrive this far apart.
+SETTLE_WINDOW_SECS = 0.5
+# After this long the cleanup goes ahead whatever the count does, with a
+# warning: an export's events land well within a second of its reply,
+# and a teardown must not hold a run up or fail its test.
+SETTLE_DEADLINE_SECS = 10.0
+# The start of the range the count is taken over: every stored event.
+EVENTS_FROM = "1970-01-01T00:00:00Z"
+
+
+def _stored_events(flavor: str) -> int:
+    """How many events of ``flavor`` the query API finds stored."""
+    query = urllib.parse.urlencode({"from": EVENTS_FROM, "limit": 1, "flavor": flavor})
+    req = urllib.request.Request(f"{API_URL}/v1/events?{query}", headers=auth_headers())
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return int(json.loads(resp.read())["total"])
+
+
+def _wait_for_the_worker(flavor: str) -> None:
+    """Return once the worker has stored what the test's exports
+    produced: the flavor's stored-event count has not changed for
+    ``SETTLE_WINDOW_SECS``. Deleting the flavor's rows while the worker
+    is still writing them makes its event inserts fail on the missing
+    session and leaves the rows it then recreates. A count that is still
+    moving, or cannot be read, at the deadline is reported as a warning
+    and the cleanup proceeds."""
+    last_count: int | None = None
+    still_since = time.monotonic()
+
+    def settled() -> bool:
+        nonlocal last_count, still_since
+        try:
+            count = _stored_events(flavor)
+        except (OSError, ValueError, KeyError):
+            # Unreadable is not settled; the deadline bounds the retries.
+            last_count = None
+            return False
+        now = time.monotonic()
+        if count != last_count:
+            last_count, still_since = count, now
+            return False
+        return now - still_since >= SETTLE_WINDOW_SECS
+
+    try:
+        wait_until(
+            settled,
+            timeout=SETTLE_DEADLINE_SECS,
+            interval=SETTLE_POLL_SECS,
+            msg=f"stored events of {flavor} settling",
+        )
+    except TimeoutError:
+        warnings.warn(
+            f"the events of {flavor} had not settled after {SETTLE_DEADLINE_SECS}s "
+            f"(last count: {last_count}); cleaning up while the worker may still "
+            "be writing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 @pytest.fixture
 def flavor() -> Iterator[str]:
     name = f"otlp-rx-{uuid.uuid4().hex[:10]}"
     yield name
+    _wait_for_the_worker(name)
     delete_flavor_data(name)
 
 

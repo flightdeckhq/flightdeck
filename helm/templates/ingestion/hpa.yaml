@@ -1,0 +1,23 @@
+{{- $component := "ingestion" -}}
+{{- if .Values.ingestion.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  minReplicas: {{ .Values.ingestion.hpa.minReplicas }}
+  maxReplicas: {{ .Values.ingestion.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ingestion.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-openai-agents playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan release-snapshot pypi-wheels pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -31,11 +31,48 @@ OPENAI_FLOOR_PYTHON ?= $(HOME)/.cache/fd-openai-floor-venv/bin/python
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
-build: ## Build all components
+build: ## Build all components, the flightdeck binary included
 	$(MAKE) -C sensor build
 	$(MAKE) -C ingestion build
 	$(MAKE) -C workers build
 	$(MAKE) -C api build
+	$(MAKE) build-flightdeck
+
+# ---------------------------------------------------------------------------
+# The flightdeck binary: the root Go module (go.mod at the repo root,
+# go.work lists the three service modules). The dashboard bundle is
+# embedded with go:embed, so build-webui runs first and copies
+# dashboard/dist into webui/dist. Source maps stay out: they are 12 MB
+# the browser never asks for in production.
+#
+# Root-module Go commands name their packages ($(GO_ROOT_PKGS)) instead
+# of ./..., which would walk dashboard/node_modules (a minute on a
+# Windows mount) and pick up a stray Go package a dependency ships.
+# ---------------------------------------------------------------------------
+GO_ROOT_PKGS := ./cmd/... ./internal/... ./webui/...
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
+build-webui: ## Build the dashboard and copy its bundle (without source maps) into webui/dist
+	$(MAKE) -C dashboard build
+	rm -rf webui/dist
+	mkdir -p webui/dist
+	cp -R dashboard/dist/. webui/dist/
+	find webui/dist -name '*.map' -delete
+	touch webui/dist/.gitkeep
+
+build-flightdeck: build-webui ## Build bin/flightdeck with the VERSION file's version
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
+
+run-flightdeck: ## Run the binary from source; pass flags with ARGS="--listen 127.0.0.1:4100"
+	go run ./cmd/flightdeck $(ARGS)
+
+test-flightdeck: ## Tests of the root module: the binary's packages, and the real binary on SQLite (stop, restart, second instance)
+	go test $(GO_ROOT_PKGS)
+
+lint-flightdeck: ## gofmt and golangci-lint on the root module
+	@test -x "$(GOFMT)" || { echo "gofmt not found at $(GOFMT)"; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal webui)" || { echo "gofmt reports unformatted files (run gofmt -w cmd internal webui):"; $(GOFMT) -l cmd internal webui; exit 1; }
+	golangci-lint run $(GO_ROOT_PKGS)
 
 test: ## Run all unit tests
 	$(MAKE) -C sensor test
@@ -43,6 +80,7 @@ test: ## Run all unit tests
 	$(MAKE) -C ingestion test
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
+	$(MAKE) test-flightdeck
 	$(MAKE) test-plugin
 	$(MAKE) -C dashboard test
 
@@ -77,12 +115,12 @@ test-integration: ## Run integration tests (requires running stack)
 	$(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
 # test-go-db runs the Go tests that need Postgres (the ones gated on
-# TEST_POSTGRES_URL / TEST_ASSEMBLER_POSTGRES_URL) against the running
-# dev stack's Postgres, each package on a fresh database of its own
-# that the script creates, migrates and drops. It never touches the
-# `flightdeck` database. It also runs the Go tests gated on
-# TEST_NATS_URL against the stack's NATS, on streams of their own. CI
-# runs it in the integration job.
+# TEST_POSTGRES_URL) against the running dev stack's Postgres, each
+# package on a fresh database of its own that the script creates,
+# migrates and drops, and the storage-converted ones on SQLite as well.
+# It never touches the `flightdeck` database. It also runs the Go tests
+# gated on TEST_NATS_URL against the stack's NATS, on streams of their
+# own. CI runs it in the integration job.
 test-go-db: ## Run the Go tests that need Postgres or NATS (requires running stack)
 	./scripts/go-db-tests.sh
 
@@ -246,25 +284,20 @@ lint: ## Lint all components
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint
 	$(MAKE) -C api lint
+	$(MAKE) lint-flightdeck
 	$(MAKE) -C dashboard lint
 
-# The dev stack (scripts/dev-stack.sh): Postgres and NATS from
-# docker/docker-compose.dev.yml, and the flightdeck binary built from
-# this checkout, run in the background on 127.0.0.1:4000 where the
-# development token works. The dashboard is served from webui/dist, so
-# run `make build-webui` first (or after a dashboard change); without
-# it / answers 503 and the API and ingestion still work.
-dev: ## Start the dev stack: Postgres + NATS containers, the flightdeck binary from source on :4000
-	scripts/dev-stack.sh up
+dev: ## Start full local dev environment
+	$(MAKE) -C docker dev
 
-dev-reset: ## Stop the dev stack, drop its volumes and data dir, start it again
-	scripts/dev-stack.sh reset
+dev-reset: ## Wipe volumes and restart
+	$(MAKE) -C docker dev-reset
 
-down: ## Stop the dev stack (volumes kept)
-	scripts/dev-stack.sh down
+down: ## Stop local dev environment
+	$(MAKE) -C docker down
 
-logs: ## Tail the flightdeck binary's log
-	scripts/dev-stack.sh logs
+logs: ## Tail logs from all services
+	$(MAKE) -C docker logs
 
 release-prep: ## Open the release PR: bump every version location, date the CHANGELOG (usage: make release-prep VERSION=v0.6.0)
 	@test -n "$(VERSION)" || (echo "Usage: make release-prep VERSION=v0.6.0" && exit 1)
@@ -280,11 +313,34 @@ pricing-refresh: ## Regenerate the vendored pricing catalogue from litellm's cur
 version-check: ## Check every version location matches the VERSION file
 	python3 scripts/version.py check
 
+# The release build, without publishing: the six binaries, their
+# archives, checksums.txt and the Homebrew formula land in dist/. Needs
+# goreleaser (https://goreleaser.com/install/) and the dashboard's
+# dependencies (make -C dashboard install). CI runs the same build on
+# every pull request so a target that stops cross-compiling fails there.
+release-snapshot: ## Build every release artifact into dist/ without publishing (needs goreleaser)
+	HOMEBREW_TAP_GITHUB_TOKEN="$${HOMEBREW_TAP_GITHUB_TOKEN:-unset}" goreleaser release --snapshot --clean --skip=sign
+
+# The flightdeck-cli wheels from the binaries release-snapshot (or the
+# release workflow) left in dist/: one per platform, into
+# packaging/pypi/dist. TAG names the version (v0.9.0, v0.9.0-rc.1).
+pypi-wheels: ## Build the flightdeck-cli wheels from dist/artifacts.json (usage: make pypi-wheels TAG=v0.9.0)
+	@test -n "$(TAG)" || (echo "Usage: make pypi-wheels TAG=v0.9.0" && exit 1)
+	python3 packaging/pypi/build_wheels.py --artifacts dist/artifacts.json --tag $(TAG) --out packaging/pypi/dist
+
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py
 
-# Migrations run inside the binary at every start (the dev stack's
-# included), so there is no separate migrate target. The applied
-# versions are visible on the dev database with:
-#   docker exec docker-postgres-1 psql -U flightdeck -d flightdeck \
-#     -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"
+# -----------------------------------------------
+# Migration targets -- LOCAL DEVELOPMENT ONLY
+# migrate-local-up and migrate-local-status use
+# docker compose and require the stack to be
+# running locally. For remote or production
+# environments, see CONTRIBUTING.md.
+# -----------------------------------------------
+
+migrate-local-up: ## Apply all pending migrations (local dev only)
+	docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml run --rm -e FLIGHTDECK_MIGRATE_ONLY=true workers
+
+migrate-local-status: ## Show current migration version (local dev only)
+	docker exec docker-postgres-1 psql -U flightdeck -d flightdeck -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"

@@ -32,6 +32,10 @@ import urllib.request
 from typing import Any
 from uuid import UUID, uuid5
 
+# seed.py, which imports this module, has put the repository root on
+# sys.path for the shared fixtures.
+from tests.shared.fixtures import POSTGRES_CONTAINER, POSTGRES_DB
+
 NAMESPACE_FLIGHTDECK = UUID("ee22ab58-26fc-54ef-91b4-b5c0a97f9b61")
 
 # The Claude Code session.id of the fixture; the Flightdeck ids follow
@@ -236,19 +240,22 @@ def _root_event_count(api_url: str, headers: dict[str, str]) -> int:
 
 
 def _psql(sql: str, what: str) -> bool:
-    """Run sql against the dev Postgres; report a failure on stderr and
-    return whether it succeeded."""
+    """Run sql against the Postgres database of the stack being seeded,
+    the container and database the shared fixtures name (the dev stack's
+    unless FLIGHTDECK_TEST_POSTGRES_CONTAINER / FLIGHTDECK_TEST_DB say
+    otherwise); report a failure on stderr and return whether it
+    succeeded."""
     try:
         result = subprocess.run(
             [
                 "docker",
                 "exec",
-                "docker-postgres-1",
+                POSTGRES_CONTAINER,
                 "psql",
                 "-U",
                 "flightdeck",
                 "-d",
-                "flightdeck",
+                POSTGRES_DB,
                 "-c",
                 sql,
             ],

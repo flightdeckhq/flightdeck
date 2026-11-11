@@ -67,9 +67,12 @@ def _session_with_tied_calls() -> tuple[str, list[str]]:
         post_event(make_event(sid, flavor, "tool_call", tool_name=f"tie-{i}", timestamp=tie))
 
     def rows() -> list[tuple[str, str]]:
+        # A fixed-width UTC rendering of the time, so the text sorts as
+        # the time does: SQLite stores exactly that, Postgres formats it.
         raw = exec_sql(
             "SELECT to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US'), id "
             "FROM events WHERE session_id = :'sid'::uuid",
+            sqlite="SELECT occurred_at, id FROM events WHERE session_id = :sid",
             sid=sid,
         )
         return [tuple(line.split("|")) for line in raw.splitlines() if line]  # type: ignore[misc]
@@ -80,8 +83,8 @@ def _session_with_tied_calls() -> tuple[str, list[str]]:
         msg=f"the {TIED_CALLS} tied tool calls of {sid} never landed",
     )
     # The contract, computed independently of the server: time to the
-    # microsecond, then the id (canonical lowercase UUIDs sort as
-    # Postgres orders uuids).
+    # stored precision, then the id (canonical lowercase UUIDs sort as
+    # Postgres orders uuids and as SQLite orders their text).
     ordered = [event_id for _, event_id in sorted(rows())]
     return sid, ordered
 

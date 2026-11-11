@@ -290,12 +290,20 @@ jobs:
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04
+    # The service modules are built one at a time by their Dockerfiles
+    # and by the dev compose containers, where the root go.work does not
+    # exist. With the workspace on, go.work.sum satisfies a module whose
+    # own go.sum is incomplete and the gap only shows when a container
+    # boots. Turning the workspace off here makes this job see what the
+    # containers see; the root module uses its replace directives.
+    env:
+      GOWORK: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Install golangci-lint v2
         # Pinned to an immutable commit SHA (not a tag like @v2.11.4)
@@ -311,6 +319,11 @@ jobs:
       # is enabled and unformatted files pass it. gofmt comes from the
       # toolchain setup-go installed above, the same Go release every
       # module's go.mod requires, so CI and a local `gofmt -l .` agree.
+      # The workflow files themselves: expressions, runner labels, shell
+      # in run: blocks. Pinned to a commit (rhysd/actionlint v1.7.12).
+      - name: actionlint on the workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca -color .github/workflows/*.yml
+
       - name: Migration pairs (postgres and sqlite directories in step)
         run: |
           scripts/test-check-migration-pairs.sh
@@ -323,7 +336,7 @@ jobs:
             unformatted="$(cd "$m" && gofmt -l .)"
             if [ -n "$unformatted" ]; then
               echo "::error::gofmt reports unformatted files in $m (run gofmt -w . there):"
-              echo "$unformatted" | sed "s|^|  $m/|"
+              while IFS= read -r file; do echo "  $m/$file"; done <<<"$unformatted"
               status=1
             fi
           done
@@ -365,14 +378,25 @@ jobs:
       # on SQLite here (a temp file per test, no server); the Postgres
       # half and the schema parity test run in the integration job's
       # `make test-go-db`, which has a Postgres.
+      #
+      # -race also turns on the compiler's checkptr instrumentation,
+      # which makes the pure-Go SQLite (modernc.org/sqlite and the libc
+      # it is transpiled against) about ten times slower per statement:
+      # the ingestion store's write of its 10 000-record cap, 0.2 s
+      # uninstrumented, then outlasts the 2 s StageTimeout it enforces.
+      # checkptr is turned off for the modernc.org packages only, by
+      # package pattern; the race detector stays on everywhere and
+      # checkptr stays on for our own code. Every Go module whose
+      # SQLite half runs under -race takes the same flag.
       - name: Test storage (SQLite)
         working-directory: storage
-        run: go test ./... -v -race -count=1
+        run: go test ./... -v -race -count=1 -gcflags='modernc.org/...=-d=checkptr=0'
 
       - name: Test ingestion
         working-directory: ingestion
         run: |
           go test ./... -v -race \
+            -gcflags='modernc.org/...=-d=checkptr=0' \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./internal/handlers/...
@@ -482,6 +506,101 @@ jobs:
           path: api/coverage.html
           retention-days: 14
 
+  flightdeck:
+    # The one binary: the root module's lint and unit tests, the build
+    # with the dashboard bundle embedded, and scripts/flightdeck-smoke.sh
+    # against a Postgres service container: start, migrate an empty
+    # database, serve the dashboard, accept an event through the
+    # embedded bus and serve the session back, stop cleanly.
+    name: flightdeck binary
+    runs-on: ubuntu-24.04
+    # The job takes about ten minutes (npm ci, the dashboard build, the
+    # lint, the -race tests that start the real binary, three smokes);
+    # twenty turns a start that wedges into a failure with its log
+    # instead of a run that sits until the six-hour default.
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flightdeck
+          POSTGRES_PASSWORD: flightdeck_dev
+          POSTGRES_DB: flightdeck
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flightdeck"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Build the binary from a bare checkout (empty webui/dist)
+        # A fresh clone has only webui/dist/.gitkeep; go:embed's pattern
+        # must still match, so `go build` works before the dashboard is
+        # built (the router then answers 503 with build instructions).
+        run: |
+          test -f webui/dist/.gitkeep
+          test "$(find webui/dist -mindepth 1 -maxdepth 1 | wc -l)" = "1"
+          go build -o /dev/null ./cmd/flightdeck
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Build the dashboard bundle into webui/dist
+        run: make build-webui
+
+      - name: Install golangci-lint v2
+        # Same pin as the Go job above.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@793d05316077345337ae9a11ae05ec8f23edfe1b
+
+      - name: gofmt and golangci-lint (root module)
+        run: make lint-flightdeck
+
+      - name: Unit tests (root module)
+        # cmd/flightdeck's tests start the real binary (the test
+        # executable re-executes itself) on SQLite: stop and restart,
+        # kill and restart, a second instance, the fleet feed. The
+        # child is built with -race too, hence the checkptr exemption
+        # for the pure-Go SQLite, as in the Go job above.
+        run: go test -race -count=1 -gcflags='modernc.org/...=-d=checkptr=0' ./cmd/... ./internal/... ./webui/...
+
+      - name: Build bin/flightdeck
+        run: CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
+
+      - name: Smoke the binary on its default database (SQLite)
+        # No database URL: the first-run path of a user who configures
+        # nothing.
+        run: scripts/flightdeck-smoke.sh ./bin/flightdeck 127.0.0.1:4000
+
+      - name: Smoke the binary against Postgres
+        run: scripts/flightdeck-smoke.sh ./bin/flightdeck 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable' 127.0.0.1:4000
+
+      - name: Concurrency smoke on SQLite
+        # Twenty sessions of a hundred events each while four readers
+        # hit the query API: every event stored once, no 5xx, no locked
+        # database, the write-ahead log bounded, a clean stop. Sized to
+        # finish in about a minute on a runner; the script's defaults
+        # are the larger load its header describes.
+        run: python3 scripts/flightdeck_stress.py ./bin/flightdeck --listen 127.0.0.1:4000 --sessions 20 --events 100 --readers 4
+
   dashboard:
     name: Dashboard (TypeScript)
     runs-on: ubuntu-24.04
@@ -525,11 +644,14 @@ jobs:
       # dashboard/Dockerfile — a future edit that weakens any of the
       # three contracts fails this step and blocks the PR.
       #
-      # Why this lives here, not in integration / e2e: those jobs run
-      # the dashboard embedded in the flightdeck binary, whose router
-      # sets its own headers; the nginx discipline below only ships
-      # from the dashboard image itself, so the smoke builds that image
-      # directly.
+      # Why this lives here, not in integration / e2e: those jobs use
+      # the docker-compose.dev.yml override which swaps the dashboard
+      # image for ``vite dev`` running in a node:24-alpine container.
+      # vite serves /runtime-config.json with its own default
+      # ``Cache-Control: no-cache`` and emits no headers at all on
+      # /assets/* — the production discipline only ships from the
+      # actual multi-stage image. So the smoke must build that image
+      # directly, no compose involved.
 
       - name: Build dashboard production image
         # docker is preinstalled on ubuntu-24.04 runners.
@@ -830,7 +952,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: |
             storage/go.sum
             ingestion/go.sum
@@ -839,10 +961,12 @@ jobs:
 
       - name: Boot the dev stack
         id: boot
-        # Postgres and NATS in containers, the flightdeck binary built
-        # from this checkout on 127.0.0.1:4000 (scripts/dev-stack.sh);
-        # the script returns once both health endpoints answer. The
-        # suite needs no dashboard, so webui/dist stays empty here.
+        # `make dev` returns once all services have been instructed to
+        # start. tests/integration/conftest.py:_wait_for_services then
+        # polls the /health endpoints with a 60 s ceiling, so the
+        # integration test process is responsible for waiting on the
+        # stack -- the workflow does not need a separate readiness
+        # probe here.
         run: make dev
 
       - name: Run integration tests (fabricated + sensor e2e)
@@ -866,9 +990,9 @@ jobs:
         run: make test-integration
 
       - name: Go tests that need Postgres or NATS
-        # The Go tests that read TEST_POSTGRES_URL or
-        # TEST_ASSEMBLER_POSTGRES_URL skip in the Go job, which has no
-        # database. This step runs them against this stack's Postgres,
+        # The Go tests that read TEST_POSTGRES_URL skip their Postgres
+        # half in the Go job, which has no database. This step runs
+        # them against this stack's Postgres,
         # so they run on both majors the matrix covers, and runs the
         # TEST_NATS_URL tests against this stack's NATS.
         # scripts/go-db-tests.sh gives each package a fresh database
@@ -884,7 +1008,11 @@ jobs:
 
       - name: Dump stack logs on failure
         if: failure()
-        run: scripts/dev-stack.sh dump
+        run: |
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml logs --tail=300 || true
+          docker compose -f docker/docker-compose.yml \
+            -f docker/docker-compose.dev.yml ps || true
 
       - name: Tear down stack
         if: always()
@@ -902,10 +1030,10 @@ jobs:
     # merges the shards' reports and is the check branch protection
     # requires.
     #
-    # The dashboard is the production bundle embedded in the flightdeck
-    # binary (make build-webui), the one users get, rather than the
-    # Vite dev server, which compiles modules on demand for every page
-    # load.
+    # The dashboard serves its production bundle
+    # (docker-compose.e2e.yml) rather than the Vite dev server, which
+    # compiles modules on demand for every page load: the suite runs in
+    # less than half the time, against the bundle users get.
     #
     # PYTHON: same job-level override as the integration job above —
     # the Makefile's $(PYTHON) default points at the local sensor/.venv
@@ -946,26 +1074,41 @@ jobs:
         working-directory: dashboard
         run: npm ci
 
+      # The browser comes from the Playwright CDN. `--with-deps` would
+      # also install Chromium's system libraries and fonts through apt,
+      # but the runner image already carries what Chromium needs, and
+      # the hosted runners have lost name resolution for the Ubuntu
+      # archive for hours at a time: apt then spends ten minutes timing
+      # out and the shard fails without running a test. So the system
+      # packages are installed only when the browser does not start
+      # without them, and the launch check runs again afterwards. The
+      # check starts the same binary the suite uses (the `chromium`
+      # channel of playwright.config.ts, not the headless shell).
       - name: Install Playwright browsers
         working-directory: dashboard
-        run: npx playwright install --with-deps chromium
+        run: |
+          npx playwright install chromium
+          launch_check() {
+            node -e "
+              const { chromium } = require('@playwright/test');
+              chromium.launch({ channel: 'chromium' }).then(async (browser) => {
+                const page = await browser.newPage();
+                await page.setContent('<title>ok</title>');
+                if ((await page.title()) !== 'ok') throw new Error('Chromium started but did not render');
+                await browser.close();
+              }).catch((err) => { console.error(err); process.exit(1); });
+            "
+          }
+          if ! launch_check; then
+            echo "::warning::Chromium did not start on the runner image alone; installing its system packages"
+            npx playwright install-deps chromium
+            launch_check
+          fi
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version: "1.27.3"
-          cache-dependency-path: |
-            go.sum
-            go.work.sum
-            storage/go.sum
-            ingestion/go.sum
-            workers/go.sum
-            api/go.sum
-
-      - name: Build the dashboard bundle into webui/dist
-        run: make build-webui
-
-      - name: Boot the dev stack, the dashboard embedded in the binary
-        run: make dev
+      - name: Boot the dev stack, the dashboard serving its production bundle
+        run: |
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+            -f docker/docker-compose.e2e.yml up --build -d
 
       - name: Seed canonical E2E fixtures
         # Idempotent; runs here explicitly so a failure at seed time
@@ -996,7 +1139,11 @@ jobs:
 
       - name: Dump stack logs on failure
         if: failure()
-        run: scripts/dev-stack.sh dump
+        run: |
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+            -f docker/docker-compose.e2e.yml logs --tail=300 || true
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+            -f docker/docker-compose.e2e.yml ps || true
 
       - name: Tear down stack
         if: always()
@@ -1066,69 +1213,166 @@ jobs:
       - name: helm lint
         run: helm lint helm/
 
-      # One replica: the flightdeck StatefulSet on the bundled Postgres
-      # with its embedded bus, so no NATS resources and one copy of the
-      # stream. More than one replica (or the HPA): the NATS cluster,
-      # its token required, the pods pointed at it, three stream copies.
-      - name: helm template renders one replica on the embedded bus and several on the NATS cluster
+      - name: helm template with production secrets succeeds
         run: |
-          set -e
-          render() { helm template flightdeck helm/ --set postgres.password=ci-test-password "$@"; }
-          one=$(render)
-          [ "$(grep -c '^kind: StatefulSet' <<<"$one")" = 2 ] || { echo "FAIL: want the flightdeck and postgres StatefulSets"; exit 1; }
-          ! grep -q 'flightdeck-nats' <<<"$one" || { echo "FAIL: one replica must render no NATS resources"; exit 1; }
-          grep -q 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' <<<"$one" || { echo "FAIL: the embedded bus holds one stream copy"; exit 1; }
-          ! grep -q 'FLIGHTDECK_NATS_URL' <<<"$one" || { echo "FAIL: one replica must not be pointed at a NATS cluster"; exit 1; }
-          grep -q 'image: docker.io/flightdeckhq/flightdeck:v' <<<"$one" || { echo "FAIL: the flightdeck image"; exit 1; }
-          grep -qE '^ +- "--metrics"$' <<<"$one" || { echo "FAIL: --metrics is on by default"; exit 1; }
-          [ "$(grep -c '^kind: NetworkPolicy' <<<"$one")" = 1 ] || { echo "FAIL: one NetworkPolicy (postgres) without the cluster"; exit 1; }
-          many=$(render --set flightdeck.replicas=3 --set nats.auth.token=ci-test-nats-token)
-          [ "$(grep -c '^kind: StatefulSet' <<<"$many")" = 3 ] || { echo "FAIL: three replicas render the NATS StatefulSet too"; exit 1; }
-          grep -q 'FLIGHTDECK_NATS_URL: "nats://ci-test-nats-token@flightdeck-nats-client:4222"' <<<"$many" || { echo "FAIL: the pods take the cluster URL with the token"; exit 1; }
-          grep -q 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"' <<<"$many" || { echo "FAIL: three stream copies on a three-server cluster"; exit 1; }
-          [ "$(grep -c '^kind: NetworkPolicy' <<<"$many")" = 2 ] || { echo "FAIL: two NetworkPolicies with the cluster"; exit 1; }
-          hpa=$(render --set flightdeck.hpa.enabled=true --set nats.auth.token=ci-test-nats-token)
-          grep -q '^kind: HorizontalPodAutoscaler' <<<"$hpa" || { echo "FAIL: the HPA renders"; exit 1; }
-          grep -q 'flightdeck-nats' <<<"$hpa" || { echo "FAIL: the HPA implies the cluster"; exit 1; }
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
-      - name: helm template refuses the configurations the binary could not run
+      - name: helm template WITHOUT password fails with actionable message
         run: |
-          set -e
-          refuse() {
-            local msg="$1"; shift
-            if helm template flightdeck helm/ "$@" > /tmp/helm-out 2> /tmp/helm-err; then
-              echo "EXPECTED FAILURE for $*"; cat /tmp/helm-out; exit 1
-            fi
-            grep -q "$msg" /tmp/helm-err \
-              || { echo "Expected '$msg' for $*; got:"; cat /tmp/helm-err; exit 1; }
-          }
-          # The bundled Postgres never runs on a well-known password.
-          refuse "postgres.password must be set"
-          # Several pods need one bus, with a token.
-          refuse "nats.auth.token must be set" --set postgres.password=p --set flightdeck.replicas=2
-          refuse "nats.auth.token must be set" --set postgres.password=p --set flightdeck.hpa.enabled=true
-          refuse "several pods need one shared bus" --set postgres.password=p --set flightdeck.replicas=2 --set nats.enabled=false
-          refuse "nats.auth.token may contain only" --set postgres.password=p --set nats.enabled=true --set nats.auth.token='a/b@c'
-          # Stream limits the binary would refuse, or the volumes could not hold.
-          with_nats=(--set postgres.password=p --set nats.enabled=true --set nats.auth.token=t)
-          refuse "must not exceed nats.replicas" "${with_nats[@]}" --set nats.replicas=1 --set nats.jetstream.stream.replicas=3
-          refuse "must be between 1 and 5" "${with_nats[@]}" --set nats.replicas=7 --set nats.jetstream.stream.replicas=6
-          refuse "must not be 2" "${with_nats[@]}" --set nats.jetstream.stream.replicas=2
-          refuse "maxAgeHours must be at least 1" --set postgres.password=p --set nats.jetstream.stream.maxAgeHours=0
-          refuse "maxSizeMiB must be at least 64" --set postgres.password=p --set nats.jetstream.stream.maxSizeMiB=10
-          refuse "at most 75% of nats.jetstream.fileStore.size" "${with_nats[@]}" --set nats.jetstream.stream.maxSizeMiB=7681
-          refuse "at most 75% of nats.jetstream.fileStore.size" "${with_nats[@]}" --set nats.jetstream.fileStore.size=50Gi --set nats.jetstream.stream.maxSizeMiB=38401
-          refuse "at most 75% of flightdeck.data.size" --set postgres.password=p --set nats.jetstream.stream.maxSizeMiB=7681
+          if helm template flightdeck helm/ > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: helm template should fail when postgres.password is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "postgres.password must be set" /tmp/helm-err; then
+            echo "Expected actionable 'postgres.password must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
 
-      - name: helm template sets the FLIGHTDECK stream's limits and replicas
-        # The binary applies these at startup. Replicas default to 3 on a
-        # NATS cluster of 3 or more servers and to 1 below that (and to 1
-        # on the embedded bus); a change to the settings rolls the pods.
+      # Fail-closed production guards (security hardening). A production
+      # install must supply a JWT secret and must not run wildcard CORS
+      # on the bearer-token API. Both branches asserted so a future
+      # refactor that drops a guard surfaces immediately.
+      - name: helm template WITHOUT jwtSecret fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.auth.jwtSecret is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "jwtSecret must be set" /tmp/helm-err; then
+            echo "Expected actionable 'jwtSecret must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with wildcard CORS fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.corsOrigin is '*'"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "corsOrigin must not be" /tmp/helm-err; then
+            echo "Expected actionable 'corsOrigin must not be' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template WITHOUT a NATS token fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when nats.auth.token is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token must be set" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with a NATS token that is not URL-safe fails
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --set nats.auth.token='a/b@c' \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: a token with URL-reserved characters should fail the render"
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token may contain only" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token may contain only' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template percent-encodes the bundled Postgres password
+        run: |
+          out=$(helm template flightdeck helm/ \
+            --set postgres.password='p@ss w+rd/x' \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --show-only templates/secret.yaml)
+          if ! grep -q 'postgres://flightdeck:p%40ss%20w%2Brd%2Fx@' <<< "$out"; then
+            echo "Expected the DSN password percent-encoded; got:"
+            grep POSTGRES_URL <<< "$out"
+            exit 1
+          fi
+
+      - name: helm template renders NetworkPolicies for postgres and nats
+        run: |
+          count=$(helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com \
+            | grep -c 'kind: NetworkPolicy')
+          if [ "$count" -ne 2 ]; then
+            echo "Expected 2 NetworkPolicy resources, got $count"
+            exit 1
+          fi
+
+      - name: helm template runs the dashboard as uid 101 and the rest as 1000
+        # The dashboard image's nginx user is uid 101 (asserted by the
+        # Dashboard job); the Go services run under the chart-wide 1000.
         run: |
           set -e
           render() {
-            helm template flightdeck helm/ --set postgres.password=ci-test-password \
-              --set nats.enabled=true --set nats.auth.token=t --show-only templates/configmap.yaml "$@"
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only "templates/$1/deployment.yaml" "${@:2}"
+          }
+          out=$(render dashboard)
+          for f in runAsUser runAsGroup fsGroup; do
+            grep -qE "^ +$f: 101$" <<<"$out" \
+              || { echo "FAIL: dashboard pod must have $f 101"; exit 1; }
+          done
+          for c in api ingestion workers; do
+            render "$c" | grep -qE '^ +runAsUser: 1000$' \
+              || { echo "FAIL: $c pod must run as uid 1000"; exit 1; }
+          done
+          # Either context set to null still renders: the dashboard then
+          # takes whichever one is left.
+          render dashboard --set dashboard.podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 1000$' \
+            || { echo "FAIL: dashboard.podSecurityContext=null must fall back to the chart-wide context"; exit 1; }
+          render dashboard --set podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 101$' \
+            || { echo "FAIL: podSecurityContext=null must still render the dashboard's own context"; exit 1; }
+
+      - name: helm template sets the FLIGHTDECK stream's limits and replicas
+        # Ingestion applies these to the stream at startup. Replicas
+        # default to 3 on a NATS cluster of 3 or more servers and to 1
+        # below that, and a count the cluster cannot place, or a limit
+        # ingestion would refuse, fails the render.
+        run: |
+          set -e
+          render() {
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only templates/configmap.yaml "$@"
           }
           expect() {
             local want="$1"; shift
@@ -1142,48 +1386,46 @@ jobs:
           expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' --set nats.replicas=2
           expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"' --set nats.replicas=5
           expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "5"' --set nats.replicas=5 --set nats.jetstream.stream.replicas=5
-          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "7680"' --set nats.jetstream.stream.maxSizeMiB=7680
           expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "30720"' -f helm/values.prod.yaml
+          refuse() {
+            local msg="$1"; shift
+            if render "$@" > /tmp/helm-out 2> /tmp/helm-err; then
+              echo "EXPECTED FAILURE for $*"; exit 1
+            fi
+            grep -q "$msg" /tmp/helm-err \
+              || { echo "Expected '$msg' for $*; got:"; cat /tmp/helm-err; exit 1; }
+          }
+          refuse "must not exceed nats.replicas" --set nats.replicas=1 --set nats.jetstream.stream.replicas=3
+          refuse "must be between 1 and 5" --set nats.replicas=7 --set nats.jetstream.stream.replicas=6
+          refuse "maxAgeHours must be at least 1" --set nats.jetstream.stream.maxAgeHours=0
+          refuse "maxSizeMiB must be at least 64" --set nats.jetstream.stream.maxSizeMiB=10
+          refuse "must not be 2" --set nats.jetstream.stream.replicas=2
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.stream.maxSizeMiB=7681
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.fileStore.size=50Gi --set nats.jetstream.stream.maxSizeMiB=38401
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "7680"' --set nats.jetstream.stream.maxSizeMiB=7680
+          # A change to the settings rolls the ingestion pods, which
+          # apply them at startup.
           sum() {
             helm template flightdeck helm/ --set postgres.password=ci-test-password \
-              --show-only templates/flightdeck/statefulset.yaml "$@" | grep 'checksum/nats-stream'
+              --set api.env=development --show-only templates/ingestion/deployment.yaml "$@" \
+              | grep 'checksum/nats-stream'
           }
           [ "$(sum)" != "$(sum --set nats.jetstream.stream.maxAgeHours=24)" ] \
-            || { echo "FAIL: the pod annotation must change with the stream settings"; exit 1; }
+            || { echo "FAIL: the ingestion pod annotation must change with the stream settings"; exit 1; }
 
-      - name: helm template percent-encodes the bundled Postgres password
+      - name: helm template in development mode renders with defaults
         run: |
-          out=$(helm template flightdeck helm/ \
-            --set postgres.password='p@ss w+rd/x' \
-            --show-only templates/secret.yaml)
-          if ! grep -q 'postgres://flightdeck:p%40ss%20w%2Brd%2Fx@' <<< "$out"; then
-            echo "Expected the DSN password percent-encoded; got:"
-            grep DATABASE_URL <<< "$out"
-            exit 1
-          fi
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.env=development > /dev/null
 
-      - name: helm template with externalUrl skips the bundled Postgres
+      - name: helm template with externalUrl skips password requirement
         run: |
-          out=$(helm template flightdeck helm/ \
-            --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require)
-          grep -q 'FLIGHTDECK_DATABASE_URL: "postgres://u:p@h:5432/d?sslmode=require"' <<<"$out" \
-            || { echo "FAIL: the pods must read the external URL"; exit 1; }
-          ! grep -q 'flightdeck-postgres' <<<"$out" || { echo "FAIL: no bundled Postgres with externalUrl"; exit 1; }
-
-      - name: helm template runs the pods as distroless nonroot
-        run: |
-          helm template flightdeck helm/ --set postgres.password=ci-test-password \
-            --show-only templates/flightdeck/statefulset.yaml \
-            | grep -qE '^ +runAsUser: 65532$' || { echo "FAIL: the flightdeck pod must run as uid 65532"; exit 1; }
-
-      - name: helm template with the production values renders
-        run: |
-          helm template flightdeck helm/ -f helm/values.prod.yaml \
+          helm template flightdeck helm/ \
             --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require \
-            --set nats.auth.token=ci-test-nats-token > /tmp/prod.yaml
-          grep -q '^kind: HorizontalPodAutoscaler' /tmp/prod.yaml || { echo "FAIL: prod values enable the HPA"; exit 1; }
-          grep -q '^kind: Ingress' /tmp/prod.yaml || { echo "FAIL: prod values enable the Ingress"; exit 1; }
-          grep -q 'FLIGHTDECK_CORS_ORIGIN: "https://flightdeck.example.com"' /tmp/prod.yaml || { echo "FAIL: prod values pin the CORS origin"; exit 1; }
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
   # Schema-validate the Claude Code plugin marketplace manifest. The
   # plugin install path (``/plugin marketplace add flightdeckhq/flightdeck``
@@ -1192,9 +1434,11 @@ jobs:
   # silently break the one-command install. Validates JSON + required
   # fields (name, version, plugins[].source.ref) so a future bump that
   # forgets to update the ref pinning surfaces in CI rather than at
-  # install time.
+  # install time. The job also runs the checks of the repository's own
+  # scripts (version locations, the pricing refresh, the README command
+  # budget), which is why its display name is wider than its id.
   marketplace-schema:
-    name: Marketplace manifest schema
+    name: Repo scripts and manifests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1210,9 +1454,55 @@ jobs:
       - name: Pricing catalogue refresh script
         run: python3 -m unittest scripts/test_pricing_refresh.py
 
+      # The release notes come from CHANGELOG.md; the installers and the
+      # install gate's checks are shell the release depends on. The
+      # runner's shellcheck is the one Ubuntu ships.
+      - name: Release notes script and shell installers
+        run: |
+          python3 -m unittest scripts/test_release_notes.py
+          python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
+          shellcheck --version | head -2
+          shellcheck -s sh install.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-sh.sh
+
+      # install.sh end to end against a local server with the release
+      # layout (a fake archive): latest, a pinned VERSION, the fallback
+      # install dir, and the refusals (bad checksum, missing checksum
+      # entry, unsupported CPU, unknown version, plain-HTTP host).
+      - name: install.sh against a local release server
+        run: scripts/test-install-sh.sh
+
+      # The PyPI wheels (flightdeck-cli) are built by a script, not a
+      # build backend; its tests pin the wheel layout, tags and RECORD.
+      # discover mode: the directory is named packaging/, which a module
+      # path would resolve to the packaging library.
+      - name: PyPI wheel builder
+        run: python3 -m unittest discover -s packaging/pypi -p 'test_*.py'
+
+      # The same ruff the sensor pins (sensor/uv.lock), with the sensor's
+      # configuration, so the packaging code follows the repository's
+      # Python rules; and the builder's output must pass twine's
+      # metadata check and build byte-identical wheels twice.
+      - name: ruff, twine and reproducibility of the wheel builder
+        run: |
+          pip install --quiet ruff==0.17.1 twine==7.0.0
+          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
+          for n in 1 2; do
+            python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \
+              --tag "v$(cat VERSION)" --out "$RUNNER_TEMP/wheels-$n" --source-date-epoch 1767322800
+          done
+          twine check --strict "$RUNNER_TEMP"/wheels-1/*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*manylinux*.whl "$RUNNER_TEMP"/wheels-2/*manylinux*.whl
+          cmp "$RUNNER_TEMP"/wheels-1/*musllinux*.whl "$RUNNER_TEMP"/wheels-2/*musllinux*.whl
+
       # The README's command budget (scripts/readme-budget.sh): the
       # self-test pins the counting rule on fixtures, then the README
-      # is measured. Report mode until the single-binary README lands
+      # is measured. A fence or a heredoc left open, and a command in
+      # a fence tagged as a sample language, fail the step even in
+      # report mode, because the counts cannot be trusted.
+      # Report mode until the single-binary README lands
       # within budget; that pull request drops --report so the budget
       # then fails the build.
       - name: README command budget
@@ -1259,3 +1549,70 @@ jobs:
               sys.exit(1)
           print(f"marketplace.json OK: {len(data['plugins'])} plugin(s) validated")
           PY
+
+  # The release build on every pull request, without publishing:
+  # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and
+  # the all-in-one Docker image is built from the root Dockerfile, so a
+  # platform or an image that stops building fails here and not on the
+  # tag. The binaries are not run: the `flightdeck` job above smokes the
+  # native build on SQLite and against Postgres.
+  release-snapshot:
+    name: Release snapshot (six binaries, Docker image)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # goreleaser reads the tags for the snapshot version.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Cross-build the six binaries
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
+        with:
+          distribution: goreleaser
+          # Pinned: the release workflow must run the same goreleaser.
+          version: v2.20.0
+          args: build --snapshot --clean
+
+      - name: Every target is present and the native one runs
+        run: |
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            ls dist/flightdeck_${target}*/flightdeck >/dev/null
+          done
+          ls dist/flightdeck_windows_amd64*/flightdeck.exe dist/flightdeck_windows_arm64*/flightdeck.exe >/dev/null
+          native=(./dist/flightdeck_linux_amd64*/flightdeck)
+          "${native[0]}" --version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build the all-in-one image (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: flightdeck:ci
+          build-args: |
+            VERSION=v${{ github.sha }}
+
+      - name: The image runs as non-root and prints its version
+        run: |
+          test "$(docker image inspect flightdeck:ci --format '{{.Config.User}}')" = "nonroot"
+          docker run --rm flightdeck:ci --version | grep -q "flightdeck v${{ github.sha }}"

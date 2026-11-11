@@ -4,35 +4,94 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
-### Changed
-
-- **Compose and Helm run the one `flightdeck` image.** The seven-service
-  compose topology (nginx, postgres, nats, ingestion, workers, api,
-  dashboard) and its production overlay are gone, with the nginx
-  configurations and the per-service images they ran.
-  `docker/docker-compose.yml` is now one `flightdeck` service
-  (`flightdeckhq/flightdeck:vX.Y.Z`, port 4000, its data under the
-  `flightdeck_data` volume) on SQLite; `docker-compose.postgres.yml`
-  layers a bundled Postgres and the database URL on it, and TLS is the
-  binary's `--domain`. The Helm chart renders one `flightdeck`
-  StatefulSet (replicas, an HPA, a per-pod data volume), its Service,
-  one Ingress path, the bundled or external Postgres, and a NATS cluster
-  exactly when the chart runs more than one replica (each pod's embedded
-  bus is a bus of its own, so several pods share the cluster through
-  `--nats-url`); the `api.*`, `ingestion.*`, `workers.*` and
-  `dashboard.*` values, the JWT and admin bootstrap values (the binary
-  generates its own secrets into its data dir) and the migrations
-  ConfigMap are gone, since the migrations are embedded in the binary
-  and run at every start. The contributors' `make dev` starts Postgres
-  and NATS in containers and the binary from source on `127.0.0.1:4000`
-  (`scripts/dev-stack.sh`), where the development token works; `make
-  build-webui` first puts the dashboard into the binary. There is no
-  migration path for an existing dev stack beyond `make dev-reset`
-  after pulling: the compose project and its volumes change shape.
-  Every environment variable the services read keeps its name under
-  the binary.
-
 ### Added
+
+- **One `flightdeck` binary runs the whole control plane, with nothing
+  to configure.** `flightdeck` starts the ingestion API, the workers and
+  the query API in one process on `127.0.0.1:4000`, with the database
+  (SQLite, in `~/.flightdeck/flightdeck.db`), NATS JetStream (no port,
+  store under `~/.flightdeck/nats`) and the dashboard all inside the
+  binary; `/api` and `/ingest` are the two prefixes, as behind the
+  compose nginx. `--database-url postgres://...` uses a Postgres
+  database instead, and `sqlite:///path/to/file.db` a SQLite file
+  elsewhere; anything else is refused at start with the accepted forms.
+  The schema migrations of either backend run at start from the binary.
+  A Postgres that is still starting is waited for up to a minute; a
+  wrong password, a database that does not exist or a URL that does
+  not parse ends the start at once, with the reason and without the
+  password.
+  The three services share one notification bus and one database: on
+  SQLite every write queues on the file's single writer connection and
+  each service reads through connections of its own; on Postgres each
+  service keeps a pool of its own. A second `flightdeck` on the same data dir or the same
+  SQLite file exits at once, naming the process that holds it. A stop
+  on Ctrl+C or SIGTERM closes the database cleanly (the write-ahead log
+  is folded into the file), and the next start finds every session,
+  event and token. Back the SQLite file up with `sqlite3
+  ~/.flightdeck/flightdeck.db "VACUUM INTO '/backup/flightdeck.db'"`.
+  On loopback the development token works and is printed; on any other
+  `--listen`, or with `--domain example.com` (TLS from Let's Encrypt on
+  :443, :80 redirecting), an `ftd_` token is minted on the first start,
+  printed once and kept in `~/.flightdeck/secrets.json` for the
+  dashboard. `--nats-url` uses an external NATS instead; `--metrics`
+  opens the services' metrics listeners. `make build-flightdeck` builds
+  it, `go run ./cmd/flightdeck` runs it from source, and the
+  dashboard's Vite proxy now points at `:4000`, so `npm run dev` in
+  `dashboard/` works against the binary. Each service also exports an
+  `app` package (`ingestion/app`, `workers/app`, `api/app`) the binary
+  and the standalone services share.
+
+- **The query API runs on SQLite or Postgres.** Every store of the API
+  (`api/internal/store`), the token validator and the WebSocket hub go
+  through the `storage` boundary: plain `database/sql` on either engine,
+  the dialect helpers for what differs (JSON paths, array membership,
+  case-insensitive match, percentiles, date truncation and time
+  differences), and a per-backend query file where a query differs
+  beyond them (the price lookup, the framework unnest, the context
+  facets, row locks). Fleet and directive notifications and token
+  revocations travel on the storage Bus (in-process on SQLite,
+  LISTEN/NOTIFY on Postgres). SQLite connections carry `regexp_like`,
+  `regexp_replace`, `percentile_cont` and `gen_random_uuid` with
+  Postgres' semantics, so the SQL spells them the same on both. Every
+  api database test runs on both backends, and a cross-backend
+  equivalence test runs every analytics metric and dimension pair, the
+  session, event, agent and search queries over one fixture and
+  compares the results to one golden. Search results now carry their
+  timestamps as RFC 3339 UTC strings on both backends.
+- `GET /v1/sessions` orders a NULL sort key last in either direction
+  (`sort=model&order=desc` put sessions without a model first on
+  Postgres before).
+- `GET /v1/agents?search=` matches `%`, `_` and `\` literally, as the
+  other search inputs do.
+- `GET /v1/analytics?granularity=hour` buckets by hour (`date` is
+  `YYYY-MM-DDTHH:00Z`); it grouped by calendar day before.
+
+- **`flightdeck_sensor.init()` needs no arguments against a local
+  stack.** `server` and `token` are optional: each resolves as the kwarg,
+  else `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN`, else the default
+  (`http://localhost:4000/ingest` and the dev token `tok_dev`). The token
+  default applies only when the server was defaulted too and its host is
+  loopback, and `init()` logs one warning when it is in use; a server
+  given without a token raises `ConfigurationError` (now a `ValueError`)
+  naming both variables, so the dev token is never sent to a server the
+  caller chose. The quickstart is `pip install flightdeck-sensor`, then
+  `init(); patch()` (D264).
+- **Flightdeck installs with one command.** Each release ships the
+  `flightdeck` binary for Linux, macOS and Windows on amd64 and arm64:
+  `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh | sh`
+  (or `irm .../install.ps1 | iex` on Windows) downloads the archive for
+  the machine, verifies it against the release's `checksums.txt` and
+  installs it without sudo; `brew install flightdeckhq/tap/flightdeck`
+  installs it from the new Homebrew tap, where `brew services start
+  flightdeck` keeps it running; `pip install flightdeck-cli` (or `uvx
+  flightdeck-cli`, `pipx run flightdeck-cli`) installs the same binary
+  from PyPI with a `flightdeck` command; and `docker run -p
+  127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck`
+  runs the new all-in-one image (distroless, non-root, amd64 and arm64),
+  whose first start prints the dashboard token in `docker logs`.
+  `flightdeck --version` prints the release the binary came from, and
+  the release's `checksums.txt` is signed with Sigstore: both installers
+  verify the signature when `cosign` is installed.
 
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
@@ -235,6 +294,15 @@ All notable changes to Flightdeck are documented here.
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed
+
+- **Tokens were counted twice when a worker stopped under load.** A
+  stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
+  the message each worker lane was processing; one cancelled after the
+  session's counters were written and before its event row was stored
+  was redelivered and counted again, so a session could show more
+  tokens than its events add up to. A stopping worker now finishes the
+  message in flight (D265). A worker that is killed can still
+  over-count by one call per lane; ARCHITECTURE states the limit.
 
 - **A failed sub-agent's error text stays out of its session with
   capture off.** The CrewAI, LangGraph and LlamaIndex wraps sent the
@@ -658,6 +726,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **One release pipeline builds every artifact from the tag.** A `vX.Y.Z`
+  tag runs goreleaser for the six binaries, the GitHub release (notes
+  from this file) and the Homebrew formula, publishes `flightdeck-cli`
+  and `flightdeck-sensor` to PyPI, scans and pushes the
+  `flightdeckhq/flightdeck` image, and then runs the install gate: the
+  published artifacts are installed on fresh Linux, macOS and Windows
+  runners through every channel, started, sent one event and read back.
+  `govulncheck` on the Go modules replaces the per-image scans. A
+  `vX.Y.Z-rc.N` tag is a dry run of the same pipeline.
+- **Go 1.27.4.** The services, their images, the development stack and CI
+  build with Go 1.27.4, which fixes a `net/http` vulnerability in the
+  standard library (GO-2026-6859). No Flightdeck code path reaches the
+  affected function; the bump keeps the vulnerability scan green.
+
 - **One storage boundary, SQLite as the default backend.** A new Go module
   `storage` opens SQLite (`sqlite://<path>`, pure Go, WAL, one writer
   connection) or Postgres (`postgres://…`) behind `database/sql`, names
@@ -670,9 +752,23 @@ All notable changes to Flightdeck are documented here.
   the same number in both directories (`scripts/check-migration-pairs.sh`
   and a schema parity test keep them in step). `make test-go-db` runs the
   Go database tests on both backends (`FLIGHTDECK_TEST_BACKEND`). The
-  ingestion API's token validation and revocation listener are the first
-  store on the boundary: they run on either backend and learn of a
-  revoked token through the Bus.
+  ingestion API runs whole on either backend: token validation and the
+  revocation listener (which learns of a revoked token through the Bus),
+  session attachment and the re-attachment stamp, directive lookup, the
+  OpenTelemetry GenAI staging store and its assembler, and the Claude
+  Code OpenTelemetry session reads. On SQLite the one writer connection
+  stands in for Postgres' row locks: a claim, a mark or a sweep runs
+  after any ingest in progress commits instead of skipping the rows it
+  holds. Text neither backend can store (U+0000, an unpaired surrogate
+  escape) is replaced with U+FFFD on both. The workers run on either
+  backend too: every write of the event pipeline (agents, sessions,
+  events and their content, the reconciler, the orphan reaper, the
+  model-id backfill) and the processor's reads, with the JSON mutations
+  (the framework and MCP server appends) behaving identically on both,
+  and the fleet notifications go through the Bus. The workers apply the
+  embedded migrations at start, so `FLIGHTDECK_MIGRATIONS_DIR` and the
+  compose mount of the migrations directory are gone; every id the
+  workers store is canonical lower-case UUID text.
 - **The docs state per framework what the sensor and the OpenTelemetry
   receiver each cover.** ARCHITECTURE.md ("Framework support"), the
   README and the sensor README carry one matrix: whether the sensor
@@ -787,6 +883,14 @@ All notable changes to Flightdeck are documented here.
   only in case, at the top level, in `incoming_message` /
   `outgoing_message`, in `streaming` or in an `llm_error`'s `error`, is
   now refused with 400; any other unknown key is handled as before.
+
+### Removed
+
+- **The per-service Docker images are no longer published.**
+  `flightdeckhq/flightdeck-ingestion`, `-workers`, `-api` and
+  `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image;
+  the compose production overlay and the Helm chart move to it in a
+  following change.
 
 ## v0.8.0 — 2026-10-31
 

@@ -1,22 +1,40 @@
-# Build context for images built from the repository root
-# (ingestion/Dockerfile needs the storage module beside ingestion/).
-# Everything a Go build does not read stays out of the context.
+# Build context of the images built from the repository root: the
+# all-in-one image (Dockerfile, which needs the Go modules and the
+# dashboard's sources) and the service images that need the storage
+# module beside their own (ingestion/Dockerfile, workers/Dockerfile,
+# api/Dockerfile). Everything no build reads stays out of the context.
 .git
 .github
 .claude
+.claude-plugin
 .scratch
-**/node_modules
-**/.venv
-**/dist
-**/coverage*
-**/bin
-dashboard
-sensor
-plugin
-playground
-tests
+.chunkhound
+assets
 docs
 helm
-assets
-# The dev stack's binary, data dir and log (scripts/dev-stack.sh).
-.dev
+playground
+plugin
+tests
+sensor
+contracts
+**/bin
+**/dist
+!webui/dist/.gitkeep
+**/node_modules
+**/coverage*
+dashboard/playwright-report
+dashboard/test-results
+**/*.md
+!dashboard/**/*.md
+**/.venv
+**/__pycache__
+**/*_test.go
+
+# Never in an image: local environment files (a dashboard/.env with
+# VITE_* values would be baked into the public bundle), keys and the
+# binary's secrets file. The example env file is documentation.
+**/.env*
+!**/.env.example
+**/*.pem
+**/*.key
+**/secrets.json

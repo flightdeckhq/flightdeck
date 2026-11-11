@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,7 +13,8 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/genai"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/flightdeckhq/flightdeck/storage"
+	"github.com/flightdeckhq/flightdeck/storage/storagetest"
 )
 
 // jsonEscape is the JSON escape of a UTF-16 code unit, built at run time
@@ -54,30 +56,41 @@ func TestFinishOTLPEventReplacesTextPostgresCannotStore(t *testing.T) {
 	}
 }
 
-// A staging write Postgres refuses is logged by its error class: the
-// SQLSTATE and table, never the message, detail or context, which quote
-// the record's content.
+// A staging write the database refuses is logged by its error class:
+// on Postgres the SQLSTATE and table, never the message, detail or
+// context, which quote the record's content; on SQLite the constraint,
+// which never quotes a value. The error is a real one from each backend
+// (a content document with the \u0000 escape, for a record that is not
+// staged), wrapped as the store wraps it.
 func TestOTLPStagingFailureLogNamesNoContent(t *testing.T) {
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		var logs bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(prev) })
 
-	pgErr := &pgconn.PgError{
-		Severity: "ERROR", Code: "22P05", Message: "unsupported Unicode escape sequence secret-message",
-		Detail: "secret-detail", Where: `JSON data, line 1: {"gen_ai.tool.call.result":"secret-context`,
-		TableName: "otlp_span_content",
-	}
-	stager := &fakeStager{err: fmt.Errorf("otlpstage: insert content: %w", pgErr)}
-	h := OTLPTracesHandler(tokenValidator{}, &recordingPublisher{}, &fakeAttacher{}, newTestRouter(stager), nil)
-	if w := postTraces(h, genaiTraceBody(t)); w.code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d", w.code)
-	}
-	got := logs.String()
-	if strings.Contains(got, "secret") {
-		t.Errorf("the staging failure log quotes content: %s", got)
-	}
-	if !strings.Contains(got, "otlp staging failed") || !strings.Contains(got, "SQLSTATE 22P05") {
-		t.Errorf("the staging failure log does not name the error class: %s", got)
-	}
+		_, dbErr := db.ExecContext(context.Background(), `
+			INSERT INTO otlp_span_content (token_key, trace_id, span_id, kind, content, staged_at)
+			VALUES ($1, $2, $3, 1, $4, $5)`,
+			"storable-text-test", make([]byte, 16), make([]byte, 8),
+			`{"gen_ai.tool.call.result":"`+jsonEscape("0000")+` secret-content"}`, time.Now())
+		if dbErr == nil {
+			t.Fatal("the database accepted content for a record that is not staged")
+		}
+		stager := &fakeStager{err: fmt.Errorf("otlpstage: insert content: %w", dbErr)}
+		h := OTLPTracesHandler(tokenValidator{}, &recordingPublisher{}, &fakeAttacher{}, newTestRouter(stager), nil)
+		if w := postTraces(h, genaiTraceBody(t)); w.code != http.StatusServiceUnavailable {
+			t.Fatalf("status %d", w.code)
+		}
+		got := logs.String()
+		if strings.Contains(got, "secret") {
+			t.Errorf("the staging failure log quotes content: %s", got)
+		}
+		if !strings.Contains(got, "otlp staging failed") || !strings.Contains(got, "otlpstage: insert content") {
+			t.Errorf("the staging failure log does not name the failed write: %s", got)
+		}
+		if db.Backend == storage.Postgres && !strings.Contains(got, "SQLSTATE") {
+			t.Errorf("the staging failure log does not name the error class: %s", got)
+		}
+	})
 }

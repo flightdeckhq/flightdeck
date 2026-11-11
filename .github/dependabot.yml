@@ -45,6 +45,7 @@ updates:
 
   - package-ecosystem: docker
     directories:
+      - "/"
       - "/api"
       - "/ingestion"
       - "/workers"

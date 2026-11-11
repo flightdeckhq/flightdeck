@@ -99,7 +99,8 @@ func TestStageRefusesMalformedBatches(t *testing.T) {
 		{"bad meta", func(b *TraceBatch) { b.Records[0].Meta = json.RawMessage("nope") }, "meta"},
 		{"bad content", func(b *TraceBatch) { b.Records[0].Content = json.RawMessage("[") }, "content"},
 	}
-	s := NewStore(nil)
+	// Validation runs before any statement, so no database is needed.
+	s := &Store{now: time.Now}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := good()
@@ -113,21 +114,21 @@ func TestStageRefusesMalformedBatches(t *testing.T) {
 }
 
 func TestStageNothingIsANoOp(t *testing.T) {
-	res, err := NewStore(nil).Stage(context.Background(), nil)
+	res, err := (&Store{now: time.Now}).Stage(context.Background(), nil)
 	if err != nil || res != (StageResult{}) {
 		t.Fatalf("Stage(nil) = %+v, %v; want a zero result and no error", res, err)
 	}
 }
 
 func TestMarkAssembledRefusesUnknownReason(t *testing.T) {
-	_, err := NewStore(nil).MarkAssembled(context.Background(), "me", TraceKey{}, 0, "late", nil)
+	_, err := (&Store{now: time.Now}).MarkAssembled(context.Background(), "me", TraceKey{}, 0, "late", nil)
 	if err == nil || !strings.Contains(err.Error(), "late") {
 		t.Fatalf("MarkAssembled error = %v, want one naming the reason", err)
 	}
 }
 
 func TestClaimDueNeedsAnOwner(t *testing.T) {
-	if _, err := NewStore(nil).ClaimDue(context.Background(), ""); err == nil {
+	if _, err := (&Store{now: time.Now}).ClaimDue(context.Background(), ""); err == nil {
 		t.Fatal("ClaimDue with no owner succeeded")
 	}
 }

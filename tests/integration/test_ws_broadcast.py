@@ -17,9 +17,9 @@ import uuid
 import pytest
 from websockets.asyncio.client import connect
 
-from .conftest import TOKEN, exec_sql, make_event, post_event
+from .conftest import BASE_URL, TOKEN, exec_sql, make_event, post_event
 
-WS_URL = f"ws://localhost:4000/api/v1/stream?token={TOKEN}"
+WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
 
 # Both tests listen on the stack-wide ``/v1/stream`` hub, which
 # broadcasts every event the stack ingests; the parallel phase's event
@@ -41,6 +41,11 @@ def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:
         "SELECT id FROM events WHERE session_id = :'sid'::uuid "
         "AND event_type = ANY(string_to_array(:'types', ',')) "
         "ORDER BY occurred_at ASC",
+        sqlite=(
+            "SELECT id FROM events WHERE session_id = :sid "
+            "AND instr(',' || :types || ',', ',' || event_type || ',') > 0 "
+            "ORDER BY occurred_at ASC"
+        ),
         sid=session_id,
         types=",".join(event_types),
     )

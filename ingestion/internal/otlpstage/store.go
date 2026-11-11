@@ -1,5 +1,4 @@
-// Package otlpstage is the Postgres staging store of the OTLP GenAI
-// dialect. OpenTelemetry GenAI frameworks export a span when it ends, so
+// Package otlpstage is the staging store of the OTLP GenAI dialect. OpenTelemetry GenAI frameworks export a span when it ends, so
 // an agent's span arrives after its model calls and tools, and one run's
 // spans can reach different ingestion replicas in several requests.
 // Ingestion therefore stages each span (and each Google ADK content log
@@ -10,14 +9,26 @@
 //
 // Every time this store writes comes from its clock, never from the
 // database's now(), so the timers are deterministic under test. All
-// state lives in Postgres: nothing a replica holds in memory is needed
-// by another, or after a restart.
+// state lives in the database: nothing a replica holds in memory is
+// needed by another, or after a restart.
+//
+// The store runs through the storage boundary on SQLite and Postgres
+// alike. Most of its SQL is the common subset of both dialects; the
+// statements that differ (array parameters, FOR UPDATE SKIP LOCKED,
+// LEAST, interval arithmetic) come in a query set per backend
+// (queries_postgres.go, queries_sqlite.go). On Postgres several
+// replicas share the tables and the row locks arbitrate between them;
+// on SQLite one process holds the one writer connection and every
+// write transaction begins IMMEDIATE, so a claim, a mark or a sweep
+// never meets a row another writer holds, and SKIP LOCKED has nothing
+// to skip.
 package otlpstage
 
 import (
 	"bytes"
 	"cmp"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,8 +36,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 // Timers and bounds. ARCHITECTURE.md (OTLP ingest > GenAI dialect)
@@ -281,8 +291,14 @@ var ErrTraceNotFound = errors.New("otlpstage: trace not found")
 
 // Store reads and writes the staging tables.
 type Store struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	db  *storage.DB
+	now func() time.Time
+	// q is the backend's query set.
+	q queries
+	// precision is the backend's timestamp precision: a time written
+	// and read back compares equal only when the clock is truncated to
+	// it.
+	precision time.Duration
 }
 
 // Option configures a Store.
@@ -294,19 +310,36 @@ func WithClock(now func() time.Time) Option {
 	return func(s *Store) { s.now = now }
 }
 
-// NewStore creates a staging Store.
-func NewStore(pool *pgxpool.Pool, opts ...Option) *Store {
-	s := &Store{pool: pool, now: time.Now}
+// NewStore creates a staging Store on db.
+func NewStore(db *storage.DB, opts ...Option) *Store {
+	s := &Store{db: db, now: time.Now, q: queriesFor(db), precision: time.Microsecond}
+	if db.Backend == storage.SQLite {
+		s.precision = time.Millisecond
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
 }
 
-// clock returns the store's time at the precision Postgres stores, so a
-// value written and read back compares equal.
+// clock returns the store's time at the precision the backend stores
+// (Postgres microseconds, SQLite milliseconds), so a value written and
+// read back compares equal.
 func (s *Store) clock() time.Time {
-	return s.now().UTC().Truncate(time.Microsecond)
+	return s.now().UTC().Truncate(s.precision)
+}
+
+// scanner is what *sql.Row and *sql.Rows share.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// timePtr returns the time a nullable timestamp scanned to, or nil.
+func timePtr(t storage.Time) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
 }
 
 // resolveAt is the time a trace that just staged a new record is next
@@ -349,16 +382,16 @@ func (s *Store) Stage(ctx context.Context, batches []TraceBatch) (StageResult, e
 	ctx, cancel := context.WithTimeout(ctx, StageTimeout)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return res, fmt.Errorf("otlpstage: begin stage: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 	res, err = s.stageTx(ctx, tx, batches)
 	if err != nil {
 		return StageResult{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return StageResult{}, fmt.Errorf("otlpstage: commit stage: %w", err)
 	}
 	return res, nil
@@ -395,7 +428,7 @@ func (b *TraceBatch) validate() error {
 }
 
 // stageTx is Stage's body inside a caller's transaction.
-func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (StageResult, error) {
+func (s *Store) stageTx(ctx context.Context, tx *sql.Tx, batches []TraceBatch) (StageResult, error) {
 	var res StageResult
 	ordered := make([]TraceBatch, len(batches))
 	for i := range batches {
@@ -408,7 +441,7 @@ func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (S
 		return bytes.Compare(a.Key.TraceID[:], b.Key.TraceID[:])
 	})
 	for i := range ordered {
-		r, err := stageTrace(ctx, tx, &ordered[i], s.clock)
+		r, err := s.stageTrace(ctx, tx, &ordered[i])
 		if err != nil {
 			return StageResult{}, err
 		}
@@ -419,9 +452,11 @@ func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (S
 	return res, nil
 }
 
-// storable is a batch with every string it stages made one Postgres
-// can store: U+0000 in a text column, and the \u0000 escape or an
-// unpaired surrogate escape in a JSON one, become U+FFFD (see pgtext).
+// storable is a batch with every string it stages made one the
+// database can store: U+0000 in a text column (Postgres refuses it;
+// SQLite's text functions and JSON check stop at it), and the \u0000
+// escape or an unpaired surrogate escape in a JSON one, become U+FFFD
+// (see pgtext). The replacement runs on both backends.
 // Every staged string, metadata and content alike, passes through it,
 // so one such character in an exporter's record cannot fail the staging
 // write of the whole request on every retry. The caller's batch is left
@@ -454,11 +489,12 @@ func jsonOrEmpty(raw json.RawMessage) string {
 }
 
 // stageTrace stages one trace's records. It reads the clock once for a
-// row it may create and again once it holds the trace's row lock, so a
-// write that waited behind another (up to StageTimeout) dates the
+// row it may create and again once it holds the trace's row lock (on
+// SQLite, the database's write lock, taken when the transaction began),
+// so a write that waited behind another (up to StageTimeout) dates the
 // trace's timers and records from when it could write, never from
 // before an earlier writer's.
-func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time.Time) (StageResult, error) {
+func (s *Store) stageTrace(ctx context.Context, tx *sql.Tx, b *TraceBatch) (StageResult, error) {
 	var res StageResult
 	if len(b.Records) == 0 {
 		return res, nil
@@ -474,56 +510,56 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time
 	// gets a placeholder resolve_at that step 5 replaces, since every
 	// record of a new trace is new.
 	var (
-		spanCount  int
-		oldCapture bool
-		rootSeenAt *time.Time
-		firstRecv  time.Time
+		spanCount            int
+		oldCapture           bool
+		rootSeen, firstRecvT storage.Time
 	)
-	created := clock()
-	err := tx.QueryRow(ctx, `
+	created := s.clock()
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO otlp_traces (token_key, trace_id, source, source_version, token_name,
 		                         resource, capture, first_received_at, last_received_at, resolve_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $8, $9)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
 		ON CONFLICT (token_key, trace_id) DO UPDATE SET last_received_at = otlp_traces.last_received_at
 		RETURNING span_count, capture, root_seen_at, first_received_at`,
 		b.Key.TokenKey, traceID, b.Source, b.SourceVersion, b.TokenName,
 		jsonOrEmpty(b.Resource), batchCapture, created, created.Add(QuietTimeout),
-	).Scan(&spanCount, &oldCapture, &rootSeenAt, &firstRecv)
+	).Scan(&spanCount, &oldCapture, &rootSeen, &firstRecvT)
 	if err != nil {
 		return res, fmt.Errorf("otlpstage: upsert trace: %w", err)
 	}
-	now := clock()
+	rootSeenAt, firstRecv := timePtr(rootSeen), firstRecvT.Time
+	now := s.clock()
 
 	// 2. Which records are new. The trace row lock is held, so no other
-	// write adds records to this trace until this transaction ends.
+	// write adds records to this trace until this transaction ends. A
+	// trace with no staged record (span_count is 0: every insert bumps
+	// it in its own transaction) has nothing to look up.
 	candidates := dedupe(b.Records)
-	ids := make([][]byte, len(candidates))
-	kinds := make([]int16, len(candidates))
-	for i, r := range candidates {
-		ids[i] = r.SpanID[:]
-		kinds[i] = int16(r.Kind)
-	}
-	rows, err := tx.Query(ctx, `
-		SELECT span_id, kind FROM otlp_spans
-		WHERE token_key = $1 AND trace_id = $2
-		  AND (span_id, kind) IN (SELECT * FROM unnest($3::bytea[], $4::smallint[]))`,
-		b.Key.TokenKey, traceID, ids, kinds)
-	if err != nil {
-		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
-	}
 	existing := map[FactKey]bool{}
-	for rows.Next() {
-		var id []byte
-		var kind int16
-		if err := rows.Scan(&id, &kind); err != nil {
-			rows.Close()
-			return res, fmt.Errorf("otlpstage: scan staged record: %w", err)
+	if spanCount > 0 {
+		ids := make([][]byte, len(candidates))
+		kinds := make([]int16, len(candidates))
+		for i, r := range candidates {
+			ids[i] = r.SpanID[:]
+			kinds[i] = int16(r.Kind)
 		}
-		existing[factKey(id, kind)] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		rows, err := tx.QueryContext(ctx, s.q.existingRecords, append([]any{b.Key.TokenKey, traceID}, s.q.keyArgs(ids, kinds)...)...)
+		if err != nil {
+			return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		}
+		for rows.Next() {
+			var id []byte
+			var kind int16
+			if err := rows.Scan(&id, &kind); err != nil {
+				_ = rows.Close()
+				return res, fmt.Errorf("otlpstage: scan staged record: %w", err)
+			}
+			existing[factKey(id, kind)] = true
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return res, fmt.Errorf("otlpstage: look up staged records: %w", err)
+		}
 	}
 	res.Duplicate = len(b.Records) - len(candidates) + len(existing)
 
@@ -545,13 +581,13 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time
 	if oldCapture && !newCapture {
 		// Off wins: once one record of the trace comes without capture,
 		// none of its content stays staged.
-		if _, err := tx.Exec(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM otlp_span_content WHERE token_key = $1 AND trace_id = $2`,
 			b.Key.TokenKey, traceID); err != nil {
 			return res, fmt.Errorf("otlpstage: delete content of trace without capture: %w", err)
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE otlp_traces SET capture = false WHERE token_key = $1 AND trace_id = $2`,
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE otlp_traces SET capture = FALSE WHERE token_key = $1 AND trace_id = $2`,
 			b.Key.TokenKey, traceID); err != nil {
 			return res, fmt.Errorf("otlpstage: turn trace capture off: %w", err)
 		}
@@ -562,7 +598,7 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time
 
 	// 3. The new records. The lock makes a conflict here impossible;
 	// ON CONFLICT and the returned rows keep the counts true regardless.
-	inserted, err := insertFacts(ctx, tx, b.Key, fresh, now)
+	inserted, err := s.q.insertFacts(ctx, tx, b.Key, fresh, now)
 	if err != nil {
 		return res, err
 	}
@@ -574,7 +610,7 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time
 
 	// 4. Their content, only under capture.
 	if newCapture {
-		if err := insertContent(ctx, tx, b.Key, inserted, now); err != nil {
+		if err := s.q.insertContent(ctx, tx, b.Key, inserted, now); err != nil {
 			return res, err
 		}
 	}
@@ -595,10 +631,13 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time
 	} else if rootNow {
 		newRootSeen = &now
 	}
-	if _, err := tx.Exec(ctx, `
+	// The conditional maximum is spelled as a CASE, which both
+	// backends share (GREATEST is Postgres', max() SQLite's).
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE otlp_traces
-		SET gen = gen + 1, pending = true, span_count = span_count + $3,
-		    last_received_at = GREATEST(last_received_at, $4), root_seen_at = $5, resolve_at = $6
+		SET gen = gen + 1, pending = TRUE, span_count = span_count + $3,
+		    last_received_at = CASE WHEN last_received_at > $4 THEN last_received_at ELSE $4 END,
+		    root_seen_at = $5, resolve_at = $6
 		WHERE token_key = $1 AND trace_id = $2`,
 		b.Key.TokenKey, traceID, len(inserted), now, newRootSeen,
 		resolveAt(firstRecv, rootNow, now)); err != nil {
@@ -630,138 +669,44 @@ func factKey(spanID []byte, kind int16) FactKey {
 	return k
 }
 
-// insertFacts stages records and returns the ones it inserted, so their
-// content and the root check never act on a row it did not write.
-func insertFacts(ctx context.Context, tx pgx.Tx, key TraceKey, records []Record, now time.Time) ([]Record, error) {
-	n := len(records)
-	var (
-		ids, parents                     = make([][]byte, n), make([][]byte, n)
-		kinds, statuses                  = make([]int16, n), make([]int16, n)
-		remotes                          = make([]bool, n)
-		scopes, versions, names, ops, ag = make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-		starts, ends                     = make([]int64, n), make([]int64, n)
-		metas                            = make([]string, n)
-	)
-	for i, r := range records {
-		ids[i] = r.SpanID[:]
-		if r.ParentSpanID != [8]byte{} {
-			parents[i] = r.ParentSpanID[:]
-		}
-		kinds[i] = int16(r.Kind)
-		statuses[i] = r.Status
-		remotes[i] = r.RemoteParent
-		scopes[i], versions[i], names[i], ops[i], ag[i] = r.ScopeName, r.ScopeVersion, r.Name, r.Op, r.AgentName
-		starts[i], ends[i] = r.StartNs, r.EndNs
-		metas[i] = jsonOrEmpty(r.Meta)
-	}
-	rows, err := tx.Query(ctx, `
-		INSERT INTO otlp_spans (token_key, trace_id, span_id, kind, parent_span_id, remote_parent,
-		                        scope_name, scope_version, name, op, agent_name,
-		                        start_ns, end_ns, status, meta, received_at)
-		SELECT $1, $2, u.span_id, u.kind, u.parent_span_id, u.remote_parent,
-		       u.scope_name, u.scope_version, u.name, u.op, u.agent_name,
-		       u.start_ns, u.end_ns, u.status, u.meta::jsonb, $16
-		FROM unnest($3::bytea[], $4::smallint[], $5::bytea[], $6::boolean[],
-		            $7::text[], $8::text[], $9::text[], $10::text[], $11::text[],
-		            $12::bigint[], $13::bigint[], $14::smallint[], $15::text[])
-		     AS u(span_id, kind, parent_span_id, remote_parent,
-		          scope_name, scope_version, name, op, agent_name,
-		          start_ns, end_ns, status, meta)
-		ON CONFLICT DO NOTHING
-		RETURNING span_id, kind`,
-		key.TokenKey, key.TraceID[:], ids, kinds, parents, remotes,
-		scopes, versions, names, ops, ag, starts, ends, statuses, metas, now)
-	if err != nil {
-		return nil, fmt.Errorf("otlpstage: insert records: %w", err)
-	}
-	written := map[FactKey]bool{}
-	for rows.Next() {
-		var id []byte
-		var kind int16
-		if err := rows.Scan(&id, &kind); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("otlpstage: scan inserted record: %w", err)
-		}
-		written[factKey(id, kind)] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("otlpstage: insert records: %w", err)
-	}
-	inserted := make([]Record, 0, len(written))
-	for _, r := range records {
-		if written[r.Key()] {
-			inserted = append(inserted, r)
-		}
-	}
-	return inserted, nil
-}
+// traceColumns is the trace row as ClaimDue returns it and scanTrace
+// reads it, unqualified. The Postgres claim, whose FROM clause also
+// names token_key and trace_id, qualifies them with the row's alias.
+const traceColumns = `token_key, trace_id, source, source_version, token_name,
+	resource, capture, first_received_at, last_received_at, root_seen_at,
+	resolve_at, gen, lease_expires, assembled_at, assembly_count,
+	COALESCE(assembly_reason, ''), span_count`
 
-// insertContent stages the content of the given (new) records whose own
-// resource declares capture. The caller has checked the trace's posture.
-func insertContent(ctx context.Context, tx pgx.Tx, key TraceKey, records []Record, now time.Time) error {
+// scanTrace reads traceColumns. Timestamps scan through storage.Time:
+// SQLite returns a RETURNING column's value as text.
+func scanTrace(row scanner) (Trace, error) {
 	var (
-		ids      [][]byte
-		kinds    []int16
-		contents []string
-	)
-	for _, r := range records {
-		// Unreachable by construction: content is inserted only when the
-		// batch's capture holds, and that is the AND of its records', so
-		// every record here declares capture. Kept as defence in depth.
-		if !r.Capture || r.Content == nil {
-			continue
-		}
-		ids = append(ids, r.SpanID[:])
-		kinds = append(kinds, int16(r.Kind))
-		contents = append(contents, string(r.Content))
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO otlp_span_content (token_key, trace_id, span_id, kind, content, staged_at)
-		SELECT $1, $2, u.span_id, u.kind, u.content::jsonb, $6
-		FROM unnest($3::bytea[], $4::smallint[], $5::text[]) AS u(span_id, kind, content)
-		ON CONFLICT DO NOTHING`,
-		key.TokenKey, key.TraceID[:], ids, kinds, contents, now); err != nil {
-		return fmt.Errorf("otlpstage: insert content: %w", err)
-	}
-	return nil
-}
-
-// claimedColumns is the trace row as ClaimDue returns it and scanTrace
-// reads it, qualified by the claim's alias.
-const claimedColumns = `t.token_key, t.trace_id, t.source, t.source_version, t.token_name,
-	t.resource, t.capture, t.first_received_at, t.last_received_at, t.root_seen_at,
-	t.resolve_at, t.gen, t.lease_expires, t.assembled_at, t.assembly_count,
-	COALESCE(t.assembly_reason, ''), t.span_count`
-
-func scanTrace(row pgx.Row) (Trace, error) {
-	var (
-		t       Trace
-		traceID []byte
-		expires *time.Time
+		t                                        Trace
+		traceID, resource                        []byte
+		first, last, root, resolve, expires, asm storage.Time
 	)
 	if err := row.Scan(&t.Key.TokenKey, &traceID, &t.Source, &t.SourceVersion, &t.TokenName,
-		&t.Resource, &t.Capture, &t.FirstReceivedAt, &t.LastReceivedAt, &t.RootSeenAt,
-		&t.ResolveAt, &t.Gen, &expires, &t.AssembledAt, &t.AssemblyCount,
+		&resource, &t.Capture, &first, &last, &root,
+		&resolve, &t.Gen, &expires, &asm, &t.AssemblyCount,
 		&t.AssemblyReason, &t.SpanCount); err != nil {
 		return Trace{}, err
 	}
 	copy(t.Key.TraceID[:], traceID)
-	if expires != nil {
-		t.LeaseExpires = *expires
-	}
+	t.Resource = json.RawMessage(resource)
+	t.FirstReceivedAt, t.LastReceivedAt, t.ResolveAt = first.Time, last.Time, resolve.Time
+	t.RootSeenAt, t.AssembledAt = timePtr(root), timePtr(asm)
+	t.LeaseExpires = expires.Time
 	return t, nil
 }
 
 // ClaimDue leases up to ClaimBatch due traces to owner for LeaseTTL: a
 // pending trace whose resolve_at has passed and whose lease is free or
-// expired, earliest due first. SKIP LOCKED passes over traces another
-// claim, or an ingest that is writing to them, holds, so no replica
-// waits on another; the next tick takes them. No lock outlives the
-// claim's own transaction.
+// expired, earliest due first. On Postgres SKIP LOCKED passes over
+// traces another claim, or an ingest that is writing to them, holds, so
+// no replica waits on another; the next tick takes them. On SQLite the
+// claim is one statement on the one writer connection: it runs after
+// any ingest in progress commits, and two claimers never see the same
+// due trace. No lock outlives the claim's own transaction.
 //
 // owner must be unique to this claim, not only to the process (for
 // example the process id plus a claim counter): the lease checks in
@@ -773,21 +718,11 @@ func (s *Store) ClaimDue(ctx context.Context, owner string) ([]Trace, error) {
 		return nil, errors.New("otlpstage: a claim needs an owner")
 	}
 	now := s.clock()
-	rows, err := s.pool.Query(ctx, `
-		UPDATE otlp_traces t SET lease_owner = $1, lease_expires = $3
-		FROM (SELECT token_key, trace_id FROM otlp_traces
-		      WHERE pending AND resolve_at <= $2
-		        AND (lease_expires IS NULL OR lease_expires < $2)
-		      ORDER BY resolve_at
-		      LIMIT $4
-		      FOR UPDATE SKIP LOCKED) due
-		WHERE t.token_key = due.token_key AND t.trace_id = due.trace_id
-		RETURNING `+claimedColumns,
-		owner, now, now.Add(LeaseTTL), ClaimBatch)
+	rows, err := s.db.QueryContext(ctx, s.q.claimDue, owner, now, now.Add(LeaseTTL), ClaimBatch)
 	if err != nil {
 		return nil, fmt.Errorf("otlpstage: claim due traces: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Trace
 	for rows.Next() {
 		t, err := scanTrace(rows)
@@ -814,22 +749,30 @@ func (s *Store) ClaimDue(ctx context.Context, owner string) ([]Trace, error) {
 // and MarkAssembled reports it again.
 func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error) {
 	out := LoadedTrace{Key: key}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	// One snapshot for both reads: REPEATABLE READ on Postgres; on
+	// SQLite a read transaction on the read pool, whose WAL snapshot is
+	// fixed by its first statement and which never waits for the
+	// writer (the isolation level is Postgres' and ignored there).
+	opts := &sql.TxOptions{ReadOnly: true}
+	if s.db.Backend == storage.Postgres {
+		opts.Isolation = sql.LevelRepeatableRead
+	}
+	tx, err := s.db.Reader().BeginTx(ctx, opts)
 	if err != nil {
 		return out, fmt.Errorf("otlpstage: begin load: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	err = tx.QueryRow(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT gen, capture FROM otlp_traces WHERE token_key = $1 AND trace_id = $2`,
 		key.TokenKey, key.TraceID[:]).Scan(&out.Gen, &out.Capture)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return out, ErrTraceNotFound
 	}
 	if err != nil {
 		return out, fmt.Errorf("otlpstage: load trace: %w", err)
 	}
-	rows, err := tx.Query(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT s.span_id, s.kind, s.parent_span_id, s.remote_parent, s.scope_name, s.scope_version,
 		       s.name, s.op, s.agent_name, s.start_ns, s.end_ns, s.status, s.meta,
 		       s.assembled, s.assembled_in, s.received_at, c.content
@@ -844,28 +787,31 @@ func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error
 	if err != nil {
 		return out, fmt.Errorf("otlpstage: load records: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
 			f              StagedFact
 			spanID, parent []byte
 			kind           int16
-			content        []byte
-			assembledIn    *int32
+			meta, content  []byte
+			assembledIn    sql.NullInt64
+			received       storage.Time
 		)
 		if err := rows.Scan(&spanID, &kind, &parent, &f.RemoteParent, &f.ScopeName, &f.ScopeVersion,
-			&f.Name, &f.Op, &f.AgentName, &f.StartNs, &f.EndNs, &f.Status, &f.Meta,
-			&f.Assembled, &assembledIn, &f.ReceivedAt, &content); err != nil {
+			&f.Name, &f.Op, &f.AgentName, &f.StartNs, &f.EndNs, &f.Status, &meta,
+			&f.Assembled, &assembledIn, &received, &content); err != nil {
 			return out, fmt.Errorf("otlpstage: scan record: %w", err)
 		}
 		copy(f.SpanID[:], spanID)
 		copy(f.ParentSpanID[:], parent)
 		f.Kind = Kind(kind)
-		if assembledIn != nil {
-			f.AssembledIn = int(*assembledIn)
+		f.Meta = json.RawMessage(meta)
+		f.ReceivedAt = received.Time
+		if assembledIn.Valid {
+			f.AssembledIn = int(assembledIn.Int64)
 		}
 		if content != nil {
-			f.Content = content
+			f.Content = json.RawMessage(content)
 		}
 		out.Facts = append(out.Facts, f)
 	}
@@ -894,12 +840,12 @@ type Lease struct {
 func (s *Store) RenewLease(ctx context.Context, owner string, key TraceKey) (Lease, error) {
 	now := s.clock()
 	var lease Lease
-	err := s.pool.QueryRow(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		UPDATE otlp_traces SET lease_expires = $5
 		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $4
 		RETURNING capture`,
 		key.TokenKey, key.TraceID[:], owner, now, now.Add(LeaseTTL)).Scan(&lease.Capture)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Lease{}, nil
 	}
 	if err != nil {
@@ -917,17 +863,16 @@ func (s *Store) RenewLease(ctx context.Context, owner string, key TraceKey) (Lea
 // past the time that record made it due. It returns false when owner no
 // longer holds an unexpired lease.
 func (s *Store) Defer(ctx context.Context, owner string, key TraceKey, gen int64, resolveAt time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE otlp_traces
-		SET lease_owner = NULL, lease_expires = NULL,
-		    resolve_at = LEAST(first_received_at + $7 * interval '1 microsecond',
-		                       CASE WHEN gen <> $5 THEN LEAST(resolve_at, $6) ELSE $6 END)
-		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $4`,
-		key.TokenKey, key.TraceID[:], owner, s.clock(), gen, resolveAt.UTC(), MaxTraceHold.Microseconds())
+	res, err := s.db.ExecContext(ctx, s.q.deferTrace,
+		key.TokenKey, key.TraceID[:], owner, s.clock(), gen, resolveAt.UTC(), int64(MaxTraceHold/time.Second))
 	if err != nil {
 		return false, fmt.Errorf("otlpstage: defer trace: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("otlpstage: defer trace: %w", err)
+	}
+	return n == 1, nil
 }
 
 // MarkResult is what MarkAssembled did.
@@ -958,18 +903,18 @@ type MarkResult struct {
 func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, gen int64, reason Reason, keys []FactKey) (MarkResult, error) {
 	var (
 		res      MarkResult
-		assembly int32
+		assembly int64
 	)
 	if !reason.valid() {
 		return res, fmt.Errorf("otlpstage: unknown assembly reason %q", reason)
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return res, fmt.Errorf("otlpstage: begin mark: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE otlp_traces
 		SET lease_owner = NULL, lease_expires = NULL, assembled_at = $5,
 		    assembly_count = assembly_count + 1, assembly_reason = $6,
@@ -977,7 +922,7 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $5
 		RETURNING pending, capture, assembly_count`,
 		key.TokenKey, key.TraceID[:], owner, gen, s.clock(), string(reason)).Scan(&res.Pending, &res.Capture, &assembly)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return MarkResult{}, nil
 	}
 	if err != nil {
@@ -990,22 +935,15 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 			ids[i] = k.SpanID[:]
 			kinds[i] = int16(k.Kind)
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE otlp_spans SET assembled = true, assembled_in = $5
-			WHERE token_key = $1 AND trace_id = $2 AND NOT assembled
-			  AND (span_id, kind) IN (SELECT * FROM unnest($3::bytea[], $4::smallint[]))`,
-			key.TokenKey, key.TraceID[:], ids, kinds, assembly); err != nil {
+		keyArgs := append([]any{key.TokenKey, key.TraceID[:]}, s.q.keyArgs(ids, kinds)...)
+		if _, err := tx.ExecContext(ctx, s.q.markRecords, append(keyArgs, assembly)...); err != nil {
 			return MarkResult{}, fmt.Errorf("otlpstage: mark records: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM otlp_span_content
-			WHERE token_key = $1 AND trace_id = $2
-			  AND (span_id, kind) IN (SELECT * FROM unnest($3::bytea[], $4::smallint[]))`,
-			key.TokenKey, key.TraceID[:], ids, kinds); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q.deleteContent, keyArgs...); err != nil {
 			return MarkResult{}, fmt.Errorf("otlpstage: delete assembled content: %w", err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return MarkResult{}, fmt.Errorf("otlpstage: commit mark: %w", err)
 	}
 	res.Marked = true
@@ -1016,19 +954,12 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 // records and content by cascade: CompleteRetention after a complete
 // assembly, DegradedRetention after any other. A pending trace is never
 // deleted, and one an ingest or a claim holds is passed over until the
-// next sweep. It deletes in batches of SweepBatch until none is left,
-// and returns how many traces it deleted.
+// next sweep (on Postgres; on SQLite no other writer holds a row while
+// the sweep runs). It deletes in batches of SweepBatch until none is
+// left, and returns how many traces it deleted.
 func (s *Store) SweepTraces(ctx context.Context) (int64, error) {
 	now := s.clock()
-	return sweep(ctx, s.pool, `
-		DELETE FROM otlp_traces t
-		USING (SELECT token_key, trace_id FROM otlp_traces
-		       WHERE NOT pending AND assembled_at < $1
-		         AND (assembly_reason = $4 OR assembled_at < $2)
-		       LIMIT $3
-		       FOR UPDATE SKIP LOCKED) expired
-		WHERE t.token_key = expired.token_key AND t.trace_id = expired.trace_id
-		  AND NOT t.pending`,
+	return sweep(ctx, s.db, s.q.sweepTraces,
 		now.Add(-CompleteRetention), now.Add(-DegradedRetention), SweepBatch, string(ReasonComplete))
 }
 
@@ -1037,26 +968,22 @@ func (s *Store) SweepTraces(ctx context.Context) (int64, error) {
 // reached. It deletes in batches of SweepBatch until none is left, and
 // returns how many rows it deleted.
 func (s *Store) SweepContent(ctx context.Context) (int64, error) {
-	return sweep(ctx, s.pool, `
-		DELETE FROM otlp_span_content c
-		USING (SELECT token_key, trace_id, span_id, kind FROM otlp_span_content
-		       WHERE staged_at < $1
-		       LIMIT $2
-		       FOR UPDATE SKIP LOCKED) old
-		WHERE c.token_key = old.token_key AND c.trace_id = old.trace_id
-		  AND c.span_id = old.span_id AND c.kind = old.kind`,
-		s.clock().Add(-ContentBackstopAge), SweepBatch)
+	return sweep(ctx, s.db, s.q.sweepContent, s.clock().Add(-ContentBackstopAge), SweepBatch)
 }
 
-func sweep(ctx context.Context, pool *pgxpool.Pool, sql string, args ...any) (int64, error) {
+func sweep(ctx context.Context, db *storage.DB, query string, args ...any) (int64, error) {
 	var total int64
 	for {
-		tag, err := pool.Exec(ctx, sql, args...)
+		res, err := db.ExecContext(ctx, query, args...)
 		if err != nil {
 			return total, fmt.Errorf("otlpstage: sweep: %w", err)
 		}
-		total += tag.RowsAffected()
-		if tag.RowsAffected() < SweepBatch {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("otlpstage: sweep: %w", err)
+		}
+		total += n
+		if n < SweepBatch {
 			return total, nil
 		}
 	}

@@ -25,8 +25,10 @@ usage() {
 }
 
 [[ "$MODE" == "prep" || "$MODE" == "tag" ]] || usage
-# Pre-releases are not supported yet: the sensor needs the PEP 440 form
-# (0.6.0rc1) and the Helm chart the SemVer form (0.6.0-rc1).
+# Pre-release versions are not written into the files: the sensor needs
+# the PEP 440 form (0.6.0rc1) and the Helm chart the SemVer form
+# (0.6.0-rc1). A pre-release *tag* on the current VERSION is a dry run of
+# the pipeline, pushed by hand (RELEASING.md, "Dry run").
 [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
   echo "Error: version must look like v0.6.0" >&2
   exit 1
@@ -102,10 +104,10 @@ git push origin "$VERSION"
 
 echo ""
 echo "Tag $VERSION pushed. The GitHub Actions release workflow will now:"
-echo "  1. Check the tag matches VERSION, then scan the Docker images"
-echo "     (stops on a fixable HIGH/CRITICAL finding or an EOL base image)"
-echo "  2. Publish flightdeck-sensor to PyPI"
-echo "  3. Build and push the Docker images to Docker Hub"
-echo "  4. Create the GitHub Release"
+echo "  1. Check the tag matches VERSION and run govulncheck on the Go modules"
+echo "  2. Build the flightdeck binaries, the GitHub release and the Homebrew formula"
+echo "  3. Publish flightdeck-cli and flightdeck-sensor to PyPI"
+echo "  4. Scan, build and push the flightdeckhq/flightdeck image"
+echo "  5. Run the install gate on every platform (install-gate.yml)"
 echo ""
 echo "Monitor: https://github.com/flightdeckhq/flightdeck/actions"

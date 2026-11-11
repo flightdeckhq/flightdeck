@@ -13,13 +13,32 @@ build/
 # Go
 bin/
 tmp/
+# The binary `go build ./cmd/flightdeck` drops at the repo root; the
+# Makefile builds into bin/.
+/flightdeck
+/flightdeck.exe
+
+# The dashboard bundle the flightdeck binary embeds; `make build-webui`
+# fills it from dashboard/dist. The directory is un-ignored first (the
+# `dist/` rule above would otherwise win), then its content ignored but
+# for the .gitkeep, which keeps go:embed's pattern matching on a
+# checkout without a bundle.
+!/webui/dist/
+webui/dist/*
+!webui/dist/.gitkeep
 
 # Node
 node_modules/
 .vite/
 
-# The dev stack's binary, data dir, log and pid (scripts/dev-stack.sh).
-.dev/
+# Helm
+# helm/migrations/ is a build artifact populated by helm/Makefile
+# sync-migrations from storage/migrations/postgres/ (the canonical
+# source). Do not edit in place; edit the source under
+# storage/migrations/postgres/ and re-run any chart-render target
+# (lint / template / install / upgrade) which gates on
+# sync-migrations.
+helm/migrations/
 
 # IDE
 .idea/

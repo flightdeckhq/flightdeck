@@ -6,7 +6,8 @@
 # ./...` alone never runs the Postgres half. Postgres: this script gives
 # each package its own fresh database on the running stack's Postgres
 # server, seeds it with docker/postgres/init.sql and migrates it to the
-# newest migration through the workers' own migrate path, runs the
+# newest migration through the workers' migrate-only mode (the embedded
+# migrations), runs the
 # package's tests against it, and drops every database it created on
 # exit. The shared `flightdeck` database is never touched. SQLite: the
 # storage/storagetest package creates and migrates a file in each test's
@@ -65,14 +66,18 @@ MODULES=(api ingestion storage workers)
 # environment, as <module>/<package dir> (<module> alone for a module's
 # root package). All of them run on Postgres.
 DB_PACKAGES=(
+  api/app
   api/internal/auth
   api/internal/store
+  ingestion/app
   ingestion/internal/assembler
   ingestion/internal/auth
+  ingestion/internal/directive
   ingestion/internal/handlers
   ingestion/internal/otlpstage
   ingestion/internal/session
   storage
+  workers/app
   workers/internal/processor
   workers/internal/writer
 )
@@ -81,8 +86,20 @@ DB_PACKAGES=(
 # SQLite as well. A package joins this list when its tests open their
 # database through storage/storagetest.
 DUAL_PACKAGES=(
+  api/app
+  api/internal/auth
+  api/internal/store
+  ingestion/app
+  ingestion/internal/assembler
   ingestion/internal/auth
+  ingestion/internal/directive
+  ingestion/internal/handlers
+  ingestion/internal/otlpstage
+  ingestion/internal/session
   storage
+  workers/app
+  workers/internal/processor
+  workers/internal/writer
 )
 
 # Every Go test package with a test that reads TEST_NATS_URL, as
@@ -217,7 +234,6 @@ for pkg in "${DB_PACKAGES[@]}"; do
     <docker/postgres/init.sql >/dev/null
   env -u FLIGHTDECK_POSTGRES_URL \
     FLIGHTDECK_POSTGRES_URL="$PG_BASE_URL/$db?sslmode=disable" \
-    FLIGHTDECK_MIGRATIONS_DIR="$MIGRATIONS_DIR" \
     FLIGHTDECK_MIGRATE_ONLY=true \
     FLIGHTDECK_METRICS_PORT=0 \
     "$workdir/workers" >"$workdir/migrate-$db.log" 2>&1 ||
@@ -258,7 +274,6 @@ run_pkg() {
       env -u FLIGHTDECK_POSTGRES_URL \
         FLIGHTDECK_TEST_BACKEND="$backend" \
         TEST_POSTGRES_URL="$dsn" \
-        TEST_ASSEMBLER_POSTGRES_URL="$dsn" \
         go test -count=1 -v "$dir"
   ) 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}

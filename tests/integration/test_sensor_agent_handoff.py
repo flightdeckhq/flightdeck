@@ -14,7 +14,6 @@ source reported the hand-off.
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -28,6 +27,7 @@ from .conftest import (
     TOKEN,
     delete_flavor_data,
     exec_sql,
+    query_rows,
     wait_until,
 )
 from .test_otlp_genai import OA, SCENARIOS, Replay, delete_replay, wait_assembled
@@ -41,13 +41,8 @@ PER_EVENT = ("id", "session_id", "flavor", "occurred_at")
 STORED_TIMEOUT_SECS = 15.0
 
 
-def _rows(sql: str, **bindings: Any) -> list[dict[str, Any]]:
-    out = exec_sql(f"SELECT coalesce(json_agg(r), '[]'::json) FROM ({sql}) r", **bindings)
-    return json.loads(out or "[]")  # type: ignore[no-any-return]
-
-
 def _signals(flavor: str) -> list[dict[str, Any]]:
-    return _rows(
+    return query_rows(
         "SELECT e.* FROM events e WHERE e.flavor = :'flavor'"
         " AND e.event_type = 'session_signal' ORDER BY e.occurred_at",
         flavor=flavor,
@@ -59,6 +54,7 @@ def _content_rows(event_ids: list[str]) -> int:
         exec_sql(
             "SELECT count(*) FROM event_content"
             " WHERE event_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            sqlite="SELECT count(*) FROM event_content WHERE instr(:ids, event_id) > 0",
             ids=",".join(event_ids),
         )
     )

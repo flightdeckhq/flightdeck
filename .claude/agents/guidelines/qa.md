@@ -169,11 +169,10 @@ Flightdeck conventions (see `CLAUDE.md`):
   touches runtime behaviour, rebuild the affected container(s) so the
   dev stack reflects branch HEAD, then run the component's full test
   suite (unit + integration) locally. CI is not the first-line
-  detector. `make dev` builds the `flightdeck` binary from the checkout
-  and runs it beside the Postgres and NATS containers, so after a Go
-  change run `make down && make dev` (or `make dev-reset`), and after a
-  dashboard change `make build-webui` first — a stack started before
-  your edit does not reflect it.
+  detector. Use `make dev` or `docker compose -f docker-compose.yml -f
+  docker-compose.dev.yml up --build -d <service>` — a plain
+  `docker compose up --build` without the dev override rebuilds a
+  stale prod-image layer and will not reflect your edits.
 - **E2E discipline (rules 40c / 40c.1–4).** Every phase that adds or
   changes user-visible UI behaviour adds Playwright tests at
   `dashboard/tests/e2e/`, one journey per file, named

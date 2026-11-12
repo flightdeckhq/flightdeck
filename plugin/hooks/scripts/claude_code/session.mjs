@@ -4,7 +4,7 @@
 // SessionEnd, and the session_start backstop.
 
 import { PLUGIN_VERSION } from "../core/config.mjs";
-import { sendEvent } from "../core/poster.mjs";
+import { postEvent } from "../core/poster.mjs";
 import {
   clearSessionMarkers,
   cwdMarkerKey,
@@ -225,23 +225,18 @@ async function waitUntil(condition, maxMs) {
   }
 }
 
-/**
- * Send ``sessionId``'s session_start unless it was accepted already or
- * another hook is sending it. Returns the sendEvent result of the POST
- * this call made, or null when it made none.
- */
 export async function ensureSessionStarted(server, token, sessionId, basePayload, extras = {}) {
-  if (isSessionStarted(sessionId)) return null;
+  if (isSessionStarted(sessionId)) return;
   if (basePayload.parent_session_id) {
     await waitUntil(() => isSessionStarted(sessionId) || isSessionStartClaimed(sessionId), SUBAGENT_START_GRACE_MS);
   }
   if (!claimSessionStart(sessionId)) {
     // Another hook is sending it: let it land before this hook's event.
     await waitUntil(() => isSessionStarted(sessionId) || !isSessionStartClaimed(sessionId), SESSION_START_WAIT_MS);
-    return null;
+    return;
   }
   try {
-    return await sendSessionStart(server, token, sessionId, basePayload, extras);
+    await sendSessionStart(server, token, sessionId, basePayload, extras);
   } finally {
     releaseSessionStart(sessionId);
   }
@@ -249,7 +244,7 @@ export async function ensureSessionStarted(server, token, sessionId, basePayload
 
 async function sendSessionStart(server, token, sessionId, basePayload, extras) {
   // A hook that held the claim before this one may have sent it.
-  if (isSessionStarted(sessionId)) return null;
+  if (isSessionStarted(sessionId)) return;
 
   const startPayload = {
     ...basePayload,
@@ -285,7 +280,7 @@ async function sendSessionStart(server, token, sessionId, basePayload, extras) {
   // sends it again: session_start carries the capture posture, and a
   // session whose row was created from a later event (posture unknown,
   // so content is dropped) only learns it from a session_start.
-  const sent = await sendEvent(server, token, sessionId, startPayload);
-  if (sent.accepted) markSessionStarted(sessionId);
-  return sent;
+  if (!(await postEvent(server, token, sessionId, startPayload))) return;
+
+  markSessionStarted(sessionId);
 }

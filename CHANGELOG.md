@@ -329,26 +329,6 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
-- **One `FLIGHTDECK_SERVER` value works for the sensor and the Claude
-  Code plugin.** The `flightdeck` start-up block prints its ingestion
-  URL (`http://localhost:4000/ingest`) as the value for both, but the
-  plugin appended `/ingest/v1/events` to it, posted to
-  `/ingest/ingest/v1/events`, got a 404 and recorded nothing. The plugin
-  now takes the base URL or the ingestion URL, with or without a
-  trailing slash, and so does a reverse proxy's prefix
-  (`https://example.com/fd`, `https://example.com/fd/ingest`). A base
-  URL with a trailing slash also failed before. The sensor accepted
-  both forms already; it now looks only at the URL's path, so a control
-  plane at `https://ingest.example.com` gets `/ingest` appended and its
-  API calls stay on that host (they went to `https://api.example.com`,
-  with the access token).
-- **A Claude Code session that is not being recorded says so.** When
-  the server does not accept a session's first event (no answer, an
-  address that is not a Flightdeck server's, a refused token), the
-  `SessionStart` hook shows a warning in Claude Code, once per session,
-  naming what happened and the setting to change; the token is never
-  printed. Before, the only trace was a line in Claude Code's debug
-  log. The hook still exits 0 and the session carries on.
 - **Analytics no longer fail on a read-only root filesystem.** With
   `docker run --read-only` (or `readOnlyRootFilesystem: true`) SQLite
   had no directory for its temporary files, which it needs once a sort

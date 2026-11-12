@@ -394,10 +394,6 @@ def init(
     kwarg, like every other knob here; see the override warning
     below). ``server`` defaults to ``http://localhost:4000/ingest``,
     where the ``flightdeck`` binary and the dev compose stack listen.
-    It may be given as the ingestion URL (ending in ``/ingest``, the
-    form the binary prints) or as the base URL without it
-    (``http://localhost:4000``, the form the Claude Code plugin's
-    default has): both name the same control plane.
     ``token`` defaults to the dev seed ``tok_dev`` **only** when the
     server was defaulted as well and that default's host is loopback;
     init then logs one WARNING naming the token in use and how to set
@@ -422,8 +418,8 @@ def init(
 
     ``api_url`` is the base URL for control-plane calls (directive
     registration, directive sync, policy prefetch).  When *None*,
-    derived from *server* by replacing ``/ingest`` with ``/api`` in
-    its path.  Override via ``FLIGHTDECK_API_URL`` env var.
+    derived from *server* by replacing ``/ingest`` with ``/api``.
+    Override via ``FLIGHTDECK_API_URL`` env var.
 
     ``limit`` sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
@@ -575,11 +571,16 @@ def init(
             _env.ENV_ALLOW_INSECURE_TRANSPORT, allow_insecure_transport
         )
 
-        # One ``FLIGHTDECK_SERVER`` value serves the sensor and the
-        # Claude Code plugin: the base URL (``http://host:4000``) and
-        # the ingestion URL (``http://host:4000/ingest``) name the same
-        # control plane, and both resolve to the ingestion URL here.
-        resolved_server, derived_api_url = _resolve_server_urls(resolved_server)
+        # Normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
+        # always carry the ``/ingest`` suffix. The Claude Code plugin
+        # uses the same env var without the suffix (it appends
+        # ``/ingest/v1/events`` itself), so a developer running both
+        # tools on one machine would otherwise hit a silent 404 when
+        # a sensor script inherited the plugin's env. ``/ingest`` is
+        # added idempotently -- a URL that already contains it stays
+        # unchanged.
+        if "/ingest" not in resolved_server:
+            resolved_server = resolved_server.rstrip("/") + "/ingest"
 
         # Same silent-override guard for the control-plane API URL.
         env_api_url = os.environ.get(_env.ENV_API_URL)
@@ -592,7 +593,9 @@ def init(
                 api_url,
                 _env.ENV_API_URL,
             )
-        resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url or derived_api_url
+        resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url
+        if not resolved_api_url:
+            resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
 
         capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
         resolved_billing_mode = (
@@ -1037,43 +1040,6 @@ def _is_valid_uuid(value: str) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
-
-
-# The path segments a Flightdeck origin publishes its two APIs under.
-_INGEST_PATH = "/ingest"
-_API_PATH = "/api"
-
-
-def _resolve_server_urls(server: str) -> tuple[str, str]:
-    """Return ``(ingestion URL, control-plane API URL)`` for *server*.
-
-    *server* may be the control plane's base URL (``http://host:4000``,
-    ``https://example.com/fd``) or its ingestion URL (the same with
-    ``/ingest``), the form the ``flightdeck`` binary prints. A path
-    without ``/ingest`` is a base URL and gets it appended; a path that
-    already has it is used as written. The API URL is the ingestion URL
-    with ``/ingest`` replaced by ``/api``.
-
-    Only the URL's path is looked at. The host is not: a control plane
-    at ``https://ingest.example.com`` is a base URL whose API is
-    ``https://ingest.example.com/api``, not a host named ``api``. A
-    query string or fragment is dropped, since the sensor appends its
-    own paths. A value ``urlsplit`` cannot parse is returned unchanged
-    for both, so the egress validation reports it.
-    """
-    try:
-        parts = urllib.parse.urlsplit(server)
-    except ValueError:
-        return server, server
-    ingest_path = parts.path
-    if _INGEST_PATH not in ingest_path:
-        ingest_path = ingest_path.rstrip("/") + _INGEST_PATH
-    api_path = ingest_path.rstrip("/").replace(_INGEST_PATH, _API_PATH)
-
-    def rebuilt(path: str) -> str:
-        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
-
-    return rebuilt(ingest_path), rebuilt(api_path)
 
 
 def _is_loopback_server(url: str) -> bool:

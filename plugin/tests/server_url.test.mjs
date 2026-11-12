@@ -136,6 +136,12 @@ describe("describeStartFailure", () => {
     assert.match(text, /the server address "localhost:4000" is not an http:\/\/ or https:\/\/ URL/);
   });
 
+  it("names a host the server does not answer for (421) and both ways out", () => {
+    const text = describeStartFailure("http://flightdeck:4000", failed(421, "HTTP 421"));
+    assert.match(text, /^Flightdeck: http:\/\/flightdeck:4000 does not answer for that host name \(HTTP 421\)/);
+    assert.match(text, /--allowed-hosts \(FLIGHTDECK_ALLOWED_HOSTS\)/);
+  });
+
   it("reports any other status as it is", () => {
     const text = describeStartFailure("http://localhost:4000", failed(503, "HTTP 503"));
     assert.match(text, /answered HTTP 503 to this session's first event/);

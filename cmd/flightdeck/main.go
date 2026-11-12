@@ -402,6 +402,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		Ingest:             ingApp.Handler(),
 		UI:                 webui.FS(),
 		Token:              token.Token,
+		Hosts:              router.NewHostPolicy(dev, opts.Domain, opts.AllowedHosts),
 		IngestReadTimeout:  ingestionapp.ReadTimeout,
 		IngestWriteTimeout: ingestionapp.WriteTimeout,
 		APIReadTimeout:     apiapp.ReadTimeout,

@@ -37,7 +37,14 @@
 #
 # Publish the port on 127.0.0.1 (as above) unless other machines should
 # reach it: the dashboard token is served to anyone who can reach the
-# origin. :4000 inside the container is not a loopback address, so the
+# origin. The container answers for `localhost` and for IP addresses
+# (FLIGHTDECK_ALLOWED_HOSTS=localhost, set below), so a page on another
+# site cannot reach it through the browser under a name of its own (DNS
+# rebinding). Reached by a name instead (a Compose service name, a
+# reverse proxy's host), add that name:
+#   -e FLIGHTDECK_ALLOWED_HOSTS=localhost,flightdeck,fd.example.com
+# A request for any other name is answered 421 with that hint; "*"
+# answers every name. :4000 inside the container is not a loopback address, so the
 # binary mints an access token on its first start, prints it once in the
 # start-up block (treat the container's logs as the secret they carry)
 # and keeps it in /data/secrets.json, mode 0600, for the next starts.
@@ -89,7 +96,8 @@ VOLUME /data
 EXPOSE 4000
 USER nonroot
 ENV FLIGHTDECK_DATA_DIR=/data \
-    FLIGHTDECK_LISTEN=:4000
+    FLIGHTDECK_LISTEN=:4000 \
+    FLIGHTDECK_ALLOWED_HOSTS=localhost
 # `flightdeck health` asks the instance in this container whether its
 # query API and its ingestion API answer, and exits 0 or 1. The image
 # has no shell and no curl, so the binary is its own probe; exec form,

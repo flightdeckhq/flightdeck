@@ -277,3 +277,34 @@ func TestParse_UsageNamesTheHealthCommandAndNoSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_AllowedHosts(t *testing.T) {
+	o, err := Parse(nil, envOf(nil), &bytes.Buffer{})
+	if err != nil || len(o.AllowedHosts) != 0 {
+		t.Fatalf("o=%+v err=%v", o, err)
+	}
+	o, err = Parse([]string{"--allowed-hosts", " FD.Internal, .Example.com ,,nas "}, envOf(nil), &bytes.Buffer{})
+	if err != nil || strings.Join(o.AllowedHosts, "|") != "fd.internal|.example.com|nas" {
+		t.Fatalf("o=%+v err=%v", o, err)
+	}
+	o, err = Parse(nil, envOf(map[string]string{"FLIGHTDECK_ALLOWED_HOSTS": "localhost"}), &bytes.Buffer{})
+	if err != nil || strings.Join(o.AllowedHosts, "|") != "localhost" {
+		t.Fatalf("o=%+v err=%v", o, err)
+	}
+	// The flag wins over the environment, an empty one included.
+	o, err = Parse([]string{"--allowed-hosts", ""}, envOf(map[string]string{"FLIGHTDECK_ALLOWED_HOSTS": "localhost"}), &bytes.Buffer{})
+	if err != nil || len(o.AllowedHosts) != 0 {
+		t.Fatalf("o=%+v err=%v", o, err)
+	}
+	o, err = Parse([]string{"--allowed-hosts", "*"}, envOf(nil), &bytes.Buffer{})
+	if err != nil || strings.Join(o.AllowedHosts, "|") != "*" {
+		t.Fatalf("o=%+v err=%v", o, err)
+	}
+	// An entry that could never match a Host is refused at start, not
+	// left to lock its operator out.
+	for _, bad := range []string{"http://fd.internal", "fd.internal:4000", "fd.internal/path", "fd internal", "..example.com", "example.com.", "*.example.com", "fd_internal", "[::1]"} {
+		if _, err := Parse([]string{"--allowed-hosts", "ok.internal," + bad}, envOf(nil), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "--allowed-hosts") {
+			t.Errorf("--allowed-hosts %q: err = %v, want it refused", bad, err)
+		}
+	}
+}

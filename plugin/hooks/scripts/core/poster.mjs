@@ -332,6 +332,13 @@ export function describeStartFailure(server, sent) {
       `Set ${serverSetting} to the address flightdeck prints when it starts, for example ${EXAMPLE_SERVER}. ${unrecorded}`
     );
   }
+  if (sent.status === 421) {
+    return (
+      `Flightdeck: ${where} does not answer for that host name (HTTP 421). ` +
+      `Set ${serverSetting} to an address the server answers for (localhost or an IP address), ` +
+      `or start the server with that name in --allowed-hosts (FLIGHTDECK_ALLOWED_HOSTS). ${unrecorded}`
+    );
+  }
   if (sent.status === 401 || sent.status === 403) {
     return (
       `Flightdeck: ${where} refused the access token (HTTP ${sent.status}). ` +

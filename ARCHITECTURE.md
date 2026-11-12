@@ -2452,7 +2452,9 @@ prints `{"systemMessage": "..."}` on stdout, which Claude Code shows as
 a warning. The message says what happened and which setting to change:
 no answer (the server is not running, or the address is wrong), a 404
 or 405 (the address is not a Flightdeck server's; the message names the
-URL that was tried), a 401 or 403 (the token was refused; the message
+URL that was tried), a 421 (the server does not answer for the host
+name in the address; see Host check under Deployment), a 401 or 403
+(the token was refused; the message
 names `FLIGHTDECK_TOKEN` and the token option, never the token), a
 value that is not an `http://` or `https://` URL, or any other status.
 It is shown once per session (a marker,
@@ -10718,6 +10720,51 @@ same trust boundary the mounted `runtime-config.json` had: a
 non-loopback deployment protects the origin at the network edge or
 with `--domain`. Further tokens are minted in the Settings page.
 
+**Host check.** `/runtime-config.json` asks for no credential, since
+the dashboard has no login of its own, so the origin is the boundary
+(above). A browser can be made to cross it from outside: a page on
+another site points a name of its own at this machine (DNS rebinding),
+the browser loads `http://that-name:4000/runtime-config.json` as that
+page's own origin, and the page reads the token and calls the API. The
+browser sends the page's name as `Host`, so every request passes a
+check of that header before any route (`internal/router/hosts.go`), the
+health routes and the two APIs included. These hosts are always
+answered: an IP address (a rebinding page needs a name whose DNS answer
+it controls; the origin of an address is whatever serves there),
+`localhost` and names under it, the `--domain`, and the entries of
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`: host names separated by
+commas, a leading dot admitting every name under one, compared without
+case or a trailing dot). The port is not compared: a forwarded or
+published port changes it, and a rebinding page cannot choose it. The
+check is on when the binary listens on loopback only, where the
+browser is the one way in; with `--domain`; and whenever a list is
+set. A listen address beyond loopback with no list answers every
+`Host`: the names such an instance is reached by (a LAN name, a
+reverse proxy's) are not known to the binary, and the operator who
+bound it there decided who reaches it. `--allowed-hosts '*'` turns the
+check off in any mode. The Docker image sets
+`FLIGHTDECK_ALLOWED_HOSTS=localhost`, so a container is checked like a
+loopback listen: published on `127.0.0.1` it is reached as `localhost`
+or by address; one reached by a name (a Compose service name, a
+reverse proxy's) lists that name. A refused request is answered 421
+Misdirected Request with one line of JSON that names the setting and
+repeats nothing from the request, and the first twenty distinct refused
+hosts are logged with the same hint. The sensor, the plugin and
+`flightdeck health` send the address they were given as `Host`, so an
+address or `localhost` passes everywhere.
+
+The fleet stream (`/api/v1/stream`) carries the token in its URL,
+because a browser cannot set a header on a WebSocket. A request for it
+with an `Origin` header is answered 403 unless the origin's host is the
+host that was asked for (the dashboard's own page; the port may differ
+behind a proxy) or one of the hosts above, in every mode, the one
+without a list included. A client that is not a browser sends no
+`Origin` and is held to its token alone. The REST API keeps its CORS
+policy (`FLIGHTDECK_CORS_ORIGIN`): a page on another site cannot read
+`/runtime-config.json`, which carries no CORS header, so it has no
+token to send. The standalone query API accepts any `Origin` on the
+stream; there the edge in front of it decides.
+
 **TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
 the binary with certificates from Let's Encrypt (`acme/autocert`,
 HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
@@ -10893,6 +10940,7 @@ over the defaults.
 | `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
+| `--allowed-hosts` | `FLIGHTDECK_ALLOWED_HOSTS` | Host names the binary answers for besides `localhost`, IP addresses and `--domain`, separated by commas (`fd.internal,.example.com`; `*` answers any). Unset, a loopback listen and `--domain` answer only for those and a listen address beyond loopback answers any name; see Host check. The Docker image sets `localhost` |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
 None of them is required: with nothing set the binary listens on
@@ -10989,7 +11037,7 @@ from one release tag (RELEASING.md has the sequence):
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and

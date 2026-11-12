@@ -54,6 +54,21 @@ All notable changes to Flightdeck are documented here.
   `FLIGHTDECK_LISTEN=:4000` in the environment instead of as flags, so
   the health check reads what the server reads.
 
+- **The binary answers only for the names it is known by.** The
+  dashboard's token is served by `/runtime-config.json` with no
+  credential, so a page on another site could reach a loopback-only
+  `flightdeck` through the user's browser under a name of its own (DNS
+  rebinding) and read it. Every request's `Host` is now checked: an IP
+  address, `localhost`, the `--domain` and the names in the new
+  `--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`) are answered, anything
+  else gets 421 with a line naming the setting. The check is on for a
+  loopback listen, with `--domain`, whenever a list is set, and in the
+  Docker image (which sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`); a
+  listen address beyond loopback with no list answers any name, as
+  before. A container reached by a name (a Compose service name, a
+  reverse proxy's host) needs that name in the list. The fleet stream
+  also refuses a browser page of another site (403).
+
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
   through the `storage` boundary: plain `database/sql` on either engine,

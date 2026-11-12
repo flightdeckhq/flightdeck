@@ -37,6 +37,10 @@ type Options struct {
 	NatsURL string
 	// Domain, when set, serves TLS for that host with ACME certificates.
 	Domain string
+	// AllowedHosts are the extra host names the instance answers for
+	// (--allowed-hosts), lower-case; see router.HostPolicy. Empty means
+	// the default of the listen mode.
+	AllowedHosts []string
 	// Metrics starts the three services' metrics listeners.
 	Metrics bool
 	// Version prints the version and exits.
@@ -83,6 +87,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		"external NATS server URL (default: $FLIGHTDECK_NATS_URL, else an embedded server with no port)")
 	fs.StringVar(&o.Domain, "domain", env("FLIGHTDECK_DOMAIN"),
 		"public host name: serve HTTPS on :443 with a Let's Encrypt certificate and redirect :80 (env FLIGHTDECK_DOMAIN)")
+	allowedHosts := fs.String("allowed-hosts", env("FLIGHTDECK_ALLOWED_HOSTS"),
+		"comma-separated host names this server answers for besides localhost, IP addresses and --domain, for example "+
+			"fd.internal,.example.com (a leading dot admits every name under it); \"*\" answers any name. Unset, a loopback "+
+			"listen and --domain answer only for those, and a listen address beyond loopback answers any name (env FLIGHTDECK_ALLOWED_HOSTS)")
 	metricsDefault, err := envBool(env, "FLIGHTDECK_METRICS")
 	if err != nil {
 		return Options{}, err
@@ -123,6 +131,9 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	if strings.TrimSpace(o.Listen) == "" {
 		return Options{}, errors.New("--listen must not be empty")
 	}
+	if o.AllowedHosts, err = parseAllowedHosts(*allowedHosts); err != nil {
+		return Options{}, err
+	}
 	if o.Health {
 		// The health command opens no database: a URL it would refuse
 		// is the server's to report.
@@ -162,6 +173,29 @@ func checkDatabaseURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// parseAllowedHosts splits --allowed-hosts into its entries, lower-case.
+// An entry is a host name, a host name with a leading dot (that name
+// and every name under it) or "*" (any name). A port, a scheme or a
+// path is refused: the check is on the name alone, and an entry that
+// silently never matched would lock its operator out.
+func parseAllowedHosts(raw string) ([]string, error) {
+	var hosts []string
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" {
+			continue
+		}
+		name := strings.TrimPrefix(entry, ".")
+		if entry != "*" && (name == "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789-.") != "" ||
+			strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..")) {
+			return nil, fmt.Errorf("--allowed-hosts (FLIGHTDECK_ALLOWED_HOSTS) entry %q is not a host name: "+
+				"give names without a scheme, a port or a path, separated by commas, for example fd.internal,.example.com", entry)
+		}
+		hosts = append(hosts, entry)
+	}
+	return hosts, nil
 }
 
 func envOr(env func(string) string, key, def string) string {

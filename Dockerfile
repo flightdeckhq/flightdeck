@@ -4,22 +4,36 @@
 # (ingestion, workers, query API, embedded NATS and the dashboard in one
 # process) on a distroless base, as a non-root user.
 #
-#   docker run -d --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck-data:/data \
-#     flightdeckhq/flightdeck
-#   docker logs flightdeck     # the start-up block with the dashboard token
+#   docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 #
-# The database is a SQLite file in /data. To use a Postgres instead, add
+# That is the whole install: nothing else to start or configure. The
+# start-up block it prints carries the dashboard URL and the token; with
+# `-d --name flightdeck` it is in `docker logs flightdeck`.
+#
+# Data. Everything the container writes lives under /data: the database
+# (a SQLite file, /data/flightdeck.db), the message-bus store and
+# secrets.json. The volume keeps it across `docker rm` and an image
+# update; without `-v` Docker gives each container an anonymous volume
+# of its own and a new container starts empty. /data is 0700 and owned
+# by the runtime user (uid 65532), and a new named volume takes that
+# over. A bind mount (`-v /srv/flightdeck:/data`) keeps the host
+# directory's owner and mode: make it writable by uid 65532 and 0700,
+# or the binary warns that the directory is readable by others. One
+# container per volume: a second one on the same /data is refused. The
+# root filesystem is never written, so `--read-only` works as is.
+#
+# Postgres instead of SQLite: add
 #   -e FLIGHTDECK_DATABASE_URL='postgres://user:password@host:5432/flightdeck?sslmode=disable'
+# The schema is created on the first start; /data then holds only the
+# bus store and secrets.json, and is still worth a volume.
 #
 # Publish the port on 127.0.0.1 (as above) unless other machines should
 # reach it: the dashboard token is served to anyone who can reach the
 # origin. :4000 inside the container is not a loopback address, so the
 # binary mints an access token on its first start, prints it once in the
-# start-up block (docker logs; treat those logs as the secret they
-# carry) and keeps it in /data/secrets.json, mode 0600, owned by the
-# nonroot user, for the next starts. Everything the container writes
-# lives under /data. The base images are pinned by digest; Dependabot
-# proposes the updates.
+# start-up block (treat the container's logs as the secret they carry)
+# and keeps it in /data/secrets.json, mode 0600, for the next starts.
+# The base images are pinned by digest; Dependabot proposes the updates.
 #
 # The release workflow builds this file for linux/amd64 and linux/arm64
 # with buildx; the Go cross-compile runs on the build platform, so no
@@ -48,14 +62,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /out/flightdeck ./cmd/flightdeck
-# The data dir, owned by the runtime user (distroless has no shell to
-# create it at start). 65532 is distroless's nonroot uid.
-RUN mkdir -p /out/data && chown 65532:65532 /out/data
+# An empty directory for the runtime stage to copy as /data: distroless
+# has no shell to create one, and none to chmod it at start.
+RUN mkdir /out/data
 
 # ---- runtime --------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/flightdeck /usr/local/bin/flightdeck
-COPY --from=build --chown=nonroot:nonroot /out/data /data
+# The data dir, 0700 and owned by the runtime user (65532 is
+# distroless's nonroot uid), which is what the binary expects of the
+# directory that holds its database and secrets. --chmod sets it: COPY
+# creates the destination 0755 whatever the source's mode. A new named
+# volume mounted here is initialised with this owner and mode.
+COPY --from=build --chown=65532:65532 --chmod=700 /out/data /data
 # The operator's price overrides, where the query API looks for them.
 COPY pricing.yaml /etc/flightdeck/pricing.yaml
 VOLUME /data

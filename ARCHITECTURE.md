@@ -230,7 +230,8 @@ flightdeck/
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
-├── scripts/install-gate.sh     # The from-scratch install gate's checks: health, token, one event, the dashboard
+├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
+├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
 ├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
 ├── install.sh                  # `curl | sh` installer: detect, download, verify, install
 ├── install.ps1                 # `irm | iex` installer for Windows
@@ -2214,7 +2215,7 @@ only managed settings, or `--settings`, outrank a repository's settings.
 Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
 NATS carries an event with the same 1 MiB `max_payload`; a larger body
-is rejected (413 from the dev nginx, 400 from ingestion), and with it
+is rejected (400 from ingestion, 413 from a proxy in front with a smaller limit), and with it
 the call's token counts. The size is measured as ingestion's Go encoder
 writes the event when it rewrites one (a `session_start`, to add the
 token id and name, or an event with a replaced value; see Validation
@@ -6096,31 +6097,31 @@ MCP protection policy mutations.
 #### Dashboard token configuration
 
 The dashboard's bearer token is fetched at runtime from
-`/runtime-config.json` rather than baked into the SPA bundle. The
-file lives at `dashboard/public/runtime-config.json` in source and
-ships with the dev token (`tok_dev`). Vite copies `public/*` to
-`dist/*` at build time so the same path resolves in dev (vite dev
-serves it directly) and prod (the dashboard image's nginx serves it
-from `/usr/share/nginx/html/`). Production deployers replace the
-file via volume mount over
-`/usr/share/nginx/html/runtime-config.json` — token rotation is a
-single-file edit + `nginx -s reload`, no rebuild.
+`/runtime-config.json`; it is not baked into the SPA bundle. The
+`flightdeck` binary answers that path itself (`internal/router`) with
+the token of its start: the development token when it serves on
+loopback, otherwise the token it minted on its first start and keeps
+in `secrets.json` (Operational Concerns > Deployment, Auth bootstrap).
+The bundle carries a `runtime-config.json` of its own
+(`dashboard/public/`, with `tok_dev`), which the binary never serves:
+only the Vite dev server (`npm run dev`) does, for the hot-reload loop
+against a dev stack.
 
 Bootstrap order (`dashboard/src/lib/runtime-config.ts`):
 
 1. `main.tsx` awaits `ensureAccessToken()` before mounting React.
-2. `ensureAccessToken()` reads `localStorage.flightdeck-access-token`.
-   If a token is set, that value wins (operator self-serve override).
-3. Otherwise, fetch `/runtime-config.json` (with `cache: no-store`),
-   validate the `{ access_token: string }` shape, write to
-   localStorage, return.
-4. Bootstrap failure (network error, non-2xx, malformed JSON) renders
+2. `ensureAccessToken()` fetches `/runtime-config.json` (with `cache:
+   no-store`), validates the `{ access_token: string }` shape and holds
+   the token in memory for the lifetime of the page. It is never
+   written to `localStorage` or `sessionStorage`, so a reload fetches
+   it again and a script that reads web storage finds nothing.
+3. Bootstrap failure (network error, non-2xx, malformed JSON) renders
    an actionable error message inline on `#root` rather than an
    empty page.
 
-The dashboard image's `nginx.conf` emits the strict cache-discipline
-header pack on `/runtime-config.json` so no intermediate proxy holds
-a stale token after rotation:
+The router sends the strict cache-discipline header pack with
+`/runtime-config.json`, on a `HEAD` as on a `GET`, so no intermediate
+proxy holds a stale token after rotation:
 
 - `Cache-Control: no-store, no-cache, must-revalidate` — HTTP/1.1
   caches discard the response after delivery and refuse to serve any
@@ -6130,18 +6131,9 @@ a stale token after rotation:
 - `Expires: 0` — HTTP/1.0 caches that respect Expires see the
   response as already-stale.
 
-The headers carry the `always` parameter so a 4xx / 5xx response
-(e.g. a misconfigured prod mount returning 404) still ships the same
-discipline rather than leaving a cacheable error in flight. `expires
-off` disables nginx's automatic Cache-Control / Expires emission so
-the response carries our explicit values only — no duplicate headers.
-
-Dev-vs-prod nuance: in dev, vite serves `dashboard/public/` directly
-and emits its own default `Cache-Control: no-cache` header. The
-strict triplet is a production-only discipline served by the
-dashboard image's nginx. The dev stack uses `tok_dev` regardless, so
-the looser dev header is acceptable; production deployers always run
-the multi-stage image where the strict triplet applies.
+Any other method on the path is answered 405. The Vite dev server
+sends its own `Cache-Control: no-cache` with the file it serves, which
+carries only the development token.
 
 ### Real-time push: fleet notification → Hub → WebSocket
 
@@ -7019,9 +7011,9 @@ only — never MUI, Ant Design, or Chakra UI.
   `policy_event_type`, `error_type`, `framework`, `model`,
   `close_reason`, `estimated_via`, `matched_entry_id`,
   `originating_call_context`, `mcp_server`, `agent_id`, and a
-  `terminal` toggle. Legacy `/investigate` is served at the nginx
-  edge with a permanent 301 to `/events` preserving the query
-  string.
+  `terminal` toggle. Legacy `/investigate` is answered by the
+  binary's router with a permanent 301 to `/events` preserving the
+  query string.
 - `/session/:id` — full session drilldown (drawer-based via deep-link).
 - `/analytics` — flexible breakdown charts.
 - `/policies` — token policy CRUD.
@@ -10508,7 +10500,12 @@ given; the public port never serves `/metrics`.
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
 mode 0700; an existing directory with a wider mode is used as it is and
 a warning names the `chmod`, since it holds the database, the bus store
-and the secrets file. It holds `flightdeck.db`, the SQLite database
+and the secrets file. A data dir the process may not write to (a
+container's user and a bind-mounted host directory another user owns
+is the usual case) stops the start with an error that names the
+directory, the user id the binary runs as and the remedy: a `chown` to
+that user, another `--data-dir`, or a named volume in place of the host
+directory. It holds `flightdeck.db`, the SQLite database
 (mode 0600, with SQLite's `flightdeck.db-wal` and `flightdeck.db-shm`
 beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
@@ -10931,18 +10928,32 @@ over the defaults.
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
-The services' tuning variables below keep their names and defaults under
-the binary; `FLIGHTDECK_PORT`, `FLIGHTDECK_POSTGRES_URL` and
-`ENVIRONMENT` are read by the standalone service binaries only, since
-the one binary derives them from its flags.
+None of them is required: with nothing set the binary listens on
+loopback and keeps its data in the SQLite file in its data dir.
 
+The three tables below list what each of the three services reads.
+The `flightdeck` binary runs them in one process: the tuning variables
+among them (stream limits, rate limit, pool size, reconciler and orphan
+timings, `SHUTDOWN_TIMEOUT_SECS`, the CORS origin, the pricing path)
+keep their names and defaults under it, and the rest it decides itself.
+It sets `FLIGHTDECK_POSTGRES_URL` (to the URL of whichever database its
+flags select, the default SQLite file included) and
+`FLIGHTDECK_JWT_SECRET`, sets `ENVIRONMENT` to `dev` when it serves on
+loopback with the development token and clears it otherwise, and serves
+the services' handlers on its own listener, so `FLIGHTDECK_PORT` is not
+used; a value of any of these in the environment has no effect on it.
+Those variables matter only to a service binary run on its own
+(`ingestion/cmd`, `workers/cmd`, `api/cmd`), which needs its database
+URL, hence "required" below. No release artifact, compose file or chart
+runs the services that way; the split test stack and
+`scripts/go-db-tests.sh` build them from source.
 
 **Ingestion API:**
 
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8080) |
-| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). A token goes in the URL's user slot (`nats://<token>@nats:4222`; a lone user is sent as the auth token, so the token is limited to URL-unreserved characters), as the Helm chart does for its NATS cluster |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
 | `FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS` | Age limit of the `FLIGHTDECK` stream in hours (default 72, at least 1); see Worker / Event Processing > The FLIGHTDECK stream |
@@ -10955,7 +10966,7 @@ the one binary derives them from its flags.
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_POSTGRES_URL` | Database URL (required): `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Database URL, required by the standalone service: `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies the pending embedded migrations of the database's backend and exits without consuming |
@@ -10969,7 +10980,7 @@ the one binary derives them from its flags.
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8081) |
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
 | `FLIGHTDECK_JWT_SECRET` | Reserved for signing dashboard login tokens; the binary supplies the value it generated in `secrets.json` |
@@ -11006,9 +11017,9 @@ from one release tag (RELEASING.md has the sequence):
 |---|---|---|
 | Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
-| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary with its defaults and logs to `$(brew --prefix)/var/log/flightdeck.log` |
+| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000`; `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -11035,7 +11046,12 @@ a pre-release tag, `vX.Y.Z-rc.1`, takes the Unreleased section and is
 marked as a pre-release, which the Homebrew tap and the installers'
 `latest` skip). CI cross-builds the six binaries with `goreleaser build
 --snapshot` on every pull request and builds the Docker image, so a
-target that stops compiling fails the PR, not the release.
+target that stops compiling fails the PR, not the release. CI also runs
+the install gate's checks (below) on the binary it builds and on that
+image, started on a new volume with a read-only root filesystem, and
+runs the checks against fake binaries that are each broken in one way
+(`scripts/test-install-gate.sh`): every fault must fail the gate within
+a bound, and a wedged binary must not hang it.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the
@@ -11046,10 +11062,24 @@ completes, the install gate (`install-gate.yml`, also runnable by hand
 with a tag) installs the published artifacts on fresh runners, one leg
 per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
 `windows-2022`), through the channel under test (`install.sh`, `pip`
-and `uvx`, `docker run`, `brew`, `install.ps1`), and runs
-`scripts/install-gate.sh`: health, the token from the start-up block,
-`/runtime-config.json`, the dashboard, one sensor-shaped event posted
-and read back by id and from the sessions list, a clean stop. A
+and `uvx`, `docker run`, `brew` and `brew services`, `install.ps1`), and
+runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
+database and nothing else configured, since that is the install a new
+user makes: the script removes the binary's settings from its
+environment and requires the start-up block to name a SQLite database
+in the data dir. Then: health, the token from the start-up block,
+`/runtime-config.json`, the dashboard, a 401 from the query API and from
+ingestion for a request with no token and for one with a wrong token
+(with authentication broken open every other check would still pass),
+one sensor-shaped event posted and read back by id and from the
+sessions list, a clean stop within the binary's own shutdown bound (a
+process that has to be killed fails the leg), and a
+restart on the same data dir (a new container on the same volume, a
+stop and start of the Homebrew service) after which the session is
+still served. The container's log must not carry the data dir's mode
+warning. One leg, linux-amd64, repeats the checks with `--database-url`
+against an empty Postgres in a service container, because Postgres
+stays a supported database; no other leg has a database to reach. A
 pre-release tag (`vX.Y.Z-rc.N`, pushed by hand) is the dry run: the same
 pipeline with the GitHub release marked pre-release, no formula, no
 `latest` image tag, no sensor publish; the gate's Homebrew leg then

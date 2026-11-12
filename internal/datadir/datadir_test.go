@@ -2,6 +2,9 @@ package datadir
 
 import (
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -86,6 +89,61 @@ func TestEnsure_WarnsAboutAWideDataDir(t *testing.T) {
 	if info.Mode().Perm() != 0o755 {
 		t.Fatalf("Ensure changed the mode to %04o", info.Mode().Perm())
 	}
+}
+
+func TestEnsure_ExplainsADataDirItCannotWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory modes do not refuse the owner on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root is refused by no directory mode")
+	}
+	uid := fmt.Sprintf("uid %d", os.Getuid())
+
+	t.Run("an existing directory", func(t *testing.T) {
+		// What a container sees of a host directory another user owns:
+		// it is there, and nothing can be created in it.
+		root := filepath.Join(t.TempDir(), "foreign")
+		if err := os.MkdirAll(root, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Ensure(root)
+		if err == nil {
+			t.Fatal("Ensure accepted a data dir it cannot write to")
+		}
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("the cause is lost: %v", err)
+		}
+		chown := fmt.Sprintf("chown -R %d %s", os.Getuid(), root)
+		for _, want := range []string{"data dir " + root + " is not writable", uid, chown, "--data-dir", "named volume"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q lacks %q", err, want)
+			}
+		}
+	})
+
+	t.Run("a directory that cannot be created", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "closed")
+		if err := os.MkdirAll(parent, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(parent, "data")
+		_, err := Ensure(root)
+		if err == nil {
+			t.Fatal("Ensure created a data dir under a directory it cannot write to")
+		}
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("the cause is lost: %v", err)
+		}
+		for _, want := range []string{"data dir " + root + " cannot be created", uid, "--data-dir"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q lacks %q", err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "chown") {
+			t.Fatalf("error %q advises a chown of a directory that does not exist", err)
+		}
+	})
 }
 
 func TestLoadSecrets_CreatesOnceAndReloads(t *testing.T) {

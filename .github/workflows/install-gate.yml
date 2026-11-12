@@ -1,10 +1,12 @@
 name: Install gate
 
 # The from-scratch install gate: on fresh runners of every supported
-# platform, install flightdeck through the channel under test, start it,
-# and check that it serves health, prints its token, accepts one
-# sensor-shaped event, lists the session and serves the dashboard
-# (scripts/install-gate.sh). Every step fails the leg.
+# platform, install flightdeck through the channel under test and start
+# it with no database and nothing else configured, as a new user does.
+# It must serve health, print its token, name a SQLite database in its
+# data dir, accept one sensor-shaped event, list the session, serve the
+# dashboard, stop, and serve that session again after a restart on the
+# same data dir (scripts/install-gate.sh). Every step fails the leg.
 #
 # Runs when the Release workflow finishes on a tag (the artifacts it
 # published are what is installed) and by hand with a tag, including a
@@ -13,11 +15,17 @@ name: Install gate
 # published for stable tags only.
 #
 # Legs (RELEASING.md lists what each proves):
-#   ubuntu-24.04      amd64  install.sh (the curl | sh path), pip + uvx, docker run
+#   ubuntu-24.04      amd64  install.sh (the curl | sh path), pip + uvx, docker run,
+#                            and the binary once more on a Postgres
 #   ubuntu-24.04-arm  arm64  install.sh
-#   macos-14          arm64  brew install flightdeckhq/tap/flightdeck
+#   macos-14          arm64  brew install flightdeckhq/tap/flightdeck, brew services
 #   macos-15-intel    amd64  install.sh
 #   windows-2022      amd64  install.ps1 (the irm | iex path, the .zip)
+#
+# No leg gives the binary a database. Postgres stays a supported one
+# (`--database-url postgres://…`), so the linux-amd64 leg alone runs the
+# checks a second time against a Postgres service container; nothing
+# else in this workflow starts or names a database.
 on:
   workflow_run:
     workflows: [Release]
@@ -33,11 +41,7 @@ permissions:
   contents: read
 
 env:
-  # The binary needs a Postgres until the SQLite default lands (the
-  # B-track of the single-binary design); each leg then starts one and
-  # passes FLIGHTDECK_DATABASE_URL. Flip to "false" when `flightdeck`
-  # runs with no database, and the legs run it bare.
-  GATE_NEEDS_POSTGRES: "true"
+  # The binary's own default; each leg's first run of the checks uses it.
   GATE_LISTEN: 127.0.0.1:4000
 
 jobs:
@@ -81,21 +85,37 @@ jobs:
     name: ${{ matrix.name }}
     needs: resolve
     runs-on: ${{ matrix.runner }}
+    # The amd64 leg takes a few minutes: four runs of the checks, each a
+    # few seconds, the image pull, and at worst the ten minutes the pip
+    # step waits for PyPI's index. Thirty turns a step that wedges into
+    # a failed leg with its log, not a run that sits until GitHub's
+    # six-hour default.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-amd64 (install.sh, pip, uvx, docker)
+          - name: linux-amd64 (install.sh, pip, uvx, docker, Postgres)
             runner: ubuntu-24.04
             extras: true
+            # Pinned by digest, as the dev stack's and CI's are not: the
+            # gate must fail on the binary, never on a base-image change.
+            postgres: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
           - name: linux-arm64 (install.sh)
             runner: ubuntu-24.04-arm
             extras: false
+            postgres: ""
     services:
+      # For the one Postgres run of the checks, on linux-amd64 ("Gate
+      # (install.sh binary on Postgres)" below). The arm64 leg's image
+      # is the empty string, and a service whose image is an empty
+      # string is not started; GitHub documents that as the way to make
+      # a service conditional:
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idservicesservice_idimage
+      # Every other run in this workflow, on every leg, has no database
+      # to reach.
       postgres:
-        # Pinned by digest, as the dev stack's and CI's are not: the gate
-        # must fail on the binary, never on a base-image change.
-        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+        image: ${{ matrix.postgres }}
         env:
           POSTGRES_USER: flightdeck
           POSTGRES_PASSWORD: flightdeck_gate
@@ -117,12 +137,6 @@ jobs:
           ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: Database for the binary
-        if: env.GATE_NEEDS_POSTGRES == 'true'
-        run: |
-          echo "FLIGHTDECK_DATABASE_URL=postgres://flightdeck:flightdeck_gate@127.0.0.1:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
-          echo "GATE_DOCKER_DATABASE_URL=postgres://flightdeck:flightdeck_gate@host.docker.internal:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
-
       # cosign on the runner, so install.sh verifies the signature of
       # checksums.txt as a user with cosign would; the step fails when
       # the installer reports the check was skipped.
@@ -140,10 +154,24 @@ jobs:
           command -v flightdeck
           flightdeck --version
 
+      # The primary path: nothing configured, the database is the SQLite
+      # file the binary creates in its data dir.
       - name: Gate (install.sh binary)
         env:
           GATE_EXPECT_VERSION: ${{ env.TAG }}
         run: scripts/install-gate.sh run "$GATE_LISTEN" "$(command -v flightdeck)"
+
+      # The supported alternative, on this leg only: the same binary and
+      # the same checks with the database named by --database-url, on an
+      # empty Postgres (the binary creates the schema).
+      - name: Gate (install.sh binary on Postgres)
+        if: matrix.extras
+        env:
+          GATE_EXPECT_VERSION: ${{ env.TAG }}
+          GATE_EXPECT_DATABASE: Postgres
+        run: |
+          scripts/install-gate.sh run 127.0.0.1:4003 "$(command -v flightdeck)" \
+            --database-url 'postgres://flightdeck:flightdeck_gate@127.0.0.1:5432/flightdeck?sslmode=disable'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         if: matrix.extras
@@ -187,26 +215,45 @@ jobs:
         run: |
           docker pull "flightdeckhq/flightdeck:$TAG"
           docker run --rm "flightdeckhq/flightdeck:$TAG" --version | grep -qx "flightdeck $TAG"
-          docker run -d --name flightdeck --add-host=host.docker.internal:host-gateway \
-            -p 127.0.0.1:4002:4000 -v flightdeck-gate:/data \
-            ${GATE_DOCKER_DATABASE_URL:+-e FLIGHTDECK_DATABASE_URL="$GATE_DOCKER_DATABASE_URL"} \
+          # The documented command, detached: a port and a new named
+          # volume for /data, no database, no environment.
+          docker run -d --name flightdeck -p 127.0.0.1:4002:4000 -v flightdeck-gate:/data \
             "flightdeckhq/flightdeck:$TAG"
 
+      # check also fails on the binary's data-dir warning: the image's
+      # /data, and so the new volume, must be 0700.
       - name: Gate (container)
         if: matrix.extras
+        env:
+          GATE_STATE_FILE: ${{ runner.temp }}/container-gate.state
         run: scripts/install-gate.sh check http://127.0.0.1:4002 docker logs flightdeck
 
-      - name: Container stops cleanly
+      # The volume is what holds the data: the container is removed, and
+      # a new one on the same volume serves the session to the same token.
+      - name: Container stops cleanly, a new one on the volume keeps the session
         if: matrix.extras
+        env:
+          GATE_STATE_FILE: ${{ runner.temp }}/container-gate.state
         run: |
           docker stop -t 30 flightdeck
           test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"
           docker rm flightdeck
+          docker run -d --name flightdeck -p 127.0.0.1:4002:4000 -v flightdeck-gate:/data \
+            "flightdeckhq/flightdeck:$TAG"
+          scripts/install-gate.sh kept http://127.0.0.1:4002 docker logs flightdeck
+          docker stop -t 30 flightdeck
+          test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"
+          docker rm flightdeck
+          rm -f "$GATE_STATE_FILE"
 
   macos:
     name: ${{ matrix.name }}
     needs: resolve
     runs-on: ${{ matrix.runner }}
+    # An install and two runs of the checks, a few minutes in all;
+    # twenty fails a leg that wedges (a service that never stops, a
+    # download that stalls) long before the six-hour default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -227,20 +274,6 @@ jobs:
           # the default branch's.
           ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
-
-      # The macOS runner images ship no PostgreSQL; Homebrew's is a
-      # minute to install. Local connections are trusted for the runner
-      # user, who owns the cluster brew creates.
-      - name: Database for the binary
-        if: env.GATE_NEEDS_POSTGRES == 'true'
-        run: |
-          brew install postgresql@16
-          brew services start postgresql@16
-          PGBIN="$(brew --prefix postgresql@16)/bin"
-          for _ in $(seq 1 60); do "$PGBIN/pg_isready" -h 127.0.0.1 -q && break; sleep 1; done
-          "$PGBIN/pg_isready" -h 127.0.0.1
-          "$PGBIN/createdb" -h 127.0.0.1 flightdeck
-          echo "FLIGHTDECK_DATABASE_URL=postgres://$(whoami)@127.0.0.1:5432/flightdeck?sslmode=disable" >> "$GITHUB_ENV"
 
       - name: brew install flightdeckhq/tap/flightdeck
         if: matrix.channel == 'brew' && env.PRERELEASE == 'false'
@@ -265,21 +298,44 @@ jobs:
           GATE_EXPECT_VERSION: ${{ env.TAG }}
         run: scripts/install-gate.sh run "$GATE_LISTEN" "$FLIGHTDECK_BIN"
 
-      # brew services runs the binary with its defaults (loopback :4000,
-      # ~/.flightdeck): it must come up and log its start-up block.
+      # brew services runs the binary with its defaults and no
+      # environment: loopback :4000 (free again, the step above stopped
+      # its server) and ~/.flightdeck, the data dir a `flightdeck` typed
+      # in a terminal uses, so the service and the command share one
+      # database. The same checks as everywhere, read from the service's
+      # log, then a stop and a start of the service: the session is
+      # still served.
       - name: brew services start flightdeck
         if: matrix.channel == 'brew' && env.PRERELEASE == 'false'
+        env:
+          GATE_STATE_FILE: ${{ runner.temp }}/brew-gate.state
         run: |
+          test ! -e "$HOME/.flightdeck"
+          log="$(brew --prefix)/var/log/flightdeck.log"
           brew services start flightdeck
-          for _ in $(seq 1 60); do curl -sf -o /dev/null "http://$GATE_LISTEN/ingest/health" && break; sleep 1; done
-          curl -sf "http://$GATE_LISTEN/api/health"
-          grep -q '^Flightdeck ' "$(brew --prefix)/var/log/flightdeck.log"
+          scripts/install-gate.sh check "http://$GATE_LISTEN" cat "$log"
+          test -f "$HOME/.flightdeck/flightdeck.db"
           brew services stop flightdeck
+          scripts/install-gate.sh down "http://$GATE_LISTEN"
+          brew services start flightdeck
+          scripts/install-gate.sh kept "http://$GATE_LISTEN" cat "$log"
+          brew services stop flightdeck
+          rm -f "$GATE_STATE_FILE"
+
+      # However the step above ended, the service is not left running
+      # (keep_alive restarts it for as long as it is loaded).
+      - name: Stop the Homebrew service
+        if: always() && matrix.channel == 'brew' && env.PRERELEASE == 'false'
+        run: brew services stop flightdeck || true
 
   windows:
     name: windows-amd64 (install.ps1)
     needs: resolve
     runs-on: windows-2022
+    # An install and one run of the checks, a few minutes on a cold
+    # disk; twenty fails a leg that wedges long before the six-hour
+    # default.
+    timeout-minutes: 20
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
@@ -290,32 +346,6 @@ jobs:
           ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
 
-      # The runner image ships PostgreSQL as a stopped Windows service
-      # with PGBIN, PGUSER=postgres and PGPASSWORD=root in the environment.
-      - name: Database for the binary
-        if: env.GATE_NEEDS_POSTGRES == 'true'
-        shell: pwsh
-        run: |
-          $svc = Get-Service -Name 'postgresql*' | Select-Object -First 1
-          if (-not $svc) { throw 'no PostgreSQL service on this runner image' }
-          Set-Service -Name $svc.Name -StartupType Manual
-          Start-Service -Name $svc.Name
-          $ready = $false
-          for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
-            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $ready = $true } else { Start-Sleep 1 }
-          }
-          if (-not $ready) { throw 'PostgreSQL did not become ready' }
-          # The image's superuser, as its PostgreSQL install documents them.
-          $user = if ($env:PGUSER) { $env:PGUSER } else { 'postgres' }
-          $password = if ($env:PGPASSWORD) { $env:PGPASSWORD } else { 'root' }
-          $env:PGPASSWORD = $password
-          & "$env:PGBIN\createdb.exe" -h 127.0.0.1 -U $user flightdeck
-          if ($LASTEXITCODE -ne 0) { throw 'createdb failed' }
-          "FLIGHTDECK_DATABASE_URL=postgres://${user}:${password}@127.0.0.1:5432/flightdeck?sslmode=disable" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # The installer as users run it, piped from the raw URL of the tag.
-      # It appends its directory to GITHUB_PATH.
       # cosign on the runner, so install.ps1 takes its signature-check
       # path (the one that reads cosign's stderr) on every gate run.
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
@@ -330,6 +360,8 @@ jobs:
           $findings | Format-Table -AutoSize | Out-String | Write-Host
           if ($findings) { throw "PSScriptAnalyzer: $($findings.Count) finding(s) in install.ps1" }
 
+      # The installer as users run it, piped from the raw URL of the tag.
+      # It appends its directory to GITHUB_PATH.
       - name: install.ps1 (irm | iex)
         shell: pwsh
         env:

@@ -1,5 +1,5 @@
-{{- $component := "flightdeck" -}}
-{{- if .Values.flightdeck.hpa.enabled }}
+{{- $component := "ingestion" -}}
+{{- if .Values.ingestion.hpa.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -9,15 +9,15 @@ metadata:
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
-    kind: StatefulSet
+    kind: Deployment
     name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
-  minReplicas: {{ .Values.flightdeck.hpa.minReplicas }}
-  maxReplicas: {{ .Values.flightdeck.hpa.maxReplicas }}
+  minReplicas: {{ .Values.ingestion.hpa.minReplicas }}
+  maxReplicas: {{ .Values.ingestion.hpa.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.flightdeck.hpa.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.ingestion.hpa.targetCPUUtilizationPercentage }}
 {{- end }}

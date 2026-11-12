@@ -1067,16 +1067,13 @@ jobs:
             exit 1
           fi
 
-  # Helm chart lint + render. scripts/helm-chart-test.sh renders the
-  # chart in every shape it supports (one pod on SQLite, one pod on
-  # Postgres, several pods on Postgres and a shared NATS, the HPA, the
-  # production values) and checks what comes out, then renders every
-  # combination it must refuse (several pods on SQLite or without a
-  # shared bus, a bundled Postgres without a password or with too few
-  # connections, a NATS cluster without a usable token, stream settings
-  # the pods would refuse) and checks the message. Every branch is
-  # checked explicitly so a refactor that drops a guard fails here. No
-  # cluster: `helm lint` and `helm template` only.
+  # Helm chart lint + render. Catches Chart.yaml/values.yaml schema
+  # drift before release. Asserts the production fail-fast contract:
+  # a production render requires postgres.password (v0.5.1), a JWT
+  # secret, and a non-wildcard CORS origin, and refuses each when
+  # unset/unsafe with an actionable message. Also asserts the
+  # security NetworkPolicies render. Every branch is checked explicitly
+  # so a future refactor that drops a guard surfaces immediately.
   helm:
     name: Helm chart lint
     runs-on: ubuntu-24.04
@@ -1088,8 +1085,222 @@ jobs:
         with:
           version: v3.16.2
 
-      - name: helm lint, every supported shape and every refusal
-        run: scripts/helm-chart-test.sh
+      - name: helm lint
+        run: helm lint helm/
+
+      - name: helm template with production secrets succeeds
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
+
+      - name: helm template WITHOUT password fails with actionable message
+        run: |
+          if helm template flightdeck helm/ > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: helm template should fail when postgres.password is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "postgres.password must be set" /tmp/helm-err; then
+            echo "Expected actionable 'postgres.password must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      # Fail-closed production guards (security hardening). A production
+      # install must supply a JWT secret and must not run wildcard CORS
+      # on the bearer-token API. Both branches asserted so a future
+      # refactor that drops a guard surfaces immediately.
+      - name: helm template WITHOUT jwtSecret fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.auth.jwtSecret is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "jwtSecret must be set" /tmp/helm-err; then
+            echo "Expected actionable 'jwtSecret must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with wildcard CORS fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.corsOrigin is '*'"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "corsOrigin must not be" /tmp/helm-err; then
+            echo "Expected actionable 'corsOrigin must not be' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template WITHOUT a NATS token fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when nats.auth.token is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token must be set" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with a NATS token that is not URL-safe fails
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --set nats.auth.token='a/b@c' \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: a token with URL-reserved characters should fail the render"
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token may contain only" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token may contain only' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template percent-encodes the bundled Postgres password
+        run: |
+          out=$(helm template flightdeck helm/ \
+            --set postgres.password='p@ss w+rd/x' \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --show-only templates/secret.yaml)
+          if ! grep -q 'postgres://flightdeck:p%40ss%20w%2Brd%2Fx@' <<< "$out"; then
+            echo "Expected the DSN password percent-encoded; got:"
+            grep POSTGRES_URL <<< "$out"
+            exit 1
+          fi
+
+      - name: helm template renders NetworkPolicies for postgres and nats
+        run: |
+          count=$(helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com \
+            | grep -c 'kind: NetworkPolicy')
+          if [ "$count" -ne 2 ]; then
+            echo "Expected 2 NetworkPolicy resources, got $count"
+            exit 1
+          fi
+
+      - name: helm template runs the dashboard as uid 101 and the rest as 1000
+        # The dashboard image's nginx user is uid 101 (asserted by the
+        # Dashboard job); the Go services run under the chart-wide 1000.
+        run: |
+          set -e
+          render() {
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only "templates/$1/deployment.yaml" "${@:2}"
+          }
+          out=$(render dashboard)
+          for f in runAsUser runAsGroup fsGroup; do
+            grep -qE "^ +$f: 101$" <<<"$out" \
+              || { echo "FAIL: dashboard pod must have $f 101"; exit 1; }
+          done
+          for c in api ingestion workers; do
+            render "$c" | grep -qE '^ +runAsUser: 1000$' \
+              || { echo "FAIL: $c pod must run as uid 1000"; exit 1; }
+          done
+          # Either context set to null still renders: the dashboard then
+          # takes whichever one is left.
+          render dashboard --set dashboard.podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 1000$' \
+            || { echo "FAIL: dashboard.podSecurityContext=null must fall back to the chart-wide context"; exit 1; }
+          render dashboard --set podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 101$' \
+            || { echo "FAIL: podSecurityContext=null must still render the dashboard's own context"; exit 1; }
+
+      - name: helm template sets the FLIGHTDECK stream's limits and replicas
+        # Ingestion applies these to the stream at startup. Replicas
+        # default to 3 on a NATS cluster of 3 or more servers and to 1
+        # below that, and a count the cluster cannot place, or a limit
+        # ingestion would refuse, fails the render.
+        run: |
+          set -e
+          render() {
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only templates/configmap.yaml "$@"
+          }
+          expect() {
+            local want="$1"; shift
+            grep -qE "^ +$want$" <<<"$(render "$@")" \
+              || { echo "FAIL: want $want for $*"; render "$@" | grep STREAM; exit 1; }
+          }
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS: "72"'
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "5120"'
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"'
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' --set nats.replicas=1
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "1"' --set nats.replicas=2
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "3"' --set nats.replicas=5
+          expect 'FLIGHTDECK_NATS_STREAM_REPLICAS: "5"' --set nats.replicas=5 --set nats.jetstream.stream.replicas=5
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "30720"' -f helm/values.prod.yaml
+          refuse() {
+            local msg="$1"; shift
+            if render "$@" > /tmp/helm-out 2> /tmp/helm-err; then
+              echo "EXPECTED FAILURE for $*"; exit 1
+            fi
+            grep -q "$msg" /tmp/helm-err \
+              || { echo "Expected '$msg' for $*; got:"; cat /tmp/helm-err; exit 1; }
+          }
+          refuse "must not exceed nats.replicas" --set nats.replicas=1 --set nats.jetstream.stream.replicas=3
+          refuse "must be between 1 and 5" --set nats.replicas=7 --set nats.jetstream.stream.replicas=6
+          refuse "maxAgeHours must be at least 1" --set nats.jetstream.stream.maxAgeHours=0
+          refuse "maxSizeMiB must be at least 64" --set nats.jetstream.stream.maxSizeMiB=10
+          refuse "must not be 2" --set nats.jetstream.stream.replicas=2
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.stream.maxSizeMiB=7681
+          refuse "at most 75% of nats.jetstream.fileStore.size" --set nats.jetstream.fileStore.size=50Gi --set nats.jetstream.stream.maxSizeMiB=38401
+          expect 'FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: "7680"' --set nats.jetstream.stream.maxSizeMiB=7680
+          # A change to the settings rolls the ingestion pods, which
+          # apply them at startup.
+          sum() {
+            helm template flightdeck helm/ --set postgres.password=ci-test-password \
+              --set api.env=development --show-only templates/ingestion/deployment.yaml "$@" \
+              | grep 'checksum/nats-stream'
+          }
+          [ "$(sum)" != "$(sum --set nats.jetstream.stream.maxAgeHours=24)" ] \
+            || { echo "FAIL: the ingestion pod annotation must change with the stream settings"; exit 1; }
+
+      - name: helm template in development mode renders with defaults
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.env=development > /dev/null
+
+      - name: helm template with externalUrl skips password requirement
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
   # Schema-validate the Claude Code plugin marketplace manifest. The
   # plugin install path (``/plugin marketplace add flightdeckhq/flightdeck``
@@ -1129,10 +1340,10 @@ jobs:
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh
 
-      # The scripts the dev stack, the integration job and the chart and
-      # compose checks run.
-      - name: shellcheck on the dev stack, chart and compose scripts
-        run: shellcheck scripts/dev-stack.sh scripts/go-db-tests.sh scripts/helm-chart-test.sh scripts/compose-smoke.sh
+      # The scripts the dev stack, the integration job and the compose
+      # check run.
+      - name: shellcheck on the dev stack and compose scripts
+        run: shellcheck scripts/dev-stack.sh scripts/go-db-tests.sh scripts/compose-smoke.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback

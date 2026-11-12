@@ -894,23 +894,23 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
 
-## D266 -- Compose and Helm run the one image: one instance on SQLite by default, more than one only on Postgres and a shared NATS
+## D266 -- Docker Compose runs the one image: one container on SQLite, published on loopback, the token read from the origin
 
 **Date:** 2026-11-12
-**Decision:** `docker/docker-compose.yml` is one `flightdeck` service on
-SQLite, published on loopback; `docker-compose.postgres.yml` adds a
-Postgres with a required password. The Helm chart is one StatefulSet of
-that image, one pod on SQLite by default; its render refuses more than
-one pod without a Postgres and a NATS the pods share. The per-service
-compose services, overlays, nginx and chart values are gone.
-**Why:** D261's one topology. A SQLite file has one process (D262) and
-every embedded bus is its own, so several pods on either would split
-the data behind one Service without an error.
-**Rejected alternative:** a Deployment (one claim serves one pod; a
-rolling update starts the new pod against a held data-dir lock); scaling
-on SQLite with a warning; a compose healthcheck (nothing in the
-distroless image can run one); publishing the compose port on every
-interface (the origin serves the dashboard token).
+**Decision:** `docker/docker-compose.yml` is one `flightdeck` service:
+SQLite on a named volume, the port published on `127.0.0.1`, a compose
+project of its own name. `docker-compose.postgres.yml` adds a Postgres
+whose password is required. The container's first start mints the
+token, which users read from `/runtime-config.json`. The seven
+per-service compose services, the production and E2E overlays and
+`docker/nginx` are gone.
+**Why:** D261's one topology. The origin serves the dashboard token, so
+publishing it is the operator's choice, and the start-up block shows the
+token in full only once.
+**Rejected alternative:** publishing on every interface; a compose
+healthcheck (nothing in the distroless image can run one); a default
+Postgres password; a bind-mounted `secrets.json` (the image's user
+cannot write a host directory it does not own).
 
 ## D267 -- The contributor dev stack is the binary from source beside one Postgres container
 

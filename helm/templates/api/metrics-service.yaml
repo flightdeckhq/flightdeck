@@ -1,0 +1,25 @@
+{{- if gt (int .Values.api.metricsPort) 0 }}
+{{- $component := "api" -}}
+{{- /*
+Headless record for the query API pods' metrics listener (the
+request-latency histogram at /metrics), so a scraper or a ServiceMonitor
+finds every pod through it. The listener carries no auth, so it is kept
+off the api Service, which the Ingress routes to and an operator may
+make a LoadBalancer.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" (printf "%s-metrics" $component)) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.api.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

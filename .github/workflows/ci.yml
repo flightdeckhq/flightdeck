@@ -734,18 +734,22 @@ jobs:
       matrix:
         include:
           - name: Integration + sensor e2e
+            slug: postgres-16
             stack: postgres
             postgres_image: postgres:16-alpine
             postgres_data_dir: /var/lib/postgresql/data
           - name: Integration + sensor e2e (Postgres 18)
+            slug: postgres-18
             stack: postgres
             postgres_image: postgres:18-alpine
             postgres_data_dir: /var/lib/postgresql
           - name: Integration + sensor e2e (SQLite)
+            slug: sqlite
             stack: sqlite
             postgres_image: postgres:16-alpine
             postgres_data_dir: /var/lib/postgresql/data
           - name: Integration (split services, worker pause)
+            slug: split
             stack: split
             postgres_image: postgres:16-alpine
             postgres_data_dir: /var/lib/postgresql/data
@@ -809,6 +813,7 @@ jobs:
         run: make dev DB=${{ matrix.stack }}
 
       - name: Run integration tests (fabricated + sensor e2e)
+        id: tests
         if: ${{ matrix.stack != 'split' }}
         # The test-integration target runs two phases: the parallel
         # phase under pytest-xdist for every test that keeps to its
@@ -822,8 +827,72 @@ jobs:
         # -rs lists every skipped test with its reason at the end of
         # each phase: on the binary those are the worker-pause tests
         # (they run in the split leg), on SQLite the postgres_only
-        # ones as well.
-        run: make test-integration DB=${{ matrix.stack }} PYTEST_ADDOPTS=-rs
+        # ones as well. The output is kept in a file for the evidence
+        # steps below.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          make test-integration DB=${{ matrix.stack }} PYTEST_ADDOPTS=-rs 2>&1 | tee "$RUNNER_TEMP/evidence/test-output.log"
+
+      - name: Boot the split test stack and run the exclusive phase on it
+        id: split
+        if: ${{ matrix.stack == 'split' }}
+        # `make test-split` starts the stack (the three services compile
+        # in their containers; compose waits for their health), seeds
+        # the fixtures and runs the tests marked `exclusive`. The
+        # worker-pause tests are among them and must run here, not
+        # skip: the step fails when pytest reports the skip reason they
+        # carry against a stack without a worker container.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          make test-split PYTEST_ADDOPTS=-rs 2>&1 | tee "$RUNNER_TEMP/evidence/test-output.log"
+          if grep -q "pausing the worker needs" "$RUNNER_TEMP/evidence/test-output.log"; then
+            echo "::error::a worker-pause test skipped on the split test stack"
+            exit 1
+          fi
+
+      # What a failure leaves behind, kept before anything else runs:
+      # the test output, and the log of the stack (the binary's, or the
+      # split stack's containers'). A leg once failed here on a runner
+      # that then stopped answering, and nothing of it could be read;
+      # these two steps upload within seconds of the tests ending, and
+      # the step summary names the failed tests with the end of the log.
+      - name: Collect the test output and the stack's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          if [ "${{ matrix.stack }}" = split ]; then
+            docker compose -p flightdeck-split -f docker/docker-compose.split.yml logs --no-color \
+              > "$RUNNER_TEMP/evidence/stack.log" 2>&1 || true
+          else
+            cp .dev/flightdeck.log "$RUNNER_TEMP/evidence/stack.log" 2>/dev/null || true
+          fi
+          if [ "${{ steps.tests.outcome }}" = failure ] || [ "${{ steps.split.outcome }}" = failure ]; then
+            {
+              echo "### ${{ matrix.name }}: the tests failed"
+              echo
+              echo '```'
+              grep -E '^(FAILED|ERROR) |=+ .*(passed|failed|error)' "$RUNNER_TEMP/evidence/test-output.log" | cut -c 1-300 | head -60 || true
+              echo '```'
+              echo
+              echo "The end of the stack's log (the whole of it is in the \`integration-evidence-${{ matrix.slug }}\` artifact):"
+              echo
+              echo '```'
+              tail -n 80 "$RUNNER_TEMP/evidence/stack.log" | cut -c 1-400 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the test output and the stack's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: integration-evidence-${{ matrix.slug }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 14
 
       - name: Go tests that need Postgres or NATS
         # The Go tests that read TEST_POSTGRES_URL skip their Postgres
@@ -841,22 +910,6 @@ jobs:
         # stay independent, but not when the stack never booted.
         if: ${{ !cancelled() && matrix.stack == 'postgres' && steps.boot.outcome == 'success' }}
         run: make test-go-db
-
-      - name: Boot the split test stack and run the exclusive phase on it
-        if: ${{ matrix.stack == 'split' }}
-        # `make test-split` starts the stack (the three services compile
-        # in their containers; compose waits for their health), seeds
-        # the fixtures and runs the tests marked `exclusive`. The
-        # worker-pause tests are among them and must run here, not
-        # skip: the step fails when pytest reports the skip reason they
-        # carry against a stack without a worker container.
-        run: |
-          set -o pipefail
-          make test-split PYTEST_ADDOPTS=-rs | tee "$RUNNER_TEMP/split.log"
-          if grep -q "pausing the worker needs" "$RUNNER_TEMP/split.log"; then
-            echo "::error::a worker-pause test skipped on the split test stack"
-            exit 1
-          fi
 
       - name: Dump the stack's logs on failure
         if: failure()
@@ -1012,6 +1065,28 @@ jobs:
         with:
           name: playwright-test-results-${{ matrix.shard }}
           path: dashboard/test-results/
+          retention-days: 14
+
+      # The binary's log of the whole shard, on every run: a test that
+      # fails its first attempt and passes on retry leaves a trace in
+      # the report, and this is what the stack logged at that second
+      # (its lines carry UTC wall-clock times). .dev is a hidden
+      # directory, which the upload action skips, hence the copy.
+      - name: Keep the binary's log
+        id: stacklog
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          cp .dev/flightdeck.log "$RUNNER_TEMP/evidence/flightdeck.log" 2>/dev/null || true
+
+      - name: Upload the binary's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: e2e-stack-log-${{ matrix.shard }}
+          path: ${{ runner.temp }}/evidence/
           retention-days: 14
 
       - name: Dump the stack's logs on failure

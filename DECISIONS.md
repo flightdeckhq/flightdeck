@@ -893,3 +893,43 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 (it miscounts, and the stop is bounded by the message deadline anyway);
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
+
+## D266 -- Compose and Helm run the one image: one instance on SQLite by default, more than one only on Postgres and a shared NATS
+
+**Date:** 2026-11-12
+**Decision:** `docker/docker-compose.yml` is one `flightdeck` service on
+SQLite with its port published on loopback; `docker-compose.postgres.yml`
+adds a Postgres whose password is required. The Helm chart is one
+StatefulSet of the same image, one pod on SQLite by default, and its
+render refuses `flightdeck.replicas` above 1 (or the HPA) without a
+Postgres and without a NATS the pods share. The per-service compose
+services, the prod and e2e overlays, `docker/nginx` and the chart's
+`api.*`, `ingestion.*`, `workers.*` and `dashboard.*` values are gone.
+**Why:** D261's one topology. A SQLite file has one process (D262) and
+every embedded bus is its own, so several pods on either would split
+the data behind one Service without an error.
+**Rejected alternative:** a Deployment (its one claim serves one pod,
+and a rolling update starts the new pod against a held data-dir lock);
+scaling on SQLite with a warning; a compose healthcheck (nothing in the
+distroless image can run one); publishing the compose port on every
+interface (the origin serves the dashboard token).
+
+## D267 -- The contributor dev stack is the binary from source beside one Postgres container
+
+**Date:** 2026-11-12
+**Decision:** `make dev` builds `cmd/flightdeck` with the dashboard
+embedded and runs it on `127.0.0.1:4000` against the Postgres container
+of `docker/docker-compose.dev.yml` (project `docker`, the existing
+`docker_postgres_data` volume); `make dev DB=sqlite` runs it alone. The
+test fixtures learn the stack's database from `.dev/stack.env`. The
+three services as containers remain only as the split test stack
+(`docker-compose.split.yml`: own project, port and database) for the
+tests that pause the worker container.
+**Why:** contributors test the topology users run, and a dev database
+survives the switch: project, volume and Postgres service are unchanged.
+**Rejected alternative:** the seven containers as the dev stack (a
+second topology); the binary in a container (a published port is not
+loopback, so no dev token); SQLite as the dev default (the E2E seeder
+writes Postgres SQL); a NATS container (one Go package needs a server,
+which `scripts/go-db-tests.sh` starts); a hook that pauses the
+in-process workers (test-only code in the product).

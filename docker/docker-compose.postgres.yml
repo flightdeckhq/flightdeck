@@ -1,17 +1,17 @@
 # Postgres instead of SQLite, as a second container. Layer it on the
-# base file:
+# base file, with POSTGRES_PASSWORD set in docker/.env:
 #
-#   POSTGRES_PASSWORD=<password> docker compose \
-#     -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml up -d
 #
 # POSTGRES_PASSWORD is required: compose refuses to start without it,
 # since a default would be one well-known password on every install.
 # Use letters, digits and - . _ ~ only (openssl rand -hex 24 gives
 # one): the same value is the server's password and a part of the
 # database URL, where `@`, `:`, `/`, `?`, `#` and `%` would be read as
-# URL syntax. Put it in docker/.env to keep it out of the shell
-# history. It is applied when the database volume is first created;
-# changing it later needs ALTER USER in the database as well.
+# URL syntax. docker/.env keeps it out of the shell history and gives
+# every later `up` the same value. It is applied when the database
+# volume is first created; changing it later needs ALTER USER in the
+# database as well.
 #
 # The database listens on the compose network only; nothing is
 # published on the host. Its data is on the `flightdeck_postgres_data`

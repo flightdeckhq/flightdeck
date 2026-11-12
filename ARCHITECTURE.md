@@ -10741,9 +10741,10 @@ decision. `:4000` inside the container is not a loopback address, so
 the first start mints the token; the start-up block in `docker compose
 logs flightdeck` carries it on that start only, and
 `/runtime-config.json` on the published port returns it on every
-start. `FLIGHTDECK_DATABASE_URL` and `FLIGHTDECK_DOMAIN` pass through
-from the shell or `docker/.env`, and `FLIGHTDECK_IMAGE` names another
-image. `docker/docker-compose.postgres.yml`, layered on it, adds a
+start. `FLIGHTDECK_DATABASE_URL`, `FLIGHTDECK_DOMAIN` and the stream's
+two limits (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`,
+`FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB`) pass through from the shell or
+`docker/.env`, and `FLIGHTDECK_IMAGE` names another image. `docker/docker-compose.postgres.yml`, layered on it, adds a
 `postgres:16-alpine` service on the compose network only (nothing
 published), sets the database URL to it and makes `flightdeck` wait for
 its health check; it requires `POSTGRES_PASSWORD`, limited to

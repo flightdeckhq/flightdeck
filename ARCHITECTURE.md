@@ -10711,7 +10711,16 @@ dashboard URL), the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
 engine's name) and the bus (embedded, with its store dir, or the
-external URL). Everything else is `slog` on stderr.
+external URL). Everything else is `slog` on stderr. The two URLs are
+`https://<domain>` with `--domain`; `http://localhost:<port>` for a
+loopback listen; the listen address as given when it names one
+interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for
+a listen on every interface (`:4000`, `0.0.0.0:4000`, `[::]:4000`),
+with a note to put the machine's name or address in place of
+`<this-host>`. The operating system's host name is not printed there:
+inside a container it is the container's id (the pod's name under
+Kubernetes), which nothing outside resolves, and the binary cannot know
+the name or the published port the machine is reached by.
 
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,

@@ -321,6 +321,13 @@ All notable changes to Flightdeck are documented here.
   naming what happened and the setting to change; the token is never
   printed. Before, the only trace was a line in Claude Code's debug
   log. The hook still exits 0 and the session carries on.
+- **The start-up block of a container shows an address a person can
+  use.** For a listen on every interface (`:4000`, the image's) the
+  block printed `http://<host name>:4000`, and a container's host name
+  is its id. It now prints `http://<this-host>:4000` with a note to put
+  the machine's name or address in its place; a loopback listen still
+  reads `http://localhost:4000`, an address on one interface is shown
+  as given, and `--domain` shows `https://<domain>`.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

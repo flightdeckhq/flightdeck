@@ -647,10 +647,14 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 }
 
 func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, layout datadir.Layout, db database, embedded bool) {
-	base := publicURL(opts)
+	base, anyInterface := publicURL(opts)
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\nFlightdeck %s\n\n", version)
-	p("  Dashboard   %s\n", base)
+	if anyInterface {
+		p("  Dashboard   %s   (every interface of this machine: put its name or address in place of %s)\n", base, thisHost)
+	} else {
+		p("  Dashboard   %s\n", base)
+	}
 	p("  Ingestion   %s/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n", base)
 	switch {
 	case dev:
@@ -674,26 +678,40 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	p("\nPress Ctrl+C to stop.\n\n")
 }
 
+// thisHost stands for the machine's own name or address in the start-up
+// block when the binary listens on every interface. The operating
+// system's host name is not printed in its place: inside a container it
+// is the container's id (a pod's name under Kubernetes), which nothing
+// outside the container resolves, and the binary cannot know the name
+// or the published port the machine is reached by from outside. The
+// placeholder has no space, so the URL stays one word.
+const thisHost = "<this-host>"
+
 // publicURL is the address to open in a browser: the domain in TLS
 // mode; otherwise the listen address, with localhost for a loopback
-// bind and the machine's host name for a bind on every interface.
-func publicURL(opts cli.Options) string {
+// bind and thisHost for a bind on every interface, for which
+// anyInterface is true. An address bound to one interface is shown as
+// given.
+func publicURL(opts cli.Options) (url string, anyInterface bool) {
 	if opts.Domain != "" {
-		return "https://" + opts.Domain
+		return "https://" + opts.Domain, false
 	}
 	host, port, err := net.SplitHostPort(opts.Listen)
 	if err != nil {
-		return "http://" + opts.Listen
+		return "http://" + opts.Listen, false
 	}
 	switch {
-	case host == "" || host == "0.0.0.0" || host == "::":
-		if h, err := os.Hostname(); err == nil && h != "" {
-			host = h
-		} else {
-			host = "localhost"
-		}
+	case host == "" || unspecified(host):
+		host, anyInterface = thisHost, true
 	case bootstrap.Loopback(opts.Listen):
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return "http://" + net.JoinHostPort(host, port), anyInterface
+}
+
+// unspecified reports whether host is the address that binds every
+// interface: 0.0.0.0 or ::, in any spelling.
+func unspecified(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }

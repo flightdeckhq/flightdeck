@@ -59,8 +59,9 @@ export {
   parseBool,
   redactServerUrl,
   resolveConfig,
+  serverBaseUrl,
 } from "./core/config.mjs";
-export { redactUserinfo } from "./core/poster.mjs";
+export { describeStartFailure, redactUserinfo } from "./core/poster.mjs";
 export {
   CI_PROVIDER_ENV,
   collectClaudeCodeSignals,

@@ -123,10 +123,63 @@ export function parseBool(value, fallback) {
   return fallback;
 }
 
-// The default server, a local ``make dev`` stack, and the seed token
-// that stack accepts when ``ENVIRONMENT=dev``.
+// The default server, the local ``flightdeck`` binary or ``make dev``
+// stack, and the seed token it accepts on loopback (the binary) or with
+// ``ENVIRONMENT=dev`` (the compose stack).
 export const DEFAULT_SERVER = "http://localhost:4000";
 export const DEFAULT_TOKEN = "tok_dev";
+
+// The path a Flightdeck origin publishes its ingestion API under. The
+// plugin builds its endpoints from the origin's base URL
+// (``<base>/ingest/v1/events``, ``<base>/api/v1/...``).
+const INGEST_PATH = "/ingest";
+
+/** ``path`` without trailing slashes and without a final ``/ingest`` segment. */
+function withoutIngest(path) {
+  const trimmed = path.replace(/\/+$/, "");
+  // endsWith("/ingest") is true only for a whole last segment:
+  // "/fd/ingest" yes, "/myingest" and "/ingestion" no.
+  return trimmed.endsWith(INGEST_PATH) ? trimmed.slice(0, -INGEST_PATH.length).replace(/\/+$/, "") : trimmed;
+}
+
+/**
+ * The base URL of the Flightdeck server a configured value names.
+ *
+ * One value must work for the sensor and the plugin. The ``flightdeck``
+ * binary prints its ingestion URL (``http://host:4000/ingest``), which
+ * is the form the Python sensor's ``FLIGHTDECK_SERVER`` takes, while
+ * the plugin appends ``/ingest/v1/events`` to a base URL
+ * (``http://host:4000``). Both forms name the same server, so both
+ * resolve to the base here, and this is the only place that decides:
+ *
+ *   * a final ``/ingest`` path segment is dropped, with or without a
+ *     trailing slash; a path that merely ends in those letters
+ *     (``/myingest``) or continues past them (``/ingestion``) is kept;
+ *   * a path prefix stays (``https://example.com/fd`` and
+ *     ``https://example.com/fd/ingest`` both give
+ *     ``https://example.com/fd``);
+ *   * trailing slashes, a query string and a fragment are dropped: the
+ *     plugin appends a path, so none of them could reach the server;
+ *   * the scheme and the host are lower-cased, as URLs compare.
+ *
+ * A value that is not an http(s) URL (no scheme, a typo) cannot work
+ * either way; it is returned with the same trimming so the failed
+ * request's log line names what was configured. A blank value gives "".
+ */
+export function serverBaseUrl(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "") return "";
+  let url = null;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Not a URL at all; trimmed as text below.
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:") || url.host === "") {
+    return withoutIngest(raw.replace(/[?#].*$/s, ""));
+  }
+  return `${url.protocol}//${url.host}${withoutIngest(url.pathname)}`;
+}
 
 /** The first value that is a non-blank string, trimmed, or "". */
 function firstSet(...values) {
@@ -154,9 +207,12 @@ function firstSet(...values) {
  * manifest's ``default``, so the plugin keeps its own defaults.
  *
  * Rationale for each default:
- *   * ``server`` points at the dev nginx (localhost:4000). A
- *     whitespace-only value is treated as unset so a user who sets
- *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
+ *   * ``server`` points at the local binary or dev stack
+ *     (localhost:4000). A whitespace-only value is treated as unset so
+ *     a user who sets ``FLIGHTDECK_SERVER=""`` in a script does not
+ *     silently break. The resolved ``server`` is always the base URL:
+ *     the ingestion URL the binary prints (``.../ingest``) and the
+ *     base both resolve to it (see serverBaseUrl).
  *   * ``token`` defaults to ``tok_dev``, the seed token the dev
  *     compose stack accepts when ``ENVIRONMENT=dev``. Production
  *     deployments do not set ``ENVIRONMENT=dev`` so the seed token
@@ -191,8 +247,10 @@ export function resolveConfig(env = process.env) {
   // "https://user:token@host" server could never work and would only
   // leak the token into every failed-POST log line. Strip the userinfo
   // and say so; the bearer token is the one credential the plugin uses.
-  const server = redactServerUrl(rawServer);
-  if (server !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
+  const redacted = redactServerUrl(rawServer);
+  // The base URL, whichever form was configured (see serverBaseUrl).
+  const server = serverBaseUrl(redacted);
+  if (redacted !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
       "[flightdeck] WARN: the server URL carries credentials; " +
         "they are ignored. Authenticate with the token option or FLIGHTDECK_TOKEN.\n",

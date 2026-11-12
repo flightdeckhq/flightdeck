@@ -78,7 +78,7 @@ Guarantees that hold regardless of the knob settings:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Base URL of your Flightdeck stack. Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. Overrides the `server` option. |
+| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Address of your Flightdeck server, in either form: the base URL (`http://localhost:4000`) or the ingestion URL the `flightdeck` start-up block prints (`http://localhost:4000/ingest`), which is also what the Python sensor takes, so one value serves both. Hooks fire `POST <base>/ingest/v1/events`. Overrides the `server` option. |
 | `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Bearer token used in the `Authorization` header. Overrides the `token` option. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
@@ -224,13 +224,21 @@ sensor reports, even when the run loads it. See the
 
 ### "I don't see my session at all"
 
-Quick health check:
+When the server does not accept the session's first event, Claude Code shows a warning from the plugin at the start of the session, once:
 
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" "$FLIGHTDECK_SERVER/ingest/health"
+```
+Flightdeck: no answer from http://localhost:4000 (ECONNREFUSED). Start flightdeck, or set FLIGHTDECK_SERVER or the plugin's server option to the address it prints when it starts. Nothing from this session is recorded until the server accepts an event.
 ```
 
-Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check the server option or `FLIGHTDECK_SERVER` and that the stack is actually running (`docker ps` should show `docker-ingestion-1` healthy). If you get `401` or `403`, the token is wrong.
+The same warning names an address that is not a Flightdeck server's (`has no ingestion API at <url> (HTTP 404)`) and a refused token (`refused the access token (HTTP 401)`; the token itself is never printed). The session carries on either way: the plugin fails open.
+
+Quick health check, with the base URL of your server:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:4000/ingest/health"
+```
+
+Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check the server option or `FLIGHTDECK_SERVER` and that the server is actually running. If you get `401` or `403`, the token is wrong.
 
 ### "cannot reach" stderr line on every Claude run
 

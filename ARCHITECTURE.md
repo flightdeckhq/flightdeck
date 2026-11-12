@@ -672,7 +672,12 @@ def init(
     default. The environment wins over a passed kwarg, as for every other
     knob; init warns when it overrides a different server. The server
     default is http://localhost:4000/ingest, the local flightdeck binary
-    or dev stack. The token default is the dev seed token tok_dev, and it
+    or dev stack. The server may be given as the ingestion URL (ending in
+    /ingest, what the binary's start-up block prints) or as the base URL
+    without it (http://localhost:4000, the Claude Code plugin's form):
+    a path without /ingest gets it appended, and a path that has it is
+    used as written. Only the path is looked at, so a host named
+    ingest.example.com is a host. The token default is the dev seed token tok_dev, and it
     applies only when neither the server nor the token was supplied by
     kwarg or environment and the default server's host is loopback
     (localhost, 127.0.0.1, ::1); init then logs one WARNING naming the
@@ -685,7 +690,8 @@ def init(
 
     api_url is the base URL for control-plane calls (directive registration,
     sync, policy prefetch). Derived from server by replacing "/ingest" with
-    "/api" when None. Override via FLIGHTDECK_API_URL.
+    "/api" in its path when None, so it stays on the server's host.
+    Override via FLIGHTDECK_API_URL.
 
     limit sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
@@ -2205,6 +2211,22 @@ option the user never saved reaches the hooks unset. A blank value
 counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
+
+The server is one value for the plugin and the sensor, in either of two
+forms: the server's base URL (`http://localhost:4000`) or its ingestion
+URL (`http://localhost:4000/ingest`, what the `flightdeck` start-up
+block prints and the sensor's default has). `serverBaseUrl`
+(`core/config.mjs`) resolves both to the base URL, and it is the only
+place that decides: a final `/ingest` path segment is dropped, with or
+without a trailing slash, and every other path is kept, so a reverse
+proxy's prefix works in both forms (`https://example.com/fd` and
+`https://example.com/fd/ingest`) and a path that only ends in those
+letters (`/myingest`) is not touched. Trailing slashes, a query string
+and a fragment are dropped, since the plugin appends its own paths; the
+scheme and the host are lower-cased. The plugin posts events to
+`<base>/ingest/v1/events` and reads MCP policies from `<base>/api`
+(`FLIGHTDECK_API_URL` overrides the latter). The sensor resolves the
+same two forms to the same endpoints (see Sensor, Public API).
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
 environment variables (see Content Capture). A repository's project
 settings (`.claude/settings.json`, `.claude/settings.local.json`) can
@@ -2419,6 +2441,25 @@ subagent's `SubagentStart` sends the child's `session_start`, with the
 prompt the subagent was given, through the same claim and marker; the
 child's interior hooks give it one second to claim first, then send a
 `session_start` themselves only if it has not. The payload carries the `collectContext` dict.
+
+A failed POST writes one line to the hook's stderr (`[flightdeck]
+cannot reach <server>: <reason>. events dropped for this session.`) and
+the hook exits 0: the plugin fails open, and the next hook sends the
+`session_start` again. Claude Code keeps the stderr of a hook that
+exits 0 in its debug log only, so the `SessionStart` hook also tells
+the user when the server does not accept the session's first event: it
+prints `{"systemMessage": "..."}` on stdout, which Claude Code shows as
+a warning. The message says what happened and which setting to change:
+no answer (the server is not running, or the address is wrong), a 404
+or 405 (the address is not a Flightdeck server's; the message names the
+URL that was tried), a 401 or 403 (the token was refused; the message
+names `FLIGHTDECK_TOKEN` and the token option, never the token), a
+value that is not an `http://` or `https://` URL, or any other status.
+It is shown once per session (a marker,
+`start-notice-${sessionId}.txt`, so a `SessionStart` that fires again
+after a compaction does not repeat it) and only by `SessionStart`:
+every other hook's stdout stays empty, since Claude Code adds a
+`UserPromptSubmit` hook's plain stdout to the model's context.
 
 `collectContext` is the Node.js parallel of the Python sensor's
 `context.py`: pid, process_name, os (Windows / Darwin / Linux), arch,
@@ -10664,7 +10705,9 @@ formats the timestamps it reads from the database in the process's zone,
 and its contract is RFC 3339 in UTC, whatever zone the host is in.
 
 **Start-up output.** One block on stdout: the version, the dashboard
-URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
+URL, the ingestion URL (the one value of `FLIGHTDECK_SERVER` for the
+sensor and the Claude Code plugin, both of which also accept the
+dashboard URL), the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
 engine's name) and the bus (embedded, with its store dir, or the
@@ -10881,7 +10924,7 @@ names and defaults under the binary.
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_SERVER` | Ingestion base URL; overrides the `server=` kwarg; default `http://localhost:4000/ingest` |
+| `FLIGHTDECK_SERVER` | The control plane's address: its ingestion URL (`http://localhost:4000/ingest`, the default and what the start-up block prints) or its base URL (`http://localhost:4000`); overrides the `server=` kwarg. The Claude Code plugin reads the same variable and accepts the same two forms |
 | `FLIGHTDECK_TOKEN` | Access token; overrides the `token=` kwarg; defaults to `tok_dev` only when the server is also defaulted (see Sensor, Public API) |
 | `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
 | `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |

@@ -460,6 +460,24 @@ export function clearSessionStarted(sessionId) {
   removeStateFile(`started-${sessionId}.txt`);
 }
 
+/**
+ * Claim the one "this session is not being recorded" notice of
+ * ``sessionId``: true the first time, false once it has been shown, so
+ * a SessionStart that fires again in the session (a compaction) does
+ * not repeat it. With an unusable state directory the answer is true:
+ * a repeated notice is better than none.
+ */
+export function claimStartFailureNotice(sessionId) {
+  const dir = stateDir();
+  try {
+    mkdirOwnerOnly(dir);
+    writeFileSync(join(dir, `start-notice-${sessionId}.txt`), new Date().toISOString(), { flag: "wx" });
+    return true;
+  } catch (err) {
+    return err?.code !== "EEXIST";
+  }
+}
+
 // ---------------------------------------------------------------------
 // Ended subagent marker. SubagentStop leaves it for the child session;
 // a later SubagentStart of the same child (a SendMessage resume, or a

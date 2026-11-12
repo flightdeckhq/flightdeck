@@ -10644,7 +10644,38 @@ like any other), prints it once in the start-up block, and keeps the
 plaintext in `secrets.json` so `/runtime-config.json` can hand it to the
 dashboard on every start. On a later start the stored token is
 validated against the database and re-minted if it no longer resolves
-(a new database under an old data dir). Serving the dashboard token
+(a new database under an old data dir).
+
+An operator can supply the token instead, so that it is known before
+the first start and several instances on one Postgres database share
+one: `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names a file that holds it (a
+mounted Kubernetes or Docker secret), and `FLIGHTDECK_DASHBOARD_TOKEN`
+holds it directly; the file wins when both are set, because it is the
+form that stays out of the process environment (`docker inspect`, a
+crash report), and the binary says which one it used. The value must
+have the form of a minted token, `ftd_` followed by 32 lower-case hex
+digits (`printf 'ftd_%s' "$(openssl rand -hex 16)"`), with at least
+eight distinct digits; anything else stops the start with a message
+that names the variable and the expected form and never the value. The
+file is read once at start, surrounding white space is dropped, and its
+mode is not checked: Kubernetes mounts a secret 0644 and Docker 0444,
+inside a container that has no other user. The binary stores the token
+as an `access_tokens` row named `Supplied dashboard token`, hashed with
+a salt like any other; the salt is derived from the token, so every
+instance computes the same row and the insert is `ON CONFLICT DO
+NOTHING` on the hash: instances starting together all succeed and leave
+one row. It is not written to `secrets.json`, the start-up block prints
+`supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE` in place of the token, and
+no log line or error carries it. `/runtime-config.json` serves it to
+the dashboard as it serves a minted token, so it is a secret of this
+deployment's dashboard and nothing else: do not reuse a value that
+protects anything more. When the supplied token changes, the new one is
+stored and served and the earlier one stays valid until it is revoked
+in Settings (both rows carry the name; the prefix and the creation time
+tell them apart): the pods of a rolling update that still run with the
+old value keep working. Without the variables the binary mints, as
+above. On a loopback listen the development token is used and a
+supplied token is ignored with a warning. Serving the dashboard token
 from `/runtime-config.json` to anyone who can reach the origin is the
 same trust boundary the mounted `runtime-config.json` had: a
 non-loopback deployment protects the origin at the network edge or
@@ -10815,6 +10846,11 @@ over the defaults.
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
+
+Two more variables have no flag, since a flag's value shows in the
+process list: `FLIGHTDECK_DASHBOARD_TOKEN_FILE`, the path of a file
+holding the dashboard token the operator supplies, and
+`FLIGHTDECK_DASHBOARD_TOKEN`, the token itself (see Auth bootstrap).
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.

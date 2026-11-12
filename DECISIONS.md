@@ -893,3 +893,24 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 (it miscounts, and the stop is bounded by the message deadline anyway);
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
+
+## D270 -- An operator can supply the dashboard token; it is stored and served as a minted one is
+
+**Date:** 2026-11-12
+**Decision:** outside loopback mode the `flightdeck` binary takes its
+dashboard token from the file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names,
+else from `FLIGHTDECK_DASHBOARD_TOKEN`, else mints one as before. A
+supplied value must have a minted token's form (`ftd_` and 32 lower-case
+hex digits) and is refused otherwise, without being echoed. It is stored
+as an `access_tokens` row named `Supplied dashboard token` (salted hash,
+the salt derived from the token so every instance writes the same row),
+never in `secrets.json`, and `/runtime-config.json` serves it exactly as
+it serves a minted token. A token supplied earlier stays valid until it
+is revoked in Settings. The file's mode is not checked.
+**Why:** several instances on one Postgres each minted a token of their
+own, and nobody could know one before the first start.
+**Rejected alternative:** replacing the earlier supplied token (the old
+pods of a rolling update still serve it); refusing a world-readable file
+(Kubernetes and Docker mount secrets 0644 / 0444); a random salt (two
+instances starting together would leave two rows); keeping the supplied
+token out of `/runtime-config.json` (the dashboard has no login).

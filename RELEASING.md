@@ -26,8 +26,36 @@ One tag produces every artifact, all built from the same commit:
 | `flightdeck-sensor` | PyPI | `python -m build` in `sensor/` |
 | `flightdeckhq/flightdeck` image, linux/amd64 and linux/arm64, `:<tag>` and `:latest` | Docker Hub | the root `Dockerfile` with buildx |
 
-`install.sh` and `install.ps1` download from the GitHub release and are
-served from this repository's `main`.
+`install.sh` and `install.ps1` download from the GitHub release. Users
+fetch them from the project's site, `https://flightdeck-hq.com/install.sh`
+and `https://flightdeck-hq.com/install.ps1`: GitHub Pages serves `docs/`
+of `main` there as static files and cannot redirect to the repository's
+raw file, so `docs/install.sh` and `docs/install.ps1` are copies of the
+root installers. `make installer-copies` refreshes them after an edit,
+and CI fails when a copy differs from its source
+(`scripts/check-installer-copies.sh`). An installer change reaches users
+once it is on `main` and Pages has deployed, a few minutes after the
+merge. To check, on an up-to-date `main`:
+
+```bash
+curl -fsSL https://flightdeck-hq.com/install.sh | cmp - install.sh
+```
+
+The repository's raw address
+(`https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh`,
+and `install.ps1` beside it) serves the same files and is the fallback
+when the site is unreachable.
+
+The short address changes nothing about what is installed. Whichever
+address the script came from, it downloads only from the GitHub release
+over HTTPS, verifies the archive against `checksums.txt`, and verifies
+the Sigstore signature of `checksums.txt` when cosign is installed. The
+script itself is the repository's `main` branch at both addresses,
+published by GitHub over HTTPS, and signed at neither, which is why the
+installers' headers say to read them before piping. The site's address
+does rest on one thing more than the raw address: the domain's DNS
+record and its binding to this repository's Pages site, so whoever
+controls the domain can serve another script from it.
 
 ## Release process
 
@@ -165,11 +193,11 @@ the leg in minutes.
 
 | Leg | Runner | Channel |
 |---|---|---|
-| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run -p … -v <new volume>:/data flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, no data-dir warning in them, clean `docker stop`, then a new container on the same volume serves the session); the `install.sh` binary once more with `--database-url` on a Postgres service container |
-| linux-arm64 | ubuntu-24.04-arm | `install.sh` |
+| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL of the tag, after a check that `https://flightdeck-hq.com/install.sh` serves the same bytes; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run -p … -v <new volume>:/data flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, no data-dir warning in them, clean `docker stop`, then a new container on the same volume serves the session); the `install.sh` binary once more with `--database-url` on a Postgres service container |
+| linux-arm64 | ubuntu-24.04-arm | `install.sh`, with the same check of the site's copy |
 | macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, the checks on the installed binary, then `brew services start flightdeck`: the same checks against the service on `:4000` (start-up block read from its log), `~/.flightdeck/flightdeck.db` exists, and the session is served after `brew services stop` and `start` |
 | macos-amd64 | macos-15-intel | `install.sh` |
-| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL (the `.zip`), then the checks under Git Bash |
+| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL of the tag (the `.zip`), after a check that `irm https://flightdeck-hq.com/install.ps1` returns the same script, then the checks under Git Bash |
 
 Every leg checks `flightdeck --version` prints `flightdeck <tag>`. No
 leg starts or names a database: the binary's default, a SQLite file in

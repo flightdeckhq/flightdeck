@@ -1484,6 +1484,18 @@ jobs:
           shellcheck --version | head -2
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh
+          shellcheck scripts/check-installer-copies.sh scripts/test-check-installer-copies.sh
+
+      # The README's install command fetches the installer from the
+      # project's site, which GitHub Pages serves from docs/ as static
+      # files: docs/install.sh and docs/install.ps1 are copies of the
+      # root installers. A copy that differs from its source fails here
+      # (`make installer-copies` refreshes them), so the site never
+      # serves an installer other than the one tested below.
+      - name: The site's installer copies match the root installers
+        run: |
+          scripts/test-check-installer-copies.sh
+          scripts/check-installer-copies.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback

@@ -1,6 +1,11 @@
 # Installs the flightdeck binary on Windows from a GitHub release.
 #
-#   irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 | iex
+#   irm https://flightdeck-hq.com/install.ps1 | iex
+#
+# The project's site serves a copy of this file (docs/install.ps1, which
+# CI keeps identical to install.ps1 on the repository's main branch). If
+# the site is unreachable, the repository serves the same script:
+# https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1
 #
 # Downloads the release .zip for this CPU and the release's checksums.txt,
 # verifies the archive against it, extracts flightdeck.exe into

@@ -30,7 +30,7 @@ Then start it:
 flightdeck
 ```
 
-The dashboard is at http://localhost:4000. Nothing needs configuring: the data is a SQLite file under `~/.flightdeck`, and agents on the same machine find it without a server address or a token.
+The dashboard is at http://localhost:4000. Nothing needs configuring: the data is a SQLite file under `~/.flightdeck`, and agents on the same machine find it without a server address or a token. If your shell does not find `flightdeck`, the installer printed the line that puts it on your `PATH`.
 
 <details>
 <summary>Homebrew, pip, Docker, Windows and the release page</summary>

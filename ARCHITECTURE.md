@@ -11454,6 +11454,21 @@ run under both `neon-dark` and `clean-light` theme
 projects via Playwright's `projects` config. Tests do not hardcode
 theme-specific selectors or computed colour values.
 
+The specs take the stack's origin, its Postgres container and its
+database from `FLIGHTDECK_TEST_BASE_URL`,
+`FLIGHTDECK_TEST_POSTGRES_CONTAINER` and `FLIGHTDECK_TEST_DB`
+(`_stack.ts`), the variables the integration fixtures read, with the
+dev stack's values as defaults. `make test-e2e` sets them from the dev
+stack's state, so the suite of a second stack reads and writes that
+stack only.
+
+`globalSetup` seeds every fixture before a spec starts, the long-run
+fixture (one run of 2,050 events, posted through ingestion) included,
+and waits until the worker has stored it. The worker announces each
+event it stores on the live stream, so a run of that size posted while
+specs run sends two thousand frames to every page that has the stream
+on, and such a page stops answering for seconds.
+
 `_fixtures.ts` provides `bringSwimlaneRowIntoView(page, agentName)`
 for the virtualized swimlane — under realistic data volume the
 IntersectionObserver-backed virtualizer keeps off-screen rows as

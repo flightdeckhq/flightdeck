@@ -1,16 +1,19 @@
 # The split test stack: the three services as separate containers, run
-# from source, with a NATS server between them and a small nginx on
-# :4000 in front. Layered on docker-compose.dev.yml, whose Postgres
-# they share (`make dev-split`, scripts/dev-stack.sh):
+# from source, with a NATS server between them, a Postgres of their own
+# and a small nginx in front. `make dev-split` starts it, `make
+# test-split` runs the tests that need it, `make down-split` removes it:
 #
-#   docker compose -p docker -f docker-compose.dev.yml -f docker-compose.split.yml up -d --wait
+#   docker compose -p flightdeck-split -f docker/docker-compose.split.yml up -d --wait
 #
 # It exists for the integration tests that pause the worker container
 # (tests/shared/fixtures.py, worker_paused): the `flightdeck` binary
 # runs the workers as goroutines of the one process, where nothing can
-# be paused alone. Nothing ships this topology. The stack takes the dev
-# stack's port, so the two do not run at once; `make dev` stops this
-# one and `make dev-split` stops the binary.
+# be paused alone. Nothing ships this topology.
+#
+# It is a compose project of its own, on its own port (4010) with its
+# own database and bus, so it runs beside the dev stack and never
+# touches the dev stack's database. Only the front door is published;
+# the tests reach the database through `docker exec`.
 #
 # `go run` on a cold cache downloads every module and compiles them,
 # and most of that time is one package: the pure-Go SQLite driver the
@@ -28,17 +31,31 @@ x-logging: &split-logging
     max-file: "5"
 
 services:
-  # Unauthenticated on purpose: a single-host test loop, published on
-  # loopback only.
+  postgres:
+    logging: *split-logging
+    # The same two variables as the dev stack's Postgres: CI may run
+    # the stack on another Postgres major.
+    image: ${FLIGHTDECK_POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      POSTGRES_USER: flightdeck
+      POSTGRES_PASSWORD: flightdeck_dev
+      POSTGRES_DB: flightdeck
+    volumes:
+      - postgres_data:${FLIGHTDECK_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightdeck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Unauthenticated on purpose: reachable on the compose network only.
   nats:
     logging: *split-logging
     image: nats:2.14-alpine
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
     volumes:
       - nats_data:/data
-    ports:
-      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_PORT:-4222}:4222"
-      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_MONITOR_PORT:-8222}:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
       interval: 5s
@@ -138,7 +155,7 @@ services:
       - source: frontdoor
         target: /etc/nginx/conf.d/default.conf
     ports:
-      - "127.0.0.1:${FLIGHTDECK_DEV_PORT:-4000}:4000"
+      - "127.0.0.1:${FLIGHTDECK_SPLIT_PORT:-4010}:4000"
     depends_on:
       api:
         condition: service_healthy
@@ -183,4 +200,5 @@ configs:
       }
 
 volumes:
+  postgres_data:
   nats_data:

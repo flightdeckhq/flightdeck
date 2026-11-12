@@ -9,9 +9,6 @@
 # the names the test harness shells into (tests/shared/fixtures.py,
 # scripts/go-db-tests.sh, three dashboard E2E files) and the volume
 # every existing dev database already lives on.
-#
-# docker-compose.split.yml layers the three services as separate
-# containers on this file, for the tests that pause the worker.
 
 services:
   postgres:

@@ -133,12 +133,18 @@ data_dir() {
   fi
 }
 
+# running_pid: the pid of the stack's binary when it runs. A pid file
+# can outlive its process (a reboot), and the number can since belong
+# to another program, so the process must also be a flightdeck.
 running_pid() {
   local pid
   [ -f "$PIDFILE" ] || return 1
   pid="$(cat "$PIDFILE")"
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
-  printf '%s' "$pid"
+  case "$(ps -p "$pid" -o comm= 2>/dev/null)" in
+    *flightdeck*) printf '%s' "$pid" ;;
+    *) return 1 ;;
+  esac
 }
 
 # state <key>: a value of the running stack's state file, empty when
@@ -148,10 +154,12 @@ state() {
   sed -n "s/^$1=//p" "$STATE"
 }
 
-want_mode() {
-  local mode="${1:-${FLIGHTDECK_DEV_DB:-postgres}}"
+# asked_mode [mode]: the database the caller asked for, on the command
+# line or in FLIGHTDECK_DEV_DB; empty when neither names one.
+asked_mode() {
+  local mode="${1:-${FLIGHTDECK_DEV_DB:-}}"
   case "$mode" in
-    postgres | sqlite) printf '%s' "$mode" ;;
+    "" | postgres | sqlite) printf '%s' "$mode" ;;
     *) die "unknown database '$mode': want postgres or sqlite" ;;
   esac
 }
@@ -275,16 +283,20 @@ write_state() {
 
 cmd_up() {
   local mode pid data running
-  mode="$(want_mode "${1:-}")"
+  mode="$(asked_mode "${1:-}")"
   if pid="$(running_pid)"; then
     running="$(state FLIGHTDECK_DEV_MODE)"
-    if [ "$running" = "$mode" ]; then
-      say "flightdeck already running (pid $pid) on $BASE_URL, database: $mode"
+    # A running stack is left alone unless another database was asked
+    # for by name: `make test-integration` must not move a stack
+    # started with DB=sqlite onto Postgres.
+    if [ -z "$mode" ] || [ "$running" = "$mode" ]; then
+      say "flightdeck already running (pid $pid) on $BASE_URL, database: $running"
       return 0
     fi
     say "a stack on ${running:-another database} is running; stopping it to start one on $mode"
     stop_binary
   fi
+  mode="${mode:-postgres}"
   retire_legacy_services
   data="$(data_dir)"
   mkdir -p "$data"
@@ -347,7 +359,7 @@ cmd_up() {
 
 cmd_restart() {
   local mode
-  mode="$(want_mode "${1:-$(state FLIGHTDECK_DEV_MODE)}")"
+  mode="$(asked_mode "${1:-$(state FLIGHTDECK_DEV_MODE)}")"
   stop_binary
   cmd_up "$mode"
 }
@@ -361,7 +373,11 @@ cmd_down() {
 
 cmd_reset() {
   local mode data
-  mode="$(want_mode "${1:-}")"
+  # The database to reset: the one asked for, else the running
+  # stack's, else Postgres.
+  mode="$(asked_mode "${1:-}")"
+  mode="${mode:-$(state FLIGHTDECK_DEV_MODE)}"
+  mode="${mode:-postgres}"
   cmd_down
   data="$(data_dir)"
   if [ "$mode" = postgres ]; then

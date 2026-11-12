@@ -1464,7 +1464,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Every file that carries the release version (sensor, plugin,
-      # marketplace pin, Helm chart and image tag, README, Swagger) must
+      # marketplace pin, Helm chart and image tag, docs/self-hosting.md,
+      # Swagger) must
       # match the root VERSION file; scripts/version.py lists them.
       - name: Version locations match VERSION
         run: |
@@ -1548,16 +1549,15 @@ jobs:
 
       # The README's command budget (scripts/readme-budget.sh): the
       # self-test pins the counting rule on fixtures, then the README
-      # is measured. A fence or a heredoc left open, and a command in
-      # a fence tagged as a sample language, fail the step even in
-      # report mode, because the counts cannot be trusted.
-      # Report mode until the single-binary README lands
-      # within budget; that pull request drops --report so the budget
-      # then fails the build.
+      # is measured and the step fails when it is over: a second
+      # command in the install block, a third visible command under
+      # Install, a fifth under Connect your agents, a seventh under
+      # Self-hosting, more than 20 in all (the channels folded in
+      # <details> included) or more than 300 lines.
       - name: README command budget
         run: |
           scripts/test-readme-budget.sh
-          scripts/readme-budget.sh --report
+          scripts/readme-budget.sh
 
       - name: Validate marketplace.json structure
         run: |

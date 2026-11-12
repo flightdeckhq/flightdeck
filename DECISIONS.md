@@ -893,3 +893,25 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 (it miscounts, and the stop is bounded by the message deadline anyway);
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
+
+## D269 -- The installers are served from the project's domain, as copies CI keeps identical
+
+**Date:** 2026-11-12
+**Decision:** the documented install command is `curl -fsSL
+https://flightdeck-hq.com/install.sh | sh` (`irm
+https://flightdeck-hq.com/install.ps1 | iex` on Windows). GitHub Pages
+serves `docs/` of `main` there, so `docs/install.sh` and
+`docs/install.ps1` are byte-for-byte copies of the root installers:
+`scripts/check-installer-copies.sh` fails CI when one differs, and the
+install gate requires the site to serve the tag's script before it runs
+it. The raw GitHub address stays documented as the fallback.
+**Why:** the README's promise is one short command. What is installed
+is unchanged: the script still downloads only from the GitHub release
+and verifies the checksum (and the signature with cosign). The script
+is `main` at both addresses and signed at neither; the site adds the
+domain's DNS record and its Pages binding to what a user trusts for it.
+**Rejected alternative:** a redirect from the site to the raw file
+(Pages serves static files only, and curl does not follow an HTML
+redirect); keeping only the raw address (it works, at 89 characters
+where the short command is 52).
+

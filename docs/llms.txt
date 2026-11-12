@@ -2,16 +2,21 @@
 
 > Flightdeck is a self-hosted observability and control plane for production and coding agents. Every LLM call, MCP event and tool call an agent makes streams to a per-agent timeline and a live fleet-wide feed. Operators set token budgets, MCP server allow/block rules and live directives on production agents (the Claude Code plugin enforces the MCP rules only). Apache 2.0.
 
-Production agents add the `flightdeck-sensor` Python package (`pip install flightdeck-sensor`, then `init()` and `patch()` in the entrypoint); it intercepts the Anthropic, OpenAI and litellm SDKs and the frameworks built on them (LangChain, LangGraph, LlamaIndex, CrewAI), and the official `mcp` client SDK, with no other code changes. Coding agents attach through the Claude Code plugin in the same repository (`/plugin marketplace add flightdeckhq/flightdeck`, then `/plugin install flightdeck@flightdeck-plugins`). The stack (ingestion API, workers, query API, dashboard, Postgres and NATS, behind an nginx front door) runs with Docker Compose or the Helm chart.
+Production agents add the `flightdeck-sensor` Python package (`pip install flightdeck-sensor`, then `init()` and `patch()` in the entrypoint); it intercepts the Anthropic, OpenAI and litellm SDKs and the frameworks built on them (LangChain, LangGraph, LlamaIndex, CrewAI), and the official `mcp` client SDK, with no other code changes. Coding agents attach through the Claude Code plugin in the same repository (`/plugin marketplace add flightdeckhq/flightdeck`, then `/plugin install flightdeck@flightdeck-plugins`). Flightdeck is one `flightdeck` binary (the ingestion API, the workers, the query API, the message bus and the dashboard in one process) on SQLite by default, installed with one command (`curl -fsSL https://flightdeck-hq.com/install.sh | sh`, then `flightdeck`; also Homebrew, `pip install flightdeck-cli` and the `flightdeckhq/flightdeck` Docker image), with Postgres, Docker Compose and a Helm chart for larger deployments.
 
 Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), not multi-tenant SaaS, and does not store prompt content from production agents unless capture is turned on (the Python sensor defaults to `capture_prompts=False`). The Claude Code plugin captures prompts and sanitised tool inputs by default, since you are observing your own session; `FLIGHTDECK_CAPTURE_PROMPTS=false` turns that off.
 
 ## Docs
 
-- [README](https://github.com/flightdeckhq/flightdeck/blob/main/README.md): quickstart, features, coverage matrix, sensor reference, MCP Protection Policy, self-hosting
+- [README](https://github.com/flightdeckhq/flightdeck/blob/main/README.md): install, connecting agents, what you get, coverage in short, self-hosting in short
+- [Coverage](https://github.com/flightdeckhq/flightdeck/blob/main/docs/coverage.md): every intercepted LLM SDK method, the framework matrices, coding agents, sub-agents, MCP, what is not planned
+- [Features](https://github.com/flightdeckhq/flightdeck/blob/main/docs/features.md): each dashboard page and control in full
+- [Self-hosting](https://github.com/flightdeckhq/flightdeck/blob/main/docs/self-hosting.md): Docker Compose, the Helm chart and its values, upgrade notes, backups
+- [OpenTelemetry into Flightdeck](https://github.com/flightdeckhq/flightdeck/blob/main/docs/opentelemetry.md): Claude Code's own telemetry and the agent frameworks' GenAI spans
+- [MCP Protection Policy](https://github.com/flightdeckhq/flightdeck/blob/main/docs/mcp-protection-policy.md): scopes, resolution, configuration and enforcement
 - [Architecture](https://github.com/flightdeckhq/flightdeck/blob/main/ARCHITECTURE.md): components, event types and payloads, APIs, analytics, content capture
 - [Claude Code plugin](https://github.com/flightdeckhq/flightdeck/blob/main/plugin/README.md): what the plugin reports for each hook, configuration, privacy
-- [Python sensor](https://github.com/flightdeckhq/flightdeck/blob/main/sensor/README.md): the `flightdeck-sensor` package
+- [Python sensor](https://github.com/flightdeckhq/flightdeck/blob/main/sensor/README.md): the `flightdeck-sensor` package, identity, `patch()` vs `wrap()`, environment variables, limitations
 
 ## Project
 

@@ -125,7 +125,7 @@ rule_error() {
 # install_readme <file>: writes a README whose Connect and Self-hosting
 # sections are within budget around the Install section read on stdin,
 # so that a fixture's verdict is its install section's alone. Connect
-# has 3 commands and Self-hosting 1.
+# has 4 commands, its whole budget, and Self-hosting 1.
 install_readme() {
   {
     echo "# Fixture"
@@ -140,6 +140,7 @@ install_readme() {
 ```text
 /plugin marketplace add example/example
 /plugin install example@example
+/reload-plugins
 ```
 
 ```bash
@@ -378,7 +379,7 @@ FIXTURE
 expect 0 "channels folded in <details> do not break the install budget" "$work/install-folded.md"
 expect_output '^ +7 +5 +Install$' "Install counts 7, of which 5 folded"
 expect_output 'Install, visible +2 \(budget' "Install shows 2"
-expect_output 'Total +11 \(budget' "the folded channels count toward the total (11)"
+expect_output 'Total +12 \(budget' "the folded channels count toward the total (12)"
 
 # Folded commands count toward the total: 2 visible and 12 folded in
 # Install, 3 in Connect and 4 in Self-hosting are 21.
@@ -516,7 +517,7 @@ FIXTURE
 # The other budgets.
 # ---------------------------------------------------------------------
 
-# Over the Connect budget: a fourth command, an export.
+# Over the Connect budget: a fifth command, an export.
 cat >"$work/connect.md" <<'FIXTURE'
 ## Install
 
@@ -529,6 +530,7 @@ curl -fsSL https://example.invalid/install.sh | sh
 ```text
 /plugin marketplace add example/example
 /plugin install example@example
+/reload-plugins
 ```
 
 ```bash
@@ -542,8 +544,8 @@ export FLIGHTDECK_SERVER=http://localhost:4000/ingest
 flightdeck --domain example.com
 ```
 FIXTURE
-expect 1 "four Connect commands fail" "$work/connect.md"
-expect_output 'OVER BUDGET: Connect your agents has 4 commands, budget 3' "the failure names the section and the counts"
+expect 1 "five Connect commands fail" "$work/connect.md"
+expect_output 'OVER BUDGET: Connect your agents has 5 commands, budget 4' "the failure names the section and the counts"
 
 # Over the Self-hosting budget: seven commands, the last two chained on
 # one line, so a line count of six would have let it through.

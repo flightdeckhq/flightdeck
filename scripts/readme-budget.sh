@@ -110,10 +110,11 @@ INSTALL_BLOCK_COMMANDS=1
 # `<details>` and count toward the total only. A third visible command
 # means a step crept back into the first-run path.
 INSTALL_VISIBLE_MAX=2
-# Connect your agents: the plugin's two REPL lines and one pip install
-# (the sensor's two lines of Python are a python fence and not
-# counted). A fourth command means a step crept back in.
-CONNECT_MAX=3
+# Connect your agents: the plugin's three REPL lines (add the
+# marketplace, install, reload) and one pip install (the sensor's two
+# lines of Python are a python fence and not counted). A fifth command
+# means a step crept back in.
+CONNECT_MAX=4
 # Self-hosting: TLS is one flag (`--domain`), Postgres one flag
 # (`--database-url`), and Docker, Compose and Helm are one command each.
 # Six covers those with one to spare (a clone for the two that run from

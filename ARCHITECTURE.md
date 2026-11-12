@@ -223,7 +223,7 @@ flightdeck/
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
-├── assets/                     # Demo GIFs embedded in README.md
+├── assets/readme/              # The README's images: the fleet view and three tiles, light and dark, and one GIF; invented agents only
 ├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
 ├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
@@ -231,12 +231,22 @@ flightdeck/
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
+├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
+├── scripts/readme-budget.sh    # The README's command budget: one install command, per-section and total limits, 300 lines
+├── scripts/demo_seed.py        # Fills a throwaway flightdeck with invented agents, for the README's images
+├── scripts/readme_images.mjs   # Photographs that instance with the dashboard's Playwright: the stills and the recording
 ├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
-├── install.sh                  # `curl | sh` installer: detect, download, verify, install
-├── install.ps1                 # `irm | iex` installer for Windows
+├── install.sh                  # `curl | sh` installer: detect, download, verify, install; served from the site as docs/install.sh
+├── install.ps1                 # `irm | iex` installer for Windows; served from the site as docs/install.ps1
 ├── Dockerfile                  # The all-in-one image flightdeckhq/flightdeck (distroless, non-root)
 ├── packaging/pypi/             # The flightdeck-cli PyPI package: the shim and the per-platform wheel builder
-├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
+├── docs/                       # GitHub Pages site, flightdeck-hq.com (index.html, 404.html, CNAME, .nojekyll, assets/, llms.txt)
+│   ├── install.sh, install.ps1 # Copies of the root installers, the ones the install command fetches
+│   ├── coverage.md             # Every intercepted method, the framework matrices, client types, what is not planned
+│   ├── features.md             # Each dashboard page and control in full
+│   ├── self-hosting.md         # Docker Compose, the Helm chart and its values, upgrade notes, backups
+│   ├── opentelemetry.md        # Claude Code's own telemetry and the agent frameworks' GenAI spans into Flightdeck
+│   └── mcp-protection-policy.md  # The operator's view of the MCP Protection Policy
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
 │   ├── Makefile
@@ -10903,11 +10913,27 @@ from one release tag (RELEASING.md has the sequence):
 
 | Channel | Command | What it installs |
 |---|---|---|
-| Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
-| PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
+| Shell installer | `curl -fsSL https://flightdeck-hq.com/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
+| PowerShell installer | `irm https://flightdeck-hq.com/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
 | Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+
+The two installers are fetched from the project's site. GitHub Pages
+serves `docs/` of `main` at `flightdeck-hq.com` as static files and
+cannot redirect to the repository's raw file, so `docs/install.sh` and
+`docs/install.ps1` are byte-for-byte copies of the root installers:
+`scripts/check-installer-copies.sh` fails CI when a copy differs from
+its source, is missing, or carries a non-ASCII byte (Pages sends a
+`.ps1` with no charset), and `make installer-copies` refreshes them.
+The repository's raw address
+(`https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh`,
+and `install.ps1` beside it) serves the same scripts and is the
+fallback. Whichever address a script came from, it downloads only from
+the GitHub release and verifies what it downloads, as described next;
+the script itself is `main` at both addresses and signed at neither.
+The site's address rests on one thing the raw address does not: the
+domain's DNS record and its binding to the repository's Pages site.
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -10951,7 +10977,9 @@ with a tag) installs the published artifacts on fresh runners, one leg
 per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
 `windows-2022`), through the channel under test (`install.sh`, `pip`
 and `uvx`, `docker run`, `brew` and `brew services`, `install.ps1`), and
-runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
+runs `scripts/install-gate.sh`. The installer legs run the tag's own
+script and first require the site to serve the same bytes, so the
+verdict covers the command users run. Every leg starts `flightdeck` with no
 database and nothing else configured, since that is the install a new
 user makes: the script removes the binary's settings from its
 environment and requires the start-up block to name a SQLite database

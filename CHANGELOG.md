@@ -41,6 +41,19 @@ All notable changes to Flightdeck are documented here.
   `app` package (`ingestion/app`, `workers/app`, `api/app`) the binary
   and the standalone services share.
 
+- **`flightdeck health` and a health check in the image.** `flightdeck
+  health` asks the running instance whether its query API and its
+  ingestion API answer, prints one line and exits 0 or 1. It takes the
+  server's `--listen` and `--domain` (or `FLIGHTDECK_LISTEN` and
+  `FLIGHTDECK_DOMAIN`), needs no token and touches neither the data dir
+  nor the database. The Docker image, which has no shell or curl, runs
+  it as its `HEALTHCHECK`, so `docker ps` shows the container `healthy`
+  and a Compose `depends_on: condition: service_healthy` works; a
+  Kubernetes exec probe runs the same command. The image now sets its
+  data dir and listen address as `FLIGHTDECK_DATA_DIR=/data` and
+  `FLIGHTDECK_LISTEN=:4000` in the environment instead of as flags, so
+  the health check reads what the server reads.
+
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
   through the `storage` boundary: plain `database/sql` on either engine,

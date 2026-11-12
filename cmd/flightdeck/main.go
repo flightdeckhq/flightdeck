@@ -26,6 +26,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/internal/health"
 	"github.com/flightdeckhq/flightdeck/internal/natsembed"
 	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/internal/serve"
@@ -120,16 +121,45 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
+		if len(args) > 0 && args[0] == cli.HealthCommand {
+			// A health check has two answers. Docker reserves exit
+			// status 2 of a HEALTHCHECK command, so a mistyped flag is
+			// "not healthy" too.
+			return 1
+		}
 		return 2
 	}
 	if opts.Version {
 		_, _ = fmt.Fprintln(stdout, "flightdeck", version)
 		return 0
 	}
+	if opts.Health {
+		return runHealth(opts, stdout, stderr)
+	}
 	if err := serveAll(opts, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
 		return 1
 	}
+	return 0
+}
+
+// runHealth is `flightdeck health`: it asks the instance that runs with
+// opts' listen address and domain whether its two HTTP services answer,
+// prints one line and returns 0 when they do and 1 when they do not.
+// It touches nothing else: no data dir, no database, no token.
+func runHealth(opts cli.Options, stdout, stderr *os.File) int {
+	target, err := health.TargetFor(opts.Listen, opts.Domain)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "unhealthy:", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), health.Timeout)
+	defer cancel()
+	if err := health.Check(ctx, target); err != nil {
+		_, _ = fmt.Fprintln(stderr, "unhealthy:", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "healthy: %s answers /api/health and /ingest/health\n", target.Base)
 	return 0
 }
 

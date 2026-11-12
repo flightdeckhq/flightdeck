@@ -10870,6 +10870,9 @@ over the defaults.
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
+`flightdeck health` (see Health checks) takes the same flags and
+variables and uses the listen address and the domain to find the
+running instance.
 
 The three tables below describe the standalone service processes, one
 per service, which the Docker Compose stack and the Helm chart run
@@ -10959,7 +10962,7 @@ from one release tag (RELEASING.md has the sequence):
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -11035,6 +11038,76 @@ readiness from the metrics listener (`/metrics`), which opens after the
 startup migrations and the NATS connection, and a worker whose consumer
 cannot create the stream or subscribe exits so its supervisor restarts
 it.
+
+**`flightdeck health`.** The binary serves the two routes as
+`/api/health` and `/ingest/health` on its one listener, and
+`flightdeck health` asks a running instance for both: it exits 0 when
+each answers 200 with its own service's body and 1 otherwise, and
+prints one line (`healthy: http://127.0.0.1:4000 answers /api/health
+and /ingest/health`, or `unhealthy: <url>: <reason>`). It exists for
+container health checks: the image is distroless, with no shell and no
+curl, so the binary is its own probe. The workers have no route to
+ask; they run in the same process, and the binary exits when one of its
+services fails, so a listener that answers means they run.
+
+The command takes the server's flags and reads the server's
+environment (`--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
+`FLIGHTDECK_DOMAIN`; the other flags are accepted and ignored), so with
+no arguments it finds an instance that was configured through the
+environment, as the image is, and the default one on `127.0.0.1:4000`.
+A listen address on every interface (`:4000`, `0.0.0.0:4000`,
+`[::]:4000`) is probed on loopback; one that names an interface or a
+host is probed there, since nothing listens on loopback then. With
+`--domain` it probes `https://127.0.0.1:443` with the domain as the TLS
+server name, which the certificate policy requires, and does not verify
+the certificate: the probe goes to the machine's own listener, sends
+nothing secret and trusts nothing it reads beyond the status, while a
+handshake that fails for want of a certificate still fails the check.
+It sends no token (the health routes need none), opens neither the data
+dir nor the database, and gives itself three seconds for both probes.
+A mistyped flag exits 1 as well, because Docker reserves exit status 2
+of a health check command.
+
+The image declares the check (`HEALTHCHECK --interval=10s --timeout=5s
+--start-period=60s --retries=3 CMD ["/usr/local/bin/flightdeck",
+"health"]`): the timeout is above the command's own three seconds, so
+the command reports why it failed, and the start period covers the
+minute the binary waits for a database that is still starting. A
+Compose service that overrides it, and one that waits for it with
+`depends_on: condition: service_healthy`, uses the same command:
+
+```yaml
+healthcheck:
+  test: ["CMD", "flightdeck", "health"]
+  interval: 10s
+  timeout: 5s
+  start_period: 60s
+  retries: 3
+```
+
+Kubernetes ignores an image's `HEALTHCHECK`, so a pod declares its
+probes. The exec form checks both services in one probe and inherits
+the container's environment:
+
+```yaml
+startupProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 2
+  timeoutSeconds: 5
+  failureThreshold: 45   # 90 s: the wait for a database, then the migrations
+readinessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+livenessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+An `httpGet` probe on `/api/health` and the container port starts no
+process and is equivalent for the query API alone.
 
 ### Stream sequences
 

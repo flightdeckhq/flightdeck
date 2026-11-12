@@ -41,7 +41,17 @@ type Options struct {
 	Metrics bool
 	// Version prints the version and exits.
 	Version bool
+	// Health is the `flightdeck health` command: ask the instance that
+	// runs with these settings whether it serves, and exit. Only Listen
+	// and Domain matter to it.
+	Health bool
 }
+
+// HealthCommand is the binary's one subcommand, given as its first
+// argument: `flightdeck health`. It takes the server's flags and reads
+// the server's environment, so it finds the instance with no arguments
+// wherever the instance itself was configured through the environment.
+const HealthCommand = "health"
 
 // ErrHelp is returned when the command line asked for the usage text,
 // which Parse has written to the output.
@@ -55,6 +65,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	fs.SetOutput(out)
 
 	var o Options
+	if len(args) > 0 && args[0] == HealthCommand {
+		o.Health = true
+		args = args[1:]
+	}
 	fs.StringVar(&o.Listen, "listen", envOr(env, "FLIGHTDECK_LISTEN", DefaultListen),
 		"address to serve the dashboard, /api and /ingest on; a loopback address enables the development token (env FLIGHTDECK_LISTEN)")
 	// The two URL flags are registered with no default and take their
@@ -77,8 +91,13 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		"start the services' metrics listeners on ports 9102 (workers), 9103 (ingestion) and 9104 (query API) (env FLIGHTDECK_METRICS)")
 	fs.BoolVar(&o.Version, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n\nRuns the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
-			"With no flags it serves on %s and keeps its data in a SQLite database under the data dir.\n\nFlags:\n", DefaultListen)
+		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n\n"+
+			"Runs the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
+			"With no flags it serves on %s and keeps its data in a SQLite database under the data dir.\n\n"+
+			"flightdeck %s asks the instance that runs with the same --listen and --domain (or their environment\n"+
+			"variables) whether it serves, prints one line and exits 0 when it does and 1 when it does not:\n"+
+			"a container health check that needs no shell and no token.\n\nFlags:\n",
+			HealthCommand, DefaultListen, HealthCommand)
 		fs.PrintDefaults()
 	}
 
@@ -101,12 +120,17 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	if o.Version {
 		return o, nil
 	}
+	if strings.TrimSpace(o.Listen) == "" {
+		return Options{}, errors.New("--listen must not be empty")
+	}
+	if o.Health {
+		// The health command opens no database: a URL it would refuse
+		// is the server's to report.
+		return o, nil
+	}
 	o.DatabaseURL = strings.TrimSpace(o.DatabaseURL)
 	if err := checkDatabaseURL(o.DatabaseURL); err != nil {
 		return Options{}, err
-	}
-	if strings.TrimSpace(o.Listen) == "" {
-		return Options{}, errors.New("--listen must not be empty")
 	}
 	return o, nil
 }

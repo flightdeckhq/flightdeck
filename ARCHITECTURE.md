@@ -10564,7 +10564,8 @@ beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
-cache; and the lock files below. With `--database-url postgres://…`
+cache; `tmp/` (mode 0700), SQLite's temporary files (below); and the
+lock files below. With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file
@@ -10572,6 +10573,32 @@ locks that a network filesystem does not provide (NFS, SMB; on
 Windows a UNC path or a mapped network drive is the usual way to end
 up on one), and the binary's own lock needs the same; the lock error
 says so when the filesystem refuses the lock.
+
+**Nothing is written outside the data dir.** The binary runs on a
+read-only root filesystem with the data dir as its one writable path
+(`docker run --read-only`, a pod with `readOnlyRootFilesystem: true`).
+The database, the bus store, the secrets and the certificate cache are
+there by construction; the one thing that is not is SQLite's temporary
+files. SQLite writes one when a statement needs more working space than
+its two-megabyte cache: a sort or a `GROUP BY` over a large events
+table (the analytics queries), an index build in a migration, a large
+statement journal. Left to itself it puts them in `$SQLITE_TMPDIR`,
+`$TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp` or the working directory,
+whichever is writable first, and with none of them writable the
+statement fails with `disk I/O error (6410)`: an analytics request then
+answers 500 once the database is large enough to need the space. So in
+SQLite mode the binary names `<data dir>/tmp` as SQLite's temporary
+directory before it opens or migrates the database
+(`storage.SetSQLiteTempDir`, SQLite's `temp_store_directory`, set on
+every connection). The files stay on disk, not in memory
+(`temp_store=MEMORY` would bound a large sort by the container's memory
+limit instead of the volume), and on the volume that holds the database
+itself. SQLite removes each file as it opens it, so the directory is
+normally empty; the binary empties it at every start, once it holds the
+data dir's lock, in case a killed process left something. The
+standalone services keep SQLite's own choice. Nothing else in the
+process writes a temporary file: the embedded NATS keeps its own under
+`nats/`, and the certificate cache under `acme/`.
 
 **One process per data dir.** The running binary holds an exclusive
 operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
@@ -10863,7 +10890,7 @@ over the defaults.
 |---|---|---|
 | `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/` |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |

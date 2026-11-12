@@ -224,6 +224,11 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return dataDirInUse(err, layout.Root)
 	}
 	defer dirLock.Release()
+	// The lock is held: whatever an earlier process left in the
+	// temporary directory belongs to nobody.
+	if err := datadir.CleanTmp(layout.Tmp); err != nil {
+		slog.Warn("temporary files of an earlier run were not removed", "err", err)
+	}
 	secrets, err := datadir.LoadSecrets(layout.Secrets)
 	if err != nil {
 		return err
@@ -245,6 +250,12 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		if err := datadir.CreatePrivate(database.path); err != nil {
 			return err
 		}
+		// SQLite's temporary files (a sort or an index build too large
+		// for memory) go into the data dir, the one place the process
+		// may always write: on a read-only root filesystem SQLite finds
+		// no other directory and the statement fails. Set before the
+		// database is opened or migrated.
+		storage.SetSQLiteTempDir(layout.Tmp)
 	}
 
 	// The services read their configuration from the environment the

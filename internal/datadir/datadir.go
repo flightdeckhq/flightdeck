@@ -47,6 +47,7 @@ type Layout struct {
 	NATS     string // the embedded JetStream store
 	Secrets  string // secrets.json
 	ACME     string // the TLS certificate cache
+	Tmp      string // SQLite's temporary files; emptied at every start (see CleanTmp)
 	// Warning is set when the directory exists with a mode wider than
 	// 0700 (not on Windows): the bus store and the secrets file inside
 	// are then readable by other users of the machine. The caller logs
@@ -55,9 +56,10 @@ type Layout struct {
 	Warning string
 }
 
-// Ensure creates dir (and the NATS and ACME subdirectories) with mode
-// 0700 and returns its layout. An existing directory is left as it is,
-// with Layout.Warning set when its mode admits other users.
+// Ensure creates dir (and the NATS, ACME and temporary-file
+// subdirectories) with mode 0700 and returns its layout. An existing
+// directory is left as it is, with Layout.Warning set when its mode
+// admits other users.
 func Ensure(dir string) (Layout, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -70,8 +72,9 @@ func Ensure(dir string) (Layout, error) {
 		NATS:     filepath.Join(abs, "nats"),
 		Secrets:  filepath.Join(abs, "secrets.json"),
 		ACME:     filepath.Join(abs, "acme"),
+		Tmp:      filepath.Join(abs, "tmp"),
 	}
-	for _, p := range []string{l.Root, l.NATS, l.ACME} {
+	for _, p := range []string{l.Root, l.NATS, l.ACME, l.Tmp} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
 			if errors.Is(err, fs.ErrPermission) {
 				return Layout{}, notWritable(l.Root, err)
@@ -89,6 +92,28 @@ func Ensure(dir string) (Layout, error) {
 		}
 	}
 	return l, nil
+}
+
+// CleanTmp removes everything inside the data dir's temporary
+// directory and leaves the directory. The binary keeps SQLite's
+// temporary files there, so that a container with a read-only root
+// filesystem writes nothing outside its data dir. SQLite removes each
+// file itself (it unlinks it on opening, or opens it unnamed), so the
+// directory is normally empty; what a killed process or an operating
+// system without that behaviour left is removed here. Call it only
+// while holding the data dir's lock: the files of a running instance
+// are in use.
+func CleanTmp(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return fmt.Errorf("empty %s: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // notWritable explains a permission error met while preparing the data

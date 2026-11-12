@@ -32,7 +32,10 @@ func TestEnsure_CreatesTheLayoutPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{l.Root, l.NATS, l.ACME} {
+	if l.Tmp != filepath.Join(l.Root, "tmp") {
+		t.Fatalf("Tmp = %q, want tmp inside the data dir", l.Tmp)
+	}
+	for _, p := range []string{l.Root, l.NATS, l.ACME, l.Tmp} {
 		info, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
@@ -215,5 +218,52 @@ func TestLoadSecrets_RejectsBadJSON(t *testing.T) {
 	}
 	if _, err := LoadSecrets(path); err == nil {
 		t.Fatal("want a parse error")
+	}
+}
+
+// CleanTmp empties the temporary directory, whatever an earlier run
+// left there, and keeps the directory and everything beside it.
+func TestCleanTmp_EmptiesTheDirectoryAndNothingElse(t *testing.T) {
+	l, err := Ensure(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"etilqs_1a2b3c", ".hidden"} {
+		if err := os.WriteFile(filepath.Join(l.Tmp, name), []byte("left behind"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(l.Tmp, "nested", "deeper"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(l.Tmp, "nested", "deeper", "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(l.Root, "flightdeck.db")
+	if err := os.WriteFile(keep, []byte("database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanTmp(l.Tmp); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(l.Tmp)
+	if err != nil {
+		t.Fatalf("the temporary directory itself must stay: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d entries left in %s", len(entries), l.Tmp)
+	}
+	for _, p := range []string{keep, l.NATS, l.ACME} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s is gone: CleanTmp reached outside the temporary directory: %v", p, err)
+		}
+	}
+	// An empty directory is left alone, and a missing one is reported.
+	if err := CleanTmp(l.Tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := CleanTmp(filepath.Join(l.Root, "absent")); err == nil {
+		t.Fatal("a missing directory was not reported")
 	}
 }

@@ -334,6 +334,15 @@ All notable changes to Flightdeck are documented here.
   naming what happened and the setting to change; the token is never
   printed. Before, the only trace was a line in Claude Code's debug
   log. The hook still exits 0 and the session carries on.
+- **Analytics no longer fail on a read-only root filesystem.** With
+  `docker run --read-only` (or `readOnlyRootFilesystem: true`) SQLite
+  had no directory for its temporary files, which it needs once a sort
+  or a `GROUP BY` outgrows its cache: on a database of 300,000 events
+  the analytics requests answered 500 (`disk I/O error (6410)`) and the
+  pricing table's sync at start failed. The binary now keeps SQLite's
+  temporary files in `<data dir>/tmp` (mode 0700, emptied at every
+  start), on disk and on the volume that holds the database, so
+  everything it writes is under the data dir.
 - **The start-up block of a container shows an address a person can
   use.** For a listen on every interface (`:4000`, the image's) the
   block printed `http://<host name>:4000`, and a container's host name

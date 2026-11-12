@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LONG_RUN_FIXTURE } from "./_fixtures";
-import { BASE_URL } from "./_stack";
+import { BASE_URL, STACK_CONFIGURATION_ERROR } from "./_stack";
 
 // Playwright global setup hook. Seeds the canonical E2E fixture
 // dataset into the running dev stack before any project starts.
@@ -137,6 +137,14 @@ async function ensureLongRun(baseURL: string, python: string, repoRoot: string):
 }
 
 export default async function globalSetup(config: FullConfig): Promise<void> {
+  // Before anything is read or written: a stack the suite must not run
+  // against (on SQLite, or at another address with nothing naming its
+  // Postgres) stops the run here, with the reason. The seeder below
+  // makes the same refusal for its own writes; this one covers the
+  // specs that run psql.
+  if (STACK_CONFIGURATION_ERROR) {
+    throw new Error(`globalSetup: ${STACK_CONFIGURATION_ERROR}`);
+  }
   const baseURL = config.projects[0]?.use.baseURL ?? BASE_URL;
   const tReady = Date.now();
   await waitForDashboard(baseURL);

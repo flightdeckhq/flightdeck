@@ -226,6 +226,8 @@ flightdeck/
 ├── assets/                     # Demo GIFs embedded in README.md
 ├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
 ├── scripts/dev-stack.sh        # The contributor dev stack: `make dev`, `make dev-restart`, `make down`, `make logs`, `make dev-reset`
+├── scripts/test-dev-stack.sh   # Tests the dev stack script against a fake docker, go and flightdeck: what a failing build, a busy port, another checkout's containers and `reset` must leave alone
+├── scripts/check-compose-projects.sh  # Fails when a compose file other than the dev stack's renders as compose project `docker`
 ├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
@@ -10826,15 +10828,52 @@ rebuilds when a dashboard source is newer than it; for hot reload,
 `npm run dev` in `dashboard/` serves the sources on `:3000` and
 proxies `/api` and `/ingest` to the stack.
 
+A start does everything that can fail before it stops anything: it
+builds the bundle and the binary, then brings the Postgres container
+up, and only then stops what the new binary replaces (the checkout's
+running binary, or the seven-container stack, below) and starts the
+binary. A build that fails leaves what was running as it was. The
+start refuses when something that is not this checkout's stack already
+listens on its port, and once both health endpoints answer it checks
+that the process it started is the one alive behind them: a stranger
+on the port would otherwise answer the probe while the binary exits on
+the busy address, and the suites would run against the stranger.
+
+The stack's commands act on the containers their own checkout started.
+Compose records on every container the directory of the compose files
+it was started from; the project's containers are this checkout's when
+that directory is this checkout's `docker/`. From another checkout
+with the same compose project, `make dev` refuses (it would stop that
+stack, or attach a second binary to its database), `make down` stops
+only its own binary and leaves the containers running, and `make
+dev-reset` refuses. A second stack beside a running one has a compose
+project, a port and a Postgres port of its own.
+
+`make dev-reset` on Postgres says what it is about to delete: the
+volume, and the number of sessions and events in it. It refuses when
+neither a container nor the dev dir says this checkout started that
+Postgres. A database with more than 100 sessions (the test fixtures
+are about 60), or one that cannot be counted, is deleted only with the
+compose project's name, as `CONFIRM=<project>` or typed at a prompt on
+a terminal.
+
 `make dev` takes over a compose project that still runs the services
 as containers. Containers of the services `nginx`, `dashboard`,
 `ingestion`, `workers`, `api` and `nats` in the `docker` project (what
 `make dev` of a checkout without the binary starts) hold port 4000 and
-consume the same database, so they are stopped first, in order: the
-front door, then ingestion, then, once the NATS monitor reports the
-workers' queue empty, the workers and the rest. They are then removed;
-the Postgres container and every volume stay, and the binary serves
-the same database. Compose leaves a running Postgres container alone
+consume the same database, so they are stopped before the binary
+starts, once the binary is built and the Postgres container answers,
+in order: the front door, then ingestion, then, once the NATS monitor
+reports the workers' queue empty, the workers and the rest. The binary
+has a bus of its own and never reads the old one, so a queue that
+cannot be read stops the move before anything is stopped, and one that
+is not empty after the wait stops it with the front door and ingestion
+stopped; `FLIGHTDECK_DEV_ALLOW_UNDRAINED=1` moves all the same and
+leaves those events in the old NATS volume. The stopped containers are
+removed once the binary serves; until then a failed start names the
+`docker start` command that brings the old stack back. The Postgres
+container and every volume stay, and the binary serves the same
+database. Compose leaves a running Postgres container alone
 as long as the `postgres` service of `docker-compose.dev.yml` resolves
 to the definition the container was created with, so a change to that
 service restarts every contributor's database at their next `make
@@ -10847,7 +10886,13 @@ services as separate containers from source (`go run ./cmd/`), with a
 NATS server, a Postgres of its own and an nginx in front that forwards
 `/api` and `/ingest` as sent. It is a compose project of its own
 (`flightdeck-split`) on `127.0.0.1:4010`, so it runs beside the dev
-stack and never touches the dev stack's database. It exists for the
+stack and never touches the dev stack's database. The file names its
+project: unnamed, compose would take the directory's name, `docker`,
+which is the dev stack's project, and the file's two volumes would be
+the dev stack's. The Makefile passes the name and refuses the dev
+stack's and the user compose file's for it; `scripts/check-compose-projects.sh`
+fails CI when a compose file other than the dev stack's renders as
+`docker`. It exists for the
 integration tests that pause the worker container to make an ordering
 between a session's events reproducible: the binary's workers are
 goroutines of the one process, where nothing can be paused alone, so
@@ -11250,7 +11295,7 @@ targets:
 | `make dev` | Start the dev stack (`scripts/dev-stack.sh`): the binary from source on `:4000`, on Postgres; `DB=sqlite` for SQLite |
 | `make dev-restart` | Rebuild the binary and restart it |
 | `make down` | Stop the dev stack; volumes and the data dir stay |
-| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again |
+| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again; `CONFIRM=<project>` for a Postgres database with more than a test seed |
 | `make logs` | Follow the binary's log |
 | `make test` | Per-component unit tests (sensor, ingestion, workers, api, dashboard) |
 | `make test-integration` | Run pytest against the dev stack, on the database it was started with |
@@ -11413,12 +11458,15 @@ projects via Playwright's `projects` config. Tests do not hardcode
 theme-specific selectors or computed colour values.
 
 The specs take the stack's origin, its Postgres container and its
-database from `FLIGHTDECK_TEST_BASE_URL`,
-`FLIGHTDECK_TEST_POSTGRES_CONTAINER` and `FLIGHTDECK_TEST_DB`
-(`_stack.ts`), the variables the integration fixtures read, with the
-dev stack's values as defaults. `make test-e2e` sets them from the dev
-stack's state, so the suite of a second stack reads and writes that
-stack only.
+database from `_stack.ts`, which follows the integration fixtures'
+rules: on the dev stack's address they come from the state file the
+dev stack writes, and a stack at any other address names them in
+`FLIGHTDECK_TEST_BASE_URL`, `FLIGHTDECK_TEST_POSTGRES_CONTAINER` and
+`FLIGHTDECK_TEST_DB`, which `make test-e2e` sets from the dev stack's
+state. So the suite of a second stack reads and writes that stack
+only. `globalSetup` stops the run, with the reason, when the stack is
+on SQLite or when another address comes without both names; nothing
+then falls back to the dev stack's container.
 
 `globalSetup` seeds every fixture before a spec starts, the long-run
 fixture (one run of 2,050 events, posted through ingestion) included,

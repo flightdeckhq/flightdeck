@@ -14,18 +14,24 @@
 #
 # Usage: scripts/dev-stack.sh <command> [postgres|sqlite]
 #   up       start the stack; a running one on the same database is
-#            left alone, one on the other database is stopped first.
-#            Builds the dashboard bundle when it is missing or older
-#            than the dashboard's sources, then the binary.
-#   restart  stop the binary, rebuild and start it again on the
-#            database it ran on; the Postgres container keeps running.
-#            Run it after a change to the Go or dashboard sources.
-#   down     stop the binary and the containers. Volumes and the data
-#            dir stay.
-#   reset    down, then delete the data of the database being started
-#            (postgres: the compose volumes; sqlite: the SQLite file)
-#            and the bus store, and start again. The only command that
-#            deletes data.
+#            left alone, one on the other database is replaced. In
+#            order: build the dashboard bundle (when it is missing or
+#            older than the dashboard's sources) and the binary; start
+#            the Postgres container; stop what the new binary replaces
+#            (this checkout's running binary, or the seven-container
+#            stack, below); start the binary and wait until it serves.
+#            A build that fails therefore leaves whatever was running
+#            as it was.
+#   restart  the same, replacing a running binary on the database it
+#            ran on; the Postgres container keeps running. Run it after
+#            a change to the Go or dashboard sources.
+#   down     stop the binary, and the containers when this checkout
+#            started them (see "Whose containers"). Volumes and the
+#            data dir stay.
+#   reset    delete the data of the database being started (postgres:
+#            the compose volumes; sqlite: the SQLite file) and the bus
+#            store, and start again. The only command that deletes
+#            data; see "Reset" for what it asks first.
 #   logs     follow the binary's log
 #   dump     the binary's last 300 log lines and the containers'
 #            status and logs (CI runs it when a job fails)
@@ -35,21 +41,46 @@
 #
 # Files, under the dev dir (<repo>/.dev, gitignored): `flightdeck` (the
 # binary), `flightdeck.log` and `flightdeck.log.1` (this start's and the
-# previous start's stdout and stderr), `flightdeck.pid`, and `stack.env`,
+# previous start's stdout and stderr), `flightdeck.pid`, `stack.env`,
 # which records the running stack for the test harness
-# (tests/shared/fixtures.py reads it). The data dir (secrets.json, the
-# bus store, the SQLite file) is <dev dir>/data, unless the dev dir is
-# on a filesystem that keeps no file modes (a Windows drive under WSL):
-# the binary refuses a secrets file it cannot keep private, so the data
-# dir then goes under $XDG_STATE_HOME (~/.local/state) instead.
+# (tests/shared/fixtures.py reads it), and `postgres.project`, the
+# compose project whose Postgres this checkout started. The data dir
+# (secrets.json, the bus store, the SQLite file) is <dev dir>/data,
+# unless the dev dir is on a filesystem that keeps no file modes (a
+# Windows drive under WSL): the binary refuses a secrets file it cannot
+# keep private, so the data dir then goes under $XDG_STATE_HOME
+# (~/.local/state) instead.
 #
-# Moving from the seven-container stack: `up` stops and removes that
-# stack's service containers (nginx, dashboard, ingestion, workers,
-# api, nats) after the workers have drained their queue, and leaves the
-# Postgres container and every volume as they are. The binary then
-# serves the same database.
+# Whose containers. Compose records, on every container, the directory
+# of the compose files it was started from. The containers of the
+# project are this checkout's when that directory is this checkout's
+# docker/. Another checkout's containers are never stopped, removed or
+# attached to: `up` refuses to start beside them, `down` leaves them
+# running, `reset` refuses. A second stack beside a running one sets
+# its own FLIGHTDECK_DEV_PROJECT, FLIGHTDECK_DEV_PORT and
+# FLIGHTDECK_DEV_PG_PORT. FLIGHTDECK_DEV_TAKEOVER=<project> says the
+# containers are this checkout's all the same (a checkout that moved).
 #
-# Environment (a second stack beside a running one sets the first five):
+# Moving from the seven-container stack: `up` stops that stack's
+# service containers (nginx, dashboard, ingestion, workers, api, nats)
+# once the new binary is built and the Postgres container answers,
+# after the workers have drained their queue, and removes them once the
+# binary serves. Until then they are stopped, not removed, and the
+# message of a start that fails says how to start them again. The
+# Postgres container and every volume stay as they are; the binary then
+# serves the same database. A queue that cannot be read, or that is not
+# empty after the wait, stops the move: its events would stay behind in
+# the old NATS volume, which the binary does not read.
+# FLIGHTDECK_DEV_ALLOW_UNDRAINED=1 moves all the same.
+#
+# Reset. On Postgres, `reset` first says what it is about to delete (the
+# volume, and how many sessions and events are in it). It refuses when
+# nothing says this checkout started that Postgres. Above
+# RESET_UNCONFIRMED_MAX_SESSIONS sessions, or when the database cannot
+# be counted, it wants the project's name: CONFIRM=<project> (`make
+# dev-reset CONFIRM=docker`), or typed at its prompt on a terminal.
+#
+# Environment (a second stack beside a running one sets the first three):
 #   FLIGHTDECK_DEV_PROJECT   compose project (default docker, so the
 #                            container is docker-postgres-1)
 #   FLIGHTDECK_DEV_PORT      port of the binary on 127.0.0.1 (4000)
@@ -63,6 +94,12 @@
 #   FLIGHTDECK_DEV_WEBUI     0 leaves the dashboard bundle as it is (an
 #                            empty one answers 503 on /; the API and
 #                            ingestion work without it)
+#   FLIGHTDECK_DEV_TAKEOVER, FLIGHTDECK_DEV_ALLOW_UNDRAINED, CONFIRM
+#                            the three deliberate overrides above
+#   FLIGHTDECK_DEV_READY_TIMEOUT_SECS, FLIGHTDECK_DEV_STOP_TIMEOUT_SECS,
+#   FLIGHTDECK_DEV_DRAIN_TIMEOUT_SECS
+#                            the three waits below, for the script's
+#                            own test (scripts/test-dev-stack.sh)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,14 +111,17 @@ BIN="$DEV_DIR/flightdeck"
 LOG="$DEV_DIR/flightdeck.log"
 PIDFILE="$DEV_DIR/flightdeck.pid"
 STATE="$DEV_DIR/stack.env"
+OWNER="$DEV_DIR/postgres.project"
 LISTEN="127.0.0.1:$PORT"
 BASE_URL="http://localhost:$PORT"
 PG_CONTAINER="$PROJECT-postgres-1"
 PG_DATABASE=flightdeck
+PG_VOLUME="${PROJECT}_postgres_data"
 PG_BASE_URL="postgres://flightdeck:flightdeck_dev@127.0.0.1:$PG_PORT"
+COMPOSE_DIR="$ROOT/docker"
 
 export FLIGHTDECK_DEV_PG_PORT="$PG_PORT"
-COMPOSE=(docker compose -p "$PROJECT" -f "$ROOT/docker/docker-compose.dev.yml")
+COMPOSE=(docker compose -p "$PROJECT" -f "$COMPOSE_DIR/docker-compose.dev.yml")
 
 # The services of the seven-container stack this one replaces, in the
 # order they are stopped: the front door first, so nothing new arrives,
@@ -97,15 +137,22 @@ LEGACY_REST=(workers api nats)
 # that has run on another bus, clears the stored stream positions; on a
 # laptop that is a few seconds, on a cold CI runner or a large database
 # well under two minutes.
-READY_TIMEOUT_SECS=120
+READY_TIMEOUT_SECS="${FLIGHTDECK_DEV_READY_TIMEOUT_SECS:-120}"
 # How long a SIGTERM gets before the stop is forced. The binary drains
 # its requests and stops its services in two steps of at most 30 s
 # each; 70 s covers both.
-STOP_TIMEOUT_SECS=70
+STOP_TIMEOUT_SECS="${FLIGHTDECK_DEV_STOP_TIMEOUT_SECS:-70}"
 # How long the old stack's workers get to empty their queue once its
 # front door and ingestion are stopped. They store an event in
 # milliseconds; 30 s covers a backlog of thousands.
-DRAIN_TIMEOUT_SECS=30
+DRAIN_TIMEOUT_SECS="${FLIGHTDECK_DEV_DRAIN_TIMEOUT_SECS:-30}"
+# The most sessions a Postgres database may hold and still be deleted
+# by `reset` without the project's name. The canonical test fixtures
+# (tests/e2e-fixtures/seed.py) are about 60 sessions, so a database at
+# or under 100 holds a seed and little else; one run of the integration
+# suite or any real use is well past it, and a database someone works
+# from holds thousands.
+RESET_UNCONFIRMED_MAX_SESSIONS=100
 
 # The longest log line `dump` prints. The binary's lines are a few
 # hundred characters; the cut keeps one pathological line (an error
@@ -113,7 +160,11 @@ DRAIN_TIMEOUT_SECS=30
 DUMP_LINE_CHARS=2000
 
 say() { printf '== %s\n' "$*"; }
-die() { printf 'dev-stack: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'dev-stack: %s\n' "$*" >&2; }
+die() {
+  warn "$@"
+  exit 1
+}
 
 # keeps_modes <dir>: whether a file created in dir keeps mode 0600.
 keeps_modes() {
@@ -183,46 +234,161 @@ project_containers() {
   done
 }
 
+# running_container <service>: the id of this project's running
+# container of the service, empty when it does not run.
+running_container() {
+  docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter "label=com.docker.compose.service=$1"
+}
+
+legacy_containers() {
+  project_containers "${LEGACY_FRONT[@]}" "${LEGACY_PRODUCERS[@]}" "${LEGACY_REST[@]}"
+}
+
 stop_containers() {
   local ids
   ids="$(project_containers "$@")"
   [ -z "$ids" ] || echo "$ids" | xargs docker stop >/dev/null
 }
 
+# same_dir <a> <b>: whether the two paths name one directory.
+same_dir() {
+  [ "$1" != "$2" ] || return 0
+  [ -d "$1" ] && [ -d "$2" ] && [ "$(cd "$1" && pwd -P)" = "$(cd "$2" && pwd -P)" ]
+}
+
+# foreign_owner <container id>...: the directory another checkout
+# started one of these containers from, as compose recorded it on the
+# container; nothing when they are this checkout's, or carry no record.
+foreign_owner() {
+  local id dir
+  for id in "$@"; do
+    dir="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$id" 2>/dev/null || true)"
+    [ -n "$dir" ] || continue
+    if ! same_dir "$dir" "$COMPOSE_DIR"; then
+      printf '%s' "$dir"
+      return 0
+    fi
+  done
+}
+
+# taken_over: whether the caller said this project's containers are
+# this checkout's whatever compose recorded.
+taken_over() { [ "${FLIGHTDECK_DEV_TAKEOVER:-}" = "$PROJECT" ]; }
+
+# refuse_foreign <what the command would do> <container id>...: stop
+# when another checkout started the containers.
+refuse_foreign() {
+  local doing="$1" other
+  shift
+  [ "$#" -gt 0 ] || return 0
+  other="$(foreign_owner "$@")"
+  [ -n "$other" ] || return 0
+  taken_over && return 0
+  die "the containers of compose project $PROJECT were started from $other, not from this checkout ($COMPOSE_DIR); this would $doing. A second stack beside that one sets its own FLIGHTDECK_DEV_PROJECT, FLIGHTDECK_DEV_PORT and FLIGHTDECK_DEV_PG_PORT. If they are this checkout's all the same (it moved), say so with FLIGHTDECK_DEV_TAKEOVER=$PROJECT."
+}
+
+# owns_postgres: whether this checkout started the project's Postgres:
+# the container says so while it exists, and after `down` removed it
+# the dev dir still does.
+owns_postgres() {
+  local id
+  id="$(project_containers postgres)"
+  if [ -n "$id" ]; then
+    # shellcheck disable=SC2086  # ids, one per line
+    [ -z "$(foreign_owner $id)" ] || taken_over
+  else
+    [ -f "$OWNER" ] && [ "$(cat "$OWNER")" = "$PROJECT" ]
+  fi
+}
+
+# port_taken: whether something accepts connections on the address the
+# binary is about to listen on.
+port_taken() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+}
+
+# queue_state <nats container>: what the old stack's NATS monitor says
+# of the workers' queue: `empty`, `busy` (messages not yet delivered,
+# or delivered and not acknowledged), or `unknown` when the monitor
+# cannot be read. Unknown is not empty.
+queue_state() {
+  local out
+  if ! out="$(docker exec "$1" wget -qO- 'http://localhost:8222/jsz?consumers=true' 2>/dev/null)"; then
+    printf unknown
+    return 0
+  fi
+  case "$out" in
+    *'"server_id"'*) ;;
+    *)
+      printf unknown
+      return 0
+      ;;
+  esac
+  if printf '%s' "$out" | grep -Eq '"num_(ack_)?pending": *[1-9]'; then
+    printf busy
+  else
+    printf empty
+  fi
+}
+
+# legacy_start_hint: the command that starts the old stack's stopped
+# containers again, in the order they depend on each other.
+legacy_start_hint() {
+  local names
+  names="$(project_containers nats api workers ingestion dashboard nginx |
+    xargs docker inspect -f '{{.Name}}' 2>/dev/null | sed 's|^/||' | tr '\n' ' ')"
+  printf 'docker start %s' "$names"
+}
+
 # The stack this one replaces ran the services as containers of the
 # same compose project. They hold port 4000 and consume the same
 # database, so they stop before the binary starts: in order, and with
 # the workers given time to store what ingestion had already accepted.
-# Containers only; no volume is touched.
-retire_legacy_services() {
-  local all ids nats i
-  have_docker || return 0
-  all="$(project_containers "${LEGACY_FRONT[@]}" "${LEGACY_PRODUCERS[@]}" "${LEGACY_REST[@]}")"
-  [ -n "$all" ] || return 0
+# Containers only; no volume is touched, and nothing is removed here.
+#
+# stop_legacy_services strict: a queue that cannot be read, or is not
+# empty after the wait, ends the script; the binary has a bus of its
+# own and would never see those events. The first read happens before
+# anything is stopped, so a monitor that does not answer leaves the old
+# stack whole.
+# stop_legacy_services lenient (`down`): the events stay in the old
+# stack's NATS volume, where that stack finds them when it starts
+# again, so the stop goes on with a warning.
+stop_legacy_services() {
+  local strictness="$1" nats queue=empty i
+  nats="$(running_container nats)"
+  if [ -n "$nats" ] && [ "$strictness" = strict ] && [ "${FLIGHTDECK_DEV_ALLOW_UNDRAINED:-}" != 1 ]; then
+    queue="$(queue_state "$nats")"
+    if [ "$queue" = unknown ]; then
+      die "the NATS monitor of the seven-container stack (project $PROJECT) does not answer, so its queue cannot be read: events may be waiting in it, and they would stay behind in the ${PROJECT}_nats_data volume. Nothing was stopped. Bring that NATS back to health and run this again, or move without waiting for the queue with FLIGHTDECK_DEV_ALLOW_UNDRAINED=1."
+    fi
+  fi
   say "stopping the service containers of the seven-container stack (project $PROJECT); Postgres and the volumes stay"
+  if [ -z "$nats" ]; then
+    say "no NATS container runs in project $PROJECT: there is no queue to wait for"
+  fi
   stop_containers "${LEGACY_FRONT[@]}"
   stop_containers "${LEGACY_PRODUCERS[@]}"
-  nats="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-    --filter "label=com.docker.compose.service=nats")"
-  ids="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-    --filter "label=com.docker.compose.service=workers")"
-  if [ -n "$nats" ] && [ -n "$ids" ]; then
-    # The NATS monitor reports, per consumer, the messages not yet
-    # delivered and those delivered but not acknowledged.
-    for ((i = 0; i < DRAIN_TIMEOUT_SECS; i++)); do
-      if ! docker exec "$nats" wget -qO- 'http://localhost:8222/jsz?consumers=true' 2>/dev/null |
-        grep -Eq '"num_(ack_)?pending": *[1-9]'; then
-        break
-      fi
+  if [ -n "$nats" ]; then
+    for ((i = 0; ; i++)); do
+      queue="$(queue_state "$nats")"
+      [ "$queue" != empty ] || break
+      ((i < DRAIN_TIMEOUT_SECS)) || break
       sleep 1
     done
-    if ((i == DRAIN_TIMEOUT_SECS)); then
-      printf 'dev-stack: the workers still had queued events after %ss; they stay in the %s_nats_data volume\n' \
-        "$DRAIN_TIMEOUT_SECS" "$PROJECT" >&2
+    if [ "$queue" != empty ]; then
+      case "$queue" in
+        busy) queue="the workers still had queued events after ${DRAIN_TIMEOUT_SECS}s" ;;
+        *) queue="the old stack's NATS monitor stopped answering, so its queue cannot be read" ;;
+      esac
+      if [ "$strictness" = strict ] && [ "${FLIGHTDECK_DEV_ALLOW_UNDRAINED:-}" != 1 ]; then
+        die "$queue: those events would stay behind in the ${PROJECT}_nats_data volume. The front door and ingestion are stopped, not removed; nothing else was. Start them again and let the workers finish ($(legacy_start_hint)), then run this again; or move with the events left in that volume: FLIGHTDECK_DEV_ALLOW_UNDRAINED=1."
+      fi
+      warn "$queue; they stay in the ${PROJECT}_nats_data volume"
     fi
   fi
   stop_containers "${LEGACY_REST[@]}"
-  echo "$all" | xargs docker rm >/dev/null
 }
 
 build_webui() {
@@ -240,6 +406,16 @@ build_webui() {
   make -C "$ROOT" --no-print-directory build-webui
 }
 
+# build_binary: the bundle, then the binary, into $BIN.new. The binary
+# that may be running from $BIN is replaced only once it has stopped.
+build_binary() {
+  mkdir -p "$DEV_DIR"
+  rm -f "$BIN.new"
+  build_webui
+  say "building $BIN from source"
+  (cd "$ROOT" && go build -o "$BIN.new" ./cmd/flightdeck)
+}
+
 stop_binary() {
   local pid i
   if pid="$(running_pid)"; then
@@ -252,20 +428,42 @@ stop_binary() {
       sleep 1
     done
     if kill -0 "$pid" 2>/dev/null; then
-      printf 'dev-stack: flightdeck (pid %s) did not exit within %ss of SIGTERM; killing it\n' "$pid" "$STOP_TIMEOUT_SECS" >&2
+      warn "flightdeck (pid $pid) did not exit within ${STOP_TIMEOUT_SECS}s of SIGTERM; killing it"
       kill -KILL "$pid" 2>/dev/null || true
     fi
   fi
   rm -f "$PIDFILE" "$STATE"
 }
 
+# alive <pid>: whether the process runs. One that has exited and was
+# not collected yet still answers kill -0; its state is then Z.
+alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case "$(ps -p "$1" -o stat= 2>/dev/null)" in
+    Z* | "") return 1 ;;
+  esac
+}
+
+# answers: whether both health endpoints answer on the stack's address.
+answers() {
+  curl -sf -o /dev/null "http://$LISTEN/api/health" && curl -sf -o /dev/null "http://$LISTEN/ingest/health"
+}
+
+# wait_ready <pid>: until the binary started here serves, or is gone, or
+# the time is up. Serving takes three things together. The process is
+# alive. Its own log holds the end of its start-up block, which it
+# prints once it holds its listener and its services run: only then is
+# an answer on the port its answer. And both health endpoints answer.
+# An answer alone proves nothing: a server that took the port in the
+# meantime answers just as well while this binary, still loading, has
+# yet to find the address busy and exit.
 wait_ready() {
   local pid="$1" i
   for ((i = 0; i < READY_TIMEOUT_SECS; i++)); do
-    if curl -sf -o /dev/null "http://$LISTEN/api/health" && curl -sf -o /dev/null "http://$LISTEN/ingest/health"; then
+    alive "$pid" || return 1
+    if grep -q '^Press Ctrl+C to stop' "$LOG" 2>/dev/null && answers; then
       return 0
     fi
-    kill -0 "$pid" 2>/dev/null || return 1
     sleep 1
   done
   return 1
@@ -291,23 +489,60 @@ write_state() {
   } >"$STATE"
 }
 
+# cmd_up [mode] [replace]: `replace` (restart) rebuilds and replaces a
+# binary that already runs on the database asked for.
 cmd_up() {
-  local mode pid data running
+  local mode replace="${2:-}" pid="" data running legacy="" hint=""
   mode="$(asked_mode "${1:-}")"
   if pid="$(running_pid)"; then
     running="$(state FLIGHTDECK_DEV_MODE)"
     # A running stack is left alone unless another database was asked
     # for by name: `make test-integration` must not move a stack
     # started with DB=sqlite onto Postgres.
-    if [ -z "$mode" ] || [ "$running" = "$mode" ]; then
+    if [ "$replace" != replace ] && { [ -z "$mode" ] || [ "$running" = "$mode" ]; }; then
       say "flightdeck already running (pid $pid) on $BASE_URL, database: $running"
       return 0
     fi
-    say "a stack on ${running:-another database} is running; stopping it to start one on $mode"
-    stop_binary
+    if [ "$replace" != replace ]; then
+      say "a stack on ${running:-another database} is running; it is replaced by one on $mode once that is built"
+    fi
+  else
+    pid=""
   fi
   mode="${mode:-postgres}"
-  retire_legacy_services
+
+  if have_docker; then
+    legacy="$(legacy_containers)"
+    # shellcheck disable=SC2086  # ids, one per line
+    refuse_foreign "stop that stack and put this checkout's binary in its place" $legacy
+    if [ "$mode" = postgres ]; then
+      # shellcheck disable=SC2046  # ids, one per line
+      refuse_foreign "attach this checkout's binary to that stack's database" $(project_containers postgres)
+    fi
+  elif [ "$mode" = postgres ]; then
+    die "no docker daemon answers, and the Postgres stack runs its database in a container (make dev DB=sqlite needs none)"
+  fi
+
+  # Nothing this run stops holds the port (no binary of this checkout,
+  # no seven-container stack), so whatever listens there is another
+  # stack: the binary would exit on the busy address while the
+  # readiness probe is answered by the stranger.
+  if [ -z "$pid" ] && [ -z "$legacy" ] && port_taken; then
+    die "something already listens on $LISTEN, and it is not this checkout's stack. A dev stack beside another one sets its own FLIGHTDECK_DEV_PORT (and FLIGHTDECK_DEV_PROJECT and FLIGHTDECK_DEV_PG_PORT for its Postgres)."
+  fi
+
+  # Everything that can fail without touching what runs comes first:
+  # the build, then (below) the Postgres container.
+  if [ "${FLIGHTDECK_DEV_BUILD:-1}" != "0" ]; then
+    build_binary
+  else
+    # What an interrupted run built is not what this one was asked to run.
+    rm -f "$BIN.new"
+    [ -x "$BIN" ] || die "no binary at $BIN (run without FLIGHTDECK_DEV_BUILD=0)"
+  fi
+  if [ ! -f "$ROOT/webui/dist/index.html" ]; then
+    say "no dashboard bundle in webui/dist: / answers 503 until the stack is started without FLIGHTDECK_DEV_WEBUI=0"
+  fi
   data="$(data_dir)"
   mkdir -p "$data"
   chmod 700 "$data"
@@ -316,18 +551,21 @@ cmd_up() {
   if [ "$mode" = postgres ]; then
     say "Postgres container ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"
     "${COMPOSE[@]}" up -d --wait postgres
+    printf '%s\n' "$PROJECT" >"$OWNER"
     db_args=(--database-url "$PG_BASE_URL/$PG_DATABASE?sslmode=disable")
   fi
 
-  if [ "${FLIGHTDECK_DEV_BUILD:-1}" != "0" ]; then
-    build_webui
-    say "building $BIN from source"
-    (cd "$ROOT" && go build -o "$BIN" ./cmd/flightdeck)
+  # Now what the new binary replaces.
+  [ -z "$pid" ] || stop_binary
+  if [ -n "$legacy" ]; then
+    stop_legacy_services strict
+    hint=" The seven-container stack's containers are stopped, not removed: $(legacy_start_hint) starts that stack again."
   fi
-  [ -x "$BIN" ] || die "no binary at $BIN (run without FLIGHTDECK_DEV_BUILD=0)"
-  if [ ! -f "$ROOT/webui/dist/index.html" ]; then
-    say "no dashboard bundle in webui/dist: / answers 503 until the stack is started without FLIGHTDECK_DEV_WEBUI=0"
+  if port_taken; then
+    rm -f "$BIN.new"
+    die "something still listens on $LISTEN after this checkout's own stack was stopped.$hint"
   fi
+  [ ! -f "$BIN.new" ] || mv -f "$BIN.new" "$BIN"
 
   [ ! -f "$LOG" ] || mv -f "$LOG" "$LOG.1"
   say "starting flightdeck on $BASE_URL, database: $mode (log: $LOG)"
@@ -350,12 +588,22 @@ cmd_up() {
     ${db_args[@]+"${db_args[@]}"} ${extra[@]+"${extra[@]}"} >"$LOG" 2>&1 &
   pid=$!
   echo "$pid" >"$PIDFILE"
-  if ! wait_ready "$pid"; then
-    printf 'dev-stack: flightdeck is not serving after %ss; the end of its log:\n' "$READY_TIMEOUT_SECS" >&2
+  if ! wait_ready "$pid" || ! alive "$pid"; then
+    rm -f "$PIDFILE"
+    if ! alive "$pid" && answers; then
+      # The tests would have run against whatever this is.
+      warn "$BASE_URL answers, but the binary started here has exited; the end of its log:"
+      tail -n 50 "$LOG" >&2
+      die "something else is serving on $LISTEN.$hint"
+    fi
+    warn "flightdeck is not serving after ${READY_TIMEOUT_SECS}s; the end of its log:"
     tail -n 50 "$LOG" >&2
     kill -KILL "$pid" 2>/dev/null || true
-    rm -f "$PIDFILE"
-    die "not ready"
+    die "not ready.$hint"
+  fi
+  if [ -n "$legacy" ]; then
+    # The binary serves the database: the old stack's containers go.
+    echo "$legacy" | xargs docker rm >/dev/null
   fi
   write_state "$mode" "$data"
   # The start-up block: version, URLs, token, data dir, database, bus.
@@ -366,34 +614,103 @@ cmd_up() {
 cmd_restart() {
   local mode
   mode="$(asked_mode "${1:-$(state FLIGHTDECK_DEV_MODE)}")"
-  stop_binary
-  cmd_up "$mode"
+  cmd_up "$mode" replace
 }
 
 cmd_down() {
+  local ids other legacy
   stop_binary
-  if have_docker; then
-    retire_legacy_services
-    say "containers down (volumes kept)"
-    "${COMPOSE[@]}" down --remove-orphans
+  have_docker || return 0
+  ids="$(project_containers postgres) $(legacy_containers)"
+  # shellcheck disable=SC2086  # ids, split on whitespace
+  set -- $ids
+  [ "$#" -gt 0 ] || return 0
+  other="$(foreign_owner "$@")"
+  if [ -n "$other" ] && ! taken_over; then
+    say "the containers of compose project $PROJECT were started from $other, not from this checkout: they are left running (make down in that checkout stops them)"
+    return 0
   fi
+  legacy="$(legacy_containers)"
+  [ -z "$legacy" ] || stop_legacy_services lenient
+  say "containers down (volumes kept)"
+  "${COMPOSE[@]}" down --remove-orphans
+}
+
+# pg_scalar <sql>: the one value a query returns from the stack's
+# database, empty when the database cannot be asked.
+pg_scalar() {
+  docker exec "$PG_CONTAINER" psql -U flightdeck -d "$PG_DATABASE" -tAX -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null || true
+}
+
+# pg_rows <table>: how many rows the table holds; 0 when the database
+# has no such table (it was never migrated), empty when it cannot be
+# asked.
+pg_rows() {
+  case "$(pg_scalar "SELECT to_regclass('public.$1') IS NOT NULL")" in
+    t) pg_scalar "SELECT count(*) FROM public.$1" ;;
+    f) printf 0 ;;
+    *) ;;
+  esac
+}
+
+# confirm_postgres_reset: say what `reset` is about to delete and stop
+# unless it may: see "Reset" in the header.
+confirm_postgres_reset() {
+  local data="$1" sessions events answer
+  have_docker || die "no docker daemon answers: there is no Postgres volume to reset"
+  # shellcheck disable=SC2046  # ids, one per line
+  refuse_foreign "delete that stack's database" $(project_containers postgres) $(legacy_containers)
+  if ! owns_postgres; then
+    die "nothing says this checkout started the Postgres of compose project $PROJECT (no container of it started from $COMPOSE_DIR, no $OWNER): refusing to delete the $PG_VOLUME volume. Start the stack here first (make dev), or delete the volume yourself: docker compose -p $PROJECT -f docker/docker-compose.dev.yml down -v"
+  fi
+  "${COMPOSE[@]}" up -d --wait postgres >/dev/null
+  sessions="$(pg_rows sessions)"
+  events="$(pg_rows events)"
+  say "reset is about to delete the $PG_VOLUME volume (the Postgres database: ${sessions:-an unknown number of} sessions, ${events:-an unknown number of} events) and the bus store in $data/nats"
+  if [ -n "$sessions" ] && [ "$sessions" -le "$RESET_UNCONFIRMED_MAX_SESSIONS" ]; then
+    return 0
+  fi
+  if [ "${CONFIRM:-}" = "$PROJECT" ]; then
+    say "confirmed: CONFIRM=$PROJECT"
+    return 0
+  fi
+  if [ -n "${CONFIRM:-}" ]; then
+    die "CONFIRM=$CONFIRM does not name the compose project ($PROJECT): nothing was deleted"
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf 'Type the compose project name (%s) to delete them, anything else to keep them: ' "$PROJECT"
+    read -r answer || answer=""
+    [ "$answer" = "$PROJECT" ] || die "not confirmed: nothing was deleted"
+    return 0
+  fi
+  die "the database holds more than a seed (over $RESET_UNCONFIRMED_MAX_SESSIONS sessions, or it could not be counted): nothing was deleted. To delete it, name the project: make dev-reset CONFIRM=$PROJECT"
 }
 
 cmd_reset() {
   local mode data
+  data="$(data_dir)"
   # The database to reset: the one asked for, else the running
-  # stack's, else Postgres.
+  # stack's, else whichever this checkout has data in. There is no
+  # default: a reset with nothing to go on deletes nothing.
   mode="$(asked_mode "${1:-}")"
   mode="${mode:-$(state FLIGHTDECK_DEV_MODE)}"
-  mode="${mode:-postgres}"
-  cmd_down
-  data="$(data_dir)"
+  if [ -z "$mode" ]; then
+    if have_docker && owns_postgres; then
+      mode=postgres
+    elif [ -f "$data/flightdeck.db" ]; then
+      mode=sqlite
+    else
+      die "nothing to reset: no dev stack of this checkout is running, and it has neither started a Postgres of compose project $PROJECT nor a SQLite database in $data"
+    fi
+  fi
   if [ "$mode" = postgres ]; then
-    say "deleting the compose volumes of project $PROJECT (the Postgres database) and the bus store in $data"
+    confirm_postgres_reset "$data"
+    stop_binary
     "${COMPOSE[@]}" down -v --remove-orphans
     rm -rf "$data/nats"
   else
-    say "deleting the SQLite database and the bus store in $data"
+    say "reset is about to delete the SQLite database $data/flightdeck.db and the bus store in $data/nats"
+    stop_binary
     rm -rf "$data/nats" "$data/flightdeck.db" "$data/flightdeck.db-wal" "$data/flightdeck.db-shm"
   fi
   cmd_up "$mode"

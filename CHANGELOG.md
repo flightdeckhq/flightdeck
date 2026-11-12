@@ -915,8 +915,16 @@ All notable changes to Flightdeck are documented here.
   dev-restart` rebuilds it. An existing dev database carries over:
   `make dev` stops the six service containers of the earlier stack once
   the workers have drained, and leaves the Postgres container and
-  every volume as they are (CONTRIBUTING.md has the steps). `make
-  dev-reset` stays the only command that deletes data. `make
+  every volume as they are (CONTRIBUTING.md has the steps). It builds
+  before it stops anything, so a build that fails leaves the earlier
+  stack, or a running binary, serving. `make dev-reset` stays the only
+  command that deletes data; on Postgres it says how many sessions and
+  events it is about to delete, and a database with more than a test
+  seed is deleted only with the compose project's name (`make
+  dev-reset CONFIRM=docker`). The commands leave another checkout's
+  containers alone: from a second checkout on the same compose project
+  `make dev` and `make dev-reset` refuse and `make down` stops only
+  its own binary. `make
   migrate-local-up` and `make migrate-local-status` are gone: the
   binary migrates at every start. CI runs the integration suite
   against this stack on Postgres 16, Postgres 18 and SQLite; the four

@@ -36,10 +36,10 @@ bundle only when a dashboard source changed.
 |---|---|
 | `make dev` | Start the stack on Postgres. A running stack is left as it is. |
 | `make dev DB=sqlite` | Start it on a SQLite file instead: the binary alone, no container. |
-| `make dev-restart` | Rebuild the binary (and a stale bundle) and restart it; Postgres keeps running. Run it after you change Go or dashboard code. |
+| `make dev-restart` | Rebuild the binary (and a stale bundle) and restart it; Postgres keeps running. Run it after you change Go or dashboard code. A build that fails leaves the running binary serving. |
 | `make logs` | Follow the binary's log (`.dev/flightdeck.log`). |
 | `make down` | Stop the binary and the container. Volumes and the data dir stay. |
-| `make dev-reset` | Stop, **delete the database** (and the bus store) and start again. The only command that deletes data. |
+| `make dev-reset` | Stop, **delete the database** (and the bus store) and start again. The only command that deletes data; it says what it is about to delete first. |
 
 The stack's files are under `.dev/` in the checkout (gitignored): the
 binary, its log, a pid file and `stack.env`, which tells the test harness
@@ -47,6 +47,22 @@ which database the running stack uses. `scripts/dev-stack.sh` is the script
 behind the targets; its header lists the environment variables that move the
 ports, the compose project and the directories, for a second stack beside a
 running one.
+
+**One checkout, one stack.** The commands act on the containers their own
+checkout started, which compose records on each container. From another
+checkout or worktree with the same compose project, `make dev` refuses to
+start (it would replace that stack, or attach a second binary to its
+database), `make down` stops only its own binary and leaves the Postgres
+container running, and `make dev-reset` refuses. `make dev` also refuses when
+something else already listens on its port. A stack beside a running one
+needs its own `FLIGHTDECK_DEV_PROJECT`, `FLIGHTDECK_DEV_PORT` and
+`FLIGHTDECK_DEV_PG_PORT`.
+
+**`make dev-reset` and a database with data.** On Postgres it prints the
+volume it is about to delete and how many sessions and events are in it. A
+database with more than 100 sessions (a test seed is about 60), or one it
+cannot count, is deleted only when you name the compose project: `make
+dev-reset CONFIRM=docker`, or type the name at its prompt in a terminal.
 
 For dashboard work with hot reload, run `npm run dev` in `dashboard/` beside
 the stack: Vite serves the sources on `http://localhost:3000` and proxies
@@ -62,28 +78,54 @@ instead of `.dev/data`; the start-up block prints where.
 Earlier checkouts ran the dev stack as seven containers (nginx, dashboard,
 ingestion, workers, api, NATS, Postgres). Your database carries over: `make
 dev` serves the same `flightdeck` database on the same
-`docker_postgres_data` volume. With the old stack still running, update your
-checkout and run:
+`docker_postgres_data` volume.
+
+Back up first if the data matters, while the old stack still runs:
+
+```bash
+docker exec docker-postgres-1 pg_dump -U flightdeck -Fc flightdeck > flightdeck.dump
+```
+
+Then, in the checkout the old stack was started from, with that stack still
+running, update the checkout and run:
 
 ```bash
 make dev
 ```
 
-It does three things, in order:
+It does five things, in this order, and stops at the first that fails:
 
-1. Stops the old stack's service containers: nginx and the dashboard first,
-   so nothing new arrives, then ingestion, then, once the workers have
-   emptied their queue, the workers, the api and NATS. It then removes those
-   six containers. No volume is removed.
-2. Leaves the Postgres container alone. Its definition in
+1. Builds the dashboard bundle and the binary. Nothing that runs has been
+   touched yet: a build that fails (no network for `npm ci`, a machine short
+   of memory, a compile error) leaves the old stack serving. On a small
+   machine the build is the slow part, several minutes the first time;
+   `make build-webui` and `go build ./cmd/flightdeck` beforehand warm it, so
+   the move itself then takes seconds.
+2. Makes sure the Postgres container answers. Its definition in
    `docker/docker-compose.dev.yml` is the one it was created from, so compose
    neither recreates nor restarts it.
-3. Builds the binary and starts it against that database. The binary applies
-   any migration the database is behind on, as the workers did at their start.
+3. Stops the old stack's service containers: nginx and the dashboard first,
+   so nothing new arrives, then ingestion, then, once the NATS monitor shows
+   the workers' queue empty, the workers, the api and NATS. A queue that
+   cannot be read stops the move before anything is stopped; one that is not
+   empty after 30 s stops it with only the front door and ingestion stopped.
+   Either way the message says how to start them again, and that
+   `FLIGHTDECK_DEV_ALLOW_UNDRAINED=1` moves all the same, leaving those events
+   in the old NATS volume, which the binary does not read.
+4. Starts the binary against that database and waits until it serves. The
+   binary applies any migration the database is behind on, as the workers
+   did at their start.
+5. Removes the six stopped containers. Until the binary serves they are
+   stopped, not removed: if the start fails, the message gives the `docker
+   start` line that brings the old stack back.
 
-To do the first step by hand instead:
+No volume is removed at any step.
+
+To stop the old stack by hand instead, build first, so that a failed build
+cannot leave you with neither stack:
 
 ```bash
+make build-webui && go build ./cmd/flightdeck
 docker stop docker-nginx-1 docker-dashboard-1 docker-ingestion-1
 sleep 10   # the workers store what ingestion had already accepted
 docker stop docker-workers-1 docker-api-1 docker-nats-1
@@ -97,11 +139,7 @@ first start the workers log `forgot session sequences from a previous
 stream incarnation` once, which is expected (ARCHITECTURE.md, Stream
 sequences). The old NATS volume, `docker_nats_data`, is no longer used;
 `docker volume rm docker_nats_data` frees it when you are sure nothing in it
-is unprocessed. Back up first if the data matters:
-
-```bash
-docker exec docker-postgres-1 pg_dump -U flightdeck -Fc flightdeck > flightdeck.dump
-```
+is unprocessed.
 
 ### Running the sensor and the plugin from source
 
@@ -248,7 +286,9 @@ against a stack on Postgres: its seeder backdates rows with Postgres SQL, and
 three of its files run `psql` in the stack's Postgres container. Its specs
 take the stack from the same variables (`dashboard/tests/e2e/_stack.ts`), and
 `make test-e2e` sets them from the dev stack's state, so the suite of a second
-dev stack reads and writes that stack only.
+dev stack reads and writes that stack only. It applies the fixtures' refusals:
+on a stack on SQLite, or at another address that names no Postgres container
+and database of its own, the run stops at its global setup and says why.
 
 ### Go tests that need a database
 

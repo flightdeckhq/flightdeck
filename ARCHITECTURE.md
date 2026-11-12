@@ -11358,6 +11358,12 @@ passes 15 s without an event. A spec therefore hovers a mark and
 asserts what the hover opens in one retried block (`hoverUntil`,
 `_hover.ts`), and compares positions it read in one synchronous pass.
 
+CI retries a failed browser test once. A test that passes only on its
+retry leaves the check green, so the E2E job reads the merged report
+(`scripts/e2e_retried_tests.py`), names each such test in the job
+summary and as a warning annotation, and fails when more than two did
+in one run.
+
 ---
 
 ## Key Constraints

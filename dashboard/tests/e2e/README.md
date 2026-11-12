@@ -262,6 +262,14 @@ leaves the pointer and its tooltip closes for good.
 - Compare positions read in one synchronous `evaluate`. Boxes read one
   `boundingBox()` at a time can be 9 px apart on the same lane.
 
+### A test that passed only on its retry
+
+CI retries a failed test once, so such a test leaves the check green.
+The E2E job lists each one in its summary and as a warning annotation
+(`scripts/e2e_retried_tests.py`), and fails when more than two did in
+one run. A listed test is a bug in the spec or in the product: open
+its trace in the `playwright-report` artifact and fix the cause.
+
 ## Theme agnosticism
 
 Playwright projects `neon-dark` and `clean-light` seed each theme

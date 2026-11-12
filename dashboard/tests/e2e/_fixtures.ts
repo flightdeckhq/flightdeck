@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Page, Locator } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // Poll for a locator to mount (count > 0) without using a fixed
 // waitForTimeout sleep (qa.md: "No waitForTimeout for
@@ -195,7 +196,7 @@ export interface GenaiEvent {
 }
 
 const GENAI_AUTH = { Authorization: "Bearer tok_dev" };
-const GENAI_API = "http://localhost:4000/api";
+const GENAI_API = API_URL;
 
 /** The sessions of a GenAI fixture flavor's newest seeded run: every
  *  session of the trace whose session started last (a hand-off's two

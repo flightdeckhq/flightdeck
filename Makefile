@@ -302,11 +302,17 @@ playground-all: ## Run every playground script (skips on missing API keys / opti
 # because the older `test-e2e` name collided when the Playwright
 # target was added — whichever target `make` picked up last silently
 # won, hiding the other. The split below avoids that ambiguity.
+#
+# Both browser targets take the stack from the dev stack's state, as
+# the pytest targets do: the specs read the address, the Postgres
+# container and the database from FLIGHTDECK_TEST_*
+# (dashboard/tests/e2e/_stack.ts), so a second stack's run reads and
+# writes that stack only.
 test-e2e: ## Run Playwright E2E tests (requires make dev; fixtures seed automatically via globalSetup)
-	cd dashboard && npx playwright test
+	$(STACK_ENV); cd dashboard && npx playwright test
 
 test-e2e-ui: ## Run Playwright E2E tests in Playwright UI mode
-	cd dashboard && npx playwright test --ui
+	$(STACK_ENV); cd dashboard && npx playwright test --ui
 
 seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (idempotent)
 	$(STACK_ENV); $(PYTHON) tests/e2e-fixtures/seed.py

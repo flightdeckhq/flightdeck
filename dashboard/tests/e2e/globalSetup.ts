@@ -2,6 +2,7 @@ import type { FullConfig } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BASE_URL } from "./_stack";
 
 // Playwright global setup hook. Seeds the canonical E2E fixture
 // dataset into the running dev stack before any project starts.
@@ -64,7 +65,7 @@ async function waitForDashboard(baseURL: string): Promise<void> {
 }
 
 export default async function globalSetup(config: FullConfig): Promise<void> {
-  const baseURL = config.projects[0]?.use.baseURL ?? "http://localhost:4000";
+  const baseURL = config.projects[0]?.use.baseURL ?? BASE_URL;
   const tReady = Date.now();
   await waitForDashboard(baseURL);
   console.log(

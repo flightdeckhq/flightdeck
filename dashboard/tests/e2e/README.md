@@ -99,8 +99,17 @@ the dashboard's production bundle embedded, so the suite tests the
 bundle users get; `make dev` rebuilds the bundle when a dashboard
 source is newer than it. The suite does not run against the stack on
 SQLite (`make dev DB=sqlite`): the seeder backdates rows with Postgres
-SQL, and three files write to the `docker-postgres-1` container
-directly.
+SQL, and three files run `psql` in the stack's Postgres container.
+
+The specs take the stack from `_stack.ts`: `http://localhost:4000` and
+the `docker-postgres-1` container unless `FLIGHTDECK_TEST_BASE_URL`,
+`FLIGHTDECK_TEST_POSTGRES_CONTAINER` and `FLIGHTDECK_TEST_DB` name
+another. `make test-e2e` sets them from the dev stack's state, so a
+second dev stack's run stays on that stack; before `npm run test:e2e`
+or `npx playwright test` against a second stack, run
+`eval "$(scripts/dev-stack.sh env)"` from the repo root with that
+stack's `FLIGHTDECK_DEV_*` variables set. A spec never writes a
+literal `localhost:4000` or container name.
 
 ```bash
 # Boot the stack (idempotent — re-running is safe)

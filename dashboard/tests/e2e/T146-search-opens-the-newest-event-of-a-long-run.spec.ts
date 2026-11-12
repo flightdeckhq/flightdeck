@@ -16,11 +16,12 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const NEEDLE = "e2e-long-run-needle";
 const CALLS = 2050;
-const API = "http://localhost:4000/api";
+const API = API_URL;
 const AUTH = { Authorization: "Bearer tok_dev" };
 
 interface NeedleHit {

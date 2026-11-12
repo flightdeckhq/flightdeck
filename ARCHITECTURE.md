@@ -11351,6 +11351,13 @@ find their fixture before asserting.
 `waitForFleetReady` waits for any swimlane row to mount, then
 leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
 
+A mark of the swimlane moves under a resting pointer: the window
+advances, and every row below the divider between the live and the
+recent agents shifts 9 px when that divider comes or goes, as an agent
+passes 15 s without an event. A spec therefore hovers a mark and
+asserts what the hover opens in one retried block (`hoverUntil`,
+`_hover.ts`), and compares positions it read in one synchronous pass.
+
 ---
 
 ## Key Constraints

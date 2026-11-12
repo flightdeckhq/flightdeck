@@ -246,6 +246,22 @@ timeouts. Use those. Explicit `waitFor` is only justified for
 non-DOM events (WebSocket connects, URL-param writes). Never use
 `setTimeout` — it flakes under load and hides real timing bugs.
 
+### A mark moves under a resting pointer
+
+The swimlane does not hold still. The window advances (3 px a second
+at 5m), and every row below the divider between the live and the
+recent agents shifts 9 px when that divider comes or goes, which it
+does whenever an agent passes 15 s without an event: one that another
+spec has just posted for, or a keep-alive fixture. A 10 px glyph then
+leaves the pointer and its tooltip closes for good.
+
+- Hover and assert in one retried block: `hoverUntil(hover, shows)`
+  from `_hover.ts`, with `HOVER_SHOWS_MS` as the timeout of the
+  assertions inside it. A bare `hover()` followed by `expect(tooltip)`
+  fails whenever the shift lands between the two.
+- Compare positions read in one synchronous `evaluate`. Boxes read one
+  `boundingBox()` at a time can be 9 px apart on the same lane.
+
 ## Theme agnosticism
 
 Playwright projects `neon-dark` and `clean-light` seed each theme

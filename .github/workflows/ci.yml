@@ -602,11 +602,16 @@ jobs:
         # on every pull request so it cannot rot between releases. First
         # as on every leg of the gate, with nothing configured (SQLite
         # in a fresh data dir, a restart that keeps the session), then as
-        # on its one Postgres leg.
+        # on its one Postgres leg: on a database of its own, created
+        # empty here, so the binary creates the schema as it does on the
+        # gate (the smoke above has already migrated `flightdeck`).
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           scripts/install-gate.sh run 127.0.0.1:4000 ./bin/flightdeck
+          docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q -U flightdeck -d postgres -c 'CREATE DATABASE flightdeck_gate'
           GATE_EXPECT_DATABASE=Postgres scripts/install-gate.sh run 127.0.0.1:4000 ./bin/flightdeck \
-            --database-url 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable'
+            --database-url 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck_gate?sslmode=disable'
 
       - name: Concurrency smoke on SQLite
         # Twenty sessions of a hundred events each while four readers
@@ -1478,7 +1483,7 @@ jobs:
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
-          shellcheck scripts/install-gate.sh scripts/test-install-sh.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback
@@ -1486,6 +1491,16 @@ jobs:
       # entry, unsupported CPU, unknown version, plain-HTTP host).
       - name: install.sh against a local release server
         run: scripts/test-install-sh.sh
+
+      # The install gate's checks against fake binaries, each broken in
+      # one way the gate must catch (exits at once, never listens and
+      # ignores SIGINT, never serves the session, needs no token, will
+      # not stop, forgets the session over a restart): every one must
+      # fail the gate within a bound, never hang it, and a fake that
+      # behaves must pass. The `flightdeck` job runs the gate against
+      # the real binary.
+      - name: The install gate's checks against fake binaries
+        run: scripts/test-install-gate.sh
 
       # The PyPI wheels (flightdeck-cli) are built by a script, not a
       # build backend; its tests pin the wheel layout, tags and RECORD.

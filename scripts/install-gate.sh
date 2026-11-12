@@ -2,23 +2,27 @@
 # The from-scratch install gate's checks: an installed `flightdeck` (or a
 # container running it), started with no database configured, serves
 # health, prints its token, names a SQLite database in its start-up
-# block, accepts one sensor-shaped event, lists the session, serves the
-# dashboard, and still serves that session after a stop and a restart on
-# the same data. The install-gate workflow runs this on every leg after
-# installing through the channel under test, and CI runs it against the
-# binary and the image it builds; it runs anywhere bash, curl and od
-# exist: Linux, macOS and the Git Bash of a Windows runner.
+# block, refuses a request without that token, accepts one sensor-shaped
+# event, lists the session, serves the dashboard, and still serves that
+# session after a stop and a restart on the same data. The install-gate
+# workflow runs this on every leg after installing through the channel
+# under test, and CI runs it against the binary and the image it builds;
+# it runs anywhere bash, curl and od exist: Linux, macOS and the Git
+# Bash of a Windows runner. scripts/test-install-gate.sh checks the
+# script itself, against fake binaries that fail in the ways the gate
+# exists to catch.
 #
 # Usage:
 #   scripts/install-gate.sh run <listen> <binary> [flag...]
 #       Starts <binary> --listen <listen> --data-dir <fresh temp dir>
 #       [flag...] with its output in a log, checks it, stops it with
-#       SIGINT and requires a clean exit, then starts it again on the
-#       same data dir and requires the session to be served still. The
-#       binary's own settings are removed from its environment
-#       (FLIGHTDECK_DATABASE_URL and the others it reads), so the
-#       database is its default, a SQLite file in that data dir, and
-#       nothing the caller's shell exports can supply one. The one
+#       SIGINT and requires a clean exit within GATE_STOP_TIMEOUT (a
+#       binary that has to be killed fails the gate), then starts it
+#       again on the same data dir and requires the session to be
+#       served still. The binary's own settings are removed from its
+#       environment (FLIGHTDECK_DATABASE_URL and the others it reads),
+#       so the database is its default, a SQLite file in that data dir,
+#       and nothing the caller's shell exports can supply one. The one
 #       other database is named as a flag:
 #       `--database-url postgres://…` with GATE_EXPECT_DATABASE=Postgres.
 #   scripts/install-gate.sh check <base-url> <log-command...>
@@ -48,6 +52,12 @@
 #   GATE_STORE_TIMEOUT    seconds for the posted session to appear in the
 #                         API (default 30; the embedded bus delivers in
 #                         milliseconds, the bound turns a hang into a failure)
+#   GATE_STOP_TIMEOUT     seconds the binary gets to exit after SIGINT
+#                         (default 75: its shutdown is two steps of at
+#                         most 30 seconds each, the HTTP drain and the
+#                         services' stop, then it closes the database
+#                         and the bus; a process still there after that
+#                         is not going to stop by itself)
 set -euo pipefail
 
 READY_TIMEOUT="${GATE_READY_TIMEOUT:-90}"
@@ -61,9 +71,16 @@ EXPECT_DATABASE="${GATE_EXPECT_DATABASE:-SQLite}"
 # loaded runner.
 REQUEST_TIMEOUT_SECS=5
 CURL=(curl --max-time "$REQUEST_TIMEOUT_SECS")
-# How long a stopped server gets to release its port before the restart
-# (kept mode has no process to wait on); a stop takes a second or two.
-STOP_TIMEOUT_SECS=30
+# How long the binary gets to exit after SIGINT, and a server the
+# caller stopped to release its port (the header has the reason for the
+# default). Past it, run mode kills the process and fails.
+STOP_TIMEOUT_SECS="${GATE_STOP_TIMEOUT:-75}"
+# How long the binary gets to exit when the gate has already failed and
+# is only cleaning up: long enough for a healthy binary to close its
+# files, so the data dir can be removed; a wedged one is killed after it.
+CLEANUP_STOP_SECS=10
+# How often a stopping process is looked at.
+STOP_POLL_SECS=0.2
 
 # The session the checks posted, for the restart check.
 GATE_SID=""
@@ -93,7 +110,12 @@ uuid() {
 # the job log before anything prints it.
 token_from() {
   local token
-  token="$(sed -n 's/^[[:space:]]*Token[[:space:]]\{1,\}\([A-Za-z0-9_]\{1,\}\).*/\1/p' | head -n 1)"
+  # One sed that reads its input to the end, and the first line taken
+  # in the shell: a `sed | head -n 1`, or a sed that quits at the first
+  # match, closes a pipe on its writer, which under pipefail fails the
+  # caller with status 141 when the output is larger than a pipe buffer.
+  token="$(sed -n 's/^[[:space:]]*Token[[:space:]]\{1,\}\([A-Za-z0-9_]\{1,\}\).*/\1/p')"
+  token="${token%%$'\n'*}"
   if [[ -n "$token" && -n "${GITHUB_ACTIONS:-}" ]]; then
     printf '::add-mask::%s\n' "$token" >&2
   fi
@@ -105,13 +127,15 @@ token_from() {
 # binary warns when its data dir is wider than 0700; a directory it
 # created, or the image's /data, never is).
 startup_checks() {
-  local out line
+  local out line warning
   out="$(cat)"
-  line="$(grep -E '^[[:space:]]*Database[[:space:]]' <<<"$out" | head -n 1 || true)"
+  line="$(grep -E '^[[:space:]]*Database[[:space:]]' <<<"$out" || true)"
+  line="${line%%$'\n'*}"
   [[ -n "$line" ]] || die "no Database line in the start-up block"
   grep -qE "\($EXPECT_DATABASE\)[[:space:]]*\$" <<<"$line" || die "the start-up block names '${line#"${line%%[![:space:]]*}"}', want a $EXPECT_DATABASE database"
-  if grep -q 'should be 0700' <<<"$out"; then
-    die "the server warns that its data dir is wider than 0700: $(grep 'should be 0700' <<<"$out" | head -n 1)"
+  warning="$(grep 'should be 0700' <<<"$out" || true)"
+  if [[ -n "$warning" ]]; then
+    die "the server warns that its data dir is wider than 0700: ${warning%%$'\n'*}"
   fi
   say "database: $EXPECT_DATABASE"
 }
@@ -128,12 +152,28 @@ wait_ready() {
   done
 }
 
+# expect_401 WHAT CURL-ARG... requires the request to be answered 401.
+expect_401() {
+  local what="$1" code; shift
+  code="$("${CURL[@]}" -s -o /dev/null -w '%{http_code}' "$@")" || die "$what: the request failed"
+  [[ "$code" == "401" ]] || die "$what answered $code, want 401"
+}
+
 # checks BASE TOKEN runs the HTTP checks against a ready server and
 # leaves the posted session's id in GATE_SID.
 checks() {
   local base="$1" token="$2" sid aid now resp body deadline
   "${CURL[@]}" -sf "$base/api/health" >/dev/null || die "no /api/health"
   say "health ok"
+
+  # Were authentication to break open, every check below would still
+  # pass: the token would simply not be needed. So the two services
+  # must refuse a request with no token and one with a wrong token.
+  say "requests without the token are refused"
+  expect_401 "GET /api/v1/sessions with no token" "$base/api/v1/sessions"
+  expect_401 "GET /api/v1/sessions with a wrong token" -H "Authorization: Bearer ${token}x" "$base/api/v1/sessions"
+  expect_401 "POST /ingest/v1/events with no token" -X POST -H 'Content-Type: application/json' -d '{}' "$base/ingest/v1/events"
+  expect_401 "POST /ingest/v1/events with a wrong token" -X POST -H "Authorization: Bearer ${token}x" -H 'Content-Type: application/json' -d '{}' "$base/ingest/v1/events"
 
   say "dashboard"
   # Each body is captured before it is searched: a `curl | grep -q`
@@ -185,30 +225,97 @@ RUN_PID=""
 RUN_LOG=""
 RUN_WORK=""
 
-run_cleanup() {
-  if [[ -n "$RUN_PID" ]] && kill -0 "$RUN_PID" 2>/dev/null; then
-    kill -INT "$RUN_PID" 2>/dev/null || true
-    wait "$RUN_PID" 2>/dev/null || true
+# STOP_STATUS is the exit status of the process stop_process last saw
+# end by itself.
+STOP_STATUS=0
+
+# stop_process PID GRACE-SECS sends SIGINT and waits for the process to
+# end, looking at it rather than blocking in `wait`: a binary that
+# ignores the signal would otherwise hold the gate for ever. Returns 0
+# when the process ended by itself (its status in STOP_STATUS), 1 when
+# it was still there after GRACE-SECS and was killed.
+stop_process() {
+  local pid="$1" grace="$2" deadline
+  kill -INT "$pid" 2>/dev/null || true
+  deadline=$((SECONDS + grace))
+  while kill -0 "$pid" 2>/dev/null; do
+    if ((SECONDS >= deadline)); then
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 1
+    fi
+    sleep "$STOP_POLL_SECS"
+  done
+  STOP_STATUS=0
+  wait "$pid" 2>/dev/null || STOP_STATUS=$?
+  return 0
+}
+
+# show_run_log prints the binary's output; the token's mask is
+# registered before the log is shown.
+show_run_log() {
+  token_from <"$RUN_LOG" >/dev/null || true
+  cat "$RUN_LOG" >&2 || true
+}
+
+# run_teardown ends the binary if it is still running and removes the
+# temp dir. Nothing here can fail the run: a process that needs killing
+# is only cleanup at this point, and a file a killed process still
+# holds (Windows keeps the handle of flightdeck.db or the lock file
+# for a moment) must not turn a passed gate into a failed one.
+run_teardown() {
+  if [[ -n "$RUN_PID" ]]; then
+    stop_process "$RUN_PID" "$CLEANUP_STOP_SECS" || true
+    RUN_PID=""
   fi
-  [[ -z "$RUN_WORK" ]] || rm -rf "$RUN_WORK"
+  if [[ -n "$RUN_WORK" ]]; then
+    rm -rf "$RUN_WORK" 2>/dev/null || true
+    RUN_WORK=""
+  fi
+}
+
+# run_on_exit is the EXIT trap: it cleans up and leaves with the status
+# the script was exiting with, whatever the cleanup's own commands did.
+run_on_exit() {
+  local status=$?
+  set +e
+  run_teardown
+  exit "$status"
 }
 
 # run_start BASE BINARY ARG... starts the binary and waits for it.
 run_start() {
   local base="$1"; shift
+  # The port must be free: a server already on it would answer the
+  # readiness probe in the binary's place.
+  if "${CURL[@]}" -s -o /dev/null "$base/ingest/health"; then
+    die "something already answers on $base; the gate needs the port for the binary it starts"
+  fi
   "$@" >>"$RUN_LOG" 2>&1 &
   RUN_PID=$!
   if ! wait_ready "$base" "kill -0 $RUN_PID 2>/dev/null"; then
     printf 'flightdeck is not ready after %ss; its output:\n' "$READY_TIMEOUT" >&2
-    token_from <"$RUN_LOG" >/dev/null  # registers the mask before the log is shown
-    cat "$RUN_LOG" >&2
+    show_run_log
     die "not ready"
+  fi
+  # Something answered: it must be the process started here. A server
+  # that took the port in the meantime answers just as well while this
+  # binary exits on the busy port, and the checks would then pass
+  # against a stranger.
+  if ! kill -0 "$RUN_PID" 2>/dev/null; then
+    show_run_log
+    die "$base answers, but the binary started here has exited: something else is on that port"
   fi
 }
 
 run_stop() {
-  kill -INT "$RUN_PID"
-  if wait "$RUN_PID"; then
+  if ! stop_process "$RUN_PID" "$STOP_TIMEOUT_SECS"; then
+    RUN_PID=""
+    show_run_log
+    die "flightdeck was still running ${STOP_TIMEOUT_SECS}s after SIGINT and had to be killed"
+  fi
+  RUN_PID=""
+  if ((STOP_STATUS == 0)); then
     say "exited 0"
   elif [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
     # Git Bash cannot deliver a console Ctrl+C to a native process; the
@@ -217,10 +324,9 @@ run_stop() {
     # killed process left, which the binary must also recover from.
     say "stopped (exit status not checked on Windows)"
   else
-    cat "$RUN_LOG" >&2
-    die "flightdeck exited non-zero on SIGINT"
+    show_run_log
+    die "flightdeck exited $STOP_STATUS on SIGINT"
   fi
-  RUN_PID=""
 }
 
 mode_run() {
@@ -240,13 +346,13 @@ mode_run() {
     FLIGHTDECK_NATS_URL FLIGHTDECK_DOMAIN FLIGHTDECK_METRICS
   RUN_WORK="$(mktemp -d)"
   RUN_LOG="$RUN_WORK/flightdeck.log"
-  trap run_cleanup EXIT
+  trap run_on_exit EXIT
   local cmd=("$bin" --listen "$listen" --data-dir "$RUN_WORK/data" "$@")
 
   say "starting $bin on $listen (data dir $RUN_WORK/data)"
   run_start "$base" "${cmd[@]}"
   token="$(token_from <"$RUN_LOG")"
-  [[ -n "$token" ]] || { cat "$RUN_LOG" >&2; die "no Token line in the start-up block"; }
+  [[ -n "$token" ]] || { show_run_log; die "no Token line in the start-up block"; }
   say "token from the start-up block: ${token:0:8}…"
   startup_checks <"$RUN_LOG"
   if [[ "$EXPECT_DATABASE" == SQLite ]]; then
@@ -263,7 +369,7 @@ mode_run() {
   run_stop
 
   trap - EXIT
-  run_cleanup
+  run_teardown
   echo "GATE OK ($EXPECT_DATABASE)"
 }
 

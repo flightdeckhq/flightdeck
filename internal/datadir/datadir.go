@@ -73,6 +73,9 @@ func Ensure(dir string) (Layout, error) {
 	}
 	for _, p := range []string{l.Root, l.NATS, l.ACME} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				return Layout{}, notWritable(l.Root, err)
+			}
 			return Layout{}, fmt.Errorf("create %s: %w", p, err)
 		}
 	}
@@ -86,6 +89,23 @@ func Ensure(dir string) (Layout, error) {
 		}
 	}
 	return l, nil
+}
+
+// notWritable explains a permission error met while preparing the data
+// dir: which directory, which user was refused, and what to do. The
+// usual way to get here is a container that runs as its own user with a
+// host directory bind-mounted as the data dir, where the bare "mkdir
+// …: permission denied" names neither.
+func notWritable(root string, err error) error {
+	uid := os.Getuid()
+	if uid < 0 {
+		// Windows has no numeric user id to name and no chown.
+		return fmt.Errorf("data dir %s is not writable by the user flightdeck runs as (%w); grant that user access to it, or use another --data-dir", root, err)
+	}
+	if _, statErr := os.Stat(root); statErr != nil {
+		return fmt.Errorf("data dir %s cannot be created by uid %d, the user flightdeck runs as (%w); create it for that user, or use another --data-dir", root, uid, err)
+	}
+	return fmt.Errorf("data dir %s is not writable by uid %d, the user flightdeck runs as (%w); give it to that user (chown -R %d %s), or use another --data-dir; in a container, mount a named volume in place of the host directory", root, uid, err, uid, root)
 }
 
 // CreatePrivate creates path as an empty file with mode 0600 when

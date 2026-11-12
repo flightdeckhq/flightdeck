@@ -85,6 +85,12 @@ jobs:
     name: ${{ matrix.name }}
     needs: resolve
     runs-on: ${{ matrix.runner }}
+    # The amd64 leg takes a few minutes: four runs of the checks, each a
+    # few seconds, the image pull, and at worst the ten minutes the pip
+    # step waits for PyPI's index. Thirty turns a step that wedges into
+    # a failed leg with its log, not a run that sits until GitHub's
+    # six-hour default.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -101,9 +107,13 @@ jobs:
             postgres: ""
     services:
       # For the one Postgres run of the checks, on linux-amd64 ("Gate
-      # (install.sh binary on Postgres)" below). An empty image starts
-      # no service, so the arm64 leg has none. Every other run in this
-      # workflow, on every leg, has no database to reach.
+      # (install.sh binary on Postgres)" below). The arm64 leg's image
+      # is the empty string, and a service whose image is an empty
+      # string is not started; GitHub documents that as the way to make
+      # a service conditional:
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idservicesservice_idimage
+      # Every other run in this workflow, on every leg, has no database
+      # to reach.
       postgres:
         image: ${{ matrix.postgres }}
         env:
@@ -240,6 +250,10 @@ jobs:
     name: ${{ matrix.name }}
     needs: resolve
     runs-on: ${{ matrix.runner }}
+    # An install and two runs of the checks, a few minutes in all;
+    # twenty fails a leg that wedges (a service that never stops, a
+    # download that stalls) long before the six-hour default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -308,10 +322,20 @@ jobs:
           brew services stop flightdeck
           rm -f "$GATE_STATE_FILE"
 
+      # However the step above ended, the service is not left running
+      # (keep_alive restarts it for as long as it is loaded).
+      - name: Stop the Homebrew service
+        if: always() && matrix.channel == 'brew' && env.PRERELEASE == 'false'
+        run: brew services stop flightdeck || true
+
   windows:
     name: windows-amd64 (install.ps1)
     needs: resolve
     runs-on: windows-2022
+    # An install and one run of the checks, a few minutes on a cold
+    # disk; twenty fails a leg that wedges long before the six-hour
+    # default.
+    timeout-minutes: 20
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:

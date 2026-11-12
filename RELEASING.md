@@ -152,11 +152,16 @@ user would, and runs `scripts/install-gate.sh` against it: start
 removes the binary's settings from its environment), wait for
 `/ingest/health`, read the token from the start-up block, require that
 block to name a SQLite database and `flightdeck.db` to be in the data
-dir, check `/runtime-config.json` and `GET /` (the dashboard), POST one
-sensor-shaped `session_start` to `/ingest/v1/events` with that token,
-read the session back from `GET /api/v1/sessions/{id}` and
-`GET /api/v1/sessions`, stop it and require a clean exit, then start it
-again on the same data dir and require the session to be served still.
+dir, check `/runtime-config.json` and `GET /` (the dashboard), require
+a 401 from `/api/v1/sessions` and from `/ingest/v1/events` with no token
+and with a wrong one, POST one sensor-shaped `session_start` to
+`/ingest/v1/events` with the token, read the session back from
+`GET /api/v1/sessions/{id}` and `GET /api/v1/sessions`, stop it with
+SIGINT and require a clean exit within 75 seconds (the binary's own
+shutdown bound; a process that has to be killed fails the leg), then
+start it again on the same data dir and require the session to be
+served still. Each leg has a job timeout, so a step that wedges fails
+the leg in minutes.
 
 | Leg | Runner | Channel |
 |---|---|---|
@@ -187,6 +192,12 @@ image (a new volume, a read-only root filesystem, a second container on
 the same volume), so the script and the image's data dir are not first
 exercised on a tag. It runs locally the same way:
 `scripts/install-gate.sh run 127.0.0.1:4100 bin/flightdeck`.
+`scripts/test-install-gate.sh` tests the script itself against fake
+binaries, each broken in one way the gate must catch (it exits at once,
+never listens and ignores SIGINT, never serves the session, needs no
+token, will not stop, forgets the session over a restart); CI runs it
+with the other script tests, and `scripts/test-install-gate.sh
+bin/flightdeck` adds a run against a real binary.
 
 The gate runs after the publish, so a red leg means something was
 published that does not install or run on that platform. Fix forward

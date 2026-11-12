@@ -91,7 +91,10 @@ All notable changes to Flightdeck are documented here.
   runs the new all-in-one image (distroless, non-root, amd64 and arm64),
   whose first start prints the dashboard token in its start-up block
   (`docker logs` when detached) and which keeps its SQLite database in
-  the volume. None of them needs a database or any other setting.
+  the volume. None of them needs a database or any other setting. A
+  data dir the binary may not write to (a host directory of another
+  user bind-mounted into the container) stops the start with an error
+  naming the directory, the user id and the fix.
   `flightdeck --version` prints the release the binary came from, and
   the release's `checksums.txt` is signed with Sigstore: both installers
   verify the signature when `cosign` is installed.

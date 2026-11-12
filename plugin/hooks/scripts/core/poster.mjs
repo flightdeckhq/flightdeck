@@ -56,9 +56,12 @@ export function redactUserinfo(text) {
 // errors that surface through either path.
 export function shortErrorFrom(err) {
   if (!err) return "unknown error";
+  // The abort the poster's own timer raises is a DOMException whose
+  // ``code`` is the legacy number 20 (ABORT_ERR); read as a code it
+  // would be reported as "20".
+  if (err.name === "AbortError" || err.name === "TimeoutError") return "timeout";
   const code = err.cause?.code || err.code;
   if (code) return String(code);
-  if (err.name === "AbortError") return "timeout";
   return (err.message || "unknown error").split("\n")[0];
 }
 

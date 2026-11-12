@@ -105,6 +105,30 @@ describe("resolveConfig server", () => {
   });
 });
 
+describe("a POST the server does not answer in time", () => {
+  it("is reported as a timeout, not as the abort's numeric code", async () => {
+    // A server that accepts the request and never answers: the
+    // poster's own two-second timer aborts it.
+    const silent = await new Promise((resolve) => {
+      const server = createServer((req) => req.resume());
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+    try {
+      const server = `http://127.0.0.1:${silent.address().port}`;
+      const result = await runScript(
+        sessionStartInput(privateTmp),
+        hookEnv({}, { FLIGHTDECK_SERVER: server, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: randomUUID() }),
+      );
+      assert.equal(result.code, 0, "the hook fails open");
+      assert.match(result.stderr, new RegExp(`^\\[flightdeck\\] cannot reach ${server}: timeout\\. events dropped for this session\\.$`, "m"));
+      assert.match(JSON.parse(result.stdout).systemMessage, new RegExp(`^Flightdeck: no answer from ${server} \\(timeout\\)\\.`));
+    } finally {
+      silent.closeAllConnections?.();
+      silent.close();
+    }
+  });
+});
+
 describe("describeStartFailure", () => {
   const failed = (status, reason) => ({ accepted: false, retryable: true, status, clockSkew: false, reason });
 

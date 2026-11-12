@@ -229,7 +229,8 @@ flightdeck/
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
-├── scripts/install-gate.sh     # The from-scratch install gate's checks: health, token, one event, the dashboard
+├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
+├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
 ├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
 ├── install.sh                  # `curl | sh` installer: detect, download, verify, install
 ├── install.ps1                 # `irm | iex` installer for Windows
@@ -10511,7 +10512,12 @@ given; the public port never serves `/metrics`.
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
 mode 0700; an existing directory with a wider mode is used as it is and
 a warning names the `chmod`, since it holds the database, the bus store
-and the secrets file. It holds `flightdeck.db`, the SQLite database
+and the secrets file. A data dir the process may not write to (a
+container's user and a bind-mounted host directory another user owns
+is the usual case) stops the start with an error that names the
+directory, the user id the binary runs as and the remedy: a `chown` to
+that user, another `--data-dir`, or a named volume in place of the host
+directory. It holds `flightdeck.db`, the SQLite database
 (mode 0600, with SQLite's `flightdeck.db-wal` and `flightdeck.db-shm`
 beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
@@ -10810,18 +10816,32 @@ over the defaults.
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
-The services' tuning variables below keep their names and defaults under
-the binary; `FLIGHTDECK_PORT`, `FLIGHTDECK_POSTGRES_URL`, `ENVIRONMENT`
-and `FLIGHTDECK_MIGRATIONS_DIR` are read by the standalone service
-binaries only, since the one binary derives them from its flags.
+None of them is required: with nothing set the binary listens on
+loopback and keeps its data in the SQLite file in its data dir.
 
+The three tables below describe the standalone service processes, one
+per service, which the Docker Compose stack and the Helm chart run
+against a Postgres and a NATS server. There each service needs its
+database URL, which is why `FLIGHTDECK_POSTGRES_URL` is marked required.
+The `flightdeck` binary runs the same three services in one process
+and needs none of these variables. It sets `FLIGHTDECK_POSTGRES_URL`
+(to the URL of whichever database its flags select, the default SQLite
+file included) and `FLIGHTDECK_JWT_SECRET` itself, sets `ENVIRONMENT`
+to `dev` when it serves on loopback with the development token and
+clears it otherwise, clears
+`FLIGHTDECK_MIGRATIONS_DIR`, and serves the services' handlers on its
+own listener, so `FLIGHTDECK_PORT` is not used; a value of any of
+these in the environment has no effect on it. The services' tuning
+variables (stream limits, pool size, reconciler and
+orphan timings, `SHUTDOWN_TIMEOUT_SECS`, the pricing path) keep their
+names and defaults under the binary.
 
-**Ingestion API:**
+**Ingestion API (standalone service):**
 
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8080) |
-| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token in the URL's user slot (`nats://<FLIGHTDECK_NATS_TOKEN>@nats:4222`; a lone user is sent as the auth token, so the token is limited to URL-unreserved characters); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
 | `FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS` | Age limit of the `FLIGHTDECK` stream in hours (default 72, at least 1); see Worker / Event Processing > The FLIGHTDECK stream |
@@ -10830,11 +10850,11 @@ binaries only, since the one binary derives them from its flags.
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves the request-latency histogram at `/metrics` (default 9103; `0` turns it off; the service refuses to start outside 0 to 65535) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
-**Workers:**
+**Workers (standalone service):**
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_POSTGRES_URL` | Database URL (required): `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Database URL, required by the standalone service: `postgres://…`, or `sqlite://<path>` for the embedded database; percent-encode reserved characters in a Postgres password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies the pending embedded migrations of the database's backend and exits without consuming |
@@ -10843,12 +10863,12 @@ binaries only, since the one binary derives them from its flags.
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves `/metrics` (default 9102; `0` turns it off; the worker refuses to start outside 0 to 65535) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
-**Query API:**
+**Query API (standalone service):**
 
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8081) |
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
 | `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set |
@@ -10885,9 +10905,9 @@ from one release tag (RELEASING.md has the sequence):
 |---|---|---|
 | Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
-| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary with its defaults and logs to `$(brew --prefix)/var/log/flightdeck.log` |
+| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000`; `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -10914,7 +10934,12 @@ a pre-release tag, `vX.Y.Z-rc.1`, takes the Unreleased section and is
 marked as a pre-release, which the Homebrew tap and the installers'
 `latest` skip). CI cross-builds the six binaries with `goreleaser build
 --snapshot` on every pull request and builds the Docker image, so a
-target that stops compiling fails the PR, not the release.
+target that stops compiling fails the PR, not the release. CI also runs
+the install gate's checks (below) on the binary it builds and on that
+image, started on a new volume with a read-only root filesystem, and
+runs the checks against fake binaries that are each broken in one way
+(`scripts/test-install-gate.sh`): every fault must fail the gate within
+a bound, and a wedged binary must not hang it.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the
@@ -10925,10 +10950,24 @@ completes, the install gate (`install-gate.yml`, also runnable by hand
 with a tag) installs the published artifacts on fresh runners, one leg
 per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
 `windows-2022`), through the channel under test (`install.sh`, `pip`
-and `uvx`, `docker run`, `brew`, `install.ps1`), and runs
-`scripts/install-gate.sh`: health, the token from the start-up block,
-`/runtime-config.json`, the dashboard, one sensor-shaped event posted
-and read back by id and from the sessions list, a clean stop. A
+and `uvx`, `docker run`, `brew` and `brew services`, `install.ps1`), and
+runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
+database and nothing else configured, since that is the install a new
+user makes: the script removes the binary's settings from its
+environment and requires the start-up block to name a SQLite database
+in the data dir. Then: health, the token from the start-up block,
+`/runtime-config.json`, the dashboard, a 401 from the query API and from
+ingestion for a request with no token and for one with a wrong token
+(with authentication broken open every other check would still pass),
+one sensor-shaped event posted and read back by id and from the
+sessions list, a clean stop within the binary's own shutdown bound (a
+process that has to be killed fails the leg), and a
+restart on the same data dir (a new container on the same volume, a
+stop and start of the Homebrew service) after which the session is
+still served. The container's log must not carry the data dir's mode
+warning. One leg, linux-amd64, repeats the checks with `--database-url`
+against an empty Postgres in a service container, because Postgres
+stays a supported database; no other leg has a database to reach. A
 pre-release tag (`vX.Y.Z-rc.N`, pushed by hand) is the dry run: the same
 pipeline with the GitHub release marked pre-release, no formula, no
 `latest` image tag, no sensor publish; the gate's Homebrew leg then

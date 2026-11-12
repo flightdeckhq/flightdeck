@@ -509,13 +509,16 @@ jobs:
   flightdeck:
     # The one binary: the root module's lint and unit tests, the build
     # with the dashboard bundle embedded, and scripts/flightdeck-smoke.sh
-    # against a Postgres service container: start, migrate an empty
-    # database, serve the dashboard, accept an event through the
-    # embedded bus and serve the session back, stop cleanly.
+    # on the default database (SQLite, nothing configured) and against a
+    # Postgres service container: start, create the schema, serve the
+    # dashboard, accept an event through the embedded bus and serve the
+    # session back, stop cleanly, restart. The release's install gate
+    # checks (scripts/install-gate.sh) run on the same binary.
     name: flightdeck binary
     runs-on: ubuntu-24.04
     # The job takes about ten minutes (npm ci, the dashboard build, the
-    # lint, the -race tests that start the real binary, three smokes);
+    # lint, the -race tests that start the real binary, three smokes
+    # and the install gate's checks);
     # twenty turns a start that wedges into a failure with its log
     # instead of a run that sits until the six-hour default.
     timeout-minutes: 20
@@ -592,6 +595,23 @@ jobs:
 
       - name: Smoke the binary against Postgres
         run: scripts/flightdeck-smoke.sh ./bin/flightdeck 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck?sslmode=disable' 127.0.0.1:4000
+
+      - name: The install gate's checks on the built binary
+        # scripts/install-gate.sh is what the install-gate workflow runs
+        # against the published artifacts after a release; it runs here
+        # on every pull request so it cannot rot between releases. First
+        # as on every leg of the gate, with nothing configured (SQLite
+        # in a fresh data dir, a restart that keeps the session), then as
+        # on its one Postgres leg: on a database of its own, created
+        # empty here, so the binary creates the schema as it does on the
+        # gate (the smoke above has already migrated `flightdeck`).
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          scripts/install-gate.sh run 127.0.0.1:4000 ./bin/flightdeck
+          docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q -U flightdeck -d postgres -c 'CREATE DATABASE flightdeck_gate'
+          GATE_EXPECT_DATABASE=Postgres scripts/install-gate.sh run 127.0.0.1:4000 ./bin/flightdeck \
+            --database-url 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck_gate?sslmode=disable'
 
       - name: Concurrency smoke on SQLite
         # Twenty sessions of a hundred events each while four readers
@@ -1463,7 +1483,7 @@ jobs:
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
-          shellcheck scripts/install-gate.sh scripts/test-install-sh.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback
@@ -1471,6 +1491,16 @@ jobs:
       # entry, unsupported CPU, unknown version, plain-HTTP host).
       - name: install.sh against a local release server
         run: scripts/test-install-sh.sh
+
+      # The install gate's checks against fake binaries, each broken in
+      # one way the gate must catch (exits at once, never listens and
+      # ignores SIGINT, never serves the session, needs no token, will
+      # not stop, forgets the session over a restart): every one must
+      # fail the gate within a bound, never hang it, and a fake that
+      # behaves must pass. The `flightdeck` job runs the gate against
+      # the real binary.
+      - name: The install gate's checks against fake binaries
+        run: scripts/test-install-gate.sh
 
       # The PyPI wheels (flightdeck-cli) are built by a script, not a
       # build backend; its tests pin the wheel layout, tags and RECORD.
@@ -1555,7 +1585,8 @@ jobs:
   # the all-in-one Docker image is built from the root Dockerfile, so a
   # platform or an image that stops building fails here and not on the
   # tag. The binaries are not run: the `flightdeck` job above smokes the
-  # native build on SQLite and against Postgres.
+  # native build on SQLite and against Postgres. The image is run, the
+  # way its header documents: a port, a volume and no database.
   release-snapshot:
     name: Release snapshot (six binaries, Docker image)
     runs-on: ubuntu-24.04
@@ -1616,3 +1647,24 @@ jobs:
         run: |
           test "$(docker image inspect flightdeck:ci --format '{{.Config.User}}')" = "nonroot"
           docker run --rm flightdeck:ci --version | grep -q "flightdeck v${{ github.sha }}"
+
+      # The install gate's container checks (scripts/install-gate.sh, as
+      # the install-gate workflow runs them on the published image): a
+      # new named volume and no database, so the start-up block must
+      # name SQLite in /data, and no data-dir warning, so /data is 0700
+      # for the runtime user. The first container has a read-only root:
+      # everything the binary writes is under /data. The second, on the
+      # same volume, must serve the first one's session to the same token.
+      - name: The image runs with no database and keeps its data on the volume
+        env:
+          GATE_STATE_FILE: ${{ runner.temp }}/image-gate.state
+        run: |
+          docker run -d --name flightdeck --read-only -p 127.0.0.1:4002:4000 -v flightdeck-ci:/data flightdeck:ci
+          scripts/install-gate.sh check http://127.0.0.1:4002 docker logs flightdeck
+          docker stop -t 30 flightdeck
+          test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"
+          docker rm flightdeck
+          docker run -d --name flightdeck -p 127.0.0.1:4002:4000 -v flightdeck-ci:/data flightdeck:ci
+          scripts/install-gate.sh kept http://127.0.0.1:4002 docker logs flightdeck
+          docker stop -t 30 flightdeck
+          test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"

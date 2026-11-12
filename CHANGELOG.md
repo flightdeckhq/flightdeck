@@ -83,12 +83,18 @@ All notable changes to Flightdeck are documented here.
   the machine, verifies it against the release's `checksums.txt` and
   installs it without sudo; `brew install flightdeckhq/tap/flightdeck`
   installs it from the new Homebrew tap, where `brew services start
-  flightdeck` keeps it running; `pip install flightdeck-cli` (or `uvx
+  flightdeck` keeps it running on the same `~/.flightdeck` a `flightdeck`
+  run by hand uses; `pip install flightdeck-cli` (or `uvx
   flightdeck-cli`, `pipx run flightdeck-cli`) installs the same binary
   from PyPI with a `flightdeck` command; and `docker run -p
-  127.0.0.1:4000:4000 -v flightdeck-data:/data flightdeckhq/flightdeck`
+  127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck`
   runs the new all-in-one image (distroless, non-root, amd64 and arm64),
-  whose first start prints the dashboard token in `docker logs`.
+  whose first start prints the dashboard token in its start-up block
+  (`docker logs` when detached) and which keeps its SQLite database in
+  the volume. None of them needs a database or any other setting. A
+  data dir the binary may not write to (a host directory of another
+  user bind-mounted into the container) stops the start with an error
+  naming the directory, the user id and the fix.
   `flightdeck --version` prints the release the binary came from, and
   the release's `checksums.txt` is signed with Sigstore: both installers
   verify the signature when `cosign` is installed.
@@ -732,7 +738,10 @@ All notable changes to Flightdeck are documented here.
   and `flightdeck-sensor` to PyPI, scans and pushes the
   `flightdeckhq/flightdeck` image, and then runs the install gate: the
   published artifacts are installed on fresh Linux, macOS and Windows
-  runners through every channel, started, sent one event and read back.
+  runners through every channel, started with no database configured,
+  sent one event, read back, stopped and started again on the same data
+  to find the session still there; one Linux leg repeats that against a
+  Postgres.
   `govulncheck` on the Go modules replaces the per-image scans. A
   `vX.Y.Z-rc.N` tag is a dry run of the same pipeline.
 - **Go 1.27.4.** The services, their images, the development stack and CI

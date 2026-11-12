@@ -58,8 +58,6 @@
 #   FLIGHTDECK_DEV_DATA_DIR  data dir (default: see above)
 #   FLIGHTDECK_DEV_DB        postgres or sqlite, when the command line
 #                            names neither
-#   FLIGHTDECK_DEV_DATABASE_URL  a Postgres URL to use in place of the
-#                            container's (postgres only)
 #   FLIGHTDECK_DEV_ARGS      extra flags for the binary (--metrics)
 #   FLIGHTDECK_DEV_BUILD     0 runs the binary already in the dev dir
 #   FLIGHTDECK_DEV_WEBUI     0 leaves the dashboard bundle as it is (an
@@ -164,6 +162,12 @@ asked_mode() {
   esac
 }
 
+# have_docker: whether there is a docker daemon to talk to. The SQLite
+# stack needs none, so its commands must work without one.
+have_docker() {
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
 # project_containers <service>...: the ids of this project's containers
 # of the named services, running or stopped.
 project_containers() {
@@ -187,6 +191,7 @@ stop_containers() {
 # Containers only; no volume is touched.
 retire_legacy_services() {
   local all ids nats i
+  have_docker || return 0
   all="$(project_containers "${LEGACY_FRONT[@]}" "${LEGACY_PRODUCERS[@]}" "${LEGACY_REST[@]}")"
   [ -n "$all" ] || return 0
   say "stopping the service containers of the seven-container stack (project $PROJECT); Postgres and the volumes stay"
@@ -304,13 +309,9 @@ cmd_up() {
 
   local -a db_args=()
   if [ "$mode" = postgres ]; then
-    if [ -n "${FLIGHTDECK_DEV_DATABASE_URL:-}" ]; then
-      db_args=(--database-url "$FLIGHTDECK_DEV_DATABASE_URL")
-    else
-      say "Postgres container ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"
-      "${COMPOSE[@]}" up -d --wait postgres
-      db_args=(--database-url "$PG_BASE_URL/$PG_DATABASE?sslmode=disable")
-    fi
+    say "Postgres container ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"
+    "${COMPOSE[@]}" up -d --wait postgres
+    db_args=(--database-url "$PG_BASE_URL/$PG_DATABASE?sslmode=disable")
   fi
 
   if [ "${FLIGHTDECK_DEV_BUILD:-1}" != "0" ]; then
@@ -366,9 +367,11 @@ cmd_restart() {
 
 cmd_down() {
   stop_binary
-  retire_legacy_services
-  say "containers down (volumes kept)"
-  "${COMPOSE[@]}" down --remove-orphans
+  if have_docker; then
+    retire_legacy_services
+    say "containers down (volumes kept)"
+    "${COMPOSE[@]}" down --remove-orphans
+  fi
 }
 
 cmd_reset() {
@@ -403,9 +406,11 @@ cmd_dump() {
   else
     say "no flightdeck log at $LOG"
   fi
-  say "containers of project $PROJECT"
-  "${COMPOSE[@]}" ps -a || true
-  "${COMPOSE[@]}" logs --tail=300 || true
+  if have_docker; then
+    say "containers of project $PROJECT"
+    "${COMPOSE[@]}" ps -a || true
+    "${COMPOSE[@]}" logs --tail=300 || true
+  fi
 }
 
 cmd_status() {
@@ -416,7 +421,9 @@ cmd_status() {
   else
     say "flightdeck not running"
   fi
-  "${COMPOSE[@]}" ps -a
+  if have_docker; then
+    "${COMPOSE[@]}" ps -a
+  fi
 }
 
 cmd_env() {

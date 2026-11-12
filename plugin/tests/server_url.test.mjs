@@ -105,26 +105,120 @@ describe("resolveConfig server", () => {
   });
 });
 
-describe("a POST the server does not answer in time", () => {
-  it("is reported as a timeout, not as the abort's numeric code", async () => {
-    // A server that accepts the request and never answers: the
-    // poster's own two-second timer aborts it.
-    const silent = await new Promise((resolve) => {
-      const server = createServer((req) => req.resume());
+// A server that leaves its first ``silentPosts`` event POSTs unanswered
+// (as one that is slow to take its first event does, past the poster's
+// two seconds) and answers the ones after them 200. ``posts`` counts
+// every event POST that arrived.
+function startSlowOrigin(silentPosts) {
+  return new Promise((resolve) => {
+    const state = { posts: 0, accepted: [] };
+    const server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.method !== "POST" || req.url !== "/ingest/v1/events") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end("{}");
+          return;
+        }
+        state.posts += 1;
+        if (state.posts <= silentPosts) return; // never answered
+        state.accepted.push(JSON.parse(body));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"status":"ok","attached":false}');
+      });
+    });
+    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, state }));
+  });
+}
+
+describe("a session start the server is slow to answer", () => {
+  async function run(silentPosts) {
+    const origin = await startSlowOrigin(silentPosts);
+    try {
+      const server = `http://127.0.0.1:${origin.port}`;
+      const sessionId = randomUUID();
+      const result = await runScript(
+        sessionStartInput(privateTmp),
+        hookEnv({}, { FLIGHTDECK_SERVER: server, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sessionId }),
+      );
+      return { result, server, sessionId, state: origin.state };
+    } finally {
+      origin.server.closeAllConnections?.();
+      origin.server.close();
+    }
+  }
+  const timeoutLines = (stderr) => stderr.split("\n").filter((line) => /cannot reach .*: timeout\./.test(line)).length;
+
+  it("sends once and prints nothing when the first attempt is answered", async () => {
+    const { result, state, sessionId } = await run(0);
+    assert.equal(result.code, 0);
+    assert.equal(state.posts, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(timeoutLines(result.stderr), 0);
+    assert.equal(state.accepted[0].session_id, sessionId);
+    assertIngestionContract(state.accepted[0]);
+  });
+
+  it("tries once more after a timeout, and says nothing to the user when that attempt is answered", async () => {
+    const { result, state, sessionId, server } = await run(1);
+    assert.equal(result.code, 0);
+    assert.equal(state.posts, 2, "the session_start was sent again after the timeout");
+    assert.equal(result.stdout, "", "no notice: the session is being recorded");
+    // The first attempt still leaves its line where Claude Code's
+    // debug log keeps it, with the reason in words, not as the abort's
+    // numeric code.
+    assert.equal(timeoutLines(result.stderr), 1);
+    assert.match(result.stderr, new RegExp(`^\\[flightdeck\\] cannot reach ${server}: timeout\\. events dropped for this session\\.$`, "m"));
+    assert.equal(state.accepted.length, 1);
+    assert.equal(state.accepted[0].event_type, "session_start");
+    assert.equal(state.accepted[0].session_id, sessionId);
+    assertIngestionContract(state.accepted[0]);
+  });
+
+  it("tells the user after two attempts that both timed out, and stops there", async () => {
+    const { result, state, server } = await run(Infinity);
+    assert.equal(result.code, 0, "the hook fails open");
+    assert.equal(state.posts, 2, "two attempts, not more");
+    assert.equal(timeoutLines(result.stderr), 2);
+    const output = JSON.parse(result.stdout);
+    assert.match(output.systemMessage, new RegExp(`^Flightdeck: no answer from ${server} \\(timeout\\)\\.`));
+    // Two attempts of two seconds each, and the rest of the hook: well
+    // inside the hook's 30-second timeout.
+    assert.ok(result.wallMs < 15000, `the hook took ${result.wallMs} ms`);
+  });
+
+  it("does not try again when the answer is a configuration error", async () => {
+    // A 404 from an address that is not a Flightdeck server's: a second
+    // attempt would get the same answer, so the user is told at once.
+    const requests = [];
+    const stranger = await new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        requests.push(req.url);
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("404 page not found\n");
+        });
+      });
       server.listen(0, "127.0.0.1", () => resolve(server));
     });
     try {
-      const server = `http://127.0.0.1:${silent.address().port}`;
       const result = await runScript(
         sessionStartInput(privateTmp),
-        hookEnv({}, { FLIGHTDECK_SERVER: server, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: randomUUID() }),
+        hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${stranger.address().port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: randomUUID(),
+        }),
       );
-      assert.equal(result.code, 0, "the hook fails open");
-      assert.match(result.stderr, new RegExp(`^\\[flightdeck\\] cannot reach ${server}: timeout\\. events dropped for this session\\.$`, "m"));
-      assert.match(JSON.parse(result.stdout).systemMessage, new RegExp(`^Flightdeck: no answer from ${server} \\(timeout\\)\\.`));
+      assert.equal(result.code, 0);
+      assert.deepEqual(requests, ["/ingest/v1/events"], "one POST, no second attempt");
+      assert.match(JSON.parse(result.stdout).systemMessage, /has no ingestion API/);
     } finally {
-      silent.closeAllConnections?.();
-      silent.close();
+      stranger.closeAllConnections?.();
+      stranger.close();
     }
   });
 });
@@ -158,6 +252,12 @@ describe("describeStartFailure", () => {
   it("names a value that is not an http(s) URL", () => {
     const text = describeStartFailure("localhost:4000", failed(null, "ERR_INVALID_URL"));
     assert.match(text, /the server address "localhost:4000" is not an http:\/\/ or https:\/\/ URL/);
+  });
+
+  it("names a host the server does not answer for (421) and both ways out", () => {
+    const text = describeStartFailure("http://flightdeck:4000", failed(421, "HTTP 421"));
+    assert.match(text, /^Flightdeck: http:\/\/flightdeck:4000 does not answer for that host name \(HTTP 421\)/);
+    assert.match(text, /--allowed-hosts \(FLIGHTDECK_ALLOWED_HOSTS\)/);
   });
 
   it("reports any other status as it is", () => {

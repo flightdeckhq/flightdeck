@@ -2265,7 +2265,7 @@ Each value is sized for the hook's normal worst case:
 
 | Hook | Timeout (s) | Normal worst case |
 |---|---|---|
-| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
+| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s, and 2 s more when the first is not answered in time), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
 | `UserPromptSubmit` | 15 | the `session_start` backstop (git probes and its POST) and the `pre_call` POST (2 s each) |
 | `PreToolUse` | 10 | local reads only (the policy cache, remembered decisions and, with enforcement on, the control state), plus a 2 s heartbeat when the session has been quiet for 5 s |
 | `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
@@ -2452,9 +2452,17 @@ prints `{"systemMessage": "..."}` on stdout, which Claude Code shows as
 a warning. The message says what happened and which setting to change:
 no answer (the server is not running, or the address is wrong), a 404
 or 405 (the address is not a Flightdeck server's; the message names the
-URL that was tried), a 401 or 403 (the token was refused; the message
+URL that was tried), a 421 (the server does not answer for the host
+name in the address), a 401 or 403 (the token was refused; the message
 names `FLIGHTDECK_TOKEN` and the token option, never the token), a
 value that is not an `http://` or `https://` URL, or any other status.
+A POST the server does not answer within its two seconds is sent once
+more before the user is told anything: a server's first event is its
+slowest, and a cold or loaded one can exceed the two seconds once and
+answer the next attempt at once, in which case the session is being
+recorded and no warning is shown. Only a timeout is tried again, and
+only while a whole attempt fits before the hook's 25-second deadline; a
+refused connection or a status is reported after the first attempt.
 It is shown once per session (a marker,
 `start-notice-${sessionId}.txt`, so a `SessionStart` that fires again
 after a compaction does not repeat it) and only by `SessionStart`:

@@ -320,7 +320,10 @@ All notable changes to Flightdeck are documented here.
   `SessionStart` hook shows a warning in Claude Code, once per session,
   naming what happened and the setting to change; the token is never
   printed. Before, the only trace was a line in Claude Code's debug
-  log. The hook still exits 0 and the session carries on.
+  log. The hook still exits 0 and the session carries on. A first event
+  the server does not answer within two seconds (a cold server's first
+  event can take longer) is sent once more before any warning, so a
+  session that is being recorded is not reported as lost.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

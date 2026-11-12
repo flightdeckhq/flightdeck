@@ -21,6 +21,16 @@ import {
 
 const WORKER_ROLES = ["fanout-worker-1", "fanout-worker-2", "fanout-worker-3"];
 
+/** How long one hover gets to show its run's tooltip before the
+ *  pointer is put back on the glyph. The tooltip opens in the render
+ *  the hover causes, so a second is many frames. */
+const TOOLTIP_OPEN_MS = 1_000;
+/** How long a glyph's hover is repeated until its tooltip shows. The
+ *  rows keep moving under a resting pointer (see the hover loop), a
+ *  few pixels at a time and about once a second; ten seconds is
+ *  several such moves. */
+const HOVER_SETTLE_MS = 10_000;
+
 // Wide enough for the 240 px sidebar, the 460 px label column and the
 // 900 px timeline side by side, so the swimlane does not scroll
 // sideways to "now" and no part of the timeline sits under the
@@ -74,10 +84,19 @@ test.describe("T137 — Runs started together keep reachable glyphs", () => {
 			// The glyph's centre hit-tests to the glyph itself.
 			expect(placed[i]!.hit).toBe(`swimlane-run-bracket-start-${prefixes[i]}`);
 
-			await glyphs[i]!.hover();
+			// A 10 px glyph does not hold still under a resting pointer.
+			// The window advances 3 px a second at 5m, and the rows above
+			// move this one 9 px when the divider between the live and
+			// the recent agents comes or goes, which it does as an agent
+			// another spec has just posted for passes 15 s without an
+			// event. The glyph then leaves the pointer and its tooltip
+			// closes, as it would for a user, who hovers it again; so
+			// does this block, until the tooltip of this run shows.
 			const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefixes[i]}"]`);
-			await expect(tooltip).toBeVisible();
-			await expect(tooltip).toContainText(`run ${prefixes[i]}`);
+			await expect(async () => {
+				await glyphs[i]!.hover();
+				await expect(tooltip).toContainText(`run ${prefixes[i]}`, { timeout: TOOLTIP_OPEN_MS });
+			}).toPass({ timeout: HOVER_SETTLE_MS });
 		}
 	});
 });

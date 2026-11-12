@@ -2,25 +2,21 @@
  * T146 — The search palette opens an event anywhere in a long run.
  *
  * Fixture: a run of e2e-test-long-run with 2,050 tool calls and, newest
- * of all, one tool call named e2e-long-run-needle. It is seeded through
- * the ingestion API by ``tests/e2e-fixtures/seed_long_run.py``, once per
- * stack (``beforeAll`` skips it when the needle is already searchable;
- * two theme projects starting together on a fresh stack may each seed
- * one, and the spec accepts either needle),
- * and the spec waits through the API until the worker has stored the
- * run. The palette finds the needle and opens it; the event drawer
- * shows it. The lookup this replaced read only the run's oldest 2,000
+ * of all, one tool call named e2e-long-run-needle (LONG_RUN_FIXTURE).
+ * globalSetup seeds it through the ingestion API, once per stack, and
+ * waits until the worker has stored the run, before any spec starts.
+ * Two suite runs started together on a fresh stack each seed one, so a
+ * stack can hold two such runs, and the spec accepts either needle.
+ * The palette finds the needle and opens it; the event drawer shows
+ * it. The lookup this replaced read only the run's oldest 2,000
  * events, so the needle opened as "Event not found".
  */
-import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { LONG_RUN_FIXTURE } from "./_fixtures";
 import { API_URL } from "./_stack";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const NEEDLE = "e2e-long-run-needle";
-const CALLS = 2050;
+const NEEDLE = LONG_RUN_FIXTURE.needle;
+const CALLS = LONG_RUN_FIXTURE.calls;
 const API = API_URL;
 const AUTH = { Authorization: "Bearer tok_dev" };
 
@@ -52,24 +48,12 @@ async function runEventCount(request: APIRequestContext, sessionId: string): Pro
 	return ((await resp.json()) as { total: number }).total;
 }
 
-test.beforeAll(async ({ request }) => {
-	if (await needleHit(request)) return;
-	const env = { ...process.env };
-	for (const key of Object.keys(env)) if (key.startsWith("FLIGHTDECK_")) delete env[key];
-	const result = spawnSync(
-		process.env.PYTHON ?? "python3",
-		[resolve(REPO_ROOT, "tests", "e2e-fixtures", "seed_long_run.py"), NEEDLE, String(CALLS)],
-		{ cwd: REPO_ROOT, env, encoding: "utf8" },
-	);
-	if (result.status !== 0) {
-		throw new Error(`T146 beforeAll: seed_long_run.py exited ${result.status}: ${result.stderr}`);
-	}
-});
-
 test.describe("T146 — The search palette opens an event anywhere in a long run", () => {
 	test("the run's newest event, past its oldest 2,000, opens in the event drawer", async ({ page, request }) => {
-		// The needle is posted last, so once it is searchable and the run
-		// holds every call, the run is fully stored.
+		// globalSetup has stored the run; this reads the needle's hit and
+		// holds the spec to the fixture it needs. The needle is posted
+		// last, so once it is searchable and the run holds every call,
+		// the run is fully stored.
 		let hit: NeedleHit | null = null;
 		await expect
 			.poll(
@@ -90,11 +74,10 @@ test.describe("T146 — The search palette opens an event anywhere in a long run
 		await expect(option).toBeVisible({ timeout: 10_000 });
 		await option.click();
 
-		// Both theme projects run this spec, and on a fresh stack both
-		// can seed a run before either sees the other's needle, so the
-		// palette may open the other run's needle. Each needle is the
-		// newest event of a run past its oldest 2,000, so either proves
-		// the lookup; the opened one must be a needle.
+		// A stack can hold two long runs (see the header), so the palette
+		// may open the other run's needle. Each needle is the newest
+		// event of a run past its oldest 2,000, so either proves the
+		// lookup; the opened one must be a needle.
 		await expect(page).toHaveURL(/[?&]event=[0-9a-f-]{36}/);
 		const opened = new URL(page.url()).searchParams.get("event");
 		const needles = (await needleHits(request)).map((h) => h.event_id);

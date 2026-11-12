@@ -228,6 +228,17 @@ crowding the LIVE rows other specs read out of view. None is a sub-agent, so T56
 `fixtureSessionId(agent, role)` derives a fixture run's session id the
 way `seed.py::_derive_session_id` does.
 
+The long-run fixture (`LONG_RUN_FIXTURE`, T146) is one run of
+`e2e-test-long-run` with 2,050 tool calls and a needle as its newest
+event. `globalSetup` seeds it through ingestion
+(`tests/e2e-fixtures/seed_long_run.py`) when the stack has none and
+waits until the worker has stored it, before any spec starts. A spec
+must not post a burst like it: the worker announces every event it
+stores on the live stream, one frame each, and a Fleet page with the
+stream on (T149's) stops answering Playwright for seconds while it
+takes two thousand of them. Seed anything of that size in
+`globalSetup`.
+
 ### Selectors
 
 Prefer semantic selectors first (`getByRole`, `getByText`,

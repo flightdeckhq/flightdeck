@@ -93,12 +93,20 @@ names, flavors, role timeline offsets) and locator helpers:
 
 ## Running locally
 
-Prerequisites: a running dev stack and Playwright's Chromium
-browser installed.
+Prerequisites: a running dev stack on Postgres and Playwright's
+Chromium browser installed. The stack is the `flightdeck` binary with
+the dashboard's production bundle embedded, so the suite tests the
+bundle users get; `make dev` rebuilds the bundle when a dashboard
+source is newer than it. The suite does not run against the stack on
+SQLite (`make dev DB=sqlite`): the seeder backdates rows with Postgres
+SQL, and three files write to the `docker-postgres-1` container
+directly.
 
 ```bash
 # Boot the stack (idempotent — re-running is safe)
 make dev
+# After editing dashboard or Go sources: rebuild and restart it
+make dev-restart
 
 # Install Playwright browsers once per machine
 cd dashboard
@@ -148,9 +156,9 @@ in the DOM.
 
 Remedies:
 
-- `make dev-reset` wipes volumes — the clean slate is what CI
-  always sees, so this is the fastest way to make local behaviour
-  match CI.
+- `make dev-reset` deletes the dev database — the clean slate is
+  what CI always sees, so this is the fastest way to make local
+  behaviour match CI. It deletes every session in it, yours included.
 - Stop any background agent that's pushing events to the dev
   stack (e.g. `FLIGHTDECK_SERVER=http://localhost:4000` set in
   your shell while a Claude Code plugin session is active).
@@ -260,22 +268,14 @@ structural position, never by computed colour value.
 The suite runs in `.github/workflows/ci.yml` as four shards
 (`e2e-shard`, `npx playwright test --shard=N/4`, both theme projects),
 in parallel with the `integration` job. Each shard runs on its own
-runner: it installs sensor + dashboard deps and Chromium, boots its own
-stack with the dashboard serving its production bundle
-(`docker/docker-compose.e2e.yml` layered on the dev compose files,
-instead of the Vite dev server), seeds fixtures, runs its share of the
-tests, uploads a blob report, and uploads `test-results/` on failure.
+runner: it installs sensor + dashboard deps, Go and Chromium, boots its
+own dev stack with `make dev` (the binary built from the commit, the
+dashboard's production bundle embedded, on Postgres), seeds fixtures,
+runs its share of the tests, uploads a blob report, and on failure
+uploads `test-results/` and prints the binary's log.
 The `E2E (Playwright)` job then merges the four blob reports into one
 HTML report (the `playwright-report` artifact) and fails unless every
 shard passed. A shard takes about 7 minutes.
-
-To run the suite locally against the bundle rather than the dev server,
-boot the stack with the same override:
-
-```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
-  -f docker/docker-compose.e2e.yml up --build -d
-```
 
 Branch protection on `main` should require the `E2E (Playwright)`
 check before merge; a repository admin sets it.
@@ -300,9 +300,9 @@ check before merge; a repository admin sets it.
 
 Common classes of flake:
 
-- **Stale dashboard build** — `docker restart docker-dashboard-1`
-  after editing source. Vite HMR in Docker + WSL is occasionally
-  unreliable.
+- **Stale dashboard build** — `make dev-restart` after editing
+  source: the suite runs against the bundle embedded in the binary,
+  not against the sources.
 - **Dev-DB pollution** — `make dev-reset` + re-seed.
 - **Aged fresh-active** — if a session's state is `stale` when
   the test expects `active`, the seed hasn't been re-run

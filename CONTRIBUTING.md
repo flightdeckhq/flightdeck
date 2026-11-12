@@ -22,10 +22,86 @@ cd flightdeck
 make dev
 ```
 
-`make dev` starts the dev stack. The dashboard is at `http://localhost:4000`
-and the stack accepts the development token `tok_dev`, which the plugin and
-the test suites default to. `make down` stops it, `make logs` tails it,
-`make dev-reset` wipes its data and starts again.
+`make dev` starts the dev stack: it builds the `flightdeck` binary from
+your checkout, with the dashboard bundle embedded, and runs it in the
+background on `http://localhost:4000` against one Postgres container
+(`docker-postgres-1`, data on the `docker_postgres_data` volume). It is the
+same binary users run, so the test suites exercise what ships. The stack
+accepts the development token `tok_dev`, which the plugin, the sensor and
+the test suites default to. The first run installs the dashboard's
+dependencies and builds the bundle (a minute or two); later runs rebuild the
+bundle only when a dashboard source changed.
+
+| Command | What it does |
+|---|---|
+| `make dev` | Start the stack on Postgres. A running stack is left as it is. |
+| `make dev DB=sqlite` | Start it on a SQLite file instead: the binary alone, no container. |
+| `make dev-restart` | Rebuild the binary (and a stale bundle) and restart it; Postgres keeps running. Run it after you change Go or dashboard code. |
+| `make logs` | Follow the binary's log (`.dev/flightdeck.log`). |
+| `make down` | Stop the binary and the container. Volumes and the data dir stay. |
+| `make dev-reset` | Stop, **delete the database** (and the bus store) and start again. The only command that deletes data. |
+
+The stack's files are under `.dev/` in the checkout (gitignored): the
+binary, its log, a pid file and `stack.env`, which tells the test harness
+which database the running stack uses. `scripts/dev-stack.sh` is the script
+behind the targets; its header lists the environment variables that move the
+ports, the compose project and the directories, for a second stack beside a
+running one.
+
+For dashboard work with hot reload, run `npm run dev` in `dashboard/` beside
+the stack: Vite serves the sources on `http://localhost:3000` and proxies
+`/api` and `/ingest` to the stack on `:4000`.
+
+**WSL with the repo on `/mnt/c`.** A Windows drive keeps no file modes, and
+the binary refuses a `secrets.json` it cannot keep private. `make dev`
+detects that and puts the data dir under `~/.local/state/flightdeck-dev/`
+instead of `.dev/data`; the start-up block prints where.
+
+### Moving from the seven-container stack
+
+Earlier checkouts ran the dev stack as seven containers (nginx, dashboard,
+ingestion, workers, api, NATS, Postgres). Your database carries over: `make
+dev` serves the same `flightdeck` database on the same
+`docker_postgres_data` volume. With the old stack still running, update your
+checkout and run:
+
+```bash
+make dev
+```
+
+It does three things, in order:
+
+1. Stops the old stack's service containers: nginx and the dashboard first,
+   so nothing new arrives, then ingestion, then, once the workers have
+   emptied their queue, the workers, the api and NATS. It then removes those
+   six containers. No volume is removed.
+2. Leaves the Postgres container alone. Its definition in
+   `docker/docker-compose.dev.yml` is the one it was created from, so compose
+   neither recreates nor restarts it.
+3. Builds the binary and starts it against that database. The binary applies
+   any migration the database is behind on, as the workers did at their start.
+
+To do the first step by hand instead:
+
+```bash
+docker stop docker-nginx-1 docker-dashboard-1 docker-ingestion-1
+sleep 10   # the workers store what ingestion had already accepted
+docker stop docker-workers-1 docker-api-1 docker-nats-1
+docker rm docker-nginx-1 docker-dashboard-1 docker-ingestion-1 docker-workers-1 docker-api-1 docker-nats-1
+make dev
+```
+
+Do not run `make dev-reset` or `docker compose down -v` unless you mean to
+delete the database. The binary's bus is embedded and starts empty; on its
+first start the workers log `forgot session sequences from a previous
+stream incarnation` once, which is expected (ARCHITECTURE.md, Stream
+sequences). The old NATS volume, `docker_nats_data`, is no longer used;
+`docker volume rm docker_nats_data` frees it when you are sure nothing in it
+is unprocessed. Back up first if the data matters:
+
+```bash
+docker exec docker-postgres-1 pg_dump -U flightdeck -Fc flightdeck > flightdeck.dump
+```
 
 ### Running the sensor and the plugin from source
 
@@ -69,10 +145,16 @@ applies to every playground run.
 # All unit tests across all components
 make test
 
-# Integration tests (requires running stack)
+# Integration tests against the dev stack (starts it when none runs)
 make test-integration
 
-# Go tests that need a database, on Postgres and SQLite (requires running stack)
+# The same suite with the stack on SQLite
+make dev DB=sqlite && make test-integration
+
+# The integration tests that pause the worker container, on the split test stack
+make test-split
+
+# Go tests that need a database, on Postgres and SQLite (requires the dev stack on Postgres)
 make test-go-db
 
 # Per-component
@@ -83,8 +165,9 @@ make -C api test
 make -C dashboard test
 ```
 
-`make test-integration` seeds the canonical fixtures, then runs the suite in two
-phases. The parallel phase runs under [pytest-xdist](https://pypi.org/project/pytest-xdist/)
+`make test-integration` runs against the dev stack on whichever database it was
+started with (CI runs it on Postgres 16, Postgres 18 and SQLite). It seeds the
+canonical fixtures, then runs the suite in two phases. The parallel phase runs under [pytest-xdist](https://pypi.org/project/pytest-xdist/)
 with four workers and covers every test that keeps to the flavors and session ids
 it created. The exclusive phase then runs the tests marked `@pytest.mark.exclusive`
 one at a time: each needs the whole stack to itself because it pauses the worker,
@@ -105,9 +188,33 @@ hand, seed first (`make seed-e2e`), then:
 ./sensor/.venv/bin/python -m pytest tests/integration -m "exclusive"
 ```
 
-The same suite runs against the `flightdeck` binary, on SQLite and on Postgres.
-Start the binary on a port and a data dir of its own with the two overrides the
-dev stack sets, then point the suite at it:
+The tests reach the database through the helpers in `tests/shared/fixtures.py`
+(`exec_sql`, `query_rows`): on Postgres through `psql` in the Postgres
+container, on SQLite through Python's `sqlite3` on the stack's `flightdeck.db`.
+They learn which from `.dev/stack.env`, so a pytest run by hand needs no
+settings against the dev stack. A statement written for Postgres is translated
+for SQLite when it keeps to the small subset the helper documents; anything
+else takes the SQLite statement explicitly (`sqlite=`), and the helper refuses
+to run half-translated SQL.
+
+Two kinds of test skip, each with its reason in the pytest summary (`-rs`):
+
+- **Four tests pause the worker container** to make an ordering between a
+  session's events reproducible. The binary's workers are goroutines of the
+  one process, so these skip against the dev stack and run against the split
+  test stack: `make test-split` starts the three services as separate
+  containers from source, with a Postgres and a NATS of their own, on
+  `:4010` beside the dev stack, and runs the `exclusive` phase there (`make
+  down-split` removes it). CI runs that as its own integration leg. A new
+  test that pauses the worker must be marked `exclusive`, or no leg runs it.
+- **On SQLite, the tests marked `@pytest.mark.postgres_only("<reason>")`**,
+  which hold a row lock from a second database session, something SQLite
+  does not have. Mark a new test `postgres_only` only when no SQLite
+  equivalent exists, and say why in the marker.
+
+To run the suite against a binary of your own instead of the dev stack, start
+it on another port with the two overrides the dev stack sets, and describe it
+to the fixtures:
 
 ```bash
 make build-flightdeck
@@ -116,39 +223,37 @@ FLIGHTDECK_RATE_LIMIT_PER_MINUTE=1000000 FLIGHTDECK_RECONCILER_INTERVAL_SECS=5 \
   bin/flightdeck --listen 127.0.0.1:4100 --data-dir /tmp/fd-it/data > /tmp/fd-it/flightdeck.log 2>&1 &
 
 export FLIGHTDECK_TEST_BASE_URL=http://localhost:4100
-export FLIGHTDECK_TEST_WORKER_LOG=/tmp/fd-it/flightdeck.log     # the binary's log stands in for the worker container's
-export FLIGHTDECK_TEST_WORKER_CONTAINER=                         # no worker container to pause
+export FLIGHTDECK_TEST_WORKER_LOG=/tmp/fd-it/flightdeck.log     # where the tests read the worker's log lines
 export FLIGHTDECK_TEST_SQLITE_DB=/tmp/fd-it/data/flightdeck.db   # the SQL helpers open this file
 ./sensor/.venv/bin/python tests/e2e-fixtures/seed.py
 ./sensor/.venv/bin/python -m pytest tests/integration -p no:respx -n 4 --dist load -m "not manual and not exclusive"
 ./sensor/.venv/bin/python -m pytest tests/integration -p no:respx -m "exclusive"
 ```
 
-For the binary on Postgres, start it with `--database-url postgres://…/<your_db>`
-(a database of your own, never `flightdeck`) and set `FLIGHTDECK_TEST_DB=<your_db>`
-in place of `FLIGHTDECK_TEST_SQLITE_DB`. The tests reach the database through the
-helpers in `tests/shared/fixtures.py` (`exec_sql`, `query_rows`): with
-`FLIGHTDECK_TEST_SQLITE_DB` set they run on that file through Python's `sqlite3`,
-otherwise through `psql` in the Postgres container. A statement written for
-Postgres is translated for SQLite when it keeps to the small subset the helper
-documents; anything else takes the SQLite statement explicitly (`sqlite=`), and
-the helper refuses to run half-translated SQL. Two kinds of test skip against the
-binary, each with its reason in the pytest summary: the ones that pause the worker
-container (the binary has none), and on SQLite the ones marked
-`@pytest.mark.postgres_only("<reason>")`, which hold a row lock from a second
-database session, something SQLite does not have. Mark a new test `postgres_only`
-only when no SQLite equivalent exists, and say why in the marker.
+For a binary on Postgres, start it with `--database-url postgres://…/<your_db>`
+(a database of your own, never the dev stack's `flightdeck`) and set
+`FLIGHTDECK_TEST_DB=<your_db>` in place of `FLIGHTDECK_TEST_SQLITE_DB`. A second
+dev stack does all of this for you: start it with its own
+`FLIGHTDECK_DEV_PROJECT`, `FLIGHTDECK_DEV_PORT` and `FLIGHTDECK_DEV_PG_PORT`
+(`scripts/dev-stack.sh`), then `eval "$(scripts/dev-stack.sh env)"`.
 
-The fixtures refuse to load for a stack that is not the dev stack unless one of
-those two variables names its database, and the worker container's name defaults
-to the dev stack's only on the dev stack: a run against the binary cannot write
-to the dev stack's `flightdeck` database or pause its worker by omission. Three
-dashboard files do not go through those fixtures and are for the dev stack only:
+The fixtures refuse to load when nothing names the database of the stack
+under test: against the dev stack's address without `.dev/stack.env` (the
+stack was not started by `make dev`), and against any other address without
+`FLIGHTDECK_TEST_DB` or `FLIGHTDECK_TEST_SQLITE_DB`. No worker container is
+assumed anywhere, so a run cannot pause a container another stack depends on.
+Three dashboard files do not go through those fixtures and are for the dev
+stack on Postgres only:
 `dashboard/tests/e2e/T149-fleet-follows-worker-state-changes.spec.ts`,
 `dashboard/tests/e2e/T150-agent-tokens-count-failed-streams.spec.ts` and
 `dashboard/tests/e2e/_tool-content-run.ts` name the `docker-postgres-1`
 container and the `flightdeck` database literally, so they must not be run
-against the binary, where they would write to the dev database instead.
+against a stack on SQLite or at another address, where they would write to
+the dev database instead.
+
+The browser suite (`make test-e2e`, `dashboard/tests/e2e/README.md`) runs
+against the dev stack on Postgres: its seeder backdates rows with Postgres
+SQL.
 
 ### Go tests that need a database
 
@@ -170,8 +275,11 @@ the SQLite half everywhere. The Postgres half skips without
 `TEST_POSTGRES_URL`. Every store package of the three services and the
 `storage` module run on both.
 
-`make test-go-db` runs the lot against the running dev stack, and CI runs it in
-the integration job on both Postgres majors that job covers.
+`make test-go-db` runs the lot against the dev stack's Postgres container, and
+CI runs it in the integration job's two Postgres legs. The one package whose
+tests need a NATS server (`ingestion/internal/nats`) gets one the script starts
+for the run: the `nats-server` the root module pins, the version the binary
+embeds, on a free loopback port.
 `scripts/go-db-tests.sh` creates a fresh Postgres database per test package,
 seeds it with `docker/postgres/init.sql`, migrates it to the newest migration
 through the workers' migrate-only mode, runs the package against it on
@@ -247,6 +355,10 @@ This runs:
 
 Run `shellcheck` on any script under `scripts/` you touch
 (`uvx --from shellcheck-py shellcheck scripts/<name>.sh` needs no install).
+After a change to the Helm chart run `make -C helm test`, which renders every
+supported shape and every refusal (`scripts/helm-chart-test.sh`); after a
+change to the user compose files, `scripts/compose-smoke.sh <image>` against
+an image built with `docker build -t flightdeck:dev .`.
 
 `make lint` and CI both fail when `gofmt -l .` lists any file in storage,
 ingestion, workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
@@ -448,8 +560,7 @@ Migration files live in the `storage` module, one directory per backend:
 `storage/migrations/postgres/` (the full history) and
 `storage/migrations/sqlite/` (`000001_baseline`, the Postgres schema at 000036
 translated once, then one pair per later change). The Go binaries embed both
-directories; the compose files and the Helm chart copy the Postgres one for
-the workers' runner.
+directories.
 
 ### Creating a new migration
 
@@ -472,10 +583,16 @@ the workers' runner.
 
 ### Applying migrations
 
-`make dev-reset` automatically applies all pending migrations. Workers run migrations on
-startup before processing events.
+The `flightdeck` binary applies every pending migration of its database's
+backend each time it starts, before any service runs, from the files embedded
+in it. On the dev stack that is `make dev-restart` after you add a migration
+(or `make dev-reset` for an empty database). There is no separate migrate
+command, in development or in a deployment: Docker Compose and the Helm chart
+run the same binary, so a new version migrates when its container starts.
 
 ### Verifying migrations applied
+
+On the dev stack's Postgres:
 
 ```bash
 docker exec -it docker-postgres-1 psql \
@@ -486,20 +603,12 @@ docker exec -it docker-postgres-1 psql \
 `dirty` must be `f` (false). If `dirty` is `t`, a migration failed mid-apply and must
 be investigated manually.
 
-### Common commands (local development)
+### The service binaries' migrate-only mode
 
-```bash
-make migrate-local-up       # Apply pending migrations (local dev only)
-make migrate-local-status   # Check current version and dirty state
-make dev-reset              # Full reset (wipe volumes + apply migrations)
-```
-
-### Running migrations in remote environments
-
-For remote or production deployments, migrations are applied automatically by the workers
-service on startup, from the set embedded in the binary for the database's backend
-(`storage/migrations/postgres/` or `storage/migrations/sqlite/`). To run migrations without
-starting the full workers service:
+The standalone workers binary (`workers/cmd`), which the split test stack and
+`scripts/go-db-tests.sh` build from source, applies the same embedded
+migrations when it starts, and with `FLIGHTDECK_MIGRATE_ONLY=true` applies
+them and exits 0:
 
 ```bash
 FLIGHTDECK_MIGRATE_ONLY=true \
@@ -507,11 +616,8 @@ FLIGHTDECK_MIGRATE_ONLY=true \
   ./workers
 ```
 
-The workers binary will apply all pending migrations and exit 0. The URL may be
-`postgres://…` or `sqlite://<path>`.
-
-In Kubernetes, the recommended pattern is an init container running the workers binary
-with `FLIGHTDECK_MIGRATE_ONLY=true` before the main workers deployment starts.
+The URL may be `postgres://…` or `sqlite://<path>`. The script uses it to
+bring each test package's database to the newest migration.
 
 ## Adding a Provider
 
@@ -613,12 +719,12 @@ Service startup tries these in order, first match wins:
 2. `/etc/flightdeck/pricing.yaml` (production container default)
 3. `./pricing.yaml` (dev default, relative to the process working dir)
 
-The API Dockerfile copies `pricing.yaml` to `/etc/flightdeck/` at
-build time, and the docker-compose dev overlay mounts the repo copy
-over that path so local edits take effect on `docker compose restart
-api` without a rebuild. The API writes the merged list into the
-`model_pricing` table at startup, skipping the write when nothing
-changed.
+The image carries `pricing.yaml` at `/etc/flightdeck/` (the root
+`Dockerfile` copies it at build time). The dev stack runs the binary
+from the repository root, where `./pricing.yaml` is found, so a local
+edit takes effect on `make dev-restart`. The API writes the merged
+list into the `model_pricing` table at startup, skipping the write
+when nothing changed.
 
 ## Reporting Bugs
 

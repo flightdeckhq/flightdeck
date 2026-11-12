@@ -22,10 +22,14 @@ services:
     # data under /var/lib/postgresql (the volume mounts there) instead of
     # /var/lib/postgresql/data.
     image: ${FLIGHTDECK_POSTGRES_IMAGE:-postgres:16-alpine}
+    # Fixed values, not variables: docker/.env is shared with the user
+    # compose files, and a POSTGRES_PASSWORD set there for them must
+    # not reach this container. scripts/dev-stack.sh connects with the
+    # same three.
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-flightdeck}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flightdeck_dev}
-      POSTGRES_DB: ${POSTGRES_DB:-flightdeck}
+      POSTGRES_USER: flightdeck
+      POSTGRES_PASSWORD: flightdeck_dev
+      POSTGRES_DB: flightdeck
     volumes:
       - postgres_data:${FLIGHTDECK_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -36,7 +40,7 @@ services:
       # beside a running one.
       - "127.0.0.1:${FLIGHTDECK_DEV_PG_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flightdeck}"]
+      test: ["CMD-SHELL", "pg_isready -U flightdeck"]
       interval: 5s
       timeout: 3s
       retries: 5

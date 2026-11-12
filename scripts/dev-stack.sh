@@ -325,7 +325,10 @@ queue_state() {
       return 0
       ;;
   esac
-  if printf '%s' "$out" | grep -Eq '"num_(ack_)?pending": *[1-9]'; then
+  # A here-string, not a pipe: grep -q exits at its first match, and
+  # under pipefail a writer cut off by that makes the pipeline fail,
+  # which would read a busy queue as an empty one.
+  if grep -Eq '"num_(ack_)?pending": *[1-9]' <<<"$out"; then
     printf busy
   else
     printf empty

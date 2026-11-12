@@ -832,10 +832,13 @@ jobs:
               head -n 30 .dev/flightdeck.log
               exit 1
             fi
-            if docker ps --format '{{.Names}}' | grep -q postgres; then
-              echo "::error::a Postgres container runs on the SQLite leg"
-              exit 1
-            fi
+            names="$(docker ps --format '{{.Names}}')"
+            case "$names" in
+              *postgres*)
+                echo "::error::a Postgres container runs on the SQLite leg"
+                exit 1
+                ;;
+            esac
           else
             if ! grep -Eq '^ +Database +.*\(Postgres\)$' .dev/flightdeck.log; then
               echo "::error::the binary's log does not say it runs on Postgres"

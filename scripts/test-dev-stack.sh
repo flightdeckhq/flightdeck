@@ -355,7 +355,7 @@ expect_call() { grep -Eq -- "$1" "$F/calls.log" || fail "no call matching '$1' w
 expect_order() {
   local prev=0 line pattern
   for pattern in "$@"; do
-    line="$(grep -En -- "$pattern" "$F/calls.log" | head -n1 | cut -d: -f1)"
+    line="$(grep -En -m1 -- "$pattern" "$F/calls.log" | cut -d: -f1)"
     [ -n "$line" ] || fail "no call matching '$pattern' was made"
     [ "$line" -gt "$prev" ] || fail "the call matching '$pattern' came too early (line $line, after line $prev expected)"
     prev="$line"

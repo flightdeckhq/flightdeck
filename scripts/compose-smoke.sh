@@ -68,6 +68,19 @@ fail() {
   exit 1
 }
 
+# has <pattern> <command>...: whether the command succeeds and its
+# output (stderr included) has a line matching the pattern. The output
+# is taken whole before it is searched. Piped into `grep -q` under
+# pipefail, a command still writing when grep exits at its first match
+# is killed by the closed pipe and the pipeline fails with the match
+# found: the check then fails at random, as `compose logs` once did.
+has() {
+  local pattern="$1" out
+  shift
+  out="$("$@" 2>&1)" || return 1
+  grep -q -- "$pattern" <<<"$out"
+}
+
 wait_ready() {
   local deadline=$((SECONDS + READY_TIMEOUT_SECS))
   until curl -sf -o /dev/null "$BASE/api/health" && curl -sf -o /dev/null "$BASE/ingest/health"; do
@@ -106,7 +119,7 @@ smoke() {
   grep -qF "Token       $token " "$TMP/first.log" || fail "the logged token is not the one /runtime-config.json serves"
   code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer tok_dev' "$BASE/api/v1/sessions?limit=1")"
   [ "$code" = "401" ] || fail "the development token answered $code, want 401"
-  curl -sf "$BASE/" | grep -q '<title>Flightdeck</title>' || fail "/ is not the dashboard"
+  has '<title>Flightdeck</title>' curl -sf "$BASE/" || fail "/ is not the dashboard"
 
   echo "== $name: one event in, its session out"
   sid="$(cat /proc/sys/kernel/random/uuid)"
@@ -117,7 +130,7 @@ smoke() {
     -d "{\"session_id\":\"$sid\",\"agent_id\":\"$aid\",\"agent_name\":\"compose-smoke\",\"agent_type\":\"coding\",\"client_type\":\"flightdeck_sensor\",\"user\":\"smoke\",\"hostname\":\"smoke-host\",\"flavor\":\"compose-smoke\",\"event_type\":\"session_start\",\"host\":\"smoke-host\",\"sensor_version\":\"0.0.0\",\"capture_prompts\":false,\"timestamp\":\"$now\",\"context\":{}}" ||
     fail "ingestion refused the event"
   deadline=$((SECONDS + STORE_TIMEOUT_SECS))
-  until curl -sf -H "Authorization: Bearer $token" "$BASE/api/v1/sessions/$sid" | grep -q "\"session_id\":\"$sid\""; do
+  until has "\"session_id\":\"$sid\"" curl -sf -H "Authorization: Bearer $token" "$BASE/api/v1/sessions/$sid"; do
     ((SECONDS < deadline)) || fail "the session is not served within ${STORE_TIMEOUT_SECS}s"
     sleep 1
   done
@@ -128,9 +141,9 @@ smoke() {
   wait_ready
   again="$(runtime_token)"
   [ "$again" = "$token" ] || fail "the token changed across down and up"
-  curl -sf -H "Authorization: Bearer $token" "$BASE/api/v1/sessions/$sid" | grep -q "\"session_id\":\"$sid\"" ||
+  has "\"session_id\":\"$sid\"" curl -sf -H "Authorization: Bearer $token" "$BASE/api/v1/sessions/$sid" ||
     fail "the session stored before the down is gone"
-  "${compose[@]}" logs flightdeck 2>&1 | grep -q 'Token       ftd_.*(from /data/secrets.json)' ||
+  has 'Token       ftd_.*(from /data/secrets.json)' "${compose[@]}" logs flightdeck ||
     fail "the second start did not take its token from /data/secrets.json"
 
   echo "== $name: down -v"

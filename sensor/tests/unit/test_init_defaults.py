@@ -219,7 +219,8 @@ def test_empty_env_token_does_not_fall_through_to_dev_token() -> None:
 
 
 # ---------------------------------------------------------------------
-# ``/ingest`` normalisation is unchanged for the defaulted and env paths
+# One server value for the sensor and the Claude Code plugin: the base
+# URL and the ingestion URL resolve to the same ingestion and API URLs
 # ---------------------------------------------------------------------
 
 
@@ -238,6 +239,126 @@ def test_env_server_ingest_suffix_normalisation(env_server: str, expected: str) 
         os.environ["FLIGHTDECK_TOKEN"] = "tok"
         flightdeck_sensor.init(quiet=True)
     assert _config().server == expected
+
+
+@pytest.mark.parametrize(
+    ("server", "ingest_url", "api_url"),
+    [
+        # The base URL: the plugin's default form, a compose-era value.
+        ("http://localhost:4000", "http://localhost:4000/ingest", "http://localhost:4000/api"),
+        ("http://localhost:4000/", "http://localhost:4000/ingest", "http://localhost:4000/api"),
+        # The ingestion URL the binary's start-up block prints.
+        (
+            "http://localhost:4000/ingest",
+            "http://localhost:4000/ingest",
+            "http://localhost:4000/api",
+        ),
+        (
+            "http://localhost:4000/ingest/",
+            "http://localhost:4000/ingest/",
+            "http://localhost:4000/api",
+        ),
+        # A reverse proxy's path prefix, both forms.
+        ("https://example.com/fd", "https://example.com/fd/ingest", "https://example.com/fd/api"),
+        ("https://example.com/fd/", "https://example.com/fd/ingest", "https://example.com/fd/api"),
+        (
+            "https://example.com/fd/ingest",
+            "https://example.com/fd/ingest",
+            "https://example.com/fd/api",
+        ),
+        # A host whose name starts with "ingest" is a host, not a path:
+        # the base form gets /ingest, and the API stays on that host.
+        (
+            "https://ingest.example.com",
+            "https://ingest.example.com/ingest",
+            "https://ingest.example.com/api",
+        ),
+        (
+            "https://ingest.example.com/ingest",
+            "https://ingest.example.com/ingest",
+            "https://ingest.example.com/api",
+        ),
+        ("http://ingest:4000", "http://ingest:4000/ingest", "http://ingest:4000/api"),
+        # A path that only ends in the letters is a base URL.
+        (
+            "https://example.com/myingest",
+            "https://example.com/myingest/ingest",
+            "https://example.com/myingest/api",
+        ),
+        # A path that names ingest somewhere is used as written.
+        (
+            "https://example.com/ingest-eu",
+            "https://example.com/ingest-eu",
+            "https://example.com/api-eu",
+        ),
+        (
+            "https://example.com/ingest/v2",
+            "https://example.com/ingest/v2",
+            "https://example.com/api/v2",
+        ),
+        # The sensor appends its own paths: a query or fragment goes.
+        (
+            "http://localhost:4000?debug=1",
+            "http://localhost:4000/ingest",
+            "http://localhost:4000/api",
+        ),
+        (
+            "http://localhost:4000/ingest?debug=1#x",
+            "http://localhost:4000/ingest",
+            "http://localhost:4000/api",
+        ),
+        # The scheme is lower-cased, as URLs compare.
+        (
+            "HTTP://localhost:4000/ingest",
+            "http://localhost:4000/ingest",
+            "http://localhost:4000/api",
+        ),
+        ("http://[::1]:4000", "http://[::1]:4000/ingest", "http://[::1]:4000/api"),
+        # Not a URL the sensor can use; the egress validation refuses
+        # it, so it only has to come back recognisable.
+        ("localhost:4000", "localhost:4000/ingest", "localhost:4000/api"),
+        ("http://[::1", "http://[::1", "http://[::1"),
+    ],
+)
+def test_resolve_server_urls(server: str, ingest_url: str, api_url: str) -> None:
+    assert flightdeck_sensor._resolve_server_urls(server) == (ingest_url, api_url)
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        "https://flightdeck.example.com",
+        "https://flightdeck.example.com/",
+        "https://flightdeck.example.com/ingest",
+    ],
+)
+def test_base_and_ingestion_forms_reach_the_same_endpoints(server: str) -> None:
+    with _clean_env():
+        flightdeck_sensor.init(server=server, token="tok", quiet=True)
+    cfg = _config()
+    assert cfg.server == "https://flightdeck.example.com/ingest"
+    assert cfg.api_url == "https://flightdeck.example.com/api"
+
+
+def test_a_host_named_ingest_keeps_its_api_on_that_host() -> None:
+    """``https://ingest.example.com`` used to be read as an ingestion URL
+    (its ``//ingest`` matched the path check): no ``/ingest`` was added,
+    and the API URL became ``https://api.example.com``, another host,
+    which then received the access token."""
+    with _clean_env():
+        os.environ["FLIGHTDECK_SERVER"] = "https://ingest.example.com"
+        os.environ["FLIGHTDECK_TOKEN"] = "tok"
+        flightdeck_sensor.init(quiet=True)
+    cfg = _config()
+    assert cfg.server == "https://ingest.example.com/ingest"
+    assert cfg.api_url == "https://ingest.example.com/api"
+
+
+def test_api_url_override_still_wins_over_the_derived_one() -> None:
+    with _clean_env():
+        os.environ["FLIGHTDECK_API_URL"] = "https://api.internal.example.com"
+        flightdeck_sensor.init(server="https://flightdeck.example.com", token="tok", quiet=True)
+    assert _config().api_url == "https://api.internal.example.com"
 
 
 # ---------------------------------------------------------------------

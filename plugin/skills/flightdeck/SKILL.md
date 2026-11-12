@@ -110,7 +110,7 @@ override the saved options for one shell or run.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Control plane base URL; events go to `/ingest`, policies come from `/api`. |
+| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Control plane address: its base URL, or the ingestion URL the `flightdeck` start-up block prints (the base plus `/ingest`); events go to `/ingest`, policies come from `/api`. |
 | `FLIGHTDECK_ENFORCEMENT` | the `enforcement` option, else off | `1` lets an operator stop the session and token policies hold it to a budget. |
 | `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Access token. The default is the development seed token and prints a warning; set a real token outside local development. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | `false` strips prompt, response and tool-result bodies while keeping metadata and token counts. |

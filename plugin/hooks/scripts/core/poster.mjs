@@ -243,11 +243,14 @@ export async function postEvent(server, token, sessionId, payload) {
 }
 
 /**
- * POST one event. Returns ``{accepted, retryable, status, clockSkew}``:
- * accepted on a 2xx; otherwise retryable unless the server refused the
- * event itself (see CLOCK_SKEW_ERROR_RE above), ``clockSkew`` when that
- * refusal was ingestion's clock-skew one, and ``status`` the HTTP status,
- * null when no answer came. Never throws.
+ * POST one event to ``server``, the server's base URL (config.mjs
+ * serverBaseUrl). Returns ``{accepted, retryable, status, clockSkew,
+ * reason}``: accepted on a 2xx; otherwise retryable unless the server
+ * refused the event itself (see CLOCK_SKEW_ERROR_RE above),
+ * ``clockSkew`` when that refusal was ingestion's clock-skew one,
+ * ``status`` the HTTP status, null when no answer came, and ``reason``
+ * the short text the failed-POST log line carries (``ECONNREFUSED``,
+ * ``timeout``, ``HTTP 404``), null when accepted. Never throws.
  */
 export async function sendEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
@@ -268,8 +271,9 @@ export async function sendEvent(server, token, sessionId, payload) {
       // Network-level failure: connection refused, DNS miss, abort
       // timeout, fetch rejection. Log and return -- the next hook
       // invocation is a fresh process and will try again.
-      logUnreachable(server, shortErrorFrom(err));
-      return { accepted: false, retryable: true, status: null, clockSkew: false };
+      const reason = shortErrorFrom(err);
+      logUnreachable(server, reason);
+      return { accepted: false, retryable: true, status: null, clockSkew: false, reason };
     }
 
     // HTTP-level failure: auth, payload validation, server error.
@@ -278,23 +282,69 @@ export async function sendEvent(server, token, sessionId, payload) {
     // is the whole contract. A subsequent hook will try again when
     // Claude Code invokes a fresh plugin process.
     if (!response.ok) {
-      logUnreachable(server, `HTTP ${response.status}`);
-      if (response.status === 413) return { accepted: false, retryable: false, status: 413, clockSkew: false };
+      const reason = `HTTP ${response.status}`;
+      logUnreachable(server, reason);
+      if (response.status === 413) return { accepted: false, retryable: false, status: 413, clockSkew: false, reason };
       // Read under the same timeout as the request.
       const message = response.status === 400 ? await ingestionErrorMessage(response) : null;
       if (message !== null) {
-        return { accepted: false, retryable: false, status: 400, clockSkew: CLOCK_SKEW_ERROR_RE.test(message) };
+        return { accepted: false, retryable: false, status: 400, clockSkew: CLOCK_SKEW_ERROR_RE.test(message), reason };
       }
-      return { accepted: false, retryable: true, status: response.status, clockSkew: false };
+      return { accepted: false, retryable: true, status: response.status, clockSkew: false, reason };
     }
     // The body is read under the same timeout, and only when a directive
     // sink is registered (enforcement on).
     await deliverDirective(sessionId, response);
-    return { accepted: true, retryable: false, status: response.status, clockSkew: false };
+    return { accepted: true, retryable: false, status: response.status, clockSkew: false, reason: null };
   } finally {
     clearTimeout(timeout);
   }
 }
+
+/**
+ * What to tell the user when the session's first event was not
+ * accepted: one sentence on what happened and one on what to change.
+ * ``server`` is the base URL the plugin resolved and ``sent`` a failed
+ * sendEvent result. The text never carries the token: a refused token
+ * is named by where it is set, not by its value.
+ */
+export function describeStartFailure(server, sent) {
+  const where = redactServerUrl(server);
+  const unrecorded = "Nothing from this session is recorded until the server accepts an event.";
+  const serverSetting = "FLIGHTDECK_SERVER or the plugin's server option";
+  if (!/^https?:\/\//i.test(where)) {
+    return (
+      `Flightdeck: the server address "${where}" is not an http:// or https:// URL. ` +
+      `Set ${serverSetting} to the address flightdeck prints when it starts, for example ${EXAMPLE_SERVER}. ${unrecorded}`
+    );
+  }
+  if (sent.status === null) {
+    return (
+      `Flightdeck: no answer from ${where} (${redactUserinfo(sent.reason ?? "unknown error")}). ` +
+      `Start flightdeck, or set ${serverSetting} to the address it prints when it starts. ${unrecorded}`
+    );
+  }
+  // 404 is what a Flightdeck origin answers under a wrong path inside
+  // /ingest or /api, 405 what its dashboard answers a POST anywhere else.
+  if (sent.status === 404 || sent.status === 405) {
+    return (
+      `Flightdeck: ${where} has no ingestion API at ${where}/ingest/v1/events (HTTP ${sent.status}). ` +
+      `Set ${serverSetting} to the address flightdeck prints when it starts, for example ${EXAMPLE_SERVER}. ${unrecorded}`
+    );
+  }
+  if (sent.status === 401 || sent.status === 403) {
+    return (
+      `Flightdeck: ${where} refused the access token (HTTP ${sent.status}). ` +
+      "Set FLIGHTDECK_TOKEN or the plugin's token option to a token from the server's start-up block " +
+      `or the dashboard's Settings page. ${unrecorded}`
+    );
+  }
+  return `Flightdeck: ${where} answered HTTP ${sent.status} to this session's first event. ${unrecorded}`;
+}
+
+// The address a start-failure message shows as an example: the binary's
+// default listen address, as its start-up block prints it.
+const EXAMPLE_SERVER = "http://localhost:4000";
 
 // ---------------------------------------------------------------------
 // Directives. The ingestion API answers an event POST, or a heartbeat,

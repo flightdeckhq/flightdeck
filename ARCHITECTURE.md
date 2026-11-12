@@ -5316,11 +5316,10 @@ and description in both directories. `scripts/check-migration-pairs.sh`
 fails CI when the version lists differ, and the `storage` module's
 parity test opens both engines at their newest migration and fails when
 the tables, columns, nullability, primary keys or explicit indexes
-differ (the GIN index is the one allowed difference). The workers apply
-the embedded set of their backend at start, so the compose files mount
-nothing; the Helm chart's migrations ConfigMap (`helm/Makefile
-sync-migrations`) still copies the Postgres directory and is unused by
-the workers.
+differ (the GIN index is the one allowed difference). The `flightdeck`
+binary applies the embedded set of its backend at start, as the
+standalone workers binary does, so no compose file and no chart
+carries migration files.
 
 ### Bus
 
@@ -9928,8 +9927,7 @@ because the mode default is already permissive.
 > empty-blocklist global row), and 000020 (drop the
 > `mcp_policy_versions` table and the `version` column). Migrations
 > ship under `storage/migrations/` (the Postgres files, and the SQLite
-> baseline that carries the same tables); the Helm chart picks the
-> Postgres files up via `helm/Makefile sync-migrations`. Any deviation
+> baseline that carries the same tables), embedded in the binaries. Any deviation
 > — column rename, type change, additional or removed constraint,
 > index difference — requires a new `DECISIONS.md` entry recording
 > the pivot BEFORE the migration is written.

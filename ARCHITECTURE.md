@@ -10730,10 +10730,16 @@ or HEAD to `https://<domain>` with the same path and query, whatever
 `Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
-**Time zone.** The binary sets the process's local zone to UTC at
-start, as the compose containers have: the query API
+**Time zone.** The binary's local zone is UTC, as the compose
+containers have: the query API
 formats the timestamps it reads from the database in the process's zone,
-and its contract is RFC 3339 in UTC, whatever zone the host is in.
+and its contract is RFC 3339 in UTC, whatever zone the host is in. The
+zone is set while the binary's packages are loaded (`internal/utc`, an
+`init`), not by `main`: it is a variable every goroutine reads, and the
+embedded NATS server starts a timer goroutine when its packages are
+loaded, so a write from `main` would race with it. Go initialises a
+package once its imports are, in import-path order, which puts this one
+before the NATS packages and so before any goroutine exists.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it

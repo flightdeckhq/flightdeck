@@ -101,7 +101,6 @@ const symlinkDepthLimit = 40
 const databaseConnectBudget = 60 * time.Second
 
 func main() {
-	useUTC()
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -110,6 +109,13 @@ func main() {
 // from the database in the process's zone, and its contract is RFC 3339 in
 // UTC (the "Z" suffix the dashboard and the integration suite expect);
 // a laptop in another zone would otherwise serve "+02:00" offsets.
+//
+// Only the server calls it. The zone is a package variable of time that
+// other goroutines read: the embedded NATS server's packages start a
+// timer when they are loaded, whose first tick stats a file one second
+// later. `flightdeck health` and --version format no time and often end
+// within that second, so they leave the variable alone rather than
+// write it beside that read.
 func useUTC() {
 	time.Local = time.UTC
 }
@@ -136,6 +142,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	if opts.Health {
 		return runHealth(opts, stdout, stderr)
 	}
+	useUTC()
 	if err := serveAll(opts, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
 		return 1

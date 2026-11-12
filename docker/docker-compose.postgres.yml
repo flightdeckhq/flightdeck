@@ -1,0 +1,54 @@
+# Postgres instead of SQLite, as a second container. Layer it on the
+# base file:
+#
+#   POSTGRES_PASSWORD=<password> docker compose \
+#     -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml up -d
+#
+# POSTGRES_PASSWORD is required: compose refuses to start without it,
+# since a default would be one well-known password on every install.
+# Use letters, digits and - . _ ~ only (openssl rand -hex 24 gives
+# one): the same value is the server's password and a part of the
+# database URL, where `@`, `:`, `/`, `?`, `#` and `%` would be read as
+# URL syntax. Put it in docker/.env to keep it out of the shell
+# history. It is applied when the database volume is first created;
+# changing it later needs ALTER USER in the database as well.
+#
+# The database listens on the compose network only; nothing is
+# published on the host. Its data is on the `flightdeck_postgres_data`
+# volume, and `flightdeck_data` then holds only the bus store and
+# secrets.json. The token is read as with the base file alone.
+#
+# A Postgres of your own instead: leave this file out and set
+# FLIGHTDECK_DATABASE_URL to its URL. One flightdeck process opens at
+# most 80 connections.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flightdeck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to the password of the bundled Postgres}
+      POSTGRES_DB: flightdeck
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flightdeck -d flightdeck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  flightdeck:
+    environment:
+      FLIGHTDECK_DATABASE_URL: postgres://flightdeck:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD to the password of the bundled Postgres}@postgres:5432/flightdeck?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

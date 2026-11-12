@@ -31,6 +31,11 @@ webui/dist/*
 node_modules/
 .vite/
 
+# The contributor dev stack's files (scripts/dev-stack.sh): the binary
+# built from the checkout, its log and pid, the state file the test
+# harness reads, and the data dir.
+.dev/
+
 # Helm
 # helm/migrations/ is a build artifact populated by helm/Makefile
 # sync-migrations from storage/migrations/postgres/ (the canonical

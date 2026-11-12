@@ -1,0 +1,186 @@
+# The split test stack: the three services as separate containers, run
+# from source, with a NATS server between them and a small nginx on
+# :4000 in front. Layered on docker-compose.dev.yml, whose Postgres
+# they share (`make dev-split`, scripts/dev-stack.sh):
+#
+#   docker compose -p docker -f docker-compose.dev.yml -f docker-compose.split.yml up -d --wait
+#
+# It exists for the integration tests that pause the worker container
+# (tests/shared/fixtures.py, worker_paused): the `flightdeck` binary
+# runs the workers as goroutines of the one process, where nothing can
+# be paused alone. Nothing ships this topology. The stack takes the dev
+# stack's port, so the two do not run at once; `make dev` stops this
+# one and `make dev-split` stops the binary.
+#
+# `go run` on a cold cache downloads every module and compiles them,
+# and most of that time is one package: the pure-Go SQLite driver the
+# storage module brings into every service (modernc.org/sqlite, the
+# whole of SQLite as Go source). On a hosted CI runner, where the three
+# services compile at once on four CPUs, ingestion began serving after
+# about 155 s. The start window of the two services with a health
+# check is 300 s, about twice that; a probe that succeeds earlier ends
+# the wait at once.
+
+x-logging: &split-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  # Unauthenticated on purpose: a single-host test loop, published on
+  # loopback only.
+  nats:
+    logging: *split-logging
+    image: nats:2.14-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    volumes:
+      - nats_data:/data
+    ports:
+      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${FLIGHTDECK_DEV_NATS_MONITOR_PORT:-8222}:8222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  ingestion:
+    logging: *split-logging
+    image: golang:1.27.4-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../ingestion:/app
+      # ingestion/go.mod replaces the storage module with ../storage,
+      # which from /app is /storage.
+      - ../storage:/storage:ro
+    environment:
+      FLIGHTDECK_PORT: "8080"
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      FLIGHTDECK_NATS_URL: nats://nats:4222
+      # tok_dev is accepted only when ENVIRONMENT=dev.
+      ENVIRONMENT: dev
+      SHUTDOWN_TIMEOUT_SECS: "30"
+      FLIGHTDECK_NATS_STREAM_REPLICAS: "1"
+      # The integration suite shares one bearer token across hundreds
+      # of requests; the 1000 a minute production limit would answer
+      # 429 mid-run.
+      FLIGHTDECK_RATE_LIMIT_PER_MINUTE: "1000000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 300s
+
+  workers:
+    logging: *split-logging
+    image: golang:1.27.4-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../workers:/app
+      - ../storage:/storage:ro
+    environment:
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      FLIGHTDECK_NATS_URL: nats://nats:4222
+      FLIGHTDECK_WORKER_POOL_SIZE: "10"
+      SHUTDOWN_TIMEOUT_SECS: "30"
+      # The reconciler ticks every 5 s instead of 60, as in the dev
+      # stack: tests/integration/test_session_states.py sizes its waits
+      # from the same number.
+      FLIGHTDECK_RECONCILER_INTERVAL_SECS: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  api:
+    logging: *split-logging
+    image: golang:1.27.4-alpine
+    working_dir: /app
+    command: ["go", "run", "./cmd/"]
+    volumes:
+      - ../api:/app
+      - ../storage:/storage:ro
+      # Where the query API looks for the price overrides.
+      - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
+    environment:
+      FLIGHTDECK_PORT: "8081"
+      FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
+      ENVIRONMENT: dev
+      SHUTDOWN_TIMEOUT_SECS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 300s
+
+  # One origin for the suite, as the binary gives it: /api and /ingest,
+  # each path forwarded as sent (the services strip their own prefix).
+  # There is no dashboard here.
+  frontdoor:
+    logging: *split-logging
+    image: nginx:1.30-alpine
+    configs:
+      - source: frontdoor
+        target: /etc/nginx/conf.d/default.conf
+    ports:
+      - "127.0.0.1:${FLIGHTDECK_DEV_PORT:-4000}:4000"
+    depends_on:
+      api:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+
+configs:
+  frontdoor:
+    content: |
+      # Idle upstream connections close before the services' own idle
+      # timeouts (ingestion 60 s, the query API 120 s), so nginx never
+      # writes a request onto a connection the backend already closed.
+      upstream api {
+          server api:8081;
+          keepalive_timeout 50s;
+      }
+      upstream ingestion {
+          server ingestion:8080;
+          keepalive_timeout 50s;
+      }
+      server {
+          listen 4000;
+          server_name _;
+          location /api/ {
+              proxy_pass http://api;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              # The WebSocket at /api/v1/stream.
+              proxy_set_header Upgrade $$http_upgrade;
+              proxy_set_header Connection "upgrade";
+              proxy_read_timeout 86400s;
+          }
+          # The OTLP receiver accepts request bodies up to 4 MiB;
+          # nginx's 1m default would answer 413 before ingestion saw
+          # them.
+          location /ingest/ {
+              client_max_body_size 4m;
+              proxy_pass http://ingestion;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+          }
+      }
+
+volumes:
+  nats_data:

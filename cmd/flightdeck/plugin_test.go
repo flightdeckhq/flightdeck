@@ -109,6 +109,20 @@ func TestBinary_ThePluginStoresASessionWithEveryFormOfTheServerAddress(t *testin
 	port := freePort(t)
 	c := start(t, "127.0.0.1:"+port, port, filepath.Join(tempDir(t), "data"))
 
+	// One event through ingestion first, by a client with no deadline
+	// of its own. The plugin gives a POST two seconds, and the first
+	// event an instance takes is its slowest: the token is looked up,
+	// the session is attached and the stream takes its first message
+	// with nothing cached. A race-built child on a loaded CI runner
+	// spends more than those two seconds on it; the later ones take
+	// milliseconds. The plugin's own answer to a slow first POST is the
+	// next hook, which sends the session_start again.
+	warm := newUUID(t)
+	c.postEvent(t, "tok_dev", warm, newUUID(t), "plugin-test-warm-up", "session_start")
+	waitFor(t, "the warm-up session is stored", storeTimeout, func() bool {
+		return c.get(t, "/api/v1/sessions/"+warm, "tok_dev", nil) == http.StatusOK
+	})
+
 	printed := ingestionLine.FindStringSubmatch(c.out.String())
 	if printed == nil {
 		t.Fatalf("the start-up block has no Ingestion line naming FLIGHTDECK_SERVER:\n%s", c.out.String())

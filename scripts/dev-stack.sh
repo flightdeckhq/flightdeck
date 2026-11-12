@@ -107,6 +107,11 @@ STOP_TIMEOUT_SECS=70
 # milliseconds; 30 s covers a backlog of thousands.
 DRAIN_TIMEOUT_SECS=30
 
+# The longest log line `dump` prints. The binary's lines are a few
+# hundred characters; the cut keeps one pathological line (an error
+# that quotes a request body) from flooding a CI log.
+DUMP_LINE_CHARS=2000
+
 say() { printf '== %s\n' "$*"; }
 die() { printf 'dev-stack: %s\n' "$*" >&2; exit 1; }
 
@@ -401,8 +406,8 @@ cmd_logs() {
 
 cmd_dump() {
   if [ -f "$LOG" ]; then
-    say "flightdeck log (last 300 lines of $LOG)"
-    tail -n 300 "$LOG" || true
+    say "flightdeck log (last 300 lines of $LOG, each cut at $DUMP_LINE_CHARS characters)"
+    tail -n 300 "$LOG" | cut -c "1-$DUMP_LINE_CHARS" || true
   else
     say "no flightdeck log at $LOG"
   fi

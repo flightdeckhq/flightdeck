@@ -860,6 +860,10 @@ jobs:
 
       - name: Dump the stack's logs on failure
         if: failure()
+        # Bounded, like the teardown below: a runner that stops
+        # answering after a failure must end the job here, with the
+        # failing step's output, not at the job's forty minutes.
+        timeout-minutes: 5
         run: |
           if [ "${{ matrix.stack }}" = split ]; then
             docker compose -p flightdeck-split -f docker/docker-compose.split.yml ps -a || true
@@ -870,6 +874,7 @@ jobs:
 
       - name: Tear down stack
         if: always()
+        timeout-minutes: 5
         run: |
           if [ "${{ matrix.stack }}" = split ]; then
             make down-split || true
@@ -1011,10 +1016,12 @@ jobs:
 
       - name: Dump the stack's logs on failure
         if: failure()
+        timeout-minutes: 5
         run: scripts/dev-stack.sh dump || true
 
       - name: Tear down stack
         if: always()
+        timeout-minutes: 5
         run: make down || true
 
   e2e:

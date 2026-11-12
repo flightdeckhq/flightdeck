@@ -934,13 +934,12 @@ in-process workers (test-only code in the product).
 
 **Date:** 2026-11-12
 **Decision:** the chart is one StatefulSet of `flightdeckhq/flightdeck`,
-each pod with a volume of its own. With the default values it is one
-pod on SQLite and the embedded bus; `postgres.enabled` or
-`postgres.externalUrl` selects Postgres. The render refuses more than
-one replica, or the HPA, without a Postgres and a NATS the pods share
-(the chart's cluster, or `nats.externalUrl`). The `api.*`,
-`ingestion.*`, `workers.*` and `dashboard.*` values and templates are
-gone.
+each pod with a volume of its own: by default one pod on SQLite and the
+embedded bus, on Postgres with `postgres.enabled` or
+`postgres.externalUrl`. The render refuses more than one replica, or
+the HPA, without a Postgres and a NATS the pods share (the chart's
+cluster, or `nats.externalUrl`). The per-service values and templates
+are gone.
 **Why:** D261's one topology. A SQLite file has one process (D262) and
 every embedded bus is its own, so several pods on either would split
 the data behind one Service without an error.

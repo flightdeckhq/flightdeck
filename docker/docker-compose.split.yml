@@ -22,7 +22,9 @@
 # services compile at once on four CPUs, ingestion began serving after
 # about 155 s. The start window of the two services with a health
 # check is 300 s, about twice that; a probe that succeeds earlier ends
-# the wait at once.
+# the wait at once. GOFLAGS passes through from the shell, so a machine
+# short of memory can hold the three compiles to two packages at a time
+# each (GOFLAGS=-p=2).
 
 x-logging: &split-logging
   driver: json-file
@@ -74,6 +76,7 @@ services:
       # which from /app is /storage.
       - ../storage:/storage:ro
     environment:
+      GOFLAGS: ${GOFLAGS:-}
       FLIGHTDECK_PORT: "8080"
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_NATS_URL: nats://nats:4222
@@ -106,6 +109,7 @@ services:
       - ../workers:/app
       - ../storage:/storage:ro
     environment:
+      GOFLAGS: ${GOFLAGS:-}
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_NATS_URL: nats://nats:4222
       FLIGHTDECK_WORKER_POOL_SIZE: "10"
@@ -131,6 +135,7 @@ services:
       # Where the query API looks for the price overrides.
       - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
     environment:
+      GOFLAGS: ${GOFLAGS:-}
       FLIGHTDECK_PORT: "8081"
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       ENVIRONMENT: dev

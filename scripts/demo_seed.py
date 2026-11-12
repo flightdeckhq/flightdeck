@@ -87,11 +87,11 @@ LIVE_RUN_STARTED_SECS = 55
 LIVE_RUN_NEWEST_EVENT_SECS = 3
 
 # --live: the pause between two rounds, and the share of the open runs
-# that make a model call (and often a tool call) in each. A third of
+# that make a model call (and often a tool call) in each. A quarter of
 # nine runs every 1.5 seconds keeps every row of the fleet view moving
 # without burying it in events.
 LIVE_ROUND_SECS = 1.5
-LIVE_ROUND_SHARE = 3
+LIVE_ROUND_SHARE = 4
 
 # The variable that raises ingestion's per-token rate limit, named in
 # the message a refused event prints.

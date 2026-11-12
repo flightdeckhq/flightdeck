@@ -1,173 +1,127 @@
 # Default values for the flightdeck chart.
-# All values are documented with their production implications.
 #
-# Image tags are pinned to the release this chart ships with (image.tag;
-# scripts/version.py keeps it in step with the VERSION file).
-# Override image.tag (or a per-component tag) to deploy a different release.
+# The chart runs the one `flightdeck` binary (ingestion API, workers,
+# query API and the dashboard in one process) as a StatefulSet. With
+# the defaults that is all it runs: one pod, its database a SQLite file
+# and its bus the embedded NATS, both on the pod's own volume.
+#
+#   helm install flightdeck helm/
+#
+# Postgres instead of SQLite: postgres.enabled=true with
+# postgres.password (the chart's own single-instance Postgres), or
+# postgres.externalUrl (one you run).
+#
+# More than one pod (flightdeck.replicas above 1, or the HPA) needs a
+# database and a bus the pods share, and the render refuses anything
+# else: a Postgres as above, and a NATS, which the chart then runs as a
+# cluster (nats.auth.token required) unless nats.externalUrl names one.
+# values.prod.yaml is that shape.
+#
+# image.tag is pinned to the release this chart ships with
+# (scripts/version.py keeps it in step with the VERSION file).
 
 nameOverride: ""
 fullnameOverride: ""
 
 image:
   registry: docker.io
-  repository: flightdeckhq
+  repository: flightdeckhq/flightdeck
   tag: "v0.8.0"
   pullPolicy: IfNotPresent
   pullSecrets: []
 
-# Agent-side defaults documented for operators who want to consume them in
-# their agent deployments via envFrom on the flightdeck-config ConfigMap.
-# These keys do not affect server-component behaviour; they are surfaced in
-# the ConfigMap for convenience only. Reference: ARCHITECTURE.md lines 2754-2759.
 flightdeck:
-  agents:
-    flavor: ""
-    # Accepted vocabulary: ``coding`` (developer-driven sessions)
-    # or ``production`` (long-running autonomous agents). Invalid
-    # values cause flightdeck_sensor.init() to raise
-    # ConfigurationError. Previous values ("autonomous",
-    # "supervised", "batch") no longer accepted.
-    type: "production"
-  unavailablePolicy: "continue"
-  capturePrompts: false
-
-ingestion:
-  replicas: 2
-  port: 8080
-  image:
-    repository: flightdeck-ingestion
-    tag: ""  # inherits image.tag when empty
-  env: "production"
-  shutdownTimeoutSecs: 30
-  rateLimitPerMinute: 1000
-  # Port of the metrics listener (the request-latency histogram at
-  # /metrics, in the Prometheus text format). It carries no auth, so it
-  # is listed only on the headless <release>-ingestion-metrics Service,
-  # never on the Service the Ingress routes to. 0 turns it off.
-  metricsPort: 9103
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  service:
-    type: ClusterIP
-    port: 8080
+  # Pods. Each pod is a whole control plane behind the one Service;
+  # the Ingress and the Service spread requests over them. More than
+  # one (or the HPA on) needs Postgres and a shared NATS, see the top
+  # of this file; on SQLite each pod would have a database of its own,
+  # so the render fails.
+  replicas: 1
   hpa:
-    enabled: true
+    enabled: false
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
-  podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-workers:
-  replicas: 2
-  image:
-    repository: flightdeck-workers
-    tag: ""
-  poolSize: 10
-  shutdownTimeoutSecs: 30
-  migrationsDir: /migrations
-  # Port of the metrics listener (the counter registry at /metrics, in
-  # the Prometheus text format). The readiness probe uses it too. 0
-  # turns the listener off and readiness falls back to process-alive.
-  metricsPort: 9102
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-api:
-  replicas: 2
-  port: 8081
-  image:
-    repository: flightdeck-api
-    tag: ""
-  env: "production"
-  shutdownTimeoutSecs: 30
-  corsOrigin: "*"
-  # Port of the metrics listener (the request-latency histogram at
-  # /metrics, in the Prometheus text format). It carries no auth, so it
-  # is listed only on the headless <release>-api-metrics Service, never
-  # on the Service the Ingress routes to. 0 turns it off.
-  metricsPort: 9104
-  auth:
-    # JWT bootstrap is evaluated at api startup when env == "production".
-    # jwtSecret must be set; adminEmail + adminPassword create the initial
-    # admin user on first boot.
-    jwtSecret: ""
-    adminEmail: ""
-    adminPassword: ""
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
+  # The one port: the dashboard at /, the query API under /api and the
+  # ingestion API under /ingest.
+  port: 4000
   service:
     type: ClusterIP
-    port: 8081
-  podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-dashboard:
-  replicas: 2
-  port: 3000
-  image:
-    repository: flightdeck-dashboard
-    tag: ""
+    port: 4000
+  # --metrics: the three services' metrics listeners on their default
+  # ports (workers 9102, ingestion 9103, query API 9104), declared on the
+  # pod and listed on the headless <release>-flightdeck-metrics Service
+  # for a scraper or a ServiceMonitor. They carry no auth, so they are
+  # never on the Service the Ingress routes to.
+  metrics:
+    enabled: true
+  # Access-Control-Allow-Origin of the query API. Empty keeps the
+  # binary's default ("*"); the dashboard is served from the same
+  # origin, so the API needs no cross-origin caller. Set it to the
+  # dashboard's origin (https://flightdeck.example.com) to refuse
+  # browser calls from anywhere else.
+  corsOrigin: ""
+  # Events per minute each access token may send to one pod; the
+  # sensor, the plugin and the OpenTelemetry exporters share a token's
+  # budget.
+  rateLimitPerMinute: 1000
+  # Worker goroutines consuming the bus in each pod.
+  workerPoolSize: 10
+  shutdownTimeoutSecs: 30
+  # Further FLIGHTDECK_* tunables (ARCHITECTURE.md, Deployment), as
+  # name: value.
+  extraEnv: {}
+  # The volume of each pod, a PersistentVolumeClaim of its own, mounted
+  # at /data; the binary's data dir is the directory `flightdeck` in it: the SQLite database when the database is SQLite, the embedded
+  # NATS JetStream store when the pods share no bus, and secrets.json
+  # (the dashboard token the pod minted). Sized for the embedded bus's
+  # default 5 GiB stream limit beside a database of a few GiB; a pod on
+  # Postgres and a shared NATS keeps only secrets.json here. The claim
+  # outlives `helm uninstall`, as every StatefulSet claim does: delete
+  # it to delete the data.
+  data:
+    size: "10Gi"
+    storageClassName: ""
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
+      cpu: 250m
       memory: 256Mi
-  service:
-    type: ClusterIP
-    port: 3000
-  # Overrides podSecurityContext for the dashboard pod. Its nginx runs as
-  # the image's own nginx user (uid and gid 101), which owns the cache and
-  # pid paths nginx writes at startup; under the chart-wide uid 1000 nginx
-  # cannot create /var/cache/nginx/client_temp and the pod crash-loops.
-  # CI checks that the image's user is still 101. To run the dashboard
-  # under the chart-wide podSecurityContext instead (e.g. on a platform
-  # that assigns its own uid), set this to null: an empty map is merged
-  # into these defaults and changes nothing.
-  podSecurityContext:
-    runAsUser: 101
-    runAsGroup: 101
-    fsGroup: 101
+    limits:
+      cpu: 1000m
+      memory: 1Gi
   podAnnotations: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Agent-side defaults, surfaced in the <release>-config ConfigMap for
+  # operators who wire them into their agent deployments with envFrom.
+  # The binary ignores them.
+  agents:
+    flavor: ""
+    # ``coding`` or ``production``; another value makes
+    # flightdeck_sensor.init() raise ConfigurationError.
+    type: "production"
+    unavailablePolicy: "continue"
+    capturePrompts: false
 
-# NetworkPolicy hardening: restrict ingress to Postgres and NATS to the
-# flightdeck server pods only (see templates/networkpolicy.yaml). The
-# NATS bus is unauthenticated by design, so this is the primary in-cluster
-# control preventing arbitrary pods from reading/forging the event bus.
-# Requires a CNI that enforces NetworkPolicy; set false to disable.
+# NetworkPolicy hardening: only the flightdeck pods may reach Postgres
+# and the NATS cluster (see templates/networkpolicy.yaml). Requires a
+# CNI that enforces NetworkPolicy; set false to disable.
 networkPolicy:
   enabled: true
 
 nats:
-  enabled: true  # The chart has no external-NATS option.
+  # The NATS cluster the pods share through --nats-url. null (the
+  # default) runs it exactly when the chart runs more than one flightdeck
+  # replica or the HPA is on; true runs it for one replica too; false
+  # never, and the render then refuses more than one replica unless
+  # externalUrl is set.
+  enabled: null
+  # A NATS server with JetStream outside the chart, as the URL the pods
+  # connect to (nats://<token>@host:4222). When set the chart renders
+  # no NATS of its own and keeps the URL in the Secret. The stream
+  # settings below still apply: the pods create or update the stream.
+  externalUrl: ""
   image:
     repository: nats
     tag: "2.14.3-alpine"
@@ -180,25 +134,25 @@ nats:
   monitorPort: 8222
   clusterPort: 6222
   auth:
-    # Client token for the event bus. Required for a production install
-    # (api.env=production): an unauthenticated bus lets any pod that can
-    # reach it forge events or drain the queue. Set via
+    # Client token for the event bus. Required whenever the cluster is
+    # rendered: an unauthenticated bus lets any pod that can reach it
+    # forge events or drain the queue. Set via
     # --set nats.auth.token=<strong-random-token>; letters, digits and
     # . _ ~ - only, since it is placed in NATS URLs (openssl rand -hex 32).
     # With replicas > 1 the cluster routes authenticate with it as well.
     token: ""
   jetstream:
-    enabled: true
     fileStore:
       size: "10Gi"
       storageClassName: ""
     # The FLIGHTDECK stream that carries every event from ingestion to
-    # the workers. Ingestion creates it with these settings, or updates
+    # the workers. The binary creates it with these settings, or updates
     # an existing stream to them in place, at startup. The stream keeps
     # a message until a limit removes it, processed or not, and at the
     # size limit removes the oldest: events the workers have not
     # processed are lost when the workers are down for longer than
-    # maxAgeHours, or fall further behind than maxSizeMiB.
+    # maxAgeHours, or fall further behind than maxSizeMiB. The same two
+    # limits apply to the embedded bus of a one-replica install.
     stream:
       # How long a message is kept. 72 hours lets the workers be down
       # from a Friday evening to a Monday morning without losing events.
@@ -214,7 +168,9 @@ nats:
       # nats.replicas is at least 3, otherwise 1. Set: 1 to 5 but not 2
       # (two copies stop the stream when either server is lost), at
       # most nats.replicas. Raising it on an existing install copies the
-      # stream to the new servers in place.
+      # stream to the new servers in place. On the embedded bus the
+      # stream has one copy and this stays unset; with externalUrl it is
+      # 1 unless set.
       replicas: null
   resources:
     requests:
@@ -229,25 +185,37 @@ nats:
   affinity: {}
 
 postgres:
-  # externalUrl is the single escape hatch for Postgres: when set to a full
-  # DSN (e.g. postgres://user:pass@host:5432/flightdeck?sslmode=require) the
-  # bundled StatefulSet and Service are not rendered and every dependent
-  # service reads this DSN from the generated secret. Percent-encode
-  # reserved characters in the password (`@` as %40): the URL's
-  # user:password part ends at the first `@`. When empty the chart
-  # ships its own single-instance StatefulSet. The chart does not provide HA or
-  # backups for the bundled database; use externalUrl for either.
+  # false (the default): no Postgres; the pod keeps its data in a SQLite
+  # file on its own volume. true: the chart runs a single-instance
+  # Postgres StatefulSet, with no HA and no backups, and the pods use
+  # it. Changing the database of an existing release rolls its pods
+  # onto the new one and does not move the data: an install that
+  # already has data in the chart's Postgres must keep this true, or
+  # its pods start on an empty SQLite database (the Postgres volume
+  # claim stays).
+  enabled: false
+  # A Postgres outside the chart, as a full DSN (e.g.
+  # postgres://user:pass@host:5432/flightdeck?sslmode=require). When set
+  # the pods read it from the generated Secret and the chart renders no
+  # Postgres of its own, whatever `enabled` says. Percent-encode reserved
+  # characters in the password (`@` as %40): the URL's user:password
+  # part ends at the first `@`. Each flightdeck pod opens at most 80
+  # connections, so the server needs max_connections of 80 per pod plus
+  # what else connects, or a pooler in front; the chart cannot check it.
   externalUrl: ""
+  # max_connections of the chart's own Postgres. Unset: 80 for every
+  # flightdeck pod the chart may run (flightdeck.replicas, or the HPA's
+  # maxReplicas) plus 20, which is 100 for one pod. A value below that
+  # fails the render.
+  maxConnections: null
   image:
     repository: postgres
     tag: "16.15-alpine"
   user: flightdeck
-  # Required when postgres.externalUrl is empty (the bundled StatefulSet path).
-  # Set via --set postgres.password=<strong-password> or pass through a values
-  # file scoped to the install. The pre-v0.5.1 behaviour silently defaulted to
-  # the literal "flightdeck" if left blank, which left every bundled install
-  # sharing one well-known credential — that fallback has been removed in
-  # v0.5.1 and the chart now fails to render with an actionable message.
+  # Required with enabled: true (the bundled StatefulSet):
+  # --set postgres.password=<strong-password>, or a values file scoped
+  # to the install. The render fails without it rather than defaulting
+  # to a well-known password every install would share.
   password: ""
   database: flightdeck
   port: 5432
@@ -270,23 +238,14 @@ postgres:
 ingress:
   enabled: false
   className: ""
+  # The OpenTelemetry receiver under /ingest accepts request bodies up
+  # to 4 MiB; an ingress controller with a smaller default (ingress-nginx:
+  # 1m) needs its body-size annotation raised, as values.prod.yaml does.
   annotations: {}
   host: flightdeck.local
   tls: []
-  # Paths are routed to the three public services. The Ingress controller
-  # must support the pathType used here. Paths are forwarded unchanged and
-  # need no rewrite annotation: ingestion serves its routes under /ingest
-  # and the API under /api as well as bare.
-  paths:
-    - path: /ingest
-      pathType: Prefix
-      service: ingestion
-    - path: /api
-      pathType: Prefix
-      service: api
-    - path: /
-      pathType: Prefix
-      service: dashboard
+  # Everything on one path: the binary routes /, /api and /ingest itself.
+  pathType: Prefix
 
 serviceAccount:
   # Per-component ServiceAccounts are always rendered. Roles/RoleBindings
@@ -294,13 +253,26 @@ serviceAccount:
   # placeholder for operators who want to scope future permissions.
   create: true
 
+# The image runs as distroless's nonroot user (uid 65532); fsGroup gives
+# the pod's volume to its group so the binary can create its data dir
+# there. fsGroupChangePolicy must stay OnRootMismatch: with the default
+# (Always) the kubelet adds group read and write to every file on the
+# volume at each mount, where the volume type supports it, and the
+# binary refuses a secrets.json that is wider than 0600, so the pod
+# would not start a second time. With OnRootMismatch the kubelet
+# prepares the empty volume once and leaves what the binary writes
+# alone. The bundled NATS and Postgres pods set their own images' users.
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
 
+# The binary writes under /data/flightdeck, and SQLite's temporary
+# files under /tmp (an emptyDir), so the root filesystem is read-only.
 securityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop: ["ALL"]

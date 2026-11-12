@@ -588,14 +588,14 @@ flightdeck/
 │   ├── time.go                 # Time: scans a timestamp from either backend, column or expression
 │   ├── bus.go, bus_postgres.go # Bus: in-process channels (SQLite) or LISTEN/NOTIFY (Postgres)
 │   ├── migrate.go              # golang-migrate runner over the embedded migrations of both backends
-│   ├── migrations/postgres/    # The Postgres migrations (canonical, embedded in every binary; the Helm chart packages a copy)
+│   ├── migrations/postgres/    # The Postgres migrations, embedded in every binary
 │   ├── migrations/sqlite/      # 000001_baseline, then one pair per Postgres migration after it
 │   └── storagetest/            # Opens migrated databases for Go tests on every backend the run covers
-├── helm/                       # Kubernetes Helm chart
-│   ├── Makefile                # lint / template / install / upgrade — each gates on sync-migrations
-│   ├── templates/              # ConfigMap consumes migrations/ via .Files.Glob at chart-render time
-│   └── migrations/             # Build artifact (gitignored); populated by `make sync-migrations`
-│                               # from storage/migrations/postgres/. Single source of truth lives there.
+├── helm/                       # Kubernetes Helm chart: the flightdeck image as one StatefulSet
+│   ├── Makefile                # lint / template / install / upgrade / uninstall
+│   ├── values.yaml             # One pod on SQLite by default; Postgres and a shared NATS for more
+│   ├── values.prod.yaml        # Three pods on an external Postgres and the chart's NATS cluster
+│   └── templates/              # flightdeck/ (StatefulSet, Services, HPA), postgres/, nats/, Ingress, NetworkPolicies
 ├── docker/                     # docker-compose.yml (users: one flightdeck container on SQLite),
 │                               # docker-compose.postgres.yml (the same with a bundled Postgres),
 │                               # docker-compose.dev.yml (the dev stack's Postgres),
@@ -5318,10 +5318,8 @@ parity test opens both engines at their newest migration and fails when
 the tables, columns, nullability, primary keys or explicit indexes
 differ (the GIN index is the one allowed difference). The `flightdeck`
 binary applies the embedded set of its backend at start, as the
-standalone workers binary does, so the compose files carry no
-migration files; the Helm chart's migrations ConfigMap (`helm/Makefile
-sync-migrations`) still copies the Postgres directory and is unused by
-the workers.
+standalone workers binary does, so no compose file and no chart
+carries migration files.
 
 ### Bus
 
@@ -9929,8 +9927,7 @@ because the mode default is already permissive.
 > empty-blocklist global row), and 000020 (drop the
 > `mcp_policy_versions` table and the `version` column). Migrations
 > ship under `storage/migrations/` (the Postgres files, and the SQLite
-> baseline that carries the same tables); the Helm chart picks the
-> Postgres files up via `helm/Makefile sync-migrations`. Any deviation
+> baseline that carries the same tables), embedded in the binaries. Any deviation
 > — column rename, type change, additional or removed constraint,
 > index difference — requires a new `DECISIONS.md` entry recording
 > the pivot BEFORE the migration is written.
@@ -10723,9 +10720,8 @@ URL each service opens its own database with (the Postgres runtime
 parameters above), for a caller that opens it for them. `Run` joins every goroutine it starts before it closes
 the connections it owns; the workers' `Run` does not migrate (the
 binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
-`app.Run`. No release artifact carries the three service binaries: the
-Helm chart still names their images, which are no longer published,
-and the split test stack (below) runs them from source.
+`app.Run`. No release artifact carries the three service binaries; the
+split test stack (Contributor dev stack, below) runs them from source.
 
 **Docker Compose.** `docker/docker-compose.yml` runs the all-in-one
 image as one service, `flightdeck`, in a compose project of the same
@@ -10766,28 +10762,81 @@ not override it. Under Helm the kubelet rotates container logs
 (`containerLogMaxSize`, `containerLogMaxFiles`) and the chart sets
 nothing.
 
-**Helm chart (Kubernetes).** A Chart at `helm/` ships a values file
-covering image tags, replicas, HPA bounds, NATS JetStream PVC sizes,
-ingress configuration, and an `externalUrl` escape hatch for managed
-Postgres. The bundled Postgres StatefulSet is fine for small
-deployments; production should provide an external HA Postgres via
-`postgres.externalUrl`. The chart passes the `FLIGHTDECK` stream's
-settings to ingestion from `nats.jetstream.stream` (`maxAgeHours`,
-`maxSizeMiB`, `replicas`; see Worker / Event Processing > The
-FLIGHTDECK stream). Unset, `replicas` is 3 when `nats.replicas` is 3 or
-more and 1 otherwise: 3 copies keep a quorum through the loss of one
-server, while 2 copies need both servers for a quorum and so would stop
-the stream on either one's loss. A set `replicas` must be 1 to 5, not 2
-for that reason, and at most `nats.replicas`, and the render fails
-otherwise, as it does for an age under 1 hour, a size under 64 MiB, or
-a size above 75% of `nats.jetstream.fileStore.size` (read when it is a
-plain integer with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix).
-Each NATS server holds a full copy on its own PVC, so `maxSizeMiB`
-stays well under the 75% of free space a server reserves at most: 5120
-MiB on the 10Gi default volume, 30720 MiB on the 50Gi volume of
-`values.prod.yaml`. The ingestion pods carry a checksum of the three
-settings, so changing one rolls them and the new settings apply to the
-stream in place. The chart runs the per-service images.
+**Helm chart (Kubernetes).** The chart at `helm/` runs the all-in-one
+image as one StatefulSet, `<release>-flightdeck`. Each pod is a whole
+control plane (the binary with `--listen :4000 --data-dir
+/data/flightdeck`) behind one ClusterIP Service, and the Ingress, when enabled, routes
+every path to it. It is a StatefulSet because the binary keeps state
+per process in its data dir (the SQLite file and its lock, the embedded
+bus store, `secrets.json`): the claim template gives every pod a
+PersistentVolumeClaim of its own, kept across restarts and rolling
+updates, where the one claim of a Deployment could serve one pod only,
+and a rolling update of a Deployment would start the new pod while the
+old one still holds the data dir's lock. The pod runs as the image's
+user (uid 65532) with a read-only root filesystem and an `emptyDir` at
+`/tmp` for SQLite's temporary files. The data dir is a directory
+inside the pod's volume rather than its root, so the binary creates it
+with mode 0700 whatever the storage class made of the root. The
+volume is given to the pod's group with `fsGroup` and
+`fsGroupChangePolicy: OnRootMismatch`: under the default policy the
+kubelet adds group read and write to every file on the volume at each
+mount, and the binary refuses a `secrets.json` wider than 0600, so the
+pod would start once and never again.
+
+The values choose one of three shapes:
+
+| Shape | Values | Database | Bus |
+|---|---|---|---|
+| One pod and nothing else (the default) | none | SQLite on the pod's volume | embedded |
+| One pod on Postgres | `postgres.enabled=true` with `postgres.password`, or `postgres.externalUrl` | the chart's single-instance Postgres StatefulSet, or one outside the chart | embedded |
+| Several pods | `flightdeck.replicas` above 1 or `flightdeck.hpa.enabled`, with a Postgres as above | Postgres | the chart's NATS cluster (`nats.auth.token` required) or `nats.externalUrl` |
+
+Several pods need a database and a bus they share, and the render
+fails for anything else. On SQLite every pod would have a database of
+its own, since one process serves a SQLite file; on the embedded bus
+the workers of one pod would never see the events another pod
+accepted. So `flightdeck.replicas` above 1, or the HPA, is refused
+without a Postgres, and refused with `nats.enabled=false` unless
+`nats.externalUrl` names a server; `nats.enabled` left unset follows
+the replica count. Each pod opens at most 80 Postgres connections
+(Database, above), so the chart starts its own Postgres with
+`max_connections` at 80 for every pod it may run (the HPA's maximum
+when it is on) plus 20 for everything else, and refuses a
+`postgres.maxConnections` set below that; a Postgres outside the chart
+needs the same room, or a pooler, which the chart cannot check. Every
+pod mints a dashboard token of its own on its first start, each valid
+on every pod because they are rows of `access_tokens`, so the Settings
+page lists one `Bootstrap token` per pod that ever started.
+
+The probes are HTTP on the public port: startup and readiness on
+`/ingest/health`, liveness on `/api/health`, with five minutes allowed
+for a first start that migrates a database. `--metrics` is on by
+default; the three metrics ports are declared on the pod and listed on
+the headless `<release>-flightdeck-metrics` Service, never on the
+Service the Ingress routes to.
+
+The chart passes the `FLIGHTDECK` stream's settings to the pods from
+`nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
+Worker / Event Processing > The FLIGHTDECK stream). On the chart's NATS
+cluster, `replicas` unset is 3 when `nats.replicas` is 3 or more and 1
+otherwise: 3 copies keep a quorum through the loss of one server, while
+2 copies need both servers for a quorum and so would stop the stream on
+either one's loss. A set `replicas` must be 1 to 5, not 2 for that
+reason, and at most `nats.replicas`, and the render fails otherwise, as
+it does for an age under 1 hour, a size under 64 MiB, or a size above
+75% of the volume that holds the stream: `nats.jetstream.fileStore.size`
+on the cluster, where each server holds a full copy on its own claim,
+and `flightdeck.data.size` on the embedded bus, whose store shares the
+pod's volume with the database (both read when they are a plain integer
+with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). So `maxSizeMiB`
+is 5120 MiB on the 10Gi default volumes and 30720 MiB on the 50Gi NATS
+volume of `values.prod.yaml`. On the embedded bus and on a NATS outside
+the chart the stream has one copy unless `replicas` is set. The pods read the
+ConfigMap and the Secret once, at start, and carry a checksum of each,
+so a change to either rolls them: the new stream settings then apply
+to the stream in place, and a release that moves from SQLite to
+Postgres, or onto a shared NATS, never leaves a running pod on the old
+database beside new pods on the new one.
 
 **Contributor dev stack.** `make dev` (`scripts/dev-stack.sh`) builds
 the binary from the checkout, with the dashboard bundle embedded, and
@@ -10870,8 +10919,8 @@ A redirect a service answers for a prefixed request (`/api/docs` to
 `/api/docs/`) keeps the prefix. Neither service has a route of its own
 under its prefix.
 
-The Docker Compose and Helm targets are feature-equivalent (Key
-Constraint #4).
+Docker Compose and the Helm chart run the same image, so a feature is
+in both or in neither (Key Constraint #4).
 
 ### Environment variables
 
@@ -10903,10 +10952,9 @@ the services' handlers on its own listener, so `FLIGHTDECK_PORT` is not
 used; a value of any of these in the environment has no effect on it.
 Those variables matter only to a service binary run on its own
 (`ingestion/cmd`, `workers/cmd`, `api/cmd`), which needs its database
-URL, hence "required" below. The Helm chart runs the services that
-way, each in a pod of its own against a Postgres and a NATS server;
-the split test stack and `scripts/go-db-tests.sh` build them from
-source. No release artifact and no compose file does.
+URL, hence "required" below. No release artifact, compose file or chart
+runs the services that way; the split test stack and
+`scripts/go-db-tests.sh` build them from source.
 
 **Ingestion API:**
 
@@ -10943,7 +10991,7 @@ source. No release artifact and no compose file does.
 | `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
-| `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set. The binary supplies the value it generated in `secrets.json` |
+| `FLIGHTDECK_JWT_SECRET` | Reserved for signing dashboard login tokens; the binary supplies the value it generated in `secrets.json` |
 | `FLIGHTDECK_ADMIN_EMAIL` / `FLIGHTDECK_ADMIN_PASSWORD` | Seed the initial dashboard login |
 | `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` (the price overrides layered over the built-in catalogue) |
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves the request-latency histogram at `/metrics` (default 9104; `0` turns it off; the service refuses to start outside 0 to 65535) |
@@ -11051,14 +11099,14 @@ The ingestion API and the query API each expose `GET /health`
 returning `{"status":"ok","service":"<name>"}`; under the binary they
 are `/ingest/health` and `/api/health` on the public port. The binary
 binds its port first and serves last, so both answer only once the
-database is migrated, the bus is up and the three services run, and
-`make dev` returns once both answer. The compose file has no health
-check, since nothing inside the distroless image can run one. The
-workers have no `/health`: the Helm chart reads their readiness from
-the metrics listener (`/metrics`), which opens after the startup
-migrations and the NATS connection, and a worker whose consumer cannot
-create the stream or subscribe exits so its supervisor restarts it;
-under the binary that failure ends the process with the error.
+database is migrated, the bus is up and the three services run. The
+Helm chart probes them over HTTP (startup and readiness on
+`/ingest/health`, liveness on `/api/health`), and `make dev` returns
+once both answer. The compose file has no health check, since nothing
+inside the distroless image can run one. The workers have no `/health`:
+a worker whose consumer cannot create the stream or subscribe exits,
+which ends the binary with that error and lets its supervisor
+(`restart: unless-stopped`, the kubelet) start it again.
 
 ### Stream sequences
 
@@ -11114,14 +11162,11 @@ then one sample per label value in sorted order. The counters are
 process-local and start at zero when a worker starts, so with several
 worker replicas each one is scraped separately and the series summed.
 The listener opens after the startup migrations and the NATS
-connection, and a consumer that cannot create the stream or subscribe
-exits the worker, so the Helm chart uses the listener as the workers'
-readiness probe (liveness stays a process-alive check, so a long
-migration never restarts the pod) and lists it on the workers' headless
-Service for scrapers. A port that cannot be bound is logged and event
+connection. A port that cannot be bound is logged and event
 processing continues. The binary starts the listener only with
-`--metrics`; its public port never routes to it and the compose file
-does not publish it. The worker's log lines for the same events (drops, reaper
+`--metrics`; its public port never routes to it, the compose file does
+not publish it, and the Helm chart lists it on the headless metrics
+Service for scrapers. The worker's log lines for the same events (drops, reaper
 closes, revivals) remain the signal when the listener is off.
 
 #### Request latency
@@ -11179,18 +11224,15 @@ and `_count`, series in sorted label order. The listener carries no
 auth, so it is kept off the public edge: the binary starts the three
 listeners only with `--metrics` and its public port never serves
 `/metrics`; the compose file does not publish the ports; and the Helm
-chart (`ingestion.metricsPort`, `api.metricsPort`) declares the port on
-the pods and lists it on a headless `<release>-ingestion-metrics` or
-`<release>-api-metrics` Service, never on the Service the Ingress or a
-`LoadBalancer` uses. Each deployment sets its own
-`FLIGHTDECK_METRICS_PORT` (the workers' included) rather than the
-shared ConfigMap, since all three services read the same variable. The
-ports differ from the workers' 9102 so the three services can share one
-host's network, or one process, without a clash. The listener binds
-every interface (only its port is configurable): in compose it is
-reachable on the compose network only and in Kubernetes on the pod IP,
-so an operator who runs the binary with `--metrics` on a bare host
-firewalls the ports. The metrics listeners, the workers' included,
+chart (`flightdeck.metrics.enabled`) declares them on the pods and
+lists them on the headless `<release>-flightdeck-metrics` Service,
+never on the Service the Ingress or a `LoadBalancer` uses. The ports
+differ from the workers' 9102 so the three services share one
+process's network without a clash. The listener binds every interface
+(only its port is configurable): in compose it is reachable on the
+compose network only and in Kubernetes on the pod IP, so an operator
+who runs the binary with `--metrics` on a bare host firewalls the
+ports. The metrics listeners, the workers' included,
 are internal, on ports of their own, and are not part of the
 Swagger-documented API surface, which covers the API ports only. The
 service's readiness and liveness

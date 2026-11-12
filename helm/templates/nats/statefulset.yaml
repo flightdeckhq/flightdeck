@@ -1,4 +1,4 @@
-{{- if .Values.nats.enabled -}}
+{{- if include "flightdeck.natsEnabled" . -}}
 {{- $component := "nats" -}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -38,14 +38,14 @@ spec:
         fsGroup: 1000
       containers:
         - name: nats
-          image: "{{ .Values.image.registry }}/{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
+          image: {{ include "flightdeck.imageRef" (dict "root" . "image" .Values.nats.image) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
           # JetStream enabled via CLI flag so NATS works without a config
-          # file. Matches docker/docker-compose.yml behaviour.
+          # file.
           args:
             - "--jetstream"
             - "--store_dir"
@@ -59,29 +59,25 @@ spec:
             {{- if gt (int .Values.nats.replicas) 1 }}
             - "--cluster_name"
             - {{ include "flightdeck.natsServiceName" . | quote }}
-            # With a token set, routes authenticate with it too, so the
-            # cluster port is not a way around client auth.
+            # The routes authenticate with the token too, so the cluster
+            # port is not a way around client auth.
             - "--cluster"
             - "nats://{{ include "flightdeck.natsRouteAuth" . }}0.0.0.0:{{ .Values.nats.clusterPort }}"
             - "--routes"
             - {{ include "flightdeck.natsRoutes" . | quote }}
             {{- end }}
-            {{- if .Values.nats.auth.token }}
             - "--auth"
             - "$(NATS_TOKEN)"
-            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            {{- if .Values.nats.auth.token }}
             - name: NATS_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "flightdeck.secretName" . }}
                   key: FLIGHTDECK_NATS_TOKEN
-            {{- end }}
           ports:
             - name: client
               containerPort: {{ .Values.nats.clientPort }}

@@ -461,7 +461,7 @@ A `policy_update` directive received in a response envelope refreshes the sensor
 
 ## Self-hosting
 
-Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose (single host), which runs the one `flightdeckhq/flightdeck` image, and a Helm chart for Kubernetes with a bundled Postgres and NATS.
+Flightdeck is self-hosted. Two deployment targets are supported, both running the one `flightdeckhq/flightdeck` image: Docker Compose (single host) and a Helm chart for Kubernetes.
 
 ### Prerequisites
 
@@ -494,16 +494,14 @@ The dashboard fetches its bearer token at runtime from `/runtime-config.json`, w
 ### Kubernetes (Helm)
 
 ```bash
-helm install flightdeck helm/ \
-  --namespace flightdeck --create-namespace \
-  --values helm/values.prod.yaml \
-  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require" \
-  --set api.auth.jwtSecret="<strong-random-secret>" \
-  --set api.corsOrigin="https://flightdeck.example.com" \
-  --set nats.auth.token="<strong-random-token>"
+helm install flightdeck helm/ --namespace flightdeck --create-namespace
 ```
 
-A production render (`api.env=production`, the default) refuses to proceed without the JWT secret, a non-wildcard CORS origin and the NATS token, and without `postgres.password` when it bundles Postgres. Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet (fine for small deployments, not HA, not backed up). NATS is always bundled; with more than one replica the servers form a cluster, so events published on any of them reach the workers. On a cluster of 3 or more servers the `FLIGHTDECK` JetStream stream keeps a copy on 3 of them, so it survives the loss of one; ingestion raises an existing one-replica stream to 3 in place on its first start after the upgrade. The token may contain only letters, digits and `. _ ~ -` because it is placed in NATS URLs (`openssl rand -hex 32` works); with more than one replica the cluster routes authenticate with it too.
+With the default values the chart runs one pod and nothing else: the database is a SQLite file and the bus is embedded, both on the pod's own volume. The notes `helm install` prints say how to open the dashboard and read the token. `postgres.enabled=true` with `postgres.password` runs the chart's own single-instance Postgres StatefulSet instead (fine for small deployments, not HA, not backed up), and `postgres.externalUrl` uses a Postgres you run.
+
+Several pods need a database and a bus they share, so the render refuses more than one replica (or the HPA) without a Postgres, and without a NATS: the chart then runs its own NATS cluster, which needs `nats.auth.token`, unless `nats.externalUrl` names one. [`helm/values.prod.yaml`](helm/values.prod.yaml) is that shape (three replicas behind an HPA, an Ingress), to be given `postgres.externalUrl` and `nats.auth.token`. Each pod opens at most 80 Postgres connections; the chart sizes its own Postgres for that, and an external one needs `max_connections` for 80 per pod or a pooler. With more than one NATS server the servers form a cluster, so events published on any of them reach the workers. On a cluster of 3 or more servers the `FLIGHTDECK` JetStream stream keeps a copy on 3 of them, so it survives the loss of one. The token may contain only letters, digits and `. _ ~ -` because it is placed in NATS URLs (`openssl rand -hex 32` works); with more than one NATS replica the cluster routes authenticate with it too.
+
+**Upgrading a release of an earlier chart**: set `postgres.enabled=true` (with the same `postgres.password`) to stay on the chart's Postgres, which earlier charts ran by default; without it the pods start on an empty SQLite database. The `api.*`, `ingestion.*`, `workers.*` and `dashboard.*` values no longer exist; `flightdeck.*` replaces them.
 
 **Upgrading a v0.5.3 install with `nats.replicas` above 1** (the default is 3): the NATS StatefulSet's pod start policy changes, which Kubernetes does not allow in place. Scale ingestion to zero, give the workers a minute to drain, then run `kubectl delete statefulset <release>-flightdeck-nats` (the data volumes stay) before `helm upgrade`. On first start the clustered servers discard the old per-server streams and ingestion recreates the stream, so any event still on the bus at that point is dropped. A one-replica install upgrades in place and keeps its stream.
 
@@ -511,22 +509,24 @@ The chart is at `version` 0.8.0 with `appVersion` 0.8.0; the default `image.tag`
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `v0.8.0` | Image tag applied to ingestion/workers/api/dashboard. |
-| `ingestion.replicas` | `2` | Initial replica count. HPA overrides at runtime when enabled. |
-| `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
-| `workers.replicas` | `2` | NATS consumer pod count. |
-| `api.replicas` | `2` | Query API replica count. |
-| `api.corsOrigin` | `*` | `Access-Control-Allow-Origin` for the query API. Lock down in prod. |
-| `dashboard.replicas` | `2` | Dashboard pod count. |
-| `postgres.externalUrl` | *(empty)* | When set, bundled Postgres StatefulSet is not rendered. |
+| `image.tag` | `v0.8.0` | Tag of the `flightdeckhq/flightdeck` image. |
+| `flightdeck.replicas` | `1` | Pod count. Above 1 needs Postgres and a shared NATS. HPA overrides at runtime when enabled. |
+| `flightdeck.hpa.enabled` | `false` | Enable the HorizontalPodAutoscaler for the pods. |
+| `flightdeck.data.size` | `10Gi` | PVC size of each pod's data dir (the SQLite database, the embedded bus store, the minted token). |
+| `flightdeck.corsOrigin` | *(empty)* | `Access-Control-Allow-Origin` for the query API; empty keeps `*`. Lock down in prod. |
+| `postgres.enabled` | `false` | Run the chart's single-instance Postgres StatefulSet; needs `postgres.password`. |
+| `postgres.externalUrl` | *(empty)* | A Postgres you run. When set, the bundled StatefulSet is not rendered. |
+| `postgres.maxConnections` | *(empty)* | `max_connections` of the bundled Postgres. Empty: 80 per pod the chart may run, plus 20. |
 | `postgres.storage.size` | `20Gi` | PVC size for the bundled StatefulSet. |
+| `nats.enabled` | *(empty)* | Run the chart's NATS cluster. Empty: exactly when the chart runs more than one pod. |
+| `nats.externalUrl` | *(empty)* | A NATS server you run, for the pods to share instead. |
 | `nats.replicas` | `3` | NATS StatefulSet replica count; more than one forms a NATS cluster. |
-| `nats.auth.token` | *(empty)* | Client token for the event bus. Required in production. |
+| `nats.auth.token` | *(empty)* | Client token for the event bus. Required when the chart runs its NATS cluster. |
 | `nats.jetstream.fileStore.size` | `10Gi` | PVC size per NATS replica. |
 | `nats.jetstream.stream.maxAgeHours` | `72` | How long the `FLIGHTDECK` stream keeps an event, processed or not. Unprocessed events older than this are lost. |
 | `nats.jetstream.stream.maxSizeMiB` | `5120` | Most the stream stores on each NATS server; at the limit the oldest events go. The render fails above 75% of `fileStore.size`; keep it well under (`values.prod.yaml`: 30720 for 50Gi). |
 | `nats.jetstream.stream.replicas` | *(empty)* | Servers holding a copy of the stream. Empty: 3 when `nats.replicas` is 3 or more, else 1. At most `nats.replicas` and 5, and not 2. |
-| `ingress.enabled` | `false` | Render an Ingress routing `/` to dashboard, `/api` to query API, `/ingest` to ingestion API. |
+| `ingress.enabled` | `false` | Render an Ingress routing every path to the pods, which serve the dashboard, `/api` and `/ingest` themselves. |
 | `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza. |
 
 ---

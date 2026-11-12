@@ -1,0 +1,19 @@
+{{- $name := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
+Flightdeck is starting as the StatefulSet {{ $name }} in namespace {{ .Release.Namespace }}.
+
+  Database  {{ if eq (include "flightdeck.database" .) "sqlite" }}SQLite, on each pod's own volume{{ else if .Values.postgres.externalUrl }}Postgres (postgres.externalUrl){{ else }}Postgres (the chart's own StatefulSet){{ end }}
+  Bus       {{ if .Values.nats.externalUrl }}NATS (nats.externalUrl){{ else if include "flightdeck.natsEnabled" . }}NATS (the chart's cluster of {{ .Values.nats.replicas }}){{ else }}embedded in the pod{{ end }}
+
+The dashboard{{ if .Values.ingress.enabled }} is at http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}. Without the Ingress, forward the Service:{{ else }}, once the pod is ready (a first start creates the database), through a port-forward:{{ end }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $name }} 4000:{{ .Values.flightdeck.service.port }}
+
+Then open http://localhost:4000. The access token for the sensor and
+the plugin is what the dashboard itself loads:
+
+  curl -s http://localhost:4000/runtime-config.json
+
+Each pod mints a token on its first start (its log prints it once, in
+the start-up block), and the Settings page mints more. Whoever can
+reach the Service can read that token: expose it only behind an Ingress
+or a network that authenticates.

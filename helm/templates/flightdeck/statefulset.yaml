@@ -2,10 +2,12 @@
 {{- include "flightdeck.validate" . -}}
 {{- /*
 The flightdeck pods: one binary each, a StatefulSet so that every pod
-keeps a data dir of its own across restarts and rolling updates (/data:
-the SQLite database and its lock when the database is SQLite, the
-embedded NATS store when the pods share no bus, the dashboard token the
-pod minted). A rolling update replaces a pod by deleting it first, so
+keeps a data dir of its own across restarts and rolling updates (the
+SQLite database and its lock when the database is SQLite, the embedded
+NATS store when the pods share no bus, the dashboard token the pod
+minted). The data dir is a directory inside the volume, not the
+volume's root: the binary creates it with mode 0700, whatever owner
+and mode the storage class gives the root. A rolling update replaces a pod by deleting it first, so
 the new process never meets the old one's lock on the data dir. One pod
 uses its embedded bus; several take FLIGHTDECK_NATS_URL from the Secret
 and share one NATS, and FLIGHTDECK_DATABASE_URL names their Postgres.
@@ -32,9 +34,16 @@ spec:
       labels:
         {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 8 }}
       annotations:
-        # The binary applies the stream settings at startup, so a change
-        # to them rolls the pods and the new settings take effect.
-        checksum/nats-stream: {{ printf "%s/%s/%s" (include "flightdeck.natsStreamMaxAgeHours" .) (include "flightdeck.natsStreamMaxSizeMiB" .) (include "flightdeck.natsStreamReplicas" .) | sha256sum | trunc 16 | quote }}
+        # The pods read their settings from the ConfigMap and the Secret
+        # once, at start. A change to either must roll every pod: the
+        # stream settings are applied at startup, and a release that
+        # moves from SQLite to Postgres, or from the embedded bus to a
+        # shared NATS, would otherwise leave the running pod on the old
+        # database beside new pods on the new one. The Secret's digest
+        # is the usual trade: whoever may read pod annotations sees a
+        # hash of it, not its content.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum | quote }}
         {{- with .Values.flightdeck.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -66,7 +75,7 @@ spec:
             - "--listen"
             - ":{{ .Values.flightdeck.port }}"
             - "--data-dir"
-            - "/data"
+            - "/data/flightdeck"
             {{- if .Values.flightdeck.metrics.enabled }}
             - "--metrics"
             {{- end }}

@@ -38,7 +38,7 @@ spec:
         fsGroup: 70
       containers:
         - name: postgres
-          image: "{{ .Values.image.registry }}/{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          image: {{ include "flightdeck.imageRef" (dict "root" . "image" .Values.postgres.image) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

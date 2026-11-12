@@ -388,10 +388,20 @@ Service: <statefulset>-<ordinal>.<service>.
 The flightdeck image reference.
 */}}
 {{- define "flightdeck.image" -}}
-{{- if .Values.image.registry -}}
-{{- printf "%s/%s:%s" .Values.image.registry .Values.image.repository .Values.image.tag -}}
+{{- include "flightdeck.imageRef" (dict "root" . "image" .Values.image) -}}
+{{- end -}}
+
+{{/*
+An image reference under image.registry: <registry>/<repository>:<tag>,
+or <repository>:<tag> when the registry is empty (an image loaded onto
+the nodes, a mirror named in the repository itself). The flightdeck,
+NATS and Postgres images all go through it.
+*/}}
+{{- define "flightdeck.imageRef" -}}
+{{- if .root.Values.image.registry -}}
+{{- printf "%s/%s:%s" .root.Values.image.registry .image.repository .image.tag -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- printf "%s:%s" .image.repository .image.tag -}}
 {{- end -}}
 {{- end -}}
 

@@ -10764,8 +10764,8 @@ nothing.
 
 **Helm chart (Kubernetes).** The chart at `helm/` runs the all-in-one
 image as one StatefulSet, `<release>-flightdeck`. Each pod is a whole
-control plane (the binary with `--listen :4000 --data-dir /data`)
-behind one ClusterIP Service, and the Ingress, when enabled, routes
+control plane (the binary with `--listen :4000 --data-dir
+/data/flightdeck`) behind one ClusterIP Service, and the Ingress, when enabled, routes
 every path to it. It is a StatefulSet because the binary keeps state
 per process in its data dir (the SQLite file and its lock, the embedded
 bus store, `secrets.json`): the claim template gives every pod a
@@ -10774,7 +10774,14 @@ updates, where the one claim of a Deployment could serve one pod only,
 and a rolling update of a Deployment would start the new pod while the
 old one still holds the data dir's lock. The pod runs as the image's
 user (uid 65532) with a read-only root filesystem and an `emptyDir` at
-`/tmp` for SQLite's temporary files.
+`/tmp` for SQLite's temporary files. The data dir is a directory
+inside the pod's volume rather than its root, so the binary creates it
+with mode 0700 whatever the storage class made of the root. The
+volume is given to the pod's group with `fsGroup` and
+`fsGroupChangePolicy: OnRootMismatch`: under the default policy the
+kubelet adds group read and write to every file on the volume at each
+mount, and the binary refuses a `secrets.json` wider than 0600, so the
+pod would start once and never again.
 
 The values choose one of three shapes:
 
@@ -10824,9 +10831,12 @@ pod's volume with the database (both read when they are a plain integer
 with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). So `maxSizeMiB`
 is 5120 MiB on the 10Gi default volumes and 30720 MiB on the 50Gi NATS
 volume of `values.prod.yaml`. On the embedded bus and on a NATS outside
-the chart the stream has one copy unless `replicas` is set. The pods
-carry a checksum of the three settings, so changing one rolls them and
-the new settings apply to the stream in place.
+the chart the stream has one copy unless `replicas` is set. The pods read the
+ConfigMap and the Secret once, at start, and carry a checksum of each,
+so a change to either rolls them: the new stream settings then apply
+to the stream in place, and a release that moves from SQLite to
+Postgres, or onto a shared NATS, never leaves a running pod on the old
+database beside new pods on the new one.
 
 **Contributor dev stack.** `make dev` (`scripts/dev-stack.sh`) builds
 the binary from the checkout, with the dashboard bundle embedded, and

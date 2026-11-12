@@ -85,7 +85,9 @@ has default '^  replicas: 1$'
 has default '^          image: docker.io/flightdeckhq/flightdeck:v'
 has default '^          command: \["/usr/local/bin/flightdeck"\]$'
 has default '^            - ":4000"$'
-has default '^            - "/data"$'
+# The data dir is a directory inside the volume, which the binary
+# creates 0700 whatever mode the storage class gives the volume's root.
+has default '^            - "/data/flightdeck"$'
 has default '^            - "--metrics"$'
 # Every pod has a volume of its own for the SQLite file, the bus store
 # and secrets.json.
@@ -93,6 +95,9 @@ has default '^  volumeClaimTemplates:$'
 has default '^              mountPath: /data$'
 has default '^              mountPath: /tmp$'
 has default '^        runAsUser: 65532$'
+# Without it the kubelet widens secrets.json at every mount and the
+# binary refuses to start a second time.
+has default '^        fsGroupChangePolicy: OnRootMismatch$'
 has default '^            readOnlyRootFilesystem: true$'
 has default '^      terminationGracePeriodSeconds: 75$'
 has default '^              path: /ingest/health$'
@@ -175,6 +180,15 @@ lacks hpa-statefulset '^  replicas:'
 render connections "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=3 --set postgres.maxConnections=500
 has connections '^            - "max_connections=500"$'
 
+# The three images follow image.registry, an empty one included.
+has three '^          image: "docker.io/nats:'
+has three '^          image: "docker.io/postgres:'
+render no-registry "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=3 --set image.registry=
+has no-registry '^          image: flightdeckhq/flightdeck:v'
+has no-registry '^          image: "nats:'
+has no-registry '^          image: "postgres:'
+lacks no-registry 'image: "?/'
+
 # One pod may use the cluster too.
 render one-cluster "${NATS_TOKEN[@]}" --set nats.enabled=true
 has one-cluster '^  name: flightdeck-nats$'
@@ -238,12 +252,30 @@ render stream-external "${EXTERNAL_PG[@]}" --set 'nats.externalUrl=nats://tok@na
   --set nats.jetstream.stream.maxSizeMiB=20000 --set nats.jetstream.stream.replicas=3
 has stream-external '^  FLIGHTDECK_NATS_STREAM_REPLICAS: "3"$'
 
-# A change to the stream settings rolls the pods, which apply them at start.
-checksum() { grep 'checksum/nats-stream' "$OUT/$1.yaml"; }
+# The pods read the ConfigMap and the Secret at start only, so a change
+# to either must roll them: the stream settings, and above all the
+# database and the bus. A release that moves from SQLite to Postgres
+# must not leave the running pod on its SQLite file beside new pods on
+# Postgres.
+checksum() { grep "checksum/$2" "$OUT/$1.yaml"; }
+differs() {
+  checks=$((checks + 1))
+  [ "$(checksum "$1" "$3")" != "$(checksum "$2" "$3")" ] ||
+    fail "the pod annotation checksum/$3 must differ between $1 and $2"
+}
+same() {
+  checks=$((checks + 1))
+  [ "$(checksum "$1" "$3")" = "$(checksum "$2" "$3")" ] ||
+    fail "the pod annotation checksum/$3 must not differ between $1 and $2"
+}
 render sum-a
 render sum-b --set nats.jetstream.stream.maxAgeHours=24
-checks=$((checks + 1))
-[ "$(checksum sum-a)" != "$(checksum sum-b)" ] ||
-  fail "the pod annotation must change with the stream settings"
+differs sum-a sum-b config
+same sum-a sum-b secret
+differs default one-bundled secret
+differs default one-external secret
+differs one-bundled three secret
+render sum-password --set postgres.enabled=true --set postgres.password=another-password
+differs one-bundled sum-password secret
 
 echo "helm chart: $checks checks passed"

@@ -71,8 +71,8 @@ flightdeck:
   # Further FLIGHTDECK_* tunables (ARCHITECTURE.md, Deployment), as
   # name: value.
   extraEnv: {}
-  # The data dir (/data) of each pod, a PersistentVolumeClaim of its
-  # own: the SQLite database when the database is SQLite, the embedded
+  # The volume of each pod, a PersistentVolumeClaim of its own, mounted
+  # at /data; the binary's data dir is the directory `flightdeck` in it: the SQLite database when the database is SQLite, the embedded
   # NATS JetStream store when the pods share no bus, and secrets.json
   # (the dashboard token the pod minted). Sized for the embedded bus's
   # default 5 GiB stream limit beside a database of a few GiB; a pod on
@@ -188,9 +188,11 @@ postgres:
   # false (the default): no Postgres; the pod keeps its data in a SQLite
   # file on its own volume. true: the chart runs a single-instance
   # Postgres StatefulSet, with no HA and no backups, and the pods use
-  # it. An install that already has data in the chart's Postgres must
-  # keep this true: turning it off starts the pods on an empty SQLite
-  # database (the Postgres volume claim stays).
+  # it. Changing the database of an existing release rolls its pods
+  # onto the new one and does not move the data: an install that
+  # already has data in the chart's Postgres must keep this true, or
+  # its pods start on an empty SQLite database (the Postgres volume
+  # claim stays).
   enabled: false
   # A Postgres outside the chart, as a full DSN (e.g.
   # postgres://user:pass@host:5432/flightdeck?sslmode=require). When set
@@ -251,17 +253,24 @@ serviceAccount:
   # placeholder for operators who want to scope future permissions.
   create: true
 
-# The image runs as distroless's nonroot user (uid 65532), which owns
-# /data (fsGroup gives the volume to it); the bundled NATS and Postgres
-# pods set their own images' users.
+# The image runs as distroless's nonroot user (uid 65532); fsGroup gives
+# the pod's volume to its group so the binary can create its data dir
+# there. fsGroupChangePolicy must stay OnRootMismatch: with the default
+# (Always) the kubelet adds group read and write to every file on the
+# volume at each mount, where the volume type supports it, and the
+# binary refuses a secrets.json that is wider than 0600, so the pod
+# would not start a second time. With OnRootMismatch the kubelet
+# prepares the empty volume once and leaves what the binary writes
+# alone. The bundled NATS and Postgres pods set their own images' users.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
 
-# The binary writes under /data, and SQLite's temporary files under
-# /tmp (an emptyDir), so the root filesystem is read-only.
+# The binary writes under /data/flightdeck, and SQLite's temporary
+# files under /tmp (an emptyDir), so the root filesystem is read-only.
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true

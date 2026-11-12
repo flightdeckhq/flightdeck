@@ -242,18 +242,13 @@ under test: against the dev stack's address without `.dev/stack.env` (the
 stack was not started by `make dev`), and against any other address without
 `FLIGHTDECK_TEST_DB` or `FLIGHTDECK_TEST_SQLITE_DB`. No worker container is
 assumed anywhere, so a run cannot pause a container another stack depends on.
-Three dashboard files do not go through those fixtures and are for the dev
-stack on Postgres only:
-`dashboard/tests/e2e/T149-fleet-follows-worker-state-changes.spec.ts`,
-`dashboard/tests/e2e/T150-agent-tokens-count-failed-streams.spec.ts` and
-`dashboard/tests/e2e/_tool-content-run.ts` name the `docker-postgres-1`
-container and the `flightdeck` database literally, so they must not be run
-against a stack on SQLite or at another address, where they would write to
-the dev database instead.
 
 The browser suite (`make test-e2e`, `dashboard/tests/e2e/README.md`) runs
-against the dev stack on Postgres: its seeder backdates rows with Postgres
-SQL.
+against a stack on Postgres: its seeder backdates rows with Postgres SQL, and
+three of its files run `psql` in the stack's Postgres container. Its specs
+take the stack from the same variables (`dashboard/tests/e2e/_stack.ts`), and
+`make test-e2e` sets them from the dev stack's state, so the suite of a second
+dev stack reads and writes that stack only.
 
 ### Go tests that need a database
 

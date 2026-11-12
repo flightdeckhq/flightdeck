@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { OTLP_AGENT, waitForInvestigateReady } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T129 — a sub-agent of a Claude Code session reported over
 // OpenTelemetry is a child session closed by its subagent_completed
@@ -25,7 +26,7 @@ test.describe("T129 — OTLP sub-agent child session", () => {
     page,
   }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${OTLP_AGENT.childSessionId}`,
+      `${API_URL}/v1/sessions/${OTLP_AGENT.childSessionId}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "the seeded OTLP child session must exist").toBe(true);

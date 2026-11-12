@@ -2,6 +2,8 @@ import type { FullConfig } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { LONG_RUN_FIXTURE } from "./_fixtures";
+import { BASE_URL } from "./_stack";
 
 // Playwright global setup hook. Seeds the canonical E2E fixture
 // dataset into the running dev stack before any project starts.
@@ -28,20 +30,16 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// `make dev` returns before the dashboard is listening (its container
-// installs dependencies first, and on CI builds the production bundle
-// it serves), and until it is, nginx
-// answers every page with 502 Bad Gateway. Specs that started inside
-// that window failed on a 502 page. Wait for the dashboard to serve its
-// index through the edge proxy before seeding and before any spec runs.
-//
-// A cold container (npm install, then Vite's dependency pre-bundling,
-// or on CI the bundle build) has been seen to take about a minute; three minutes
-// leaves room for a slow runner without hiding a dashboard that never
-// comes up.
-const DASHBOARD_READY_TIMEOUT_MS = 180_000;
+// The binary serves the dashboard it embeds, and `make dev` returns
+// only once both of its health endpoints answer, so a stack that is up
+// serves / at once. This wait is the run's check that a stack with a
+// dashboard answers at the base URL at all: without one every spec
+// would fail on its first navigation, each with its own timeout. Half
+// a minute covers a stack that is restarting (`make dev-restart`) when
+// the run starts, without holding a run that has no stack for long.
+const DASHBOARD_READY_TIMEOUT_MS = 30_000;
 // One request a second is enough to start the suite within a second of
-// the dashboard coming up, without flooding the proxy log.
+// the dashboard coming up.
 const DASHBOARD_READY_POLL_MS = 1_000;
 
 async function waitForDashboard(baseURL: string): Promise<void> {
@@ -59,12 +57,86 @@ async function waitForDashboard(baseURL: string): Promise<void> {
   }
   throw new Error(
     `globalSetup: the dashboard at ${baseURL} did not serve within ` +
-      `${DASHBOARD_READY_TIMEOUT_MS / 1000}s (last: ${last}). Is the dev stack up (make dev, or the E2E compose override)?`,
+      `${DASHBOARD_READY_TIMEOUT_MS / 1000}s (last: ${last}). Is the dev stack up (make dev)? ` +
+      `A 503 means the binary has no dashboard bundle: start it without FLIGHTDECK_DEV_WEBUI=0.`,
+  );
+}
+
+const AUTH = { Authorization: "Bearer tok_dev" };
+
+// How long the worker gets to store the long-run fixture after it is
+// posted. It stores a run's events one at a time, each its own commit:
+// the 2,051 events took 6 to 9 s on a CI runner and 12 to 15 s on a
+// WSL dev box. Two minutes leaves room for a slow runner without
+// hiding a worker that never stores the run.
+const LONG_RUN_STORED_TIMEOUT_MS = 120_000;
+// Two small API reads per poll; four a second starts the suite within
+// a quarter second of the last event landing.
+const LONG_RUN_POLL_MS = 250;
+
+/** The run of the newest stored needle, or null while none is searchable. */
+async function longRunSession(api: string): Promise<string | null> {
+  const res = await fetch(`${api}/v1/search?q=${LONG_RUN_FIXTURE.needle}`, { headers: AUTH });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { events?: { tool_name: string; session_id: string }[] };
+  const hit = (body.events ?? []).find((e) => e.tool_name === LONG_RUN_FIXTURE.needle);
+  return hit?.session_id ?? null;
+}
+
+/** How many events the run holds. */
+async function runEventCount(api: string, sessionId: string): Promise<number> {
+  const res = await fetch(
+    `${api}/v1/events?from=1970-01-01T00:00:00Z&session_id=${sessionId}&limit=1`,
+    { headers: AUTH },
+  );
+  if (!res.ok) return 0;
+  return ((await res.json()) as { total: number }).total;
+}
+
+// Seed the long-run fixture when the stack has none, then wait until
+// the worker has stored every event of it. The needle is posted last,
+// so a stack whose needle is searchable was seeded by an earlier run.
+// Here, not in the spec that reads it: see LONG_RUN_FIXTURE.
+async function ensureLongRun(baseURL: string, python: string, repoRoot: string): Promise<void> {
+  const api = `${baseURL}/api`;
+  if ((await longRunSession(api)) === null) {
+    // The seeder posts through the fixtures module, which takes the
+    // stack from the FLIGHTDECK_TEST_* variables. Every other
+    // FLIGHTDECK_* variable is a sensor or plugin setting of the
+    // developer's own shell and stays out of the child.
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (key.startsWith("FLIGHTDECK_") && !key.startsWith("FLIGHTDECK_TEST_")) delete env[key];
+    }
+    const script = resolve(repoRoot, "tests", "e2e-fixtures", "seed_long_run.py");
+    const result = spawnSync(
+      python,
+      [script, LONG_RUN_FIXTURE.needle, String(LONG_RUN_FIXTURE.calls)],
+      { cwd: repoRoot, env, encoding: "utf8" },
+    );
+    if (result.error) {
+      throw new Error(`globalSetup: failed to spawn ${python} for seed_long_run.py: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(`globalSetup: seed_long_run.py exited ${result.status}: ${result.stderr}`);
+    }
+  }
+  const deadline = Date.now() + LONG_RUN_STORED_TIMEOUT_MS;
+  let stored = 0;
+  while (Date.now() < deadline) {
+    const sessionId = await longRunSession(api);
+    stored = sessionId ? await runEventCount(api, sessionId) : 0;
+    if (stored > LONG_RUN_FIXTURE.calls) return;
+    await new Promise((r) => setTimeout(r, LONG_RUN_POLL_MS));
+  }
+  throw new Error(
+    `globalSetup: the long-run fixture was not stored within ${LONG_RUN_STORED_TIMEOUT_MS / 1000}s ` +
+      `(${stored} of ${LONG_RUN_FIXTURE.calls + 1} events). Is the worker consuming?`,
   );
 }
 
 export default async function globalSetup(config: FullConfig): Promise<void> {
-  const baseURL = config.projects[0]?.use.baseURL ?? "http://localhost:4000";
+  const baseURL = config.projects[0]?.use.baseURL ?? BASE_URL;
   const tReady = Date.now();
   await waitForDashboard(baseURL);
   console.log(
@@ -102,9 +174,15 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // noise.
   console.log(`[playwright globalSetup] seed complete in ${elapsed}s`);
 
+  const tLongRun = Date.now();
+  await ensureLongRun(baseURL, python, repoRoot);
+  console.log(
+    `[playwright globalSetup] long-run fixture stored after ${((Date.now() - tLongRun) / 1000).toFixed(1)}s`,
+  );
+
   // ── Keep-alive watchdog ────────────────────────────────────────────
   // The workers reconciler (ReconcileStaleSessions in
-  // workers/internal/writer/postgres.go, ticking every
+  // workers/internal/writer/writer.go, ticking every
   // FLIGHTDECK_RECONCILER_INTERVAL_SECS, 5 s on the dev stack) marks
   // state='active' → 'stale' on any session whose ``last_seen_at`` is
   // older than the 2-min stale threshold.

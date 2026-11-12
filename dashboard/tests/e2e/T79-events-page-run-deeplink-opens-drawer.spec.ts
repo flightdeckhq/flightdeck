@@ -10,6 +10,7 @@
  */
 import { test, expect } from "@playwright/test";
 import { CODING_AGENT } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 test.describe("T79 — /events ?run= deep-link", () => {
   test("?run=<id> opens the run drawer without a click", async ({ page }) => {
@@ -20,7 +21,7 @@ test.describe("T79 — /events ?run= deep-link", () => {
       limit: "1",
     });
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions?${sp.toString()}`,
+      `${API_URL}/v1/sessions?${sp.toString()}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "sessions API call must succeed").toBe(true);

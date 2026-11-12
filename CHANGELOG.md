@@ -940,6 +940,9 @@ All notable changes to Flightdeck are documented here.
   against this stack on Postgres 16, Postgres 18 and SQLite; the four
   tests that pause the worker container run against a split test stack
   of the three services (`make test-split`), in a CI leg of their own.
+  `make test-e2e` runs the browser suite against the stack `make dev`
+  started, a second stack on other ports included: the specs take the
+  address and the Postgres container from the stack's state.
 
 ### Removed
 

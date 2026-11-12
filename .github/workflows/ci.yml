@@ -1474,6 +1474,13 @@ jobs:
       - name: Pricing catalogue refresh script
         run: python3 -m unittest scripts/test_pricing_refresh.py
 
+      # The seed that fills a throwaway Flightdeck for the README's
+      # images (scripts/demo_seed.py), against a fake server: its
+      # events are the same on every run, carry the identity ingestion
+      # requires and no content, and name only invented hosts and users.
+      - name: Demo seed script
+        run: python3 -m unittest scripts/test_demo_seed.py
+
       # The release notes come from CHANGELOG.md; the installers and the
       # install gate's checks are shell the release depends on. The
       # runner's shellcheck is the one Ubuntu ships.
@@ -1528,8 +1535,8 @@ jobs:
       - name: ruff, twine and reproducibility of the wheel builder
         run: |
           pip install --quiet ruff==0.17.1 twine==7.0.0
-          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
-          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py scripts/demo_seed.py scripts/test_demo_seed.py
+          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py scripts/demo_seed.py scripts/test_demo_seed.py
           printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
           for n in 1 2; do
             python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \

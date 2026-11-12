@@ -63,10 +63,6 @@ Shared ConfigMap and Secret names.
 {{- printf "%s-secret" (include "flightdeck.fullname" .) -}}
 {{- end -}}
 
-{{- define "flightdeck.migrationsConfigMapName" -}}
-{{- printf "%s-migrations" (include "flightdeck.fullname" .) -}}
-{{- end -}}
-
 {{/*
 In-cluster hostnames.
 */}}
@@ -88,21 +84,116 @@ routes can form).
 {{- end -}}
 
 {{/*
-Replica count of the FLIGHTDECK JetStream stream. Unset, it is 3 when
-the NATS cluster has at least 3 servers and 1 otherwise: 3 replicas keep
-a quorum through the loss of one server, while 2 need both servers for
-a quorum, so they would stop the stream on either server's loss. Set,
-it must be between 1 and 5 (JetStream's maximum), not 2 for that
-reason, and at most nats.replicas, since JetStream places each replica
-on its own server.
+The flightdeck StatefulSet's headless Service, for stable pod DNS.
+*/}}
+{{- define "flightdeck.headlessServiceName" -}}
+{{- printf "%s-flightdeck-headless" (include "flightdeck.fullname" .) -}}
+{{- end -}}
+
+{{/*
+The database the pods use, "postgres" or "sqlite": Postgres when the
+chart runs its own (postgres.enabled) or is given one
+(postgres.externalUrl), otherwise the SQLite file in each pod's data
+volume.
+*/}}
+{{- define "flightdeck.database" -}}
+{{- if or .Values.postgres.externalUrl .Values.postgres.enabled -}}postgres{{- else -}}sqlite{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the chart renders its own Postgres, "true" or "": asked for
+with postgres.enabled, and not replaced by postgres.externalUrl.
+*/}}
+{{- define "flightdeck.postgresBundled" -}}
+{{- if and .Values.postgres.enabled (not .Values.postgres.externalUrl) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the chart runs more than one flightdeck pod: replicas above 1,
+or the HPA, which may scale above 1.
+*/}}
+{{- define "flightdeck.multiReplica" -}}
+{{- if or (gt (int .Values.flightdeck.replicas) 1) .Values.flightdeck.hpa.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+The most flightdeck pods the chart may run: the HPA's maximum when it
+is on, the replica count otherwise.
+*/}}
+{{- define "flightdeck.maxReplicas" -}}
+{{- $replicas := int .Values.flightdeck.replicas -}}
+{{- if .Values.flightdeck.hpa.enabled -}}
+{{- max $replicas (int .Values.flightdeck.hpa.maxReplicas) -}}
+{{- else -}}
+{{- $replicas -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+What several pods need, checked once (the StatefulSet includes it): a
+database they share. On SQLite every pod has a database file of its
+own, since one process serves a SQLite file, so the Service would
+spread one fleet over several unrelated databases without any error.
+The bus they must share is checked by flightdeck.natsEnabled.
+*/}}
+{{- define "flightdeck.validate" -}}
+{{- if and (include "flightdeck.multiReplica" .) (eq (include "flightdeck.database" .) "sqlite") -}}
+{{- fail "more than one flightdeck pod (flightdeck.replicas above 1, or flightdeck.hpa.enabled) needs a Postgres database: on SQLite every pod would have a database of its own, since one process serves a SQLite file. Set postgres.enabled=true with postgres.password (the chart's Postgres) or postgres.externalUrl=<dsn>, or run one replica" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the chart's NATS cluster is rendered, "true" or "". With
+nats.externalUrl the pods use that server and the chart renders none.
+Otherwise nats.enabled null follows the replica count: several pods
+need one shared bus, one pod uses the binary's embedded server. An
+explicit false with several pods fails the render: each embedded server
+is a bus of its own, so the workers of one pod would never see the
+events another pod ingested.
+*/}}
+{{- define "flightdeck.natsEnabled" -}}
+{{- $multi := include "flightdeck.multiReplica" . -}}
+{{- $set := .Values.nats.enabled -}}
+{{- if .Values.nats.externalUrl -}}
+{{- if and (not (kindIs "invalid" $set)) $set -}}
+{{- fail "nats.enabled=true and nats.externalUrl are both set: the pods use one bus. Leave nats.enabled unset to use the external server, or drop nats.externalUrl to run the chart's NATS cluster" -}}
+{{- end -}}
+{{- else if kindIs "invalid" $set -}}
+{{- $multi -}}
+{{- else if $set -}}
+true
+{{- else if $multi -}}
+{{- fail "nats.enabled=false with more than one flightdeck pod (flightdeck.replicas above 1, or flightdeck.hpa.enabled): several pods need one shared bus, since the embedded NATS of each pod is a bus of its own. Leave nats.enabled unset (the chart then runs its NATS cluster), set nats.externalUrl to a NATS server you run, or run one replica" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the pods share a NATS outside their own process, "true" or "":
+the chart's cluster or nats.externalUrl. Empty means each pod's
+embedded bus.
+*/}}
+{{- define "flightdeck.natsShared" -}}
+{{- if or (include "flightdeck.natsEnabled" .) .Values.nats.externalUrl -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Replica count of the FLIGHTDECK JetStream stream. Unset, it is 3 on the
+chart's NATS cluster of at least 3 servers and 1 everywhere else: 3
+replicas keep a quorum through the loss of one server, while 2 need
+both servers for a quorum, so they would stop the stream on either
+server's loss. Set, it must be between 1 and 5 (JetStream's maximum)
+and not 2 for that reason; at most nats.replicas on the chart's
+cluster, since JetStream places each replica on its own server; and 1
+on the embedded bus, which is one server.
 */}}
 {{- define "flightdeck.natsStreamReplicas" -}}
+{{- $cluster := include "flightdeck.natsEnabled" . -}}
 {{- $servers := int .Values.nats.replicas -}}
 {{- $set := .Values.nats.jetstream.stream.replicas -}}
 {{- $replicas := 1 -}}
 {{- if not (kindIs "invalid" $set) -}}
 {{- $replicas = int $set -}}
-{{- else if ge $servers 3 -}}
+{{- else if and $cluster (ge $servers 3) -}}
 {{- $replicas = 3 -}}
 {{- end -}}
 {{- if or (lt $replicas 1) (gt $replicas 5) -}}
@@ -111,16 +202,19 @@ on its own server.
 {{- if eq $replicas 2 -}}
 {{- fail "nats.jetstream.stream.replicas must not be 2: two replicas need both servers for a quorum, so losing either one stops the stream; use 1 or 3" -}}
 {{- end -}}
-{{- if gt $replicas $servers -}}
+{{- if and $cluster (gt $replicas $servers) -}}
 {{- fail (printf "nats.jetstream.stream.replicas (%d) must not exceed nats.replicas (%d): JetStream places each stream replica on its own server" $replicas $servers) -}}
+{{- end -}}
+{{- if and (not (include "flightdeck.natsShared" .)) (gt $replicas 1) -}}
+{{- fail (printf "nats.jetstream.stream.replicas is %d, but the pod uses its embedded bus, which is one server: leave it unset, or run the chart's NATS cluster (nats.enabled=true)" $replicas) -}}
 {{- end -}}
 {{- $replicas -}}
 {{- end -}}
 
 {{/*
 The FLIGHTDECK stream's age and size limits, validated so a bad value
-fails the render instead of the ingestion pods' startup (which refuses
-the same values).
+fails the render instead of the pods' startup (which refuses the same
+values).
 */}}
 {{- define "flightdeck.natsStreamMaxAgeHours" -}}
 {{- $hours := int .Values.nats.jetstream.stream.maxAgeHours -}}
@@ -135,20 +229,27 @@ the same values).
 {{- if lt $mib 64 -}}
 {{- fail (printf "nats.jetstream.stream.maxSizeMiB must be at least 64, got %d" $mib) -}}
 {{- end -}}
-{{- $volume := include "flightdeck.natsFileStoreMiB" . -}}
+{{- if include "flightdeck.natsEnabled" . -}}
+{{- $volume := include "flightdeck.sizeMiB" .Values.nats.jetstream.fileStore.size -}}
 {{- if and $volume (gt (mul $mib 4) (mul (int $volume) 3)) -}}
 {{- fail (printf "nats.jetstream.stream.maxSizeMiB (%d) must be at most 75%% of nats.jetstream.fileStore.size (%s, %s MiB): a NATS server reserves at most 75%% of its volume's free space, so it would refuse the stream" $mib .Values.nats.jetstream.fileStore.size $volume) -}}
+{{- end -}}
+{{- else if not .Values.nats.externalUrl -}}
+{{- $volume := include "flightdeck.sizeMiB" .Values.flightdeck.data.size -}}
+{{- if and $volume (gt (mul $mib 4) (mul (int $volume) 3)) -}}
+{{- fail (printf "nats.jetstream.stream.maxSizeMiB (%d) must be at most 75%% of flightdeck.data.size (%s, %s MiB): the embedded bus keeps its store on the pod's data volume, beside the SQLite database and the secrets" $mib .Values.flightdeck.data.size $volume) -}}
+{{- end -}}
 {{- end -}}
 {{- $mib -}}
 {{- end -}}
 
 {{/*
-nats.jetstream.fileStore.size in MiB, for the size check above. Only
-the plain forms are read (Ki, Mi, Gi, Ti and K, M, G, T, with an
-integer); anything else renders empty and skips the check.
+A Kubernetes quantity in MiB, for the size checks above. Only the plain
+forms are read (Ki, Mi, Gi, Ti and K, M, G, T, with an integer);
+anything else renders empty and skips the check.
 */}}
-{{- define "flightdeck.natsFileStoreMiB" -}}
-{{- $size := toString .Values.nats.jetstream.fileStore.size -}}
+{{- define "flightdeck.sizeMiB" -}}
+{{- $size := toString . -}}
 {{- if regexMatch "^[0-9]+(Ki|Mi|Gi|Ti|K|M|G|T)$" $size -}}
 {{- $n := int64 (regexFind "^[0-9]+" $size) -}}
 {{- $unit := trimPrefix (toString $n) $size -}}
@@ -165,19 +266,40 @@ integer); anything else renders empty and skips the check.
 {{- end -}}
 
 {{/*
-Bundled Postgres password. Fails the render when postgres.externalUrl is
-empty AND postgres.password is unset — prior releases silently defaulted
-to the literal "flightdeck", which left every bundled-Postgres install
-sharing one well-known credential. Operators MUST set
-postgres.password (or set postgres.externalUrl to point at a managed DB).
-Single source of truth so the DSN helper and the Secret stay byte-aligned.
+Bundled Postgres password. Fails the render when the chart runs its own
+Postgres and postgres.password is unset: a default every bundled
+install would share is a well-known credential. Single source of truth
+so the DSN helper and the Secret stay byte-aligned.
 */}}
 {{- define "flightdeck.postgresPassword" -}}
-{{- required "postgres.password must be set when postgres.externalUrl is empty. Set --set postgres.password=<strong-password> or supply --set postgres.externalUrl=<dsn>. Defaulting to the literal 'flightdeck' (the pre-v0.5.1 behaviour) is unsafe and has been removed." .Values.postgres.password -}}
+{{- required "postgres.password must be set when postgres.enabled is true. Set --set postgres.password=<strong-password>, or supply --set postgres.externalUrl=<dsn> for a Postgres outside the chart." .Values.postgres.password -}}
 {{- end -}}
 
 {{/*
-Bundled Postgres DSN. Only used when .Values.postgres.externalUrl is empty.
+max_connections of the bundled Postgres. One flightdeck process opens
+at most 80 connections (a pool per service inside it, its LISTEN
+connections and the start-up check), so the server needs 80 for every
+pod the chart may run, and 20 more for what else connects: the 3
+Postgres keeps for superusers, a psql session, a backup. That is 100
+for one pod, Postgres's own default. A postgres.maxConnections set
+below it fails the render, since the pods would be refused connections
+under load rather than at install.
+*/}}
+{{- define "flightdeck.postgresMaxConnections" -}}
+{{- $pods := max 1 (int (include "flightdeck.maxReplicas" .)) -}}
+{{- $needed := add (mul 80 $pods) 20 -}}
+{{- $set := .Values.postgres.maxConnections -}}
+{{- if kindIs "invalid" $set -}}
+{{- $needed -}}
+{{- else if lt (int $set) (int $needed) -}}
+{{- fail (printf "postgres.maxConnections (%d) is below the %d the chart's flightdeck pods need: each pod opens at most 80 connections, the chart may run %d, and 20 are left for everything else. Raise it, leave it unset, or put a connection pooler in front and use postgres.externalUrl" (int $set) (int $needed) $pods) -}}
+{{- else -}}
+{{- int $set -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Bundled Postgres DSN. Only used when the chart runs its own Postgres.
 */}}
 {{- define "flightdeck.bundledPostgresURL" -}}
 {{- $pw := include "flightdeck.postgresPassword" . -}}
@@ -197,8 +319,9 @@ turned any literal "+" into "%2B").
 {{- end -}}
 
 {{/*
-Postgres DSN used by every server component. Resolves to externalUrl when
-set; otherwise to the bundled in-cluster service.
+Postgres DSN the pods read (FLIGHTDECK_DATABASE_URL) when the database
+is Postgres. Resolves to externalUrl when set; otherwise to the bundled
+in-cluster service.
 */}}
 {{- define "flightdeck.postgresURL" -}}
 {{- if .Values.postgres.externalUrl -}}
@@ -209,38 +332,40 @@ set; otherwise to the bundled in-cluster service.
 {{- end -}}
 
 {{/*
-NATS URL -- always the bundled in-cluster client Service. A token goes
-in the user slot (nats://<token>@host): nats.go sends a lone user as the
-auth token, while nats://:<token>@host sends an empty user and a
-password, which a token-protected server rejects.
+NATS URL the pods read (FLIGHTDECK_NATS_URL, the binary's --nats-url):
+nats.externalUrl as given, or the bundled cluster's client Service.
+There the token goes in the user slot (nats://<token>@host): nats.go
+sends a lone user as the auth token, while nats://:<token>@host sends
+an empty user and a password, which a token-protected server rejects.
 */}}
 {{- define "flightdeck.natsURL" -}}
-{{- if .Values.nats.auth.token -}}
-{{- printf "nats://%s@%s:%d" .Values.nats.auth.token (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
+{{- if .Values.nats.externalUrl -}}
+{{- .Values.nats.externalUrl -}}
 {{- else -}}
-{{- printf "nats://%s:%d" (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
+{{- printf "nats://%s@%s:%d" (include "flightdeck.natsToken" .) (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-Validated NATS token. The token is written into URLs unencoded (the
-client URL and the cluster route URLs, the latter expanded from an env
-var by the kubelet), so it is limited to URL-unreserved characters.
+Validated NATS token, required whenever the cluster is rendered. The
+token is written into URLs unencoded (the client URL and the cluster
+route URLs, the latter expanded from an env var by the kubelet), so it
+is limited to URL-unreserved characters.
 */}}
 {{- define "flightdeck.natsToken" -}}
-{{- $token := .Values.nats.auth.token -}}
-{{- if and $token (not (regexMatch "^[A-Za-z0-9._~-]+$" $token)) -}}
+{{- $token := required "nats.auth.token must be set when the NATS cluster is rendered (more than one flightdeck replica, the HPA, or nats.enabled=true): an unauthenticated event bus lets any pod that can reach it forge events or drain the queue. Set --set nats.auth.token=<strong-random-token> (openssl rand -hex 32)." .Values.nats.auth.token -}}
+{{- if not (regexMatch "^[A-Za-z0-9._~-]+$" $token) -}}
 {{- fail "nats.auth.token may contain only letters, digits and . _ ~ - (it is placed in NATS URLs); generate one with: openssl rand -hex 32" -}}
 {{- end -}}
 {{- $token -}}
 {{- end -}}
 
 {{/*
-Userinfo the cluster routes authenticate with when a token is set. The
-password is the NATS_TOKEN env var, expanded by the kubelet in args.
+Userinfo the cluster routes authenticate with. The password is the
+NATS_TOKEN env var, expanded by the kubelet in args.
 */}}
 {{- define "flightdeck.natsRouteAuth" -}}
-{{- if .Values.nats.auth.token -}}route:$(NATS_TOKEN)@{{- end -}}
+route:$(NATS_TOKEN)@
 {{- end -}}
 
 {{/*
@@ -260,18 +385,13 @@ Service: <statefulset>-<ordinal>.<service>.
 {{- end -}}
 
 {{/*
-Fully-qualified image reference per component. Usage:
-  image: {{ include "flightdeck.image" (dict "root" . "component" .Values.ingestion) }}
+The flightdeck image reference.
 */}}
 {{- define "flightdeck.image" -}}
-{{- $registry := .root.Values.image.registry -}}
-{{- $repoBase := .root.Values.image.repository -}}
-{{- $repo := .component.image.repository -}}
-{{- $tag := .component.image.tag | default .root.Values.image.tag -}}
-{{- if $registry -}}
-{{- printf "%s/%s/%s:%s" $registry $repoBase $repo $tag -}}
+{{- if .Values.image.registry -}}
+{{- printf "%s/%s:%s" .Values.image.registry .Values.image.repository .Values.image.tag -}}
 {{- else -}}
-{{- printf "%s/%s:%s" $repoBase $repo $tag -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- end -}}
 {{- end -}}
 

@@ -1,4 +1,4 @@
-{{- if not .Values.postgres.externalUrl -}}
+{{- if include "flightdeck.postgresBundled" . -}}
 {{- $component := "postgres" -}}
 apiVersion: v1
 kind: Service

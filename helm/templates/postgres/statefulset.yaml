@@ -1,9 +1,10 @@
 {{- /*
-Bundled Postgres StatefulSet. Suppressed entirely when postgres.externalUrl
-is set -- operators are expected to point at a managed database in that case.
-See values.yaml for the rationale: the chart does not ship HA or backups.
+Bundled Postgres StatefulSet, rendered with postgres.enabled and
+suppressed when postgres.externalUrl is set: operators are expected to
+point at a managed database in that case. See values.yaml for the
+rationale: the chart does not ship HA or backups.
 */ -}}
-{{- if not .Values.postgres.externalUrl -}}
+{{- if include "flightdeck.postgresBundled" . -}}
 {{- $component := "postgres" -}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -43,6 +44,12 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # The official image passes arguments that start with "-" to
+          # the server. The value is 80 connections for every flightdeck
+          # pod the chart may run, plus 20 (see the helper).
+          args:
+            - "-c"
+            - "max_connections={{ include "flightdeck.postgresMaxConnections" . }}"
           ports:
             - name: postgres
               containerPort: {{ .Values.postgres.port }}

@@ -131,7 +131,8 @@ async function ensureLongRun(baseURL: string, python: string, repoRoot: string):
   }
   throw new Error(
     `globalSetup: the long-run fixture was not stored within ${LONG_RUN_STORED_TIMEOUT_MS / 1000}s ` +
-      `(${stored} of ${LONG_RUN_FIXTURE.calls + 1} events). Is the worker consuming?`,
+      `(${stored} of its events are stored, more than ${LONG_RUN_FIXTURE.calls} are expected). ` +
+      `Is the worker consuming?`,
   );
 }
 

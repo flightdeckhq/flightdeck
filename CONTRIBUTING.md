@@ -357,16 +357,17 @@ be counted.
 
 When a README change goes over, the detail moves to the page that owns
 it and the README links there; nothing a user needs leaves the
-repository:
+repository. The pages are in `guides/`, not `docs/`: `docs/` is the
+website's root, and GitHub Pages serves every file in it.
 
 | Content | Where |
 |---|---|
 | Contributor steps: a clone, `make dev`, per-component commands, the playground | this file |
-| Every intercepted method, the framework matrices, client types, what is not planned | `docs/coverage.md` |
-| Each dashboard page and control in full | `docs/features.md` |
-| Claude Code and the agent frameworks over OpenTelemetry | `docs/opentelemetry.md` |
-| The MCP Protection Policy | `docs/mcp-protection-policy.md` |
-| Compose, Helm, the chart's values, upgrade notes, backups | `docs/self-hosting.md` |
+| Every intercepted method, the framework matrices, client types, what is not planned | `guides/coverage.md` |
+| Each dashboard page and control in full | `guides/features.md` |
+| Claude Code and the agent frameworks over OpenTelemetry | `guides/opentelemetry.md` |
+| The MCP Protection Policy | `guides/mcp-protection-policy.md` |
+| Compose, Helm, the chart's values, upgrade notes, backups | `guides/self-hosting.md` |
 | The sensor: identity, `patch()` and `wrap()`, environment variables, limitations | `sensor/README.md` (also the PyPI page: no relative images there) |
 | The plugin: options, headless and CI runs, enforcement, privacy | `plugin/README.md` |
 

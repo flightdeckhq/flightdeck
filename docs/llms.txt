@@ -9,11 +9,11 @@ Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), no
 ## Docs
 
 - [README](https://github.com/flightdeckhq/flightdeck/blob/main/README.md): install, connecting agents, what you get, coverage in short, self-hosting in short
-- [Coverage](https://github.com/flightdeckhq/flightdeck/blob/main/docs/coverage.md): every intercepted LLM SDK method, the framework matrices, coding agents, sub-agents, MCP, what is not planned
-- [Features](https://github.com/flightdeckhq/flightdeck/blob/main/docs/features.md): each dashboard page and control in full
-- [Self-hosting](https://github.com/flightdeckhq/flightdeck/blob/main/docs/self-hosting.md): Docker Compose, the Helm chart and its values, upgrade notes, backups
-- [OpenTelemetry into Flightdeck](https://github.com/flightdeckhq/flightdeck/blob/main/docs/opentelemetry.md): Claude Code's own telemetry and the agent frameworks' GenAI spans
-- [MCP Protection Policy](https://github.com/flightdeckhq/flightdeck/blob/main/docs/mcp-protection-policy.md): scopes, resolution, configuration and enforcement
+- [Coverage](https://github.com/flightdeckhq/flightdeck/blob/main/guides/coverage.md): every intercepted LLM SDK method, the framework matrices, coding agents, sub-agents, MCP, what is not planned
+- [Features](https://github.com/flightdeckhq/flightdeck/blob/main/guides/features.md): each dashboard page and control in full
+- [Self-hosting](https://github.com/flightdeckhq/flightdeck/blob/main/guides/self-hosting.md): Docker Compose, the Helm chart and its values, upgrade notes, backups
+- [OpenTelemetry into Flightdeck](https://github.com/flightdeckhq/flightdeck/blob/main/guides/opentelemetry.md): Claude Code's own telemetry and the agent frameworks' GenAI spans
+- [MCP Protection Policy](https://github.com/flightdeckhq/flightdeck/blob/main/guides/mcp-protection-policy.md): scopes, resolution, configuration and enforcement
 - [Architecture](https://github.com/flightdeckhq/flightdeck/blob/main/ARCHITECTURE.md): components, event types and payloads, APIs, analytics, content capture
 - [Claude Code plugin](https://github.com/flightdeckhq/flightdeck/blob/main/plugin/README.md): what the plugin reports for each hook, configuration, privacy
 - [Python sensor](https://github.com/flightdeckhq/flightdeck/blob/main/sensor/README.md): the `flightdeck-sensor` package, identity, `patch()` vs `wrap()`, environment variables, limitations

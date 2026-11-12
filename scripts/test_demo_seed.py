@@ -151,6 +151,38 @@ class TestArguments(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("real data", out.getvalue())
 
+    def test_a_server_on_another_machine_is_refused(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out), self.assertRaises(SystemExit) as raised:
+            demo_seed.main(["--server", "https://flightdeck.example.com"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("not on this machine", out.getvalue())
+
+    def test_which_servers_are_refused(self) -> None:
+        refusal = demo_seed.refusal
+        for server in (
+            "http://127.0.0.1:4610",
+            "http://localhost:4610",
+            "http://[::1]:4610",
+            "http://127.0.0.2:4610",
+            "http://LOCALHOST:4610",
+        ):
+            self.assertIsNone(refusal(server, False, False), server)
+        for server in (
+            "https://flightdeck.example.com",
+            "http://10.0.0.5:4610",
+            "http://localhost.example.com:4610",
+            "http://127.example.com:4610",
+            "http://example.com:4610/?x=localhost",
+        ):
+            self.assertIn("not on this machine", refusal(server, False, False) or "", server)
+            self.assertIsNone(refusal(server, False, True), server)
+        # Each flag lifts its own refusal only.
+        self.assertIn("port 4000", refusal("http://localhost:4000", False, True) or "")
+        self.assertIn("not on this machine", refusal("http://10.0.0.5:4000", True, False) or "")
+        self.assertIn("port 4000", refusal("http://10.0.0.5:4000", False, True) or "")
+        self.assertIsNone(refusal("http://10.0.0.5:4000", True, True))
+
     def test_a_server_must_be_named(self) -> None:
         # No default and no environment variable: the seed never picks a
         # Flightdeck on its own.
@@ -255,6 +287,12 @@ class TestLive(unittest.TestCase):
         _, live, output = run_seed("--no-history", "--live", "2")
         self.assertGreater(len(live.events), len(quiet.events))
         self.assertIn("live:", output)
+        # The researcher's denied call recurs from the first round on.
+        blocks = [
+            e for e in live.events[len(quiet.events) :] if e["event_type"] == "policy_mcp_block"
+        ]
+        self.assertGreaterEqual(len(blocks), 1)
+        self.assertEqual({e["agent_role"] for e in blocks}, {"Researcher"})
         # Only the open runs emit, and none of them is ended.
         extra = live.events[len(quiet.events) :]
         ended = {e["session_id"] for e in live.events if e["event_type"] == "session_end"}

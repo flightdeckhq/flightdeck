@@ -14,10 +14,12 @@
 # Two more things the served copies depend on:
 #   - docs/.nojekyll exists, so Pages publishes docs/ as the files it
 #     holds, with no Jekyll build between the repository and the site.
-#   - Both installers are ASCII. Pages sends a .ps1 without a charset,
-#     and Windows PowerShell 5.1 then decodes the response as
-#     ISO-8859-1: a non-ASCII byte would reach `iex` as other
-#     characters than the ones in the file.
+#   - Both installers are ASCII. Pages sends a .ps1 as
+#     application/octet-stream with no charset. `irm` still returns it
+#     as a string, which is why `irm ... | iex` works, but Windows
+#     PowerShell 5.1 decodes that string as ISO-8859-1: a non-ASCII
+#     byte would reach `iex` as other characters than the ones in the
+#     file.
 #
 # Usage: scripts/check-installer-copies.sh           check (CI runs it in
 #                                                    the marketplace-schema

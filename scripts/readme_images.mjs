@@ -3,7 +3,10 @@
 // scripts/demo_seed.py filled with invented agents. Never point it at a
 // Flightdeck with real data: what it photographs is published.
 //
-// The whole procedure, from the repository root:
+// To regenerate the images, in short: start the binary on a temp data
+// dir, seed it with --live, run this script a minute later, then make
+// the GIF and shrink the stills. The steps in full, from the
+// repository root:
 //
 //   1. Build the binary with the dashboard in it:   make build-flightdeck
 //   2. Start it on an empty data dir, on a port of its own:
@@ -31,7 +34,8 @@
 //   fleet-{light,dark}.png          the fleet view, the README's hero
 //   tile-timeline-{light,dark}.png  a detail of the fleet timeline
 //   tile-agents-{light,dark}.png    the agents table, tokens to cost
-//   tile-policies-{light,dark}.png  the MCP rules of one agent
+//   tile-control-{light,dark}.png   a run's drawer: a blocked MCP call
+//                                   in its timeline and the Stop control
 // and, with --video, <dir>/fleet.webm: the fleet view in the dark theme,
 // loading and then twelve seconds of events arriving.
 //
@@ -76,10 +80,21 @@ const TILE_WIDTH = 1100;
 const TIMELINE_ORIGIN = { x: 240, y: 128 };
 const TIMELINE_VIEWPORT = { width: TIMELINE_ORIGIN.x + TILE_WIDTH, height: VIEWPORT.height };
 
-// The policies page laid out at the tile's own width, so no column is
-// cut; its content starts below the navigation bar.
-const POLICIES_ORIGIN = { x: 0, y: 52 };
-const POLICIES_VIEWPORT = { width: TILE_WIDTH, height: VIEWPORT.height };
+// The run drawer over the events page, laid out at the tile's own
+// width so the tile is the top of the page with nothing cut at its
+// sides. The drawer is the researcher's open run, whose flavor denies
+// one MCP server; the seed's --live repeats that blocked call.
+const CONTROL_VIEWPORT = { width: TILE_WIDTH, height: VIEWPORT.height };
+const CONTROL_ROLE = 'Researcher';
+const CONTROL_DRAWER = '[data-testid="session-drawer"]';
+const CONTROL_BLOCK_LABEL = 'MCP POLICY BLOCK';
+const CONTROL_STOP_LABEL = 'Stop Agent';
+
+// How long to wait for a blocked call to be among the rows of the
+// drawer's timeline that the tile shows. The seed emits one every 21
+// seconds and newer events push it down, so two periods are enough.
+const CONTROL_WAIT_MS = 45000;
+const CONTROL_POLL_MS = 1000;
 
 // The agents table needs this much width to show its cost column,
 // which is where its tile ends.
@@ -139,6 +154,19 @@ if (active === 0) {
   fail('no agent is active: run scripts/demo_seed.py with --live so the fleet view has events arriving');
 }
 
+// The open run whose drawer the control tile shows.
+const sessionsResponse = await fetch(`${server}/api/v1/sessions?limit=100`, {
+  headers: { Authorization: `Bearer ${DEV_TOKEN}` },
+});
+if (!sessionsResponse.ok) fail(`${server}/api/v1/sessions answered ${sessionsResponse.status}`);
+const controlSession = (await sessionsResponse.json()).sessions.find(
+  (session) => session.state === 'active' && session.agent_role === CONTROL_ROLE,
+);
+if (!controlSession) {
+  fail(`no open run of the ${CONTROL_ROLE} sub-agent: run scripts/demo_seed.py with --live`);
+}
+const controlRun = controlSession.session_id;
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const dashboardDir = path.resolve(args.dashboard ?? path.join(scriptDir, '..', 'dashboard'));
 const require = createRequire(path.join(dashboardDir, 'package.json'));
@@ -191,19 +219,26 @@ for (const theme of THEMES) {
     clip: tileClip(TIMELINE_ORIGIN.x, TIMELINE_ORIGIN.y),
   });
 
-  // The MCP rules of the research assistant: an allowed server and a
-  // denied one.
-  await page.setViewportSize(POLICIES_VIEWPORT);
-  await settle(page, '/policies');
-  await page.getByText('MCP Protection', { exact: true }).click();
-  await page.getByText('Global', { exact: true }).first().click();
-  await page.getByText('research-assistant', { exact: true }).first().click();
-  await page.getByText('scratch-fs', { exact: true }).first().waitFor();
-  await page.waitForTimeout(SETTLE_MS);
-  await page.screenshot({
-    path: path.join(outDir, `tile-policies-${theme}.png`),
-    clip: tileClip(POLICIES_ORIGIN.x, POLICIES_ORIGIN.y),
-  });
+  // The control tile: the drawer of the researcher's open run, with
+  // the Stop control in its header and a blocked MCP call in the part
+  // of its timeline the tile shows. The page is reloaded until a
+  // blocked call is that near the top.
+  await page.setViewportSize(CONTROL_VIEWPORT);
+  const controlClip = tileClip(0, 0);
+  const deadline = Date.now() + CONTROL_WAIT_MS;
+  let blockShown = false;
+  while (!blockShown && Date.now() < deadline) {
+    await page.goto(`${server}/events?run=${controlRun}`, { waitUntil: 'networkidle' });
+    const drawer = page.locator(CONTROL_DRAWER);
+    await drawer.getByRole('button', { name: CONTROL_STOP_LABEL }).waitFor();
+    await page.waitForTimeout(CONTROL_POLL_MS);
+    const block = await drawer.getByText(CONTROL_BLOCK_LABEL, { exact: true }).first().boundingBox().catch(() => null);
+    blockShown = block !== null && block.y + block.height <= controlClip.height - 8;
+  }
+  if (!blockShown) {
+    fail('no blocked MCP call near the top of the run drawer: is scripts/demo_seed.py still running with --live?');
+  }
+  await page.screenshot({ path: path.join(outDir, `tile-control-${theme}.png`), clip: controlClip });
 
   // The agents table, from its first column to the end of the cost
   // column.

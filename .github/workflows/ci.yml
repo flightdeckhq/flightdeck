@@ -1464,7 +1464,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Every file that carries the release version (sensor, plugin,
-      # marketplace pin, Helm chart and image tag, docs/self-hosting.md,
+      # marketplace pin, Helm chart and image tag, guides/self-hosting.md,
       # Swagger) must
       # match the root VERSION file; scripts/version.py lists them.
       - name: Version locations match VERSION
@@ -1481,6 +1481,11 @@ jobs:
       # requires and no content, and name only invented hosts and users.
       - name: Demo seed script
         run: python3 -m unittest scripts/test_demo_seed.py
+
+      # The script that photographs the seeded instance needs a browser
+      # and a running flightdeck, so CI only checks that it parses.
+      - name: README image script parses
+        run: node --check scripts/readme_images.mjs
 
       # The release notes come from CHANGELOG.md; the installers and the
       # install gate's checks are shell the release depends on. The

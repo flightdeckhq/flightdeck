@@ -375,12 +375,26 @@ jobs:
       # https://flightdeck-hq.com/install.ps1 | iex`), which GitHub Pages
       # serves from docs/ of main. The step below runs the tag's own
       # script, so the site must serve the same text: `irm` must hand
-      # back a string (Pages sends a .ps1 with no text content type) and
+      # back a string (Pages sends a .ps1 as application/octet-stream) and
       # it must equal the tag's file, line endings aside (the checkout
       # may convert them). A mismatch means main's installer moved on
       # from this tag or Pages has not deployed yet.
       - name: The site serves this tag's install.ps1
         shell: pwsh
+        run: |
+          $site = irm https://flightdeck-hq.com/install.ps1
+          if ($site -isnot [string]) { throw "irm returned $($site.GetType().FullName), not a string: iex could not run it" }
+          $tagged = Get-Content -Raw install.ps1
+          if (($site -replace "`r`n", "`n") -cne ($tagged -replace "`r`n", "`n")) { throw 'https://flightdeck-hq.com/install.ps1 differs from install.ps1 of this tag' }
+
+      # The same check under Windows PowerShell 5.1, the shell a Windows
+      # user has without installing anything. Pages serves a .ps1 as
+      # application/octet-stream with no charset; `irm` returns a string
+      # for it in both shells (it is `iwr`'s Content that is a byte
+      # array), and 5.1 decodes it as ISO-8859-1, which is why the
+      # installers are kept ASCII.
+      - name: The site serves this tag's install.ps1 (Windows PowerShell 5.1)
+        shell: powershell
         run: |
           $site = irm https://flightdeck-hq.com/install.ps1
           if ($site -isnot [string]) { throw "irm returned $($site.GetType().FullName), not a string: iex could not run it" }

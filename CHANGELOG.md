@@ -748,11 +748,11 @@ All notable changes to Flightdeck are documented here.
   Connect your agents 4, Self-hosting 6, 20 in all with the channels
   folded in `<details>`, 300 lines). The reference material moved as it
   was, each page linked from where it stood: the coverage matrices and
-  the not-planned list to `docs/coverage.md`, the feature descriptions
-  to `docs/features.md`, Compose, Helm and backups to
-  `docs/self-hosting.md`, the two OpenTelemetry sections to
-  `docs/opentelemetry.md`, the MCP Protection Policy to
-  `docs/mcp-protection-policy.md`, Identity and the Sensor reference to
+  the not-planned list to `guides/coverage.md`, the feature descriptions
+  to `guides/features.md`, Compose, Helm and backups to
+  `guides/self-hosting.md`, the two OpenTelemetry sections to
+  `guides/opentelemetry.md`, the MCP Protection Policy to
+  `guides/mcp-protection-policy.md`, Identity and the Sensor reference to
   `sensor/README.md`. The images are new and show invented agents only
   (`assets/readme/`, made by `scripts/demo_seed.py` and
   `scripts/readme_images.mjs`); the three demo GIFs of May are gone.

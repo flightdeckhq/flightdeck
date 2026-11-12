@@ -9,10 +9,16 @@
 #
 # The install block: a second line, a chained command, a comment, a
 # prompt and a second visible install block each fail; so does an
-# install section whose only block is folded. The channels folded in a
-# <details> under the block do not break the install budget and do
-# count toward the total; <details open> is not folded; a <details>
-# left open is an error.
+# install section whose only block is folded. The one other command
+# the section may show is `flightdeck`, with or without flags: a
+# second way to install in its place (brew under bash, irm under
+# powershell) fails. The channels folded in a <details> under the
+# block do not break the install budget and do count toward the total.
+# Folded is what GitHub renders folded: <details open> in any
+# spelling, tags inside an HTML comment, an element closed before the
+# fence, an escaped tag and a tag in an indented code block fold
+# nothing; an empty summary and a collapsed element inside an open one
+# do. A <details> left open is an error.
 #
 # The counting rule, one fixture per clause of the script's header:
 # every fence counts unless its language is a sample (powershell, zsh,
@@ -487,6 +493,304 @@ FIXTURE
 expect 1 "an install command folded in <details> fails" "$work/install-hidden.md"
 expect_output 'OVER BUDGET: Install has no command block outside <details>' "the failure says the block must be visible"
 expect_output 'Install block +none' "and the summary shows no install block"
+
+# ---------------------------------------------------------------------
+# The one other visible command: the run command.
+# ---------------------------------------------------------------------
+
+# Two visible commands, within the count, and the second is another
+# way to install: the count alone would let it through.
+install_readme "$work/install-brew-second.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+On macOS:
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect 1 "a second way to install in place of the run command fails" "$work/install-brew-second.md"
+expect_output 'OVER BUDGET: Install shows a command that is neither the install command nor "flightdeck" \(line 12: brew install example/tap/flightdeck\)' "the failure names the line and the command"
+expect_output 'Install, visible +2 \(budget' "the visible count alone is within budget"
+expect_output 'Install, other +1 \(exactly 0' "the summary counts the stray command"
+
+install_readme "$work/install-irm-second.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+FIXTURE
+expect 1 "a powershell install command in place of the run command fails" "$work/install-irm-second.md"
+expect_output 'neither the install command nor "flightdeck" \(line 12: irm https://example.invalid/install.ps1 \| iex\)' "the failure names the powershell command"
+
+# The run command first and the install command second is the same
+# mistake in the other order: the block is then `flightdeck` and the
+# stray command is the install.
+install_readme "$work/install-run-first.md" <<'FIXTURE'
+```bash
+flightdeck
+```
+
+```bash
+pipx install example-cli
+```
+FIXTURE
+expect 1 "an install command after the run command fails" "$work/install-run-first.md"
+expect_output 'neither the install command nor "flightdeck" \(line 10: pipx install example-cli\)' "the failure names it"
+
+# What the run command may look like: flags, a trailing comment, the
+# Windows name under a powershell fence.
+for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck   # then open the URL it prints' 'flightdeck -data-dir /srv/flightdeck --metrics'; do
+  install_readme "$work/install-run-ok.md" <<FIXTURE
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+\`\`\`bash
+$run
+\`\`\`
+FIXTURE
+  expect 0 "the run command may be written: $run" "$work/install-run-ok.md"
+  expect_output 'Install, other +0 \(exactly 0' "and nothing else is counted beside the install block"
+done
+
+install_readme "$work/install-run-exe.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```powershell
+flightdeck.exe --listen 127.0.0.1:4100
+```
+FIXTURE
+expect 0 "flightdeck.exe under a powershell fence is the run command" "$work/install-run-exe.md"
+
+# What it may not: a command chained onto it (after flags as well,
+# where the chained command would otherwise read as their values), a
+# word that is not a flag, a path, another binary whose name starts
+# the same.
+for run in 'flightdeck && brew install example/tap/flightdeck' 'flightdeck --metrics; brew install example/tap/flightdeck' 'flightdeck --metrics && pipx install example-cli' 'flightdeck install' './flightdeck' 'flightdeck-cli' 'sudo flightdeck'; do
+  install_readme "$work/install-run-bad.md" <<FIXTURE
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+\`\`\`bash
+$run
+\`\`\`
+FIXTURE
+  expect 1 "the run command may not be written: $run" "$work/install-run-bad.md"
+  expect_output 'neither the install command nor "flightdeck" \(line 10: ' "and the failure names line 10"
+done
+
+# ---------------------------------------------------------------------
+# Folded is what GitHub renders folded.
+# ---------------------------------------------------------------------
+
+# folded_case <rc> <description>: an Install section with the install
+# block, the run command and the lines read on stdin. rc 0 means the
+# commands in those lines were folded away; rc 1 that they were
+# visible, which takes the section over its budget of two.
+folded_case() {
+  local want="$1" what="$2"
+  {
+    cat <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+
+FIXTURE
+    cat
+  } | install_readme "$work/folded-case.md"
+  expect "$want" "$what" "$work/folded-case.md"
+}
+
+# Tags inside an HTML comment are not tags: GitHub renders the fence
+# unfolded.
+folded_case 1 "a <details> inside HTML comments folds nothing" <<'FIXTURE'
+<!-- <details> -->
+
+```bash
+brew install example/tap/flightdeck
+```
+
+<!-- </details> -->
+FIXTURE
+expect_output 'OVER BUDGET: Install shows 3 commands outside <details>, budget 2' "its command is counted as visible"
+expect_output '^ +3 +0 +Install$' "and not as folded"
+
+folded_case 1 "a <details> inside a comment that spans lines folds nothing" <<'FIXTURE'
+<!--
+<details>
+<summary>Homebrew</summary>
+-->
+
+```bash
+brew install example/tap/flightdeck
+```
+
+<!--
+</details>
+-->
+FIXTURE
+expect_output '^ +3 +0 +Install$' "its command is visible"
+
+# A comment beside a real tag does not hide the tag.
+folded_case 0 "a comment beside a real <details> leaves it folded" <<'FIXTURE'
+<details> <!-- the other channels -->
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details> <!-- end -->
+FIXTURE
+expect_output '^ +3 +1 +Install$' "its command is folded"
+
+# An element closed before the fence does not contain it.
+folded_case 1 "a <details> closed on its own line does not fold the fence after it" <<'FIXTURE'
+<details><summary>Homebrew</summary></details>
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect_output '^ +3 +0 +Install$' "its command is visible"
+
+folded_case 1 "a <details> closed on the next line does not fold the fence after it" <<'FIXTURE'
+<details>
+<summary>Homebrew</summary>
+</details>
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect_output '^ +3 +0 +Install$' "its command is visible"
+
+# An empty summary, and no summary at all, still render collapsed.
+folded_case 0 "a <details> with an empty summary is folded" <<'FIXTURE'
+<details><summary></summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +3 +1 +Install$' "its command is folded"
+
+folded_case 0 "a <details> with no summary is folded" <<'FIXTURE'
+<details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +3 +1 +Install$' "its command is folded"
+
+# Every spelling of the open attribute renders unfolded.
+for tag in '<details open="">' '<details OPEN>' '<DETAILS Open="open">' '<details name="channels" open>' '<details open=false>'; do
+  folded_case 1 "$tag is not folded" <<FIXTURE
+$tag
+<summary>Homebrew</summary>
+
+\`\`\`bash
+brew install example/tap/flightdeck
+\`\`\`
+
+</details>
+FIXTURE
+  expect_output '^ +3 +0 +Install$' "its command is visible"
+done
+
+# An attribute that only contains the word is not the open attribute.
+folded_case 0 '<details name="open-channels"> is folded' <<'FIXTURE'
+<details name="open-channels">
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +3 +1 +Install$' "its command is folded"
+
+# Nesting: a collapsed element inside an open one is folded; the fence
+# after it, still inside the open one, is not.
+folded_case 0 "a collapsed <details> inside an open one is folded" <<'FIXTURE'
+<details open>
+<summary>Other channels</summary>
+<details>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+</details>
+FIXTURE
+expect_output '^ +3 +1 +Install$' "its command is folded"
+
+folded_case 1 "a fence after the inner <details>, inside the open one, is visible" <<'FIXTURE'
+<details open>
+<summary>Other channels</summary>
+<details>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+
+```bash
+pipx install example-cli
+```
+
+</details>
+FIXTURE
+expect_output '^ +4 +1 +Install$' "one command folded, one visible"
+
+# A tag that is text, not markup: escaped, or in an indented code
+# block.
+folded_case 1 "an escaped \\<details> folds nothing" <<'FIXTURE'
+\<details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+\</details>
+FIXTURE
+expect_output '^ +3 +0 +Install$' "its command is visible"
+
+folded_case 1 "a <details> in an indented code block folds nothing" <<'FIXTURE'
+    <details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+    </details>
+FIXTURE
+expect_output '^ +3 +0 +Install$' "its command is visible"
 
 # A <details> left open would fold everything after it. Refused, in
 # report mode as well; the tag is on line 4 of the fixture.

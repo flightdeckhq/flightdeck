@@ -65,11 +65,47 @@ sensor (`sensor/pyproject.toml`), the plugin (`plugin/package.json`,
 `plugin/.claude-plugin/plugin.json`), the marketplace entry (`version` and
 `source.ref` in `.claude-plugin/marketplace.json`), the Helm chart
 (`version`, `appVersion` and the default `image.tag`), the Helm section
-of `docs/self-hosting.md` and the two services' Swagger version. CI fails if any of them
+of `guides/self-hosting.md` and the two services' Swagger version. CI fails if any of them
 differs from `VERSION` (`make version-check`).
 
 `main` is protected, so a release is two steps: the version bump goes
 through a pull request, and only the tag is pushed directly.
+
+### Before the first release that ships the binary
+
+The README on `main` tells a new user to run
+`curl -fsSL https://flightdeck-hq.com/install.sh | sh`. That works only
+when everything below holds (v0.8.0 and earlier have no assets), so each
+line is a gate, in this order, before the first tag whose release
+carries the binary:
+
+- [ ] **#303 and #313 are merged** (Compose and the Helm chart on the
+  one image). The README and `guides/self-hosting.md` link
+  `docker/docker-compose.postgres.yml` and describe the chart, both of
+  which exist only after them.
+- [ ] **The README with the one command (#314) is merged, after them.**
+  From that merge until the release is out, `main`'s README and the
+  site show a command that does not work yet, so merge it when the
+  release is next.
+- [ ] **Pages has deployed and serves this `main`'s installers.** Both
+  must answer 200 with the bytes of the files about to be tagged:
+
+  ```bash
+  curl -fsSI https://flightdeck-hq.com/install.sh
+  curl -fsSL https://flightdeck-hq.com/install.sh | cmp - install.sh
+  curl -fsSL https://flightdeck-hq.com/install.ps1 | cmp - install.ps1
+  ```
+
+  The install gate repeats the comparison against the tag's scripts and
+  goes red when the site serves anything else.
+- [ ] **The release has its assets**, which are what the installer
+  downloads: the six archives, `checksums.txt` and its Sigstore bundle.
+  The dry run below shows them before the real tag; after the tag,
+  `gh release view vX.Y.Z --json assets -q '.assets[].name'` lists them
+  and the install gate installs from them.
+
+Later releases need none of this: CI keeps the site's copies identical
+to the root installers. Delete this section once that release is out.
 
 ### 1. Open the release PR
 

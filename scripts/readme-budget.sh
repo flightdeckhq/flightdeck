@@ -15,22 +15,38 @@
 # is not folded away (below) must be exactly one line holding exactly
 # one command: no second line, no command chained onto it, no comment,
 # no blank line and no `$ ` prompt. The section may show one more
-# command outside that block, the one that starts the binary. A second
-# install command therefore fails the run wherever it is put: in the
-# block, chained onto its line, or in another visible block.
+# command outside that block, and that command must be the one that
+# starts the binary: `flightdeck`, alone or followed by flags
+# (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged.
+# A second install command therefore fails the run wherever it is put:
+# in the block, chained onto its line, or in another visible block
+# (`brew install ...` under a bash fence, `irm ... | iex` under a
+# powershell one).
 #
 # Folded commands. A fence inside a collapsed `<details>` element is
 # counted like any other: it adds to its section's count and to the
 # total, so alternatives folded under one line still cost budget. It
 # does not add to the section's visible count, which is what the
 # install budget limits: the other install channels sit in a
-# `<details>` under the install block. `<details open>` is rendered
-# unfolded, so its fences are visible, and so are those of a tag that
-# does not close on its own line (its attributes cannot be read). The
-# tags are read on lines outside fences, in any letter case, nested or
-# not, and not inside inline code. A `<details>` that is never closed
-# would fold everything after it: it is an error (exit 1) that names
-# the line it opened on.
+# `<details>` under the install block. What counts as folded is what
+# GitHub renders folded:
+#   - `<details open>` is rendered unfolded, in any spelling of the
+#     attribute (`OPEN`, `open=""`, `open="open"`), so its fences are
+#     visible; so are those of a tag that does not close on its own
+#     line, whose attributes cannot be read.
+#   - A collapsed element inside an open one is folded, and an open
+#     one inside a collapsed one is folded with it. A fence after an
+#     element has closed is outside it, however short the element was.
+#   - An element with an empty `<summary>`, or with none, is still
+#     folded.
+#   - A tag inside an HTML comment (`<!-- <details> -->`, on one line
+#     or over several) is not a tag, and neither is one inside inline
+#     code, one written `\<details>`, or one on a line indented four
+#     columns or more (an indented code block; inside a nested list
+#     this errs towards counting the fences as visible).
+# The tags are read on lines outside fences, in any letter case. A
+# `<details>` that is never closed would fold everything after it: it
+# is an error (exit 1) that names the line it opened on.
 #
 # Which fences: every fenced block, tagged or not, except the ones
 # whose language is a code or data sample (SAMPLE_LANGUAGES below). A
@@ -116,9 +132,9 @@ INSTALL_VISIBLE_MAX=2
 # means a step crept back in.
 CONNECT_MAX=4
 # Self-hosting: TLS is one flag (`--domain`), Postgres one flag
-# (`--database-url`), and Docker, Compose and Helm are one command each.
-# Six covers those with one to spare (a clone for the two that run from
-# a checkout, or an export).
+# (`--database-url`), Docker, Compose and Helm are one command each,
+# and Compose and Helm read their files from a clone, which is the
+# sixth. Nothing is spare: a seventh command means a step crept in.
 SELF_HOSTING_MAX=6
 # Total: the three sections above plus the install channels folded
 # under the install block, with a few to spare. Twenty is roughly a
@@ -133,6 +149,13 @@ LINES_MAX=300
 # The section headings the per-section budgets apply to, as they appear
 # after `## ` (compared case-insensitively).
 INSTALL_HEADING="Install"
+# The only command the install section may show besides the install
+# block: the binary's own name, with or without `.exe`, alone or
+# followed by flags. An extended regular expression, matched against
+# the whole command; it reaches awk through -v, which reads backslash
+# escapes, so the dot is written as a bracket expression and \t is a
+# tab by the time awk compiles it.
+RUN_COMMAND_RE='^flightdeck([.]exe)?([ \t]+-.*)?$'
 CONNECT_HEADING="Connect your agents"
 SELF_HOSTING_HEADING="Self-hosting"
 
@@ -227,7 +250,10 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # <details>), then "T\t<total>", then, when the install section has a
 # visible counted fence, "B\t<commands>\t<lines>\t<prompts>\t<line>"
 # for the first one: its commands, its lines of any kind, how many of
-# them start with a prompt, and the line it opens on. It exits 1 with a
+# them start with a prompt, and the line it opens on; and, when the
+# install section shows a command outside that block that is not the
+# run command, "O\t<count>\t<line>\t<command>" for the first such
+# command. It exits 1 with a
 # message on a fence, a heredoc or a <details> that is never closed and
 # on a command in a sample fence. The rules are the ones in the header;
 # the program keeps to POSIX awk (no gawk functions), and takes the
@@ -237,7 +263,7 @@ counts() {
   awk -v samples="$SAMPLE_LANGUAGES" -v powershells="$POWERSHELL_LANGUAGES" \
     -v cmds="$CMD_LANGUAGES" -v shells="$SHELL_WORDS" \
     -v commands="$COMMAND_WORDS" -v fence_min="$FENCE_MIN_LENGTH" \
-    -v install="$(lower "$INSTALL_HEADING")" -v sq="'" '
+    -v install="$(lower "$INSTALL_HEADING")" -v runre="$RUN_COMMAND_RE" -v sq="'" '
     function fail(msg) {
       printf "readme-budget: %s\n", msg > "/dev/stderr"
       failed = 1
@@ -311,14 +337,14 @@ counts() {
     # the heredocs it opens. Inside the body of a heredoc that feeds a
     # shell no further heredoc is opened: the lines of a nested one are
     # counted as commands, which errs towards counting.
-    function count_commands(s,    i, n, ch, nx, prev, q, has, segs, r, r1, fed) {
-      n = length(s); q = ""; has = 0; segs = 0; prev = " "; fed = -1
+    function count_commands(s,    i, n, ch, nx, prev, q, has, segs, r, r1, fed, cut, cmd) {
+      n = length(s); q = ""; has = 0; segs = 0; prev = " "; fed = -1; cut = n + 1
       for (i = 1; i <= n; i++) {
         ch = substr(s, i, 1)
         if (q == sq) { if (ch == sq) { q = "" }; continue }
         if (q == dq) { if (dqesc != "" && ch == dqesc) { i++ } else if (ch == dq) { q = "" }; continue }
         if (ch == " " || ch == "\t") { prev = " "; continue }
-        if (hashcomments && ch == "#" && prev == " ") { break }
+        if (hashcomments && ch == "#" && prev == " ") { cut = i; break }
         if (ch == esc) { i++; has = 1; prev = ch; continue }
         if ((singlequotes && ch == sq) || ch == dq) { q = ch; has = 1; prev = ch; continue }
         nx = substr(s, i + 1, 1)
@@ -360,14 +386,42 @@ counts() {
       total += segs
       if (fencefolded) { folded[section] += segs }
       if (inblock) { blockcommands += segs }
+      # A visible command of the install section outside the install
+      # block must be the run command, and nothing chained onto it.
+      if (inrun) {
+        cmd = substr(s, 1, cut - 1)
+        sub(/^[ \t]+/, "", cmd); sub(/[ \t]+$/, "", cmd)
+        if (segs != 1 || cmd !~ runre) {
+          if (++others == 1) { otherline = NR; othercmd = substr(cmd, 1, 60) }
+        }
+      }
+    }
+
+    # s without its HTML comments. A comment may run over several
+    # lines: incomment carries the open state to the next one.
+    function strip_comments(s,    out, i, j) {
+      out = ""
+      while (1) {
+        if (incomment) {
+          j = index(s, "-->")
+          if (j == 0) { return out }
+          s = substr(s, j + 3); incomment = 0
+        }
+        i = index(s, "<!--")
+        if (i == 0) { return out s }
+        out = out substr(s, 1, i - 1)
+        s = substr(s, i + 4); incomment = 1
+      }
     }
 
     # Reads the <details> and </details> tags of a line outside fences
     # into the stack of open elements: dfold[k] says whether the k-th
-    # open element is collapsed, nfolded how many are. Inline code is
-    # dropped first, so a tag that is only mentioned does not count.
+    # open element is collapsed, nfolded how many are. Inline code and
+    # an escaped "<" are dropped first, so a tag that is only mentioned
+    # does not count.
     function scan_details(s,    i, j, c, gt, tag) {
       gsub(/`[^`]*`/, "", s)
+      gsub(/\\</, "", s)
       s = tolower(s)
       while (1) {
         i = index(s, "<details"); j = index(s, "</details")
@@ -464,7 +518,7 @@ counts() {
       if (nhere > 0) {
         fail(sprintf("%s:%d: the heredoc <<%s opened on this line is not terminated before its code fence closes (line %d)", FILENAME, hereline, here[herenext], NR))
       }
-      infence = 0; counted = 0; inbody = 0; inblock = 0; fencefolded = 0
+      infence = 0; counted = 0; inbody = 0; inblock = 0; fencefolded = 0; inrun = 0
     }
 
     BEGIN {
@@ -480,6 +534,7 @@ counts() {
       infence = 0; counted = 0; total = 0; nhere = 0; herenext = 1; joining = 0; inbody = 0
       ndetails = 0; nfolded = 0; fencefolded = 0
       blockseen = 0; inblock = 0; blockcommands = 0; blocklines = 0; blockprompts = 0
+      incomment = 0; inrun = 0; others = 0
     }
 
     {
@@ -529,11 +584,16 @@ counts() {
           if (counted && !fencefolded && !blockseen && tolower(section) == install) {
             blockseen = 1; inblock = 1; blockline = NR
           }
+          inrun = (counted && !fencefolded && !inblock && tolower(section) == install)
           next
         }
       }
 
-      scan_details($0)
+      # Comments are tracked on every line, so one that opens on an
+      # indented line still closes; tags are not read on a line that
+      # is an indented code block.
+      plain = strip_comments($0)
+      if ($0 !~ /^(    |\t)/) { scan_details(plain) }
 
       if ($0 ~ /^ ? ? ?##[ \t]/) {
         section = $0
@@ -555,6 +615,7 @@ counts() {
       for (i = 1; i <= n; i++) { printf "S\t%d\t%d\t%s\n", count[order[i]], folded[order[i]], order[i] }
       printf "T\t%d\n", total
       if (blockseen) { printf "B\t%d\t%d\t%d\t%d\n", blockcommands, blocklines, blockprompts, blockline }
+      if (others > 0) { printf "O\t%d\t%d\t%s\n", others, otherline, othercmd }
     }
   ' "$readme"
 }
@@ -590,6 +651,16 @@ if [ -n "$block" ]; then
   read -r block_commands block_lines block_prompts block_at <<<"$block"
 fi
 
+# The first visible command of the install section that is neither the
+# install block nor the run command, if there is one.
+other=$(printf '%s\n' "$table" | awk -F'\t' '$1 == "O" { print $2 "\t" $3 "\t" $4 }')
+other_count=0
+other_at=""
+other_command=""
+if [ -n "$other" ]; then
+  IFS=$'\t' read -r other_count other_at other_command <<<"$other"
+fi
+
 echo "README commands by section ($readme):"
 echo "  total  folded  section"
 printf '%s\n' "$table" | awk -F'\t' '$1 == "S" { printf "  %5d  %6d  %s\n", $2, $3, $4 }'
@@ -598,6 +669,7 @@ echo "  (folded: inside a collapsed <details>; counted in the section and the to
 echo
 printf '  Install block        %s (exactly %d, on one line)\n' "${block_commands:-none}" "$INSTALL_BLOCK_COMMANDS"
 printf '  Install, visible     %s (budget %d)\n' "${install_visible:-no such section}" "$INSTALL_VISIBLE_MAX"
+printf '  Install, other       %d (exactly 0: beside the install block only "flightdeck" may show)\n' "$other_count"
 printf '  Connect your agents  %s (budget %d)\n' "${connect:-no such section}" "$CONNECT_MAX"
 printf '  Self-hosting         %s (budget %d)\n' "${self_hosting:-no such section}" "$SELF_HOSTING_MAX"
 printf '  Total                %d (budget %d)\n' "$total" "$TOTAL_MAX"
@@ -616,6 +688,7 @@ if [ -n "$block" ]; then
   [ "$block_lines" -eq 1 ] || over "the install block (line $block_at) has $block_lines lines, must be exactly one: no comment, no blank line, no second command"
   [ "$block_prompts" -eq 0 ] || over "the install block (line $block_at) starts with a prompt; show the command alone"
 fi
+[ "$other_count" -eq 0 ] || over "$INSTALL_HEADING shows a command that is neither the install command nor \"flightdeck\" (line $other_at: $other_command): another way to install belongs in the <details> under the install block"
 [ -z "$install_visible" ] || [ "$install_visible" -le "$INSTALL_VISIBLE_MAX" ] || over "$INSTALL_HEADING shows $install_visible commands outside <details>, budget $INSTALL_VISIBLE_MAX"
 [ -z "$connect" ] || [ "$connect" -le "$CONNECT_MAX" ] || over "$CONNECT_HEADING has $connect commands, budget $CONNECT_MAX"
 [ -z "$self_hosting" ] || [ "$self_hosting" -le "$SELF_HOSTING_MAX" ] || over "$SELF_HOSTING_HEADING has $self_hosting commands, budget $SELF_HOSTING_MAX"

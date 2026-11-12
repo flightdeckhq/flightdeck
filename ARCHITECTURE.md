@@ -240,8 +240,9 @@ flightdeck/
 ├── install.ps1                 # `irm | iex` installer for Windows; served from the site as docs/install.ps1
 ├── Dockerfile                  # The all-in-one image flightdeckhq/flightdeck (distroless, non-root)
 ├── packaging/pypi/             # The flightdeck-cli PyPI package: the shim and the per-platform wheel builder
-├── docs/                       # GitHub Pages site, flightdeck-hq.com (index.html, 404.html, CNAME, .nojekyll, assets/, llms.txt)
-│   ├── install.sh, install.ps1 # Copies of the root installers, the ones the install command fetches
+├── docs/                       # GitHub Pages site, flightdeck-hq.com: everything in it is served (index.html, 404.html, CNAME, .nojekyll, assets/, llms.txt)
+│   └── install.sh, install.ps1 # Copies of the root installers, the ones the install command fetches
+├── guides/                     # The user documentation the README links, kept out of docs/ so the site does not serve it as raw files
 │   ├── coverage.md             # Every intercepted method, the framework matrices, client types, what is not planned
 │   ├── features.md             # Each dashboard page and control in full
 │   ├── self-hosting.md         # Docker Compose, the Helm chart and its values, upgrade notes, backups

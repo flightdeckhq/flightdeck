@@ -35,12 +35,16 @@ seeding, when those markers have left its one-minute window.
 
 It refuses a server on port 4000 unless ``--allow-default-port`` is
 given: that port is where a Flightdeck with real data usually listens,
-and this script is for an instance that will be thrown away.
+and this script is for an instance that will be thrown away. For the
+same reason it refuses a server that is not on this machine unless
+``--allow-remote`` is given, and it takes no server from the
+environment: ``--server`` is required.
 """
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import random
 import sys
@@ -63,6 +67,10 @@ DEV_TOKEN = "tok_dev"
 
 # The port a Flightdeck with real data usually listens on.
 DEFAULT_PORT = 4000
+
+# The one host name that is this machine; an address is this machine
+# when it is a loopback address. Anything else is someone's server.
+LOOPBACK_NAME = "localhost"
 
 # The sensor version stamped on session_start, which ingestion requires.
 SENSOR_VERSION = "0.8.0"
@@ -92,6 +100,12 @@ LIVE_RUN_NEWEST_EVENT_SECS = 3
 # without burying it in events.
 LIVE_ROUND_SECS = 1.5
 LIVE_ROUND_SHARE = 4
+
+# --live: the researcher's denied MCP call recurs every this many
+# rounds (21 seconds), starting with the first, so its timeline always
+# has a blocked call a few events from the top, which is where the
+# README's third tile looks for one.
+LIVE_BLOCK_EVERY_ROUNDS = 14
 
 # The variable that raises ingestion's per-token rate limit, named in
 # the message a refused event prints.
@@ -778,12 +792,44 @@ def seed_live(client: Client, now: float, rng: random.Random) -> list[Run]:
 
 
 def keep_live(runs: list[Run], seconds: float, rng: random.Random) -> None:
-    """Has the open runs emit in real time for a recording."""
+    """Has the open runs emit in real time for a recording. The
+    researcher keeps reaching for the server its flavor denies, so a
+    blocked call is always among its newest events."""
+    researcher = next((run for run in runs if run.agent is RESEARCHER), None)
     deadline = time.monotonic() + seconds
+    round_number = 0
     while time.monotonic() < deadline:
         for run in rng.sample(runs, k=max(1, len(runs) // LIVE_ROUND_SHARE)):
             run.call(time.time() - run.agent.latency_ms[0] / 1000)
+        if researcher is not None and round_number % LIVE_BLOCK_EVERY_ROUNDS == 0:
+            researcher.mcp_block(time.time(), SCRATCH_FS)
+        round_number += 1
         time.sleep(LIVE_ROUND_SECS)
+
+
+def refusal(server: str, allow_default_port: bool, allow_remote: bool) -> str | None:
+    """Why this server must not be seeded, or None when it may be. The
+    seed is for an instance on this machine that will be thrown away:
+    a server on another host, or on the port a Flightdeck with real
+    data usually listens on, is refused unless its flag says otherwise."""
+    target = urllib.parse.urlsplit(server)
+    host = (target.hostname or "").lower()
+    try:
+        local = host == LOOPBACK_NAME or ipaddress.ip_address(host).is_loopback
+    except ValueError:  # a host name other than localhost
+        local = False
+    if not local and not allow_remote:
+        return (
+            f"{server} is not on this machine; the seed is for a throwaway Flightdeck "
+            "on localhost (see this script's header), or pass --allow-remote"
+        )
+    if target.port == DEFAULT_PORT and not allow_default_port:
+        return (
+            f"{server} is on port {DEFAULT_PORT}, where a Flightdeck with real data "
+            "usually listens; start a throwaway one on another port (see this script's "
+            "header), or pass --allow-default-port"
+        )
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -811,15 +857,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"seed a server on port {DEFAULT_PORT}, where real data usually lives",
     )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="seed a server that is not on this machine",
+    )
     args = parser.parse_args(argv)
 
-    port = urllib.parse.urlsplit(args.server).port
-    if port == DEFAULT_PORT and not args.allow_default_port:
-        parser.error(
-            f"{args.server} is on port {DEFAULT_PORT}, where a Flightdeck with real data "
-            "usually listens; start a throwaway one on another port (see this script's "
-            "header), or pass --allow-default-port"
-        )
+    refused = refusal(args.server, args.allow_default_port, args.allow_remote)
+    if refused:
+        parser.error(refused)
 
     client = Client(args.server, args.token)
     rng = random.Random(RANDOM_SEED)

@@ -188,7 +188,7 @@ plugin loaded with `--plugin-dir` (checked on Claude Code 2.1.316), so
 the plugin reports nothing for a bare run. Leave `--bare` off a run you
 want the plugin to report, or report the run through Claude Code's own
 OpenTelemetry export, which needs no hooks: see
-[Claude Code over OpenTelemetry](../docs/opentelemetry.md#claude-code-over-opentelemetry).
+[Claude Code over OpenTelemetry](../guides/opentelemetry.md#claude-code-over-opentelemetry).
 The same export covers CI jobs and cloud sessions that do not install the
 plugin.
 

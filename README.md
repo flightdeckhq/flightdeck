@@ -79,7 +79,7 @@ flightdeck_sensor.patch()
 
 Those two lines go at the top of your entrypoint; nothing else in your code changes. Every call your agent makes through the Anthropic or OpenAI SDK or litellm, directly or inside a framework, is reported, with prompt capture off until you turn it on. [sensor/README.md](sensor/README.md) has the agent identity model, the environment variables and the known limitations.
 
-For a Flightdeck on another machine, set `FLIGHTDECK_TOKEN` and `FLIGHTDECK_SERVER`: the sensor takes the ingestion address (`https://flightdeck.example.com/ingest`), the plugin the bare one (`https://flightdeck.example.com`). Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](docs/opentelemetry.md).
+For a Flightdeck on another machine, set `FLIGHTDECK_TOKEN` and `FLIGHTDECK_SERVER`: the sensor takes the ingestion address (`https://flightdeck.example.com/ingest`), the plugin the bare one (`https://flightdeck.example.com`). Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](guides/opentelemetry.md).
 
 ## What you get
 
@@ -89,7 +89,7 @@ Flightdeck is an observability and control plane for AI agents that you host you
   <tr>
     <td width="33%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-timeline-dark.png"><img alt="A detail of the fleet timeline: agents and their sub-agents, one row each, with events arriving." src="assets/readme/tile-timeline-light.png"></picture><br><sub>A live fleet timeline</sub></td>
     <td width="33%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-agents-dark.png"><img alt="The agents table: tokens, latency, errors, sessions and cost per agent over seven days." src="assets/readme/tile-agents-light.png"></picture><br><sub>Cost and tokens per agent</sub></td>
-    <td width="33%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-policies-dark.png"><img alt="The MCP protection policy of one agent: one server allowed, one denied and blocked." src="assets/readme/tile-policies-light.png"></picture><br><sub>Budgets, MCP rules and the kill switch</sub></td>
+    <td width="33%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-control-dark.png"><img alt="A run's drawer: a blocked MCP call at the top of its timeline and the Stop Agent button in its header." src="assets/readme/tile-control-light.png"></picture><br><sub>A blocked MCP call and the kill switch</sub></td>
   </tr>
 </table>
 
@@ -101,7 +101,7 @@ Flightdeck is an observability and control plane for AI agents that you host you
 - **Kill switch and directives.** Stop one agent, or every agent of a flavor, from the dashboard; register your own functions as directives and invoke them the same way.
 - **Analytics and estimated cost.** Tokens, runs, latency, policy events and cost from public list prices, grouped by agent flavor, model, framework, host, team and more.
 
-[docs/features.md](docs/features.md) describes each in full, and [docs/mcp-protection-policy.md](docs/mcp-protection-policy.md) the MCP policy. Events arriving on the fleet view:
+[guides/features.md](guides/features.md) describes each in full, and [guides/mcp-protection-policy.md](guides/mcp-protection-policy.md) the MCP policy. Events arriving on the fleet view:
 
 ![The fleet view over nine seconds: events arrive on every agent's row and in the live feed below.](assets/readme/fleet-live.gif)
 
@@ -133,7 +133,7 @@ The sensor meters every LLM call a framework makes through the Anthropic or Open
 | AutoGen, AG2, Semantic Kernel | yes | no | no |
 | DSPy | on its litellm engine | n/a | no |
 
-[docs/coverage.md](docs/coverage.md) has the full matrices: every intercepted method, which providers of each framework are metered, how streams and errors are reported, the client types, and what is not planned.
+[guides/coverage.md](guides/coverage.md) has the full matrices: every intercepted method, which providers of each framework are metered, how streams and errors are reported, the client types, and what is not planned.
 
 ## Self-hosting
 
@@ -163,9 +163,9 @@ docker compose -f flightdeck/docker/docker-compose.yml up -d
 helm install flightdeck flightdeck/helm/ --namespace flightdeck --create-namespace
 ```
 
-Compose runs that image as one container on SQLite, and with [`docker-compose.postgres.yml`](docker/docker-compose.postgres.yml) layered on it, beside a Postgres. The Helm chart runs one pod on SQLite by default, or several on Postgres with a NATS cluster they share. Both read their files from a clone of this repository. [docs/self-hosting.md](docs/self-hosting.md) has their settings, the chart's values and the upgrade notes.
+Compose runs that image as one container on SQLite, and with [`docker-compose.postgres.yml`](docker/docker-compose.postgres.yml) layered on it, beside a Postgres. The Helm chart runs one pod on SQLite by default, or several on Postgres with a NATS cluster they share. Both read their files from a clone of this repository. [guides/self-hosting.md](guides/self-hosting.md) has their settings, the chart's values and the upgrade notes.
 
-**Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [docs/self-hosting.md](docs/self-hosting.md#backing-up) has the command that backs up a running instance.
+**Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [guides/self-hosting.md](guides/self-hosting.md#backing-up) has the command that backs up a running instance.
 
 **Upgrading.** Install the new release and start it; the binary migrates its database at start. [ARCHITECTURE.md](ARCHITECTURE.md) ("Deployment") lists every flag and environment variable.
 

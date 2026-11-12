@@ -146,12 +146,23 @@ test-sensor-e2e: ## Run sensor respx-driven end-to-end tests against the dev sta
 SPLIT_PROJECT ?= flightdeck-split
 SPLIT_PORT ?= 4010
 SPLIT_COMPOSE = FLIGHTDECK_SPLIT_PORT=$(SPLIT_PORT) docker compose -p $(SPLIT_PROJECT) -f docker/docker-compose.split.yml
+# The split stack's volumes are postgres_data and nats_data of its
+# project, and down-split deletes them. Under the dev stack's project
+# (docker, or FLIGHTDECK_DEV_PROJECT) or the user compose file's
+# (flightdeck) those names are a real database's volume, so the three
+# targets refuse those projects before they run anything.
+SPLIT_GUARD = @case "$(SPLIT_PROJECT)" in \
+	docker|flightdeck|"$(FLIGHTDECK_DEV_PROJECT)") \
+	  echo "SPLIT_PROJECT=$(SPLIT_PROJECT) is the compose project of the dev stack or of a user install: the split test stack would share its volumes, and down-split deletes them. Give it a project of its own (the default is flightdeck-split)." >&2; \
+	  exit 1 ;; \
+	esac
 SPLIT_ENV = FLIGHTDECK_TEST_BASE_URL=http://localhost:$(SPLIT_PORT) \
 	FLIGHTDECK_TEST_DB=flightdeck \
 	FLIGHTDECK_TEST_POSTGRES_CONTAINER=$(SPLIT_PROJECT)-postgres-1 \
 	FLIGHTDECK_TEST_WORKER_CONTAINER=$(SPLIT_PROJECT)-workers-1
 
 dev-split: ## Start the split test stack: ingestion, workers and api as containers from source, on :4010
+	$(SPLIT_GUARD)
 	$(SPLIT_COMPOSE) up -d --wait
 
 test-split: dev-split ## Run the exclusive integration tests, the worker-pause ones included, against the split test stack
@@ -159,6 +170,7 @@ test-split: dev-split ## Run the exclusive integration tests, the worker-pause o
 	$(SPLIT_ENV) $(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
 down-split: ## Remove the split test stack and its volumes (test data only)
+	$(SPLIT_GUARD)
 	$(SPLIT_COMPOSE) down -v
 
 # ---------------------------------------------------------------------------
@@ -341,8 +353,11 @@ dev: ## Start the dev stack: the flightdeck binary from source on :4000 (DB=post
 dev-restart: ## Rebuild the binary (and a stale dashboard bundle) and restart it; Postgres keeps running
 	scripts/dev-stack.sh restart $(DB)
 
-dev-reset: ## Stop the dev stack, DELETE its database and bus store, start again
-	scripts/dev-stack.sh reset $(DB)
+# CONFIRM names the compose project, for a database that holds more
+# than a seed: make dev-reset CONFIRM=docker. scripts/dev-stack.sh says
+# what it is about to delete and refuses without it.
+dev-reset: ## Stop the dev stack, DELETE its database and bus store, start again (CONFIRM=<project> for a database with data)
+	CONFIRM="$(CONFIRM)" scripts/dev-stack.sh reset $(DB)
 
 down: ## Stop the dev stack; volumes and the data dir stay
 	scripts/dev-stack.sh down

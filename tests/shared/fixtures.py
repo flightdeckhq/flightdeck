@@ -65,7 +65,9 @@ from flightdeck_sensor.core.agent_id import derive_agent_id
 # A stack must name its database with one of the first two:
 # stack_configuration_error refuses to run otherwise, because the SQL
 # helpers have no safe default to write to.
-BASE_URL = os.environ.get("FLIGHTDECK_TEST_BASE_URL", "http://localhost:4000").rstrip("/")
+BASE_URL = os.environ.get("FLIGHTDECK_TEST_BASE_URL", "http://localhost:4000").rstrip(
+    "/"
+)
 INGESTION_URL = f"{BASE_URL}/ingest"
 API_URL = f"{BASE_URL}/api"
 # The addresses the dev stack answers on.
@@ -190,7 +192,9 @@ if _configuration_error:
 POSTGRES_CONTAINER = (
     ""
     if SQLITE_DB
-    else _settings.get("FLIGHTDECK_TEST_POSTGRES_CONTAINER", DEV_STACK_POSTGRES_CONTAINER)
+    else _settings.get(
+        "FLIGHTDECK_TEST_POSTGRES_CONTAINER", DEV_STACK_POSTGRES_CONTAINER
+    )
 )
 POSTGRES_DB = _settings.get("FLIGHTDECK_TEST_DB", DEV_STACK_DATABASE)
 # The finest step a stored timestamp resolves: Postgres keeps

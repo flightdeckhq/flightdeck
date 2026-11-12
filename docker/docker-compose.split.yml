@@ -26,6 +26,14 @@
 # short of memory can hold the three compiles to two packages at a time
 # each (GOFLAGS=-p=2).
 
+# A fixed project name, as in docker-compose.yml: without it compose
+# takes this directory's name, `docker`, which is the dev stack's
+# project, and the two volumes below would then be the dev stack's
+# `docker_postgres_data` and `docker_nats_data`: a `down -v` on this
+# file would delete the dev database. `make` passes the same name with
+# -p; it refuses the dev stack's and the user compose file's.
+name: flightdeck-split
+
 x-logging: &split-logging
   driver: json-file
   options:

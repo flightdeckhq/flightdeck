@@ -166,13 +166,12 @@ Flightdeck conventions (see `CLAUDE.md`):
   (`capture_prompts=True`) — `09_capture.py` is the one legitimate
   override.
 - **Pre-commit live test (rule 40b).** Before committing code that
-  touches runtime behaviour, rebuild the affected container(s) so the
-  dev stack reflects branch HEAD, then run the component's full test
-  suite (unit + integration) locally. CI is not the first-line
-  detector. Use `make dev` or `docker compose -f docker-compose.yml -f
-  docker-compose.dev.yml up --build -d <service>` — a plain
-  `docker compose up --build` without the dev override rebuilds a
-  stale prod-image layer and will not reflect your edits.
+  touches runtime behaviour, rebuild the binary (`make dev-restart`)
+  so the dev stack reflects branch HEAD, then run the component's
+  full test suite (unit + integration) locally. CI is not the
+  first-line detector. The dev stack is the `flightdeck` binary built
+  when the stack starts, so a stack started before your edit does not
+  reflect it.
 - **E2E discipline (rules 40c / 40c.1–4).** Every phase that adds or
   changes user-visible UI behaviour adds Playwright tests at
   `dashboard/tests/e2e/`, one journey per file, named

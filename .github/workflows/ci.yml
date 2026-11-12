@@ -289,6 +289,9 @@ jobs:
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04
+    # The job takes three to four minutes; twenty ends a build or a test
+    # that hangs with its output, not at the six-hour default.
+    timeout-minutes: 20
     # The service modules are also built one at a time, each from its
     # own directory, by the split test stack's containers (`go run
     # ./cmd/` with only that module mounted), where the root go.work
@@ -625,6 +628,8 @@ jobs:
   dashboard:
     name: Dashboard (TypeScript)
     runs-on: ubuntu-24.04
+    # About two minutes; fifteen bounds a hung test run.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: dashboard
@@ -737,11 +742,13 @@ jobs:
             slug: postgres-16
             stack: postgres
             postgres_image: postgres:16-alpine
+            postgres_major: "16"
             postgres_data_dir: /var/lib/postgresql/data
           - name: Integration + sensor e2e (Postgres 18)
             slug: postgres-18
             stack: postgres
             postgres_image: postgres:18-alpine
+            postgres_major: "18"
             postgres_data_dir: /var/lib/postgresql
           - name: Integration + sensor e2e (SQLite)
             slug: sqlite
@@ -812,6 +819,40 @@ jobs:
         # endpoints answer, or fails with the end of the binary's log.
         run: make dev DB=${{ matrix.stack }}
 
+      - name: The stack runs on the database this leg is for
+        if: ${{ matrix.stack != 'split' }}
+        # A leg that booted on another database than its name says
+        # would pass for the wrong reason (the image variable not
+        # reaching compose, DB= not reaching the script). The binary's
+        # start-up block names its database, and the server its version.
+        run: |
+          if [ "${{ matrix.stack }}" = sqlite ]; then
+            if ! grep -Eq '^ +Database +.*\(SQLite\)$' .dev/flightdeck.log; then
+              echo "::error::the binary's log does not say it runs on SQLite"
+              head -n 30 .dev/flightdeck.log
+              exit 1
+            fi
+            if docker ps --format '{{.Names}}' | grep -q postgres; then
+              echo "::error::a Postgres container runs on the SQLite leg"
+              exit 1
+            fi
+          else
+            if ! grep -Eq '^ +Database +.*\(Postgres\)$' .dev/flightdeck.log; then
+              echo "::error::the binary's log does not say it runs on Postgres"
+              head -n 30 .dev/flightdeck.log
+              exit 1
+            fi
+            version="$(docker exec docker-postgres-1 psql -U flightdeck -d flightdeck -tAc 'show server_version')"
+            echo "Postgres server_version: $version"
+            case "$version" in
+              "${{ matrix.postgres_major }}".*) ;;
+              *)
+                echo "::error::this leg is for Postgres ${{ matrix.postgres_major }}, and the server is $version"
+                exit 1
+                ;;
+            esac
+          fi
+
       - name: Run integration tests (fabricated + sensor e2e)
         id: tests
         if: ${{ matrix.stack != 'split' }}
@@ -851,6 +892,20 @@ jobs:
             echo "::error::a worker-pause test skipped on the split test stack"
             exit 1
           fi
+          # No skip is not yet a pass: the four tests this leg exists
+          # for must each be reported PASSED here, by name. They skip
+          # on every other leg, so one that is renamed, loses its
+          # marker or is deselected would otherwise run nowhere.
+          for id in \
+            tests/integration/test_prompt_capture.py::test_a_backlog_of_capture_on_sessions_keeps_every_calls_content \
+            tests/integration/test_prompt_capture.py::test_content_published_before_its_session_start_keeps_its_content \
+            tests/integration/test_session_states.py::test_backlog_of_reattachments_drains_to_the_right_states \
+            tests/integration/test_session_states.py::test_a_call_published_after_the_end_cannot_keep_the_session_open; do
+            if ! grep -Fq "$id PASSED" "$RUNNER_TEMP/evidence/test-output.log"; then
+              echo "::error::$id was not reported PASSED on the split test stack"
+              exit 1
+            fi
+          done
 
       # What a failure leaves behind, kept before anything else runs:
       # the test output, and the log of the stack (the binary's, or the
@@ -938,6 +993,11 @@ jobs:
   e2e-shard:
     name: E2E (Playwright) shard ${{ matrix.shard }}/4
     runs-on: ubuntu-24.04
+    # A shard takes five to eight minutes: it builds the dashboard
+    # bundle and the binary (`make dev`), then runs its quarter of the
+    # suite. Thirty ends a stack or a browser that wedges with the
+    # shard's log and reports instead of a six-hour run.
+    timeout-minutes: 30
     # Rule 40c: browser end-to-end tests run parallel to the integration
     # job, with no `needs:` on the unit jobs: each shard boots its own
     # stack and shares nothing with them. The suite (both theme
@@ -1179,6 +1239,9 @@ jobs:
   marketplace-schema:
     name: Repo scripts and manifests
     runs-on: ubuntu-24.04
+    # About two minutes of script tests, each with a bound of its own;
+    # fifteen covers a slow runner.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -1207,7 +1270,22 @@ jobs:
       # The scripts the dev stack, the integration job and the chart and
       # compose checks run.
       - name: shellcheck on the dev stack, chart and compose scripts
-        run: shellcheck scripts/dev-stack.sh scripts/go-db-tests.sh scripts/helm-chart-test.sh scripts/compose-smoke.sh
+        run: |
+          shellcheck scripts/dev-stack.sh scripts/test-dev-stack.sh scripts/go-db-tests.sh \
+            scripts/helm-chart-test.sh scripts/compose-smoke.sh scripts/check-compose-projects.sh
+
+      # The dev stack script on the paths where a mistake costs a
+      # running stack or a database: a failing build, the move from the
+      # seven-container stack, a busy port, another checkout's
+      # containers, and every way `reset` refuses. It runs the script
+      # for real against a fake docker, go and flightdeck.
+      - name: The dev stack script against fakes
+        run: scripts/test-dev-stack.sh
+
+      # A compose file with no project name of its own renders as
+      # project `docker`, the dev stack's, and shares its volumes.
+      - name: Every compose file renders under its own project
+        run: scripts/check-compose-projects.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback
@@ -1314,6 +1392,9 @@ jobs:
   release-snapshot:
     name: Release snapshot (six binaries, Docker image)
     runs-on: ubuntu-24.04
+    # Four to five minutes: six binaries, the image, and the compose
+    # smoke on it. Thirty bounds a build or a container that hangs.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

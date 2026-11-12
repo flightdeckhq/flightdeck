@@ -443,7 +443,9 @@ def test_no_worker_container_is_assumed() -> None:
     names one (the split test stack) has its worker paused; a default
     would pause a container some other stack depends on."""
     named = fixtures.stack_settings(
-        fixtures.BASE_URL, os.environ, fixtures.read_stack_state(fixtures.DEV_STACK_STATE_FILE)
+        fixtures.BASE_URL,
+        os.environ,
+        fixtures.read_stack_state(fixtures.DEV_STACK_STATE_FILE),
     ).get("FLIGHTDECK_TEST_WORKER_CONTAINER", "")
     assert fixtures.WORKER_CONTAINER == named
 

@@ -12,10 +12,11 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
 export const AUTH = { Authorization: "Bearer tok_dev" };
-const INGEST = "http://localhost:4000/ingest/v1";
-export const API = "http://localhost:4000/api/v1";
+const INGEST = `${INGEST_URL}/v1`;
+export const API = `${API_URL}/v1`;
 const HOST = "e2e-tool-content-host";
 
 /** How long the setup waits for the worker to store a run's events. */
@@ -217,7 +218,7 @@ export function storedEvent(events: StoredEvent[], eventType: string, toolName?:
  *  other session belongs to it. */
 export function removeRun(run: Run): void {
   const args = [
-    "exec", "-i", "docker-postgres-1", "psql", "-U", "flightdeck", "-d", "flightdeck",
+    "exec", "-i", POSTGRES_CONTAINER, "psql", "-U", "flightdeck", "-d", POSTGRES_DB,
     "-tA", "-v", "ON_ERROR_STOP=1", "-v", `sid=${run.sessionId}`, "-v", `aid=${run.agentId}`,
   ];
   const sql = `BEGIN;

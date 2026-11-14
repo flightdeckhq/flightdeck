@@ -56,8 +56,10 @@
 9. **Backend unit tests:** Go testing package for Go components. pytest for
    flightdeck-sensor. No real API calls. Mock all external services.
 
-10. **Integration tests:** pytest. Full pipeline. Real NATS and Postgres in Docker
-    Compose. Run with `make test-integration`.
+10. **Integration tests:** pytest. Full pipeline against the dev stack: the
+    `flightdeck` binary with its embedded NATS, on Postgres or on SQLite. Run with
+    `make test-integration`; the tests that pause the worker container run with
+    `make test-split`.
 
 Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
 
@@ -272,15 +274,17 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 
      How to apply:
      - For sensor / ingestion / worker / API / dashboard API-contract
-       changes: rebuild the affected container(s) so the dev stack is
-       running branch HEAD, then run the component's full test suite
-       (unit + integration) locally. Don't push until green.
-     - The project's dev stack uses the `docker-compose.dev.yml`
-       override (mounts source, runs `go run ./cmd/` / vite dev) — a
-       plain `docker compose up --build` without the override rebuilds
-       a stale prod-image layer and will NOT reflect your edits. Use
-       `make dev` or `docker compose -f docker-compose.yml -f
-       docker-compose.dev.yml up --build -d <service>`.
+       changes: rebuild the binary (`make dev-restart`) so the dev
+       stack is running branch HEAD, then run the component's full
+       test suite (unit + integration) locally. Don't push until green.
+     - The project's dev stack (`make dev`, `scripts/dev-stack.sh`) is
+       the `flightdeck` binary built from the checkout, with the
+       dashboard bundle embedded, beside one Postgres container. The
+       binary is built when the stack starts, so a running stack does
+       NOT reflect your edits: run `make dev-restart` after a Go or a
+       dashboard change. When the change touches a store or SQL, run
+       the suite on both databases (`make dev DB=sqlite` for the
+       second).
      - Exempt: pure docs, comments, type-only fixes, and formatting
        passes that cannot change runtime behavior.
 

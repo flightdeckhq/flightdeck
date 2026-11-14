@@ -131,6 +131,20 @@ func equivalenceEvents(ids map[string]string, t0 time.Time) (before, revive, aft
 	return before, revive, after
 }
 
+// equivalenceLead is how long before the run the sequence's first event
+// is dated. The sequence spans a little over a minute (its last event is
+// dated 61s after t0), and a time reads as "clock" when it falls in the
+// run's window, which opens at the first database-clock read after t0 is
+// taken. A lead of one minute put the 60s and 61s events at the run's
+// own start, so whether the child's session_end (60s) counted as an
+// event-dated time or as "clock" depended on how many milliseconds the
+// first clock read took: a slow read on one backend and not the other
+// made the dumps disagree. The lead must exceed the span of the
+// sequence by more than any run could take; ten minutes does, and
+// stays well inside the reconciler thresholds the test drives by
+// backdating last_seen_at explicitly.
+const equivalenceLead = 10 * time.Minute
+
 // equivalenceDump is the normalised state of the rows the run wrote.
 type equivalenceDump struct {
 	Sessions []map[string]any `json:"sessions"`
@@ -159,9 +173,9 @@ func runEquivalence(t *testing.T, db *storage.DB) equivalenceDump {
 		cleanupSession(t, db, ids[k])
 	}
 	p := newTestProcessor(db)
-	// The events are dated a minute before the run, so a time the
+	// The events are dated from t0, well before the run, so a time the
 	// database's clock wrote is told apart from an event-dated one.
-	t0 := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	t0 := time.Now().UTC().Add(-equivalenceLead).Truncate(time.Millisecond)
 	from := databaseNow(t, db).Add(-time.Millisecond)
 	process := func(events []consumer.EventPayload) {
 		t.Helper()

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { OTLP_AGENT } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T128 — the events of a Claude Code session reported over
 // OpenTelemetry render as the dashboard renders any client's: the
@@ -19,7 +20,7 @@ type Ev = {
 
 async function rootEvents(page: Page): Promise<Ev[]> {
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions/${OTLP_AGENT.rootSessionId}`,
+    `${API_URL}/v1/sessions/${OTLP_AGENT.rootSessionId}`,
     { headers: { Authorization: "Bearer tok_dev" } },
   );
   expect(resp.ok(), "the seeded OTLP root session must exist").toBe(true);

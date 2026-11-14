@@ -1,4 +1,4 @@
-.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -107,26 +107,71 @@ test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 # suite's 5-10 s state waits start to miss on a laptop-class box;
 # more workers make the parallel phase flake before they make it
 # faster.
+#
+# The suite runs against the dev stack, on whichever database it was
+# started with (`make dev`, `make dev DB=sqlite`); the target starts
+# the stack when none runs. STACK_ENV hands the running stack's
+# settings (base URL, database, log file) to the fixtures; a caller
+# that sets FLIGHTDECK_TEST_BASE_URL has a stack of its own and is
+# left to describe it (CONTRIBUTING.md).
 INTEGRATION_WORKERS ?= 4
-test-integration: ## Run integration tests (requires running stack)
-	$(MAKE) -C docker dev
+STACK_ENV = if [ -z "$$FLIGHTDECK_TEST_BASE_URL" ]; then eval "$$(scripts/dev-stack.sh env)"; fi
+test-integration: ## Run the integration suite against the dev stack (starts it when none runs)
+	@[ -n "$$FLIGHTDECK_TEST_BASE_URL" ] || scripts/dev-stack.sh up $(DB)
 	$(MAKE) seed-e2e
-	$(PYTHON) -m pytest tests/integration -p no:respx -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
-	$(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
+	$(STACK_ENV); $(PYTHON) -m pytest tests/integration -p no:respx -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
+	$(STACK_ENV); $(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
 # test-go-db runs the Go tests that need Postgres (the ones gated on
-# TEST_POSTGRES_URL) against the running dev stack's Postgres, each
+# TEST_POSTGRES_URL) against the dev stack's Postgres container, each
 # package on a fresh database of its own that the script creates,
 # migrates and drops, and the storage-converted ones on SQLite as well.
 # It never touches the `flightdeck` database. It also runs the Go tests
-# gated on TEST_NATS_URL against the stack's NATS, on streams of their
-# own. CI runs it in the integration job.
-test-go-db: ## Run the Go tests that need Postgres or NATS (requires running stack)
-	./scripts/go-db-tests.sh
+# gated on TEST_NATS_URL against a NATS server the script starts for
+# the run. CI runs it in the integration job's Postgres legs.
+test-go-db: ## Run the Go tests that need Postgres or NATS (requires the dev stack on Postgres)
+	$(STACK_ENV); ./scripts/go-db-tests.sh
 
-test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
-	$(MAKE) -C docker dev
-	$(PYTHON) -m pytest tests/integration/test_sensor_e2e.py -p no:respx -v
+test-sensor-e2e: ## Run sensor respx-driven end-to-end tests against the dev stack (starts it when none runs)
+	@[ -n "$$FLIGHTDECK_TEST_BASE_URL" ] || scripts/dev-stack.sh up $(DB)
+	$(STACK_ENV); $(PYTHON) -m pytest tests/integration/test_sensor_e2e.py -p no:respx -v
+
+# The split test stack (docker/docker-compose.split.yml): the three
+# services as separate containers from source, with their own Postgres
+# and NATS, on port $(SPLIT_PORT). It runs beside the dev stack and
+# exists for the integration tests that pause the worker container,
+# which skip against the binary (the workers are goroutines of the one
+# process). Every such test is marked `exclusive`, so test-split runs
+# the exclusive phase. CI runs it as its own integration leg.
+SPLIT_PROJECT ?= flightdeck-split
+SPLIT_PORT ?= 4010
+SPLIT_COMPOSE = FLIGHTDECK_SPLIT_PORT=$(SPLIT_PORT) docker compose -p $(SPLIT_PROJECT) -f docker/docker-compose.split.yml
+# The split stack's volumes are postgres_data and nats_data of its
+# project, and down-split deletes them. Under the dev stack's project
+# (docker, or FLIGHTDECK_DEV_PROJECT) or the user compose file's
+# (flightdeck) those names are a real database's volume, so the three
+# targets refuse those projects before they run anything.
+SPLIT_GUARD = @case "$(SPLIT_PROJECT)" in \
+	docker|flightdeck|"$(FLIGHTDECK_DEV_PROJECT)") \
+	  echo "SPLIT_PROJECT=$(SPLIT_PROJECT) is the compose project of the dev stack or of a user install: the split test stack would share its volumes, and down-split deletes them. Give it a project of its own (the default is flightdeck-split)." >&2; \
+	  exit 1 ;; \
+	esac
+SPLIT_ENV = FLIGHTDECK_TEST_BASE_URL=http://localhost:$(SPLIT_PORT) \
+	FLIGHTDECK_TEST_DB=flightdeck \
+	FLIGHTDECK_TEST_POSTGRES_CONTAINER=$(SPLIT_PROJECT)-postgres-1 \
+	FLIGHTDECK_TEST_WORKER_CONTAINER=$(SPLIT_PROJECT)-workers-1
+
+dev-split: ## Start the split test stack: ingestion, workers and api as containers from source, on :4010
+	$(SPLIT_GUARD)
+	$(SPLIT_COMPOSE) up -d --wait
+
+test-split: dev-split ## Run the exclusive integration tests, the worker-pause ones included, against the split test stack
+	$(SPLIT_ENV) $(PYTHON) tests/e2e-fixtures/seed.py
+	$(SPLIT_ENV) $(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
+
+down-split: ## Remove the split test stack and its volumes (test data only)
+	$(SPLIT_GUARD)
+	$(SPLIT_COMPOSE) down -v
 
 # ---------------------------------------------------------------------------
 # Rule 40d playground demos. Each runs the per-framework playground
@@ -269,14 +314,20 @@ playground-all: ## Run every playground script (skips on missing API keys / opti
 # because the older `test-e2e` name collided when the Playwright
 # target was added — whichever target `make` picked up last silently
 # won, hiding the other. The split below avoids that ambiguity.
+#
+# Both browser targets take the stack from the dev stack's state, as
+# the pytest targets do: the specs read the address, the Postgres
+# container and the database from FLIGHTDECK_TEST_*
+# (dashboard/tests/e2e/_stack.ts), so a second stack's run reads and
+# writes that stack only.
 test-e2e: ## Run Playwright E2E tests (requires make dev; fixtures seed automatically via globalSetup)
-	cd dashboard && npx playwright test
+	$(STACK_ENV); cd dashboard && npx playwright test
 
 test-e2e-ui: ## Run Playwright E2E tests in Playwright UI mode
-	cd dashboard && npx playwright test --ui
+	$(STACK_ENV); cd dashboard && npx playwright test --ui
 
 seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (idempotent)
-	$(PYTHON) tests/e2e-fixtures/seed.py
+	$(STACK_ENV); $(PYTHON) tests/e2e-fixtures/seed.py
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint
@@ -287,17 +338,32 @@ lint: ## Lint all components
 	$(MAKE) lint-flightdeck
 	$(MAKE) -C dashboard lint
 
-dev: ## Start full local dev environment
-	$(MAKE) -C docker dev
+# The dev stack (scripts/dev-stack.sh): the flightdeck binary built from
+# this checkout, with the dashboard bundle embedded, in the background
+# on 127.0.0.1:4000, where the development token works. DB picks the
+# database: postgres (the default; the Postgres container of
+# docker/docker-compose.dev.yml, on the docker_postgres_data volume) or
+# sqlite (a file in the stack's data dir, no container). A stack of the
+# seven-container layout that is still running is moved over: its
+# service containers stop, its Postgres and its volumes stay. Only
+# dev-reset deletes data.
+dev: ## Start the dev stack: the flightdeck binary from source on :4000 (DB=postgres, the default, or DB=sqlite)
+	scripts/dev-stack.sh up $(DB)
 
-dev-reset: ## Wipe volumes and restart
-	$(MAKE) -C docker dev-reset
+dev-restart: ## Rebuild the binary (and a stale dashboard bundle) and restart it; Postgres keeps running
+	scripts/dev-stack.sh restart $(DB)
 
-down: ## Stop local dev environment
-	$(MAKE) -C docker down
+# CONFIRM names the compose project, for a database that holds more
+# than a seed: make dev-reset CONFIRM=docker. scripts/dev-stack.sh says
+# what it is about to delete and refuses without it.
+dev-reset: ## Stop the dev stack, DELETE its database and bus store, start again (CONFIRM=<project> for a database with data)
+	CONFIRM="$(CONFIRM)" scripts/dev-stack.sh reset $(DB)
 
-logs: ## Tail logs from all services
-	$(MAKE) -C docker logs
+down: ## Stop the dev stack; volumes and the data dir stay
+	scripts/dev-stack.sh down
+
+logs: ## Follow the flightdeck binary's log
+	scripts/dev-stack.sh logs
 
 release-prep: ## Open the release PR: bump every version location, date the CHANGELOG (usage: make release-prep VERSION=v0.6.0)
 	@test -n "$(VERSION)" || (echo "Usage: make release-prep VERSION=v0.6.0" && exit 1)
@@ -338,16 +404,8 @@ pypi-wheels: ## Build the flightdeck-cli wheels from dist/artifacts.json (usage:
 vuln-scan: ## Scan the npm and pip lockfiles for known vulnerabilities (the CI dependency scan)
 	python3 scripts/vuln_scan.py
 
-# -----------------------------------------------
-# Migration targets -- LOCAL DEVELOPMENT ONLY
-# migrate-local-up and migrate-local-status use
-# docker compose and require the stack to be
-# running locally. For remote or production
-# environments, see CONTRIBUTING.md.
-# -----------------------------------------------
-
-migrate-local-up: ## Apply all pending migrations (local dev only)
-	docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml run --rm -e FLIGHTDECK_MIGRATE_ONLY=true workers
-
-migrate-local-status: ## Show current migration version (local dev only)
-	docker exec docker-postgres-1 psql -U flightdeck -d flightdeck -c "SELECT version, dirty FROM schema_migrations ORDER BY version;"
+# Migrations run inside the binary at every start (the dev stack's
+# included), from the files embedded in it, so there is no migrate
+# target. The versions applied to the dev stack's Postgres:
+#   docker exec docker-postgres-1 psql -U flightdeck -d flightdeck \
+#     -c "SELECT version, dirty FROM schema_migrations"

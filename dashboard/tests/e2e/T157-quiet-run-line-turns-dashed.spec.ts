@@ -19,6 +19,7 @@ import {
 	fixtureSessionId,
 	waitForFleetReady,
 } from "./_fixtures";
+import { HOVER_SHOWS_MS, hoverUntil } from "./_hover";
 
 test.use({ viewport: { width: 1700, height: 1800 } });
 
@@ -66,13 +67,22 @@ test.describe("T157 — A quiet run's line turns dashed", () => {
 		await expect(live.getByTestId("swimlane-run-quiet-tail")).toHaveCount(0);
 
 		// Hover the quiet tail near the right edge, where no circle of the
-		// run sits (it has been silent there).
-		const lineBox = await stale.boundingBox();
-		await stale.hover({ position: { x: lineBox!.width - 8, y: lineBox!.height / 2 } });
+		// run sits (it has been silent there). The line is 8 px high and
+		// can move from under the pointer between the hover and the
+		// checks (hoverUntil says how), so they are one retried block,
+		// which reads the line's box again each time: the line grows
+		// with the window.
 		const tooltip = page.getByTestId(`swimlane-run-line-tooltip-${prefix(roles.stale)}`);
-		await expect(tooltip).toBeVisible();
-		await expect(tooltip).toContainText("running · quiet since");
-		await expect(tooltip).toContainText("state: stale");
-		await expect(stale).toHaveAttribute("data-highlighted", "true");
+		await hoverUntil(
+			async () => {
+				const lineBox = await stale.boundingBox();
+				await stale.hover({ position: { x: lineBox!.width - 8, y: lineBox!.height / 2 } });
+			},
+			async () => {
+				await expect(tooltip).toContainText("running · quiet since", { timeout: HOVER_SHOWS_MS });
+				await expect(tooltip).toContainText("state: stale", { timeout: HOVER_SHOWS_MS });
+				await expect(stale).toHaveAttribute("data-highlighted", "true", { timeout: HOVER_SHOWS_MS });
+			},
+		);
 	});
 });

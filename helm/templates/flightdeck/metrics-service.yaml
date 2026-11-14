@@ -1,0 +1,35 @@
+{{- if .Values.flightdeck.metrics.enabled }}
+{{- $component := "flightdeck" -}}
+{{- /*
+Headless record for the pods' three metrics listeners (the workers'
+counters on 9102, the ingestion and query API request-latency
+histograms on 9103 and 9104, each at /metrics in the Prometheus text
+format), so a scraper or a ServiceMonitor finds every pod through it.
+The listeners carry no auth, so they are kept off the flightdeck
+Service, which the Ingress routes to and an operator may make a
+LoadBalancer.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" (printf "%s-metrics" $component)) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: metrics-workers
+      port: 9102
+      targetPort: metrics-workers
+      protocol: TCP
+    - name: metrics-ingest
+      port: 9103
+      targetPort: metrics-ingest
+      protocol: TCP
+    - name: metrics-api
+      port: 9104
+      targetPort: metrics-api
+      protocol: TCP
+{{- end }}

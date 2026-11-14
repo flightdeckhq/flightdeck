@@ -982,6 +982,43 @@ All notable changes to Flightdeck are documented here.
   healthcheck (the image has no shell to run one). An install of the
   earlier compose files keeps its data by setting
   `FLIGHTDECK_DATABASE_URL` to its Postgres.
+- **The Helm chart runs the one image as a StatefulSet.** With the
+  default values it is one pod and nothing else: SQLite and the
+  embedded bus on the pod's own volume. `postgres.enabled=true` with
+  `postgres.password` runs the chart's Postgres, and
+  `postgres.externalUrl` uses yours. More than one replica, or the HPA,
+  needs a Postgres and a NATS the pods share (the chart's cluster with
+  `nats.auth.token`, or the new `nats.externalUrl`), and the render
+  refuses anything else with the reason: on SQLite or the embedded bus
+  every pod would have data of its own. The chart's Postgres gets
+  `max_connections` for 80 connections per pod it may run
+  (`postgres.maxConnections` overrides it upwards). The values
+  `api.*`, `ingestion.*`, `workers.*` and `dashboard.*`, the JWT and
+  admin secrets and the migrations ConfigMap are gone; `flightdeck.*`
+  replaces them. **An existing release must set `postgres.enabled=true`
+  to stay on the chart's Postgres**: it was implied before, and without
+  it the pods start on an empty SQLite database (the Postgres volume
+  claim stays). `kubectl logs <release>-flightdeck-0` shows the token
+  of the first start, as the install notes say. Every secret can come
+  from a Secret you created (`postgres.externalUrlSecret`,
+  `postgres.passwordSecret`, `nats.externalUrlSecret`,
+  `nats.auth.tokenSecret`) instead of a value. An upgrade that would
+  move the release to another database fails unless
+  `allowDatabaseChange=true`, since the chart does not move data. The
+  pods set `FLIGHTDECK_ALLOWED_HOSTS` to the Service, pod and Ingress
+  names (`flightdeck.extraAllowedHosts` adds more). Every pod runs under
+  the default seccomp profile, the bundled Postgres and NATS with a
+  read-only root filesystem; images can be pinned by digest;
+  `flightdeck.extraEnvFrom` and an optional NetworkPolicy for the
+  metrics ports are new, and `flightdeck.extraEnv` refuses a name that
+  reads like a secret. `flightdeck.dashboardTokenSecret` gives every
+  pod one dashboard token you supply, mounted from your Secret as the
+  file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names. Resource names are
+  built on the release name cut to 43 characters, so a long release
+  name no longer renders a Service or StatefulSet name Kubernetes
+  refuses; a release of an earlier chart with a longer base gets new
+  Postgres and NATS names (the README says how to keep the Postgres
+  data; the NATS rename loses only the events still queued).
 - **`make dev` runs the binary from source.** The contributor dev
   stack is the `flightdeck` binary built from the checkout, with the
   dashboard embedded, on `127.0.0.1:4000` beside one Postgres
@@ -1016,10 +1053,9 @@ All notable changes to Flightdeck are documented here.
 - **The per-service Docker images are no longer published.**
   `flightdeckhq/flightdeck-ingestion`, `-workers`, `-api` and
   `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image,
-  which Docker Compose runs. Their Dockerfiles, the nginx front door
-  (`docker/nginx`) and the compose production and E2E overlays are
-  gone with them; the Helm chart moves to the one image in a following
-  change.
+  which Docker Compose and the Helm chart run. Their Dockerfiles, the
+  nginx front door (`docker/nginx`), the compose production and E2E
+  overlays and the chart's per-service templates are gone with them.
 
 ## v0.8.0 — 2026-10-31
 

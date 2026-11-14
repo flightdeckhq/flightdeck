@@ -49,6 +49,16 @@ func MigrationsFS(b Backend) (fs.FS, error) {
 // up to migrationLockWait (see migrate_lock.go), and then find the
 // schema current. ctx ends the wait. A schema left dirty by a migration
 // that was interrupted is reported as a DirtyError and not migrated.
+//
+// A SQLite database is recognised by its real path, with symbolic
+// links resolved, so callers that reach one file through a link and
+// through its target exclude each other. A hard link has no path to
+// resolve: within one process the file is still recognised (by
+// os.SameFile), but two processes that reach one database through two
+// hard links each take a lock file of their own name and may migrate
+// it at once. Reach one SQLite database by one path, or by symbolic
+// links to it. On Postgres the lock is the database's own, whatever the
+// URL.
 func Migrate(ctx context.Context, rawURL string) error {
 	release, err := lockMigrations(ctx, rawURL)
 	if err != nil {
@@ -89,9 +99,26 @@ func (e *DirtyError) Error() string {
 	}
 	return fmt.Sprintf("storage: the schema is marked dirty at version %d (%s): that migration was interrupted "+
 		"(the process applying it was killed or lost the database) and may be partly applied, so no instance "+
-		"migrates further. Compare the database with that file, then record the outcome in schema_migrations: "+
-		"version %d with dirty = false once its changes are all there, or version %d with dirty = false once they "+
-		"are undone; the next start applies what is left", e.Version, file, e.Version, e.Version-1)
+		"migrates further. Compare the database with that file, then record the outcome in schema_migrations: %s; "+
+		"the next start applies what is left", e.Version, file, e.recovery())
+}
+
+// recovery is the record that states each outcome of the interrupted
+// migration. golang-migrate records "no migration applied" as an empty
+// schema_migrations, not as version 0 (a version 0 row is refused with
+// "no migration found for version 0"), so undoing the first migration
+// means emptying the table.
+func (e *DirtyError) recovery() string {
+	const empty = "DELETE FROM schema_migrations, leaving no row"
+	switch e.Version {
+	case 0:
+		return empty
+	case 1:
+		return fmt.Sprintf("version 1 with dirty = false once its changes are all there, or %s once they are undone", empty)
+	default:
+		return fmt.Sprintf("version %d with dirty = false once its changes are all there, or version %d with dirty = false "+
+			"once they are undone", e.Version, e.Version-1)
+	}
 }
 
 // asDirty returns the DirtyError for err when it is golang-migrate's

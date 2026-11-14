@@ -280,7 +280,7 @@ func TestMigrate_ADirtySchemaIsReportedAndLeftDirty(t *testing.T) {
 					fmt.Sprintf("marked dirty at version %d (%s)", c.version, c.file),
 					"was interrupted",
 					fmt.Sprintf("version %d with dirty = false once its changes are all there", c.version),
-					fmt.Sprintf("version %d with dirty = false once they are undone", c.version-1),
+					undoneAdvice(c.version),
 				} {
 					if !strings.Contains(err.Error(), want) {
 						t.Errorf("instance %d: the message lacks %q: %v", i, want, err)
@@ -358,4 +358,132 @@ func versionWithoutTheLock(t *testing.T, rawURL string) (uint, bool, error) {
 		return 0, false, nil
 	}
 	return v, dirty, err
+}
+
+// undoneAdvice is what the DirtyError tells an operator to record once
+// the interrupted migration's changes are undone: the version before,
+// or, for the first migration, an empty table (golang-migrate refuses a
+// version 0 row).
+func undoneAdvice(version uint) string {
+	if version <= 1 {
+		return "DELETE FROM schema_migrations, leaving no row once they are undone"
+	}
+	return fmt.Sprintf("version %d with dirty = false once they are undone", version-1)
+}
+
+// markDirty leaves rawURL's schema_migrations as a migrator killed
+// during version leaves it, with nothing of that migration applied
+// when fresh, or on top of a schema already migrated when not.
+func markDirty(t *testing.T, rawURL string, version uint, fresh bool) {
+	t.Helper()
+	ctx := context.Background()
+	if fresh {
+		// Creates schema_migrations, empty, as golang-migrate does
+		// before it applies anything.
+		if _, _, err := storage.SchemaVersion(ctx, rawURL); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := storage.Migrate(ctx, rawURL); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(ctx, rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (version, dirty) VALUES ($1, TRUE)", version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func execOn(t *testing.T, rawURL, statement string) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := storage.Open(ctx, rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, statement); err != nil {
+		t.Fatalf("%s: %v", statement, err)
+	}
+}
+
+// Following the DirtyError's advice gets the schema migrated again: the
+// advice an operator is given has to work.
+func TestMigrate_TheDirtySchemaAdviceWorks(t *testing.T) {
+	type tc struct {
+		name    string
+		backend storage.Backend
+		url     func(t *testing.T) string
+		version uint
+		fresh   bool // nothing of the migration applied
+		// version 0 below stands for the backend's newest version.
+		record string // the record the advice says to write
+	}
+	sqliteURL := func(t *testing.T) string { return storage.SQLiteURL(filepath.Join(t.TempDir(), "flightdeck.db")) }
+	postgresURL := func(suffix string) func(t *testing.T) string {
+		return func(t *testing.T) string { return freshPostgres(t, suffix) }
+	}
+	cases := []tc{
+		// The first migration interrupted before it changed anything:
+		// undone means an empty table, not version 0.
+		{"sqlite, version 1 undone", storage.SQLite, sqliteURL, 1, true, "DELETE FROM schema_migrations"},
+		{"postgres, version 1 undone", storage.Postgres, postgresURL("advice_v1"), 1, true, "DELETE FROM schema_migrations"},
+		// The newest migration interrupted once its changes were all
+		// there (a kill between its last statement and the clean mark).
+		{"postgres, the newest version done", storage.Postgres, postgresURL("advice_done"), 0, false, "UPDATE schema_migrations SET dirty = FALSE"},
+		{"sqlite, version 1 done", storage.SQLite, sqliteURL, 0, false, "UPDATE schema_migrations SET dirty = FALSE"},
+	}
+	for _, c := range cases {
+		if c.version == 0 {
+			c.version = maxVersion(versions(t, c.backend))
+		}
+		t.Run(c.name, func(t *testing.T) {
+			if c.backend == storage.Postgres {
+				storagetest.PostgresURL(t)
+			}
+			rawURL := c.url(t)
+			markDirty(t, rawURL, c.version, c.fresh)
+
+			err := storage.Migrate(context.Background(), rawURL)
+			var dirty *storage.DirtyError
+			if !errors.As(err, &dirty) || dirty.Version != c.version {
+				t.Fatalf("err = %v, want a DirtyError at version %d", err, c.version)
+			}
+			if c.version <= 1 && strings.Contains(err.Error(), "version 0") {
+				t.Fatalf("the advice names version 0, which golang-migrate refuses: %v", err)
+			}
+			if !strings.Contains(err.Error(), undoneAdvice(c.version)) {
+				t.Fatalf("the advice lacks %q: %v", undoneAdvice(c.version), err)
+			}
+
+			execOn(t, rawURL, c.record)
+			if err := storage.Migrate(context.Background(), rawURL); err != nil {
+				t.Fatalf("after following the advice (%s): %v", c.record, err)
+			}
+			requireCurrent(t, rawURL, c.backend, nil)
+		})
+	}
+}
+
+// The advice for each version, the underflow of version 0 included.
+func TestDirtyError_Advice(t *testing.T) {
+	for _, c := range []struct {
+		version   uint
+		want, not string
+	}{
+		{0, "DELETE FROM schema_migrations, leaving no row", "version 18446744073709551615"},
+		{1, "version 1 with dirty = false once its changes are all there, or DELETE FROM schema_migrations, leaving no row once they are undone", "version 0"},
+		{2, "version 2 with dirty = false once its changes are all there, or version 1 with dirty = false once they are undone", "DELETE"},
+		{30, "version 30 with dirty = false once its changes are all there, or version 29 with dirty = false once they are undone", "DELETE"},
+	} {
+		msg := (&storage.DirtyError{Version: c.version, File: "x.up.sql"}).Error()
+		if !strings.Contains(msg, c.want) || strings.Contains(msg, c.not) {
+			t.Errorf("version %d: %q; want it to contain %q and not %q", c.version, msg, c.want, c.not)
+		}
+	}
 }

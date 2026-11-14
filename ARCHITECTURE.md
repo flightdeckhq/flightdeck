@@ -5347,16 +5347,41 @@ holds no transaction for an index build to wait on. On SQLite it is an
 exclusive lock (`flock`, `LockFileEx` on Windows) on
 `<database>.migrate.lock` beside the database, created 0600, and a mutex
 of the process for each database file; on a platform with no file lock
-the mutex alone serialises the migrations of one process. A waiting
+(none of the release targets) the mutex alone serialises the migrations
+of one process. The database is recognised by its real path, symbolic
+links resolved (the file's own, or its directory's when the file is yet
+to be created, following a link to a file not created yet), so a caller
+that reaches it through a link and one that names its target take one
+lock file. A hard link has no path to resolve: within one process the
+mutex still recognises the file (`os.SameFile`), but two processes that
+reach one database through two hard links each lock a file of their own
+name and may migrate it at once, so a SQLite database is reached by one
+path, or by symbolic links to it. A waiting
 instance asks four times a second, logs once that it waits and every 30
 seconds after, and gives up after ten minutes with an error that says
 another instance is migrating; its context (a signal, for the binary)
 ends the wait too. A holder that dies loses the lock at once: Postgres
 drops a session's advisory locks with its connection, the kernel drops
-a file lock with its process. An instance of an earlier version takes
-only golang-migrate's lock, so a rolling update whose old and new pods
-migrate at once can still meet the deadlock; a new version's
-migrations are applied by its first pod before the old pods restart.
+a file lock with its process.
+
+The Postgres lock is a session's, so the URL the binary migrates with
+must reach the server directly or through a pooler in session mode: a
+transaction pooler (PgBouncer with `pool_mode = transaction`) hands the
+session's statements to different server connections, so the lock is
+not held by the session that asked for it and the instances are not
+serialised. While an instance migrates, its lock session is idle (the
+migrations run on golang-migrate's own connection), so a server
+`idle_session_timeout` shorter than the longest migration ends that
+session and releases the lock halfway, letting a waiting instance in;
+leave it unset for the migrating role, or above the longest migration.
+
+An instance of an earlier version takes only golang-migrate's lock. A
+rolling update keeps the old pods running while the new ones start and
+migrate, and a running pod does not migrate again, so the update is
+safe as long as no old pod restarts while a new one is migrating: an old
+pod that restarts then (a crash, an eviction, a node drain) waits in
+golang-migrate's blocking lock, and against an index built
+concurrently that is the deadlock again.
 
 **A dirty schema.** golang-migrate marks the schema dirty when it
 starts a migration and clean when the migration is done. With the lock
@@ -5370,7 +5395,10 @@ migration was interrupted, and gives the recovery. Compare the database
 with that file, then record the outcome in `schema_migrations`: the
 version with `dirty = false` once its changes are all there, or the
 version before it with `dirty = false` once they are undone; the next
-start applies what is left. An interrupted `CREATE INDEX CONCURRENTLY`
+start applies what is left. For the first migration, undone means an
+empty table (`DELETE FROM schema_migrations`): golang-migrate records
+"nothing applied" as no row, and refuses a version 0 row with `no
+migration found for version 0`. An interrupted `CREATE INDEX CONCURRENTLY`
 leaves an invalid index of that name, which is undone with `DROP INDEX
 CONCURRENTLY`.
 

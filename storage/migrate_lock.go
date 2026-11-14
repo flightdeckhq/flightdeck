@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -63,9 +65,12 @@ const (
 )
 
 // migrateLockSuffix names the lock file of a SQLite database's
-// migrations: the database's path with this suffix, beside it. It is
-// not the binary's own "<database>.lock", which a running instance
-// holds for as long as it runs.
+// migrations: the database's real path (symbolic links resolved) with
+// this suffix, beside it. It is not the binary's own "<database>.lock",
+// which a running instance holds for as long as it runs. A hard link
+// to the database has a lock file of its own name, so two processes
+// that reach one file through two hard links are not excluded from
+// each other; see Migrate.
 const migrateLockSuffix = ".migrate.lock"
 
 // lockMigrations takes the migration lock of the database at rawURL,
@@ -114,28 +119,105 @@ func lockPostgresMigrations(ctx context.Context, rawURL string) (func(), error) 
 	}, nil
 }
 
-// sqliteMigrationMutexes holds a mutex per SQLite database file this
-// process migrates, by absolute path. On platforms without file locks
-// it is the only exclusion; elsewhere it keeps the goroutines of one
-// process off the lock file's system calls.
-var sqliteMigrationMutexes sync.Map
+// symlinkDepthLimit bounds how many dangling symbolic links
+// sqliteRealPath follows by hand; the kernel itself gives up at forty.
+const symlinkDepthLimit = 40
+
+// sqliteRealPath returns the absolute path of the SQLite database at
+// path with its symbolic links resolved: those of the file when it
+// exists; otherwise those of its directory, where the file is about to
+// be created, after following a link that points at a file not created
+// yet (at most depth times). Two names for one file through links are
+// then one name, which is what the migration lock is keyed on.
+func sqliteRealPath(path string, depth int) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if info, lerr := os.Lstat(abs); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
+		if depth <= 0 {
+			return "", fmt.Errorf("%s: too many symbolic links", abs)
+		}
+		target, rerr := os.Readlink(abs)
+		if rerr != nil {
+			return "", rerr
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(abs), target)
+		}
+		return sqliteRealPath(target, depth-1)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, filepath.Base(abs)), nil
+}
+
+// sqliteMigrationMutex is the mutex that serialises the migrations of
+// one SQLite database file in this process.
+type sqliteMigrationMutex struct {
+	path string // the file's real path (sqliteRealPath)
+	mu   sync.Mutex
+}
+
+// sqliteMigrationMutexes holds one entry per SQLite database file this
+// process has migrated. On platforms without file locks the mutex is
+// the only exclusion; elsewhere it also covers what the lock file
+// cannot: a hard link, which no path resolves (see mutexFor).
+var (
+	sqliteMigrationRegistry sync.Mutex
+	sqliteMigrationMutexes  []*sqliteMigrationMutex
+)
+
+// sqliteMigrationMutexFor returns the mutex of the database whose real
+// path is path: the entry of that path, or the entry of another path
+// that names the same file (os.SameFile: a hard link, on every
+// platform), or a new one. The files are looked at when the lock is
+// asked for, so a database created by an earlier migration is matched
+// to its hard links once it exists.
+func sqliteMigrationMutexFor(path string) *sync.Mutex {
+	sqliteMigrationRegistry.Lock()
+	defer sqliteMigrationRegistry.Unlock()
+	info, statErr := os.Stat(path)
+	for _, m := range sqliteMigrationMutexes {
+		if m.path == path {
+			return &m.mu
+		}
+		if statErr != nil {
+			continue
+		}
+		if other, err := os.Stat(m.path); err == nil && os.SameFile(info, other) {
+			return &m.mu
+		}
+	}
+	m := &sqliteMigrationMutex{path: path}
+	sqliteMigrationMutexes = append(sqliteMigrationMutexes, m)
+	return &m.mu
+}
 
 func lockSQLiteMigrations(ctx context.Context, path string) (func(), error) {
-	abs, err := filepath.Abs(path)
+	resolved, err := sqliteRealPath(path, symlinkDepthLimit)
 	if err != nil {
 		return nil, fmt.Errorf("storage: SQLite database path: %w", err)
 	}
-	mutex, _ := sqliteMigrationMutexes.LoadOrStore(abs, &sync.Mutex{})
-	mu := mutex.(*sync.Mutex)
-	if err := waitForMigrationLock(ctx, func() (bool, error) { return mu.TryLock(), nil }, abs, migrationLockWait); err != nil {
+	mu := sqliteMigrationMutexFor(resolved)
+	if err := waitForMigrationLock(ctx, func() (bool, error) { return mu.TryLock(), nil }, resolved, migrationLockWait); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(abs+migrateLockSuffix, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(resolved+migrateLockSuffix, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		mu.Unlock()
 		return nil, fmt.Errorf("storage: the migration lock file: %w", err)
 	}
-	if err := waitForMigrationLock(ctx, func() (bool, error) { return tryLockFile(f) }, abs, migrationLockWait); err != nil {
+	if err := waitForMigrationLock(ctx, func() (bool, error) { return tryLockFile(f) }, resolved, migrationLockWait); err != nil {
 		_ = f.Close()
 		mu.Unlock()
 		return nil, err

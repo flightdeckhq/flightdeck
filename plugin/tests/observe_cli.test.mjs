@@ -1974,14 +1974,16 @@ describe("observe_cli helpers", () => {
       assert.equal(result.content, undefined);
     });
 
-    it("truncates command to 200 characters", () => {
+    it("cuts command to 200 characters, marks the cut and lists the field", () => {
       const result = sanitizeToolInput({ command: "a".repeat(300) });
-      assert.ok(result.command.length <= 200);
+      assert.equal(result.command, "a".repeat(200) + "…");
+      assert.deepEqual(result.truncated, ["command"]);
     });
 
-    it("truncates Task prompt to 100 characters", () => {
+    it("cuts Task prompt to 100 characters, marks the cut and lists the field", () => {
       const result = sanitizeToolInput({ prompt: "x".repeat(250) });
-      assert.equal(result.prompt.length, 100);
+      assert.equal(result.prompt, "x".repeat(100) + "…");
+      assert.deepEqual(result.truncated, ["prompt"]);
     });
 
     it("returns null for empty / non-object input", () => {

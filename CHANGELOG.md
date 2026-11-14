@@ -314,6 +314,13 @@ All notable changes to Flightdeck are documented here.
   plane at `https://ingest.example.com` gets `/ingest` appended and its
   API calls stay on that host (they went to `https://api.example.com`,
   with the access token).
+- **A cut tool input says it was cut.** The plugin keeps a tool's
+  `command`, `query` and `pattern` to 200 characters and a sub-agent's
+  `prompt` to 100, and cut them with no sign, so the session drawer
+  showed a command that stopped mid-way as if it were the whole command.
+  A cut value now ends with `…` and the tool input lists the cut fields
+  in `truncated`; the bounds are unchanged. The bounds count characters,
+  so a cut no longer splits one in two.
 - **A Claude Code session that is not being recorded says so.** When
   the server does not accept a session's first event (no answer, an
   address that is not a Flightdeck server's, a refused token), the

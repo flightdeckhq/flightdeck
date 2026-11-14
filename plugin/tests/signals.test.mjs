@@ -148,6 +148,8 @@ describe("session_signal events", () => {
   it("cuts a long or multi-line tool input to the bound instead of dropping it", () => {
     const long = build("PermissionRequest", { tool_name: "Read", tool_input: { file_path: "/x/" + "p".repeat(400) } });
     assert.equal(Buffer.byteLength(long.signal_data.file_path, "utf8"), MAX_SIGNAL_DATA_VALUE_BYTES);
+    assert.ok(long.signal_data.file_path.endsWith("…"), "a cut value ends with the cut mark");
+    assert.equal(long.signal_data.truncated, "file_path");
     const heredoc = build("PermissionRequest", {
       tool_name: "Bash",
       tool_input: { command: "git commit -m \"$(cat <<'EOF'\nfix: the thing\n\tdetails\nEOF\n)\"" },
@@ -155,6 +157,28 @@ describe("session_signal events", () => {
     assert.equal(heredoc.signal_data.command, "git commit -m \"$(cat <<'EOF' fix: the thing details EOF )\"");
     const tab = build("PermissionRequest", { tool_name: "Grep", tool_input: { pattern: "a\tb" } });
     assert.equal(tab.signal_data.pattern, "a b");
+  });
+
+  it("marks a tool input the whitelist cut, and one the byte bound cuts again", () => {
+    // Over the whitelist's 200 characters: cut there, the mark kept.
+    const command = "find . -name '*.log' | xargs grep -n ERROR " + "| sort ".repeat(40);
+    const cut = build("PermissionRequest", { tool_name: "Bash", tool_input: { command } });
+    assert.equal(cut.signal_data.command, Array.from(command).slice(0, 200).join("") + "…");
+    assert.equal(cut.signal_data.truncated, "command");
+    // 200 characters of three bytes each are 600 bytes, over
+    // signal_data's 256: cut again on a character boundary, one mark.
+    const wide = build("PermissionRequest", { tool_name: "Grep", tool_input: { pattern: "€".repeat(150), query: "ok" } });
+    assert.ok(Buffer.byteLength(wide.signal_data.pattern, "utf8") <= MAX_SIGNAL_DATA_VALUE_BYTES);
+    assert.match(wide.signal_data.pattern, /^€+…$/);
+    assert.equal(wide.signal_data.query, "ok");
+    assert.equal(wide.signal_data.truncated, "pattern");
+    // Nothing cut: no list.
+    const whole = build("PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" } });
+    assert.equal("truncated" in whole.signal_data, false);
+    // Every value is a scalar, as ingestion requires of signal_data.
+    for (const event of [cut, wide, whole]) {
+      for (const value of Object.values(event.signal_data)) assert.notEqual(typeof value, "object");
+    }
   });
 
   it("reports an auto-mode denial with the tool, its use id and the matched rule", () => {

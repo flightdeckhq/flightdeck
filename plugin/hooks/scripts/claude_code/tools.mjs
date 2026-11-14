@@ -24,14 +24,56 @@ const TOOL_ERROR_MESSAGE_MAX_CHARS = 1000;
 // Tool input sanitisation -- safe whitelist only.
 // ---------------------------------------------------------------------
 
+// How much of a free-text tool input leaves the machine, in characters
+// (code points): a shell command, a search query or a glob pattern up
+// to 200, a sub-agent's prompt up to 100. They are privacy and size
+// bounds: the values ride inline on the event row, next to the
+// metadata, whatever the capture of prompts, and a prompt can carry
+// anything the user typed.
+export const TOOL_INPUT_TEXT_MAX_CHARS = 200;
+export const TOOL_INPUT_PROMPT_MAX_CHARS = 100;
+
+// What ends a value that was cut, after the characters kept, so that a
+// command cut mid-way does not read as the whole command. The field's
+// name is also listed in the sanitized input's ``truncated``.
+export const TOOL_INPUT_CUT_MARK = "…";
+
+// The whitelisted free-text fields and their bounds, in the order they
+// are reported.
+const BOUNDED_TOOL_INPUT_FIELDS = [
+  ["command", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["query", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["pattern", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["prompt", TOOL_INPUT_PROMPT_MAX_CHARS],
+];
+
+/**
+ * The tool input the plugin reports: ``file_path``, and ``command``,
+ * ``query``, ``pattern`` and ``prompt`` within their bounds; nothing
+ * else (file bodies, message content, sub-agent context). A value over
+ * its bound keeps its first characters followed by TOOL_INPUT_CUT_MARK,
+ * and the sanitized input lists every such field in ``truncated``, in
+ * the order above. Null when no whitelisted field is present.
+ */
 export function sanitizeToolInput(input) {
   if (!input || typeof input !== "object") return null;
   const safe = {};
+  const truncated = [];
   if (input.file_path) safe.file_path = input.file_path;
-  if (input.command) safe.command = String(input.command).slice(0, 200);
-  if (input.query) safe.query = String(input.query).slice(0, 200);
-  if (input.pattern) safe.pattern = String(input.pattern).slice(0, 200);
-  if (input.prompt) safe.prompt = String(input.prompt).slice(0, 100);
+  for (const [field, maxChars] of BOUNDED_TOOL_INPUT_FIELDS) {
+    if (!input[field]) continue;
+    const value = String(input[field]);
+    // By code point: a cut through a surrogate pair would send half a
+    // character.
+    const chars = Array.from(value);
+    if (chars.length > maxChars) {
+      safe[field] = chars.slice(0, maxChars).join("") + TOOL_INPUT_CUT_MARK;
+      truncated.push(field);
+    } else {
+      safe[field] = value;
+    }
+  }
+  if (truncated.length > 0) safe.truncated = truncated;
   return Object.keys(safe).length > 0 ? safe : null;
 }
 

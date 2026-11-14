@@ -2502,11 +2502,22 @@ cannot observe it.
 ### Tool input sanitisation
 
 `sanitizeToolInput(input)` is a strict whitelist that keeps ONLY:
-`file_path`, `command` (truncated to 200 chars), `query`, `pattern`,
-`prompt` (truncated to 100 chars). Everything else (content, message
-bodies, sub-agent contexts) is dropped. Returns `null` if no whitelisted
-field was present. Raw file bodies written by `Write` / `Edit` are never
-forwarded.
+`file_path`, `command`, `query`, `pattern` (each of the last three cut
+to 200 characters) and `prompt` (cut to 100). Everything else (content,
+message bodies, sub-agent contexts) is dropped. Returns `null` if no
+whitelisted field was present. Raw file bodies written by `Write` /
+`Edit` are never forwarded. The bounds count characters (code points),
+so a cut never splits one. A cut value keeps its first characters and
+ends with `…`, and the sanitized input lists every cut field, in the
+order `command`, `query`, `pattern`, `prompt`, as `truncated`
+(`{"command": "git log --oneline … | head…", "truncated":
+["command"]}`): a command cut mid-way does not read as the whole
+command, in the event's `tool_input` or in the Prompts tab, which shows
+the same object. A value at its bound is sent whole, with no `truncated`.
+The same input in a permission or notification `session_signal` is cut
+again to `signal_data`'s 256 bytes; a value that bound cuts ends with
+`…` too, and `signal_data.truncated` names the cut fields, comma-separated,
+since `signal_data` holds scalars only.
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
@@ -9693,8 +9704,10 @@ sanitiser is a strict whitelist implemented in
 - Keys kept: `file_path`, `command`, `query`, `pattern`, `prompt`. Every
   other field is dropped at the source; structured inputs that don't map
   onto one of these keys never reach the network.
-- String values truncated: `prompt` at 100 chars, everything else at 200.
-  Truncation happens before JSON serialisation.
+- String values cut: `prompt` at 100 characters, `command`, `query` and
+  `pattern` at 200; `file_path` is sent whole. A cut value ends with `…`
+  and is listed in the input's `truncated` (see Plugin > Tool input
+  sanitisation). The cut happens before JSON serialisation.
 - Raw file bodies written by `Write` / `Edit` are never forwarded. Those
   tools carry their body as the `content` key, which is not on the
   whitelist.

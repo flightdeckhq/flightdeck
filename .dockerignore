@@ -1,13 +1,13 @@
-# Build context of the images built from the repository root: the
-# all-in-one image (Dockerfile, which needs the Go modules and the
-# dashboard's sources) and the service images that need the storage
-# module beside their own (ingestion/Dockerfile, workers/Dockerfile,
-# api/Dockerfile). Everything no build reads stays out of the context.
+# Build context of the all-in-one image (Dockerfile), which needs the Go
+# modules and the dashboard's sources. Everything the build does not
+# read stays out of the context.
 .git
 .github
 .claude
 .claude-plugin
 .scratch
+# The dev stack's binary, log and data dir (scripts/dev-stack.sh).
+.dev
 .chunkhound
 assets
 docs

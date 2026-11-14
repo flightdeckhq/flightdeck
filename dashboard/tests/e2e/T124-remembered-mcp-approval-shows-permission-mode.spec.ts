@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T124 — a remembered MCP approval names its server and the Claude
 // Code permission mode it was given in. The seed's
@@ -16,7 +17,7 @@ const POLICY_ACTIVE_SESSION_ID = "91e0c5c2-7023-5e81-8b27-aac132d827d2";
 test.describe("T124 — remembered MCP approval shows its permission mode", () => {
   test("the drawer lists the server, approval time and permission mode", async ({ page }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${POLICY_ACTIVE_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${POLICY_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

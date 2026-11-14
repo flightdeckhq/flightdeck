@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T125 — the event drawer's neighbors tab lists the events around the
 // open event, however deep in its session that event is. The seed puts
@@ -19,7 +20,7 @@ type Ev = { id: string; event_type: string; occurred_at: string };
 test.describe("T125 — neighbors tab centres on the open event", () => {
   test("the anchor is the open event and the rows before it are its predecessors", async ({ page }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${POLICY_ACTIVE_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${POLICY_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

@@ -34,9 +34,8 @@ permissions:
 
 # Cap blast radius from rapid-fire pushes on the same branch: cancel
 # any in-flight run when a newer commit lands. Two pushes in quick
-# succession should not boot two sets of parallel Compose stacks (the
-# integration jobs and each of the four E2E shards spin up a full dev
-# stack).
+# succession should not boot two sets of parallel stacks (the
+# integration legs and each of the four E2E shards start a dev stack).
 concurrency:
   # Namespace by workflow name so a future workflow that picks the
   # same ref-keyed group doesn't accidentally cancel CI runs. Low-cost
@@ -290,12 +289,17 @@ jobs:
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04
-    # The service modules are built one at a time by their Dockerfiles
-    # and by the dev compose containers, where the root go.work does not
-    # exist. With the workspace on, go.work.sum satisfies a module whose
-    # own go.sum is incomplete and the gap only shows when a container
-    # boots. Turning the workspace off here makes this job see what the
-    # containers see; the root module uses its replace directives.
+    # The job takes three to four minutes; twenty ends a build or a test
+    # that hangs with its output, not at the six-hour default.
+    timeout-minutes: 20
+    # The service modules are also built one at a time, each from its
+    # own directory, by the split test stack's containers (`go run
+    # ./cmd/` with only that module mounted), where the root go.work
+    # does not exist. With the workspace on, go.work.sum satisfies a
+    # module whose own go.sum is incomplete and the gap only shows when
+    # a container boots. Turning the workspace off here makes this job
+    # see what the containers see; the root module uses its replace
+    # directives.
     env:
       GOWORK: "off"
     steps:
@@ -624,6 +628,8 @@ jobs:
   dashboard:
     name: Dashboard (TypeScript)
     runs-on: ubuntu-24.04
+    # About two minutes; fifteen bounds a hung test run.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: dashboard
@@ -646,216 +652,11 @@ jobs:
       - name: Unit tests
         run: npm run test
 
-      # ---- Production image smoke ---------------------------------
-      #
-      # Build the multi-stage dashboard image (Node build → nginx-
-      # alpine), run it standalone, and assert three contracts on
-      # the resulting container:
-      #
-      #   1. /runtime-config.json strict cache-discipline pack
-      #      (Cache-Control: no-store, no-cache, must-revalidate +
-      #      Pragma: no-cache + Expires: 0) on 200 and 405.
-      #   2. /assets/<hashed-bundle> exactly-one Cache-Control of
-      #      "public, max-age=31536000, immutable" + no Expires on
-      #      200 and 405.
-      #   3. Container master process runs as a non-root UID.
-      #
-      # Permanent regression protection on dashboard/nginx.conf AND
-      # dashboard/Dockerfile — a future edit that weakens any of the
-      # three contracts fails this step and blocks the PR.
-      #
-      # Why this lives here, not in integration / e2e: those jobs use
-      # the docker-compose.dev.yml override which swaps the dashboard
-      # image for ``vite dev`` running in a node:24-alpine container.
-      # vite serves /runtime-config.json with its own default
-      # ``Cache-Control: no-cache`` and emits no headers at all on
-      # /assets/* — the production discipline only ships from the
-      # actual multi-stage image. So the smoke must build that image
-      # directly, no compose involved.
-
-      - name: Build dashboard production image
-        # docker is preinstalled on ubuntu-24.04 runners.
-        # working-directory: dashboard inherits from defaults above,
-        # so the context is `.` (the dashboard directory).
-        run: docker build -t flightdeck-dashboard-smoke .
-
-      - name: Run dashboard image
-        run: |
-          docker run -d --name dashboard-smoke \
-            -p 13000:3000 \
-            flightdeck-dashboard-smoke
-
-      - name: Wait for nginx ready
-        # Bounded retry loop. Status check is pinned to 200 (not just
-        # "any 2xx via curl -f") so a transient redirect during
-        # startup can't satisfy the readiness gate before the
-        # assertion steps run.
-        run: |
-          for i in $(seq 1 30); do
-            code=$(curl -o /dev/null -w '%{http_code}' -s http://localhost:13000/runtime-config.json || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "ready after ${i}s"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "FAIL: nginx did not become ready within 30 s"
-          docker logs dashboard-smoke || true
-          exit 1
-
-      - name: Assert headers on 200 (GET /runtime-config.json)
-        # Triplet + Pragma + Expires must all appear on the success
-        # path. Negative assertions guard against ``expires off`` →
-        # ``expires 1h`` slippage (would inject a conflicting
-        # ``Cache-Control: max-age=…`` directive alongside the
-        # required ones, OR a non-zero ``Expires:``). Either is a
-        # regression the substring assertions would otherwise miss.
-        # Header values are kept in lock-step with
-        # ``dashboard/nginx.conf`` — that file carries a pointer
-        # comment to this step so future editors see the contract.
-        run: |
-          set -e
-          headers=$(curl -sI http://localhost:13000/runtime-config.json)
-          echo "--- headers ---"
-          echo "$headers"
-          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
-          echo "$headers" | grep -qi 'Pragma: no-cache'
-          echo "$headers" | grep -qi 'Expires: 0'
-          if echo "$headers" | grep -qi 'max-age'; then
-            echo "FAIL: Cache-Control must not include max-age"
-            exit 1
-          fi
-          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
-            echo "FAIL: Expires must be exactly 0"
-            exit 1
-          fi
-
-      - name: Assert headers on 405 (POST /runtime-config.json)
-        # Verifies the ``always`` parameter on every add_header
-        # directive. Status check uses ``curl -w '%{http_code}'``
-        # rather than grepping the status line so the assertion isn't
-        # coupled to ``HTTP/1.1`` (a future image upgrade enabling
-        # HTTP/2 plain-text would silently break a status-line grep).
-        run: |
-          set -e
-          code=$(curl -o /dev/null -w '%{http_code}' -s -X POST http://localhost:13000/runtime-config.json)
-          headers=$(curl -sI -X POST http://localhost:13000/runtime-config.json)
-          echo "--- headers ---"
-          echo "$headers"
-          if [ "$code" != "405" ]; then
-            echo "FAIL: expected 405, got $code"
-            exit 1
-          fi
-          echo "$headers" | grep -qi 'Cache-Control: no-store, no-cache, must-revalidate'
-          echo "$headers" | grep -qi 'Pragma: no-cache'
-          echo "$headers" | grep -qi 'Expires: 0'
-          if echo "$headers" | grep -qi 'max-age'; then
-            echo "FAIL: Cache-Control must not include max-age on error responses"
-            exit 1
-          fi
-          if echo "$headers" | grep -qiE 'Expires: [^0]'; then
-            echo "FAIL: Expires must be exactly 0 on error responses"
-            exit 1
-          fi
-
-      - name: Resolve a representative hashed asset
-        # Vite emits hashed filenames under /assets/ (e.g.
-        # index-<hash>.js). The smoke needs a real one to hit the
-        # asset-serving path operators see; ``docker exec ls`` gives
-        # the canonical list inside the image. Asserting against
-        # whatever happens to land first is fine because the cache
-        # contract is uniform across the directory — every file
-        # under /assets/ shares the same nginx location block.
-        id: asset
-        run: |
-          set -e
-          name=$(docker exec dashboard-smoke ls /usr/share/nginx/html/assets/ | head -1)
-          if [ -z "$name" ]; then
-            echo "FAIL: /usr/share/nginx/html/assets/ is empty in the built image"
-            exit 1
-          fi
-          echo "asset=$name" >> "$GITHUB_OUTPUT"
-          echo "Selected asset: $name"
-
-      - name: Assert single normalized Cache-Control on 200 (GET /assets/...)
-        # Hashed bundles are immutable by design — the file URL
-        # changes whenever the content changes. The contract is one
-        # ``Cache-Control: public, max-age=31536000, immutable``
-        # header, full stop. The defective shape to guard against is two
-        # Cache-Control headers (``max-age=…`` from ``expires 1y``
-        # plus ``public, immutable`` from add_header) — the count
-        # assertion below catches any regression to that pattern.
-        # No ``Expires:`` header should ship — ``expires off``
-        # disables nginx's auto-emission so only our explicit
-        # add_header value lands.
-        run: |
-          set -e
-          asset='${{ steps.asset.outputs.asset }}'
-          headers=$(curl -sI "http://localhost:13000/assets/${asset}")
-          echo "--- headers ---"
-          echo "$headers"
-          cc_count=$(echo "$headers" | grep -ci '^Cache-Control:')
-          if [ "$cc_count" != "1" ]; then
-            echo "FAIL: expected exactly one Cache-Control header, got $cc_count"
-            exit 1
-          fi
-          echo "$headers" | grep -qi '^Cache-Control: public, max-age=31536000, immutable'
-          if echo "$headers" | grep -qi '^Expires:'; then
-            echo "FAIL: /assets/ must not ship an Expires header"
-            exit 1
-          fi
-
-      - name: Assert headers on 405 (POST /assets/...)
-        # Verifies the ``always`` parameter on /assets/ — the cache
-        # discipline must hold on error responses too, otherwise a
-        # 404 or 405 from a missing asset could be cached forever
-        # under one rule and never under another. Same Expires-
-        # absence check as the 200 path so the contract is uniform.
-        run: |
-          set -e
-          asset='${{ steps.asset.outputs.asset }}'
-          code=$(curl -o /dev/null -w '%{http_code}' -s -X POST "http://localhost:13000/assets/${asset}")
-          headers=$(curl -sI -X POST "http://localhost:13000/assets/${asset}")
-          echo "--- headers ---"
-          echo "$headers"
-          if [ "$code" != "405" ]; then
-            echo "FAIL: expected 405, got $code"
-            exit 1
-          fi
-          cc_count=$(echo "$headers" | grep -ci '^Cache-Control:')
-          if [ "$cc_count" != "1" ]; then
-            echo "FAIL: expected exactly one Cache-Control header on 405, got $cc_count"
-            exit 1
-          fi
-          echo "$headers" | grep -qi '^Cache-Control: public, max-age=31536000, immutable'
-          if echo "$headers" | grep -qi '^Expires:'; then
-            echo "FAIL: /assets/ must not ship an Expires header on 405"
-            exit 1
-          fi
-
-      - name: Assert dashboard image runs as the nginx user, uid 101
-        # USER nginx in the Dockerfile drops the master process from
-        # root (uid 0) to nginx (uid 101), which owns the paths nginx
-        # writes at startup. The Helm chart runs the dashboard pod as
-        # uid 101 (dashboard.podSecurityContext) to match, so a base
-        # image whose nginx user has another uid must fail here rather
-        # than crash-loop under the chart.
-        run: |
-          set -e
-          uid=$(docker exec dashboard-smoke id -u)
-          echo "Container UID: $uid"
-          if [ "$uid" != "101" ]; then
-            echo "FAIL: dashboard image must run as uid 101 (the chart's dashboard.podSecurityContext)"
-            exit 1
-          fi
-
-      - name: Dump dashboard image logs on failure
-        if: failure()
-        run: docker logs dashboard-smoke || true
-
-      - name: Tear down dashboard image
-        if: always()
-        run: docker rm -f dashboard-smoke || true
+      # The dashboard ships inside the flightdeck binary: the cache and
+      # security headers it is served with are the router's, pinned by
+      # internal/router's tests (the `flightdeck binary` job), and the
+      # image that carries it is built and run by the release snapshot
+      # job.
 
   plugin:
     name: Plugin (Claude Code, node --test)
@@ -920,21 +721,45 @@ jobs:
         run: python3 scripts/vuln_scan.py
 
   integration:
-    # The suite runs on Postgres 16 (the default image) and on Postgres
-    # 18, the current major. The 16 entry keeps the job's established
-    # name.
+    # The suite runs against the dev stack (`make dev`: the flightdeck
+    # binary built from this commit) on Postgres 16 (the default image),
+    # on Postgres 18, the current major, and on SQLite. The Postgres 16
+    # entry keeps the job's established name, which branch protection
+    # requires. A fourth leg boots the split test stack (the three
+    # services as separate containers) and runs the suite's `exclusive`
+    # phase there: it holds the tests that pause the worker container,
+    # which skip against the binary, where the workers are goroutines.
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
+    # A leg takes ten to fifteen minutes; forty turns a stack that
+    # wedges into a failure with its log instead of a six-hour run.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: Integration + sensor e2e
+            slug: postgres-16
+            stack: postgres
             postgres_image: postgres:16-alpine
+            postgres_major: "16"
             postgres_data_dir: /var/lib/postgresql/data
           - name: Integration + sensor e2e (Postgres 18)
+            slug: postgres-18
+            stack: postgres
             postgres_image: postgres:18-alpine
+            postgres_major: "18"
             postgres_data_dir: /var/lib/postgresql
+          - name: Integration + sensor e2e (SQLite)
+            slug: sqlite
+            stack: sqlite
+            postgres_image: postgres:16-alpine
+            postgres_data_dir: /var/lib/postgresql/data
+          - name: Integration (split services, worker pause)
+            slug: split
+            stack: split
+            postgres_image: postgres:16-alpine
+            postgres_data_dir: /var/lib/postgresql/data
     # No `needs:` on the unit jobs: this job boots its own stack and
     # shares nothing with them, so it starts as soon as the push lands
     # instead of queueing behind the slowest unit job, which cost about
@@ -947,10 +772,15 @@ jobs:
     # venv, so we override here at the job level — every Make target
     # invoked below ($(PYTHON), $(MAKE) -C sensor, etc.) inherits this
     # without per-step overrides. One env-var, no per-step trap.
+    #
+    # FLIGHTDECK_DEV_WEBUI: the suite never loads the dashboard, so the
+    # binary is built without the bundle (`/` answers 503) and the leg
+    # skips npm ci and the dashboard build. The E2E shards build it.
     env:
       PYTHON: python
       FLIGHTDECK_POSTGRES_IMAGE: ${{ matrix.postgres_image }}
       FLIGHTDECK_POSTGRES_DATA_DIR: ${{ matrix.postgres_data_dir }}
+      FLIGHTDECK_DEV_WEBUI: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -974,47 +804,160 @@ jobs:
         with:
           go-version: "1.27.4"
           cache-dependency-path: |
+            go.sum
+            go.work.sum
             storage/go.sum
             ingestion/go.sum
             workers/go.sum
             api/go.sum
 
-      - name: Boot the dev stack
+      - name: Boot the dev stack (the binary from source, on ${{ matrix.stack }})
         id: boot
-        # `make dev` returns once all services have been instructed to
-        # start. tests/integration/conftest.py:_wait_for_services then
-        # polls the /health endpoints with a 60 s ceiling, so the
-        # integration test process is responsible for waiting on the
-        # stack -- the workflow does not need a separate readiness
-        # probe here.
-        run: make dev
+        if: ${{ matrix.stack != 'split' }}
+        # `make dev` builds the binary, starts it (beside the Postgres
+        # container on the Postgres legs) and returns once both health
+        # endpoints answer, or fails with the end of the binary's log.
+        run: make dev DB=${{ matrix.stack }}
+
+      - name: The stack runs on the database this leg is for
+        if: ${{ matrix.stack != 'split' }}
+        # A leg that booted on another database than its name says
+        # would pass for the wrong reason (the image variable not
+        # reaching compose, DB= not reaching the script). The binary's
+        # start-up block names its database, and the server its version.
+        run: |
+          if [ "${{ matrix.stack }}" = sqlite ]; then
+            if ! grep -Eq '^ +Database +.*\(SQLite\)$' .dev/flightdeck.log; then
+              echo "::error::the binary's log does not say it runs on SQLite"
+              head -n 30 .dev/flightdeck.log
+              exit 1
+            fi
+            names="$(docker ps --format '{{.Names}}')"
+            case "$names" in
+              *postgres*)
+                echo "::error::a Postgres container runs on the SQLite leg"
+                exit 1
+                ;;
+            esac
+          else
+            if ! grep -Eq '^ +Database +.*\(Postgres\)$' .dev/flightdeck.log; then
+              echo "::error::the binary's log does not say it runs on Postgres"
+              head -n 30 .dev/flightdeck.log
+              exit 1
+            fi
+            version="$(docker exec docker-postgres-1 psql -U flightdeck -d flightdeck -tAc 'show server_version')"
+            echo "Postgres server_version: $version"
+            case "$version" in
+              "${{ matrix.postgres_major }}".*) ;;
+              *)
+                echo "::error::this leg is for Postgres ${{ matrix.postgres_major }}, and the server is $version"
+                exit 1
+                ;;
+            esac
+          fi
 
       - name: Run integration tests (fabricated + sensor e2e)
+        id: tests
+        if: ${{ matrix.stack != 'split' }}
         # The test-integration target runs two phases: the parallel
         # phase under pytest-xdist for every test that keeps to its
         # own flavors and session ids, then the tests marked
         # `exclusive` one at a time. Both deselect manual tests;
         # test_ui_demo.py is the only manual-marked test today, a
         # 3-minute dashboard data-population tool, not a regression
-        # test.
+        # test. The test_sensor_e2e.py file is part of the integration
+        # directory, so its e2e tests run inside this step.
         #
-        # The test_sensor_e2e.py file is part of the integration
-        # directory, so its 20 e2e tests run inside this step. The
-        # previous workflow had a separate "Run sensor e2e tests in
-        # isolation" step that re-ran the same 20 tests via
-        # ``make test-e2e``; it was removed in B-L because pytest
-        # already prints per-test PASS/FAIL in this step's log and
-        # the duplicate doubled the slowest CI stage with no
-        # additional coverage. ``make test-e2e`` still works locally
-        # for targeted runs.
-        run: make test-integration
+        # -rs lists every skipped test with its reason at the end of
+        # each phase: on the binary those are the worker-pause tests
+        # (they run in the split leg), on SQLite the postgres_only
+        # ones as well. The output is kept in a file for the evidence
+        # steps below.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          make test-integration DB=${{ matrix.stack }} PYTEST_ADDOPTS=-rs 2>&1 | tee "$RUNNER_TEMP/evidence/test-output.log"
+
+      - name: Boot the split test stack and run the exclusive phase on it
+        id: split
+        if: ${{ matrix.stack == 'split' }}
+        # `make test-split` starts the stack (the three services compile
+        # in their containers; compose waits for their health), seeds
+        # the fixtures and runs the tests marked `exclusive`. The
+        # worker-pause tests are among them and must run here, not
+        # skip: the step fails when pytest reports the skip reason they
+        # carry against a stack without a worker container.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          make test-split PYTEST_ADDOPTS=-rs 2>&1 | tee "$RUNNER_TEMP/evidence/test-output.log"
+          if grep -q "pausing the worker needs" "$RUNNER_TEMP/evidence/test-output.log"; then
+            echo "::error::a worker-pause test skipped on the split test stack"
+            exit 1
+          fi
+          # No skip is not yet a pass: the four tests this leg exists
+          # for must each be reported PASSED here, by name. They skip
+          # on every other leg, so one that is renamed, loses its
+          # marker or is deselected would otherwise run nowhere.
+          for id in \
+            tests/integration/test_prompt_capture.py::test_a_backlog_of_capture_on_sessions_keeps_every_calls_content \
+            tests/integration/test_prompt_capture.py::test_content_published_before_its_session_start_keeps_its_content \
+            tests/integration/test_session_states.py::test_backlog_of_reattachments_drains_to_the_right_states \
+            tests/integration/test_session_states.py::test_a_call_published_after_the_end_cannot_keep_the_session_open; do
+            if ! grep -Fq "$id PASSED" "$RUNNER_TEMP/evidence/test-output.log"; then
+              echo "::error::$id was not reported PASSED on the split test stack"
+              exit 1
+            fi
+          done
+
+      # What a failure leaves behind, kept before anything else runs:
+      # the test output, and the log of the stack (the binary's, or the
+      # split stack's containers'). A leg once failed here on a runner
+      # that then stopped answering, and nothing of it could be read;
+      # these two steps upload within seconds of the tests ending, and
+      # the step summary names the failed tests with the end of the log.
+      - name: Collect the test output and the stack's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          if [ "${{ matrix.stack }}" = split ]; then
+            docker compose -p flightdeck-split -f docker/docker-compose.split.yml logs --no-color \
+              > "$RUNNER_TEMP/evidence/stack.log" 2>&1 || true
+          else
+            cp .dev/flightdeck.log "$RUNNER_TEMP/evidence/stack.log" 2>/dev/null || true
+          fi
+          if [ "${{ steps.tests.outcome }}" = failure ] || [ "${{ steps.split.outcome }}" = failure ]; then
+            {
+              echo "### ${{ matrix.name }}: the tests failed"
+              echo
+              echo '```'
+              grep -E '^(FAILED|ERROR) |=+ .*(passed|failed|error)' "$RUNNER_TEMP/evidence/test-output.log" | cut -c 1-300 | head -60 || true
+              echo '```'
+              echo
+              echo "The end of the stack's log (the whole of it is in the \`integration-evidence-${{ matrix.slug }}\` artifact):"
+              echo
+              echo '```'
+              tail -n 80 "$RUNNER_TEMP/evidence/stack.log" | cut -c 1-400 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the test output and the stack's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: integration-evidence-${{ matrix.slug }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 14
 
       - name: Go tests that need Postgres or NATS
         # The Go tests that read TEST_POSTGRES_URL skip their Postgres
         # half in the Go job, which has no database. This step runs
-        # them against this stack's Postgres,
-        # so they run on both majors the matrix covers, and runs the
-        # TEST_NATS_URL tests against this stack's NATS.
+        # them against this stack's Postgres container, so they run on
+        # both majors the matrix covers, and runs the TEST_NATS_URL
+        # tests against a NATS server the script starts.
         # scripts/go-db-tests.sh gives each package a fresh database
         # (init.sql seed, then the workers' migrate-only mode up to the
         # newest migration), runs the packages on Postgres and the
@@ -1023,24 +966,41 @@ jobs:
         # when a DB-gated package is missing from its lists. It runs
         # even when the integration tests failed, so the two results
         # stay independent, but not when the stack never booted.
-        if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.stack == 'postgres' && steps.boot.outcome == 'success' }}
         run: make test-go-db
 
-      - name: Dump stack logs on failure
+      - name: Dump the stack's logs on failure
         if: failure()
+        # Bounded, like the teardown below: a runner that stops
+        # answering after a failure must end the job here, with the
+        # failing step's output, not at the job's forty minutes.
+        timeout-minutes: 5
         run: |
-          docker compose -f docker/docker-compose.yml \
-            -f docker/docker-compose.dev.yml logs --tail=300 || true
-          docker compose -f docker/docker-compose.yml \
-            -f docker/docker-compose.dev.yml ps || true
+          if [ "${{ matrix.stack }}" = split ]; then
+            docker compose -p flightdeck-split -f docker/docker-compose.split.yml ps -a || true
+            docker compose -p flightdeck-split -f docker/docker-compose.split.yml logs --tail=300 || true
+          else
+            scripts/dev-stack.sh dump || true
+          fi
 
       - name: Tear down stack
         if: always()
-        run: make down || true
+        timeout-minutes: 5
+        run: |
+          if [ "${{ matrix.stack }}" = split ]; then
+            make down-split || true
+          else
+            make down || true
+          fi
 
   e2e-shard:
     name: E2E (Playwright) shard ${{ matrix.shard }}/4
     runs-on: ubuntu-24.04
+    # A shard takes five to eight minutes: it builds the dashboard
+    # bundle and the binary (`make dev`), then runs its quarter of the
+    # suite. Thirty ends a stack or a browser that wedges with the
+    # shard's log and reports instead of a six-hour run.
+    timeout-minutes: 30
     # Rule 40c: browser end-to-end tests run parallel to the integration
     # job, with no `needs:` on the unit jobs: each shard boots its own
     # stack and shares nothing with them. The suite (both theme
@@ -1050,10 +1010,11 @@ jobs:
     # merges the shards' reports and is the check branch protection
     # requires.
     #
-    # The dashboard serves its production bundle
-    # (docker-compose.e2e.yml) rather than the Vite dev server, which
-    # compiles modules on demand for every page load: the suite runs in
-    # less than half the time, against the bundle users get.
+    # The stack is the dev stack on Postgres: the flightdeck binary built
+    # from this commit with the dashboard's production bundle embedded,
+    # so the suite tests the bundle users get, served the way they get
+    # it. Postgres because the seeder and three spec files write to the
+    # database with Postgres SQL (dashboard/tests/e2e/README.md).
     #
     # PYTHON: same job-level override as the integration job above —
     # the Makefile's $(PYTHON) default points at the local sensor/.venv
@@ -1090,6 +1051,17 @@ jobs:
           UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
         run: uv sync --locked --inexact --extra dev --extra anthropic --extra openai
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
       - name: Install dashboard deps
         working-directory: dashboard
         run: npm ci
@@ -1125,10 +1097,11 @@ jobs:
             launch_check
           fi
 
-      - name: Boot the dev stack, the dashboard serving its production bundle
-        run: |
-          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
-            -f docker/docker-compose.e2e.yml up --build -d
+      - name: Boot the dev stack, the dashboard bundle embedded in the binary
+        # `make dev` builds the bundle (the dependencies are installed
+        # above), builds the binary around it and returns once it
+        # serves.
+        run: make dev
 
       - name: Seed canonical E2E fixtures
         # Idempotent; runs here explicitly so a failure at seed time
@@ -1157,16 +1130,36 @@ jobs:
           path: dashboard/test-results/
           retention-days: 14
 
-      - name: Dump stack logs on failure
-        if: failure()
+      # The binary's log of the whole shard, on every run: a test that
+      # fails its first attempt and passes on retry leaves a trace in
+      # the report, and this is what the stack logged at that second
+      # (its lines carry UTC wall-clock times). .dev is a hidden
+      # directory, which the upload action skips, hence the copy.
+      - name: Keep the binary's log
+        id: stacklog
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: |
-          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
-            -f docker/docker-compose.e2e.yml logs --tail=300 || true
-          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
-            -f docker/docker-compose.e2e.yml ps || true
+          mkdir -p "$RUNNER_TEMP/evidence"
+          cp .dev/flightdeck.log "$RUNNER_TEMP/evidence/flightdeck.log" 2>/dev/null || true
+
+      - name: Upload the binary's log
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: e2e-stack-log-${{ matrix.shard }}
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 14
+
+      - name: Dump the stack's logs on failure
+        if: failure()
+        timeout-minutes: 5
+        run: scripts/dev-stack.sh dump || true
 
       - name: Tear down stack
         if: always()
+        timeout-minutes: 5
         run: make down || true
 
   e2e:
@@ -1460,6 +1453,9 @@ jobs:
   marketplace-schema:
     name: Repo scripts and manifests
     runs-on: ubuntu-24.04
+    # About two minutes of script tests, each with a bound of its own;
+    # fifteen covers a slow runner.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -1495,6 +1491,26 @@ jobs:
         run: |
           scripts/test-check-script-modes.sh
           scripts/check-script-modes.sh
+
+      # The scripts the dev stack, the integration job and the compose
+      # check run.
+      - name: shellcheck on the dev stack and compose scripts
+        run: |
+          shellcheck scripts/dev-stack.sh scripts/test-dev-stack.sh scripts/go-db-tests.sh \
+            scripts/compose-smoke.sh scripts/check-compose-projects.sh
+
+      # The dev stack script on the paths where a mistake costs a
+      # running stack or a database: a failing build, the move from the
+      # seven-container stack, a busy port, another checkout's
+      # containers, and every way `reset` refuses. It runs the script
+      # for real against a fake docker, go and flightdeck.
+      - name: The dev stack script against fakes
+        run: scripts/test-dev-stack.sh
+
+      # A compose file with no project name of its own renders as
+      # project `docker`, the dev stack's, and shares its volumes.
+      - name: Every compose file renders under its own project
+        run: scripts/check-compose-projects.sh
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback
@@ -1601,6 +1617,9 @@ jobs:
   release-snapshot:
     name: Release snapshot (six binaries, Docker image)
     runs-on: ubuntu-24.04
+    # Four to five minutes: six binaries, the image, and the compose
+    # smoke on it. Thirty bounds a build or a container that hangs.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1694,3 +1713,12 @@ jobs:
           scripts/install-gate.sh kept http://127.0.0.1:4002 docker logs flightdeck
           docker stop -t 30 flightdeck
           test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"
+
+      # The compose files users run (docker/docker-compose.yml alone, on
+      # SQLite, and with docker-compose.postgres.yml), on the image just
+      # built: up, the token read the way the file's header says, one
+      # event in and its session out, down and up again with the token
+      # and the session kept, and the overlay refused without a
+      # password. Ports 4003; projects of its own, removed at the end.
+      - name: The compose files run the image and keep its data across down and up
+        run: scripts/compose-smoke.sh flightdeck:ci

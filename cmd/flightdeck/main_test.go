@@ -140,7 +140,7 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 
 func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 	for _, k := range []string{"FLIGHTDECK_POSTGRES_URL", "FLIGHTDECK_NATS_URL", "FLIGHTDECK_JWT_SECRET",
-		"ENVIRONMENT", "FLIGHTDECK_METRICS_PORT", "FLIGHTDECK_MIGRATIONS_DIR"} {
+		"ENVIRONMENT", "FLIGHTDECK_METRICS_PORT"} {
 		t.Setenv(k, "inherited")
 	}
 	secrets := &datadir.Secrets{JWTSecret: "abc"}
@@ -150,12 +150,11 @@ func TestSetServiceEnv_DevAndProductionModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"FLIGHTDECK_POSTGRES_URL":   "postgres://x/db",
-		"FLIGHTDECK_NATS_URL":       "inherited", // untouched: the embedded bus is injected
-		"FLIGHTDECK_JWT_SECRET":     "abc",
-		"ENVIRONMENT":               "dev",
-		"FLIGHTDECK_METRICS_PORT":   "0",
-		"FLIGHTDECK_MIGRATIONS_DIR": "",
+		"FLIGHTDECK_POSTGRES_URL": "postgres://x/db",
+		"FLIGHTDECK_NATS_URL":     "inherited", // untouched: the embedded bus is injected
+		"FLIGHTDECK_JWT_SECRET":   "abc",
+		"ENVIRONMENT":             "dev",
+		"FLIGHTDECK_METRICS_PORT": "0",
 	}
 	for k, v := range want {
 		if got := os.Getenv(k); got != v {

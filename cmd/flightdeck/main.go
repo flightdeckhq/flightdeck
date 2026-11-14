@@ -655,7 +655,7 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 	if opts.NatsURL != "" {
 		set["FLIGHTDECK_NATS_URL"] = opts.NatsURL
 	}
-	unset := []string{"FLIGHTDECK_MIGRATIONS_DIR"}
+	var unset []string
 	if dev {
 		set["ENVIRONMENT"] = "dev"
 	} else {

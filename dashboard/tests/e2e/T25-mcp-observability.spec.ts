@@ -6,6 +6,7 @@ import {
   waitForFleetReady,
   waitForInvestigateReady,
 } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T25 — MCP observability rendering.
 //
@@ -86,7 +87,7 @@ async function fetchMCPSessionId(page: Page): Promise<string> {
     limit: "100",
   });
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions?${sp.toString()}`,
+    `${API_URL}/v1/sessions?${sp.toString()}`,
     { headers: { Authorization: "Bearer tok_dev" } },
   );
   expect(resp.ok(), "sessions API call must succeed").toBe(true);

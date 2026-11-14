@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T120 — the Analytics summary row has one card per provider that used
 // tokens in the window, derived from a single group_by=provider query,
@@ -16,7 +17,7 @@ test.describe("T120 — analytics provider summary cards", () => {
     // default 30d window: the page's own response body is not readable
     // once the page updates its URL after load.
     const resp = await page.request.get(
-      "http://localhost:4000/api/v1/analytics?metric=tokens&group_by=provider&range=30d",
+      `${API_URL}/v1/analytics?metric=tokens&group_by=provider&range=30d`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "analytics API call must succeed").toBe(true);

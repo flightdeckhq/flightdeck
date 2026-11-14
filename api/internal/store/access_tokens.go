@@ -235,3 +235,43 @@ func (s *Store) isDevAccessTokenID(ctx context.Context, id string) (bool, error)
 	}
 	return name == devAccessTokenName, nil
 }
+
+// suppliedSaltDomain separates the salt derived for a supplied token
+// from any other SHA-256 of the same value.
+const suppliedSaltDomain = "flightdeck supplied access token salt\x00"
+
+// EnsureSuppliedAccessToken stores raw, a token the operator chose, as
+// an access_tokens row named name unless the row is already there, and
+// reports whether this call inserted it. The row has the shape
+// CreateAccessToken writes (salted hash, salt, prefix); only the salt
+// differs: it is derived from the token, not random, so every process
+// that is given the same token computes the same hash and the unique
+// index on it makes the insert idempotent. Processes that start
+// together with one token all succeed and leave one row. The salt's
+// job, keeping equal secrets from showing as equal hashes and a
+// precomputed table from applying, is moot for a value the caller has
+// checked to be 128 random bits; raw is not validated here.
+func EnsureSuppliedAccessToken(ctx context.Context, db *storage.DB, name, raw string) (bool, error) {
+	if name == "" {
+		return false, ErrAccessTokenNameRequired
+	}
+	if len(raw) < 8 {
+		return false, errors.New("supplied token is shorter than a token prefix")
+	}
+	saltSum := sha256.Sum256([]byte(suppliedSaltDomain + raw))
+	salt := hex.EncodeToString(saltSum[:16])
+	sum := sha256.Sum256([]byte(salt + raw))
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO access_tokens (name, token_hash, salt, prefix)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (token_hash) DO NOTHING
+	`, name, hex.EncodeToString(sum[:]), salt, raw[:8])
+	if err != nil {
+		return false, fmt.Errorf("insert supplied token: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("insert supplied token: %w", err)
+	}
+	return n > 0, nil
+}

@@ -60,11 +60,11 @@ Several pods need a database and a bus they share, so the render refuses more th
 
 **Upgrading a v0.5.3 install with `nats.replicas` above 1** (the default is 3): the NATS StatefulSet's pod start policy changes, which Kubernetes does not allow in place. Scale ingestion to zero, give the workers a minute to drain, then run `kubectl delete statefulset <release>-flightdeck-nats` (the data volumes stay) before `helm upgrade`. On first start the clustered servers discard the old per-server streams and ingestion recreates the stream, so any event still on the bus at that point is dropped. A one-replica install upgrades in place and keeps its stream.
 
-The chart is at `version` 0.8.0 with `appVersion` 0.8.0; the default `image.tag` is `v0.8.0`. See [`helm/values.yaml`](../helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
+The chart is at `version` 0.9.0 with `appVersion` 0.9.0; the default `image.tag` is `v0.9.0`. See [`helm/values.yaml`](../helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `v0.8.0` | Tag of the `flightdeckhq/flightdeck` image. |
+| `image.tag` | `v0.9.0` | Tag of the `flightdeckhq/flightdeck` image. |
 | `image.digest` | *(empty)* | `sha256:...` pins the image by digest; `nats.image.digest` and `postgres.image.digest` likewise. |
 | `allowDatabaseChange` | `false` | Let an upgrade move the release to another database (the data is not moved). |
 | `flightdeck.replicas` | `1` | Pod count. Above 1 needs Postgres and a shared NATS. HPA overrides at runtime when enabled. |

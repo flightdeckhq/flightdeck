@@ -2,8 +2,8 @@ apiVersion: v2
 name: flightdeck
 description: Flightdeck on Kubernetes - the one flightdeck binary as a StatefulSet, on SQLite by default; Postgres and a shared NATS when it runs more than one replica.
 type: application
-version: 0.8.0
-appVersion: "0.8.0"
+version: 0.9.0
+appVersion: "0.9.0"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/flightdeckhq/flightdeck
 sources:

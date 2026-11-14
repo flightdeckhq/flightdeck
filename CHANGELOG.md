@@ -4,6 +4,23 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.9.0 — 2026-11-14
+
+Flightdeck is one binary. `flightdeck` runs the whole control plane,
+ingestion, workers, query API and dashboard, with SQLite and the
+message bus inside it, and installs with one command:
+`curl -fsSL https://flightdeck-hq.com/install.sh | sh`, or
+`irm https://flightdeck-hq.com/install.ps1 | iex` on Windows. Docker
+Compose and the Helm chart run the same single image, and Postgres is
+one `--database-url` away. Claude Code, the Claude Agent SDK and agent
+frameworks that emit OpenTelemetry GenAI traces report over
+OpenTelemetry, the sensor wraps the OpenAI Agents SDK, and
+`flightdeck_sensor.init()` needs no arguments against a local server.
+Claude Code sessions can be stopped and held to token budgets. The
+sensor and the plugin take one server address, a session that is not
+being recorded says so, and the Prompts tab shows a long tool output as
+readable text. The per-service images are no longer published.
+
 ### Added
 
 - **One `flightdeck` binary runs the whole control plane, with nothing

@@ -49,7 +49,7 @@ allowDatabaseChange: false
 image:
   registry: docker.io
   repository: flightdeckhq/flightdeck
-  tag: "v0.8.0"
+  tag: "v0.9.0"
   # sha256:<64 hex digits> pins the image to that digest
   # (<repository>@<digest>; the tag is then not used). The NATS and
   # Postgres images take one too.

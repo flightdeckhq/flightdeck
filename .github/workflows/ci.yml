@@ -370,8 +370,14 @@ jobs:
       # govulncheck fails only on a vulnerability the code can reach;
       # advisories in a required module that no call path touches are
       # reported without failing the job.
-      - name: Vulnerability scan (storage, ingestion, workers, api)
+      # The root module is the flightdeck binary; it names its package
+      # directories (the repository root has no Go files, and ./... would
+      # walk dashboard/node_modules), as the release workflow's scan does.
+      - name: Vulnerability scan (the binary, storage, ingestion, workers, api)
         run: |
+          echo "::group::govulncheck root module"
+          govulncheck ./cmd/... ./internal/... ./webui/...
+          echo "::endgroup::"
           for m in storage ingestion workers api; do
             echo "::group::govulncheck $m"
             (cd "$m" && govulncheck ./...)

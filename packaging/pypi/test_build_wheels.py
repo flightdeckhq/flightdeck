@@ -90,7 +90,7 @@ class BuildWheelsTest(unittest.TestCase):
                     "flightdeck_cli/__main__.py",
                     "flightdeck_cli/bin/flightdeck",
                     "flightdeck_cli-0.9.0.dist-info/METADATA",
-                    "flightdeck_cli-0.9.0.dist-info/LICENSE",
+                    "flightdeck_cli-0.9.0.dist-info/licenses/LICENSE",
                     "flightdeck_cli-0.9.0.dist-info/WHEEL",
                     "flightdeck_cli-0.9.0.dist-info/entry_points.txt",
                     "flightdeck_cli-0.9.0.dist-info/RECORD",
@@ -110,8 +110,12 @@ class BuildWheelsTest(unittest.TestCase):
             self.assertTrue(metadata.startswith(first_line))
             self.assertIn("Name: flightdeck-cli\n", metadata)
             self.assertIn("Version: 0.9.0\n", metadata)
-            self.assertIn("License: Apache-2.0\n", metadata)
+            self.assertIn("License-Expression: Apache-2.0\n", metadata)
             self.assertIn("License-File: LICENSE\n", metadata)
+            # PEP 639: a license expression replaces the License field and
+            # the license classifiers, which an index may refuse beside it.
+            self.assertNotIn("\nLicense: ", metadata)
+            self.assertNotIn("Classifier: License ::", metadata)
             self.assertIn("Requires-Python: >=3.8\n", metadata)
             self.assertIn("# flightdeck-cli", metadata, "README is the long description")
 
@@ -126,7 +130,7 @@ class BuildWheelsTest(unittest.TestCase):
     def test_the_wheel_ships_the_repository_license(self) -> None:
         path = self.build()
         with zipfile.ZipFile(path) as zf:
-            shipped = zf.read("flightdeck_cli-0.9.0.dist-info/LICENSE")
+            shipped = zf.read("flightdeck_cli-0.9.0.dist-info/licenses/LICENSE")
         self.assertEqual(shipped, (build_wheels.ROOT / "LICENSE").read_bytes())
         self.assertIn(b"Apache License", shipped)
 

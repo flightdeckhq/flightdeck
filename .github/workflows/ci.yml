@@ -370,8 +370,14 @@ jobs:
       # govulncheck fails only on a vulnerability the code can reach;
       # advisories in a required module that no call path touches are
       # reported without failing the job.
-      - name: Vulnerability scan (storage, ingestion, workers, api)
+      # The root module is the flightdeck binary; it names its package
+      # directories (the repository root has no Go files, and ./... would
+      # walk dashboard/node_modules), as the release workflow's scan does.
+      - name: Vulnerability scan (the binary, storage, ingestion, workers, api)
         run: |
+          echo "::group::govulncheck root module"
+          govulncheck ./cmd/... ./internal/... ./webui/...
+          echo "::endgroup::"
           for m in storage ingestion workers api; do
             echo "::group::govulncheck $m"
             (cd "$m" && govulncheck ./...)
@@ -1417,6 +1423,22 @@ jobs:
               --tag "v$(cat VERSION)" --out "$RUNNER_TEMP/wheels-$n" --source-date-epoch 1767322800
           done
           twine check --strict "$RUNNER_TEMP"/wheels-1/*.whl
+          # PyPI validates METADATA against the version it declares;
+          # packaging.metadata (installed with twine) is that check, stricter
+          # than twine's own.
+          python3 - "$RUNNER_TEMP"/wheels-1/*.whl <<'PY'
+          import sys, zipfile
+          from packaging.metadata import Metadata
+          for path in sys.argv[1:]:
+              with zipfile.ZipFile(path) as zf:
+                  names = zf.namelist()
+                  name = next(n for n in names if n.endswith(".dist-info/METADATA"))
+                  metadata = Metadata.from_email(zf.read(name), validate=True)
+                  dist_info = name.rsplit("/", 1)[0]
+                  for license_file in metadata.license_files or []:
+                      assert f"{dist_info}/licenses/{license_file}" in names, license_file
+              print("metadata valid:", path)
+          PY
           cmp "$RUNNER_TEMP"/wheels-1/*manylinux*.whl "$RUNNER_TEMP"/wheels-2/*manylinux*.whl
           cmp "$RUNNER_TEMP"/wheels-1/*musllinux*.whl "$RUNNER_TEMP"/wheels-2/*musllinux*.whl
 

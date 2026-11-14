@@ -9,7 +9,7 @@
 The wheel is written directly with ``zipfile``: it holds the shim
 package (``flightdeck_cli/__init__.py``, ``__main__.py``), the binary at
 ``flightdeck_cli/bin/flightdeck[.exe]`` with its executable bit, and the
-``.dist-info`` (METADATA from README.md, LICENSE, WHEEL,
+``.dist-info`` (METADATA from README.md, licenses/LICENSE, WHEEL,
 entry_points.txt, RECORD). No build backend is involved because there is
 nothing to build: the binary is prebuilt by goreleaser, and ``wheel``'s
 tag handling would have to be overridden for every platform anyway. The
@@ -49,10 +49,13 @@ ROOT = HERE.parent.parent
 DISTRIBUTION = "flightdeck-cli"
 PACKAGE = "flightdeck_cli"
 
-# Core metadata version written to METADATA. 2.1 is the oldest that
-# carries Description-Content-Type and License-File, and every installer
-# and index in use reads it; nothing here needs a newer field.
-METADATA_VERSION = "2.1"
+# Core metadata version written to METADATA. 2.4 is the version that
+# defines License-Expression and License-File (PEP 639): PyPI validates
+# an upload's METADATA against the version it declares, and an older
+# version carrying License-File is invalid (packaging.metadata refuses
+# it). A License-File path names a file under the .dist-info's
+# licenses/ directory, where the wheel carries LICENSE.
+METADATA_VERSION = "2.4"
 
 # The zip format stores timestamps as MS-DOS dates, which start on
 # 1980-01-01; an earlier SOURCE_DATE_EPOCH (0 is common in build
@@ -123,7 +126,7 @@ def metadata(version: str) -> str:
         ),
         ("Home-page", "https://github.com/flightdeckhq/flightdeck"),
         ("Author", "Flightdeck"),
-        ("License", "Apache-2.0"),
+        ("License-Expression", "Apache-2.0"),
         ("License-File", "LICENSE"),
         ("Project-URL", "Source, https://github.com/flightdeckhq/flightdeck"),
         (
@@ -134,7 +137,6 @@ def metadata(version: str) -> str:
         ("Classifier", "Development Status :: 4 - Beta"),
         ("Classifier", "Environment :: Console"),
         ("Classifier", "Intended Audience :: Developers"),
-        ("Classifier", "License :: OSI Approved :: Apache Software License"),
         ("Classifier", "Operating System :: POSIX :: Linux"),
         ("Classifier", "Operating System :: MacOS"),
         ("Classifier", "Operating System :: Microsoft :: Windows"),
@@ -195,7 +197,7 @@ def build_wheel(
         (f"{PACKAGE}/__main__.py", (HERE / PACKAGE / "__main__.py").read_bytes(), FILE_MODE),
         (f"{PACKAGE}/bin/{binary_name}", binary.read_bytes(), EXEC_MODE),
         (f"{dist_info}/METADATA", metadata(version).encode("utf-8"), FILE_MODE),
-        (f"{dist_info}/LICENSE", (ROOT / "LICENSE").read_bytes(), FILE_MODE),
+        (f"{dist_info}/licenses/LICENSE", (ROOT / "LICENSE").read_bytes(), FILE_MODE),
         (f"{dist_info}/WHEEL", wheel_metadata(platform_tag).encode("utf-8"), FILE_MODE),
         (f"{dist_info}/entry_points.txt", ENTRY_POINTS.encode("utf-8"), FILE_MODE),
     ]

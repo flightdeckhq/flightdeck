@@ -301,8 +301,13 @@ jobs:
           if [ "${{ matrix.channel }}" = brew ]; then
             echo "::warning::$TAG is a pre-release, which the tap does not carry; this leg installs with install.sh"
           fi
-          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" | VERSION="$TAG" sh
-          echo "FLIGHTDECK_BIN=$(command -v flightdeck)" >> "$GITHUB_ENV"
+          # INSTALL_DIR names where the binary lands: the GITHUB_PATH line
+          # install.sh writes reaches later steps only, so `command -v`
+          # in this step finds the binary only where PATH already looks.
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" \
+            | VERSION="$TAG" INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          test -x "$RUNNER_TEMP/bin/flightdeck"
+          echo "FLIGHTDECK_BIN=$RUNNER_TEMP/bin/flightdeck" >> "$GITHUB_ENV"
 
       - name: Gate
         env:

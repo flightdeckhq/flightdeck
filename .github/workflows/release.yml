@@ -68,13 +68,16 @@ jobs:
             storage/go.sum
 
       # govulncheck reports only vulnerabilities in code the binaries
-      # reach, module by module. The root module names its packages
-      # instead of ./... so dashboard/node_modules is not walked. Pinned
-      # to a commit (golang/vuln v1.9.0): a tag can be re-pointed.
+      # reach, module by module. The root module names its package
+      # directories instead of ./... so dashboard/node_modules is not
+      # walked; the repository root itself holds no Go files. The same
+      # version as CI's scan: a module version is immutable once the Go
+      # checksum database has recorded it, so the pin is as fixed as a
+      # commit.
       - name: govulncheck (root module and the service modules)
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@d1f380186385b4f64e00313f31743df8e4b89a77
-          govulncheck . ./cmd/... ./internal/... ./webui/...
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./cmd/... ./internal/... ./webui/...
           for m in api ingestion workers storage; do
             echo "::group::$m"
             (cd "$m" && govulncheck ./...)

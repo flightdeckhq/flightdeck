@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -52,6 +53,24 @@ func NewHostPolicy(loopback bool, domain string, allowed []string) HostPolicy {
 	}
 	p.Enforce = loopback || p.Domain != "" || len(p.Names) > 0
 	return p
+}
+
+// Describe is the policy for the start-up block: the hosts answered,
+// and whether every other one is refused.
+func (p HostPolicy) Describe() (answered string, enforced bool) {
+	if !p.Enforce {
+		return "any host name", false
+	}
+	parts := []string{"localhost", "IP addresses"}
+	shown := map[string]bool{"localhost": true}
+	for _, name := range append([]string{p.Domain}, p.Names...) {
+		// The image's list is "localhost", which is answered anyway.
+		if name != "" && !shown[name] {
+			shown[name] = true
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", "), true
 }
 
 // names reports whether host (lower-case, no port) is a name the
@@ -106,11 +125,18 @@ func hostOf(hostport string) (host string, ok bool) {
 		h = h[:i]
 	}
 	h = strings.ToLower(strings.TrimSuffix(h, "."))
-	if h == "" || strings.ContainsAny(h, "/\\@ \t") {
+	if h == "" || len(h) > maxHostNameBytes || strings.ContainsAny(h, "/\\@ \t") {
 		return "", false
 	}
 	return h, true
 }
+
+// maxHostNameBytes is the longest host name a Host header may carry:
+// 253, the most a DNS name can spell out (RFC 1035's 255 octets on the
+// wire). A longer value is no name at all, and the refused host is
+// echoed in the 421 body and the log, so this also bounds what a
+// request can put there.
+const maxHostNameBytes = 253
 
 // portOrNone reports whether s is empty or ":" and a decimal port.
 func portOrNone(s string) bool {
@@ -128,12 +154,17 @@ func portOrNone(s string) bool {
 	return true
 }
 
-// refusedHostLogLimit is how many distinct refused Host values the
-// process logs. One line each tells an operator why a name they use is
-// answered 421 and what to set; a scanner sending a different Host on
-// every request must not fill the log, and twenty is more names than
-// any deployment is reached by.
+// refusedHostLogLimit is how many distinct refused host names the
+// process logs and remembers. One line each tells an operator which
+// name a client used and what to set; a scanner sending a different
+// Host on every request must grow neither the log nor the set past it,
+// and twenty is more names than any deployment is reached by. One more
+// line says when the limit is reached.
 const refusedHostLogLimit = 20
+
+// malformedHost stands for a Host header that is missing or not a host
+// name, in the log and as the key of the logged set.
+const malformedHost = "(missing or malformed)"
 
 // hostGuard applies a HostPolicy in front of the router.
 type hostGuard struct {
@@ -142,15 +173,15 @@ type hostGuard struct {
 
 	mu     sync.Mutex
 	logged map[string]bool
+	// full is set once the limit was reached and said so.
+	full bool
 }
 
 func (g *hostGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, ok := hostOf(r.Host)
 	if g.policy.Enforce && (!ok || !g.policy.names(host)) {
-		g.logRefused(r.Host)
-		refuse(w, http.StatusMisdirectedRequest,
-			"this server does not answer for the host name in the request; reach it by localhost or an IP address, "+
-				"or start it with that name in --allowed-hosts (FLIGHTDECK_ALLOWED_HOSTS)")
+		g.logRefused(host, ok)
+		refuse(w, http.StatusMisdirectedRequest, misdirected(host, ok))
 		return
 	}
 	// The fleet stream is the one route a browser opens with the token
@@ -182,22 +213,54 @@ func (g *hostGuard) originAllowed(origin, host string, hostOK bool) bool {
 	return (hostOK && originHost == host) || g.policy.names(originHost)
 }
 
-func (g *hostGuard) logRefused(host string) {
+// misdirected is the 421 body's message: the host that was refused, as
+// the server read it (lower-case, without its port: an entry of the
+// list names no port), and the exact setting that admits it. host is
+// at most maxHostNameBytes and holds none of the characters hostOf
+// refuses; the JSON encoding escapes the rest. The names the operator
+// listed are not repeated: they are no secret, but the requester has
+// no need of them.
+func misdirected(host string, ok bool) string {
+	if !ok {
+		return "this server answers only for the host names it is reached by, and the request's Host header is missing or is not a host name"
+	}
+	return fmt.Sprintf("this server does not answer for the host name %q; if it is reached by that name, "+
+		"add %s to the comma-separated list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts and restart it "+
+		"(localhost and IP addresses are always answered)", host, host)
+}
+
+// logRefused logs one line for each distinct refused host name, up to
+// refusedHostLogLimit, then one line saying no more are logged.
+func (g *hostGuard) logRefused(host string, ok bool) {
+	if !ok {
+		host = malformedHost
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.logged[host] || len(g.logged) >= refusedHostLogLimit {
+	if g.logged[host] || g.full {
+		return
+	}
+	if len(g.logged) >= refusedHostLogLimit {
+		g.full = true
+		slog.Warn("further requests for host names this server does not answer for are refused (421) without a log line",
+			"distinct_hosts_logged", refusedHostLogLimit)
 		return
 	}
 	if g.logged == nil {
 		g.logged = map[string]bool{}
 	}
 	g.logged[host] = true
+	if !ok {
+		slog.Warn("a request was refused (421): its Host header is missing or is not a host name", "host", host)
+		return
+	}
 	slog.Warn("a request was refused (421): its Host header names a host this server does not answer for; "+
-		"if this server is reached by that name, start it with --allowed-hosts (FLIGHTDECK_ALLOWED_HOSTS)", "host", host)
+		"if it is reached by that name, add it to FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts", "host", host)
 }
 
-// refuse answers a request the guard turns away: one line of JSON that
-// repeats nothing from the request.
+// refuse answers a request the guard turns away: one line of JSON. It
+// carries no secret; the only thing it repeats from the request is the
+// refused host name, which misdirected bounds.
 func refuse(w http.ResponseWriter, status int, message string) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")

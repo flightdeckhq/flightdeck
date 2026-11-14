@@ -1,9 +1,15 @@
 package router
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -123,18 +129,48 @@ func TestHostPolicy_ByListenMode(t *testing.T) {
 				t.Errorf("%s: %s %s with Host %q answered %d, want %d", c.name, p.method, p.path, c.host, rec.Code, c.want)
 			}
 			if refused {
-				body := rec.Body.String()
-				if strings.Contains(body, "ftd_secret_token") {
-					t.Errorf("%s: the refusal carries the token: %s", c.name, body)
-				}
-				if c.host != "" && strings.Contains(body, c.host) {
-					t.Errorf("%s: the refusal repeats the request's Host: %s", c.name, body)
-				}
-				if strings.Count(body, "\n") != 1 || !strings.Contains(body, "--allowed-hosts (FLIGHTDECK_ALLOWED_HOSTS)") {
-					t.Errorf("%s: the refusal is not one line naming the setting: %q", c.name, body)
-				}
+				requireMisdirectedBody(t, c.name, rec, c.host)
 			}
 		}
+	}
+}
+
+// requireMisdirectedBody checks a 421: one line of JSON with no secret,
+// naming the refused host as the server read it (lower-case, without a
+// port or a trailing dot) and the setting that admits it, or saying the
+// Host was missing or malformed.
+func requireMisdirectedBody(t *testing.T, name string, rec *httptest.ResponseRecorder, sentHost string) {
+	t.Helper()
+	body := rec.Body.String()
+	if strings.Contains(body, "ftd_secret_token") {
+		t.Errorf("%s: the refusal carries the token: %s", name, body)
+	}
+	if strings.Count(body, "\n") != 1 || rec.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("%s: the refusal is not one line of JSON: %q", name, body)
+	}
+	var msg struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &msg); err != nil {
+		t.Fatalf("%s: the refusal does not parse: %v: %q", name, err, body)
+	}
+	host, ok := hostOf(sentHost)
+	if !ok {
+		if !strings.Contains(msg.Error, "missing or is not a host name") {
+			t.Errorf("%s: the refusal of a malformed Host does not say so: %q", name, msg.Error)
+		}
+		return
+	}
+	for _, want := range []string{
+		`does not answer for the host name "` + host + `"`,
+		"add " + host + " to the comma-separated list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts",
+	} {
+		if !strings.Contains(msg.Error, want) {
+			t.Errorf("%s: the refusal lacks %q: %q", name, want, msg.Error)
+		}
+	}
+	if _, port, err := net.SplitHostPort(sentHost); err == nil && port != "" && strings.Contains(msg.Error, ":"+port) {
+		t.Errorf("%s: the refusal names the port, which no list entry takes: %q", name, msg.Error)
 	}
 }
 
@@ -227,6 +263,137 @@ func TestHostOf(t *testing.T) {
 	for _, in := range []string{"", ".", ":4000", "localhost:", "localhost:port", "localhost:1234567", "::1", "[::1", "[::1]4000", "[localhost]:4000", "a b", "a/b", "user@host"} {
 		if got, ok := hostOf(in); ok {
 			t.Errorf("hostOf(%q) = %q, want it refused", in, got)
+		}
+	}
+}
+
+// capturedLog is the default logger's output for the length of a test.
+type capturedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *capturedLog) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *capturedLog) lines(substr string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, line := range strings.Split(c.buf.String(), "\n") {
+		if strings.Contains(line, substr) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func captureLog(t *testing.T) *capturedLog {
+	t.Helper()
+	c := &capturedLog{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(c, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return c
+}
+
+// One WARN line per distinct refused host name, whatever its port, case
+// or trailing dot, up to refusedHostLogLimit names; then one line that
+// says no more are logged, and nothing after it. The set behind it
+// never grows past the limit.
+func TestHostGuard_LogsEachRefusedHostOnceAndStopsAtTheLimit(t *testing.T) {
+	log := captureLog(t)
+	h := guarded(NewHostPolicy(true, "", nil))
+	g, ok := h.(*hostGuard)
+	if !ok {
+		t.Fatalf("New returned %T, want the host guard in front", h)
+	}
+
+	for _, host := range []string{"evil.example:4000", "EVIL.example:8080", "evil.example.", "evil.example"} {
+		answer(h, http.MethodGet, "/runtime-config.json", host, nil)
+	}
+	if got := log.lines(`host=evil.example`); len(got) != 1 {
+		t.Fatalf("%d log lines for one host name sent four ways, want 1:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	if got := log.lines("a request was refused (421)"); len(got) != 1 || !strings.Contains(got[0], "FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts") {
+		t.Fatalf("the line does not name the setting: %v", got)
+	}
+	// A malformed Host counts as one name, however it is malformed.
+	for _, host := range []string{"", ":4000", "[::1", strings.Repeat("a", maxHostNameBytes+1)} {
+		answer(h, http.MethodGet, "/", host, nil)
+	}
+	if got := log.lines("missing or is not a host name"); len(got) != 1 {
+		t.Fatalf("%d log lines for malformed hosts, want 1:\n%s", len(got), strings.Join(got, "\n"))
+	}
+
+	// A scanner: a new name on every request.
+	for i := range 3 * refusedHostLogLimit {
+		answer(h, http.MethodGet, "/", fmt.Sprintf("scan-%d.example", i), nil)
+	}
+	if got := log.lines("a request was refused (421)"); len(got) != refusedHostLogLimit {
+		t.Fatalf("%d refused hosts were logged, want the limit of %d", len(got), refusedHostLogLimit)
+	}
+	if got := log.lines("without a log line"); len(got) != 1 {
+		t.Fatalf("%d lines say the limit was reached, want 1", len(got))
+	}
+	g.mu.Lock()
+	remembered := len(g.logged)
+	g.mu.Unlock()
+	if remembered > refusedHostLogLimit {
+		t.Fatalf("the guard remembers %d hosts, more than the limit of %d", remembered, refusedHostLogLimit)
+	}
+	// Past the limit every request is still refused, with its own name.
+	rec := answer(h, http.MethodGet, "/runtime-config.json", "late.example:4000", nil)
+	if rec.Code != http.StatusMisdirectedRequest || !strings.Contains(rec.Body.String(), `\"late.example\"`) {
+		t.Fatalf("past the log limit: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// What a request can make the server repeat is bounded: a Host longer
+// than any DNS name is refused as malformed, so neither the 421 body
+// nor the log carries it.
+func TestHostGuard_ALongHostIsNotRepeated(t *testing.T) {
+	log := captureLog(t)
+	h := guarded(NewHostPolicy(true, "", nil))
+	long := strings.Repeat("a", 300) + ".example"
+	rec := answer(h, http.MethodGet, "/", long+":4000", nil)
+	if rec.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("a %d-byte Host answered %d, want 421", len(long), rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), strings.Repeat("a", 64)) {
+		t.Fatalf("the 421 body repeats the long Host: %s", rec.Body.String())
+	}
+	if got := log.lines(strings.Repeat("a", 64)); len(got) != 0 {
+		t.Fatalf("the log repeats the long Host: %v", got)
+	}
+	// The longest DNS name is still a name.
+	edge := strings.Repeat("a", maxHostNameBytes)
+	if got, ok := hostOf(edge + ":4000"); !ok || got != edge {
+		t.Fatalf("a %d-byte name was refused as malformed", maxHostNameBytes)
+	}
+}
+
+func TestHostPolicy_Describe(t *testing.T) {
+	cases := []struct {
+		policy   HostPolicy
+		answered string
+		enforced bool
+	}{
+		{NewHostPolicy(true, "", nil), "localhost, IP addresses", true},
+		{NewHostPolicy(false, "FD.Example.com.", nil), "localhost, IP addresses, fd.example.com", true},
+		{NewHostPolicy(false, "", []string{"fd.internal", ".corp.example"}), "localhost, IP addresses, fd.internal, .corp.example", true},
+		{NewHostPolicy(false, "", nil), "any host name", false},
+		{NewHostPolicy(true, "", []string{"*"}), "any host name", false},
+		{NewHostPolicy(false, "", []string{"localhost"}), "localhost, IP addresses", true},
+		{NewHostPolicy(false, "fd.example.com", []string{"fd.example.com", "a", "a"}), "localhost, IP addresses, fd.example.com, a", true},
+	}
+	for _, c := range cases {
+		answered, enforced := c.policy.Describe()
+		if answered != c.answered || enforced != c.enforced {
+			t.Errorf("Describe(%+v) = %q, %v; want %q, %v", c.policy, answered, enforced, c.answered, c.enforced)
 		}
 	}
 }

@@ -73,8 +73,29 @@ func TestBinary_ALoopbackListenAnswersOnlyForItsOwnNames(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(c.out.String(), "a request was refused (421)") {
-		t.Errorf("the log does not say why a request was refused:\n%s", c.out.String())
+	// The refusal names the host and the setting, so an operator who
+	// put a proxy or a service name in front learns what to set.
+	code, body := c.getWithHost(t, "/runtime-config.json", "Proxy.Example:"+port)
+	wantBody := `this server does not answer for the host name \"proxy.example\"; if it is reached by that name, ` +
+		`add proxy.example to the comma-separated list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts`
+	if code != http.StatusMisdirectedRequest || !strings.Contains(body, wantBody) {
+		t.Errorf("Host Proxy.Example: answered %d %q, want 421 naming the host and the setting", code, body)
+	}
+	out := c.out.String()
+	for _, want := range []string{
+		"a request was refused (421)",
+		"host=evil.example",
+		"host=proxy.example",
+		"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the output lacks %q:\n%s", want, out)
+		}
+	}
+	// One line per name: evil.example was refused on five paths, with
+	// and without its port.
+	if n := strings.Count(out, "host=evil.example\n"); n != 1 {
+		t.Errorf("%d log lines for evil.example, want 1:\n%s", n, out)
 	}
 
 	// The fleet stream: the dashboard's own page and a client that is
@@ -112,6 +133,9 @@ func TestBinary_AllowedHostsBeyondLoopback(t *testing.T) {
 				t.Errorf("Host %s: /api/health answered %d, want 200", host, code)
 			}
 		}
+		if want := "  Hosts       any host name   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)"; !strings.Contains(c.out.String(), want) {
+			t.Errorf("the block lacks %q:\n%s", want, c.out.String())
+		}
 	})
 	t.Run("a list: the listed names, localhost and addresses", func(t *testing.T) {
 		port := freePort(t)
@@ -120,6 +144,9 @@ func TestBinary_AllowedHostsBeyondLoopback(t *testing.T) {
 			if code, _ := c.getWithHost(t, "/runtime-config.json", host); code != http.StatusOK {
 				t.Errorf("Host %s: /runtime-config.json answered %d, want 200", host, code)
 			}
+		}
+		if want := "  Hosts       localhost, IP addresses, fd.internal, .corp.example   (a request for any other host name is refused"; !strings.Contains(c.out.String(), want) {
+			t.Errorf("the block lacks %q:\n%s", want, c.out.String())
 		}
 		token := c.dashboardToken(t)
 		for _, host := range []string{"evil.example:" + port, "x.fd.internal"} {

@@ -894,26 +894,19 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
 
-## D271 -- The binary checks the Host of every request on a loopback listen, with --domain and when a list is set
+## D271 -- The binary checks the Host of every request on loopback, with --domain and with a list
 
 **Date:** 2026-11-12
-**Decision:** every request to the `flightdeck` binary passes a `Host`
-check before any route. Always answered: an IP address, `localhost` and
-names under it, the `--domain`, and `--allowed-hosts`
-(`FLIGHTDECK_ALLOWED_HOSTS`) entries; the port is not compared. The
-check is on for a loopback listen, with `--domain` and whenever a list
-is set; a listen beyond loopback with no list answers any `Host`, and
-`*` turns the check off. A refusal is 421 with one line naming the
-setting. The fleet stream also refuses (403) a browser `Origin` that is
-neither the requested host nor an answered name, in every mode. The
-Docker image sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`.
-**Why:** `/runtime-config.json` hands the dashboard its token with no
-credential (the dashboard has no login), so a DNS-rebinding page in the
-user's browser could read it from a loopback-only instance; such a page
-is always asked for by the attacker's name, never by an address.
-**Rejected alternative:** enforcing on every listen (a LAN or
-reverse-proxy name the binary cannot know would lock a working
-deployment out); comparing the port (forwards and published ports
-change it, and a rebinding page cannot choose it); guarding only
-`/runtime-config.json` (the same page then calls the API and the
-stream); dropping the token from that file (needs a dashboard login).
+**Decision:** every request passes a `Host` check before any route,
+except on a listen beyond loopback with no `--domain` and no
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`; `*` turns it off). IP
+addresses, `localhost`, the domain and the list are answered, ports not
+compared; anything else gets 421 naming the host and the setting. The
+fleet stream refuses (403) a foreign browser `Origin` in every mode. The
+image sets the list to `localhost`.
+**Why:** `/runtime-config.json` hands out the dashboard token with no
+credential, so a DNS-rebinding page could read it from a loopback-only
+instance; such a page always uses its own name, never an address.
+**Rejected alternative:** enforcing on every listen (locks out a LAN or
+proxy name the binary cannot know); comparing ports (forwards change
+them); guarding only that file (the page then calls the API).

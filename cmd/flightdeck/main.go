@@ -389,12 +389,13 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if err != nil {
 		return err
 	}
+	hosts := router.NewHostPolicy(dev, opts.Domain, opts.AllowedHosts)
 	handler := router.New(router.Config{
 		API:                apiApp.Handler(),
 		Ingest:             ingApp.Handler(),
 		UI:                 webui.FS(),
 		Token:              token.Token,
-		Hosts:              router.NewHostPolicy(dev, opts.Domain, opts.AllowedHosts),
+		Hosts:              hosts,
 		IngestReadTimeout:  ingestionapp.ReadTimeout,
 		IngestWriteTimeout: ingestionapp.WriteTimeout,
 		APIReadTimeout:     apiapp.ReadTimeout,
@@ -421,7 +422,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		serveFns = append(serveFns, func() error { return serveErr("http", srv.Serve(lns.plain)) })
 	}
 
-	printBanner(stdout, opts, dev, token, layout, database, embedded != nil)
+	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil)
 	return supervise(ctx, services, serveFns, func(c context.Context) error {
 		var firstErr error
 		for _, s := range srvs {
@@ -680,7 +681,7 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 	return nil
 }
 
-func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, layout datadir.Layout, db database, embedded bool) {
+func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, hosts router.HostPolicy, layout datadir.Layout, db database, embedded bool) {
 	base, anyInterface := publicURL(opts)
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\nFlightdeck %s\n\n", version)
@@ -697,6 +698,11 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 		p("  Token       %s   (minted now, named %q in Settings; kept in %s)\n", token.Token, bootstrap.TokenName, layout.Secrets)
 	default:
 		p("  Token       %s…   (from %s)\n", token.Token[:min(8, len(token.Token))], layout.Secrets)
+	}
+	if answered, enforced := hosts.Describe(); enforced {
+		p("  Hosts       %s   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n", answered)
+	} else {
+		p("  Hosts       %s   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n", answered)
 	}
 	p("  Data dir    %s\n", layout.Root)
 	if db.backend == storage.SQLite {

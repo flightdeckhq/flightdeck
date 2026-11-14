@@ -10704,11 +10704,31 @@ check off in any mode. The Docker image sets
 loopback listen: published on `127.0.0.1` it is reached as `localhost`
 or by address; one reached by a name (a Compose service name, a
 reverse proxy's) lists that name. A refused request is answered 421
-Misdirected Request with one line of JSON that names the setting and
-repeats nothing from the request, and the first twenty distinct refused
-hosts are logged with the same hint. The sensor, the plugin and
-`flightdeck health` send the address they were given as `Host`, so an
-address or `localhost` passes everywhere.
+Misdirected Request with one line of JSON that names the refused host as
+the server read it (lower-case, without its port, which no entry takes)
+and the exact setting that admits it: `add <host> to the comma-separated
+list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts`. A Host longer than
+253 bytes, the most a DNS name can spell out, is no host name and is
+refused as malformed, so a request can make the server repeat no more
+than that. The body carries nothing else from the request and no
+secret, and the listed names are not repeated to the requester. Each
+distinct refused host name is logged once, as a WARN with the same
+hint (a name sent with different ports or cases is one name); after
+twenty names one more line says further ones are refused without a log
+line, and the set of names the process remembers stops growing there, so
+a scanner can grow neither the log nor the memory. With the check on,
+the start-up block's `Hosts` line lists the names answered (`localhost,
+IP addresses` and the domain and the listed names); with it off it says
+`any host name`. The sensor, the plugin and `flightdeck health` send
+the address they were given as `Host`, so an address or `localhost`
+passes everywhere. Under Kubernetes the kubelet's `httpGet` probes
+connect to the pod IP and send it as `Host`, and `flightdeck health` in
+an exec probe sends `127.0.0.1` (the domain with `--domain`), so probes
+pass with any list; the names to list are the ones clients use: the
+Service's (`<service>`, `<service>.<namespace>`,
+`<service>.<namespace>.svc`, `<service>.<namespace>.svc.<cluster
+domain>`) and the Ingress hosts, which an ingress controller passes on
+as the `Host`.
 
 The fleet stream (`/api/v1/stream`) carries the token in its URL,
 because a browser cannot set a header on a WebSocket. A request for it
@@ -10745,8 +10765,9 @@ before the NATS packages and so before any goroutine exists.
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
-engine's name) and the bus (embedded, with its store dir, or the
-external URL). Everything else is `slog` on stderr. The two URLs are
+engine's name), the host names answered (see Host check) and the bus
+(embedded, with its store dir, or the external URL). Everything else is
+`slog` on stderr. The two URLs are
 `https://<domain>` with `--domain`; `http://localhost:<port>` for a
 loopback listen; the listen address as given when it names one
 interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for

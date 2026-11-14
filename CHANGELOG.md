@@ -61,7 +61,8 @@ All notable changes to Flightdeck are documented here.
   rebinding) and read it. Every request's `Host` is now checked: an IP
   address, `localhost`, the `--domain` and the names in the new
   `--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`) are answered, anything
-  else gets 421 with a line naming the setting. The check is on for a
+  else gets 421 naming the refused host and the setting to add it to,
+  and is logged once per host name. The check is on for a
   loopback listen, with `--domain`, whenever a list is set, and in the
   Docker image (which sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`); a
   listen address beyond loopback with no list answers any name, as

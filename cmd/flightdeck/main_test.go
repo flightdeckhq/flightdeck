@@ -15,6 +15,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/storage"
 )
 
@@ -56,7 +57,7 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 	}
 	layout := datadir.Layout{Root: "/data", NATS: "/data/nats", Secrets: "/data/secrets.json"}
 	db := database{backend: storage.SQLite, display: "/data/flightdeck.db"}
-	block := func(opts cli.Options, dev bool) string {
+	block := func(opts cli.Options, dev bool, allowed ...string) string {
 		t.Helper()
 		f, err := os.CreateTemp(t.TempDir(), "banner")
 		if err != nil {
@@ -67,7 +68,7 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 		if dev {
 			token = bootstrap.Result{Token: bootstrap.DevToken, Dev: true}
 		}
-		printBanner(f, opts, dev, token, layout, db, true)
+		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true)
 		out, err := os.ReadFile(f.Name())
 		if err != nil {
 			t.Fatal(err)
@@ -97,6 +98,32 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("loopback: the block lacks %q:\n%s", want, out)
+		}
+	}
+
+	// The hosts answered, in each mode of the host check.
+	for _, c := range []struct {
+		name    string
+		opts    cli.Options
+		dev     bool
+		allowed []string
+		want    string
+	}{
+		{"loopback", cli.Options{Listen: "127.0.0.1:4000"}, true, nil,
+			"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"the image (a list of localhost)", cli.Options{Listen: ":4000"}, false, []string{"localhost"},
+			"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"a list", cli.Options{Listen: ":4000"}, false, []string{"fd.internal", ".corp.example"},
+			"  Hosts       localhost, IP addresses, fd.internal, .corp.example   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"a domain", cli.Options{Listen: ":4000", Domain: "fd.example.com"}, false, nil,
+			"  Hosts       localhost, IP addresses, fd.example.com   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"beyond loopback, no list", cli.Options{Listen: ":4000"}, false, nil,
+			"  Hosts       any host name   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n"},
+		{"the list says any", cli.Options{Listen: "127.0.0.1:4000"}, true, []string{"*"},
+			"  Hosts       any host name   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n"},
+	} {
+		if out := block(c.opts, c.dev, c.allowed...); !strings.Contains(out, c.want) {
+			t.Errorf("%s: the block lacks %q:\n%s", c.name, c.want, out)
 		}
 	}
 

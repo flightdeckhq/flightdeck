@@ -43,8 +43,8 @@
 # rebinding). Reached by a name instead (a Compose service name, a
 # reverse proxy's host), add that name:
 #   -e FLIGHTDECK_ALLOWED_HOSTS=localhost,flightdeck,fd.example.com
-# A request for any other name is answered 421 with that hint; "*"
-# answers every name. :4000 inside the container is not a loopback address, so the
+# A request for any other name is answered 421 naming the host and
+# this variable, and logged; "*" answers every name. :4000 inside the container is not a loopback address, so the
 # binary mints an access token on its first start, prints it once in the
 # start-up block (treat the container's logs as the secret they carry)
 # and keeps it in /data/secrets.json, mode 0600, for the next starts.

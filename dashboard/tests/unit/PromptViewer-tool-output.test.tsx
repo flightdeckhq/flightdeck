@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
 
@@ -282,6 +282,88 @@ describe("text fields of a structured result", () => {
       cleanup();
       const root = await renderResult(JSON.stringify([{ type: "text", text: "a list at the root" }]));
       expect(await within(root).findByRole("region", { name: "text block 1" })).toHaveTextContent("a list at the root");
+    });
+  });
+
+  describe("when a block stops scrolling", () => {
+    // The drawer widens: the same text now fits its box. The measurement
+    // is stubbed, and a fake ResizeObserver lets the test say when the
+    // box resized.
+    let overflowing = true;
+    const observers: Array<{ callback: ResizeObserverCallback }> = [];
+    const saved = {
+      scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+      clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+    };
+    beforeEach(() => {
+      overflowing = true;
+      observers.length = 0;
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.tagName === "PRE" ? (overflowing ? 800 : 200) : 0;
+        },
+      });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.tagName === "PRE" ? (overflowing ? 360 : 200) : 0;
+        },
+      });
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(public callback: ResizeObserverCallback) {
+            observers.push(this);
+          }
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      for (const [key, descriptor] of Object.entries(saved)) {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+      }
+    });
+
+    /** The text now fits: every observed box reports its resize. */
+    function widen(): void {
+      overflowing = false;
+      act(() => {
+        for (const o of observers) o.callback([], o as unknown as ResizeObserver);
+      });
+    }
+
+    it("keeps the focus on a block that holds it, and leaves the tab order once it loses it", async () => {
+      const box = await renderResult(JSON.stringify({ stdout: "many\nlines", stderr: "" }));
+      const stdout = await within(box).findByRole("region", { name: "stdout" });
+      act(() => stdout.focus());
+      expect(document.activeElement).toBe(stdout);
+
+      widen();
+      // Still the focused element, still a named region: the focus did
+      // not fall to the page.
+      expect(document.activeElement).toBe(stdout);
+      expect(stdout).toHaveAttribute("tabindex", "0");
+      expect(stdout).toHaveAttribute("role", "region");
+      expect(stdout).not.toHaveAttribute("data-scrolls");
+
+      act(() => stdout.blur());
+      expect(stdout).not.toHaveAttribute("tabindex");
+      expect(stdout).not.toHaveAttribute("role");
+      expect(within(box).queryByRole("region")).toBeNull();
+    });
+
+    it("leaves the tab order at once when the block does not hold the focus", async () => {
+      const box = await renderResult(JSON.stringify({ stdout: "many\nlines", stderr: "" }));
+      const stdout = await within(box).findByRole("region", { name: "stdout" });
+      widen();
+      expect(stdout).not.toHaveAttribute("tabindex");
+      expect(within(box).queryByRole("region")).toBeNull();
     });
   });
 

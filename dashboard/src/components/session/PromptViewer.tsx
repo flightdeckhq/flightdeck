@@ -1725,14 +1725,19 @@ function useScrollsVertically(ref: React.RefObject<HTMLElement | null>, content:
  *  TERMINAL_TEXT_MAX_HEIGHT_PX; stderr is set apart by the error
  *  colour. A block whose text scrolls is a focusable region named
  *  ``name``, so the keys scroll it too; one that fits is plain text and
- *  stays out of the tab order. */
+ *  stays out of the tab order. A block that holds the focus stays a
+ *  region until it loses it: one that stops scrolling under the focus
+ *  (a wider drawer) would otherwise drop the focus to the page. */
 function TerminalText({ text, name, tone = "muted" }: { text: string; name: string; tone?: "muted" | "error" }) {
   const ref = useRef<HTMLPreElement | null>(null);
   const scrolls = useScrollsVertically(ref, text);
+  const [focused, setFocused] = useState(false);
   return (
     <pre
       ref={ref}
-      {...(scrolls ? { role: "region", "aria-label": name, tabIndex: 0 } : {})}
+      {...(scrolls || focused ? { role: "region", "aria-label": name, tabIndex: 0 } : {})}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       data-scrolls={scrolls ? "true" : undefined}
       className="rounded-md p-2 font-mono text-[12px] leading-relaxed"
       style={{

@@ -277,7 +277,9 @@ The gate installs what was just published on fresh runners, the way a
 user would, and runs `scripts/install-gate.sh` against it: start
 `flightdeck` with no database and nothing else configured (the script
 removes the binary's settings from its environment), wait for
-`/ingest/health`, read the token from the start-up block, require that
+`/ingest/health` and for the binary's own start-up block (an answer
+alone could be another server that took the port), read the token
+from the start-up block, require that
 block to name a SQLite database and `flightdeck.db` to be in the data
 dir, check `/runtime-config.json` and `GET /` (the dashboard), require
 a 401 from `/api/v1/sessions` and from `/ingest/v1/events` with no token

@@ -353,11 +353,13 @@ dev: ## Start the dev stack: the flightdeck binary from source on :4000 (DB=post
 dev-restart: ## Rebuild the binary (and a stale dashboard bundle) and restart it; Postgres keeps running
 	scripts/dev-stack.sh restart $(DB)
 
-# CONFIRM names the compose project, for a database that holds more
-# than a seed: make dev-reset CONFIRM=docker. scripts/dev-stack.sh says
-# what it is about to delete and refuses without it.
-dev-reset: ## Stop the dev stack, DELETE its database and bus store, start again (CONFIRM=<project> for a database with data)
-	CONFIRM="$(CONFIRM)" scripts/dev-stack.sh reset $(DB)
+# FLIGHTDECK_DEV_CONFIRM names what is deleted, for a database that
+# holds more than a seed: the compose project on Postgres (make
+# dev-reset FLIGHTDECK_DEV_CONFIRM=docker), sqlite on SQLite.
+# scripts/dev-stack.sh says what it is about to delete and refuses
+# without it.
+dev-reset: ## Stop the dev stack, DELETE its database and bus store, start again (FLIGHTDECK_DEV_CONFIRM=<project> or sqlite for a database with data)
+	FLIGHTDECK_DEV_CONFIRM="$(FLIGHTDECK_DEV_CONFIRM)" scripts/dev-stack.sh reset $(DB)
 
 down: ## Stop the dev stack; volumes and the data dir stay
 	scripts/dev-stack.sh down

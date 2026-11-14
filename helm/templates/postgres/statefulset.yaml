@@ -1,19 +1,21 @@
 {{- /*
-Bundled Postgres StatefulSet. Suppressed entirely when postgres.externalUrl
-is set -- operators are expected to point at a managed database in that case.
-See values.yaml for the rationale: the chart does not ship HA or backups.
+Bundled Postgres StatefulSet, rendered with postgres.enabled and
+suppressed when postgres.externalUrl is set: operators are expected to
+point at a managed database in that case. See values.yaml for the
+rationale: the chart does not ship HA or backups.
 */ -}}
-{{- if not .Values.postgres.externalUrl -}}
+{{- if include "flightdeck.postgresBundled" . -}}
 {{- $component := "postgres" -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
 spec:
   serviceName: {{ include "flightdeck.postgresServiceName" . }}
   replicas: 1
+  {{- include "flightdeck.pvcRetention" . | nindent 2 }}
   selector:
     matchLabels:
       {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
@@ -35,14 +37,31 @@ spec:
         runAsUser: 70
         runAsGroup: 70
         fsGroup: 70
+        # The kubelet gives the volume to the group once, when its root
+        # does not match, instead of walking every file of the database
+        # at each mount.
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
-          image: "{{ .Values.image.registry }}/{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          image: {{ include "flightdeck.imageRef" (dict "root" . "image" .Values.postgres.image "key" "postgres.image") | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The root filesystem is read-only: the server writes its data
+          # under the volume, its socket and lock under
+          # /var/run/postgresql and temporary files under /tmp, the two
+          # emptyDirs below.
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # The official image passes arguments that start with "-" to
+          # the server. The value is 80 connections for every flightdeck
+          # pod the chart may run, plus 20 (see the helper).
+          args:
+            - "-c"
+            - "max_connections={{ include "flightdeck.postgresMaxConnections" . }}"
           ports:
             - name: postgres
               containerPort: {{ .Values.postgres.port }}
@@ -56,8 +75,14 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
+                  {{- $passwordRef := include "flightdeck.secretRef" (dict "root" . "path" "postgres.passwordSecret") | fromJson }}
+                  {{- if $passwordRef.name }}
+                  name: {{ $passwordRef.name | quote }}
+                  key: {{ $passwordRef.key | quote }}
+                  {{- else }}
                   name: {{ include "flightdeck.secretName" . }}
                   key: POSTGRES_PASSWORD
+                  {{- end }}
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
@@ -84,6 +109,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.postgres.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

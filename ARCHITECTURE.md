@@ -590,14 +590,14 @@ flightdeck/
 │   ├── time.go                 # Time: scans a timestamp from either backend, column or expression
 │   ├── bus.go, bus_postgres.go # Bus: in-process channels (SQLite) or LISTEN/NOTIFY (Postgres)
 │   ├── migrate.go              # golang-migrate runner over the embedded migrations of both backends
-│   ├── migrations/postgres/    # The Postgres migrations (canonical, embedded in every binary; the Helm chart packages a copy)
+│   ├── migrations/postgres/    # The Postgres migrations, embedded in every binary
 │   ├── migrations/sqlite/      # 000001_baseline, then one pair per Postgres migration after it
 │   └── storagetest/            # Opens migrated databases for Go tests on every backend the run covers
-├── helm/                       # Kubernetes Helm chart
-│   ├── Makefile                # lint / template / install / upgrade — each gates on sync-migrations
-│   ├── templates/              # ConfigMap consumes migrations/ via .Files.Glob at chart-render time
-│   └── migrations/             # Build artifact (gitignored); populated by `make sync-migrations`
-│                               # from storage/migrations/postgres/. Single source of truth lives there.
+├── helm/                       # Kubernetes Helm chart: the flightdeck image as one StatefulSet
+│   ├── Makefile                # lint / template / install / upgrade / uninstall
+│   ├── values.yaml             # One pod on SQLite by default; Postgres and a shared NATS for more
+│   ├── values.prod.yaml        # Three pods on an external Postgres and the chart's NATS cluster
+│   └── templates/              # flightdeck/ (StatefulSet, Services, HPA), postgres/, nats/, Ingress, NetworkPolicies
 ├── docker/                     # docker-compose.yml (users: one flightdeck container on SQLite),
 │                               # docker-compose.postgres.yml (the same with a bundled Postgres),
 │                               # docker-compose.dev.yml (the dev stack's Postgres),
@@ -5320,10 +5320,8 @@ parity test opens both engines at their newest migration and fails when
 the tables, columns, nullability, primary keys or explicit indexes
 differ (the GIN index is the one allowed difference). The `flightdeck`
 binary applies the embedded set of its backend at start, as the
-standalone workers binary does, so the compose files carry no
-migration files; the Helm chart's migrations ConfigMap (`helm/Makefile
-sync-migrations`) still copies the Postgres directory and is unused by
-the workers.
+standalone workers binary does, so no compose file and no chart
+carries migration files.
 
 **Instances that migrate at once.** Every instance applies the
 migrations when it starts (the binary's pods under one Deployment, the
@@ -10012,8 +10010,7 @@ because the mode default is already permissive.
 > empty-blocklist global row), and 000020 (drop the
 > `mcp_policy_versions` table and the `version` column). Migrations
 > ship under `storage/migrations/` (the Postgres files, and the SQLite
-> baseline that carries the same tables); the Helm chart picks the
-> Postgres files up via `helm/Makefile sync-migrations`. Any deviation
+> baseline that carries the same tables), embedded in the binaries. Any deviation
 > — column rename, type change, additional or removed constraint,
 > index difference — requires a new `DECISIONS.md` entry recording
 > the pivot BEFORE the migration is written.
@@ -10595,9 +10592,10 @@ beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
-cache; the lock files below; and, in SQLite mode,
-`flightdeck.db.migrate.lock`, which an instance holds while it applies
-the migrations (see Storage > Migrations). With `--database-url postgres://…`
+cache; `tmp/` (mode 0700), SQLite's temporary files (below); the lock
+files below; and, in SQLite mode, `flightdeck.db.migrate.lock`, which
+an instance holds while it applies the migrations (see Storage >
+Migrations). With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file
@@ -10605,6 +10603,38 @@ locks that a network filesystem does not provide (NFS, SMB; on
 Windows a UNC path or a mapped network drive is the usual way to end
 up on one), and the binary's own lock needs the same; the lock error
 says so when the filesystem refuses the lock.
+
+**Nothing is written outside the data dir.** The binary runs on a
+read-only root filesystem with the data dir as its one writable path
+(`docker run --read-only`, a pod with `readOnlyRootFilesystem: true`).
+The database, the bus store, the secrets and the certificate cache are
+there by construction; the one thing that is not is SQLite's temporary
+files. SQLite writes one when a statement needs more working space than
+its two-megabyte cache: a sort or a `GROUP BY` over a large events
+table (the analytics queries), an index build in a migration, a large
+statement journal. Left to itself it puts them in `$SQLITE_TMPDIR`,
+`$TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp` or the working directory,
+whichever is writable first, and with none of them writable the
+statement fails with `disk I/O error (6410)`: an analytics request then
+answers 500 once the database is large enough to need the space. So in
+SQLite mode the binary names `<data dir>/tmp` as SQLite's temporary
+directory before it opens or migrates the database
+(`storage.SetSQLiteTempDir`, SQLite's `temp_store_directory`, set on
+every connection). The files stay on disk, not in memory
+(`temp_store=MEMORY` would bound a large sort by the container's memory
+limit instead of the volume), and on the volume that holds the database
+itself. SQLite removes each file as it opens it (or opens it unnamed),
+so the directory is normally empty. At every start, once it holds the
+data dir's lock, the binary removes what a killed process may have left
+there, and nothing else: only files named with SQLite's temporary-file
+prefix, `etilqs_`, so a `tmp` that is shared (a data dir of `/`, whose
+`tmp` is the system's) loses nothing that is not SQLite's. `tmp` is
+looked at without following it: a symbolic link or a file in its place
+is removed itself (a link's target is never touched), a new 0700
+directory is made, and a warning says what was replaced. The
+standalone services keep SQLite's own choice. Nothing else in the
+process writes a temporary file: the embedded NATS keeps its own under
+`nats/`, and the certificate cache under `acme/`.
 
 **One process per data dir.** The running binary holds an exclusive
 operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
@@ -10775,6 +10805,77 @@ is the trust boundary: a non-loopback deployment protects it at the
 network edge or with `--domain`. Further tokens are minted in the
 Settings page.
 
+**Host check.** `/runtime-config.json` asks for no credential, since
+the dashboard has no login of its own, so the origin is the boundary
+(above). A browser can be made to cross it from outside: a page on
+another site points a name of its own at this machine (DNS rebinding),
+the browser loads `http://that-name:4000/runtime-config.json` as that
+page's own origin, and the page reads the token and calls the API. The
+browser sends the page's name as `Host`, so every request passes a
+check of that header before any route (`internal/router/hosts.go`), the
+health routes and the two APIs included. These hosts are always
+answered: an IP address (a rebinding page needs a name whose DNS answer
+it controls; the origin of an address is whatever serves there),
+`localhost` and names under it, the `--domain`, and the entries of
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`: host names separated by
+commas, a leading dot admitting every name under one, compared without
+case or a trailing dot). The port is not compared: a forwarded or
+published port changes it, and a rebinding page cannot choose it. The
+check is on when the binary listens on loopback only, where the
+browser is the one way in; with `--domain`; and whenever a list is
+set. A listen address beyond loopback with no list answers every
+`Host`: the names such an instance is reached by (a LAN name, a
+reverse proxy's) are not known to the binary, and the operator who
+bound it there decided who reaches it. `--allowed-hosts '*'` turns the
+check off in any mode. The Docker image sets
+`FLIGHTDECK_ALLOWED_HOSTS=localhost`, so a container is checked like a
+loopback listen: published on `127.0.0.1` it is reached as `localhost`
+or by address; one reached by a name (a Compose service name, a
+reverse proxy's) lists that name. A refused request is answered 421
+Misdirected Request with one line of JSON that names the refused host as
+the server read it (lower-case, without its port, which no entry takes)
+and the exact setting that admits it: `add <host> to the comma-separated
+list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts`. A Host longer than
+253 bytes, the most a DNS name can spell out, is no host name and is
+refused as malformed, so a request can make the server repeat no more
+than that. The body carries nothing else from the request and no
+secret, and the listed names are not repeated to the requester. Each
+distinct refused host name is logged once, as a WARN with the same
+hint (a name sent with different ports or cases is one name); after
+twenty names one more line says further ones are refused without a log
+line, and the set of names the process remembers stops growing there, so
+a scanner can grow neither the log nor the memory. With the check on,
+the start-up block's `Hosts` line lists the names answered (`localhost,
+IP addresses` and the domain and the listed names); with it off it says
+`any host name`. The sensor, the plugin and `flightdeck health` send
+the address they were given as `Host`, so an address or `localhost`
+passes everywhere. Under Kubernetes the kubelet's `httpGet` probes
+connect to the pod IP and send it as `Host`, and `flightdeck health` in
+an exec probe sends `127.0.0.1` (the domain with `--domain`), so probes
+pass with any list; the names to list are the ones clients use: the
+Service's (`<service>`, `<service>.<namespace>`,
+`<service>.<namespace>.svc`, `<service>.<namespace>.svc.<cluster
+domain>`) and the Ingress hosts, which an ingress controller passes on
+as the `Host`.
+
+The fleet stream (`/api/v1/stream`) carries the token in its URL,
+because a browser cannot set a header on a WebSocket. With the Host
+check on, a request for it with an `Origin` header is answered 403
+unless the origin's host is the host that was asked for (the
+dashboard's own page; the port may differ behind a proxy) or one of the
+hosts above; the body names the page's host and the setting that admits
+it, as the 421 does. With the check off (a listen beyond loopback and no
+list) the `Origin` is not checked, as the stream never checked it before
+the Host check existed: such an instance is commonly behind a reverse
+proxy that rewrites the `Host` to its upstream address
+(`proxy_pass http://127.0.0.1:4000`) while the browser's `Origin` keeps
+the public name, which the binary cannot know. A client that is not a
+browser sends no `Origin`. Either way the stream needs its token. The REST API keeps its CORS
+policy (`FLIGHTDECK_CORS_ORIGIN`): a page on another site cannot read
+`/runtime-config.json`, which carries no CORS header, so it has no
+token to send. The standalone query API accepts any `Origin` on the
+stream; there the edge in front of it decides.
+
 **TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
 the binary with certificates from Let's Encrypt (`acme/autocert`,
 HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
@@ -10783,17 +10884,32 @@ or HEAD to `https://<domain>` with the same path and query, whatever
 `Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
-**Time zone.** The binary sets the process's local zone to UTC at
-start: the query API
+**Time zone.** The binary's local zone is UTC: the query API
 formats the timestamps it reads from the database in the process's zone,
-and its contract is RFC 3339 in UTC, whatever zone the host is in.
+and its contract is RFC 3339 in UTC, whatever zone the host is in. The
+zone is set while the binary's packages are loaded (`internal/utc`, an
+`init`), not by `main`: it is a variable every goroutine reads, and the
+embedded NATS server starts a timer goroutine when its packages are
+loaded, so a write from `main` would race with it. Go initialises a
+package once its imports are, in import-path order, which puts this one
+before the NATS packages and so before any goroutine exists.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
-engine's name) and the bus (embedded, with its store dir, or the
-external URL). Everything else is `slog` on stderr.
+engine's name), the host names answered (see Host check) and the bus
+(embedded, with its store dir, or the external URL). Everything else is
+`slog` on stderr. The two URLs are
+`https://<domain>` with `--domain`; `http://localhost:<port>` for a
+loopback listen; the listen address as given when it names one
+interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for
+a listen on every interface (`:4000`, `0.0.0.0:4000`, `[::]:4000`),
+with a note to put the machine's name or address in place of
+`<this-host>`. The operating system's host name is not printed there:
+inside a container it is the container's id (the pod's name under
+Kubernetes), which nothing outside resolves, and the binary cannot know
+the name or the published port the machine is reached by.
 
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
@@ -10859,9 +10975,8 @@ URL each service opens its own database with (the Postgres runtime
 parameters above), for a caller that opens it for them. `Run` joins every goroutine it starts before it closes
 the connections it owns; the workers' `Run` does not migrate (the
 binaries call `Migrate` once, first). The per-service `cmd/main.go` is environment parsing plus
-`app.Run`. No release artifact carries the three service binaries: the
-Helm chart still names their images, which are no longer published,
-and the split test stack (below) runs them from source.
+`app.Run`. No release artifact carries the three service binaries; the
+split test stack (Contributor dev stack, below) runs them from source.
 
 **Docker Compose.** `docker/docker-compose.yml` runs the all-in-one
 image as one service, `flightdeck`, in a compose project of the same
@@ -10884,10 +10999,16 @@ two limits (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`,
 published), sets the database URL to it and makes `flightdeck` wait for
 its health check; it requires `POSTGRES_PASSWORD`, limited to
 URL-unreserved characters because the one value is both the server's
-password and a part of that URL. The `flightdeck` service has no health
-check: the image is distroless, with no shell or HTTP client to run one
-from inside the container, and the binary has no health subcommand, so
-`docker compose ps` reports only whether the process runs. Both
+password and a part of that URL. The `flightdeck` service takes the
+image's health check, `flightdeck health` (see Health checks), so
+`docker compose ps` reports it `healthy` once it serves and another
+service can wait for it with `depends_on: condition: service_healthy`.
+The service passes `FLIGHTDECK_ALLOWED_HOSTS` through from the shell or
+`docker/.env`, defaulting to the image's `localhost` (see Host check):
+the published port is reached as `127.0.0.1` or `localhost` with nothing
+set, and a deployment reached by any other name (a LAN name with
+`FLIGHTDECK_PUBLISH_HOST=0.0.0.0`, a reverse proxy's host, the service
+name `flightdeck` from another container) lists it there. Both
 services log through Docker's `json-file` driver with rotation: a
 container's log file is rotated at 20 MiB and five files are kept, so
 one container holds at most 100 MiB of logs. Without it the driver
@@ -10902,28 +11023,169 @@ not override it. Under Helm the kubelet rotates container logs
 (`containerLogMaxSize`, `containerLogMaxFiles`) and the chart sets
 nothing.
 
-**Helm chart (Kubernetes).** A Chart at `helm/` ships a values file
-covering image tags, replicas, HPA bounds, NATS JetStream PVC sizes,
-ingress configuration, and an `externalUrl` escape hatch for managed
-Postgres. The bundled Postgres StatefulSet is fine for small
-deployments; production should provide an external HA Postgres via
-`postgres.externalUrl`. The chart passes the `FLIGHTDECK` stream's
-settings to ingestion from `nats.jetstream.stream` (`maxAgeHours`,
-`maxSizeMiB`, `replicas`; see Worker / Event Processing > The
-FLIGHTDECK stream). Unset, `replicas` is 3 when `nats.replicas` is 3 or
-more and 1 otherwise: 3 copies keep a quorum through the loss of one
-server, while 2 copies need both servers for a quorum and so would stop
-the stream on either one's loss. A set `replicas` must be 1 to 5, not 2
-for that reason, and at most `nats.replicas`, and the render fails
-otherwise, as it does for an age under 1 hour, a size under 64 MiB, or
-a size above 75% of `nats.jetstream.fileStore.size` (read when it is a
-plain integer with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix).
-Each NATS server holds a full copy on its own PVC, so `maxSizeMiB`
-stays well under the 75% of free space a server reserves at most: 5120
-MiB on the 10Gi default volume, 30720 MiB on the 50Gi volume of
-`values.prod.yaml`. The ingestion pods carry a checksum of the three
-settings, so changing one rolls them and the new settings apply to the
-stream in place. The chart runs the per-service images.
+**Helm chart (Kubernetes).** The chart at `helm/` runs the all-in-one
+image as one StatefulSet, `<release>-flightdeck`. Each pod is a whole
+control plane (the binary with `--listen :4000 --data-dir
+/data/flightdeck`) behind one ClusterIP Service, and the Ingress, when enabled, routes
+every path to it. It is a StatefulSet because the binary keeps state
+per process in its data dir (the SQLite file and its lock, the embedded
+bus store, `secrets.json`): the claim template gives every pod a
+PersistentVolumeClaim of its own, kept across restarts and rolling
+updates, where the one claim of a Deployment could serve one pod only,
+and a rolling update of a Deployment would start the new pod while the
+old one still holds the data dir's lock. The pod runs as the image's
+user (uid 65532) with a read-only root filesystem and an `emptyDir` at
+`/tmp` for SQLite's temporary files. The data dir is a directory
+inside the pod's volume rather than its root, so the binary creates it
+with mode 0700 whatever the storage class made of the root. The
+volume is given to the pod's group with `fsGroup` and
+`fsGroupChangePolicy: OnRootMismatch`: under the default policy the
+kubelet adds group read and write to every file on the volume at each
+mount, and the binary refuses a `secrets.json` wider than 0600, so the
+pod would start once and never again.
+
+The values choose one of three shapes:
+
+| Shape | Values | Database | Bus |
+|---|---|---|---|
+| One pod and nothing else (the default) | none | SQLite on the pod's volume | embedded |
+| One pod on Postgres | `postgres.enabled=true` with `postgres.password`, or `postgres.externalUrl` | the chart's single-instance Postgres StatefulSet, or one outside the chart | embedded |
+| Several pods | `flightdeck.replicas` above 1 or `flightdeck.hpa.enabled`, with a Postgres as above | Postgres | the chart's NATS cluster (`nats.auth.token` required) or `nats.externalUrl` |
+
+Several pods need a database and a bus they share, and the render
+fails for anything else. On SQLite every pod would have a database of
+its own, since one process serves a SQLite file; on the embedded bus
+the workers of one pod would never see the events another pod
+accepted. So `flightdeck.replicas` above 1, or the HPA, is refused
+without a Postgres, and refused with `nats.enabled=false` unless
+`nats.externalUrl` names a server; `nats.enabled` left unset follows
+the replica count. Each pod opens at most 80 Postgres connections
+(Database, above), so the chart starts its own Postgres with
+`max_connections` at 80 for every pod it may run (the HPA's maximum
+when it is on) plus 20 for everything else, and refuses a
+`postgres.maxConnections` set below that; a Postgres outside the chart
+needs the same room, or a pooler, which the chart cannot check. With
+`flightdeck.dashboardTokenSecret` (a Secret's name and key) every pod
+serves one supplied dashboard token: the chart mounts the key
+read-only as a file at `/etc/flightdeck/dashboard-token/token` and
+sets `FLIGHTDECK_DASHBOARD_TOKEN_FILE` to it, never the variable that
+carries the token itself, which would put it in the pod's environment.
+Without it every pod mints a dashboard token of its own on its first
+start, each valid on every pod because they are rows of
+`access_tokens`, so the Settings page lists one `Bootstrap token` per
+pod that ever started.
+
+The probes are HTTP on the public port: startup and readiness on
+`/ingest/health`, liveness on `/api/health`, with five minutes allowed
+for a first start that migrates a database. `--metrics` is on by
+default; the three metrics ports are declared on the pod and listed on
+the headless `<release>-flightdeck-metrics` Service, never on the
+Service the Ingress routes to.
+
+Every resource is named `<base>-<component>`, the base (the release
+name, with `-flightdeck` when it lacks it, or `fullnameOverride`) cut
+to 43 characters: the longest name, the headless
+`<base>-flightdeck-headless` Service, is then the 63 a DNS label may
+have, and an earlier chart's release of a base up to 43, the longest
+whose Postgres StatefulSet (`<base>-postgres`, 52) could always start
+its pods, keeps every name. A StatefulSet's name is cut to 52, since
+the controller labels each pod with `controller-revision-hash`, the
+name, a dash and the revision's hash, in a label value of at most 63.
+The hash is the decimal string of the revision's FNV-32 sum,
+safe-encoded one character per digit, so it is 1 to 10 characters.
+
+The chart passes the `FLIGHTDECK` stream's settings to the pods from
+`nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
+Worker / Event Processing > The FLIGHTDECK stream). On the chart's NATS
+cluster, `replicas` unset is 3 when `nats.replicas` is 3 or more and 1
+otherwise: 3 copies keep a quorum through the loss of one server, while
+2 copies need both servers for a quorum and so would stop the stream on
+either one's loss. A set `replicas` must be 1 to 5, not 2 for that
+reason, and at most `nats.replicas`, and the render fails otherwise, as
+it does for an age under 1 hour, a size under 64 MiB, or a size above
+75% of the volume that holds the stream: `nats.jetstream.fileStore.size`
+on the cluster, where each server holds a full copy on its own claim,
+and `flightdeck.data.size` on the embedded bus, whose store shares the
+pod's volume with the database (both read when they are a plain integer
+with a `Ki`/`Mi`/`Gi`/`Ti` or `K`/`M`/`G`/`T` suffix). So `maxSizeMiB`
+is 5120 MiB on the 10Gi default volumes and 30720 MiB on the 50Gi NATS
+volume of `values.prod.yaml`. On the embedded bus and on a NATS outside
+the chart the stream has one copy unless `replicas` is set. The pods read the
+ConfigMap and the Secret once, at start, and carry a checksum of each,
+so a change to either rolls them: the new stream settings then apply
+to the stream in place, and a release that moves from SQLite to
+Postgres, or onto a shared NATS, never leaves a running pod on the old
+database beside new pods on the new one.
+
+Every secret the chart needs can come from a value or from a Secret
+the operator created (`postgres.externalUrlSecret`,
+`postgres.passwordSecret`, `nats.externalUrlSecret`,
+`nats.auth.tokenSecret`: a name and a key), never both, and the render
+refuses a Secret given for something the chart does not run. The
+chart's own Secret carries only what came from values. A URL from the
+operator's Secret is read into the pod's env as it is; a password or
+token from one is read into `FD_POSTGRES_PASSWORD` or `FD_NATS_TOKEN`,
+and the kubelet expands it into the URL the chart writes in the pod
+spec, so such a value must be URL-safe (the chart cannot encode what
+it does not see). The checksum annotations cover the chart's Secret,
+not the operator's, so a change to those needs a restart of the pods.
+A Secret reference reads null as unset and fails the render for any
+other value that is not a map, naming the path but not the value.
+`flightdeck.extraEnv` goes into the ConfigMap in plain text, so the
+render refuses, in any case, a name that reads like a secret (one
+containing `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `CREDENTIAL` or
+`APIKEY`, or with `KEY`, `URL`, `URI`, `DSN`, `PASS` or `PWD` as a
+word: a URL may carry a password, and the binary reads no URL setting
+without one), a key the chart sets itself and a key a ConfigMap cannot
+carry. It is a guard against a slip, not a scanner.
+`flightdeck.extraEnvFrom` adds env sources after the chart's own, so
+their keys override the chart's ConfigMap and Secret unseen by these
+checks; the env entries built from the operator's Secrets still win.
+
+The StatefulSet carries the database the release runs on as the
+annotation `flightdeck/database` (`sqlite`, the chart's Postgres, an
+external one named by host, port and database, never its credentials,
+or the name and key of the Secret its URL comes from, so a Secret
+repointed at another database is not seen). An upgrade reads it from the
+running StatefulSet with `lookup` and fails when the database would
+change, unless `allowDatabaseChange=true`: the chart does not move
+data, so such an upgrade starts the pods on the new database as it is.
+`lookup` answers nothing when the render cannot read the cluster
+(`helm template`, a client-side dry run, a GitOps tool that renders
+offline) and a StatefulSet of an earlier chart has no annotation, so
+neither is checked; the notes of every upgrade name the database. The
+chart does not generate the bundled Postgres's password: a generated
+value would change on every render that cannot read the cluster, and
+Postgres takes a password only when it creates its database.
+
+Every pod runs under the runtime's default seccomp profile, as a
+non-root user, with no capabilities, no privilege escalation and a
+read-only root filesystem: the flightdeck pod with an `emptyDir` at
+`/tmp`, the bundled Postgres with `emptyDir`s at `/var/run/postgresql`
+(its socket and lock) and `/tmp`, NATS writing only its store. The
+three StatefulSets set `fsGroupChangePolicy: OnRootMismatch` and, on
+Kubernetes 1.27 and later where the field exists,
+`persistentVolumeClaimRetentionPolicy` `Retain` on deletion and
+scale-in, the behaviour without it too. The claim templates cannot
+change once installed, so a new size or storage class fails the
+upgrade; the README gives the procedure to grow a claim.
+`image.digest`, `nats.image.digest` and `postgres.image.digest` pin an
+image by digest.
+
+The ConfigMap sets `FLIGHTDECK_ALLOWED_HOSTS` to the names the pods
+are reached by: the Service and the headless Service in their short
+and qualified forms (`<name>`, `.<namespace>`, `.svc`,
+`.svc.<clusterDomain>`), every pod through the headless Service (a
+leading dot admits the names under it), the Ingress host and TLS hosts
+when the Ingress is rendered (a wildcard `*.x` as `.x`), `localhost`
+for a port-forward, and `flightdeck.extraAllowedHosts`. A binary that
+checks the `Host` header answers IP addresses whatever the list, so
+the kubelet's probes, which connect to the pod IP and send it as the
+`Host`, need nothing. An entry the binary would refuse at start fails
+the render. `flightdeck.metrics.networkPolicy`, off by default, lets
+only the peers it names reach the metrics ports, and states the public
+port open to everyone, since a NetworkPolicy that selects a pod denies
+whatever it does not allow.
 
 **Contributor dev stack.** `make dev` (`scripts/dev-stack.sh`) builds
 the binary from the checkout, with the dashboard bundle embedded, and
@@ -11071,8 +11333,8 @@ A redirect a service answers for a prefixed request (`/api/docs` to
 `/api/docs/`) keeps the prefix. Neither service has a route of its own
 under its prefix.
 
-The Docker Compose and Helm targets are feature-equivalent (Key
-Constraint #4).
+Docker Compose and the Helm chart run the same image, so a feature is
+in both or in neither (Key Constraint #4).
 
 ### Environment variables
 
@@ -11083,9 +11345,10 @@ over the defaults.
 |---|---|---|
 | `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/` |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
+| `--allowed-hosts` | `FLIGHTDECK_ALLOWED_HOSTS` | Host names the binary answers for besides `localhost`, IP addresses and `--domain`, separated by commas (`fd.internal,.example.com`; `*` answers any). Unset, a loopback listen and `--domain` answer only for those and a listen address beyond loopback answers any name; see Host check. The Docker image sets `localhost` |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
 Two more variables have no flag, since a flag's value shows in the
@@ -11095,6 +11358,9 @@ holding the dashboard token the operator supplies, and
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
+`flightdeck health` (see Health checks) takes the same flags and
+variables and uses the listen address and the domain to find the
+running instance.
 
 The three tables below list what each of the three services reads.
 The `flightdeck` binary runs them in one process: the tuning variables
@@ -11109,10 +11375,9 @@ the services' handlers on its own listener, so `FLIGHTDECK_PORT` is not
 used; a value of any of these in the environment has no effect on it.
 Those variables matter only to a service binary run on its own
 (`ingestion/cmd`, `workers/cmd`, `api/cmd`), which needs its database
-URL, hence "required" below. The Helm chart runs the services that
-way, each in a pod of its own against a Postgres and a NATS server;
-the split test stack and `scripts/go-db-tests.sh` build them from
-source. No release artifact and no compose file does.
+URL, hence "required" below. No release artifact, compose file or chart
+runs the services that way; the split test stack and
+`scripts/go-db-tests.sh` build them from source.
 
 **Ingestion API:**
 
@@ -11149,7 +11414,7 @@ source. No release artifact and no compose file does.
 | `FLIGHTDECK_POSTGRES_URL` | Postgres DSN, required by the standalone service; percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
-| `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set. The binary supplies the value it generated in `secrets.json` |
+| `FLIGHTDECK_JWT_SECRET` | Reserved for signing dashboard login tokens; the binary supplies the value it generated in `secrets.json` |
 | `FLIGHTDECK_ADMIN_EMAIL` / `FLIGHTDECK_ADMIN_PASSWORD` | Seed the initial dashboard login |
 | `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` (the price overrides layered over the built-in catalogue) |
 | `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves the request-latency histogram at `/metrics` (default 9104; `0` turns it off; the service refuses to start outside 0 to 65535) |
@@ -11185,7 +11450,7 @@ from one release tag (RELEASING.md has the sequence):
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -11262,13 +11527,93 @@ returning `{"status":"ok","service":"<name>"}`; under the binary they
 are `/ingest/health` and `/api/health` on the public port. The binary
 binds its port first and serves last, so both answer only once the
 database is migrated, the bus is up and the three services run, and
-`make dev` returns once both answer. The compose file has no health
-check, since nothing inside the distroless image can run one. The
-workers have no `/health`: the Helm chart reads their readiness from
-the metrics listener (`/metrics`), which opens after the startup
-migrations and the NATS connection, and a worker whose consumer cannot
-create the stream or subscribe exits so its supervisor restarts it;
-under the binary that failure ends the process with the error.
+`make dev` returns once both answer. The image runs them as its health
+check (`flightdeck health`, below), and the compose service inherits it.
+The Helm chart probes them over HTTP (startup and readiness on
+`/ingest/health`, liveness on `/api/health`). The workers have no
+`/health`: a worker whose consumer cannot create the stream or subscribe
+exits, which ends the binary with that error and lets its supervisor
+(`restart: unless-stopped`, the kubelet) start it again.
+
+**`flightdeck health`.** The binary serves the two routes as
+`/api/health` and `/ingest/health` on its one listener, and
+`flightdeck health` asks a running instance for both: it exits 0 when
+each answers 200 with its own service's body and 1 otherwise, and
+prints one line (`healthy: http://127.0.0.1:4000 answers /api/health
+and /ingest/health`, or `unhealthy: <url>: <reason>`). It exists for
+container health checks: the image is distroless, with no shell and no
+curl, so the binary is its own probe. The workers have no route to
+ask; they run in the same process, and the binary exits when one of its
+services fails, so a listener that answers means they run.
+
+The command takes the server's flags and reads the server's
+environment (`--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
+`FLIGHTDECK_DOMAIN`; the other flags are accepted and ignored), so with
+no arguments it finds an instance that was configured through the
+environment, as the image is, and the default one on `127.0.0.1:4000`.
+A listen address on every interface (`:4000`, `0.0.0.0:4000`,
+`[::]:4000`) is probed on `127.0.0.1`, and on `::1` when nothing can be
+connected to there (a listener on IPv6 only), within the same three
+seconds: a container may have no IPv6 on its loopback, and `::1` first
+would fail on an instance that serves. An answer that is wrong at the
+first address is not retried at the second. One that names an
+interface or a host is probed there, since nothing listens on loopback
+then. With `--domain` it probes `https://127.0.0.1:443` with the domain
+as the TLS server name and the `Host`, which the certificate policy
+requires, and does not verify the certificate. That is safe: the probe
+goes to the machine's own loopback, which nothing on the network can
+answer in its place, sends nothing secret, and trusts nothing it reads
+beyond the status, while a handshake that fails for want of a
+certificate still fails the check. On an instance that has no
+certificate cached yet, the first probe's handshake is what makes
+`autocert` request one, which can take longer than the probe's three
+seconds; the image's 60-second start period covers that issuance. It
+sends no token (the health routes need none), opens neither the data
+dir nor the database, and gives itself three seconds for both probes.
+A mistyped flag prints one line, the error, and exits 1, because
+Docker reserves exit status 2 of a health check command and keeps the
+output in the container's health log.
+
+The image declares the check (`HEALTHCHECK --interval=10s --timeout=5s
+--start-period=60s --retries=3 CMD ["/usr/local/bin/flightdeck",
+"health"]`): the timeout is above the command's own three seconds, so
+the command reports why it failed, and the start period covers the
+minute the binary waits for a database that is still starting. A
+Compose service that overrides it, and one that waits for it with
+`depends_on: condition: service_healthy`, uses the same command:
+
+```yaml
+healthcheck:
+  test: ["CMD", "flightdeck", "health"]
+  interval: 10s
+  timeout: 5s
+  start_period: 60s
+  retries: 3
+```
+
+Kubernetes ignores an image's `HEALTHCHECK`, so a pod declares its
+probes. The exec form checks both services in one probe and inherits
+the container's environment:
+
+```yaml
+startupProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 2
+  timeoutSeconds: 5
+  failureThreshold: 45   # 90 s: the wait for a database, then the migrations
+readinessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+livenessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+An `httpGet` probe on `/api/health` and the container port starts no
+process and is equivalent for the query API alone.
 
 ### Stream sequences
 
@@ -11324,14 +11669,11 @@ then one sample per label value in sorted order. The counters are
 process-local and start at zero when a worker starts, so with several
 worker replicas each one is scraped separately and the series summed.
 The listener opens after the startup migrations and the NATS
-connection, and a consumer that cannot create the stream or subscribe
-exits the worker, so the Helm chart uses the listener as the workers'
-readiness probe (liveness stays a process-alive check, so a long
-migration never restarts the pod) and lists it on the workers' headless
-Service for scrapers. A port that cannot be bound is logged and event
+connection. A port that cannot be bound is logged and event
 processing continues. The binary starts the listener only with
-`--metrics`; its public port never routes to it and the compose file
-does not publish it. The worker's log lines for the same events (drops, reaper
+`--metrics`; its public port never routes to it, the compose file does
+not publish it, and the Helm chart lists it on the headless metrics
+Service for scrapers. The worker's log lines for the same events (drops, reaper
 closes, revivals) remain the signal when the listener is off.
 
 #### Request latency
@@ -11389,18 +11731,15 @@ and `_count`, series in sorted label order. The listener carries no
 auth, so it is kept off the public edge: the binary starts the three
 listeners only with `--metrics` and its public port never serves
 `/metrics`; the compose file does not publish the ports; and the Helm
-chart (`ingestion.metricsPort`, `api.metricsPort`) declares the port on
-the pods and lists it on a headless `<release>-ingestion-metrics` or
-`<release>-api-metrics` Service, never on the Service the Ingress or a
-`LoadBalancer` uses. Each deployment sets its own
-`FLIGHTDECK_METRICS_PORT` (the workers' included) rather than the
-shared ConfigMap, since all three services read the same variable. The
-ports differ from the workers' 9102 so the three services can share one
-host's network, or one process, without a clash. The listener binds
-every interface (only its port is configurable): in compose it is
-reachable on the compose network only and in Kubernetes on the pod IP,
-so an operator who runs the binary with `--metrics` on a bare host
-firewalls the ports. The metrics listeners, the workers' included,
+chart (`flightdeck.metrics.enabled`) declares them on the pods and
+lists them on the headless `<release>-flightdeck-metrics` Service,
+never on the Service the Ingress or a `LoadBalancer` uses. The ports
+differ from the workers' 9102 so the three services share one
+process's network without a clash. The listener binds every interface
+(only its port is configurable): in compose it is reachable on the
+compose network only and in Kubernetes on the pod IP, so an operator
+who runs the binary with `--metrics` on a bare host firewalls the
+ports. The metrics listeners, the workers' included,
 are internal, on ports of their own, and are not part of the
 Swagger-documented API surface, which covers the API ports only. The
 service's readiness and liveness

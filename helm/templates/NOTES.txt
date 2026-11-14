@@ -1,0 +1,42 @@
+{{- $sts := include "flightdeck.statefulSetName" (dict "root" . "component" "flightdeck") -}}
+{{- $svc := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
+{{- if .Release.IsUpgrade }}
+Flightdeck is upgraded: the StatefulSet {{ $sts }} in namespace {{ .Release.Namespace }}
+now runs on {{ include "flightdeck.databaseIdentity" . }}.
+
+The chart never moves data between databases. If this release ran on
+another database before this upgrade, its data is still there (a volume
+claim, or the other server) and the pods do not read it: they run on
+the database above, as it is. When the chart can read the running
+release it refuses such an upgrade unless allowDatabaseChange=true; a
+release installed by an earlier chart, or rendered without access to
+the cluster, is not checked.
+{{- else }}
+Flightdeck is starting as the StatefulSet {{ $sts }} in namespace {{ .Release.Namespace }}.
+{{- end }}
+
+  Database  {{ if eq (include "flightdeck.database" .) "sqlite" }}SQLite, on each pod's own volume{{ else if include "flightdeck.postgresExternal" . }}Postgres outside the chart{{ else }}Postgres (the chart's own StatefulSet){{ end }}
+  Bus       {{ if include "flightdeck.natsExternal" . }}NATS outside the chart{{ else if include "flightdeck.natsEnabled" . }}NATS (the chart's cluster of {{ .Values.nats.replicas }}){{ else }}embedded in the pod{{ end }}
+
+The dashboard{{ if .Values.ingress.enabled }} is at http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}. Without the Ingress, forward the Service:{{ else }}, once the pod is ready (a first start creates the database), through a port-forward:{{ end }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $svc }} 4000:{{ .Values.flightdeck.service.port }}
+
+Then open http://localhost:4000. The access token for the sensor and
+the plugin is what the dashboard itself loads:
+
+  curl -s http://localhost:4000/runtime-config.json
+{{ if $dashboardToken.name }}
+Every pod serves the token in the Secret {{ $dashboardToken.name }}, key {{ $dashboardToken.key }}
+(flightdeck.dashboardTokenSecret). A pod whose token is not "ftd_" and
+32 random lower-case hex digits does not start, and its log says why.
+{{- else }}
+Each pod mints a token on its first start (its log prints it once, in
+the start-up block), and each is valid on every pod; with
+flightdeck.dashboardTokenSecret every pod serves one token you supply.
+{{- end }}
+
+The Settings page mints more tokens. Whoever can reach the Service can
+read the token: expose it only behind an Ingress or a network that
+authenticates.

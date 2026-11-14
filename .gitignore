@@ -36,15 +36,6 @@ node_modules/
 # harness reads, and the data dir.
 .dev/
 
-# Helm
-# helm/migrations/ is a build artifact populated by helm/Makefile
-# sync-migrations from storage/migrations/postgres/ (the canonical
-# source). Do not edit in place; edit the source under
-# storage/migrations/postgres/ and re-run any chart-render target
-# (lint / template / install / upgrade) which gates on
-# sync-migrations.
-helm/migrations/
-
 # IDE
 .idea/
 .vscode/

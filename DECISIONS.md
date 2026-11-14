@@ -930,6 +930,22 @@ writes Postgres SQL); a NATS container (one Go package needs a server,
 which `scripts/go-db-tests.sh` starts); a hook that pauses the
 in-process workers (test-only code in the product).
 
+## D268 -- The Helm chart runs the one image as a StatefulSet, more than one pod only on Postgres and a shared NATS
+
+**Date:** 2026-11-12
+**Decision:** one StatefulSet of `flightdeckhq/flightdeck`, a volume per
+pod; one pod on SQLite and the embedded bus by default. More than one
+replica, or the HPA, is refused without a Postgres and a shared NATS.
+**Why:** a SQLite file has one process (D262) and each embedded bus is
+its own, so several pods on either would split the data behind one
+Service with no error.
+**Rejected alternative:** a Deployment (one claim serves one pod; a
+rolling update meets the old pod's data-dir lock); scaling on SQLite
+with a warning; the volume's root as the data dir with plain `fsGroup`
+(the kubelet widens `secrets.json`, which the binary then refuses).
+**Also:** an upgrade onto another database is refused (the chart moves no
+data); every secret may come from the operator's Secret, `{name, key}`.
+
 ## D270 -- An operator can supply the dashboard token; it is stored and served as a minted one is
 
 **Date:** 2026-11-12
@@ -945,3 +961,20 @@ could be known before the first start.
 **Rejected alternative:** revoking the earlier token (401s the old pods);
 a rotate setting (restart and revoke do it); refusing a world-readable
 file (secret mounts are 0644 / 0444); a random salt (two rows).
+
+## D271 -- The binary checks the Host of every request on loopback, with --domain and with a list
+
+**Date:** 2026-11-12
+**Decision:** every request passes a `Host` check before any route,
+except on a listen beyond loopback with no `--domain` and no
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`; `*` turns it off). IP
+addresses, `localhost`, the domain and the list are answered, ports not
+compared; anything else gets 421 naming the host and the setting. The
+fleet stream refuses (403) a foreign browser `Origin` in every mode. The
+image sets the list to `localhost`.
+**Why:** `/runtime-config.json` hands out the dashboard token with no
+credential, so a DNS-rebinding page could read it from a loopback-only
+instance; such a page always uses its own name, never an address.
+**Rejected alternative:** enforcing on every listen (locks out a LAN or
+proxy name the binary cannot know); comparing ports (forwards change
+them); guarding only that file (the page then calls the API).

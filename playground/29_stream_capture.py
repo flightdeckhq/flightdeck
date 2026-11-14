@@ -46,6 +46,7 @@ from _helpers import (
     API_URL,
     fetch_events_for_session,
     init_sensor,
+    instant,
     print_result,
 )
 
@@ -325,7 +326,7 @@ def main() -> None:
         if len(post_calls) >= len(ran) and len(tool_calls) >= want_tools:
             break
         time.sleep(1)
-    events.sort(key=lambda e: e.get("occurred_at") or "")
+    events.sort(key=lambda e: instant(e["occurred_at"]))
     post_calls = [e for e in events if e.get("event_type") == "post_call"]
     tool_calls = [e for e in events if e.get("event_type") == "tool_call"]
 

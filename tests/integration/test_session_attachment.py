@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
 
 import pytest
 
 from .conftest import (
     get_session_detail,
+    instant,
     make_event,
     post_event,
     wait_for_state,
@@ -119,11 +119,9 @@ def test_session_attachment_multiple() -> None:
     detail = get_session_detail(sid)
     attachments = detail["attachments"]
     assert len(attachments) == 2
-    # Chronological: first attachment strictly before second. Compared
-    # as instants, not as strings: the API trims trailing zeros from the
-    # fraction, so "…59.1Z" (100 ms) sorts after "…59.105Z" as text.
-    first, second = (datetime.fromisoformat(stamp) for stamp in attachments)
-    assert first < second, attachments
+    # Chronological: first attachment strictly before second, compared
+    # as times (instant: the API trims the fraction's trailing zeros).
+    assert instant(attachments[0]) < instant(attachments[1]), attachments
 
 
 def test_session_attachment_invalid_uuid_warns(

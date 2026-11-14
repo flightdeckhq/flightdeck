@@ -41,6 +41,7 @@ from _helpers import (
     API_URL,
     fetch_events_for_session,
     init_sensor,
+    instant,
     print_result,
     require_env,
     wait_for_dev_stack,
@@ -227,7 +228,8 @@ def section_handoff(sdk: Any, settings: Any, model: str) -> None:
     weather_start = [e["occurred_at"] for e in weather_events if e["event_type"] == "session_start"]
     _check(
         "the triage child ended before the weather child started",
-        bool(triage_end and weather_start) and triage_end[0] <= weather_start[0],
+        bool(triage_end and weather_start)
+        and instant(triage_end[0]) <= instant(weather_start[0]),
         (triage_end, weather_start),
     )
     posts = _of_type(root, "post_call", 2)

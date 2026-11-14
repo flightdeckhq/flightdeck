@@ -681,6 +681,21 @@ def sqlite_timestamp(value: str | datetime) -> str:
     return f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
 
 
+def instant(stamp: str | datetime) -> datetime:
+    """The moment a timestamp from the API or a database row names, so two
+    are compared as times, never as text.
+
+    The API writes RFC 3339 with the fraction's trailing zeros trimmed:
+    ``…:59.1Z`` is 100 ms and sorts after ``…:59.105Z`` as a string, and
+    a whole second has no fraction at all. A row's text parses too:
+    Postgres' ``row_to_json`` and psql forms (``2026-11-14 11:30:59.1+00``)
+    and SQLite's millisecond layout. ``fromisoformat`` takes any fraction
+    width, the ``Z`` suffix and a space for the ``T`` on the Python 3.11+
+    the suite runs on.
+    """
+    return stamp if isinstance(stamp, datetime) else datetime.fromisoformat(stamp)
+
+
 @contextmanager
 def _sqlite_connection() -> Iterator[sqlite3.Connection]:
     """A connection to the binary's database file, closed on exit.

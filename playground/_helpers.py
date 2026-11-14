@@ -12,6 +12,7 @@ import json
 import os
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +260,14 @@ def fetch_events_for_session(
             pass
         time.sleep(poll_s)
     return last
+
+
+def instant(stamp: str) -> datetime:
+    """The moment an API timestamp names, so two are compared as times,
+    never as text: the API trims the fraction's trailing zeros, and
+    ``…:59.1Z`` (100 ms) sorts after ``…:59.105Z`` as a string.
+    """
+    return datetime.fromisoformat(stamp)
 
 
 def assert_token_cost_fields(

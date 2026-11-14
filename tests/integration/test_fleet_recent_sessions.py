@@ -27,10 +27,9 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from datetime import datetime
 from typing import Any
 
-from .conftest import API_URL, auth_headers
+from .conftest import API_URL, auth_headers, instant
 
 # Mirrors ``store.RecentSessionsPerAgent`` (api/internal/store/postgres.go).
 # The Go side is the canonical source — bumping the cap there must be
@@ -42,15 +41,6 @@ PER_AGENT_CAP = 5
 # beside this one and create agents of their own on the shared stack,
 # whose sessions may still be landing when the page is read.
 SEEDED_AGENT_PREFIX = "e2e-test-"
-
-
-def _instant(stamp: str) -> datetime:
-    """Parse an RFC 3339 timestamp from the API, with or without fractions.
-
-    The API emits fractions of one to six digits; ``fromisoformat``
-    accepts any width on the Python 3.11+ the suite runs on.
-    """
-    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _list_fleet(params: dict[str, str]) -> dict[str, Any]:
@@ -136,7 +126,7 @@ def test_fleet_response_attaches_recent_sessions() -> None:
         if not rs or len(rs) < 2:
             continue
         for i in range(1, len(rs)):
-            assert _instant(rs[i - 1]["started_at"]) >= _instant(rs[i]["started_at"]), (
+            assert instant(rs[i - 1]["started_at"]) >= instant(rs[i]["started_at"]), (
                 f"recent_sessions not descending by started_at on "
                 f"agent {a['agent_id']}: position {i - 1} = "
                 f"{rs[i - 1]['started_at']} < position {i} = "

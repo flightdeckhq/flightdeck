@@ -84,10 +84,9 @@ flightdeck-sensor 0.8.0, the latest on PyPI, requires `server` and
 v0.8.0). So each line is a gate, in this order, before and after the
 first tag whose release carries the binary:
 
-- [ ] **#303 and #313 are merged** (Compose and the Helm chart on the
-  one image). The README and `guides/self-hosting.md` link
-  `docker/docker-compose.postgres.yml` and describe the chart, both of
-  which exist only after them.
+- [x] **#303 and #313 are merged** (Compose and the Helm chart on the
+  one image), which the README's Compose and Helm lines and
+  `guides/self-hosting.md` describe.
 - [ ] **The README with the install commands (#314) is merged, after
   them.** From that merge until the final tag is out, `main`'s README
   and the site show install commands that find no binary and a sensor

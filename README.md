@@ -168,7 +168,7 @@ docker compose -f flightdeck/docker/docker-compose.yml up -d
 helm install flightdeck flightdeck/helm/ --namespace flightdeck --create-namespace
 ```
 
-Compose runs that image as one container on SQLite, and with [`docker-compose.postgres.yml`](docker/docker-compose.postgres.yml) layered on it, beside a Postgres. The Helm chart runs one pod on SQLite by default, or several on Postgres with a NATS cluster they share. Both read their files from a clone of this repository. [guides/self-hosting.md](guides/self-hosting.md) has their settings, the chart's values and the upgrade notes.
+Compose runs that image as one container on SQLite, and with [`docker-compose.postgres.yml`](docker/docker-compose.postgres.yml) layered on it, beside a Postgres. The Helm chart runs it as a StatefulSet: by default one pod on SQLite with the embedded bus, with nothing to set. More than one pod needs a Postgres (`postgres.enabled=true` with `postgres.password`, or `postgres.externalUrl`) and a NATS they share (the chart's, with `nats.auth.token`, or `nats.externalUrl`). The notes `helm install` prints say how to open the dashboard and read the token; `flightdeck.dashboardTokenSecret` names a Secret holding a token you supply, and a host name beyond the chart's Service and Ingress names goes in `flightdeck.extraAllowedHosts`. Both read their files from a clone of this repository. [guides/self-hosting.md](guides/self-hosting.md#kubernetes-helm) has their settings, the chart's values and the upgrade notes.
 
 **Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [guides/self-hosting.md](guides/self-hosting.md#backing-up) has the command that backs up a running instance.
 

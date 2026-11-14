@@ -66,7 +66,7 @@ name: flightdeck
 
 services:
   flightdeck:
-    image: ${FLIGHTDECK_IMAGE:-flightdeckhq/flightdeck:v0.8.0}
+    image: ${FLIGHTDECK_IMAGE:-flightdeckhq/flightdeck:v0.9.0}
     restart: unless-stopped
     ports:
       - "${FLIGHTDECK_PUBLISH_HOST:-127.0.0.1}:${FLIGHTDECK_PUBLISH_PORT:-4000}:4000"

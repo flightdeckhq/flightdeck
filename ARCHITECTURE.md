@@ -3644,7 +3644,28 @@ control plane honours end-to-end:
    up; the worker's rules still apply if the stamp is missed. If the row
    does not exist the store is a no-op and the worker creates it
    downstream.
+
+   A `session_start` that carries an `id` is attached once per id: the
+   client-minted event id is the idempotency key of these side effects.
+   A client resends a start it gave up on (the Claude Code plugin sends
+   the same event, id and timestamp, until one is acknowledged; an
+   OpenTelemetry exporter retries a batch, whose derived ids repeat), and
+   the first copy may have been attached already. `Attach` records the id
+   in `session_start_receipts`, in the same transaction as the attach
+   (`ON CONFLICT (event_id) DO NOTHING`), with whether it attached; a copy
+   whose id is there revives nothing, writes no `session_attachments`
+   row and is answered with the first copy's `attached`. `RecordStart`
+   stamps once per id: it sets the receipt's `start_seq` only while it is
+   unset, and stamps the row only then, so a copy's later sequence never
+   replaces the first copy's. The copy is still published, since the
+   first copy's publish may have failed after the attach, and the worker
+   stores the event once (`(id, occurred_at)`). A receipt is kept 50
+   hours: ingestion refuses an event dated more than 48 hours back or 5
+   minutes ahead, so a copy of a start first received earlier than that
+   can no longer pass validation; `Attach` deletes older receipts. A
+   `session_start` without an `id` is attached on every arrival.
 3. **Response envelope — `attached: true` when the row pre-existed.**
+   A resent copy gets what the first copy got.
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
 5. **Dashboard — an attachment badge per recorded attachment.**
@@ -4975,8 +4996,10 @@ five focused functions:
 1. **`ingestion/internal/session/store.go::Attach`**.
    Synchronous on `session_start` so the HTTP response can report
    `attached=true`. Closed/lost → active, clearing `ended_at` and
-   `closed_seq`; writes one `session_attachments` row per arrival (the
-   only writer of those rows).
+   `closed_seq`; writes one `session_attachments` row per arrival of a
+   start event id it has not seen (the only writer of those rows; a
+   resent copy, recognised by its `session_start_receipts` row, writes
+   nothing).
 2. **`ingestion/internal/session/store.go::RecordStart`**.
    Runs once the event is published, when the row pre-existed. Stamps the
    start's stream sequence and revives a closed row whose `closed_seq` is
@@ -4985,7 +5008,9 @@ five focused functions:
    `closed_seq`. Best effort: it skips a row another writer holds instead
    of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
    if the row is still held it gives up and logs that, at most one line a
-   second per process. No attachment row.
+   second per process. No attachment row. Once per start event id: the
+   first call records its sequence on the id's receipt, and a later call
+   for the same id stamps nothing.
 3. **`workers/internal/writer/writer.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
@@ -5633,6 +5658,29 @@ row — only re-attachments. The session drawer and the timeline mark
 the `session_start` within two seconds of each row (see Session
 attachment flow).
 
+### `session_start_receipts`
+
+```sql
+CREATE TABLE session_start_receipts (
+    event_id    UUID PRIMARY KEY,
+    session_id  UUID NOT NULL,
+    attached    BOOLEAN NOT NULL DEFAULT FALSE,
+    start_seq   BIGINT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW
+);
+
+CREATE INDEX session_start_receipts_received_idx ON session_start_receipts (received_at);
+```
+
+One row per `session_start` event id ingestion has attached (see
+Session attachment flow): whether the start attached to an existing
+row, and the stream sequence its re-attachment stamp recorded. A resent
+copy of the start finds its row and changes nothing. `session_id`
+carries no foreign key: a session's first start is received before the
+worker creates the session row. Rows older than 50 hours are deleted by
+`Attach`, the age past which no copy of the start passes ingestion's
+clock-skew check.
+
 ### `events` (metadata only — no prompt content inline)
 
 ```sql
@@ -6060,6 +6108,7 @@ schema this history reaches at 000036.
 | 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
 | 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
 | 000036 | `otlp_spans.assembled_in`: the assembly that marked a record, with a check that it is set exactly when `assembled` is (records marked before it get their trace's `assembly_count`); the down file drops the column |
+| 000037 | `session_start_receipts` and its `received_at` index: one row per attached `session_start` event id, so a resent copy is not attached again; the down file drops the table |
 
 ---
 

@@ -893,13 +893,56 @@ All notable changes to Flightdeck are documented here.
   `outgoing_message`, in `streaming` or in an `llm_error`'s `error`, is
   now refused with 400; any other unknown key is handled as before.
 
+- **Docker Compose runs the one `flightdeck` image.** `docker compose
+  -f docker/docker-compose.yml up -d` starts one container: SQLite, its
+  data on a named volume, the port published on `127.0.0.1:4000`.
+  Layering `-f docker/docker-compose.postgres.yml` on it adds a
+  Postgres, and compose refuses to start it until `POSTGRES_PASSWORD`
+  is set. The first start mints the access token, since the container
+  does not listen on loopback: it is in the start-up block (`docker
+  compose logs flightdeck`) on that start, and `curl -s
+  http://localhost:4000/runtime-config.json` returns it on every start.
+  `FLIGHTDECK_PUBLISH_HOST` and `FLIGHTDECK_PUBLISH_PORT` move the
+  published address; `FLIGHTDECK_DOMAIN`, with ports 80 and 443
+  published, serves TLS from the binary. The container has no
+  healthcheck (the image has no shell to run one). An install of the
+  earlier compose files keeps its data by setting
+  `FLIGHTDECK_DATABASE_URL` to its Postgres.
+- **`make dev` runs the binary from source.** The contributor dev
+  stack is the `flightdeck` binary built from the checkout, with the
+  dashboard embedded, on `127.0.0.1:4000` beside one Postgres
+  container; `make dev DB=sqlite` runs it with no container, and `make
+  dev-restart` rebuilds it. An existing dev database carries over:
+  `make dev` stops the six service containers of the earlier stack once
+  the workers have drained, and leaves the Postgres container and
+  every volume as they are (CONTRIBUTING.md has the steps). It builds
+  before it stops anything, so a build that fails leaves the earlier
+  stack, or a running binary, serving. `make dev-reset` stays the only
+  command that deletes data; on Postgres it says how many sessions and
+  events it is about to delete, and a database with more than a test
+  seed is deleted only with the compose project's name (`make
+  dev-reset CONFIRM=docker`). The commands leave another checkout's
+  containers alone: from a second checkout on the same compose project
+  `make dev` and `make dev-reset` refuse and `make down` stops only
+  its own binary. `make
+  migrate-local-up` and `make migrate-local-status` are gone: the
+  binary migrates at every start. CI runs the integration suite
+  against this stack on Postgres 16, Postgres 18 and SQLite; the four
+  tests that pause the worker container run against a split test stack
+  of the three services (`make test-split`), in a CI leg of their own.
+  `make test-e2e` runs the browser suite against the stack `make dev`
+  started, a second stack on other ports included: the specs take the
+  address and the Postgres container from the stack's state.
+
 ### Removed
 
 - **The per-service Docker images are no longer published.**
   `flightdeckhq/flightdeck-ingestion`, `-workers`, `-api` and
-  `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image;
-  the compose production overlay and the Helm chart move to it in a
-  following change.
+  `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image,
+  which Docker Compose runs. Their Dockerfiles, the nginx front door
+  (`docker/nginx`) and the compose production and E2E overlays are
+  gone with them; the Helm chart moves to the one image in a following
+  change.
 
 ## v0.8.0 — 2026-10-31
 

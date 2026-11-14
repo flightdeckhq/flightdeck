@@ -1,99 +1,49 @@
-# Development overrides: source mounts, hot reload, dev servers
-# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# The contributor dev stack's database: one Postgres container. `make
+# dev` (scripts/dev-stack.sh) starts it and runs the `flightdeck` binary
+# built from this checkout beside it, on the host, against it. Users do
+# not run this file; they run docker-compose.yml.
+#
+# The compose project is `docker` (scripts/dev-stack.sh passes it, and
+# it is what compose derives from this directory's name), so the
+# container is `docker-postgres-1` and the volume `docker_postgres_data`:
+# the names the test harness shells into (tests/shared/fixtures.py,
+# scripts/go-db-tests.sh, three dashboard E2E files) and the volume
+# every existing dev database already lives on.
 
 services:
-  ingestion:
-    image: golang:1.27.4-alpine
-    working_dir: /app
-    command: ["go", "run", "./cmd/"]
-    volumes:
-      - ../ingestion:/app
-      # ingestion/go.mod replaces the storage module with ../storage,
-      # which from /app is /storage.
-      - ../storage:/storage:ro
-    # The integration test suite shares one bearer token (tok_dev)
-    # across 50+ tests run back-to-back. The default 1000 req/min
-    # sliding window in handlers.NewRateLimiter is appropriate for
-    # production but is exhausted by a fast CI run, causing 429s
-    # that cascade into sensor e2e timeouts. Bump the cap to 1e6
-    # in dev/CI only -- production deployments that do not set
-    # FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit the 1000 default.
+  postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    # FLIGHTDECK_POSTGRES_IMAGE / FLIGHTDECK_POSTGRES_DATA_DIR let CI run
+    # the stack on another Postgres major; Postgres 18 images keep their
+    # data under /var/lib/postgresql (the volume mounts there) instead of
+    # /var/lib/postgresql/data.
+    image: ${FLIGHTDECK_POSTGRES_IMAGE:-postgres:16-alpine}
+    # Fixed values, not variables: docker/.env is shared with the user
+    # compose files, and a POSTGRES_PASSWORD set there for them must
+    # not reach this container. scripts/dev-stack.sh connects with the
+    # same three.
     environment:
-      FLIGHTDECK_RATE_LIMIT_PER_MINUTE: "1000000"
-    # `go run` on a cold cache downloads every module and then
-    # compiles them, and most of that time is one package: the pure-Go
-    # SQLite driver the storage module brings into every service
-    # (modernc.org/sqlite, the whole of SQLite as Go source). A cold
-    # build of this one service takes 46 s on two CPUs of a fast
-    # workstation; on a hosted CI runner, where the three services
-    # compile at once on four slower CPUs, ingestion began serving
-    # after about 155 s. The base compose healthcheck allows a 10 s
-    # start_period and 5 retries 5 s apart, 35 s in all, which suits
-    # the prebuilt production images (they boot in under 2 s and keep
-    # that tight check) and marks a compiling container unhealthy,
-    # which fails `make dev` with "dependency failed to start". The
-    # start window here is 300 s, about twice the slowest start
-    # observed; a probe that succeeds earlier ends the wait at once.
-    # Nothing else bounds this start more tightly: the CI jobs that
-    # boot the stack have no step timeout of their own, and the
-    # suites' 60 s health wait begins after compose has seen these
-    # containers healthy (nginx depends on them).
+      POSTGRES_USER: flightdeck
+      POSTGRES_PASSWORD: flightdeck_dev
+      POSTGRES_DB: flightdeck
+    volumes:
+      - postgres_data:${FLIGHTDECK_POSTGRES_DATA_DIR:-/var/lib/postgresql/data}
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      # Loopback only: the database has a well-known development
+      # password and must never be reachable from the LAN.
+      # FLIGHTDECK_DEV_PG_PORT moves the host port for a second stack
+      # beside a running one.
+      - "127.0.0.1:${FLIGHTDECK_DEV_PG_PORT:-5432}:5432"
     healthcheck:
-      start_period: 300s
-
-  workers:
-    image: golang:1.27.4-alpine
-    working_dir: /app
-    command: ["go", "run", "./cmd/"]
-    volumes:
-      - ../workers:/app
-      # workers/go.mod replaces the storage module with ../storage,
-      # which from /app is /storage.
-      - ../storage:/storage:ro
-    # The integration suite's reconciler tests
-    # (tests/integration/test_session_states.py) backdate a session
-    # row and then wait for the next reconciler tick to move it. At
-    # the 60 s production default the four tests that wait for a tick
-    # idle for about five minutes per run. 5 s keeps them to seconds
-    # while remaining far above the time one reconcile pass takes on
-    # the dev database. The test module sizes its waits from
-    # RECONCILER_INTERVAL_SECS, which must match this value.
-    # Production deployments that do not set
-    # FLIGHTDECK_RECONCILER_INTERVAL_SECS inherit the 60 s default.
-    environment:
-      FLIGHTDECK_RECONCILER_INTERVAL_SECS: "5"
-
-  api:
-    image: golang:1.27.4-alpine
-    working_dir: /app
-    command: ["go", "run", "./cmd/"]
-    volumes:
-      - ../api:/app
-      # api/go.mod replaces the storage module with ../storage, which
-      # from /app is /storage.
-      - ../storage:/storage:ro
-      # Compose merges volumes by replacing the base list when the
-      # overlay sets its own, so the pricing.yaml mount from the base
-      # docker-compose.yml needs to be re-declared here for dev runs.
-      # Without it, LoadPricing falls back to the safety map and cost
-      # estimates cover only four models.
-      - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
-    # See the matching comment on ``ingestion`` above. Same cold
-    # compile of the SQLite driver, same dev-only start window.
-    healthcheck:
-      start_period: 300s
-
-  dashboard:
-    image: node:24-alpine
-    working_dir: /app
-    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
-    volumes:
-      - ../dashboard:/app
-      - dashboard_node_modules:/app/node_modules
-    environment:
-      VITE_API_BASE_URL: ""
-      CHOKIDAR_USEPOLLING: "true"
-      WATCHPACK_POLLING: "true"
+      test: ["CMD-SHELL", "pg_isready -U flightdeck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
-  dashboard_node_modules:
+  postgres_data:

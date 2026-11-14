@@ -12,6 +12,7 @@ row of the stack.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sqlite3
 import uuid
@@ -332,34 +333,57 @@ def test_a_stack_on_sqlite_names_no_postgres_container() -> None:
 
 
 @pytest.mark.parametrize(
-    ("base_url", "test_db", "sqlite_db", "refused_for"),
+    ("base_url", "test_db", "sqlite_db", "container", "refused_for"),
     [
-        # The dev stack with its defaults, however it is spelled.
-        ("http://localhost:4000", "", "", None),
-        ("http://localhost:4000/", "", "", None),
-        ("http://127.0.0.1:4000", "", "", None),
-        # The binary with its database named.
-        ("http://localhost:4100", "fd_my_db", "", None),
-        ("http://localhost:4100", "", "/tmp/fd/data/flightdeck.db", None),
-        ("http://localhost:4000", "", "/tmp/fd/data/flightdeck.db", None),
-        # The binary with no database named: the helpers would write to
-        # the dev stack's database.
-        ("http://localhost:4100", "", "", "neither"),
-        ("http://127.0.0.1:4110/", "", "", "neither"),
-        ("http://example.test:4000", "", "", "neither"),
-        # The binary pointed at the dev stack's own database by name.
-        ("http://localhost:4100", "flightdeck", "", "dev stack's own database"),
-        ("http://127.0.0.1:4110/", "flightdeck", "", "dev stack's own database"),
-        # On the dev stack that name is the stack's database.
-        ("http://localhost:4000", "flightdeck", "", None),
+        # The dev stack, its database named (by the state file or the
+        # environment), however the address is spelled.
+        ("http://localhost:4000", "flightdeck", "", "docker-postgres-1", None),
+        ("http://localhost:4000/", "flightdeck", "", "docker-postgres-1", None),
+        ("http://127.0.0.1:4000", "flightdeck", "", "docker-postgres-1", None),
+        ("http://localhost:4000", "", "/tmp/fd/data/flightdeck.db", "", None),
+        # The dev stack's address with no database named: nothing says
+        # which database whatever listens there uses.
+        ("http://localhost:4000", "", "", "docker-postgres-1", "no dev stack state"),
+        ("http://127.0.0.1:4000/", "", "", "docker-postgres-1", "no dev stack state"),
+        # A stack of its own with its database named.
+        ("http://localhost:4100", "fd_my_db", "", "docker-postgres-1", None),
+        ("http://localhost:4100", "", "/tmp/fd/data/flightdeck.db", "", None),
+        # A stack of its own with a Postgres container of its own may
+        # call its database flightdeck too.
+        ("http://localhost:4410", "flightdeck", "", "fd2-postgres-1", None),
+        # A stack of its own with no database named.
+        ("http://localhost:4100", "", "", "docker-postgres-1", "neither"),
+        ("http://127.0.0.1:4110/", "", "", "docker-postgres-1", "neither"),
+        ("http://example.test:4000", "", "", "docker-postgres-1", "neither"),
+        # A stack of its own pointed at the dev stack's own database.
+        (
+            "http://localhost:4100",
+            "flightdeck",
+            "",
+            "docker-postgres-1",
+            "dev stack's own database",
+        ),
+        (
+            "http://127.0.0.1:4110/",
+            "flightdeck",
+            "",
+            "docker-postgres-1",
+            "dev stack's own database",
+        ),
         # Two databases named for one stack.
-        ("http://localhost:4100", "fd_my_db", "/tmp/fd/data/flightdeck.db", "both set"),
+        (
+            "http://localhost:4100",
+            "fd_my_db",
+            "/tmp/fd/data/flightdeck.db",
+            "docker-postgres-1",
+            "both set",
+        ),
     ],
 )
-def test_a_stack_that_is_not_the_dev_stack_must_name_its_database(
-    base_url: str, test_db: str, sqlite_db: str, refused_for: str | None
+def test_a_stack_must_name_its_database(
+    base_url: str, test_db: str, sqlite_db: str, container: str, refused_for: str | None
 ) -> None:
-    error = fixtures.stack_configuration_error(base_url, test_db, sqlite_db)
+    error = fixtures.stack_configuration_error(base_url, test_db, sqlite_db, container)
     if refused_for is None:
         assert error is None
         return
@@ -369,22 +393,68 @@ def test_a_stack_that_is_not_the_dev_stack_must_name_its_database(
     assert "FLIGHTDECK_TEST_SQLITE_DB" in error
 
 
-def test_the_dev_stacks_worker_container_is_the_default_only_on_the_dev_stack() -> None:
-    """A run against the binary that sets no worker container must not
-    reach the dev stack's: the pause tests would pause its worker."""
-    assert (
-        fixtures.default_worker_container("http://localhost:4000") == "docker-workers-1"
+def test_the_state_file_holds_the_dev_stacks_settings(tmp_path: pathlib.Path) -> None:
+    state_file = tmp_path / "stack.env"
+    state_file.write_text(
+        "# The running dev stack\n"
+        "FLIGHTDECK_DEV_MODE=sqlite\n"
+        "FLIGHTDECK_TEST_BASE_URL=http://localhost:4000\n"
+        "FLIGHTDECK_TEST_WORKER_LOG=/repo/.dev/flightdeck.log\n"
+        "FLIGHTDECK_TEST_WORKER_CONTAINER=\n"
+        "FLIGHTDECK_TEST_SQLITE_DB=/state/a=b/flightdeck.db\n",
+        encoding="utf-8",
     )
-    assert (
-        fixtures.default_worker_container("http://127.0.0.1:4000/")
-        == "docker-workers-1"
+    assert fixtures.read_stack_state(str(state_file)) == {
+        "FLIGHTDECK_TEST_BASE_URL": "http://localhost:4000",
+        "FLIGHTDECK_TEST_WORKER_LOG": "/repo/.dev/flightdeck.log",
+        "FLIGHTDECK_TEST_WORKER_CONTAINER": "",
+        # Only the first "=" separates the name from the value.
+        "FLIGHTDECK_TEST_SQLITE_DB": "/state/a=b/flightdeck.db",
+    }
+    assert fixtures.read_stack_state(str(tmp_path / "absent.env")) == {}
+
+
+def test_the_state_file_describes_the_dev_stack_only() -> None:
+    """A run against a stack of its own must not pick up the dev
+    stack's database, and the environment wins over the state file."""
+    state = {
+        "FLIGHTDECK_TEST_SQLITE_DB": "/state/flightdeck.db",
+        "FLIGHTDECK_TEST_WORKER_LOG": "/repo/.dev/flightdeck.log",
+    }
+    on_dev = fixtures.stack_settings("http://localhost:4000/", {"HOME": "/h"}, state)
+    assert on_dev == state
+    overridden = fixtures.stack_settings(
+        "http://127.0.0.1:4000",
+        {"FLIGHTDECK_TEST_WORKER_LOG": "/elsewhere.log", "PATH": "/bin"},
+        state,
     )
-    assert fixtures.default_worker_container("http://localhost:4100") == ""
-    assert fixtures.default_worker_container("http://localhost:4110/") == ""
-    if fixtures.BASE_URL not in fixtures.DEV_STACK_BASE_URLS:
-        # This run is against the binary: whatever the environment set,
-        # the name is not the dev stack's.
-        assert fixtures.WORKER_CONTAINER != fixtures.DEV_STACK_WORKER_CONTAINER
+    assert overridden == {
+        "FLIGHTDECK_TEST_SQLITE_DB": "/state/flightdeck.db",
+        "FLIGHTDECK_TEST_WORKER_LOG": "/elsewhere.log",
+    }
+    elsewhere = fixtures.stack_settings(
+        "http://localhost:4100", {"FLIGHTDECK_TEST_DB": "fd_my_db"}, state
+    )
+    assert elsewhere == {"FLIGHTDECK_TEST_DB": "fd_my_db"}
+
+
+def test_no_worker_container_is_assumed() -> None:
+    """The flightdeck binary has no worker container. Only a stack that
+    names one (the split test stack) has its worker paused; a default
+    would pause a container some other stack depends on."""
+    named = fixtures.stack_settings(
+        fixtures.BASE_URL,
+        os.environ,
+        fixtures.read_stack_state(fixtures.DEV_STACK_STATE_FILE),
+    ).get("FLIGHTDECK_TEST_WORKER_CONTAINER", "")
+    assert fixtures.WORKER_CONTAINER == named
+
+
+def test_reading_the_worker_log_needs_a_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixtures, "WORKER_LOG_FILE", "")
+    monkeypatch.setattr(fixtures, "WORKER_CONTAINER", "")
+    with pytest.raises(RuntimeError, match="FLIGHTDECK_TEST_WORKER_LOG"):
+        fixtures.worker_log_lines("anything")
 
 
 def test_a_missing_database_file_is_not_created(

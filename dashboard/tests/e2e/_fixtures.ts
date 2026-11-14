@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Page, Locator } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // Poll for a locator to mount (count > 0) without using a fixed
 // waitForTimeout sleep (qa.md: "No waitForTimeout for
@@ -195,7 +196,7 @@ export interface GenaiEvent {
 }
 
 const GENAI_AUTH = { Authorization: "Bearer tok_dev" };
-const GENAI_API = "http://localhost:4000/api";
+const GENAI_API = API_URL;
 
 /** The sessions of a GenAI fixture flavor's newest seeded run: every
  *  session of the trace whose session started last (a hand-off's two
@@ -276,6 +277,20 @@ export const FANOUT_FIXTURE = {
   wideName: "e2e-test-fanout@e2e-host-fanout/wide",
   /** The five wide runs started together. */
   wideRoles: ["fanout-wide-1", "fanout-wide-2", "fanout-wide-3", "fanout-wide-4", "fanout-wide-5"],
+} as const;
+
+/** The long-run fixture: one run of e2e-test-long-run holding ``calls``
+ *  tool calls and, newest of all, one tool call named ``needle``.
+ *  globalSetup seeds it through ingestion
+ *  (tests/e2e-fixtures/seed_long_run.py) once per stack and waits until
+ *  the worker has stored it, before any spec starts. It is not seeded
+ *  from a spec: the worker announces every event it stores on the live
+ *  stream, so a run seeded while specs run sends about 2,050 frames to
+ *  every page that has the stream on, and that page stops answering
+ *  for seconds. */
+export const LONG_RUN_FIXTURE = {
+  needle: "e2e-long-run-needle",
+  calls: 2050,
 } as const;
 
 /** The run-glyph lane fixtures (canonical.json roles that declare

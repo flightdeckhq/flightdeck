@@ -29,7 +29,7 @@ Built and maintained by [Omri Arnon](https://github.com/pykul) ([LinkedIn](https
 
 ## Quickstart
 
-Prerequisites: Docker Engine 28+ with Compose v2. Python 3.11 to 3.14 for the sensor path; Claude Code for the plugin path.
+Prerequisites: Go 1.27+, Node.js 24+ and Docker Engine 28+ with Compose v2 (`make dev` builds the stack from source; [CONTRIBUTING.md](CONTRIBUTING.md)). Python 3.11 to 3.14 for the sensor path; Claude Code for the plugin path.
 
 Start the stack:
 
@@ -245,7 +245,7 @@ Rolling it out:
 - **Cloud sessions** (Claude Code on the web) read the variables from your organization's server-managed settings, which reach every cloud session except Claude Tag channel sessions. Claude Code's documentation advises against putting a credential such as the token in a cloud environment's own variables, since anyone who uses the environment can read them, and those variables are the only route to Claude Tag sessions. The session's network must reach your Flightdeck host: add its domain to the environment's allowed domains if its network access level does not cover it.
 - **The TypeScript Agent SDK** runs the Claude Code CLI, which does the exporting: set the variables in the process environment, or in `options.env`, which replaces the inherited environment, so spread `process.env` into it. Anthropic's Agent SDK observability guide suggests renaming the service with `OTEL_SERVICE_NAME`; leave it unset for Flightdeck and set `flightdeck.flavor` instead. An app that pays with an API key also sets `flightdeck.billing_mode=metered`.
 
-A proxy in front of ingestion must accept 4 MiB request bodies on `/ingest/`; the bundled nginx does, and so does the Helm chart's `values.prod.yaml` for ingress-nginx. The limit applies to the body as sent, and a gzip body may inflate to 16 MiB. With content logging on, a batch carries prompts, responses (each cut at 60 KB by default) and tool parameters, so a backlog can pass 4 MiB; the receiver then answers 413 and the exporter drops the whole batch. Add `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` when capture is on.
+A proxy in front of ingestion must accept 4 MiB request bodies on `/ingest/`; the binary's own router does, and so does the Helm chart's `values.prod.yaml` for ingress-nginx. The limit applies to the body as sent, and a gzip body may inflate to 16 MiB. With content logging on, a batch carries prompts, responses (each cut at 60 KB by default) and tool parameters, so a backlog can pass 4 MiB; the receiver then answers 413 and the exporter drops the whole batch. Add `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` when capture is on.
 
 ### Agent frameworks over OpenTelemetry
 
@@ -461,51 +461,26 @@ A `policy_update` directive received in a response envelope refreshes the sensor
 
 ## Self-hosting
 
-Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose (single host) and a Helm chart for Kubernetes with a bundled Postgres and NATS.
+Flightdeck is self-hosted. Two deployment targets are supported: Docker Compose (single host), which runs the one `flightdeckhq/flightdeck` image, and a Helm chart for Kubernetes with a bundled Postgres and NATS.
 
 ### Prerequisites
 
-- Docker Engine 28+ with Compose v2 (`docker compose version` reports `v2.x`).
-- A DNS A/AAAA record for the host (e.g. `flightdeck.example.com`).
-- A TLS cert for that hostname. The walkthrough below uses `certbot`; bring-your-own works too.
-- Ports 80 and 443 reachable from the public internet.
+- Docker Engine 28+ with Compose v2 (`docker compose version` reports `v2.x`), or a Kubernetes 1.25+ cluster with Helm 3.
+- For TLS from the binary: a DNS A/AAAA record for the host (e.g. `flightdeck.example.com`) and ports 80 and 443 reachable from the public internet.
 
 ### Docker Compose
-
-Issue the cert (certbot standalone is the shortest path):
-
-```bash
-sudo certbot certonly --standalone \
-  -d flightdeck.example.com \
-  --non-interactive --agree-tos \
-  -m ops@example.com --no-eff-email
-```
-
-Symlink certbot's output into where nginx expects it:
-
-```bash
-sudo mkdir -p /etc/nginx/certs
-sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/fullchain.pem \
-  /etc/nginx/certs/fullchain.pem
-sudo ln -sf /etc/letsencrypt/live/flightdeck.example.com/privkey.pem \
-  /etc/nginx/certs/privkey.pem
-```
-
-Start the stack:
 
 ```bash
 git clone https://github.com/flightdeckhq/flightdeck
 cd flightdeck
-docker compose \
-  -f docker/docker-compose.yml \
-  -f docker/docker-compose.prod.yml up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
-The prod overlay terminates TLS at nginx on 443 with 80 to 443 redirect, rejects the seed `tok_dev` token, sets `restart: unless-stopped` on every service, and uses named volumes for Postgres and NATS JetStream.
+That is one container: the database is a SQLite file on the `flightdeck_data` volume, and the dashboard is at `http://localhost:4000`. The first start mints the access token, since the seed `tok_dev` token is refused off loopback; `/runtime-config.json` on that address returns it, and the start-up block in the container's log carries it on that start. The port is published on `127.0.0.1` because whoever can reach it can read that token: `FLIGHTDECK_PUBLISH_HOST` publishes it wider, behind a firewall or a proxy that authenticates. The header of [`docker/docker-compose.yml`](docker/docker-compose.yml) lists every variable, including `FLIGHTDECK_DOMAIN` for TLS from the binary (a Let's Encrypt certificate, 80 redirecting to 443); [`docker/docker-compose.postgres.yml`](docker/docker-compose.postgres.yml), layered on it, runs a Postgres instead of SQLite and requires `POSTGRES_PASSWORD`. Both set `restart: unless-stopped` and keep their data on named volumes.
 
 The `FLIGHTDECK` NATS stream that carries events from ingestion to the workers keeps them for 72 hours, up to 5 GiB, then removes the oldest (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`, `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` in `docker/.env`). The limits remove events whether or not the workers have processed them, so if the workers are down for longer than 72 hours, or fall more than 5 GiB behind, the oldest unprocessed events are lost; the workers log how many at their next start. To roll back to a release before the stream was bounded, first run `nats stream edit FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old --replicas=1 --force` (with `-s <your NATS URL>`), which restores unbounded retention; the earlier ingestion and workers do not start on the bounded stream.
 
-Reach the dashboard at `https://flightdeck.example.com/`. Go to **Settings → Access tokens → Create** and mint your first token. The token's plaintext is shown once at creation; copy it into your secret store before closing the modal.
+Reach the dashboard at `http://localhost:4000/` (or `https://flightdeck.example.com/`). Go to **Settings → Access tokens → Create** to mint a token for your agents. The token's plaintext is shown once at creation; copy it into your secret store before closing the modal.
 
 Point an agent:
 
@@ -514,7 +489,7 @@ export FLIGHTDECK_SERVER="https://flightdeck.example.com/ingest"
 export FLIGHTDECK_TOKEN="ftd_..."
 ```
 
-The dashboard fetches its bearer token at runtime from `/runtime-config.json` rather than baking it into the bundle. Rotation is a single-file replace plus `nginx -s reload`; no rebuild required.
+The dashboard fetches its bearer token at runtime from `/runtime-config.json`, which the binary answers from the token it keeps in `/data/secrets.json`; nothing is baked into the bundle.
 
 ### Kubernetes (Helm)
 

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T14 — embeddings event renders with rich
 // drawer fields. The fresh-active role on the coding agent is
@@ -87,7 +88,7 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
  */
 async function fetchEmbeddingsEventIds(page: Page, sessionId: string): Promise<string[]> {
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions/${sessionId}?events_limit=${DRAWER_EVENTS_LIMIT}`,
+    `${API_URL}/v1/sessions/${sessionId}?events_limit=${DRAWER_EVENTS_LIMIT}`,
     { headers: { Authorization: "Bearer tok_dev" } },
   );
   expect(resp.ok(), `GET session ${sessionId}`).toBe(true);

@@ -1,0 +1,192 @@
+{{- $component := "flightdeck" -}}
+{{- include "flightdeck.validate" . -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
+{{- /*
+The flightdeck pods: one binary each, a StatefulSet so that every pod
+keeps a data dir of its own across restarts and rolling updates (the
+SQLite database and its lock when the database is SQLite, the embedded
+NATS store when the pods share no bus, the dashboard token the pod
+minted). The data dir is a directory inside the volume, not the
+volume's root: the binary creates it with mode 0700, whatever owner
+and mode the storage class gives the root. A rolling update replaces a pod by deleting it first, so
+the new process never meets the old one's lock on the data dir. One pod
+uses its embedded bus; several take FLIGHTDECK_NATS_URL from the Secret
+and share one NATS, and FLIGHTDECK_DATABASE_URL names their Postgres.
+*/ -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+  annotations:
+    # The database the release runs on. The next upgrade reads it back
+    # and refuses to move the release to another database unless
+    # allowDatabaseChange is true (flightdeck.checkDatabaseChange).
+    flightdeck/database: {{ include "flightdeck.databaseIdentity" . | quote }}
+spec:
+  serviceName: {{ include "flightdeck.headlessServiceName" . }}
+  {{- include "flightdeck.pvcRetention" . | nindent 2 }}
+  {{- if not .Values.flightdeck.hpa.enabled }}
+  replicas: {{ .Values.flightdeck.replicas }}
+  {{- end }}
+  # Every pod is a whole control plane; none waits on another, so they
+  # start together.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 8 }}
+      annotations:
+        # The pods read their settings from the ConfigMap and the Secret
+        # once, at start. A change to either must roll every pod: the
+        # stream settings are applied at startup, and a release that
+        # moves from SQLite to Postgres, or from the embedded bus to a
+        # shared NATS, would otherwise leave the running pod on the old
+        # database beside new pods on the new one. The Secret's digest
+        # is the usual trade: whoever may read pod annotations sees a
+        # hash of it, not its content.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum | quote }}
+        {{- with .Values.flightdeck.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "flightdeck.serviceAccountName" (dict "root" . "component" $component) }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # The binary stops in two steps of at most 30 s each: it drains
+      # the requests in flight, then its services finish the messages
+      # they are processing. 75 s lets both end before the kubelet kills
+      # the container.
+      terminationGracePeriodSeconds: 75
+      containers:
+        - name: flightdeck
+          image: {{ include "flightdeck.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # The flags the chart decides; the database and bus URLs and
+          # the tunables come from the environment (envFrom below).
+          command: ["/usr/local/bin/flightdeck"]
+          args:
+            - "--listen"
+            - ":{{ .Values.flightdeck.port }}"
+            - "--data-dir"
+            - "/data/flightdeck"
+            {{- if .Values.flightdeck.metrics.enabled }}
+            - "--metrics"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.flightdeck.port }}
+              protocol: TCP
+            {{- if .Values.flightdeck.metrics.enabled }}
+            - name: metrics-workers
+              containerPort: 9102
+              protocol: TCP
+            - name: metrics-ingest
+              containerPort: 9103
+              protocol: TCP
+            - name: metrics-api
+              containerPort: 9104
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "flightdeck.configMapName" . }}
+            - secretRef:
+                name: {{ include "flightdeck.secretName" . }}
+            {{- with .Values.flightdeck.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with include "flightdeck.secretEnv" . | trim }}
+          # Secrets from the operator's own Secrets (the *Secret values):
+          # the chart's Secret cannot carry them.
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
+          # A first start migrates the database and creates the JetStream
+          # store before it serves; the startup probe gives that up to
+          # five minutes before liveness takes over.
+          startupProbe:
+            httpGet:
+              path: /ingest/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /ingest/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.flightdeck.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # The root filesystem is read-only; SQLite writes the
+            # temporary files of a large sort here.
+            - name: tmp
+              mountPath: /tmp
+            {{- if $dashboardToken.name }}
+            # The dashboard token every pod serves
+            # (FLIGHTDECK_DASHBOARD_TOKEN_FILE).
+            - name: dashboard-token
+              mountPath: {{ include "flightdeck.dashboardTokenDir" . }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $dashboardToken.name }}
+        - name: dashboard-token
+          secret:
+            secretName: {{ $dashboardToken.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ $dashboardToken.key | quote }}
+                path: {{ include "flightdeck.dashboardTokenFile" . }}
+        {{- end }}
+      {{- with .Values.flightdeck.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.flightdeck.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.flightdeck.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.flightdeck.data.storageClassName }}
+        storageClassName: {{ .Values.flightdeck.data.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.flightdeck.data.size }}

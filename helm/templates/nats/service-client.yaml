@@ -1,6 +1,6 @@
-{{- if .Values.nats.enabled -}}
+{{- if include "flightdeck.natsEnabled" . -}}
 {{- $component := "nats" -}}
-# Clients (ingestion, workers) connect here. Unlike the headless Service
+# Clients (the flightdeck pods) connect here. Unlike the headless Service
 # the StatefulSet uses for pod DNS and cluster routes, this one lists
 # only ready servers, so a client never lands on a server that is still
 # starting or recovering.

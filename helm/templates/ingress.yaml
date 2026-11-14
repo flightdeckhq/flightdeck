@@ -1,4 +1,9 @@
 {{- if .Values.ingress.enabled -}}
+{{- /*
+One rule, one path: the binary routes the dashboard (/), the query API
+(/api) and the ingestion API (/ingest) itself, and the paths are
+forwarded unchanged, so no rewrite annotation is needed.
+*/ -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -21,13 +26,11 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
-        {{- range .Values.ingress.paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
+          - path: /
+            pathType: {{ .Values.ingress.pathType }}
             backend:
               service:
-                name: {{ include "flightdeck.componentName" (dict "root" $ "component" .service) }}
+                name: {{ include "flightdeck.componentName" (dict "root" . "component" "flightdeck") }}
                 port:
-                  number: {{ index $.Values .service "service" "port" }}
-        {{- end }}
+                  number: {{ .Values.flightdeck.service.port }}
 {{- end }}

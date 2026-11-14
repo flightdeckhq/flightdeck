@@ -395,8 +395,10 @@ This runs:
 
 Run `shellcheck` on any script under `scripts/` you touch
 (`uvx --from shellcheck-py shellcheck scripts/<name>.sh` needs no install).
-After a change to the user compose files run `scripts/compose-smoke.sh <image>`
-against an image built with `docker build -t flightdeck:dev .`.
+After a change to the Helm chart run `make -C helm test`, which renders every
+supported shape and every refusal (`scripts/helm-chart-test.sh`); after a
+change to the user compose files, `scripts/compose-smoke.sh <image>` against
+an image built with `docker build -t flightdeck:dev .`.
 
 `make lint` and CI both fail when `gofmt -l .` lists any file in storage,
 ingestion, workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
@@ -598,8 +600,7 @@ Migration files live in the `storage` module, one directory per backend:
 `storage/migrations/postgres/` (the full history) and
 `storage/migrations/sqlite/` (`000001_baseline`, the Postgres schema at 000036
 translated once, then one pair per later change). The Go binaries embed both
-directories; the Helm chart copies the Postgres one (`make -C helm
-sync-migrations`), which nothing reads.
+directories.
 
 ### Creating a new migration
 
@@ -626,8 +627,8 @@ The `flightdeck` binary applies every pending migration of its database's
 backend each time it starts, before any service runs, from the files embedded
 in it. On the dev stack that is `make dev-restart` after you add a migration
 (or `make dev-reset` for an empty database). There is no separate migrate
-command, in development or under Docker Compose, which runs the same binary:
-a new version migrates when its container starts.
+command, in development or in a deployment: Docker Compose and the Helm chart
+run the same binary, so a new version migrates when its container starts.
 
 ### Verifying migrations applied
 

@@ -13,7 +13,7 @@
   </p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/fleet-dark.png">
-    <img alt="The Flightdeck fleet view: every agent on one live timeline, with its LLM calls, tool calls and policy events as they happen." src="assets/readme/fleet-light.png" width="480">
+    <img alt="The Flightdeck fleet view: every agent on one live timeline, with its LLM calls, tool calls and policy events as they happen." src="assets/readme/fleet-light.png" width="440">
   </picture>
 </div>
 

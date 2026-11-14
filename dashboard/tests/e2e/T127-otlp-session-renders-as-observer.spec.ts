@@ -4,6 +4,7 @@ import {
   bringSwimlaneRowIntoView,
   waitForFleetReady,
 } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T127 — a Claude Code session reported over OpenTelemetry renders as
 // an observer: no Stop control anywhere, and an OTel source pill that
@@ -26,7 +27,7 @@ const OTEL_TITLE = "Claude Code via OpenTelemetry: observe only, no directives r
 const OTLP_SOURCE_TEXT = "via OpenTelemetry: observe only, no directives reach it";
 
 async function sessionAgentId(page: Page, sessionId: string): Promise<string> {
-  const resp = await page.request.get(`http://localhost:4000/api/v1/sessions/${sessionId}`, {
+  const resp = await page.request.get(`${API_URL}/v1/sessions/${sessionId}`, {
     headers: AUTH,
   });
   expect(resp.ok(), `session ${sessionId} must exist`).toBe(true);
@@ -35,7 +36,7 @@ async function sessionAgentId(page: Page, sessionId: string): Promise<string> {
 
 async function otlpAgentId(page: Page): Promise<string> {
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions/${OTLP_AGENT.rootSessionId}`,
+    `${API_URL}/v1/sessions/${OTLP_AGENT.rootSessionId}`,
     { headers: AUTH },
   );
   expect(resp.ok(), "the seeded OTLP root session must exist").toBe(true);

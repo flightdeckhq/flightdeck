@@ -31,6 +31,11 @@ webui/dist/*
 node_modules/
 .vite/
 
+# The contributor dev stack's files (scripts/dev-stack.sh): the binary
+# built from the checkout, its log and pid, the state file the test
+# harness reads, and the data dir.
+.dev/
+
 # Helm
 # helm/migrations/ is a build artifact populated by helm/Makefile
 # sync-migrations from storage/migrations/postgres/ (the canonical
@@ -54,12 +59,10 @@ Thumbs.db
 # Env
 .env
 
-# Production runtime config. Operators may mount their own
-# runtime-config.json over /usr/share/nginx/html/runtime-config.json
-# inside the dashboard container. The repo-shipped default at
-# dashboard/public/runtime-config.json is the dev token; ignore any
-# host-side override file so a deployer's production token never
-# accidentally lands in source control.
+# A runtime-config.json with a real token. The binary generates the
+# one it serves; the repo-shipped dashboard/public/runtime-config.json
+# carries the development token for `npm run dev`. A copy with a
+# deployment's token must never land in source control.
 runtime-config.prod.json
 docker/dashboard/runtime-config.json
 docker/runtime-config.json

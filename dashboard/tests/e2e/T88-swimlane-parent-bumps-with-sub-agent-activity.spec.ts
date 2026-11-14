@@ -39,9 +39,10 @@
  */
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
+import { API_URL, INGEST_URL } from "./_stack";
 
-const API = "http://localhost:4000/api";
-const INGEST = "http://localhost:4000/ingest";
+const API = API_URL;
+const INGEST = INGEST_URL;
 const AUTH = { Authorization: "Bearer tok_dev" };
 
 interface ApiSession {

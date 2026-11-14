@@ -37,9 +37,9 @@ type Config struct {
 	APIReadTimeout     time.Duration
 }
 
-// Security headers for every dashboard response, the ones the compose
-// dashboard's nginx sets: the SPA is never framed, content types are
-// not sniffed, referrers stay on the origin, and the CSP admits only
+// Security headers for every dashboard response: the SPA is never
+// framed, content types are not sniffed, referrers stay on the origin,
+// and the CSP admits only
 // same-origin scripts, styles, fonts and connections (inline scripts and
 // styles are what Vite's bundle and Tailwind emit).
 var securityHeaders = map[string]string{
@@ -122,8 +122,8 @@ func withDeadlines(h http.Handler, read, write time.Duration, exempt func(*http.
 // the ingestion handler answered without reading it, as a refused
 // over-cap body (413) is. net/http drains only 256 KiB of leftover body
 // before it closes the connection, and a client still sending the rest
-// then sees a reset instead of the status; nginx, the edge before the
-// binary, read the whole body itself. 16 MiB is the receivers' inflated
+// then sees a reset instead of the status, where a reverse proxy in
+// front would have read the whole body itself. 16 MiB is the receivers' inflated
 // body cap, four times the 4 MiB they accept as sent, so every body a
 // well-behaved exporter could send is drained and the status reaches it;
 // past that the connection closes, as it would otherwise. The drain

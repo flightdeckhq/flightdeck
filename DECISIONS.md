@@ -893,3 +893,39 @@ twice: a stop under load left a session at 315 tokens for 300 sent.
 (it miscounts, and the stop is bounded by the message deadline anyway);
 one transaction per message (the handlers also read and publish through
 other connections; a larger change than this defect needs).
+
+## D266 -- Docker Compose runs the one image: one container on SQLite, published on loopback, the token read from the origin
+
+**Date:** 2026-11-12
+**Decision:** `docker/docker-compose.yml` is one `flightdeck` service:
+SQLite on a named volume, the port published on `127.0.0.1`, a compose
+project of its own name. `docker-compose.postgres.yml` adds a Postgres
+whose password is required. The container's first start mints the
+token, which users read from `/runtime-config.json`. The seven
+per-service compose services, the production and E2E overlays and
+`docker/nginx` are gone.
+**Why:** D261's one topology. The origin serves the dashboard token, so
+publishing it is the operator's choice, and the start-up block shows the
+token in full only once.
+**Rejected alternative:** publishing on every interface; a compose
+healthcheck (nothing in the distroless image can run one); a default
+Postgres password; a bind-mounted `secrets.json` (the image's user
+cannot write a host directory it does not own).
+
+## D267 -- The contributor dev stack is the binary from source beside one Postgres container
+
+**Date:** 2026-11-12
+**Decision:** `make dev` builds `cmd/flightdeck` with the dashboard
+embedded and runs it on `127.0.0.1:4000` against the Postgres container
+of `docker/docker-compose.dev.yml` (project `docker`, the existing
+`docker_postgres_data` volume); `make dev DB=sqlite` runs it alone. The
+three services as containers remain only as the split test stack
+(`docker-compose.split.yml`), for the tests that pause the worker.
+**Why:** contributors test the topology users run, and a dev database
+survives the switch: project, volume and Postgres service are unchanged.
+**Rejected alternative:** the seven containers as the dev stack (a
+second topology); the binary in a container (a published port is not
+loopback, so no dev token); SQLite as the dev default (the E2E seeder
+writes Postgres SQL); a NATS container (one Go package needs a server,
+which `scripts/go-db-tests.sh` starts); a hook that pauses the
+in-process workers (test-only code in the product).

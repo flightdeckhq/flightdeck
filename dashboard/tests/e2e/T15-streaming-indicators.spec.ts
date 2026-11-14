@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T15 — streaming indicators on post_call
 // rows. Two seeded variants:
@@ -105,7 +106,7 @@ async function findStreamingEventId(
   finalOutcome: "completed" | "aborted",
 ): Promise<string> {
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions/${sessionId}?events_limit=${DRAWER_EVENTS_LIMIT}`,
+    `${API_URL}/v1/sessions/${sessionId}?events_limit=${DRAWER_EVENTS_LIMIT}`,
     { headers: { Authorization: "Bearer tok_dev" } },
   );
   expect(resp.ok(), `GET session ${sessionId}`).toBe(true);

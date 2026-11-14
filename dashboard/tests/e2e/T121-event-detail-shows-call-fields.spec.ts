@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T121 — the event detail drawer shows a call's token, serving and
 // cost detail. The seed's call_fields_post_call (on the sensor agent's
@@ -19,7 +20,7 @@ test.describe("T121 — event detail shows a call's per-call fields", () => {
     // re-emits this session's MCP events every 30s, so over a long run
     // the seeded call falls out of any fixed newest-N window.
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

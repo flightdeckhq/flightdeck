@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 
 import type { PricedModel } from "../../src/lib/types";
+import { API_URL } from "./_stack";
 
 // T118 — the token policy editor's degrade-to list comes from
 // GET /v1/pricing/models, and the API's rejection of a model outside
@@ -21,7 +22,7 @@ async function openCreateDialog(page: Page): Promise<PricedModel[]> {
   // The expected list comes from the API directly. The page's own
   // response body is not readable once the page navigates after it
   // lands, so the test reads only that response's status.
-  const resp = await page.request.get("http://localhost:4000/api/v1/pricing/models", {
+  const resp = await page.request.get(`${API_URL}/v1/pricing/models`, {
     headers: { Authorization: "Bearer tok_dev" },
   });
   expect(resp.ok(), "pricing models API call must succeed").toBe(true);

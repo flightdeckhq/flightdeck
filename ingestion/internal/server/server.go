@@ -42,7 +42,7 @@ const (
 // POST /v1/events and the OTLP routes. Pass
 // handlers.DefaultRateLimitPerMinute for production semantics, or a
 // higher value (typically from FLIGHTDECK_RATE_LIMIT_PER_MINUTE in
-// dev compose) when running the integration suite. A non-positive
+// the dev stack) when running the integration suite. A non-positive
 // value falls back to the default inside NewRateLimiter so a
 // misconfigured env var cannot accidentally disable the limit.
 //

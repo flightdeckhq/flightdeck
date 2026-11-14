@@ -123,9 +123,9 @@ export function parseBool(value, fallback) {
   return fallback;
 }
 
-// The default server, the local ``flightdeck`` binary or ``make dev``
-// stack, and the seed token it accepts on loopback (the binary) or with
-// ``ENVIRONMENT=dev`` (the compose stack).
+// The default server, a local ``flightdeck`` (the binary, or the
+// ``make dev`` stack, which runs it), and the seed token a flightdeck
+// accepts when it listens on loopback only.
 export const DEFAULT_SERVER = "http://localhost:4000";
 export const DEFAULT_TOKEN = "tok_dev";
 
@@ -207,16 +207,16 @@ function firstSet(...values) {
  * manifest's ``default``, so the plugin keeps its own defaults.
  *
  * Rationale for each default:
- *   * ``server`` points at the local binary or dev stack
- *     (localhost:4000). A whitespace-only value is treated as unset so
- *     a user who sets ``FLIGHTDECK_SERVER=""`` in a script does not
- *     silently break. The resolved ``server`` is always the base URL:
- *     the ingestion URL the binary prints (``.../ingest``) and the
- *     base both resolve to it (see serverBaseUrl).
- *   * ``token`` defaults to ``tok_dev``, the seed token the dev
- *     compose stack accepts when ``ENVIRONMENT=dev``. Production
- *     deployments do not set ``ENVIRONMENT=dev`` so the seed token
- *     becomes inert there.
+ *   * ``server`` points at a local flightdeck (localhost:4000). A
+ *     whitespace-only value is treated as unset so a user who sets
+ *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
+ *     The resolved ``server`` is always the base URL: the ingestion
+ *     URL the binary prints (``.../ingest``) and the base both resolve
+ *     to it (see serverBaseUrl).
+ *   * ``token`` defaults to ``tok_dev``, the seed token a flightdeck
+ *     accepts when it listens on loopback only. A flightdeck that
+ *     other machines can reach refuses it, so the seed token is inert
+ *     there.
  *   * ``captureToolInputs`` defaults ON because the plugin only
  *     captures a sanitised whitelist (file paths, short command and
  *     query strings, <=200 chars). Without it tool events carry only

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the Go tests that need a database, on Postgres against the dev
-# stack's server and on SQLite against a temp file per test.
+# stack's Postgres container and on SQLite against a temp file per test.
 #
 # Those tests skip unless the environment names a backend, so `go test
 # ./...` alone never runs the Postgres half. Postgres: this script gives
@@ -26,11 +26,14 @@
 # DB_PACKAGES, and to DUAL_PACKAGES once it runs on SQLite).
 #
 # The Go tests that need a real NATS server (gated on TEST_NATS_URL) run
-# here too, against the stack's NATS, under the same rules with
-# NATS_PACKAGES. They create streams of their own and delete them; the
-# FLIGHTDECK stream is never touched.
+# here too, under the same rules with NATS_PACKAGES, against a server
+# this script starts for the run: the nats-server the root module pins
+# and the `flightdeck` binary embeds, built from the module cache, on a
+# free loopback port with its store in the run's temp directory, and
+# stopped on exit. The dev stack has no NATS to borrow: its bus is
+# inside the binary and has no port.
 #
-# Requires: the dev stack running (`make dev`), Go, docker.
+# Requires: the dev stack's Postgres container (`make dev`), Go, docker.
 # Usage: make test-go-db   (or scripts/go-db-tests.sh)
 #
 # Environment overrides:
@@ -43,14 +46,15 @@
 #   PG_BASE_URL    DSN prefix the tests connect through, without the
 #                  database name (default
 #                  postgres://flightdeck:flightdeck_dev@127.0.0.1:5432)
-#   NATS_TEST_URL  NATS server the TEST_NATS_URL tests use (default
-#                  nats://127.0.0.1:4222, the dev stack's loopback port)
+#   NATS_TEST_URL  a NATS server with JetStream to use for the
+#                  TEST_NATS_URL tests in place of the one the script
+#                  starts
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_CONTAINER="${PG_CONTAINER:-docker-postgres-1}"
 PG_BASE_URL="${PG_BASE_URL:-postgres://flightdeck:flightdeck_dev@127.0.0.1:5432}"
-NATS_TEST_URL="${NATS_TEST_URL:-nats://127.0.0.1:4222}"
+NATS_TEST_URL="${NATS_TEST_URL:-}"
 BACKENDS="${FLIGHTDECK_TEST_BACKEND:-both}"
 MIGRATIONS_DIR="$ROOT/storage/migrations/postgres"
 
@@ -112,6 +116,10 @@ NATS_PACKAGES=(
 # healthcheck gives up after 5 tries 5 s apart, so 60 s covers a cold
 # start with margin.
 PG_READY_TIMEOUT_SECS=60
+# How long the NATS server this script starts gets to write its ports
+# file. It listens within a second of starting; 30 s turns a server
+# that cannot start into a failure with its log.
+NATS_READY_TIMEOUT_SECS=30
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }
 group() { if in_ci; then echo "::group::$1"; else echo "== $1"; fi; }
@@ -191,7 +199,7 @@ done
 deadline=$((SECONDS + PG_READY_TIMEOUT_SECS))
 until docker exec "$PG_CONTAINER" pg_isready -q -U flightdeck -d postgres; do
   if ((SECONDS >= deadline)); then
-    fail "Postgres in $PG_CONTAINER not ready after ${PG_READY_TIMEOUT_SECS}s (is the dev stack up?)"
+    fail "Postgres in $PG_CONTAINER not ready after ${PG_READY_TIMEOUT_SECS}s (is the dev stack up on Postgres? make dev)"
   fi
   sleep 1
 done
@@ -201,7 +209,12 @@ echo "Postgres server $pg_version in $PG_CONTAINER"
 # --- Databases: one per package, dropped on exit ---------------------------
 workdir="$(mktemp -d)"
 created=()
+nats_pid=""
 cleanup() {
+  if [ -n "$nats_pid" ]; then
+    kill "$nats_pid" 2>/dev/null || true
+    wait "$nats_pid" 2>/dev/null || true
+  fi
   for db in ${created[@]+"${created[@]}"}; do
     psql_admin -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" || true
   done
@@ -309,7 +322,30 @@ if [ "$BACKENDS" != postgres ]; then
   done
 fi
 
-# --- Run each NATS-gated package against the stack's NATS -----------------
+# --- A NATS server for the NATS-gated packages -----------------------------
+# -p -1 takes a free port, and the ports file says which.
+if [ -z "$NATS_TEST_URL" ]; then
+  group "start a NATS server for the run"
+  go build -o "$workdir/nats-server" github.com/nats-io/nats-server/v2
+  mkdir "$workdir/nats"
+  "$workdir/nats-server" -a 127.0.0.1 -p -1 -js -sd "$workdir/nats/store" \
+    --ports_file_dir "$workdir/nats" >"$workdir/nats/server.log" 2>&1 &
+  nats_pid=$!
+  deadline=$((SECONDS + NATS_READY_TIMEOUT_SECS))
+  until NATS_TEST_URL="$(sed -n 's/.*"nats":\["\([^"]*\)".*/\1/p' "$workdir"/nats/*.ports 2>/dev/null)" &&
+    [ -n "$NATS_TEST_URL" ]; do
+    if ! kill -0 "$nats_pid" 2>/dev/null || ((SECONDS >= deadline)); then
+      cat "$workdir/nats/server.log"
+      fail "the NATS server did not start within ${NATS_READY_TIMEOUT_SECS}s"
+    fi
+    sleep 1
+  done
+  "$workdir/nats-server" --version
+  echo "listening on $NATS_TEST_URL"
+  endgroup
+fi
+
+# --- Run each NATS-gated package against that server -----------------------
 for pkg in "${NATS_PACKAGES[@]}"; do
   module="$(pkg_module "$pkg")"
   dir="$(pkg_dir "$pkg")"

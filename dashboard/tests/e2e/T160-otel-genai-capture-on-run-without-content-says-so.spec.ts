@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { GENAI_FIXTURE, genaiEvents, genaiSession, newestGenaiRun } from "./_fixtures";
+import { API_URL } from "./_stack";
 
 // T160 — a run whose exporter declared prompt capture, but whose
 // framework sent no content (Pydantic AI with its own content switch
@@ -20,7 +21,7 @@ test.describe("T160 — a capture-on run without content says so", () => {
     const run = await newestGenaiRun(page, GENAI_FIXTURE.noContent);
     const agent = genaiSession(run, `${GENAI_FIXTURE.noContent}/weather_agent`);
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${agent.session_id}`,
+      `${API_URL}/v1/sessions/${agent.session_id}`,
       { headers: AUTH },
     );
     expect(resp.ok()).toBe(true);
@@ -72,7 +73,7 @@ test.describe("T160 — a capture-on run without content says so", () => {
     const run = await newestGenaiRun(page, GENAI_FIXTURE.captureOff);
     const agent = genaiSession(run, `${GENAI_FIXTURE.captureOff}/weather_agent`);
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${agent.session_id}`,
+      `${API_URL}/v1/sessions/${agent.session_id}`,
       { headers: AUTH },
     );
     expect(((await resp.json()) as { session: { capture_prompts: boolean | null } }).session.capture_prompts).toBe(false);

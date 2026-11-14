@@ -12,6 +12,7 @@ Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), no
 - [Coverage](https://github.com/flightdeckhq/flightdeck/blob/main/guides/coverage.md): every intercepted LLM SDK method, the framework matrices, coding agents, sub-agents, MCP, what is not planned
 - [Features](https://github.com/flightdeckhq/flightdeck/blob/main/guides/features.md): each dashboard page and control in full
 - [Self-hosting](https://github.com/flightdeckhq/flightdeck/blob/main/guides/self-hosting.md): Docker Compose, the Helm chart and its values, upgrade notes, backups
+- [Windows](https://github.com/flightdeckhq/flightdeck/blob/main/guides/windows.md): the PowerShell installer, running Flightdeck, its data, upgrading and removing it, agents from PowerShell
 - [OpenTelemetry into Flightdeck](https://github.com/flightdeckhq/flightdeck/blob/main/guides/opentelemetry.md): Claude Code's own telemetry and the agent frameworks' GenAI spans
 - [MCP Protection Policy](https://github.com/flightdeckhq/flightdeck/blob/main/guides/mcp-protection-policy.md): scopes, resolution, configuration and enforcement
 - [Architecture](https://github.com/flightdeckhq/flightdeck/blob/main/ARCHITECTURE.md): components, event types and payloads, APIs, analytics, content capture

@@ -742,16 +742,21 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
-- **The README shows the product, then one install command.** It
-  opens with a screenshot of the fleet view and
-  `curl -fsSL https://flightdeck-hq.com/install.sh | sh`, then
-  `flightdeck`, connecting Claude Code and a Python agent, what you
-  get, coverage and self-hosting in their short form: 197 lines and 17
-  commands, from 590 and 44. `scripts/readme-budget.sh` now fails CI
-  when the install block holds anything but one command on one line,
-  or when a section or the whole goes over (Install 2 visible commands,
-  Connect your agents 4, Self-hosting 6, 20 in all with the channels
-  folded in `<details>`, 300 lines). The reference material moved as it
+- **The README shows the product, then one install command per
+  platform.** It opens with a screenshot of the fleet view, then
+  `curl -fsSL https://flightdeck-hq.com/install.sh | sh` under **Linux
+  and macOS** and `irm https://flightdeck-hq.com/install.ps1 | iex`
+  under **Windows**, then `flightdeck`, connecting Claude Code and a
+  Python agent, what you get, coverage and self-hosting in their short
+  form: 201 lines and 17 commands, from 590 and 44.
+  `scripts/readme-budget.sh` now fails CI unless each platform has its
+  install block of one command on one line, when anything but
+  `flightdeck` shows beside them, and when a section or the whole goes
+  over (Install 3 visible commands, Connect your agents 4, Self-hosting
+  6, 20 in all with the channels folded in `<details>`, 300 lines).
+  `guides/windows.md` covers Flightdeck on Windows: the installer,
+  running it, its data, upgrading and removing it, and agents from
+  PowerShell. The reference material moved as it
   was, each page linked from where it stood: the coverage matrices and
   the not-planned list to `guides/coverage.md`, the feature descriptions
   to `guides/features.md`, Compose, Helm and backups to

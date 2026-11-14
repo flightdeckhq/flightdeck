@@ -250,6 +250,7 @@ flightdeck/
 │   ├── coverage.md             # Every intercepted method, the framework matrices, client types, what is not planned
 │   ├── features.md             # Each dashboard page and control in full
 │   ├── self-hosting.md         # Docker Compose, the Helm chart and its values, upgrade notes, backups
+│   ├── windows.md              # Windows: the PowerShell installer, running, the data, upgrading, removing, agents from PowerShell
 │   ├── opentelemetry.md        # Claude Code's own telemetry and the agent frameworks' GenAI spans into Flightdeck
 │   └── mcp-protection-policy.md  # The operator's view of the MCP Protection Policy
 │

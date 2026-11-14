@@ -477,24 +477,26 @@ the pull request; delete it then.
 ### Which document a change belongs in
 
 The README is written for someone who has never run Flightdeck: what it
-looks like, the one command that installs it, connecting an agent, what
-is covered, and running it for a team, each in its shortest form. It is
+looks like, the one command that installs it on each platform,
+connecting an agent, what is covered, and running it for a team, each
+in its shortest form. It is
 held to a budget that `scripts/readme-budget.sh` measures and CI enforces
 (the `marketplace-schema` job, "Repo scripts and manifests"; the script's
 header has the counting rules):
 
 | What | Budget |
 |---|---|
-| The install block, the first code block under `## Install` | exactly one command, on one line |
-| `## Install`, outside `<details>` | 2 commands (install, start) |
+| The install blocks under `## Install`: one right after a line that reads **Linux and macOS**, one right after **Windows** (emphasis, a colon and words in parentheses aside), both required | exactly one command each, on one line |
+| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it; nothing else) |
 | `## Connect your agents` | 4 commands |
 | `## Self-hosting` | 6 commands |
 | The whole README, the channels folded in `<details>` included | 20 commands, 300 lines |
 
-So a second install command fails the build wherever it is put, and so
-does a step that creeps back in. The other install channels sit in the
-`<details>` under the install block: they count toward the total, not
-toward what the section shows. A command block must not carry a
+So a second install command fails the build wherever it is put (in a
+platform's block, in a second block under the same label, under another
+label or under none), and so does a step that creeps back in. The other
+install channels sit in the `<details>` under the install blocks: they
+count toward the total, not toward what the section shows. A command block must not carry a
 sample-language tag (`json`, `yaml`, `python` and the like), which the
 script does not count: tag it as the shell it is for (`bash`,
 `powershell`, `text`), or the script fails naming the line. A step a
@@ -514,6 +516,7 @@ website's root, and GitHub Pages serves every file in it.
 | Claude Code and the agent frameworks over OpenTelemetry | `guides/opentelemetry.md` |
 | The MCP Protection Policy | `guides/mcp-protection-policy.md` |
 | Compose, Helm, the chart's values, upgrade notes, backups | `guides/self-hosting.md` |
+| Windows: what the installer does, running, the data, upgrading, removing, agents from PowerShell | `guides/windows.md` |
 | The sensor: identity, `patch()` and `wrap()`, environment variables, limitations | `sensor/README.md` (also the PyPI page: no relative images there) |
 | The plugin: options, headless and CI runs, enforcement, privacy | `plugin/README.md` |
 

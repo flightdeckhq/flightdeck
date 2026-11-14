@@ -18,10 +18,18 @@
 
 ## Install
 
-Installing Flightdeck is one command, on Linux and macOS:
+Installing Flightdeck is one command.
+
+**Linux and macOS**
 
 ```bash
 curl -fsSL https://flightdeck-hq.com/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://flightdeck-hq.com/install.ps1 | iex
 ```
 
 Then start it:
@@ -30,10 +38,10 @@ Then start it:
 flightdeck
 ```
 
-The dashboard is at http://localhost:4000. Nothing needs configuring: the data is a SQLite file under `~/.flightdeck`, and agents on the same machine find it without a server address or a token. If your shell does not find `flightdeck`, the installer printed the line that puts it on your `PATH`.
+The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
 
 <details>
-<summary>Homebrew, pip, Docker, Windows and the release page</summary>
+<summary>Homebrew, pip, Docker and the release page</summary>
 
 ```bash
 brew install flightdeckhq/tap/flightdeck   # Homebrew
@@ -42,11 +50,7 @@ uvx flightdeck-cli                         # or run it from PyPI without install
 docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 ```
 
-```powershell
-irm https://flightdeck-hq.com/install.ps1 | iex
-```
-
-Every channel installs the same binary, for Linux, macOS and Windows on amd64 and arm64; the archives are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed). The Docker image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`. `flightdeck --help` lists the flags.
+Every channel installs the same binary, for Linux, macOS and Windows on amd64 and arm64; the archives are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed). The Docker image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`. `flightdeck --help` lists the flags, and [guides/windows.md](guides/windows.md) has the detail for Windows.
 
 </details>
 
@@ -167,7 +171,7 @@ Compose runs that image as one container on SQLite, and with [`docker-compose.po
 
 **Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [guides/self-hosting.md](guides/self-hosting.md#backing-up) has the command that backs up a running instance.
 
-**Upgrading.** Install the new release and start it; the binary migrates its database at start. [ARCHITECTURE.md](ARCHITECTURE.md) ("Deployment") lists every flag and environment variable.
+**Upgrading.** Install the new release and start it; the binary migrates its database at start. On Windows, stop it first: [guides/windows.md](guides/windows.md) covers upgrading, the firewall and removing it. [ARCHITECTURE.md](ARCHITECTURE.md) ("Deployment") lists every flag and environment variable.
 
 ## What Flightdeck is not
 

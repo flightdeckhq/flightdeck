@@ -3662,9 +3662,12 @@ control plane honours end-to-end:
    whose id is there for the same session revives nothing, writes no
    `session_attachments` row and is answered with the first copy's
    `attached`. A start whose id is another session's receipt is not a
-   copy: it is attached as a start without an id is, and nothing is
-   recorded for it (the other session's answer is never handed out;
-   refusing the event would drop it over an informational side effect).
+   copy: it is attached and stamped as a start without an id is, and
+   nothing is recorded for it (the other session's answer is never
+   handed out; refusing the event would drop it over an informational
+   side effect). `RecordStart` and the worker's upsert read only a
+   receipt of the start's own session, so the other session's recorded
+   sequence never stands in for this start's.
    `RecordStart` keeps the lowest sequence a copy of the start was
    published at: it records a sequence on the receipt only when it is
    below the one recorded (in one transaction, the receipt locked on

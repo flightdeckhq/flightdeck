@@ -550,7 +550,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 	// with two copies of one start in flight at once (neither stored,
 	// so Process let both through), the later one upserts with the
 	// earlier one's sequence, or lowers the row back to it.
-	startSeq, replacedSeq, err := sp.w.ClaimStartSeq(ctx, e.ID, e.StreamSeq)
+	startSeq, replacedSeq, err := sp.w.ClaimStartSeq(ctx, e.SessionID, e.ID, e.StreamSeq)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}

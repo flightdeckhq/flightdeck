@@ -86,6 +86,34 @@ func TestHandleSessionStart_KeepsTheLowestSequenceOfOneStartsCopies(t *testing.T
 			t.Errorf("start_seq = %d after a later start, want its 50 kept", got)
 		}
 
+		// A start reusing another session's id: the other session's
+		// receipt is not its own, so it upserts with its own sequence, as
+		// a start without a receipt does, and the receipt is left alone.
+		owner, reuser, shared := randomID(t), randomID(t), randomID(t)
+		cleanupSession(t, db, owner)
+		cleanupSession(t, db, reuser)
+		receipt(owner, shared)
+		if err := sp.HandleSessionStart(ctx, start(owner, shared, 1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := sp.HandleSessionStart(ctx, start(reuser, randomID(t), 2)); err != nil {
+			t.Fatal(err)
+		}
+		if err := sp.HandleSessionStart(ctx, start(reuser, shared, 4)); err != nil {
+			t.Fatal(err)
+		}
+		if got := startSeq(reuser); got != 4 {
+			t.Errorf("start_seq = %d for a start reusing another session's id, want its own 4", got)
+		}
+		var ownerReceipt sql.NullInt64
+		if err := db.Reader().QueryRowContext(ctx,
+			`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`, shared).Scan(&ownerReceipt); err != nil {
+			t.Fatal(err)
+		}
+		if ownerReceipt.Int64 != 1 {
+			t.Errorf("the owner's receipt start_seq = %v, want its own 1", ownerReceipt)
+		}
+
 		// No receipt: the greater sequence of the starts, as before.
 		plain := randomID(t)
 		cleanupSession(t, db, plain)

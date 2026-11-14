@@ -20,10 +20,11 @@ import (
 // sequence upserts with the lower one when that is on the receipt, and
 // when the higher was recorded first, the lower one replaces it and
 // replaced reports the higher, for LowerStartSeq. useSeq is seq itself
-// when the start has no receipt (no id, or ingestion's attach did not
-// record one), when the id is not a UUID, or for an unknown (zero)
-// sequence.
-func (w *Writer) ClaimStartSeq(ctx context.Context, eventID string, seq uint64) (useSeq, replaced uint64, err error) {
+// when the start has no receipt of sessionID's (no id, ingestion's
+// attach did not record one, or the id is another session's start,
+// which ingestion attaches as a start without an id), when the id is
+// not a UUID, or for an unknown (zero) sequence.
+func (w *Writer) ClaimStartSeq(ctx context.Context, sessionID, eventID string, seq uint64) (useSeq, replaced uint64, err error) {
 	if seq == 0 || seqParam(seq) == 0 || !eventIDPattern.MatchString(eventID) {
 		return seq, 0, nil
 	}
@@ -39,7 +40,8 @@ func (w *Writer) ClaimStartSeq(ctx context.Context, eventID string, seq uint64) 
 	}
 	var current sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`+lock, eventID,
+		`SELECT start_seq FROM session_start_receipts WHERE event_id = $1 AND session_id = $2`+lock,
+		eventID, canonicalUUID(sessionID),
 	).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return seq, 0, nil
@@ -51,7 +53,8 @@ func (w *Writer) ClaimStartSeq(ctx context.Context, eventID string, seq uint64) 
 		return uint64(current.Int64), 0, nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE session_start_receipts SET start_seq = $2 WHERE event_id = $1`, eventID, seqParam(seq),
+		`UPDATE session_start_receipts SET start_seq = $2 WHERE event_id = $1 AND session_id = $3`,
+		eventID, seqParam(seq), canonicalUUID(sessionID),
 	); err != nil {
 		return 0, 0, fmt.Errorf("claim session_start %s sequence: %w", eventID, err)
 	}

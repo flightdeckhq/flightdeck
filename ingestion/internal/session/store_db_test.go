@@ -364,6 +364,45 @@ func TestRecordStartIsIdempotentPerEventIDOnBothBackends(t *testing.T) {
 			t.Fatalf("start_seq = %v, want the later start's 50 kept", startSeq)
 		}
 
+		// A start reusing another session's id is stamped as a start
+		// without an id: the other session's receipt is not its own.
+		// Session A starts with id X (receipt sequence 1); session B,
+		// stamped at 2 and closed at 3, starts again reusing X,
+		// published at 4: B's row takes 4, so a session_end queued at 3
+		// cannot close the revived run, and A's receipt keeps 1.
+		owner, reuser, shared := randomUUID(t), randomUUID(t), randomUUID(t)
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM session_start_receipts WHERE event_id = $1`, shared)
+		})
+		insertSession(t, db, owner, "active", "", "", nil)
+		if attached, _, err := s.Attach(ctx, owner, shared); err != nil || !attached {
+			t.Fatalf("owner attach: %v, %v", attached, err)
+		}
+		if err := s.RecordStart(ctx, owner, shared, 1); err != nil {
+			t.Fatal(err)
+		}
+		closedAt := int64(3)
+		insertSession(t, db, reuser, "closed", "", "", &closedAt)
+		if _, err := db.ExecContext(ctx, `UPDATE sessions SET start_seq = 2 WHERE session_id = $1`, reuser); err != nil {
+			t.Fatal(err)
+		}
+		if attached, prior, err := s.Attach(ctx, reuser, shared); err != nil || !attached || prior != "closed" {
+			t.Fatalf("reusing start: %v, %q, %v; want attached, closed", attached, prior, err)
+		}
+		if err := s.RecordStart(ctx, reuser, shared, 4); err != nil {
+			t.Fatal(err)
+		}
+		if state, _, startSeq, _ := rowState(t, db, reuser); startSeq.Int64 != 4 || state != "active" {
+			t.Fatalf("the reusing session: state=%s start_seq=%v, want active at 4 (stamped as an id-less start)", state, startSeq)
+		}
+		if err := db.Reader().QueryRowContext(ctx,
+			`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`, shared).Scan(&receiptSeq); err != nil {
+			t.Fatal(err)
+		}
+		if receiptSeq.Int64 != 1 {
+			t.Fatalf("the owner's receipt start_seq = %v, want its own 1 kept", receiptSeq)
+		}
+
 		// No receipt (the attach fell back): stamped as before.
 		if err := s.RecordStart(ctx, row, randomUUID(t), 30); err != nil {
 			t.Fatal(err)

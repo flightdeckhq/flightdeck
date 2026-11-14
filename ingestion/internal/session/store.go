@@ -458,7 +458,7 @@ func (s *Store) RecordStart(ctx context.Context, sessionID, eventID string, seq 
 	}
 	sessionID = canonical(sessionID)
 	if eventID = canonicalEventID(eventID); eventID != "" {
-		stamp, replaced, err := s.claimStartStamp(ctx, eventID, int64(seq))
+		stamp, replaced, err := s.claimStartStamp(ctx, sessionID, eventID, int64(seq))
 		if err != nil || !stamp {
 			return err
 		}
@@ -486,11 +486,13 @@ func (s *Store) RecordStart(ctx context.Context, sessionID, eventID string, seq 
 // session_end published between the two for an earlier run's), and
 // replaced is the receipt's previous sequence when a copy published
 // later had stamped first (the narrow race of two copies' stamps), 0
-// otherwise. A start with no receipt (Attach failed and the caller fell
-// back) is stamped as before. The read and the write run in one
+// otherwise. A start with no receipt of its own session (Attach failed
+// and the caller fell back, or the id is another session's start, which
+// Attach treats as a start without an id) is stamped as before. The
+// read and the write run in one
 // transaction, the receipt's row locked on Postgres, so two copies'
 // stamps are taken in turn.
-func (s *Store) claimStartStamp(ctx context.Context, eventID string, seq int64) (stamp bool, replaced int64, err error) {
+func (s *Store) claimStartStamp(ctx context.Context, sessionID, eventID string, seq int64) (stamp bool, replaced int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, 0, fmt.Errorf("record session_start %s sequence: begin: %w", eventID, err)
@@ -502,7 +504,7 @@ func (s *Store) claimStartStamp(ctx context.Context, eventID string, seq int64) 
 	}
 	var current sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`+lock, eventID,
+		`SELECT start_seq FROM session_start_receipts WHERE event_id = $1 AND session_id = $2`+lock, eventID, sessionID,
 	).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, 0, nil
@@ -514,7 +516,7 @@ func (s *Store) claimStartStamp(ctx context.Context, eventID string, seq int64) 
 		return false, 0, nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE session_start_receipts SET start_seq = $2 WHERE event_id = $1`, eventID, seq,
+		`UPDATE session_start_receipts SET start_seq = $2 WHERE event_id = $1 AND session_id = $3`, eventID, seq, sessionID,
 	); err != nil {
 		return false, 0, fmt.Errorf("record session_start %s sequence: %w", eventID, err)
 	}

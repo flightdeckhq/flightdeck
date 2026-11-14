@@ -368,9 +368,12 @@ leg of the gate installs with `install.sh` and says so), the Docker
 image gets `:<tag>` but not `:latest`, `flightdeck-sensor` is not
 published (its version would be the final `X.Y.Z`), and `flightdeck-cli`
 is published as the PEP 440 pre-release (`0.9.0rc1`), which `pip` and
-`uvx` do not pick without an exact pin. The release notes are the
-CHANGELOG's Unreleased section. The version guard still requires
-`X.Y.Z` to match `VERSION`.
+`uvx` do not pick without an exact pin. The version guard still
+requires `X.Y.Z` to match `VERSION`, which the release PR sets, so the
+release notes are the `X.Y.Z` section that PR dated (the CHANGELOG's
+Unreleased section only for a pre-release of a version not dated yet).
+A fix merged after the release PR adds its entry to that dated section,
+not to Unreleased, so the final release's notes carry it.
 
 A second dry run after a fix is a new tag, `-rc.2`: PyPI never
 replaces a published file (the publish step skips a version that already

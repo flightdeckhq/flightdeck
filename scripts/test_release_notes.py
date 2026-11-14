@@ -54,8 +54,24 @@ class ReleaseNotesTest(unittest.TestCase):
         self.assertNotIn("## v0.9.0", notes)
         self.assertTrue(notes.endswith("- A bug.\n"))
 
-    def test_a_pre_release_tag_reads_the_unreleased_section(self) -> None:
+    def test_a_pre_release_tag_reads_its_release_once_dated(self) -> None:
+        # The dry run after the release PR: v0.9.0 is dated, so v0.9.0-rc.1
+        # reads it, not the Unreleased entries meant for a later release.
         notes = release_notes.extract(CHANGELOG, "v0.9.0-rc.1")
+        self.assertEqual(notes, release_notes.extract(CHANGELOG, "v0.9.0"))
+        self.assertNotIn("not released yet", notes)
+
+    def test_a_pre_release_tag_after_the_release_pr_emptied_unreleased(self) -> None:
+        # What the release PR leaves: an empty Unreleased above the dated
+        # section. The dry run's notes are the dated section, not an error.
+        text = CHANGELOG.replace(
+            "### Added\n\n- Something not released yet.\n\n## v0.9.0", "## v0.9.0"
+        )
+        notes = release_notes.extract(text, "v0.9.0-rc.1")
+        self.assertIn("**One binary.**", notes)
+
+    def test_a_pre_release_tag_reads_the_unreleased_section_until_dated(self) -> None:
+        notes = release_notes.extract(CHANGELOG, "v0.10.0-rc.1")
         self.assertIn("not released yet", notes)
         self.assertNotIn("One binary", notes)
 
@@ -72,7 +88,7 @@ class ReleaseNotesTest(unittest.TestCase):
             "### Added\n\n- Something not released yet.\n\n## v0.9.0", "## v0.9.0"
         )
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            release_notes.extract(text, "v0.9.0-rc.1")
+            release_notes.extract(text, "v0.10.0-rc.1")
 
     def test_a_malformed_tag_fails(self) -> None:
         for tag in ("0.9.0", "v0.9", "v0.9.0rc1", "latest"):

@@ -35,8 +35,9 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # A tag the release workflow accepts: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N
 # or -rc.N (v0.9.0-rc.1). A pre-release tag is a dry run of the release
 # pipeline and the install gate: it must name the version the files
-# carry, but the CHANGELOG need not be dated yet, since the release PR
-# that dates it comes after the dry run. The grammar is the one
+# carry, which the release PR sets, so the dry run comes after that PR;
+# its release notes are the section that PR dated
+# (scripts/release_notes.py). The grammar is the one
 # packaging/pypi/build_wheels.py turns into a PEP 440 version, so a tag
 # this guard accepts never fails half-way through the pipeline;
 # test_version.py pins that the two agree.

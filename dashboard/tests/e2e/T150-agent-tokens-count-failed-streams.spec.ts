@@ -21,10 +21,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "../../src/lib/constants";
+import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
 const AUTH = { Authorization: "Bearer tok_dev" };
-const INGEST = "http://localhost:4000/ingest/v1";
-const API = "http://localhost:4000/api/v1";
+const INGEST = `${INGEST_URL}/v1`;
+const API = `${API_URL}/v1`;
 const HOST = "e2e-t150-host";
 
 /** How long the setup waits for the worker to store a run's events. */
@@ -160,7 +161,7 @@ async function waitForTokens(api: APIRequestContext, run: Run, total: number): P
  *  when no other session belongs to it. */
 function removeRun(run: Run): void {
   const args = [
-    "exec", "-i", "docker-postgres-1", "psql", "-U", "flightdeck", "-d", "flightdeck",
+    "exec", "-i", POSTGRES_CONTAINER, "psql", "-U", "flightdeck", "-d", POSTGRES_DB,
     "-tA", "-v", "ON_ERROR_STOP=1", "-v", `sid=${run.sessionId}`, "-v", `aid=${run.agentId}`,
   ];
   const sql = `BEGIN;

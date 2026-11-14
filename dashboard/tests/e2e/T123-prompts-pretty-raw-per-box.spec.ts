@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T123 — every box in the Prompts panel has its own Pretty / Raw
 // toggle. The seed's prompt_content_post_call (on the sensor agent's
@@ -17,7 +18,7 @@ const MCP_ACTIVE_SESSION_ID = "f53c6626-fcdb-5452-9cf6-8472ef15dfca";
 test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
   test("each box toggles on its own and Pretty pretty-prints JSON", async ({ page }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

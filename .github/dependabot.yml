@@ -16,9 +16,9 @@
 # - Branch moves stay manual, because each one moves several pins
 #   together or needs a migration: nginx and Go minor and major
 #   versions (nginx's odd minors are mainline releases; a Go version
-#   moves with go.mod, CI's setup-go and the compose dev images), and
-#   Node (with @types/node), Postgres and NATS majors (a Postgres major
-#   needs a data migration).
+#   moves with go.mod, CI's setup-go, the root Dockerfile and the split
+#   test stack's images), and Node (with @types/node), Postgres and NATS
+#   majors (a Postgres major needs a data migration).
 #
 # Security updates are not subject to the cooldown and arrive as soon
 # as an advisory is published (Dependabot security updates are enabled
@@ -43,13 +43,9 @@ updates:
       prefix: chore
       include: scope
 
+  # The root Dockerfile, the all-in-one image, is the only one.
   - package-ecosystem: docker
-    directories:
-      - "/"
-      - "/api"
-      - "/ingestion"
-      - "/workers"
-      - "/dashboard"
+    directory: "/"
     schedule:
       interval: monthly
       time: "06:00"
@@ -59,8 +55,6 @@ updates:
       docker-minor-patch:
         update-types: [minor, patch]
     ignore:
-      - dependency-name: nginx
-        update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: golang
         update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: node
@@ -69,6 +63,10 @@ updates:
       prefix: chore
       include: scope
 
+  # docker/docker-compose*.yml: the Postgres of the user overlay and of
+  # the dev stack, and the split test stack's images (golang, nats,
+  # nginx, postgres). The flightdeck image in docker-compose.yml is
+  # this repository's own; scripts/version.py moves its tag.
   - package-ecosystem: docker-compose
     directory: "/docker"
     schedule:
@@ -80,12 +78,11 @@ updates:
       docker-compose-minor-patch:
         update-types: [minor, patch]
     ignore:
+      - dependency-name: flightdeckhq/flightdeck
       - dependency-name: nginx
         update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: golang
         update-types: [version-update:semver-major, version-update:semver-minor]
-      - dependency-name: node
-        update-types: [version-update:semver-major]
       - dependency-name: postgres
         update-types: [version-update:semver-major]
       - dependency-name: nats
@@ -123,9 +120,9 @@ updates:
       npm-minor-patch:
         update-types: [minor, patch]
     # @types/node describes one Node major's API, so it moves with the
-    # Node the dashboard runs on (node:24 in its Dockerfile, engines
-    # >=24.15, CI's setup-node 24), as a manual branch move like Node
-    # itself. Minor and patch updates within that major still arrive.
+    # Node the dashboard is built with (node:24 in the root Dockerfile,
+    # engines >=24.15, CI's setup-node 24), as a manual branch move like
+    # Node itself. Minor and patch updates within that major still arrive.
     ignore:
       - dependency-name: "@types/node"
         update-types: [version-update:semver-major]

@@ -31,8 +31,9 @@ from .conftest import (
     worker_paused,
 )
 
-# The dev compose override (docker/docker-compose.dev.yml) sets the
-# workers' FLIGHTDECK_RECONCILER_INTERVAL_SECS to this value so the tests
+# The dev stack (scripts/dev-stack.sh) and the split test stack
+# (docker/docker-compose.split.yml) set the workers'
+# FLIGHTDECK_RECONCILER_INTERVAL_SECS to this value so the tests
 # below that wait for a reconciler tick finish in seconds rather than
 # idling through the 60 s production default. The two must match: a
 # longer server-side interval makes the positive waits time out and

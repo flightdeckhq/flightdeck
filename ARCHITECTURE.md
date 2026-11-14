@@ -10855,13 +10855,16 @@ only its own binary and leaves the containers running, and `make
 dev-reset` refuses. A second stack beside a running one has a compose
 project, a port and a Postgres port of its own.
 
-`make dev-reset` on Postgres says what it is about to delete: the
-volume, and the number of sessions and events in it. It refuses when
-neither a container nor the dev dir says this checkout started that
-Postgres. A database with more than 100 sessions (the test fixtures
-are about 60), or one that cannot be counted, is deleted only with the
-compose project's name, as `CONFIRM=<project>` or typed at a prompt on
-a terminal.
+`make dev-reset` refuses while something that is not this stack
+listens on its port: a binary started from another dev dir may be
+using the database, and the start that ends the reset would fail on
+the busy port only after the deletion. On Postgres it says what it is
+about to delete: the volume, and the number of sessions and events in
+it. It refuses when neither a container nor the dev dir says this
+checkout started that Postgres. A database with more than 100 sessions
+(the test fixtures are about 60), or one that cannot be counted, is
+deleted only with the compose project's name, as `CONFIRM=<project>`
+or typed at a prompt on a terminal.
 
 `make dev` takes over a compose project that still runs the services
 as containers. Containers of the services `nginx`, `dashboard`,

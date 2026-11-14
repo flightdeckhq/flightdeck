@@ -661,6 +661,26 @@ expect_out "nothing says this checkout started the Postgres of compose project $
 expect_no_call '^docker compose'
 passed
 
+fresh "reset refuses while something that is not this stack serves on its port"
+container postgres "$OURS"
+mv "$F/containers/postgres-$PROJECT" "$F/containers/pg-$PROJECT"
+printf '%s\n' "$PROJECT" >"$DEV/postgres.project" 2>/dev/null || { mkdir -p "$DEV" && printf '%s\n' "$PROJECT" >"$DEV/postgres.project"; }
+echo 3 >"$F/pg_sessions"
+echo 40 >"$F/pg_events"
+stranger
+for args in "" postgres sqlite; do
+  ENVV=(CONFIRM="$PROJECT")
+  # shellcheck disable=SC2086  # an empty args runs reset with none
+  stack reset $args
+  expect_status 1
+  expect_out "something listens on 127.0.0.1:$PORT, and it is not this checkout's stack"
+  expect_out "Nothing was deleted"
+done
+expect_no_call '^docker compose'
+[ ! -f "$F/volume_removed" ] || fail "the volume was removed"
+expect_state "pg-$PROJECT" running
+passed
+
 fresh "reset refuses another checkout's Postgres, with or without a confirmation"
 container postgres "$FOREIGN"
 mv "$F/containers/postgres-$PROJECT" "$F/containers/pg-$PROJECT"

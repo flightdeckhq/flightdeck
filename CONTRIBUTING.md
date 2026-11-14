@@ -63,6 +63,7 @@ volume it is about to delete and how many sessions and events are in it. A
 database with more than 100 sessions (a test seed is about 60), or one it
 cannot count, is deleted only when you name the compose project: `make
 dev-reset CONFIRM=docker`, or type the name at its prompt in a terminal.
+It refuses, on either database, while something else listens on its port.
 
 For dashboard work with hot reload, run `npm run dev` in `dashboard/` beside
 the stack: Vite serves the sources on `http://localhost:3000` and proxies

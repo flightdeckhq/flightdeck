@@ -169,6 +169,22 @@ func bind(opts cli.Options) (*listeners, error) {
 
 func serveAll(opts cli.Options, stdout *os.File) error {
 	dev := bootstrap.DevMode(opts.Listen, opts.Domain)
+	// Read before anything is bound or written: a token that is refused
+	// stops the start with nothing done.
+	supplied, err := bootstrap.LoadSupplied(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if supplied != nil {
+		switch {
+		case dev:
+			slog.Warn("the supplied dashboard token is ignored: the server listens on loopback only, where the development token is used",
+				"variable", supplied.Source)
+			supplied = nil
+		case supplied.Shadowed:
+			slog.Warn("both dashboard token variables are set; the file is used", "used", bootstrap.TokenFileEnv, "ignored", bootstrap.TokenEnv)
+		}
+	}
 
 	lns, err := bind(opts)
 	if err != nil {
@@ -343,7 +359,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	bus := storage.NewBus(wrkDB)
 	defer func() { _ = bus.Close() }()
 
-	token, err := bootstrap.EnsureToken(ctx, db, secrets, layout.Secrets, dev)
+	token, err := bootstrap.EnsureToken(ctx, db, secrets, layout.Secrets, dev, supplied)
 	if err != nil {
 		return err
 	}
@@ -655,6 +671,8 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	switch {
 	case dev:
 		p("  Token       %s   (development token: the server listens on loopback only)\n", token.Token)
+	case token.Source != "":
+		p("  Token       supplied by %s   (named %q in Settings)\n", token.Source, bootstrap.SuppliedTokenNameFor(token.Token))
 	case token.Minted:
 		p("  Token       %s   (minted now, named %q in Settings; kept in %s)\n", token.Token, bootstrap.TokenName, layout.Secrets)
 	default:

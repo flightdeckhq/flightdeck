@@ -945,3 +945,19 @@ with a warning; the volume's root as the data dir with plain `fsGroup`
 (the kubelet widens `secrets.json`, which the binary then refuses).
 **Also:** an upgrade onto another database is refused (the chart moves no
 data); every secret may come from the operator's Secret, `{name, key}`.
+
+## D270 -- An operator can supply the dashboard token; it is stored and served as a minted one is
+
+**Date:** 2026-11-12
+**Decision:** beyond loopback the token comes from the file
+`FLIGHTDECK_DASHBOARD_TOKEN_FILE` names, else `FLIGHTDECK_DASHBOARD_TOKEN`,
+else is minted. A value not shaped like a minted token stops the start.
+It is stored as a row named after its prefix, salted with a value derived
+from it so every instance writes one row, and served as a minted one is.
+An earlier supplied token stays valid until revoked: the deliberate
+default, since a rolling update's old pods still serve it.
+**Why:** instances on one Postgres each minted their own token, and none
+could be known before the first start.
+**Rejected alternative:** revoking the earlier token (401s the old pods);
+a rotate setting (restart and revoke do it); refusing a world-readable
+file (secret mounts are 0644 / 0444); a random salt (two rows).

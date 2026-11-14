@@ -45,7 +45,7 @@ func TestDevMode_NeedsLoopbackAndNoDomain(t *testing.T) {
 }
 
 func TestEnsureToken_DevModeNeedsNoDatabase(t *testing.T) {
-	res, err := EnsureToken(context.Background(), nil, nil, "", true)
+	res, err := EnsureToken(context.Background(), nil, nil, "", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestEnsureToken_MintsOnceReusesAndRemintsForANewDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := EnsureToken(ctx, db, secrets, secretsPath, false)
+	first, err := EnsureToken(ctx, db, secrets, secretsPath, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestEnsureToken_MintsOnceReusesAndRemintsForANewDatabase(t *testing.T) {
 		t.Fatalf("secrets.json holds %q, want the minted token", reloaded.DashboardToken)
 	}
 
-	second, err := EnsureToken(ctx, db, reloaded, secretsPath, false)
+	second, err := EnsureToken(ctx, db, reloaded, secretsPath, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestEnsureToken_MintsOnceReusesAndRemintsForANewDatabase(t *testing.T) {
 
 	// The same data dir on a database that has never seen the token.
 	fresh := storagetest.OpenSQLite(t)
-	third, err := EnsureToken(ctx, fresh, reloaded, secretsPath, false)
+	third, err := EnsureToken(ctx, fresh, reloaded, secretsPath, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

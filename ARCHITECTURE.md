@@ -10632,7 +10632,57 @@ like any other), prints it once in the start-up block, and keeps the
 plaintext in `secrets.json` so `/runtime-config.json` can hand it to the
 dashboard on every start. On a later start the stored token is
 validated against the database and re-minted if it no longer resolves
-(a new database under an old data dir). `/runtime-config.json` serves
+(a new database under an old data dir).
+
+An operator can supply the token instead, so that it is known before
+the first start and several instances on one Postgres database share
+one: `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names a file that holds it (a
+mounted Kubernetes or Docker secret), and `FLIGHTDECK_DASHBOARD_TOKEN`
+holds it directly. The file is the preferred form, and wins when both
+are set (the binary says which one it used): a value in a variable is
+visible to anything that can read the process's environment
+(`/proc/<pid>/environ`, `docker inspect`, every child process), a file
+only to what can read the file. The value must have the form of a
+minted token, `ftd_` followed by 32 lower-case hex digits (`printf
+'ftd_%s' "$(openssl rand -hex 16)"`), and must not look typed: fewer
+than eight distinct digits, a second half that repeats the first, or a
+walk where every digit is one above or below the one before
+(`0123456789abcdef…`) is refused. A refused value stops the start, on
+any listen address, with a message that names the variable and the
+expected form and never the value. The file is read once at start,
+surrounding white space is dropped, and its mode is not checked:
+Kubernetes mounts a secret 0644 and Docker 0444, inside a container
+that has no other user. The binary stores the token as an
+`access_tokens` row named after its prefix, `Supplied dashboard token
+(ftd_a07a)`, with a salted hash like any other token. A minted token's
+salt is random; a supplied token's is derived from the token,
+`SHA256("flightdeck supplied access token salt\0" || token)`, so every
+instance computes the same row and the insert is `ON CONFLICT DO
+NOTHING` on the hash: instances starting together all succeed and leave
+one row. That is no weaker. The salt is stored beside the hash in both
+cases, so what it adds is that equal tokens hash differently and that
+no precomputed table applies. A supplied token is unique by
+construction, and 128 random bits cannot be searched offline, salt or
+none. The token is not written to `secrets.json`, the start-up block
+prints `supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE` and the row's name
+in place of the token, and no log line or error carries it.
+`/runtime-config.json` serves it to the dashboard as it serves a minted
+token, so it is a secret of this deployment's dashboard and nothing
+else: do not reuse a value that protects anything more.
+
+When the supplied token changes, the new one is stored and served, and
+the earlier one stays valid until it is revoked in Settings. That is the
+default on purpose: during a rolling update the pods that still run
+with the old value keep serving it to their dashboards, and revoking it
+on the first new start would answer those 401. To rotate: supply the
+new token, restart every instance, then revoke the old row (the one
+named after the old token's prefix) in Settings. The converse holds as
+well: a row revoked while its token is still supplied is stored again
+by the next start, so to stop using a supplied token, remove the
+variable (or replace its value), restart, and then revoke. Without the
+variables the binary mints, as above. On a loopback listen the
+development token is used, and a well-formed supplied token is ignored
+with a warning (a malformed one stops the start there too). `/runtime-config.json` serves
 the dashboard token to anyone who can reach the origin, so the origin
 is the trust boundary: a non-loopback deployment protects it at the
 network edge or with `--domain`. Further tokens are minted in the
@@ -10981,18 +11031,31 @@ with the same compose project, `make dev` refuses (it would stop that
 stack, or attach a second binary to its database), `make down` stops
 only its own binary and leaves the containers running, and `make
 dev-reset` refuses. A second stack beside a running one has a compose
-project, a port and a Postgres port of its own.
+project, a port and a Postgres port of its own. Within one checkout,
+`make down` of a dev dir leaves the Postgres container running while
+another client still uses the database (the stack of another dev dir,
+which the database lists by its `application_name`, a checksum of the
+dev dir's physical path), and when it cannot ask the database.
 
-`make dev-reset` refuses while something that is not this stack
-listens on its port: a binary started from another dev dir may be
-using the database, and the start that ends the reset would fail on
-the busy port only after the deletion. On Postgres it says what it is
-about to delete: the volume, and the number of sessions and events in
-it. It refuses when neither a container nor the dev dir says this
-checkout started that Postgres. A database with more than 100 sessions
-(the test fixtures are about 60), or one that cannot be counted, is
-deleted only with the compose project's name, as `CONFIRM=<project>`
-or typed at a prompt on a terminal.
+`make dev-reset` refuses while the database is in use by anything but
+this dev dir's own binary, since the start that ends the reset would
+fail only after the deletion: something else listening on its port; on
+Postgres, a connection of any other client, which the database itself
+lists (`pg_stat_activity`): each dev stack's binary connects with an
+`application_name` of its dev dir, so the connections of a stack of
+another dev dir of the same checkout, on another port, are told from
+its own, and so are a psql session's; on SQLite, another process
+holding the data dir's lock. It says what it is about to delete: the
+Postgres volume or the SQLite file, and the number of sessions and
+events in it. On Postgres it refuses when neither a container nor the
+dev dir says this checkout started that Postgres. A database with more
+than 100 sessions (the test fixtures are about 60), or one that cannot
+be counted, is deleted only with its name, as
+`FLIGHTDECK_DEV_CONFIRM=<project>` on Postgres or
+`FLIGHTDECK_DEV_CONFIRM=sqlite` on SQLite, or typed at a prompt on a
+terminal. The checks come before the deletion, not with it: a
+stack that connects to the Postgres in between is cut off when
+`compose down -v` deletes the volume.
 
 `make dev` takes over a compose project that still runs the services
 as containers. Containers of the services `nginx`, `dashboard`,
@@ -11068,6 +11131,11 @@ over the defaults.
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
+
+Two more variables have no flag, since a flag's value shows in the
+process list: `FLIGHTDECK_DASHBOARD_TOKEN_FILE`, the path of a file
+holding the dashboard token the operator supplies, and
+`FLIGHTDECK_DASHBOARD_TOKEN`, the token itself (see Auth bootstrap).
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
@@ -11208,7 +11276,11 @@ runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
 database and nothing else configured, since that is the install a new
 user makes: the script removes the binary's settings from its
 environment and requires the start-up block to name a SQLite database
-in the data dir. Then: health, the token from the start-up block,
+in the data dir. When the script starts the binary itself, it counts
+it as ready only once the binary's own output since that start holds
+the end of its start-up block, the health endpoint answers and the
+process is alive: an answer alone could come from a server that took
+the port while the binary was still loading. Then: health, the token from the start-up block,
 `/runtime-config.json`, the dashboard, a 401 from the query API and from
 ingestion for a request with no token and for one with a wrong token
 (with authentication broken open every other check would still pass),
@@ -11425,7 +11497,7 @@ targets:
 | `make dev` | Start the dev stack (`scripts/dev-stack.sh`): the binary from source on `:4000`, on Postgres; `DB=sqlite` for SQLite |
 | `make dev-restart` | Rebuild the binary and restart it |
 | `make down` | Stop the dev stack; volumes and the data dir stay |
-| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again; `CONFIRM=<project>` for a Postgres database with more than a test seed |
+| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again; `FLIGHTDECK_DEV_CONFIRM=<project>` (Postgres) or `sqlite` for a database with more than a test seed |
 | `make logs` | Follow the binary's log |
 | `make test` | Per-component unit tests (sensor, ingestion, workers, api, dashboard) |
 | `make test-integration` | Run pytest against the dev stack, on the database it was started with |
@@ -11613,6 +11685,19 @@ find their fixture before asserting.
 
 `waitForFleetReady` waits for any swimlane row to mount, then
 leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
+
+A mark of the swimlane moves under a resting pointer: the window
+advances, and every row below the divider between the live and the
+recent agents shifts 9 px when that divider comes or goes, as an agent
+passes 15 s without an event. A spec therefore hovers a mark and
+asserts what the hover opens in one retried block (`hoverUntil`,
+`_hover.ts`), and compares positions it read in one synchronous pass.
+
+CI retries a failed browser test once. A test that passes only on its
+retry leaves the check green, so the E2E job reads the merged report
+(`scripts/e2e_retried_tests.py`), names each such test in the job
+summary and as a warning annotation, and fails when more than two did
+in one run.
 
 ---
 

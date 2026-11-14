@@ -58,12 +58,16 @@ something else already listens on its port. A stack beside a running one
 needs its own `FLIGHTDECK_DEV_PROJECT`, `FLIGHTDECK_DEV_PORT` and
 `FLIGHTDECK_DEV_PG_PORT`.
 
-**`make dev-reset` and a database with data.** On Postgres it prints the
-volume it is about to delete and how many sessions and events are in it. A
-database with more than 100 sessions (a test seed is about 60), or one it
-cannot count, is deleted only when you name the compose project: `make
-dev-reset CONFIRM=docker`, or type the name at its prompt in a terminal.
-It refuses, on either database, while something else listens on its port.
+**`make dev-reset` and a database with data.** It prints what it is about to
+delete (the Postgres volume or the SQLite file) and how many sessions and
+events are in it. A database with more than 100 sessions (a test seed is
+about 60), or one it cannot count, is deleted only when you name it: the
+compose project on Postgres (`make dev-reset FLIGHTDECK_DEV_CONFIRM=docker`),
+`sqlite` on SQLite, or the same typed at its prompt in a terminal. It refuses
+while the database is in use by anything but this checkout's own stack:
+something else listening on its port, on Postgres any other client (a stack of
+another dev dir of this checkout on another port, a psql session; it lists
+them), on SQLite another process holding the data dir.
 
 For dashboard work with hot reload, run `npm run dev` in `dashboard/` beside
 the stack: Vite serves the sources on `http://localhost:3000` and proxies

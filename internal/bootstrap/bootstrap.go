@@ -57,16 +57,35 @@ type Result struct {
 	Minted bool
 	// Dev is true when Token is the development token.
 	Dev bool
+	// Source is the variable an operator supplied Token through
+	// (TokenFileEnv or TokenEnv); "" for a development or minted token.
+	// A supplied token is never printed.
+	Source string
 }
 
 // EnsureToken returns the development token in dev mode. Otherwise it
+// returns the token the operator supplied, stored as an access token
+// named after its prefix unless it is stored already (idempotent across
+// restarts and across instances starting together on one database). A
+// token supplied earlier stays valid until it is revoked, on purpose:
+// during a rolling update the old instances still serve it. A row
+// revoked while its token is still supplied is stored again by the next
+// start, so a rotation supplies the new token, restarts every instance,
+// and then revokes the old row. With none supplied it
 // returns the token kept in secrets when the database still knows it,
 // and mints a new one through the query API's token store (storing it in
 // secrets) when there is none or it no longer resolves, as after the
-// database was recreated under an old data dir.
-func EnsureToken(ctx context.Context, db *storage.DB, secrets *datadir.Secrets, secretsPath string, dev bool) (Result, error) {
+// database was recreated under an old data dir. A supplied token is not
+// written to secrets: its source is the operator's file or variable.
+func EnsureToken(ctx context.Context, db *storage.DB, secrets *datadir.Secrets, secretsPath string, dev bool, supplied *Supplied) (Result, error) {
 	if dev {
 		return Result{Token: DevToken, Dev: true}, nil
+	}
+	if supplied != nil {
+		if _, err := apiapp.EnsureSuppliedToken(ctx, db, SuppliedTokenNameFor(supplied.Token), supplied.Token); err != nil {
+			return Result{}, fmt.Errorf("store the dashboard token supplied by %s: %w", supplied.Source, err)
+		}
+		return Result{Token: supplied.Token, Source: supplied.Source}, nil
 	}
 	if secrets.DashboardToken != "" {
 		ok, err := apiapp.TokenValid(ctx, db, secrets.DashboardToken)

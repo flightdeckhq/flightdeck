@@ -353,6 +353,14 @@ func TokenValid(ctx context.Context, db *storage.DB, raw string) (bool, error) {
 	return res.Valid, nil
 }
 
+// EnsureSuppliedToken stores raw, a token the operator supplied, as an
+// access token named name unless it is stored already, and reports
+// whether this call stored it. Calls racing on one database all succeed
+// and leave one row (store.EnsureSuppliedAccessToken).
+func EnsureSuppliedToken(ctx context.Context, db *storage.DB, name, raw string) (bool, error) {
+	return store.EnsureSuppliedAccessToken(ctx, db, name, raw)
+}
+
 // MintToken creates an ftd_ access token named name through the token
 // store (salted hash and prefix stored, plaintext returned once).
 func MintToken(ctx context.Context, db *storage.DB, name string) (string, error) {

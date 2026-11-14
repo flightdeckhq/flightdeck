@@ -57,11 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -143,11 +143,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -189,11 +189,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -228,11 +228,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -265,11 +265,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -710,7 +710,7 @@ jobs:
         with:
           node-version: "24"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
 
@@ -784,11 +784,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -1028,7 +1028,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
 
@@ -1036,7 +1036,7 @@ jobs:
         with:
           node-version: "24"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.24"
           enable-cache: true
@@ -1169,6 +1169,20 @@ jobs:
     needs: e2e-shard
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    # About a minute: download the shards' reports, merge them, list the
+    # retried tests. Ten bounds a download or an npm ci that hangs.
+    timeout-minutes: 10
+    env:
+      # How many tests may pass only on a retry before the job fails.
+      # Every such test is listed in the job summary and gets a warning
+      # annotation whatever this number is. It is not 0: the one retry
+      # exists to absorb a real infrastructure blip (a runner that
+      # stalls for a second), and at 0 one unlucky test in an unrelated
+      # pull request would turn it red. Of 105 runs before this step
+      # existed, 19 had one such test, 2 had two and none had more, so
+      # more than two in one run is not one unlucky test: it is the
+      # stack or the change under test.
+      E2E_MAX_RETRIED_TESTS: "2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -1189,7 +1203,10 @@ jobs:
 
       - name: Merge into one HTML report
         working-directory: dashboard
-        run: npx playwright merge-reports --reporter html ./all-blob-reports
+        # The JSON report beside it is what the retried-tests step reads.
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/e2e-merged-report.json
+        run: npx playwright merge-reports --reporter html,json ./all-blob-reports
 
       - name: Upload the HTML report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -1197,6 +1214,16 @@ jobs:
           name: playwright-report
           path: dashboard/playwright-report/
           retention-days: 14
+
+      # A test that fails its first attempt and passes on the retry
+      # leaves every shard green, and nothing else says it happened.
+      # This step names each one in the job summary and as a warning
+      # annotation, and fails above E2E_MAX_RETRIED_TESTS. The traces of
+      # the failed attempts are in the report uploaded above.
+      - name: Tests that passed only on a retry
+        run: |
+          python3 scripts/e2e_retried_tests.py "$RUNNER_TEMP/e2e-merged-report.json" \
+            --summary "$GITHUB_STEP_SUMMARY" --max "$E2E_MAX_RETRIED_TESTS"
 
       - name: Every shard passed
         run: |
@@ -1476,6 +1503,7 @@ jobs:
       - name: Release notes script and shell installers
         run: |
           python3 -m unittest scripts/test_release_notes.py
+          python3 -m unittest scripts/test_e2e_retried_tests.py
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
@@ -1543,8 +1571,10 @@ jobs:
       - name: ruff, twine and reproducibility of the wheel builder
         run: |
           pip install --quiet ruff==0.17.1 twine==7.0.0
-          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
-          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py
+          ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py \
+            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py
+          ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py \
+            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py
           printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
           for n in 1 2; do
             python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \

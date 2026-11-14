@@ -15,16 +15,99 @@ flightdeck_sensor.init()
 flightdeck_sensor.patch()
 ```
 
-`init()` resolves `server` and `token` each as: the kwarg, else the
-`FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` environment variable, else the
-default. The server default is `http://localhost:4000/ingest`, where the
-`flightdeck` binary and the dev compose stack listen. The token default
-is the dev seed `tok_dev`, used only when the server was defaulted as
-well and its host is loopback; `init()` logs one WARNING when it is in
-use. A server supplied without a token raises `ConfigurationError` (a
-`ValueError`) naming both variables, whatever its host: the sensor never
-sends `tok_dev` to a server you chose. The environment wins over a passed
-kwarg, as for every other `init()` knob.
+`init()` resolves `server` and `token` each as: the `FLIGHTDECK_SERVER`
+/ `FLIGHTDECK_TOKEN` environment variable when it is set, else the
+kwarg, else the default. The server default is
+`http://localhost:4000/ingest`, where the `flightdeck` binary and the
+dev compose stack listen. The token default is the dev seed `tok_dev`,
+used only when the server was defaulted as well and its host is
+loopback; `init()` logs one WARNING when it is in use. A server
+supplied without a token raises `ConfigurationError` (a `ValueError`)
+naming both variables, whatever its host: the sensor never sends
+`tok_dev` to a server you chose. [Environment
+variables](#environment-variables) gives the precedence of every other
+`init()` argument that has a variable.
+
+## Identity
+
+Every session carries a persistent **flavor** and an ephemeral **session ID**. Set the flavor via environment variable, typically from your orchestrator manifest:
+
+```yaml
+env:
+  - name: AGENT_FLAVOR
+    value: "research-agent"
+  - name: FLIGHTDECK_SERVER
+    value: "https://flightdeck.svc.cluster.local"
+  - name: FLIGHTDECK_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: flightdeck-token
+        key: token
+```
+
+Agents without `AGENT_FLAVOR` appear as `{user}@{hostname}`. That is how agents deployed outside your blessed config become visible.
+
+Every session also carries a **client type**, the kind of client that produced it (the sensor sends `flightdeck_sensor`, the Claude Code plugin `claude_code`). The dashboard shows it as a pill on each agent and offers it as a filter. A stable `agent_id`, derived from the agent type, user, host, client type and agent name, ties a client's sessions to one agent.
+
+For one continuous session across the re-runs of a Temporal workflow or an Airflow DAG, pass a stable `session_id` at `init()`: see [Optional `session_id` hint](#optional-session_id-hint).
+
+## Sensor reference
+
+### `patch()` vs `wrap()`
+
+`patch()` is the right answer in almost every case. For Anthropic it patches `create`, `stream` and `parse` on the SDK's `Messages` resource classes, which every `anthropic` client class hands out, so every client — first-party, Bedrock, Vertex, Google Cloud, Foundry, AWS, Mantle, and the ones frameworks build internally — is intercepted, including a client built before `patch()` (from its next call on; only a `with_raw_response` / `with_streaming_response` view first touched before `patch()` stays unmetered). For OpenAI it installs a class-level descriptor on `openai.OpenAI` and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
+
+`wrap()` instruments a single client instance:
+
+```python
+client = flightdeck_sensor.wrap(anthropic.Anthropic())
+```
+
+Use `wrap()` only when you deliberately do not call `patch()`. Clients built by frameworks will be invisible unless `patch()` is active.
+
+Call `patch()` before any framework or user code constructs a client. In practice this means calling `init()` + `patch()` at the top of your entrypoint.
+
+### Environment variables
+
+| Variable                        | Purpose                                                         |
+|---------------------------------|-----------------------------------------------------------------|
+| `FLIGHTDECK_SERVER`             | The server's address: its base URL (`https://flightdeck.example.com`) or its ingestion URL (`https://flightdeck.example.com/ingest`, what the start-up block prints). Wins over the `server=` kwarg. Default `http://localhost:4000/ingest`. The Claude Code plugin reads the same variable and takes the same two forms. |
+| `FLIGHTDECK_TOKEN`              | Access token. Wins over the `token=` kwarg. Defaults to `tok_dev` only when the server is defaulted too. |
+| `FLIGHTDECK_API_URL`            | Control-plane base URL. Wins over the `api_url=` kwarg; derived from the server when neither is set. |
+| `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs. Wins over the `session_id=` kwarg. |
+| `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture, `false` to turn it off. Wins over the `capture_prompts=` kwarg. |
+| `FLIGHTDECK_BILLING_MODE`       | `metered`, `subscription` or `local`. Wins over the `billing_mode=` kwarg. |
+| `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` | `true` to allow plain `http://` to a control plane that is not local. Wins over the `allow_insecure_transport=` kwarg. |
+| `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` when the control plane is down.  |
+| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`. The `agent_name=` kwarg wins over both, and `FLIGHTDECK_AGENT_NAME` over `AGENT_FLAVOR`. `AGENT_FLAVOR`, when set, is also the session's `flavor`, whatever the label. |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production`. Default: `production`. The `agent_type=` kwarg wins over both, and `FLIGHTDECK_AGENT_TYPE` over `AGENT_TYPE`. Any other value raises `ConfigurationError`. |
+| `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
+
+A variable that wins over its kwarg does so even when the kwarg is passed, so an exported value redirects an agent that hard-codes its configuration. `init()` logs a WARNING naming both values when `FLIGHTDECK_SERVER` or `FLIGHTDECK_API_URL` overrides a kwarg with a different value (compared as written, so a server's base URL and its ingestion URL count as different); the other overrides are silent. A blank `FLIGHTDECK_SERVER` or `FLIGHTDECK_TOKEN` is an error, not an absent value. A blank `FLIGHTDECK_API_URL`, `FLIGHTDECK_SESSION_ID` or `FLIGHTDECK_BILLING_MODE` falls through to the kwarg, and `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` take effect only as `true`, `1`, `yes`, `false`, `0` or `no`, in any case.
+
+### Threading model
+
+| Pattern                         | Description                                                | Status                |
+|---------------------------------|------------------------------------------------------------|-----------------------|
+| Single-threaded agent           | One `init()`, one thread, sequential LLM calls             | Supported             |
+| Multithreaded agent             | One `init()`, many threads sharing patched clients         | Supported             |
+| Multi-agent in one process      | Multiple `init()` calls, one per logical agent             | One `init()` per process; a second `init()` is a no-op with a warning |
+
+The sensor reports over HTTP on background daemon threads. Control plane downtime is handled by the configured policy; it does not block agent code.
+
+### Known limitations
+
+- `patch()` must run before OpenAI clients are constructed. On openai 1.78 and later, instances that already accessed `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted. Anthropic clients are intercepted from their next call on, whenever they were built, except that a `with_raw_response` / `with_streaming_response` view first touched before `patch()` binds the unpatched method and is not metered.
+- The OpenAI patch needs `openai>=1.26` (the first release whose chat `create` takes `stream_options`, which the sensor adds to streamed calls); an older SDK is reported with a warning at import and its calls are not metered. On openai before 1.78 a client built before `patch()` is metered from its next call. Its client-level `with_raw_response` / `with_streaming_response` view is the exception: the SDK builds it with the client, so on a client built before `patch()` or with no session active it is not metered, and on a client built while a session was active it reports to that session.
+- The Anthropic patch needs `anthropic>=0.86` (the lowest release with the resource layout it imports); an older SDK is reported with a warning at import and its calls are not metered.
+- A `with_raw_response.create(stream=True)` response (Anthropic or OpenAI) that is never parsed has no close hook to settle on: it is reported on the pre-call estimate (as an aborted stream with no chunks when its body was never read), at the next LLM call the sensor intercepts after the response is collected, or when the session ends. The streaming view (`with_streaming_response`) settles when its `with` block exits, whether or not its stream was parsed or read.
+- Anthropic Message Batches (`messages.batches.*`) and `count_tokens` are not patched: batch spend runs outside the kill switch and the token budget.
+- With `capture_prompts=True`, prompts sent through the Bedrock, Vertex, Foundry, AWS and Mantle clients — platforms often chosen for data residency — reach the Flightdeck control plane like any other captured prompt. Keep capture off for those sessions, or keep the control plane inside the same residency boundary.
+- llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so LlamaIndex's Anthropic LLM fails on anthropic 1.x with or without the sensor; the playgrounds skip it there.
+- On mcp 2.x, `mcp.Client` answers `list_tools`, `list_resources`, `list_resource_templates`, `list_prompts` and `read_resource` from its response cache when it can; a cached answer makes no MCP request, so no `mcp_*` event is emitted for it (pass `cache=None` to the `Client` to observe every request). Tool calls are not cached and are always observed and policed.
+- Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
+- Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
+- While a litellm call is in flight, an SDK call made from inside it (by a litellm callback, guardrail or custom provider, or by a task created inside the call and run before it ends) is neither policed nor metered: the litellm wrapper has already metered the call it serves, and the mark that tells the SDK interceptors so covers the whole call. A litellm call made from inside it is reported as a call of its own, except litellm's own re-issues of the same call (its responses/completion bridge and its `fallbacks` loop, which report once, with the model that answered). A chat call through litellm's MCP gateway is reported twice, and a sync call with `fallbacks` made while an event loop is running in its thread (a notebook) has each attempt reported as a call of its own beside it (a failed primary and one fallback: three `pre_call`s, two `post_call`s, one `llm_error`). Under a DEGRADE policy a litellm call's `fallbacks` are dropped, so it runs only the degrade target.
 
 ## Local development venv
 

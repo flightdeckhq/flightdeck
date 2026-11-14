@@ -1,4 +1,4 @@
-.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -380,6 +380,13 @@ pricing-refresh: ## Regenerate the vendored pricing catalogue from litellm's cur
 
 version-check: ## Check every version location matches the VERSION file
 	python3 scripts/version.py check
+
+# The project's site (GitHub Pages, docs/) serves the installers the
+# README's install command fetches, as copies of the root install.sh
+# and install.ps1. Run this after editing either; CI fails when a copy
+# differs from its source (scripts/check-installer-copies.sh).
+installer-copies: ## Refresh docs/install.sh and docs/install.ps1, the copies the site serves
+	scripts/check-installer-copies.sh --write
 
 # The release build, without publishing: the six binaries, their
 # archives, checksums.txt and the Homebrew formula land in dist/. Needs

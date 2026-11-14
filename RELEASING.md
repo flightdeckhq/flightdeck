@@ -26,8 +26,36 @@ One tag produces every artifact, all built from the same commit:
 | `flightdeck-sensor` | PyPI | `python -m build` in `sensor/` |
 | `flightdeckhq/flightdeck` image, linux/amd64 and linux/arm64, `:<tag>` and `:latest` | Docker Hub | the root `Dockerfile` with buildx |
 
-`install.sh` and `install.ps1` download from the GitHub release and are
-served from this repository's `main`.
+`install.sh` and `install.ps1` download from the GitHub release. Users
+fetch them from the project's site, `https://flightdeck-hq.com/install.sh`
+and `https://flightdeck-hq.com/install.ps1`: GitHub Pages serves `docs/`
+of `main` there as static files and cannot redirect to the repository's
+raw file, so `docs/install.sh` and `docs/install.ps1` are copies of the
+root installers. `make installer-copies` refreshes them after an edit,
+and CI fails when a copy differs from its source
+(`scripts/check-installer-copies.sh`). An installer change reaches users
+once it is on `main` and Pages has deployed, a few minutes after the
+merge. To check, on an up-to-date `main`:
+
+```bash
+curl -fsSL https://flightdeck-hq.com/install.sh | cmp - install.sh
+```
+
+The repository's raw address
+(`https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh`,
+and `install.ps1` beside it) serves the same files and is the fallback
+when the site is unreachable.
+
+The short address changes nothing about what is installed. Whichever
+address the script came from, it downloads only from the GitHub release
+over HTTPS, verifies the archive against `checksums.txt`, and verifies
+the Sigstore signature of `checksums.txt` when cosign is installed. The
+script itself is the repository's `main` branch at both addresses,
+published by GitHub over HTTPS, and signed at neither, which is why the
+installers' headers say to read them before piping. The site's address
+does rest on one thing more than the raw address: the domain's DNS
+record and its binding to this repository's Pages site, so whoever
+controls the domain can serve another script from it.
 
 ## Release process
 
@@ -36,12 +64,110 @@ The version lives in one place, the root `VERSION` file.
 sensor (`sensor/pyproject.toml`), the plugin (`plugin/package.json`,
 `plugin/.claude-plugin/plugin.json`), the marketplace entry (`version` and
 `source.ref` in `.claude-plugin/marketplace.json`), the Helm chart
-(`version`, `appVersion` and the default `image.tag`), the README's Helm
-section and the two services' Swagger version. CI fails if any of them
+(`version`, `appVersion` and the default `image.tag`), the Helm section
+of `guides/self-hosting.md` and the two services' Swagger version. CI fails if any of them
 differs from `VERSION` (`make version-check`).
 
 `main` is protected, so a release is two steps: the version bump goes
 through a pull request, and only the tag is pushed directly.
+
+### Before the first release that ships the binary
+
+The README on `main` tells a new user to run
+`curl -fsSL https://flightdeck-hq.com/install.sh | sh` (or
+`irm https://flightdeck-hq.com/install.ps1 | iex` on Windows), then to
+connect a Python agent with `pip install flightdeck-sensor` and
+`flightdeck_sensor.init()` with no arguments. All of that works only when
+everything below holds: v0.8.0 and earlier have no binary assets, and
+flightdeck-sensor 0.8.0, the latest on PyPI, requires `server` and
+`token` (the no-argument `init()` first ships in the release after
+v0.8.0). So each line is a gate, in this order, before and after the
+first tag whose release carries the binary:
+
+- [x] **#303 and #313 are merged** (Compose and the Helm chart on the
+  one image), which the README's Compose and Helm lines and
+  `guides/self-hosting.md` describe.
+- [ ] **The README with the install commands (#314) is merged, after
+  them.** From that merge until the final tag is out, `main`'s README
+  and the site show install commands that find no binary and a sensor
+  snippet that fails against flightdeck-sensor 0.8.0, so merge it when
+  the release is next.
+- [ ] **Pages has deployed and serves this `main`'s installers.** Both
+  must answer 200 with the bytes of the files about to be tagged:
+
+  ```bash
+  curl -fsSI https://flightdeck-hq.com/install.sh
+  curl -fsSL https://flightdeck-hq.com/install.sh | cmp - install.sh
+  curl -fsSL https://flightdeck-hq.com/install.ps1 | cmp - install.ps1
+  ```
+
+  The install gate repeats the comparison against the tag's scripts and
+  goes red when the site serves anything else.
+- [ ] **A dry run passes first.** Once the release PR (step 1) has
+  set `VERSION` to `X.Y.Z` on `main`, tag `vX.Y.Z-rc.1` there as "Dry
+  run: a pre-release tag" below describes (a new `-rc.N` after each
+  fix; the version guard requires the rc's `X.Y.Z` to match `VERSION`). The
+  Release workflow publishes the pre-release: the GitHub pre-release
+  with its assets, `flightdeck-cli` as `X.Y.ZrcN` on PyPI and the image
+  as `flightdeckhq/flightdeck:vX.Y.Z-rc.N` on Docker Hub; no Homebrew
+  formula and no flightdeck-sensor. Then:
+  - the install gate is green on all five legs (it starts when the
+    Release workflow succeeds; `gh run list --workflow install-gate.yml`
+    shows it). Its installer legs also require the site to serve the
+    tag's `install.sh` and `install.ps1`; on an rc its macos-arm64 leg
+    installs with `install.sh`, since the tap carries no pre-release;
+  - the channels, by hand, on a machine whose `localhost:4000` holds no
+    real data (a fresh VM). The installers come from the site, pinned to
+    the rc because their default, the latest release, skips
+    pre-releases:
+
+    ```bash
+    curl -fsSL https://flightdeck-hq.com/install.sh | VERSION=vX.Y.Z-rc.N sh
+    pip install flightdeck-cli==X.Y.ZrcN
+    docker run --rm flightdeckhq/flightdeck:vX.Y.Z-rc.N --version
+    ```
+
+    ```powershell
+    $env:VERSION = 'vX.Y.Z-rc.N'; irm https://flightdeck-hq.com/install.ps1 | iex
+    ```
+
+    Each `flightdeck --version` prints `flightdeck vX.Y.Z-rc.N`, and
+    `flightdeck` started from the shell installer serves the dashboard
+    on `http://localhost:4000`. Homebrew cannot be checked on an rc: the
+    tap gets a formula from a stable tag only, and is checked after the
+    final tag (below).
+
+  Only then the final tag, `vX.Y.Z` (step 2), on the same `main`.
+- [ ] **The final release has its assets**, which are what the
+  installers download: the six archives, `checksums.txt` and its
+  Sigstore bundle. `gh release view vX.Y.Z --json assets -q
+  '.assets[].name'` lists them, and the install gate, green on all five
+  legs, installs from them, the macos-arm64 leg through `brew install
+  flightdeckhq/tap/flightdeck` and `brew services`.
+- [ ] **flightdeck-sensor X.Y.Z is on PyPI and the README's snippet
+  runs.** The final tag publishes it in the same run as the binary
+  (the `publish-sensor` job, stable tags only, after `flightdeck-cli`),
+  so the sensor with the no-argument `init()` reaches PyPI with the
+  release that makes the install commands work, never after it. If
+  `publish-sensor` failed, the install commands work while the README's
+  sensor snippet does not: re-run it ("If a release fails", case 2)
+  before announcing the release. Then, on a machine where a
+  `flightdeck` from this release is the only thing on
+  `localhost:4000`, in a fresh virtualenv: `pip install
+  flightdeck-sensor` resolves to `X.Y.Z`, and the README's lines
+
+  ```python
+  import flightdeck_sensor
+
+  flightdeck_sensor.init()
+  flightdeck_sensor.patch()
+  ```
+
+  run with one warning (the development token in use) and no error,
+  and the session appears in the dashboard.
+
+Later releases need none of this: CI keeps the site's copies identical
+to the root installers. Delete this section once that release is out.
 
 ### 1. Open the release PR
 
@@ -167,11 +293,11 @@ the leg in minutes.
 
 | Leg | Runner | Channel |
 |---|---|---|
-| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run -p … -v <new volume>:/data flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, no data-dir warning in them, clean `docker stop`, then a new container on the same volume serves the session); the `install.sh` binary once more with `--database-url` on a Postgres service container |
-| linux-arm64 | ubuntu-24.04-arm | `install.sh` |
+| linux-amd64 | ubuntu-24.04 | `install.sh` piped from the raw URL of the tag, after a check that `https://flightdeck-hq.com/install.sh` serves the same bytes; `pip install flightdeck-cli==<version>` and `uvx flightdeck-cli`; `docker run -p … -v <new volume>:/data flightdeckhq/flightdeck:<tag>` (token read from `docker logs`, no data-dir warning in them, clean `docker stop`, then a new container on the same volume serves the session); the `install.sh` binary once more with `--database-url` on a Postgres service container |
+| linux-arm64 | ubuntu-24.04-arm | `install.sh`, with the same check of the site's copy |
 | macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, the checks on the installed binary, then `brew services start flightdeck`: the same checks against the service on `:4000` (start-up block read from its log), `~/.flightdeck/flightdeck.db` exists, and the session is served after `brew services stop` and `start` |
 | macos-amd64 | macos-15-intel | `install.sh` |
-| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL (the `.zip`), then the checks under Git Bash |
+| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL of the tag under Windows PowerShell 5.1 (the `.zip`), after a check under 5.1 and PowerShell 7 that `irm https://flightdeck-hq.com/install.ps1` returns the same script, then the checks under Git Bash |
 
 Every leg checks `flightdeck --version` prints `flightdeck <tag>`. No
 leg starts or names a database: the binary's default, a SQLite file in

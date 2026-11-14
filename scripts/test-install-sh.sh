@@ -50,7 +50,7 @@ printf 'x' >>"$FAKE/releases/download/v0.0.1-bad/flightdeck_darwin_arm64.tar.gz"
 # A release whose checksums.txt forgot an asset.
 cp -R "$FAKE/releases/latest/download" "$FAKE/releases/download/v0.0.1-noentry"
 grep -v 'flightdeck_linux_amd64\|flightdeck_darwin_arm64' "$FAKE/releases/latest/download/checksums.txt" >"$FAKE/releases/download/v0.0.1-noentry/checksums.txt"
-# The script itself, served for the piped case as raw.githubusercontent.com serves it.
+# The script itself, served for the piped case as the project's site and raw.githubusercontent.com serve it.
 cp "$INSTALL_SH" "$FAKE/install.sh"
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 -d "$FAKE" >"$WORK/http.log" 2>&1 &

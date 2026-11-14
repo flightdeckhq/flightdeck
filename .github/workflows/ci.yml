@@ -1297,7 +1297,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Every file that carries the release version (sensor, plugin,
-      # marketplace pin, Helm chart and image tag, README, Swagger) must
+      # marketplace pin, Helm chart and image tag, guides/self-hosting.md,
+      # Swagger) must
       # match the root VERSION file; scripts/version.py lists them.
       - name: Version locations match VERSION
         run: |
@@ -1306,6 +1307,18 @@ jobs:
 
       - name: Pricing catalogue refresh script
         run: python3 -m unittest scripts/test_pricing_refresh.py
+
+      # The seed that fills a throwaway Flightdeck for the README's
+      # images (scripts/demo_seed.py), against a fake server: its
+      # events are the same on every run, carry the identity ingestion
+      # requires and no content, and name only invented hosts and users.
+      - name: Demo seed script
+        run: python3 -m unittest scripts/test_demo_seed.py
+
+      # The script that photographs the seeded instance needs a browser
+      # and a running flightdeck, so CI only checks that it parses.
+      - name: README image script parses
+        run: node --check scripts/readme_images.mjs
 
       # The release notes come from CHANGELOG.md; the installers and the
       # install gate's checks are shell the release depends on. The
@@ -1319,6 +1332,7 @@ jobs:
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \
             scripts/check-script-modes.sh scripts/test-check-script-modes.sh
+          shellcheck scripts/check-installer-copies.sh scripts/test-check-installer-copies.sh
 
       # A script the Makefile or a workflow runs by its path must be
       # committed executable (git mode 100755): one that is not runs on
@@ -1329,6 +1343,17 @@ jobs:
         run: |
           scripts/test-check-script-modes.sh
           scripts/check-script-modes.sh
+
+      # The README's install command fetches the installer from the
+      # project's site, which GitHub Pages serves from docs/ as static
+      # files: docs/install.sh and docs/install.ps1 are copies of the
+      # root installers. A copy that differs from its source fails here
+      # (`make installer-copies` refreshes them), so the site never
+      # serves an installer other than the one tested below.
+      - name: The site's installer copies match the root installers
+        run: |
+          scripts/test-check-installer-copies.sh
+          scripts/check-installer-copies.sh
 
       # The scripts the dev stack, the integration job and the chart and
       # compose checks run.
@@ -1382,9 +1407,9 @@ jobs:
         run: |
           pip install --quiet ruff==0.17.1 twine==7.0.0
           ruff check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py \
-            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py
+            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py scripts/demo_seed.py scripts/test_demo_seed.py
           ruff format --check --config sensor/pyproject.toml packaging/pypi scripts/release_notes.py scripts/test_release_notes.py \
-            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py
+            scripts/e2e_retried_tests.py scripts/test_e2e_retried_tests.py scripts/demo_seed.py scripts/test_demo_seed.py
           printf '#!/bin/sh\necho stub\n' > "$RUNNER_TEMP/flightdeck"
           for n in 1 2; do
             python3 packaging/pypi/build_wheels.py --binary "$RUNNER_TEMP/flightdeck" --platform linux/amd64 \
@@ -1396,16 +1421,15 @@ jobs:
 
       # The README's command budget (scripts/readme-budget.sh): the
       # self-test pins the counting rule on fixtures, then the README
-      # is measured. A fence or a heredoc left open, and a command in
-      # a fence tagged as a sample language, fail the step even in
-      # report mode, because the counts cannot be trusted.
-      # Report mode until the single-binary README lands
-      # within budget; that pull request drops --report so the budget
-      # then fails the build.
+      # is measured and the step fails when it is over: a second
+      # command in the install block, a third visible command under
+      # Install, a fifth under Connect your agents, a seventh under
+      # Self-hosting, more than 20 in all (the channels folded in
+      # <details> included) or more than 300 lines.
       - name: README command budget
         run: |
           scripts/test-readme-budget.sh
-          scripts/readme-budget.sh --report
+          scripts/readme-budget.sh
 
       - name: Validate marketplace.json structure
         run: |
@@ -1446,6 +1470,50 @@ jobs:
               sys.exit(1)
           print(f"marketplace.json OK: {len(data['plugins'])} plugin(s) validated")
           PY
+
+  # install.ps1 on Windows, on every pull request rather than first on a
+  # release tag: the install gate runs it only after a release is
+  # published. PSScriptAnalyzer as the gate runs it, then
+  # scripts/test-install-ps1.ps1 (the installer piped through iex
+  # against a local server with the release layout: checksum, the user
+  # PATH and its registry type, the caller's session left as it was,
+  # the refusals) under Windows PowerShell 5.1, which every Windows
+  # has, and under PowerShell 7. The test writes a throwaway registry
+  # key; -UseRealRegistry adds a run against the runner's real
+  # HKCU\Environment, the code path users get.
+  installer-windows:
+    name: Installer on Windows (PowerShell 5.1 and 7)
+    runs-on: windows-2022
+    # Two runs of a script that takes seconds; fifteen minutes fails a
+    # hung server or download long before the six-hour default.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The test serves the release layout with `python -m http.server`.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # The same analysis as the install gate's, with the same rule left
+      # out (the gate's comment says why).
+      - name: PSScriptAnalyzer on install.ps1
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer
+          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -ExcludeRule PSAvoidUsingWriteHost
+          $findings | Format-Table -AutoSize | Out-String | Write-Host
+          if ($findings) { throw "PSScriptAnalyzer: $($findings.Count) finding(s) in install.ps1" }
+
+      - name: install.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install-ps1.ps1 -Port 8766 -UseRealRegistry
+
+      - name: install.ps1 under PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-ps1.ps1 -Port 8767 -UseRealRegistry
 
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and

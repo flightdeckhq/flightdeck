@@ -2,10 +2,26 @@
 # Self-test of scripts/readme-budget.sh on fixture READMEs.
 #
 # The budgets: a README within budget passes and its counts are the
-# expected ones; one over the Quickstart budget, one over the
-# Self-hosting budget, one over the total, one over the line budget and
-# one missing a budgeted section each fail and name the reason;
-# --report prints the same counts and exits 0 on an over-budget file.
+# expected ones; one over the Connect budget, one over the Self-hosting
+# budget, one over the total, one over the line budget and one missing
+# a budgeted section each fail and name the reason; --report prints the
+# same counts and exits 0 on an over-budget file.
+#
+# The install blocks, one per platform under its label (Linux and
+# macOS, Windows): a second line, a chained command, a comment, a
+# prompt, a second block under the same label, a missing platform and
+# a block under another label each fail; so does an install section
+# whose only block is folded. The one other command the section may
+# show is `flightdeck`, with or without flags: a second way to install
+# in its place (brew under bash, irm under powershell, labelled or
+# not) fails. The channels folded in a <details> under the blocks do
+# not break the install budget and do count toward the total.
+# Folded is what GitHub renders folded: <details open> in any
+# spelling, tags inside an HTML comment, an element closed before the
+# fence, an escaped tag and a tag in an indented code block fold
+# nothing; an empty summary and a collapsed element inside an open one
+# do. A <details> left open is an error, and so is an HTML comment
+# left open; a `<!--` in inline code or in a fence opens none.
 #
 # The counting rule, one fixture per clause of the script's header:
 # every fence counts unless its language is a sample (powershell, zsh,
@@ -61,24 +77,36 @@ expect_output() {
   fi
 }
 
-# rule <count> <description>: reads the body of a Quickstart section on
-# stdin, measures a README made of it and asserts the section's count.
-# It runs in report mode, because a rule fixture may be over budget and
-# only its count is under test.
+# expect_no_output <pattern> <description>: the last run's output does
+# not contain the pattern.
+expect_no_output() {
+  if grep -Eq -- "$1" "$work/out"; then
+    fail "$2: output has '$1':"
+    sed 's/^/    /' "$work/out" >&2
+  else
+    echo "ok: $2"
+  fi
+}
+
+# rule <count> <description>: reads the body of a section on stdin,
+# measures a README made of it and asserts the section's count (the
+# first column of its row; the second is the folded part). It runs in
+# report mode, because a rule fixture has no budgeted section and only
+# its count is under test.
 rule() {
   local want="$1" what="$2" rc=0
   {
-    echo "## Quickstart"
+    echo "## Rules"
     echo
     cat
     echo
     echo "## Self-hosting"
   } >"$work/rule.md"
   "$BUDGET" --report "$work/rule.md" >"$work/out" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && grep -Eq -- "^  Quickstart +$want \(budget" "$work/out"; then
+  if [ "$rc" -eq 0 ] && grep -Eq -- "^ +$want +[0-9]+ +Rules$" "$work/out"; then
     echo "ok: $what (counts $want)"
   else
-    fail "$what: exit $rc, want a Quickstart count of $want:"
+    fail "$what: exit $rc, want a count of $want for the Rules section:"
     sed 's/^/    /' "$work/out" >&2
   fi
 }
@@ -90,7 +118,7 @@ rule() {
 rule_error() {
   local pattern="$1" what="$2" rc=0
   {
-    echo "## Quickstart"
+    echo "## Rules"
     echo
     cat
   } >"$work/rule.md"
@@ -103,14 +131,70 @@ rule_error() {
   fi
 }
 
+# install_section <file>: writes a README whose Connect and
+# Self-hosting sections are within budget around the Install section
+# read on stdin, so that a fixture's verdict is its install section's
+# alone. Connect has 4 commands, its whole budget, and Self-hosting 1.
+# The Install section is stdin and nothing else.
+install_section() {
+  {
+    echo "# Fixture"
+    echo
+    echo "## Install"
+    echo
+    cat
+    echo
+    cat <<'FIXTURE'
+## Connect your agents
+
+```text
+/plugin marketplace add example/example
+/plugin install example@example
+/reload-plugins
+```
+
+```bash
+pip install example
+```
+
+## Self-hosting
+
+```bash
+flightdeck --domain example.com
+```
+FIXTURE
+  } >"$1"
+}
+
+# install_readme <file>: as install_section, with the Linux and macOS
+# label before stdin and a Windows install block after it, so a body
+# whose first fence is the shell install block makes a complete
+# section. The body starts on line 7: the fixture's line N is line
+# N + 6 of the README.
+install_readme() {
+  {
+    echo "**Linux and macOS**"
+    echo
+    cat
+    echo
+    echo "**Windows** (PowerShell)"
+    echo
+    echo '```powershell'
+    echo "irm https://example.invalid/install.ps1 | iex"
+    echo '```'
+  } | install_section "$1"
+}
+
 # ---------------------------------------------------------------------
 # The budgets.
 # ---------------------------------------------------------------------
 
-# A README within budget. Quickstart: 3 commands (bash, text and an
-# indented sh fence in a list); the python fence, the comment and the
-# blank line are not counted. Self-hosting: 4 (console and bash fences;
-# the yaml fence is not counted). Preamble: 0.
+# A README within budget. Install: a block per platform (1 command on
+# one line each), the start command, and three channels folded in a
+# <details>, so 6 of which 3 folded and 3 visible. Connect your agents: 3 (a text fence
+# and a bash fence; the python fence is not counted). Self-hosting: 4
+# (console and bash fences, one in a list item; the yaml fence, the
+# comment and the blank line are not counted). Preamble: 0.
 cat >"$work/good.md" <<'FIXTURE'
 # Fixture
 
@@ -120,27 +204,53 @@ Some text before the first section.
 not: counted
 ```
 
-## Quickstart
+## Install
+
+Install with one command:
+
+**Linux and macOS**
 
 ```bash
 curl -fsSL https://example.invalid/install.sh | sh
 ```
 
-```text
-/plugin install example
+**Windows** (PowerShell)
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
 ```
 
-- A list item with its own fence:
+Then start it:
 
-  ```sh
-  # a comment does not count
+```bash
+flightdeck
+```
 
-  flightdeck
-  ```
+<details>
+<summary>Homebrew, pip, Docker</summary>
+
+```bash
+brew install example/tap/flightdeck
+pipx install example-cli
+docker run -p 127.0.0.1:4000:4000 example/flightdeck
+```
+
+</details>
+
+## Connect your agents
+
+```text
+/plugin marketplace add example/example
+/plugin install example@example
+```
+
+```bash
+pip install example
+```
 
 ```python
 import flightdeck_sensor
-flightdeck_sensor.init(server="http://localhost:4000/ingest", token="tok_dev")
+flightdeck_sensor.init()
 ```
 
 ## Self-hosting
@@ -154,10 +264,14 @@ flightdeck --database-url postgres://u:p@h/db
 image: not/counted
 ```
 
-```bash
-docker run example
-helm install example
-```
+- A list item with its own fence:
+
+  ```sh
+  # a comment does not count
+
+  docker run example
+  helm install example
+  ```
 
 ## License
 
@@ -165,21 +279,917 @@ Apache 2.0.
 FIXTURE
 
 expect 0 "a README within budget passes" "$work/good.md"
-expect_output '^ +3 +Quickstart$' "Quickstart counts 3 (bash, text and an indented sh fence; python, comments and blanks excluded)"
-expect_output '^ +4 +Self-hosting$' "Self-hosting counts 4 (console and bash; yaml excluded)"
-expect_output '^ +0 +\(preamble\)$' "the preamble's yaml fence is not counted"
-expect_output 'Total +7 \(budget' "the total is 7"
+expect_output '^ +6 +3 +Install$' "Install counts 6, of which 3 folded in <details>"
+expect_output '^ +3 +0 +Connect your agents$' "Connect your agents counts 3 (text and bash; python excluded)"
+expect_output '^ +4 +0 +Self-hosting$' "Self-hosting counts 4 (console and an indented sh fence; yaml, comments and blanks excluded)"
+expect_output '^ +0 +0 +\(preamble\)$' "the preamble's yaml fence is not counted"
+expect_output 'Install, Linux and macOS +1 \(exactly 1' "the Linux and macOS block holds 1 command"
+expect_output 'Install, Windows +1 \(exactly 1' "the Windows block holds 1 command"
+expect_output 'Install, visible +3 \(budget' "Install shows 3 commands: the folded channels are not visible"
+expect_output 'Total +13 \(budget' "the total is 13: the folded channels count toward it"
 expect_output 'README within budget' "the verdict is printed"
 
-# Over the Quickstart budget: one bash fence with four commands.
-cat >"$work/quickstart.md" <<'FIXTURE'
-## Quickstart
+# ---------------------------------------------------------------------
+# The install block.
+# ---------------------------------------------------------------------
+
+# A second command on a second line of the install block.
+install_readme "$work/install-second-line.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect 1 "a second command in the install block fails" "$work/install-second-line.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 2 commands, must be exactly 1' "the failure names the block, its line and the counts"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 2 lines, must be exactly one' "and that the block is not one line"
+expect 0 "--report prints the same file without failing" --report "$work/install-second-line.md"
+expect_output 'report mode: not failing' "--report says so"
+
+# A second command chained onto the one line: the block is one line
+# and still two commands.
+install_readme "$work/install-chained.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh && flightdeck
+```
+FIXTURE
+expect 1 "a command chained onto the install command fails" "$work/install-chained.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 2 commands, must be exactly 1' "the failure counts the chained command"
+expect_no_output 'has [0-9]+ lines, must be exactly one' "the block is one line, so only the command count fails"
+
+# One command, with a comment above it: the count is right and the
+# block is still not the single line the README promises.
+install_readme "$work/install-comment.md" <<'FIXTURE'
+```bash
+# Linux and macOS
+curl -fsSL https://example.invalid/install.sh | sh
+```
+FIXTURE
+expect 1 "a comment in the install block fails" "$work/install-comment.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 2 lines, must be exactly one' "the failure names the line count"
+expect_no_output 'commands, must be exactly' "the block has one command, so only the line count fails"
+
+install_readme "$work/install-blank.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+
+```
+FIXTURE
+expect 1 "a blank line in the install block fails" "$work/install-blank.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 2 lines, must be exactly one' "the failure names the line count"
+
+install_readme "$work/install-prompt.md" <<'FIXTURE'
+```console
+$ curl -fsSL https://example.invalid/install.sh | sh
+```
+FIXTURE
+expect 1 "a prompt in the install block fails" "$work/install-prompt.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) starts with a prompt' "the failure names the prompt"
+
+# An install block with nothing to run: the number is exact, not a
+# ceiling.
+install_readme "$work/install-empty.md" <<'FIXTURE'
+```bash
+# see the release page
+```
+FIXTURE
+expect 1 "an install block with no command fails" "$work/install-empty.md"
+expect_output 'OVER BUDGET: the Linux and macOS install block \(line 7\) has 0 commands, must be exactly 1' "the failure names the count of 0"
+
+# A second visible install block: the first block is the one line it
+# must be, and the section shows three commands.
+install_readme "$work/install-second-block.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+Or with Homebrew:
 
 ```bash
-git clone https://example.invalid/repo
-cd repo
-make dev
-open http://localhost:4000
+brew install example/tap/flightdeck
+```
+
+Then start it:
+
+```bash
+flightdeck
+```
+FIXTURE
+expect 1 "a second visible install block fails" "$work/install-second-block.md"
+expect_output 'OVER BUDGET: Install shows 4 commands outside <details>, budget 3' "the failure names the visible count"
+expect_output 'Install, Linux and macOS +1 \(exactly 1' "the first block itself holds 1 command"
+
+# The same channels folded in a <details>: within the install budget,
+# and counted in the section and the total. The <details> carries
+# attributes and sits in mixed case; the tag mentioned in inline code
+# on the line before it folds nothing.
+install_readme "$work/install-folded.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+
+The other channels sit in a `<details>` element:
+
+<Details name="channels">
+<summary>Homebrew, pip, Docker, Windows</summary>
+
+```bash
+brew install example/tap/flightdeck
+pipx install example-cli
+uvx example-cli
+docker run example/flightdeck
+```
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+</DETAILS>
+FIXTURE
+expect 0 "channels folded in <details> do not break the install budget" "$work/install-folded.md"
+expect_output '^ +8 +5 +Install$' "Install counts 8, of which 5 folded"
+expect_output 'Install, visible +3 \(budget' "Install shows 3"
+expect_output 'Total +13 \(budget' "the folded channels count toward the total (13)"
+
+# Folded commands count toward the total: 3 visible and 11 folded in
+# Install, 3 in Connect and 4 in Self-hosting are 21.
+{
+  echo "## Install"
+  echo
+  echo "**Linux and macOS**"
+  echo
+  echo '```bash'
+  echo "curl -fsSL https://example.invalid/install.sh | sh"
+  echo '```'
+  echo
+  echo "**Windows**"
+  echo
+  echo '```powershell'
+  echo "irm https://example.invalid/install.ps1 | iex"
+  echo '```'
+  echo
+  echo '```bash'
+  echo "flightdeck"
+  echo '```'
+  echo
+  echo "<details><summary>Other channels</summary>"
+  echo
+  echo '```bash'
+  for i in $(seq 1 11); do echo "install-channel-$i"; done
+  echo '```'
+  echo
+  echo "</details>"
+  echo
+  echo "## Connect your agents"
+  echo
+  echo '```bash'
+  for i in 1 2 3; do echo "connect-$i"; done
+  echo '```'
+  echo
+  echo "## Self-hosting"
+  echo
+  echo '```bash'
+  for i in 1 2 3 4; do echo "flightdeck --flag-$i"; done
+  echo '```'
+} >"$work/folded-total.md"
+expect 1 "folded commands that take the total over budget fail" "$work/folded-total.md"
+expect_output 'OVER BUDGET: 21 commands in total, budget 20' "the failure names the total"
+expect_output 'Install, visible +3 \(budget' "while the install section still shows 3"
+expect_no_output 'OVER BUDGET: Install' "and the install budget itself holds"
+
+# <details open> is rendered unfolded: its commands are visible.
+install_readme "$work/install-details-open.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+
+<details open>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect 1 "<details open> does not fold its commands" "$work/install-details-open.md"
+expect_output 'OVER BUDGET: Install shows 4 commands outside <details>, budget 3' "the failure counts the open block as visible"
+expect_output '^ +4 +0 +Install$' "and none of the 4 as folded"
+
+# An open element inside a collapsed one is still folded away.
+install_readme "$work/install-nested.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+
+<details>
+<summary>Other channels</summary>
+<details open>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+
+```bash
+pipx install example-cli
+```
+
+</details>
+FIXTURE
+expect 0 "an open <details> inside a collapsed one stays folded" "$work/install-nested.md"
+expect_output '^ +5 +2 +Install$' "Install counts 5, of which 2 folded"
+
+# The install command itself must be visible: a section whose only
+# block is folded has no install block.
+install_readme "$work/install-hidden.md" <<'FIXTURE'
+<details>
+<summary>Install</summary>
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+</details>
+FIXTURE
+expect 1 "an install command folded in <details> fails" "$work/install-hidden.md"
+expect_output 'OVER BUDGET: Install has no install block for Linux and macOS' "the failure says the block must be visible"
+expect_output 'Install, Linux and macOS +none' "and the summary shows no install block for it"
+
+# ---------------------------------------------------------------------
+# One install block per platform.
+# ---------------------------------------------------------------------
+
+# platform_case <rc> <description>: an Install section read on stdin as
+# it is, with nothing added; the fixture's line N is line N + 4 of the
+# README.
+platform_case() {
+  local want="$1" what="$2"
+  install_section "$work/platform-case.md"
+  expect "$want" "$what" "$work/platform-case.md"
+}
+
+platform_case 0 "a Linux and macOS block, a Windows block and the run command pass" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+expect_output 'Install, Windows +1 \(exactly 1' "the Windows block holds 1 command"
+expect_output 'Install, visible +3 \(budget 3' "three commands show: the budget"
+
+platform_case 1 "a second command in the Windows block fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+winget install example.flightdeck
+```
+FIXTURE
+expect_output 'OVER BUDGET: the Windows install block \(line 13\) has 2 commands, must be exactly 1' "the failure names the Windows block, its line and the count"
+expect_output 'OVER BUDGET: the Windows install block \(line 13\) has 2 lines, must be exactly one' "and its line count"
+
+platform_case 1 "a second command chained onto the Windows command fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex; winget install example.flightdeck
+```
+FIXTURE
+expect_output 'OVER BUDGET: the Windows install block \(line 13\) has 2 commands' "the failure counts the chained command"
+
+platform_case 1 "a PowerShell prompt in the Windows block fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+PS C:\> irm https://example.invalid/install.ps1 | iex
+```
+FIXTURE
+expect_output 'OVER BUDGET: the Windows install block \(line 13\) starts with a prompt' "the failure names the prompt"
+
+# A second block under the same label is a second install command for
+# that platform.
+platform_case 1 "a second Windows block fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+**Windows**
+
+```powershell
+winget install example.flightdeck
+```
+FIXTURE
+expect_output 'OVER BUDGET: Install shows a second Windows install block \(line 19\): one install command per platform' "the failure names the second block's line"
+
+# An extra block with no label is held to the run command, and so is
+# one labelled with a platform that has no install block.
+platform_case 1 "an unlabelled third install block fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect_output 'neither an install command nor "flightdeck" \(line 18: brew install example/tap/flightdeck\)' "the failure names the unlabelled command"
+
+platform_case 1 "a block labelled with another platform fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+**FreeBSD**
+
+```sh
+pkg install flightdeck
+```
+FIXTURE
+expect_output 'neither an install command nor "flightdeck" \(line 20: pkg install flightdeck\)' "the failure names it"
+
+# Both platforms are required: dropping the Windows block, or folding
+# it away, fails.
+platform_case 1 "a section with no Windows block fails" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+expect_output 'OVER BUDGET: Install has no install block for Windows' "the failure names the missing platform"
+expect_output 'Install, Windows +none' "and the summary shows none"
+
+platform_case 1 "a Windows block folded in <details> is missing" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+<details>
+<summary>Windows</summary>
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+</details>
+FIXTURE
+expect_output 'OVER BUDGET: Install has no install block for Windows' "a folded block does not count as the platform's"
+
+# A label labels the fence right after it: text between them, or a
+# fence between them, takes the label away.
+platform_case 1 "a label with text between it and the fence labels nothing" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+Run this in PowerShell:
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+FIXTURE
+expect_output 'OVER BUDGET: Install has no install block for Windows' "the Windows block is missing"
+expect_output 'neither an install command nor "flightdeck" \(line 16: irm ' "and the unlabelled command is a stray one"
+
+platform_case 1 "a label covers one fence, not the one after it" <<'FIXTURE'
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+```powershell
+winget install example.flightdeck
+```
+FIXTURE
+expect_output 'neither an install command nor "flightdeck" \(line 18: winget install example.flightdeck\)' "the second fence is held to the run command"
+
+# A label must name the platform and nothing more.
+for label in 'On Windows:' 'Windows users' '**Windows**, in PowerShell:' 'Windows and WSL'; do
+  platform_case 1 "\"$label\" is not the Windows label" <<FIXTURE
+**Linux and macOS**
+
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+$label
+
+\`\`\`powershell
+irm https://example.invalid/install.ps1 | iex
+\`\`\`
+FIXTURE
+  expect_output 'OVER BUDGET: Install has no install block for Windows' "and the Windows block is missing"
+done
+
+for label in '**Windows**' 'Windows' '*Windows*:' '**Windows** (PowerShell)' '- **Windows**' '> **Windows**'; do
+  platform_case 0 "\"$label\" is the Windows label" <<FIXTURE
+**Linux and macOS**
+
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+$label
+
+\`\`\`powershell
+irm https://example.invalid/install.ps1 | iex
+\`\`\`
+FIXTURE
+done
+
+# ---------------------------------------------------------------------
+# The one other visible command: the run command.
+# ---------------------------------------------------------------------
+
+# Two visible commands, within the count, and the second is another
+# way to install: the count alone would let it through.
+install_readme "$work/install-brew-second.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+On macOS:
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect 1 "a second way to install in place of the run command fails" "$work/install-brew-second.md"
+expect_output 'OVER BUDGET: Install shows a command that is neither an install command nor "flightdeck" \(line 14: brew install example/tap/flightdeck\)' "the failure names the line and the command"
+expect_output 'Install, visible +3 \(budget' "the visible count alone is within budget"
+expect_output 'Install, other +1 \(exactly 0' "the summary counts the stray command"
+
+install_readme "$work/install-irm-second.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+FIXTURE
+expect 1 "a powershell install command in place of the run command fails" "$work/install-irm-second.md"
+expect_output 'neither an install command nor "flightdeck" \(line 14: irm https://example.invalid/install.ps1 \| iex\)' "the failure names the powershell command, whose label is not a platform"
+
+# The run command first and the install command second is the same
+# mistake in the other order: the block is then `flightdeck` and the
+# stray command is the install.
+install_readme "$work/install-run-first.md" <<'FIXTURE'
+```bash
+flightdeck
+```
+
+```bash
+pipx install example-cli
+```
+FIXTURE
+expect 1 "an install command after the run command fails" "$work/install-run-first.md"
+expect_output 'neither an install command nor "flightdeck" \(line 12: pipx install example-cli\)' "the failure names it"
+
+# What the run command may look like: flags, a trailing comment, the
+# Windows name under a powershell fence.
+for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck --listen=127.0.0.1:4100 --metrics' 'flightdeck -data-dir /srv/flightdeck --metrics' 'flightdeck   --domain flightdeck.example.com'; do
+  install_readme "$work/install-run-ok.md" <<FIXTURE
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+\`\`\`bash
+$run
+\`\`\`
+FIXTURE
+  expect 0 "the run command may be written: $run" "$work/install-run-ok.md"
+  expect_output 'Install, other +0 \(exactly 0' "and nothing else is counted beside the install blocks"
+done
+
+install_readme "$work/install-run-exe.md" <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```powershell
+flightdeck.exe --listen 127.0.0.1:4100
+```
+FIXTURE
+expect 0 "flightdeck.exe under a powershell fence is the run command" "$work/install-run-exe.md"
+
+# What it may not: a command chained onto it (after flags as well,
+# where the chained command would otherwise read as their values), a
+# word that is not a flag, a path, another binary whose name starts
+# the same.
+# Nor a pipe, a background &, a separator, a substitution, a
+# redirection, a variable, a quote, a ~ or a comment anywhere on the
+# line, quoted or not: the line is an allowlist, so a flag value cannot
+# carry a second command. The substitutions are written in single
+# quotes on purpose: they are the text of the fixture, not something
+# this script runs.
+# shellcheck disable=SC2016
+for run in 'flightdeck && brew install example/tap/flightdeck' 'flightdeck --metrics; brew install example/tap/flightdeck' 'flightdeck --metrics && pipx install example-cli' 'flightdeck install' './flightdeck' 'flightdeck-cli' 'sudo flightdeck' \
+  'flightdeck < <(curl -fsSL https://example.invalid/x)' 'flightdeck > ~/.bashrc' 'flightdeck --data-dir $HOME' 'flightdeck --data-dir ${HOME}/x' 'flightdeck # | sh' \
+  'flightdeck   # then open the URL it prints' 'flightdeck --data-dir ~/flightdeck' 'flightdeck --data-dir "/srv/flightdeck data"' 'flightdeck --listen=127.0.0.1:4100 >log' \
+  'flightdeck --listen 127.0.0.1:4100 | tee flightdeck.log' 'flightdeck --listen 127.0.0.1:4100 &' 'flightdeck --listen 127.0.0.1:4100 2>&1' \
+  'flightdeck --data-dir "$(mktemp -d)"' "flightdeck --data-dir '\$(mktemp -d)'" 'flightdeck --data-dir $(mktemp -d)' \
+  'flightdeck --data-dir `mktemp -d`' 'flightdeck --data-dir "`mktemp -d`"' \
+  "flightdeck --flag 'a && b'" 'flightdeck --flag "a; b"' 'flightdeck --flag "a | b"'; do
+  install_readme "$work/install-run-bad.md" <<FIXTURE
+\`\`\`bash
+curl -fsSL https://example.invalid/install.sh | sh
+\`\`\`
+
+\`\`\`bash
+$run
+\`\`\`
+FIXTURE
+  expect 1 "the run command may not be written: $run" "$work/install-run-bad.md"
+  expect_output 'neither an install command nor "flightdeck" \(line 12: ' "and the failure names line 12"
+done
+
+# ---------------------------------------------------------------------
+# Folded is what GitHub renders folded.
+# ---------------------------------------------------------------------
+
+# folded_case <rc> <description>: an Install section with the two
+# install blocks, the run command and the lines read on stdin. rc 0
+# means the commands in those lines were folded away; rc 1 that they
+# were visible, which takes the section over its budget of three.
+folded_case() {
+  local want="$1" what="$2"
+  {
+    cat <<'FIXTURE'
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+```bash
+flightdeck
+```
+
+FIXTURE
+    cat
+  } | install_readme "$work/folded-case.md"
+  expect "$want" "$what" "$work/folded-case.md"
+}
+
+# Tags inside an HTML comment are not tags: GitHub renders the fence
+# unfolded.
+folded_case 1 "a <details> inside HTML comments folds nothing" <<'FIXTURE'
+<!-- <details> -->
+
+```bash
+brew install example/tap/flightdeck
+```
+
+<!-- </details> -->
+FIXTURE
+expect_output 'OVER BUDGET: Install shows 4 commands outside <details>, budget 3' "its command is counted as visible"
+expect_output '^ +4 +0 +Install$' "and not as folded"
+
+folded_case 1 "a <details> inside a comment that spans lines folds nothing" <<'FIXTURE'
+<!--
+<details>
+<summary>Homebrew</summary>
+-->
+
+```bash
+brew install example/tap/flightdeck
+```
+
+<!--
+</details>
+-->
+FIXTURE
+expect_output '^ +4 +0 +Install$' "its command is visible"
+
+# A comment beside a real tag does not hide the tag.
+folded_case 0 "a comment beside a real <details> leaves it folded" <<'FIXTURE'
+<details> <!-- the other channels -->
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details> <!-- end -->
+FIXTURE
+expect_output '^ +4 +1 +Install$' "its command is folded"
+
+# An element closed before the fence does not contain it.
+folded_case 1 "a <details> closed on its own line does not fold the fence after it" <<'FIXTURE'
+<details><summary>Homebrew</summary></details>
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect_output '^ +4 +0 +Install$' "its command is visible"
+
+folded_case 1 "a <details> closed on the next line does not fold the fence after it" <<'FIXTURE'
+<details>
+<summary>Homebrew</summary>
+</details>
+
+```bash
+brew install example/tap/flightdeck
+```
+FIXTURE
+expect_output '^ +4 +0 +Install$' "its command is visible"
+
+# An empty summary, and no summary at all, still render collapsed.
+folded_case 0 "a <details> with an empty summary is folded" <<'FIXTURE'
+<details><summary></summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +4 +1 +Install$' "its command is folded"
+
+folded_case 0 "a <details> with no summary is folded" <<'FIXTURE'
+<details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +4 +1 +Install$' "its command is folded"
+
+# Every spelling of the open attribute renders unfolded.
+for tag in '<details open="">' '<details OPEN>' '<DETAILS Open="open">' '<details name="channels" open>' '<details open=false>'; do
+  folded_case 1 "$tag is not folded" <<FIXTURE
+$tag
+<summary>Homebrew</summary>
+
+\`\`\`bash
+brew install example/tap/flightdeck
+\`\`\`
+
+</details>
+FIXTURE
+  expect_output '^ +4 +0 +Install$' "its command is visible"
+done
+
+# An attribute that only contains the word is not the open attribute.
+folded_case 0 '<details name="open-channels"> is folded' <<'FIXTURE'
+<details name="open-channels">
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output '^ +4 +1 +Install$' "its command is folded"
+
+# Nesting: a collapsed element inside an open one is folded; the fence
+# after it, still inside the open one, is not.
+folded_case 0 "a collapsed <details> inside an open one is folded" <<'FIXTURE'
+<details open>
+<summary>Other channels</summary>
+<details>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+</details>
+FIXTURE
+expect_output '^ +4 +1 +Install$' "its command is folded"
+
+folded_case 1 "a fence after the inner <details>, inside the open one, is visible" <<'FIXTURE'
+<details open>
+<summary>Other channels</summary>
+<details>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+
+```bash
+pipx install example-cli
+```
+
+</details>
+FIXTURE
+expect_output '^ +5 +1 +Install$' "one command folded, one visible"
+
+# A tag that is text, not markup: escaped, or in an indented code
+# block.
+folded_case 1 "an escaped \\<details> folds nothing" <<'FIXTURE'
+\<details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+\</details>
+FIXTURE
+expect_output '^ +4 +0 +Install$' "its command is visible"
+
+folded_case 1 "a <details> in an indented code block folds nothing" <<'FIXTURE'
+    <details>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+    </details>
+FIXTURE
+expect_output '^ +4 +0 +Install$' "its command is visible"
+
+# An HTML comment left open hides the rest of the page on GitHub.
+# Refused, in report mode as well; the comment opens on line 4.
+rule_error 'rule\.md:4: the HTML comment opened on this line is never closed' "an unclosed HTML comment is an error that names its line" <<'FIXTURE'
+Text.
+<!-- a note that never ends
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule_error 'rule\.md:5: the HTML comment opened on this line is never closed' "a comment that opens after one that closed, and stays open, is named" <<'FIXTURE'
+Text.
+<!-- closed --> and then
+<!-- open
+```bash
+flightdeck
+```
+FIXTURE
+
+# A `<!--` in inline code or in a fence is text: no comment opens.
+rule 1 "a <!-- in inline code opens no comment" <<'FIXTURE'
+Write `<!--` to start a comment and `-->` to end it; `<!--` alone is text.
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a <!-- in a fence opens no comment" <<'FIXTURE'
+```html
+<!-- an example
+```
+
+```bash
+flightdeck
+```
+FIXTURE
+
+# A <details> left open would fold everything after it. Refused, in
+# report mode as well; the tag is on line 4 of the fixture.
+rule_error 'rule\.md:4: the <details> opened on this line is never closed' "an unclosed <details> is an error that names its line" <<'FIXTURE'
+Text.
+<details>
+<summary>Folded</summary>
+
+```bash
+flightdeck
+```
+FIXTURE
+
+# A tag inside a fence is content, not a tag: nothing is folded and
+# nothing is left open.
+rule 2 "a <details> inside a fence folds nothing" <<'FIXTURE'
+```html
+<details>
+```
+
+```bash
+flightdeck
+flightdeck status
+```
+FIXTURE
+
+# ---------------------------------------------------------------------
+# The other budgets.
+# ---------------------------------------------------------------------
+
+# Over the Connect budget: a fifth command, an export.
+cat >"$work/connect.md" <<'FIXTURE'
+## Install
+
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+## Connect your agents
+
+```text
+/plugin marketplace add example/example
+/plugin install example@example
+/reload-plugins
+```
+
+```bash
+pip install example
+export FLIGHTDECK_SERVER=http://localhost:4000/ingest
 ```
 
 ## Self-hosting
@@ -188,18 +1198,30 @@ open http://localhost:4000
 flightdeck --domain example.com
 ```
 FIXTURE
-expect 1 "four Quickstart commands fail" "$work/quickstart.md"
-expect_output 'OVER BUDGET: Quickstart has 4 commands, budget 3' "the failure names Quickstart and the counts"
-expect 0 "--report prints the same file without failing" --report "$work/quickstart.md"
-expect_output 'report mode: not failing' "--report says so"
+expect 1 "five Connect commands fail" "$work/connect.md"
+expect_output 'OVER BUDGET: Connect your agents has 5 commands, budget 4' "the failure names the section and the counts"
 
 # Over the Self-hosting budget: seven commands, the last two chained on
 # one line, so a line count of six would have let it through.
 cat >"$work/selfhosting.md" <<'FIXTURE'
-## Quickstart
+## Install
+
+**Linux and macOS**
 
 ```bash
-flightdeck
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+## Connect your agents
+
+```bash
+pip install example
 ```
 
 ## Self-hosting
@@ -217,12 +1239,26 @@ expect 1 "seven Self-hosting commands fail" "$work/selfhosting.md"
 expect_output 'OVER BUDGET: Self-hosting has 7 commands, budget 6' "the failure names Self-hosting and the counts"
 
 # Over the total budget while every section is within its own: 21
-# commands spread over sections with no per-section budget.
+# commands, 17 of them in a section with no budget of its own.
 {
-  echo "## Quickstart"
+  echo "## Install"
+  echo
+  echo "**Linux and macOS**"
   echo
   echo '```bash'
-  echo "flightdeck"
+  echo "curl -fsSL https://example.invalid/install.sh | sh"
+  echo '```'
+  echo
+  echo "**Windows**"
+  echo
+  echo '```powershell'
+  echo "irm https://example.invalid/install.ps1 | iex"
+  echo '```'
+  echo
+  echo "## Connect your agents"
+  echo
+  echo '```bash'
+  echo "pip install example"
   echo '```'
   echo
   echo "## Self-hosting"
@@ -234,17 +1270,50 @@ expect_output 'OVER BUDGET: Self-hosting has 7 commands, budget 6' "the failure 
   echo "## Exporters"
   echo
   echo '```bash'
-  for i in $(seq 1 19); do echo "export VAR_$i=$i"; done
+  for i in $(seq 1 17); do echo "export VAR_$i=$i"; done
   echo '```'
 } >"$work/total.md"
 expect 1 "21 commands in total fail" "$work/total.md"
 expect_output 'OVER BUDGET: 21 commands in total, budget 20' "the failure names the total"
 
-# Over the line budget with no commands at all.
+# skeleton: the three budgeted sections within budget (the two install
+# blocks, one command in each other section), for the fixtures below
+# that are about something else. skeleton_lines is its line count.
+skeleton() {
+  cat <<'FIXTURE'
+## Install
+
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+## Connect your agents
+
+```bash
+pip install example
+```
+
+## Self-hosting
+
+```bash
+flightdeck --domain example.com
+```
+FIXTURE
+}
+skeleton_lines=$(skeleton | awk 'END { print NR }')
+
+# Over the line budget: the skeleton's lines and enough more for 301.
 {
-  echo "## Quickstart"
-  echo "## Self-hosting"
-  for i in $(seq 1 299); do echo "line $i"; done
+  skeleton
+  for i in $(seq 1 $((301 - skeleton_lines))); do echo "line $i"; done
 } >"$work/long.md"
 expect 1 "301 lines fail" "$work/long.md"
 expect_output 'OVER BUDGET: 301 lines, budget 300' "the failure names the line count"
@@ -252,13 +1321,19 @@ expect_output 'OVER BUDGET: 301 lines, budget 300' "the failure names the line c
 # The same 301 lines with no newline after the last one: the last line
 # is still a line. Counting newline characters would see 300 and pass.
 {
-  echo "## Quickstart"
-  echo "## Self-hosting"
-  for i in $(seq 1 298); do echo "line $i"; done
-  printf 'line 299'
+  skeleton
+  for i in $(seq 1 $((300 - skeleton_lines))); do echo "line $i"; done
+  printf 'the last line'
 } >"$work/long-no-newline.md"
 expect 1 "301 lines fail without a trailing newline" "$work/long-no-newline.md"
 expect_output 'OVER BUDGET: 301 lines, budget 300' "the last line counts without its newline"
+
+# One line fewer is within budget.
+{
+  skeleton
+  for i in $(seq 1 $((300 - skeleton_lines))); do echo "line $i"; done
+} >"$work/long-enough.md"
+expect 0 "300 lines pass" "$work/long-enough.md"
 
 # A README without a budgeted section fails: the budget cannot be
 # measured, and a renamed heading must not pass silently.
@@ -270,15 +1345,33 @@ flightdeck
 ```
 FIXTURE
 expect 1 "a README without the budgeted sections fails" "$work/nosection.md"
-expect_output 'no "## Quickstart" section' "the failure names the missing section"
+expect_output 'no "## Install" section' "the failure names the missing Install section"
+expect_output 'no "## Connect your agents" section' "and the missing Connect section"
+expect_output 'no "## Self-hosting" section' "and the missing Self-hosting section"
 
-# The section heading is matched case-insensitively and a fence with
-# attributes after the language still counts.
+# The section heading and the platform labels are matched
+# case-insensitively, a label may end in a colon or carry words in
+# parentheses, and a fence with attributes after the language still
+# counts.
 cat >"$work/case.md" <<'FIXTURE'
-## QUICKSTART
+## INSTALL
+
+__LINUX AND MACOS:__
 
 ```bash {.copy}
-flightdeck
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+windows (PowerShell 5.1 or 7):
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+## Connect Your Agents
+
+```bash
+pip install example
 ```
 
 ## Self-Hosting
@@ -288,25 +1381,42 @@ flightdeck --domain example.com
 ```
 FIXTURE
 expect 0 "headings match case-insensitively and a fence with attributes counts" "$work/case.md"
-expect_output 'Quickstart +1 \(budget' "QUICKSTART is read as Quickstart"
+expect_output 'Install, Linux and macOS +1 \(exactly' "INSTALL is read as Install, and __LINUX AND MACOS:__ labels its block"
+expect_output 'Install, Windows +1 \(exactly' "and windows (PowerShell 5.1 or 7): labels the other"
+expect_output 'Connect your agents +1 \(budget' "Connect Your Agents is read as Connect your agents"
 expect_output 'Self-hosting +1 \(budget' "Self-Hosting is read as Self-hosting"
 
 # A `###` subsection is part of its `## ` section: its commands count
 # against that section's budget and it gets no row of its own.
 cat >"$work/subsection.md" <<'FIXTURE'
-## Quickstart
+## Install
+
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
 
 ```bash
 flightdeck
 ```
 
-### Coding agents
+## Connect your agents
+
+### Claude Code
 
 ```text
-/plugin install example
+/plugin marketplace add example/example
+/plugin install example@example
 ```
 
-### Production agents
+### Python agents
 
 ```bash
 pip install example
@@ -321,14 +1431,9 @@ docker run example
 ```
 FIXTURE
 expect 0 "subsections count into their section" "$work/subsection.md"
-expect_output '^ +3 +Quickstart$' "Quickstart counts the commands of its two subsections (3)"
-expect_output '^ +1 +Self-hosting$' "Self-hosting counts the command of its subsection (1)"
-if grep -Eq 'Coding agents|Production agents|Docker' "$work/out"; then
-  fail "a ### subsection got a row of its own:"
-  sed 's/^/    /' "$work/out" >&2
-else
-  echo "ok: a ### subsection has no row of its own"
-fi
+expect_output '^ +3 +0 +Connect your agents$' "Connect your agents counts the commands of its two subsections (3)"
+expect_output '^ +1 +0 +Self-hosting$' "Self-hosting counts the command of its subsection (1)"
+expect_no_output 'Claude Code|Python agents|Docker' "a ### subsection has no row of its own"
 
 # ---------------------------------------------------------------------
 # Which fences count.
@@ -473,7 +1578,25 @@ FIXTURE
 # still found (the run is not in report mode, so a missing section
 # would fail it) and the counts are the same as with LF.
 awk '{ printf "%s\r\n", $0 }' >"$work/crlf.md" <<'FIXTURE'
-## Quickstart
+## Install
+
+**Linux and macOS**
+
+```bash
+curl -fsSL https://example.invalid/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://example.invalid/install.ps1 | iex
+```
+
+```bash
+flightdeck
+```
+
+## Connect your agents
 
 ```bash
 flightdeck
@@ -491,8 +1614,10 @@ if [ "$(tr -d '\r' <"$work/crlf.md" | wc -c)" -eq "$(wc -c <"$work/crlf.md")" ];
   fail "the CRLF fixture has no carriage returns"
 fi
 expect 0 "a README with CRLF line endings is measured" "$work/crlf.md"
-expect_output '^ +3 +Quickstart$' "CRLF: Quickstart counts 3"
-expect_output '^ +1 +Self-hosting$' "CRLF: a wrapped command counts 1"
+expect_output '^ +3 +0 +Connect your agents$' "CRLF: Connect your agents counts 3"
+expect_output '^ +1 +0 +Self-hosting$' "CRLF: a wrapped command counts 1"
+expect_output 'Install, Linux and macOS +1 \(exactly' "CRLF: the labels are read and the Linux and macOS block is one line"
+expect_output 'Install, Windows +1 \(exactly' "CRLF: and so is the Windows block"
 
 # ---------------------------------------------------------------------
 # What a command is.

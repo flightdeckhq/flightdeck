@@ -33,7 +33,7 @@ agent's calls to Flightdeck is a separate package,
 [`flightdeck-sensor`](https://pypi.org/project/flightdeck-sensor/).
 
 Other ways to install the same binary: the shell installer
-(`curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh | sh`),
+(`curl -fsSL https://flightdeck-hq.com/install.sh | sh`),
 Homebrew (`brew install flightdeckhq/tap/flightdeck`), the Docker image
 `flightdeckhq/flightdeck`, and the archives on the
 [release page](https://github.com/flightdeckhq/flightdeck/releases).

@@ -134,8 +134,9 @@ All notable changes to Flightdeck are documented here.
   `init(); patch()` (D264).
 - **Flightdeck installs with one command.** Each release ships the
   `flightdeck` binary for Linux, macOS and Windows on amd64 and arm64:
-  `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh | sh`
-  (or `irm .../install.ps1 | iex` on Windows) downloads the archive for
+  `curl -fsSL https://flightdeck-hq.com/install.sh | sh`
+  (or `irm https://flightdeck-hq.com/install.ps1 | iex` on Windows)
+  downloads the archive for
   the machine, verifies it against the release's `checksums.txt` and
   installs it without sudo; `brew install flightdeckhq/tap/flightdeck`
   installs it from the new Homebrew tap, where `brew services start
@@ -153,7 +154,18 @@ All notable changes to Flightdeck are documented here.
   naming the directory, the user id and the fix.
   `flightdeck --version` prints the release the binary came from, and
   the release's `checksums.txt` is signed with Sigstore: both installers
-  verify the signature when `cosign` is installed.
+  verify the signature when `cosign` is installed. The installers are
+  served from the project's site as copies of the repository's
+  (`docs/install.sh`, `docs/install.ps1`, which CI keeps identical to
+  the root files); the repository's raw address serves the same scripts
+  and is the fallback (D269). The Windows installer runs under Windows
+  PowerShell 5.1 as well as PowerShell 7, appends its directory to the
+  user PATH without expanding the `%VARIABLES%` in it or changing its
+  registry type, and leaves no variable or preference of its own in
+  the session that ran it. It refuses a `VERSION` that is not a release
+  tag, never takes the PATH past the 32,767 characters Windows allows,
+  and does not add a directory the PATH already has in quotes. CI runs
+  it on Windows under both shells on every pull request.
 
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens
@@ -893,6 +905,30 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The README shows the product, then one install command per
+  platform.** It opens with a screenshot of the fleet view, then
+  `curl -fsSL https://flightdeck-hq.com/install.sh | sh` under **Linux
+  and macOS** and `irm https://flightdeck-hq.com/install.ps1 | iex`
+  under **Windows**, then `flightdeck`, connecting Claude Code and a
+  Python agent, what you get, coverage and self-hosting in their short
+  form: 201 lines and 17 commands, from 590 and 44.
+  `scripts/readme-budget.sh` now fails CI unless each platform has its
+  install block of one command on one line, when anything but
+  `flightdeck` shows beside them, and when a section or the whole goes
+  over (Install 3 visible commands, Connect your agents 4, Self-hosting
+  6, 20 in all with the channels folded in `<details>`, 300 lines).
+  `guides/windows.md` covers Flightdeck on Windows: the installer,
+  running it, its data, upgrading and removing it, and agents from
+  PowerShell. The reference material moved as it
+  was, each page linked from where it stood: the coverage matrices and
+  the not-planned list to `guides/coverage.md`, the feature descriptions
+  to `guides/features.md`, Compose, Helm and backups to
+  `guides/self-hosting.md`, the two OpenTelemetry sections to
+  `guides/opentelemetry.md`, the MCP Protection Policy to
+  `guides/mcp-protection-policy.md`, Identity and the Sensor reference to
+  `sensor/README.md`. The images are new and show invented agents only
+  (`assets/readme/`, made by `scripts/demo_seed.py` and
+  `scripts/readme_images.mjs`); the three demo GIFs of May are gone.
 - **One release pipeline builds every artifact from the tag.** A `vX.Y.Z`
   tag runs goreleaser for the six binaries, the GitHub release (notes
   from this file) and the Homebrew formula, publishes `flightdeck-cli`

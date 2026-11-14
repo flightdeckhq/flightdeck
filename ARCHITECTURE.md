@@ -223,7 +223,7 @@ flightdeck/
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
-├── assets/                     # Demo GIFs embedded in README.md
+├── assets/readme/              # The README's images: the fleet view and three tiles, light and dark, and one GIF; invented agents only
 ├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
 ├── scripts/dev-stack.sh        # The contributor dev stack: `make dev`, `make dev-restart`, `make down`, `make logs`, `make dev-reset`
 ├── scripts/test-dev-stack.sh   # Tests the dev stack script against a fake docker, go and flightdeck: what a failing build, a busy port, another checkout's containers and `reset` must leave alone
@@ -234,12 +234,25 @@ flightdeck/
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
+├── scripts/test-install-ps1.ps1  # install.ps1 piped through iex against a local release layout, under Windows PowerShell 5.1 and 7
+├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
+├── scripts/readme-budget.sh    # The README's command budget: one install command, per-section and total limits, 300 lines
+├── scripts/demo_seed.py        # Fills a throwaway flightdeck with invented agents, for the README's images
+├── scripts/readme_images.mjs   # Photographs that instance with the dashboard's Playwright: the stills and the recording
 ├── .goreleaser.yaml            # Release build: six binaries, archives, checksums, Homebrew formula
-├── install.sh                  # `curl | sh` installer: detect, download, verify, install
-├── install.ps1                 # `irm | iex` installer for Windows
+├── install.sh                  # `curl | sh` installer: detect, download, verify, install; served from the site as docs/install.sh
+├── install.ps1                 # `irm | iex` installer for Windows; served from the site as docs/install.ps1
 ├── Dockerfile                  # The all-in-one image flightdeckhq/flightdeck (distroless, non-root)
 ├── packaging/pypi/             # The flightdeck-cli PyPI package: the shim and the per-platform wheel builder
-├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
+├── docs/                       # GitHub Pages site, flightdeck-hq.com: everything in it is served (index.html, 404.html, CNAME, .nojekyll, assets/, llms.txt)
+│   └── install.sh, install.ps1 # Copies of the root installers, the ones the install command fetches
+├── guides/                     # The user documentation the README links, kept out of docs/ so the site does not serve it as raw files
+│   ├── coverage.md             # Every intercepted method, the framework matrices, client types, what is not planned
+│   ├── features.md             # Each dashboard page and control in full
+│   ├── self-hosting.md         # Docker Compose, the Helm chart and its values, upgrade notes, backups
+│   ├── windows.md              # Windows: the PowerShell installer, running, the data, upgrading, removing, agents from PowerShell
+│   ├── opentelemetry.md        # Claude Code's own telemetry and the agent frameworks' GenAI spans into Flightdeck
+│   └── mcp-protection-policy.md  # The operator's view of the MCP Protection Policy
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
 │   ├── Makefile
@@ -668,10 +681,10 @@ def init(
     """
     Initialize the sensor.
 
-    server and token each resolve as: the kwarg if passed, else the
-    FLIGHTDECK_SERVER / FLIGHTDECK_TOKEN environment variable, else the
-    default. The environment wins over a passed kwarg, as for every other
-    knob; init warns when it overrides a different server. The server
+    server and token each resolve as: the FLIGHTDECK_SERVER /
+    FLIGHTDECK_TOKEN environment variable when it is set, else the kwarg,
+    else the default; init warns when the environment overrides a server
+    kwarg with a different value. The server
     default is http://localhost:4000/ingest, the local flightdeck binary
     or dev stack. The server may be given as the ingestion URL (ending in
     /ingest, what the binary's start-up block prints) or as the base URL
@@ -709,8 +722,15 @@ def init(
     session with that ID already exists, the backend attaches this execution
     to the prior row.
 
-    Reads from environment (override init params):
-        FLIGHTDECK_SERVER             -- ingestion base URL
+    Reads from environment. Each variable with an init param wins over
+    that param when set, except the agent identity pair: a passed
+    agent_type or agent_name wins over AGENT_TYPE / FLIGHTDECK_AGENT_TYPE
+    and AGENT_FLAVOR / FLIGHTDECK_AGENT_NAME (the FLIGHTDECK_ name over
+    the legacy one; AGENT_FLAVOR, when set, is also the session's
+    flavor). init logs a WARNING when FLIGHTDECK_SERVER or
+    FLIGHTDECK_API_URL overrides a kwarg with a different value; the
+    other overrides are silent.
+        FLIGHTDECK_SERVER             -- the server's address (base or ingestion URL)
         FLIGHTDECK_TOKEN              -- access token
         FLIGHTDECK_API_URL            -- control-plane base URL
         FLIGHTDECK_SESSION_ID         -- session-id hint
@@ -718,8 +738,10 @@ def init(
         AGENT_TYPE / FLIGHTDECK_AGENT_TYPE   -- "coding" or "production"
         FLIGHTDECK_HOSTNAME           -- override socket.gethostname
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
-        FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable
+        FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable, "false" to disable
         FLIGHTDECK_BILLING_MODE       -- "metered" / "subscription" / "local"
+        FLIGHTDECK_ALLOW_INSECURE_TRANSPORT -- "true" allows plain http://
+                                         to a non-local control plane
 
     When capture_prompts=False (default):
         Event payloads contain token counts, model, latency, tool names only.
@@ -3037,9 +3059,9 @@ sessions extend the derivation with a conditional 6th input,
 | Field | Vocabulary | Source |
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
-| `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
+| `agent_type` | `coding` \| `production` | Sensor `init` kwarg, else `FLIGHTDECK_AGENT_TYPE`, else `AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
 | `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
-| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
+| `agent_name` | string | Sensor `init` kwarg, else `FLIGHTDECK_AGENT_NAME`, else `AGENT_FLAVOR` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
@@ -3685,7 +3707,7 @@ control plane honours end-to-end:
 
 1. **Sensor — `init` accepts `session_id`.** The caller passes a stable
    ID via the kwarg OR exports `FLIGHTDECK_SESSION_ID`. The env var wins
-   over the kwarg, same precedence as `FLIGHTDECK_SERVER` / `AGENT_FLAVOR`.
+   over the kwarg, same precedence as `FLIGHTDECK_SERVER`.
 2. **Ingestion — synchronous attachment check on `session_start`.** On
    arrival of a `session_start` event the ingestion API calls
    `session.Store.Attach(session_id)` against the database (through
@@ -11723,14 +11745,15 @@ runs the services that way; the split test stack and
 |---|---|
 | `FLIGHTDECK_SERVER` | The control plane's address: its ingestion URL (`http://localhost:4000/ingest`, the default and what the start-up block prints) or its base URL (`http://localhost:4000`); overrides the `server=` kwarg. The Claude Code plugin reads the same variable and accepts the same two forms |
 | `FLIGHTDECK_TOKEN` | Access token; overrides the `token=` kwarg; defaults to `tok_dev` only when the server is also defaulted (see Sensor, Public API) |
-| `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
-| `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |
-| `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture |
-| `FLIGHTDECK_BILLING_MODE` | `metered`, `subscription` or `local`; overrides the billing mode the sensor detects (see Cost estimation) |
+| `FLIGHTDECK_API_URL` | Control-plane base URL; overrides the `api_url=` kwarg (derived from server if neither is set) |
+| `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs; overrides the `session_id=` kwarg |
+| `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture, `false` to turn it off; overrides the `capture_prompts=` kwarg |
+| `FLIGHTDECK_BILLING_MODE` | `metered`, `subscription` or `local`; overrides the `billing_mode=` kwarg and the billing mode the sensor detects (see Cost estimation) |
+| `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` | `true` allows plain `http://` to a non-local control plane; overrides the `allow_insecure_transport=` kwarg |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` |
 | `FLIGHTDECK_HOSTNAME` | Override `socket.gethostname` |
-| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}` |
-| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production`. Any other value raises `ConfigurationError` |
+| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}`. The `agent_name=` kwarg wins over both, `FLIGHTDECK_AGENT_NAME` over `AGENT_FLAVOR`; `AGENT_FLAVOR`, when set, is also the session's `flavor` |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production`. The `agent_type=` kwarg wins over both, `FLIGHTDECK_AGENT_TYPE` over `AGENT_TYPE`. Any other value raises `ConfigurationError` |
 
 **Postgres:** standard Postgres environment plus the optional
 `POSTGRES_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB` for the bundled
@@ -11743,11 +11766,27 @@ from one release tag (RELEASING.md has the sequence):
 
 | Channel | Command | What it installs |
 |---|---|---|
-| Shell installer | `curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
-| PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
+| Shell installer | `curl -fsSL https://flightdeck-hq.com/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
+| PowerShell installer | `irm https://flightdeck-hq.com/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
 | Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+
+The two installers are fetched from the project's site. GitHub Pages
+serves `docs/` of `main` at `flightdeck-hq.com` as static files and
+cannot redirect to the repository's raw file, so `docs/install.sh` and
+`docs/install.ps1` are byte-for-byte copies of the root installers:
+`scripts/check-installer-copies.sh` fails CI when a copy differs from
+its source, is missing, or carries a non-ASCII byte (Pages sends a
+`.ps1` with no charset), and `make installer-copies` refreshes them.
+The repository's raw address
+(`https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh`,
+and `install.ps1` beside it) serves the same scripts and is the
+fallback. Whichever address a script came from, it downloads only from
+the GitHub release and verifies what it downloads, as described next;
+the script itself is `main` at both addresses and signed at neither.
+The site's address rests on one thing the raw address does not: the
+domain's DNS record and its binding to the repository's Pages site.
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -11779,7 +11818,28 @@ the install gate's checks (below) on the binary it builds and on that
 image, started on a new volume with a read-only root filesystem, and
 runs the checks against fake binaries that are each broken in one way
 (`scripts/test-install-gate.sh`): every fault must fail the gate within
-a bound, and a wedged binary must not hang it.
+a bound, and a wedged binary must not hang it. Both installers are run
+end to end against a local server with the release layout on every
+pull request: `scripts/test-install-sh.sh` on Linux, and
+`scripts/test-install-ps1.ps1` on Windows under Windows PowerShell 5.1
+and PowerShell 7, piped through `iex` as users run it. The PowerShell
+installer appends its directory to the user PATH by writing the Path
+value of `HKCU\Environment` back with the registry type it had and its
+`%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE` (a failed
+broadcast is a warning: the PATH is already written). A directory
+already on the PATH, spelled with a variable, in quotes or with a
+trailing backslash, is not added again; a PATH the entry would take past
+the 32,767 characters Windows allows a variable is left unchanged and
+the installer stops, and one past 2,047 is written with a warning. It
+refuses a `VERSION` that is not a release tag before downloading
+anything, and runs in a script block of its own, so the session that ran
+it keeps its own variables and preferences. Its test points it at a
+throwaway registry key (`FLIGHTDECK_INSTALL_REGISTRY_KEY`, a test-only
+override) so a run never touches a real PATH; CI adds one run against
+the runner's real `HKCU\Environment`. The installer honours that
+override only for a key under `HKCU\Software\flightdeck-test\`, and says
+so when it does; any other value stops it before it downloads or writes
+anything, so a stray setting cannot send the PATH write elsewhere.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the
@@ -11791,7 +11851,9 @@ with a tag) installs the published artifacts on fresh runners, one leg
 per platform (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel`,
 `windows-2022`), through the channel under test (`install.sh`, `pip`
 and `uvx`, `docker run`, `brew` and `brew services`, `install.ps1`), and
-runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
+runs `scripts/install-gate.sh`. The installer legs run the tag's own
+script and first require the site to serve the same bytes, so the
+verdict covers the command users run. Every leg starts `flightdeck` with no
 database and nothing else configured, since that is the install a new
 user makes: the script removes the binary's settings from its
 environment and requires the start-up block to name a SQLite database

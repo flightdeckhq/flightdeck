@@ -1,7 +1,12 @@
 #!/bin/sh
 # Installs the flightdeck binary from a GitHub release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh | sh
+#   curl -fsSL https://flightdeck-hq.com/install.sh | sh
+#
+# The project's site serves a copy of this file (docs/install.sh, which
+# CI keeps identical to install.sh on the repository's main branch). If
+# the site is unreachable, the repository serves the same script:
+# https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.sh
 #
 # Detects the operating system and CPU, downloads the matching release
 # archive and the release's checksums.txt, verifies the archive against
@@ -19,7 +24,8 @@
 # checked, and the download is trusted as far as TLS to github.com is:
 # install cosign (https://docs.sigstore.dev/cosign/system_config/installation/)
 # before running this script to close that gap. This script is itself
-# fetched over TLS from the repository; read it before piping it to sh.
+# fetched over TLS, from the project's site or from the repository, and
+# is not signed; read it before piping it to sh.
 #
 # Overrides, as environment variables:
 #   VERSION                 a release tag (v1.2.3); default: the latest release
@@ -61,7 +67,7 @@ detect_os() {
     Linux) echo linux ;;
     Darwin) echo darwin ;;
     MINGW* | MSYS* | CYGWIN*)
-      fail "on Windows, run install.ps1 (irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 | iex) or download the .zip from ${REPO_URL}/releases" ;;
+      fail "on Windows, run install.ps1 (irm https://flightdeck-hq.com/install.ps1 | iex) or download the .zip from ${REPO_URL}/releases" ;;
     *) fail "unsupported operating system: $(uname -s) (releases cover Linux, macOS and Windows)" ;;
   esac
 }

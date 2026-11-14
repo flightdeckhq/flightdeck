@@ -142,8 +142,19 @@ jobs:
       # the installer reports the check was skipped.
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
 
-      # The installer as users run it, piped from the raw URL of the tag
-      # (what main serves once the tag's commit is on main).
+      # Users fetch the installer from the project's site (the README's
+      # one command), which GitHub Pages serves from docs/ of main. The
+      # steps below run the tag's own script, so the site must serve the
+      # same bytes for the gate's verdict to cover that command. A
+      # mismatch means main's installer moved on from this tag (a gate
+      # run by hand on an older tag) or Pages has not deployed yet.
+      - name: The site serves this tag's install.sh
+        run: |
+          curl -fsSL --retry 3 https://flightdeck-hq.com/install.sh -o "$RUNNER_TEMP/site-install.sh"
+          cmp install.sh "$RUNNER_TEMP/site-install.sh"
+
+      # The installer piped as users pipe it, from the raw URL of the
+      # tag: the script this release ships.
       - name: install.sh (curl | sh)
         run: |
           # A failed download or installer fails here, not at the grep.
@@ -351,19 +362,55 @@ jobs:
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
 
       # PSScriptAnalyzer ships on the Windows runner image; the installer
-      # is linted on the platform that runs it.
+      # is linted on the platform that runs it. PSAvoidUsingWriteHost is
+      # left out: an installer piped to iex talks to the person running
+      # it, and Write-Host is the stream that reaches their console
+      # without becoming the pipeline's output.
       - name: PSScriptAnalyzer on install.ps1
         shell: pwsh
         run: |
           Import-Module PSScriptAnalyzer
-          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error
+          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -ExcludeRule PSAvoidUsingWriteHost
           $findings | Format-Table -AutoSize | Out-String | Write-Host
           if ($findings) { throw "PSScriptAnalyzer: $($findings.Count) finding(s) in install.ps1" }
 
-      # The installer as users run it, piped from the raw URL of the tag.
-      # It appends its directory to GITHUB_PATH.
-      - name: install.ps1 (irm | iex)
+      # Users fetch the installer from the project's site (`irm
+      # https://flightdeck-hq.com/install.ps1 | iex`), which GitHub Pages
+      # serves from docs/ of main. The step below runs the tag's own
+      # script, so the site must serve the same text: `irm` must hand
+      # back a string (Pages sends a .ps1 as application/octet-stream) and
+      # it must equal the tag's file, line endings aside (the checkout
+      # may convert them). A mismatch means main's installer moved on
+      # from this tag or Pages has not deployed yet.
+      - name: The site serves this tag's install.ps1
         shell: pwsh
+        run: |
+          $site = irm https://flightdeck-hq.com/install.ps1
+          if ($site -isnot [string]) { throw "irm returned $($site.GetType().FullName), not a string: iex could not run it" }
+          $tagged = Get-Content -Raw install.ps1
+          if (($site -replace "`r`n", "`n") -cne ($tagged -replace "`r`n", "`n")) { throw 'https://flightdeck-hq.com/install.ps1 differs from install.ps1 of this tag' }
+
+      # The same check under Windows PowerShell 5.1, the shell a Windows
+      # user has without installing anything. Pages serves a .ps1 as
+      # application/octet-stream with no charset; `irm` returns a string
+      # for it in both shells (it is `iwr`'s Content that is a byte
+      # array), and 5.1 decodes it as ISO-8859-1, which is why the
+      # installers are kept ASCII.
+      - name: The site serves this tag's install.ps1 (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $site = irm https://flightdeck-hq.com/install.ps1
+          if ($site -isnot [string]) { throw "irm returned $($site.GetType().FullName), not a string: iex could not run it" }
+          $tagged = Get-Content -Raw install.ps1
+          if (($site -replace "`r`n", "`n") -cne ($tagged -replace "`r`n", "`n")) { throw 'https://flightdeck-hq.com/install.ps1 differs from install.ps1 of this tag' }
+
+      # The installer piped as users pipe it, from the raw URL of the
+      # tag: the script this release ships, under Windows PowerShell
+      # 5.1, the shell every Windows has (the CI job "Installer on
+      # Windows" runs it under PowerShell 7 as well on every pull
+      # request). It appends its directory to GITHUB_PATH.
+      - name: install.ps1 (irm | iex)
+        shell: powershell
         env:
           VERSION: ${{ env.TAG }}
         run: |

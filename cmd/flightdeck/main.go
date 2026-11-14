@@ -26,9 +26,12 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/internal/health"
 	"github.com/flightdeckhq/flightdeck/internal/natsembed"
 	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/internal/serve"
+	// The process's local time zone is UTC from the moment it starts.
+	_ "github.com/flightdeckhq/flightdeck/internal/utc"
 	"github.com/flightdeckhq/flightdeck/storage"
 	"github.com/flightdeckhq/flightdeck/webui"
 	workersapp "github.com/flightdeckhq/flightdeck/workers/app"
@@ -100,17 +103,7 @@ const symlinkDepthLimit = 40
 const databaseConnectBudget = 60 * time.Second
 
 func main() {
-	useUTC()
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
-// useUTC makes the process's local time zone UTC, as the containers the
-// services ran in had. The query API formats the timestamps it reads
-// from the database in the process's zone, and its contract is RFC 3339 in
-// UTC (the "Z" suffix the dashboard and the integration suite expect);
-// a laptop in another zone would otherwise serve "+02:00" offsets.
-func useUTC() {
-	time.Local = time.UTC
 }
 
 func run(args []string, stdout, stderr *os.File) int {
@@ -120,16 +113,46 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
+		if len(args) > 0 && args[0] == cli.HealthCommand {
+			// A health check has two answers. Docker reserves exit
+			// status 2 of a HEALTHCHECK command, so a mistyped flag is
+			// "not healthy" too.
+			return 1
+		}
 		return 2
 	}
 	if opts.Version {
 		_, _ = fmt.Fprintln(stdout, "flightdeck", version)
 		return 0
 	}
+	if opts.Health {
+		return runHealth(opts, stdout, stderr)
+	}
 	if err := serveAll(opts, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
 		return 1
 	}
+	return 0
+}
+
+// runHealth is `flightdeck health`: it asks the instance that runs with
+// opts' listen address and domain whether its two HTTP services answer,
+// prints one line and returns 0 when they do and 1 when they do not.
+// It touches nothing else: no data dir, no database, no token.
+func runHealth(opts cli.Options, stdout, stderr *os.File) int {
+	target, err := health.TargetFor(opts.Listen, opts.Domain)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "unhealthy:", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), health.Timeout)
+	defer cancel()
+	answered, err := health.Check(ctx, target)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "unhealthy:", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "healthy: %s answers /api/health and /ingest/health\n", answered)
 	return 0
 }
 
@@ -210,6 +233,16 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return dataDirInUse(err, layout.Root)
 	}
 	defer dirLock.Release()
+	// The lock is held: whatever SQLite files an earlier process left in
+	// the temporary directory belong to nobody. Without the directory
+	// SQLite in this mode would have nowhere for its temporary files.
+	tmpWarning, err := datadir.PrepareTmp(layout.Tmp)
+	if err != nil {
+		return err
+	}
+	if tmpWarning != "" {
+		slog.Warn(tmpWarning)
+	}
 	secrets, err := datadir.LoadSecrets(layout.Secrets)
 	if err != nil {
 		return err
@@ -231,6 +264,12 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		if err := datadir.CreatePrivate(database.path); err != nil {
 			return err
 		}
+		// SQLite's temporary files (a sort or an index build too large
+		// for memory) go into the data dir, the one place the process
+		// may always write: on a read-only root filesystem SQLite finds
+		// no other directory and the statement fails. Set before the
+		// database is opened or migrated.
+		storage.SetSQLiteTempDir(layout.Tmp)
 	}
 
 	// The services read their configuration from the environment the
@@ -372,11 +411,13 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	if err != nil {
 		return err
 	}
+	hosts := router.NewHostPolicy(dev, opts.Domain, opts.AllowedHosts)
 	handler := router.New(router.Config{
 		API:                apiApp.Handler(),
 		Ingest:             ingApp.Handler(),
 		UI:                 webui.FS(),
 		Token:              token.Token,
+		Hosts:              hosts,
 		IngestReadTimeout:  ingestionapp.ReadTimeout,
 		IngestWriteTimeout: ingestionapp.WriteTimeout,
 		APIReadTimeout:     apiapp.ReadTimeout,
@@ -403,7 +444,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		serveFns = append(serveFns, func() error { return serveErr("http", srv.Serve(lns.plain)) })
 	}
 
-	printBanner(stdout, opts, dev, token, layout, database, embedded != nil)
+	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil)
 	return supervise(ctx, services, serveFns, func(c context.Context) error {
 		var firstErr error
 		for _, s := range srvs {
@@ -662,11 +703,15 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 	return nil
 }
 
-func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, layout datadir.Layout, db database, embedded bool) {
-	base := publicURL(opts)
+func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, hosts router.HostPolicy, layout datadir.Layout, db database, embedded bool) {
+	base, anyInterface := publicURL(opts)
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\nFlightdeck %s\n\n", version)
-	p("  Dashboard   %s\n", base)
+	if anyInterface {
+		p("  Dashboard   %s   (every interface of this machine: put its name or address in place of %s)\n", base, thisHost)
+	} else {
+		p("  Dashboard   %s\n", base)
+	}
 	p("  Ingestion   %s/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n", base)
 	switch {
 	case dev:
@@ -677,6 +722,11 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 		p("  Token       %s   (minted now, named %q in Settings; kept in %s)\n", token.Token, bootstrap.TokenName, layout.Secrets)
 	default:
 		p("  Token       %s…   (from %s)\n", token.Token[:min(8, len(token.Token))], layout.Secrets)
+	}
+	if answered, enforced := hosts.Describe(); enforced {
+		p("  Hosts       %s   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n", answered)
+	} else {
+		p("  Hosts       %s   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n", answered)
 	}
 	p("  Data dir    %s\n", layout.Root)
 	if db.backend == storage.SQLite {
@@ -692,26 +742,40 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	p("\nPress Ctrl+C to stop.\n\n")
 }
 
+// thisHost stands for the machine's own name or address in the start-up
+// block when the binary listens on every interface. The operating
+// system's host name is not printed in its place: inside a container it
+// is the container's id (a pod's name under Kubernetes), which nothing
+// outside the container resolves, and the binary cannot know the name
+// or the published port the machine is reached by from outside. The
+// placeholder has no space, so the URL stays one word.
+const thisHost = "<this-host>"
+
 // publicURL is the address to open in a browser: the domain in TLS
 // mode; otherwise the listen address, with localhost for a loopback
-// bind and the machine's host name for a bind on every interface.
-func publicURL(opts cli.Options) string {
+// bind and thisHost for a bind on every interface, for which
+// anyInterface is true. An address bound to one interface is shown as
+// given.
+func publicURL(opts cli.Options) (url string, anyInterface bool) {
 	if opts.Domain != "" {
-		return "https://" + opts.Domain
+		return "https://" + opts.Domain, false
 	}
 	host, port, err := net.SplitHostPort(opts.Listen)
 	if err != nil {
-		return "http://" + opts.Listen
+		return "http://" + opts.Listen, false
 	}
 	switch {
-	case host == "" || host == "0.0.0.0" || host == "::":
-		if h, err := os.Hostname(); err == nil && h != "" {
-			host = h
-		} else {
-			host = "localhost"
-		}
+	case host == "" || unspecified(host):
+		host, anyInterface = thisHost, true
 	case bootstrap.Loopback(opts.Listen):
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return "http://" + net.JoinHostPort(host, port), anyInterface
+}
+
+// unspecified reports whether host is the address that binds every
+// interface: 0.0.0.0 or ::, in any spelling.
+func unspecified(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }

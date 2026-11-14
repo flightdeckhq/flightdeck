@@ -10511,7 +10511,8 @@ beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
-cache; and the lock files below. With `--database-url postgres://…`
+cache; `tmp/` (mode 0700), SQLite's temporary files (below); and the
+lock files below. With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file
@@ -10519,6 +10520,38 @@ locks that a network filesystem does not provide (NFS, SMB; on
 Windows a UNC path or a mapped network drive is the usual way to end
 up on one), and the binary's own lock needs the same; the lock error
 says so when the filesystem refuses the lock.
+
+**Nothing is written outside the data dir.** The binary runs on a
+read-only root filesystem with the data dir as its one writable path
+(`docker run --read-only`, a pod with `readOnlyRootFilesystem: true`).
+The database, the bus store, the secrets and the certificate cache are
+there by construction; the one thing that is not is SQLite's temporary
+files. SQLite writes one when a statement needs more working space than
+its two-megabyte cache: a sort or a `GROUP BY` over a large events
+table (the analytics queries), an index build in a migration, a large
+statement journal. Left to itself it puts them in `$SQLITE_TMPDIR`,
+`$TMPDIR`, `/var/tmp`, `/usr/tmp`, `/tmp` or the working directory,
+whichever is writable first, and with none of them writable the
+statement fails with `disk I/O error (6410)`: an analytics request then
+answers 500 once the database is large enough to need the space. So in
+SQLite mode the binary names `<data dir>/tmp` as SQLite's temporary
+directory before it opens or migrates the database
+(`storage.SetSQLiteTempDir`, SQLite's `temp_store_directory`, set on
+every connection). The files stay on disk, not in memory
+(`temp_store=MEMORY` would bound a large sort by the container's memory
+limit instead of the volume), and on the volume that holds the database
+itself. SQLite removes each file as it opens it (or opens it unnamed),
+so the directory is normally empty. At every start, once it holds the
+data dir's lock, the binary removes what a killed process may have left
+there, and nothing else: only files named with SQLite's temporary-file
+prefix, `etilqs_`, so a `tmp` that is shared (a data dir of `/`, whose
+`tmp` is the system's) loses nothing that is not SQLite's. `tmp` is
+looked at without following it: a symbolic link or a file in its place
+is removed itself (a link's target is never touched), a new 0700
+directory is made, and a warning says what was replaced. The
+standalone services keep SQLite's own choice. Nothing else in the
+process writes a temporary file: the embedded NATS keeps its own under
+`nats/`, and the certificate cache under `acme/`.
 
 **One process per data dir.** The running binary holds an exclusive
 operating-system file lock (`flock` on Linux and macOS, `LockFileEx` on
@@ -10688,6 +10721,77 @@ is the trust boundary: a non-loopback deployment protects it at the
 network edge or with `--domain`. Further tokens are minted in the
 Settings page.
 
+**Host check.** `/runtime-config.json` asks for no credential, since
+the dashboard has no login of its own, so the origin is the boundary
+(above). A browser can be made to cross it from outside: a page on
+another site points a name of its own at this machine (DNS rebinding),
+the browser loads `http://that-name:4000/runtime-config.json` as that
+page's own origin, and the page reads the token and calls the API. The
+browser sends the page's name as `Host`, so every request passes a
+check of that header before any route (`internal/router/hosts.go`), the
+health routes and the two APIs included. These hosts are always
+answered: an IP address (a rebinding page needs a name whose DNS answer
+it controls; the origin of an address is whatever serves there),
+`localhost` and names under it, the `--domain`, and the entries of
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`: host names separated by
+commas, a leading dot admitting every name under one, compared without
+case or a trailing dot). The port is not compared: a forwarded or
+published port changes it, and a rebinding page cannot choose it. The
+check is on when the binary listens on loopback only, where the
+browser is the one way in; with `--domain`; and whenever a list is
+set. A listen address beyond loopback with no list answers every
+`Host`: the names such an instance is reached by (a LAN name, a
+reverse proxy's) are not known to the binary, and the operator who
+bound it there decided who reaches it. `--allowed-hosts '*'` turns the
+check off in any mode. The Docker image sets
+`FLIGHTDECK_ALLOWED_HOSTS=localhost`, so a container is checked like a
+loopback listen: published on `127.0.0.1` it is reached as `localhost`
+or by address; one reached by a name (a Compose service name, a
+reverse proxy's) lists that name. A refused request is answered 421
+Misdirected Request with one line of JSON that names the refused host as
+the server read it (lower-case, without its port, which no entry takes)
+and the exact setting that admits it: `add <host> to the comma-separated
+list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts`. A Host longer than
+253 bytes, the most a DNS name can spell out, is no host name and is
+refused as malformed, so a request can make the server repeat no more
+than that. The body carries nothing else from the request and no
+secret, and the listed names are not repeated to the requester. Each
+distinct refused host name is logged once, as a WARN with the same
+hint (a name sent with different ports or cases is one name); after
+twenty names one more line says further ones are refused without a log
+line, and the set of names the process remembers stops growing there, so
+a scanner can grow neither the log nor the memory. With the check on,
+the start-up block's `Hosts` line lists the names answered (`localhost,
+IP addresses` and the domain and the listed names); with it off it says
+`any host name`. The sensor, the plugin and `flightdeck health` send
+the address they were given as `Host`, so an address or `localhost`
+passes everywhere. Under Kubernetes the kubelet's `httpGet` probes
+connect to the pod IP and send it as `Host`, and `flightdeck health` in
+an exec probe sends `127.0.0.1` (the domain with `--domain`), so probes
+pass with any list; the names to list are the ones clients use: the
+Service's (`<service>`, `<service>.<namespace>`,
+`<service>.<namespace>.svc`, `<service>.<namespace>.svc.<cluster
+domain>`) and the Ingress hosts, which an ingress controller passes on
+as the `Host`.
+
+The fleet stream (`/api/v1/stream`) carries the token in its URL,
+because a browser cannot set a header on a WebSocket. With the Host
+check on, a request for it with an `Origin` header is answered 403
+unless the origin's host is the host that was asked for (the
+dashboard's own page; the port may differ behind a proxy) or one of the
+hosts above; the body names the page's host and the setting that admits
+it, as the 421 does. With the check off (a listen beyond loopback and no
+list) the `Origin` is not checked, as the stream never checked it before
+the Host check existed: such an instance is commonly behind a reverse
+proxy that rewrites the `Host` to its upstream address
+(`proxy_pass http://127.0.0.1:4000`) while the browser's `Origin` keeps
+the public name, which the binary cannot know. A client that is not a
+browser sends no `Origin`. Either way the stream needs its token. The REST API keeps its CORS
+policy (`FLIGHTDECK_CORS_ORIGIN`): a page on another site cannot read
+`/runtime-config.json`, which carries no CORS header, so it has no
+token to send. The standalone query API accepts any `Origin` on the
+stream; there the edge in front of it decides.
+
 **TLS.** `--domain example.com` (`FLIGHTDECK_DOMAIN`) terminates TLS in
 the binary with certificates from Let's Encrypt (`acme/autocert`,
 HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
@@ -10696,17 +10800,32 @@ or HEAD to `https://<domain>` with the same path and query, whatever
 `Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
-**Time zone.** The binary sets the process's local zone to UTC at
-start: the query API
+**Time zone.** The binary's local zone is UTC: the query API
 formats the timestamps it reads from the database in the process's zone,
-and its contract is RFC 3339 in UTC, whatever zone the host is in.
+and its contract is RFC 3339 in UTC, whatever zone the host is in. The
+zone is set while the binary's packages are loaded (`internal/utc`, an
+`init`), not by `main`: it is a variable every goroutine reads, and the
+embedded NATS server starts a timer goroutine when its packages are
+loaded, so a write from `main` would race with it. Go initialises a
+package once its imports are, in import-path order, which puts this one
+before the NATS packages and so before any goroutine exists.
 
 **Start-up output.** One block on stdout: the version, the dashboard
 URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
-engine's name) and the bus (embedded, with its store dir, or the
-external URL). Everything else is `slog` on stderr.
+engine's name), the host names answered (see Host check) and the bus
+(embedded, with its store dir, or the external URL). Everything else is
+`slog` on stderr. The two URLs are
+`https://<domain>` with `--domain`; `http://localhost:<port>` for a
+loopback listen; the listen address as given when it names one
+interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for
+a listen on every interface (`:4000`, `0.0.0.0:4000`, `[::]:4000`),
+with a note to put the machine's name or address in place of
+`<this-host>`. The operating system's host name is not printed there:
+inside a container it is the container's id (the pod's name under
+Kubernetes), which nothing outside resolves, and the binary cannot know
+the name or the published port the machine is reached by.
 
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
@@ -10796,10 +10915,16 @@ two limits (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`,
 published), sets the database URL to it and makes `flightdeck` wait for
 its health check; it requires `POSTGRES_PASSWORD`, limited to
 URL-unreserved characters because the one value is both the server's
-password and a part of that URL. The `flightdeck` service has no health
-check: the image is distroless, with no shell or HTTP client to run one
-from inside the container, and the binary has no health subcommand, so
-`docker compose ps` reports only whether the process runs. Both
+password and a part of that URL. The `flightdeck` service takes the
+image's health check, `flightdeck health` (see Health checks), so
+`docker compose ps` reports it `healthy` once it serves and another
+service can wait for it with `depends_on: condition: service_healthy`.
+The service passes `FLIGHTDECK_ALLOWED_HOSTS` through from the shell or
+`docker/.env`, defaulting to the image's `localhost` (see Host check):
+the published port is reached as `127.0.0.1` or `localhost` with nothing
+set, and a deployment reached by any other name (a LAN name with
+`FLIGHTDECK_PUBLISH_HOST=0.0.0.0`, a reverse proxy's host, the service
+name `flightdeck` from another container) lists it there. Both
 services log through Docker's `json-file` driver with rotation: a
 container's log file is rotated at 20 MiB and five files are kept, so
 one container holds at most 100 MiB of logs. Without it the driver
@@ -11136,9 +11261,10 @@ over the defaults.
 |---|---|---|
 | `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/` |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
+| `--allowed-hosts` | `FLIGHTDECK_ALLOWED_HOSTS` | Host names the binary answers for besides `localhost`, IP addresses and `--domain`, separated by commas (`fd.internal,.example.com`; `*` answers any). Unset, a loopback listen and `--domain` answer only for those and a listen address beyond loopback answers any name; see Host check. The Docker image sets `localhost` |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
 Two more variables have no flag, since a flag's value shows in the
@@ -11148,6 +11274,9 @@ holding the dashboard token the operator supplies, and
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
+`flightdeck health` (see Health checks) takes the same flags and
+variables and uses the listen address and the domain to find the
+running instance.
 
 The three tables below list what each of the three services reads.
 The `flightdeck` binary runs them in one process: the tuning variables
@@ -11237,7 +11366,7 @@ from one release tag (RELEASING.md has the sequence):
 | PowerShell installer | `irm https://raw.githubusercontent.com/flightdeckhq/flightdeck/main/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `--data-dir /data --listen :4000` and nothing else to configure; the database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 The release is produced by goreleaser (`.goreleaser.yaml`): the binary
 is cross-compiled with `CGO_ENABLED=0` for `linux`, `darwin` and
@@ -11313,14 +11442,94 @@ The ingestion API and the query API each expose `GET /health`
 returning `{"status":"ok","service":"<name>"}`; under the binary they
 are `/ingest/health` and `/api/health` on the public port. The binary
 binds its port first and serves last, so both answer only once the
-database is migrated, the bus is up and the three services run. The
-Helm chart probes them over HTTP (startup and readiness on
-`/ingest/health`, liveness on `/api/health`), and `make dev` returns
-once both answer. The compose file has no health check, since nothing
-inside the distroless image can run one. The workers have no `/health`:
-a worker whose consumer cannot create the stream or subscribe exits,
-which ends the binary with that error and lets its supervisor
+database is migrated, the bus is up and the three services run, and
+`make dev` returns once both answer. The image runs them as its health
+check (`flightdeck health`, below), and the compose service inherits it.
+The Helm chart probes them over HTTP (startup and readiness on
+`/ingest/health`, liveness on `/api/health`). The workers have no
+`/health`: a worker whose consumer cannot create the stream or subscribe
+exits, which ends the binary with that error and lets its supervisor
 (`restart: unless-stopped`, the kubelet) start it again.
+
+**`flightdeck health`.** The binary serves the two routes as
+`/api/health` and `/ingest/health` on its one listener, and
+`flightdeck health` asks a running instance for both: it exits 0 when
+each answers 200 with its own service's body and 1 otherwise, and
+prints one line (`healthy: http://127.0.0.1:4000 answers /api/health
+and /ingest/health`, or `unhealthy: <url>: <reason>`). It exists for
+container health checks: the image is distroless, with no shell and no
+curl, so the binary is its own probe. The workers have no route to
+ask; they run in the same process, and the binary exits when one of its
+services fails, so a listener that answers means they run.
+
+The command takes the server's flags and reads the server's
+environment (`--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
+`FLIGHTDECK_DOMAIN`; the other flags are accepted and ignored), so with
+no arguments it finds an instance that was configured through the
+environment, as the image is, and the default one on `127.0.0.1:4000`.
+A listen address on every interface (`:4000`, `0.0.0.0:4000`,
+`[::]:4000`) is probed on `127.0.0.1`, and on `::1` when nothing can be
+connected to there (a listener on IPv6 only), within the same three
+seconds: a container may have no IPv6 on its loopback, and `::1` first
+would fail on an instance that serves. An answer that is wrong at the
+first address is not retried at the second. One that names an
+interface or a host is probed there, since nothing listens on loopback
+then. With `--domain` it probes `https://127.0.0.1:443` with the domain
+as the TLS server name and the `Host`, which the certificate policy
+requires, and does not verify the certificate. That is safe: the probe
+goes to the machine's own loopback, which nothing on the network can
+answer in its place, sends nothing secret, and trusts nothing it reads
+beyond the status, while a handshake that fails for want of a
+certificate still fails the check. On an instance that has no
+certificate cached yet, the first probe's handshake is what makes
+`autocert` request one, which can take longer than the probe's three
+seconds; the image's 60-second start period covers that issuance. It
+sends no token (the health routes need none), opens neither the data
+dir nor the database, and gives itself three seconds for both probes.
+A mistyped flag prints one line, the error, and exits 1, because
+Docker reserves exit status 2 of a health check command and keeps the
+output in the container's health log.
+
+The image declares the check (`HEALTHCHECK --interval=10s --timeout=5s
+--start-period=60s --retries=3 CMD ["/usr/local/bin/flightdeck",
+"health"]`): the timeout is above the command's own three seconds, so
+the command reports why it failed, and the start period covers the
+minute the binary waits for a database that is still starting. A
+Compose service that overrides it, and one that waits for it with
+`depends_on: condition: service_healthy`, uses the same command:
+
+```yaml
+healthcheck:
+  test: ["CMD", "flightdeck", "health"]
+  interval: 10s
+  timeout: 5s
+  start_period: 60s
+  retries: 3
+```
+
+Kubernetes ignores an image's `HEALTHCHECK`, so a pod declares its
+probes. The exec form checks both services in one probe and inherits
+the container's environment:
+
+```yaml
+startupProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 2
+  timeoutSeconds: 5
+  failureThreshold: 45   # 90 s: the wait for a database, then the migrations
+readinessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+livenessProbe:
+  exec: {command: ["flightdeck", "health"]}
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+An `httpGet` probe on `/api/health` and the container port starts no
+process and is equivalent for the query API alone.
 
 ### Stream sequences
 

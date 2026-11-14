@@ -1317,7 +1317,18 @@ jobs:
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
-          shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh
+          shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \
+            scripts/check-script-modes.sh scripts/test-check-script-modes.sh
+
+      # A script the Makefile or a workflow runs by its path must be
+      # committed executable (git mode 100755): one that is not runs on
+      # its author's checkout and fails with "Permission denied" on a
+      # fresh clone. The self-test pins the rule on fixture repositories,
+      # then the repository is checked.
+      - name: Scripts run by path are executable
+        run: |
+          scripts/test-check-script-modes.sh
+          scripts/check-script-modes.sh
 
       # The scripts the dev stack, the integration job and the chart and
       # compose checks run.
@@ -1520,6 +1531,21 @@ jobs:
         run: |
           docker run -d --name flightdeck --read-only -p 127.0.0.1:4002:4000 -v flightdeck-ci:/data flightdeck:ci
           scripts/install-gate.sh check http://127.0.0.1:4002 docker logs flightdeck
+          # The image's HEALTHCHECK is `flightdeck health`, the binary
+          # probing itself (the image has no shell or curl). Docker runs
+          # the first check ten seconds after the start; a minute is the
+          # image's own start period. The same command by hand must
+          # agree.
+          deadline=$((SECONDS + 60))
+          until [ "$(docker inspect flightdeck --format '{{.State.Health.Status}}')" = "healthy" ]; do
+            if ((SECONDS >= deadline)); then
+              echo "the container is not healthy after 60s:"
+              docker inspect flightdeck --format '{{json .State.Health}}'
+              exit 1
+            fi
+            sleep 1
+          done
+          docker exec flightdeck flightdeck health
           docker stop -t 30 flightdeck
           test "$(docker inspect flightdeck --format '{{.State.ExitCode}}')" = "0"
           docker rm flightdeck

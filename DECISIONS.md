@@ -961,3 +961,20 @@ could be known before the first start.
 **Rejected alternative:** revoking the earlier token (401s the old pods);
 a rotate setting (restart and revoke do it); refusing a world-readable
 file (secret mounts are 0644 / 0444); a random salt (two rows).
+
+## D271 -- The binary checks the Host of every request on loopback, with --domain and with a list
+
+**Date:** 2026-11-12
+**Decision:** every request passes a `Host` check before any route,
+except on a listen beyond loopback with no `--domain` and no
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`; `*` turns it off). IP
+addresses, `localhost`, the domain and the list are answered, ports not
+compared; anything else gets 421 naming the host and the setting. The
+fleet stream refuses (403) a foreign browser `Origin` in every mode. The
+image sets the list to `localhost`.
+**Why:** `/runtime-config.json` hands out the dashboard token with no
+credential, so a DNS-rebinding page could read it from a loopback-only
+instance; such a page always uses its own name, never an address.
+**Rejected alternative:** enforcing on every listen (locks out a LAN or
+proxy name the binary cannot know); comparing ports (forwards change
+them); guarding only that file (the page then calls the API).

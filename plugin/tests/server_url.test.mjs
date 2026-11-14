@@ -129,6 +129,13 @@ describe("resolveConfig server", () => {
     assert.equal(resolveConfig({ ...quiet, FLIGHTDECK_SERVER: "  " }).server, "http://localhost:4000");
   });
 
+  it("reads credentials from the authority only, so an @ later in the URL never moves the host", () => {
+    const resolved = (value) => resolveConfig({ ...quiet, FLIGHTDECK_SERVER: value }).server;
+    assert.equal(resolved("https://good.example#@evil.example"), "https://good.example");
+    assert.equal(resolved("https://flightdeck.example.com?ref=me@corp.example"), "https://flightdeck.example.com");
+    assert.equal(resolved("https://good.example\\@evil.example/ingest"), "https://good.example/@evil.example");
+  });
+
   it("drops credentials in the URL and still resolves the ingestion form", () => {
     assert.equal(
       resolveConfig({ ...quiet, FLIGHTDECK_SERVER: "https://user:secret@example.com/ingest" }).server,

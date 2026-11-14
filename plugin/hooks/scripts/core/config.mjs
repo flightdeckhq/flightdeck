@@ -73,15 +73,37 @@ export function truncateUtf8(value, maxBytes) {
   return bytes.subarray(0, end).toString("utf8");
 }
 
+// Userinfo is part of a URL's authority only: the span after
+// ``scheme://`` and before the first ``/``, ``?``, ``#`` or ``\`` (which
+// the URL standard reads as ``/`` in an http(s) URL), up to the
+// authority's last ``@``. An ``@`` after any of them is in the path, the
+// query or the fragment, and the host is what comes before it.
+const AUTHORITY_USERINFO_RE = /^(\s*[a-z][a-z0-9+.-]*:\/\/)[^/?#\\]*@/i;
+// Without a scheme, the same span from the start of the value.
+const LEADING_USERINFO_RE = /^(\s*)[^/?#\\]*@/;
+const SCHEME_AUTHORITY_RE = /^\s*[a-z][a-z0-9+.-]*:\/\//i;
+
 /**
- * The control-plane URL without its userinfo, for log lines: a server
- * configured as ``https://user:token@host``, or as ``user:token@host``
- * with no scheme, must not leak the token into stderr, the worker log
- * or the notice the user sees. Without a scheme, everything up to an
- * ``@`` that comes before the first ``/`` is userinfo.
+ * The control-plane URL without its userinfo: a server configured as
+ * ``https://user:token@host``, or as ``user:token@host`` with no scheme,
+ * must not leak the token into stderr, the worker log or the notice the
+ * user sees, and resolveConfig drops it before the URL is used. A value
+ * the URL parser reads parses first: one with no username and no
+ * password is returned unchanged, so ``https://good.example#@evil``
+ * keeps naming good.example. Otherwise only the authority's userinfo
+ * goes (AUTHORITY_USERINFO_RE), as the parser would read it.
  */
 export function redactServerUrl(server) {
-  return String(server).replace(/^([a-z][a-z0-9+.-]*:\/\/)?[^@/]*@/i, "$1");
+  const text = String(server);
+  if (!SCHEME_AUTHORITY_RE.test(text)) return text.replace(LEADING_USERINFO_RE, "$1");
+  let url = null;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    // Not a URL the parser takes (a bad port, say): the pattern alone.
+  }
+  if (url && url.username === "" && url.password === "") return text;
+  return text.replace(AUTHORITY_USERINFO_RE, "$1");
 }
 
 // An access token in a value that should hold the server's address:

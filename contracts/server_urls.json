@@ -1,5 +1,5 @@
 {
-  "about": "One FLIGHTDECK_SERVER value for the Python sensor, the Claude Code plugin and the playground. Each value is an http(s) URL as a user may set it; ingest and api are the ingestion URL and the API URL it names. A path whose last segment is ingest (trailing slashes aside) is the ingestion URL and the API is the same path with that segment replaced by api; any other path is the server's base URL and gets /ingest and /api appended. Surrounding whitespace, credentials, the query, the fragment, trailing slashes and the scheme's default port go; the scheme and the host are lower-cased. The sensor (_resolve_server_urls), the plugin (serverBaseUrl) and the playground (_helpers.server_urls) each assert every row.",
+  "about": "One FLIGHTDECK_SERVER value for the Python sensor, the Claude Code plugin and the playground. Each value is an http(s) URL as a user may set it; ingest and api are the ingestion URL and the API URL it names. A path whose last segment is ingest (trailing slashes aside) is the ingestion URL and the API is the same path with that segment replaced by api; any other path is the server's base URL and gets /ingest and /api appended. Surrounding whitespace, credentials, the query, the fragment, trailing slashes and the scheme's default port go; the scheme and the host are lower-cased. Credentials are read from the authority only (up to the first /, ?, # or backslash, the host after the last @), so an @ in the path, query or fragment never moves the host. plugin/tests/server_url.test.mjs asserts every case for the plugin (serverBaseUrl, resolveConfig); sensor/tests/unit/test_init_defaults.py asserts every case for the sensor (_resolve_server_urls) and for the playground (_helpers.server_urls, loaded by path).",
   "cases": [
     {
       "value": "http://localhost:4000",
@@ -210,6 +210,54 @@
       "ingest": "http://localhost:4000/ingest",
       "api": "http://localhost:4000/api",
       "why": "surrounding whitespace"
+    },
+    {
+      "value": "https://good.example#@evil.example",
+      "ingest": "https://good.example/ingest",
+      "api": "https://good.example/api",
+      "why": "an @ in the fragment: the host is the one before #"
+    },
+    {
+      "value": "https://flightdeck.example.com?ref=me@corp.example",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "an @ in the query: the host is the one before ?"
+    },
+    {
+      "value": "https://flightdeck.example.com/ingest?ref=me@corp.example",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "an @ in the query after the ingestion path"
+    },
+    {
+      "value": "https://flightdeck.example.com/fd@corp/ingest",
+      "ingest": "https://flightdeck.example.com/fd@corp/ingest",
+      "api": "https://flightdeck.example.com/fd@corp/api",
+      "why": "an @ in the path is part of the path"
+    },
+    {
+      "value": "https://good.example\\@evil.example/ingest",
+      "ingest": "https://good.example/@evil.example/ingest",
+      "api": "https://good.example/@evil.example/api",
+      "why": "a backslash ends the authority, as the URL standard reads http(s)"
+    },
+    {
+      "value": "https://user%40corp.example:pw@flightdeck.example.com/ingest",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "a percent-encoded @ inside the credentials"
+    },
+    {
+      "value": "https://a@b@flightdeck.example.com/ingest",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "two @ in the authority: the host follows the last"
+    },
+    {
+      "value": "HTTPS://User:PW@Flightdeck.Example.com:443/ingest",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "credentials, upper case and the default port together"
     }
   ]
 }

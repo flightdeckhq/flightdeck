@@ -45,9 +45,14 @@ export function logUnreachable(server, shortError) {
   );
 }
 
-/** Strip the userinfo of every URL inside free text (error messages quote URLs). */
+/**
+ * Strip the userinfo of every URL inside free text (error messages quote
+ * URLs): in each, the authority's span up to its last ``@`` before the
+ * first ``/``, ``?``, ``#``, ``\`` or space (see config.mjs
+ * redactServerUrl).
+ */
 export function redactUserinfo(text) {
-  return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^@\s/]*@/gi, "$1");
+  return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#\\]*@/gi, "$1");
 }
 
 // ``fetch failed`` is the generic umbrella Node uses to wrap underlying

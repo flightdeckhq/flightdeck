@@ -340,6 +340,10 @@ All notable changes to Flightdeck are documented here.
   ingestion URL, any other path (`/ingestion`, `/ingest-eu`) is the
   base. Credentials in the server URL are dropped, with a warning, by
   both, and neither the plugin's notice nor its log lines show them.
+  They are read from the URL's authority only: the plugin took an `@`
+  in the query or the fragment for the end of the credentials, so
+  `https://good.example#@evil.example` sent events, with the access
+  token, to `evil.example`.
 - **A cut tool input says it was cut.** The plugin keeps a tool's
   `command`, `query` and `pattern` to 200 characters and a sub-agent's
   `prompt` to 100, and cut them with no sign, so the session drawer

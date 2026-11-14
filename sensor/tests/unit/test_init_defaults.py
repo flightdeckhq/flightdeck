@@ -12,6 +12,7 @@ workflow) proves override precedence rather than masking it.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from flightdeck_sensor.core.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from types import ModuleType
 
 # The server values the sensor, the Claude Code plugin and the
 # playground resolve alike.
@@ -258,6 +260,64 @@ def _server_url_cases() -> list[dict[str, str]]:
 @pytest.mark.parametrize("case", _server_url_cases(), ids=lambda c: c["why"])
 def test_resolve_server_urls_matches_the_plugin(case: dict[str, str]) -> None:
     assert flightdeck_sensor._resolve_server_urls(case["value"]) == (case["ingest"], case["api"])
+
+
+def _playground_helpers() -> ModuleType | None:
+    """``playground/_helpers.py``, loaded by path, or None when this
+    checkout has no playground (an installed sensor's tests)."""
+    path = _SERVER_URL_CASES.parents[1] / "playground" / "_helpers.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("_playground_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("case", _server_url_cases(), ids=lambda c: c["why"])
+def test_the_playground_resolves_the_shared_cases_alike(case: dict[str, str]) -> None:
+    """The playground keeps its own copy of the rule (its GenAI venvs
+    import ``_helpers`` without the sensor); it must agree with the
+    sensor and the plugin on every case."""
+    helpers = _playground_helpers()
+    if helpers is None:
+        pytest.skip("no playground/_helpers.py in this checkout")
+    assert helpers.server_urls(case["value"]) == (case["ingest"], case["api"])
+
+
+@pytest.mark.parametrize(
+    ("server", "stripped"),
+    [
+        (
+            "https://user:hunter2@flightdeck.example.com/ingest",
+            "https://flightdeck.example.com/ingest",
+        ),
+        ("https://a@b@flightdeck.example.com/x", "https://flightdeck.example.com/x"),
+        ("user:tok_secret@127.0.0.1:4901", "127.0.0.1:4901"),
+        # An @ outside the authority is not userinfo.
+        ("https://good.example#@evil.example", "https://good.example#@evil.example"),
+        (
+            "https://fd.example.com?ref=me@corp.example",
+            "https://fd.example.com?ref=me@corp.example",
+        ),
+        ("https://fd.example.com/fd@corp", "https://fd.example.com/fd@corp"),
+        ("localhost:4000?x=a@b", "localhost:4000?x=a@b"),
+        # A backslash ends an http(s) authority, as the URL standard reads it.
+        ("https://good.example\\@evil.example/x", "https://good.example/@evil.example/x"),
+    ],
+)
+def test_without_userinfo_reads_the_authority_only(server: str, stripped: str) -> None:
+    assert flightdeck_sensor._without_userinfo(server) == stripped
+
+
+def test_an_at_sign_after_the_host_is_not_credentials(caplog: pytest.LogCaptureFixture) -> None:
+    with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        flightdeck_sensor.init(server="https://good.example#@evil.example", token="tok", quiet=True)
+    cfg = _config()
+    assert cfg.server == "https://good.example/ingest"
+    assert cfg.api_url == "https://good.example/api"
+    assert not any("carries credentials" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(

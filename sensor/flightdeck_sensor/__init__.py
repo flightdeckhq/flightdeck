@@ -549,7 +549,7 @@ def init(
         # them: neither sends them, and every log line and error message
         # below names the server. The access token is the one credential.
         without_userinfo = _without_userinfo(resolved_server)
-        if without_userinfo != resolved_server:
+        if without_userinfo != _as_the_plugin_reads_it(resolved_server):
             _log.warning(
                 "The server URL carries credentials; they are ignored. "
                 "Authenticate with token= or %s.",
@@ -1065,17 +1065,54 @@ _API_PATH = "/api"
 # out, as the plugin's do.
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
-# Userinfo at the start of a server value, with or without a scheme:
-# everything up to an ``@`` that comes before the first ``/`` after it.
-_USERINFO_RE = re.compile(r"^([a-z][a-z0-9+.-]*://)?[^@/]*@", re.IGNORECASE)
+# Userinfo without a scheme: what comes before the last ``@`` ahead of
+# the first ``/``, ``?``, ``#`` or ``\``, the span a URL's authority
+# would take.
+_LEADING_USERINFO_RE = re.compile(r"^[^/?#\\]*@")
+# A value with a scheme and an authority (``scheme://``).
+_SCHEME_AUTHORITY_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_HTTP_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _as_the_plugin_reads_it(server: str) -> str:
+    r"""*server* with each ``\`` of an http(s) URL read as ``/``.
+
+    The URL standard, which the Claude Code plugin's parser follows,
+    ends an http(s) URL's authority at a backslash as at a slash;
+    ``urllib.parse`` does not, and would read the host of
+    ``https://good.example\@evil.example`` as ``evil.example``.
+    """
+    return server.replace("\\", "/") if _HTTP_SCHEME_RE.match(server) else server
 
 
 def _without_userinfo(server: str) -> str:
     """*server* without the userinfo of ``https://user:token@host`` or
     ``user:token@host``. Neither the sensor's HTTP client nor the
     plugin's sends it (as basic auth or otherwise); left in, it would
-    reach log lines and error messages, token included."""
-    return _USERINFO_RE.sub(r"\1", server, count=1)
+    reach log lines and error messages, token included.
+
+    Userinfo is part of the authority only, which ``urllib.parse``
+    splits out: an ``@`` in the path, the query or the fragment
+    (``https://good.example#@evil.example``) is not userinfo, and the
+    host stays the one before it. In the authority, the host follows
+    the last ``@``.
+    """
+    value = _as_the_plugin_reads_it(server)
+    if not _SCHEME_AUTHORITY_RE.match(value):
+        return _LEADING_USERINFO_RE.sub("", value, count=1)
+    try:
+        netloc = urllib.parse.urlsplit(value).netloc
+    except ValueError:
+        netloc = ""
+    if "@" not in netloc:
+        return value
+    start = value.index("//") + 2
+    if value[start : start + len(netloc)] != netloc:
+        # urlsplit dropped characters (a tab or a newline) from the
+        # value: rebuild it from the parts instead.
+        parts = urllib.parse.urlsplit(value)
+        return urllib.parse.urlunsplit(parts._replace(netloc=netloc.rpartition("@")[2]))
+    return value[:start] + netloc.rpartition("@")[2] + value[start + len(netloc) :]
 
 
 def _resolve_server_urls(server: str) -> tuple[str, str]:
@@ -1085,7 +1122,8 @@ def _resolve_server_urls(server: str) -> tuple[str, str]:
     ``https://example.com/fd``) or its ingestion URL (the same with
     ``/ingest``), the form the ``flightdeck`` binary prints. The rule is
     the Claude Code plugin's and the playground's
-    (``contracts/server_urls.json`` holds the cases all three assert): a
+    (``contracts/server_urls.json`` holds the cases all three must agree
+    on, and the sensor's unit suite and the plugin's assert them): a
     path whose last segment is ``ingest``, trailing slashes aside, is
     the ingestion URL, and the API URL is that path with the segment
     replaced by ``api``; any other path is a base URL and gets

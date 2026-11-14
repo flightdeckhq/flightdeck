@@ -23,7 +23,29 @@ from typing import Any
 # ---------------------------------------------------------------------
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
-_USERINFO_RE = re.compile(r"^([a-z][a-z0-9+.-]*://)?[^@/]*@", re.IGNORECASE)
+_LEADING_USERINFO_RE = re.compile(r"^[^/?#\\]*@")
+_SCHEME_AUTHORITY_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_HTTP_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _without_userinfo(value: str) -> str:
+    """*value* without userinfo, which is part of the URL's authority only
+    (``flightdeck_sensor._without_userinfo``): an ``@`` in the path, the
+    query or the fragment leaves the host before it alone, a backslash
+    ends an http(s) authority as the URL standard reads it, and the host
+    follows the authority's last ``@``."""
+    if _HTTP_SCHEME_RE.match(value):
+        value = value.replace("\\", "/")
+    if not _SCHEME_AUTHORITY_RE.match(value):
+        return _LEADING_USERINFO_RE.sub("", value, count=1)
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    if "@" not in parts.netloc:
+        return value
+    host = parts.netloc.rpartition("@")[2]
+    return urllib.parse.urlunsplit(parts._replace(netloc=host))
 
 
 def server_urls(value: str) -> tuple[str, str]:
@@ -33,7 +55,8 @@ def server_urls(value: str) -> tuple[str, str]:
     Claude Code plugin's, copied here because the OpenTelemetry GenAI
     scripts import this module from venvs without the sensor;
     ``contracts/server_urls.json`` holds the cases all three resolve
-    alike. A path whose last segment is ``ingest`` is the ingestion URL,
+    alike, and ``sensor/tests/unit/test_init_defaults.py`` runs them
+    through this function too. A path whose last segment is ``ingest`` is the ingestion URL,
     and the API URL is that path with the segment replaced by ``api``;
     any other path is the server's base URL and gets ``/ingest`` and
     ``/api`` appended. Only the path is looked at, never the host.
@@ -48,10 +71,12 @@ def server_urls(value: str) -> tuple[str, str]:
     ('https://example.com/ingest-gw/ingest', 'https://example.com/ingest-gw/api')
     >>> server_urls("https://example.com/ingestion")
     ('https://example.com/ingestion/ingest', 'https://example.com/ingestion/api')
+    >>> server_urls("https://good.example#@evil.example")
+    ('https://good.example/ingest', 'https://good.example/api')
     >>> server_urls("not a url")
     ('not a url', 'not a url')
     """
-    stripped = _USERINFO_RE.sub(r"\1", value.strip(), count=1)
+    stripped = _without_userinfo(value.strip())
     try:
         parts = urllib.parse.urlsplit(stripped)
         port = parts.port

@@ -2220,7 +2220,14 @@ no scheme) are stripped before use, with a warning: neither fetch nor
 the sensor's urllib sends them, as basic auth or otherwise, and left in
 they would reach every log line and notice that names the server. The
 plugin and the sensor both drop them; the access token is the one
-credential. A log line or notice never shows a server value that looks
+credential. Credentials are read from the URL's authority only, as the
+URL standard reads it: the span after `scheme://` up to the first `/`,
+`?`, `#` or `\` (a backslash ends an http(s) authority as a slash
+does), with the host after its last `@`. An `@` in the path, the query
+or the fragment is not userinfo, so `https://good.example#@evil.example`
+names good.example. The plugin checks a value with its URL parser
+first, the sensor and the playground with `urllib.parse` after reading
+`\` as `/`. A log line or notice never shows a server value that looks
 like an access token (`ftd_` or `tok_`, a token pasted into the wrong
 variable). The default token prints a warning on every hook unless
 `FLIGHTDECK_QUIET=1`.
@@ -2241,8 +2248,12 @@ the plugin appends its own paths; the scheme and the host are
 lower-cased. The plugin posts events to `<base>/ingest/v1/events` and
 reads MCP policies from `<base>/api` (`FLIGHTDECK_API_URL` overrides the
 latter). The sensor and the playground resolve every value to the same
-two endpoints by the same rule (see Sensor, Public API);
-`contracts/server_urls.json` holds the cases all three assert.
+two endpoints by the same rule (see Sensor, Public API).
+`contracts/server_urls.json` holds the cases all three must agree on;
+`plugin/tests/server_url.test.mjs` runs them through the plugin, and
+`sensor/tests/unit/test_init_defaults.py` through the sensor and
+through the playground's copy (`playground/_helpers.py`, loaded by
+path), so both CI suites check all three.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
 environment variables (see Content Capture). A repository's project
 settings (`.claude/settings.json`, `.claude/settings.local.json`) can

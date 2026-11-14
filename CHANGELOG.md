@@ -365,6 +365,14 @@ All notable changes to Flightdeck are documented here.
   a session's `session_start`, the second attempt and a later hook's
   backstop alike, is the same event, with the same id and time, so a
   server that stored one and answered it late keeps one.
+- **A resent `session_start` no longer marks its session re-attached.**
+  Ingestion attached every arrival of a `session_start`, so a copy sent
+  again after a slow answer (the Claude Code plugin's retry, an
+  OpenTelemetry exporter's retried batch) recorded an attachment, which
+  the dashboard draws as a re-attached run, and moved the session's
+  start sequence. The event id is now the key: a start is attached and
+  stamped once per id, and a copy gets the first copy's answer (D273;
+  migration 000037 adds `session_start_receipts`).
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

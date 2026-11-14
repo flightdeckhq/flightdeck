@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestAttachOnBothBackends(t *testing.T) {
 		ctx := context.Background()
 		s := NewStore(db)
 
-		attached, prior, err := s.Attach(ctx, randomUUID(t))
+		attached, prior, err := s.Attach(ctx, randomUUID(t), "")
 		if err != nil || attached || prior != "" {
 			t.Fatalf("Attach of an unknown session = %v, %q, %v; want false, \"\", nil", attached, prior, err)
 		}
@@ -81,7 +82,7 @@ func TestAttachOnBothBackends(t *testing.T) {
 		seq := int64(7)
 		closed := randomUUID(t)
 		insertSession(t, db, closed, "closed", "", "", &seq)
-		attached, prior, err = s.Attach(ctx, strings.ToUpper(closed))
+		attached, prior, err = s.Attach(ctx, strings.ToUpper(closed), "")
 		if err != nil || !attached || prior != "closed" {
 			t.Fatalf("Attach of a closed session = %v, %q, %v; want true, closed, nil", attached, prior, err)
 		}
@@ -95,7 +96,7 @@ func TestAttachOnBothBackends(t *testing.T) {
 
 		lost := randomUUID(t)
 		insertSession(t, db, lost, "lost", "", "", nil)
-		if attached, prior, err := s.Attach(ctx, lost); err != nil || !attached || prior != "lost" {
+		if attached, prior, err := s.Attach(ctx, lost, ""); err != nil || !attached || prior != "lost" {
 			t.Fatalf("Attach of a lost session = %v, %q, %v; want true, lost, nil", attached, prior, err)
 		}
 		if state, _, _, _ := rowState(t, db, lost); state != "active" {
@@ -105,12 +106,195 @@ func TestAttachOnBothBackends(t *testing.T) {
 		active := randomUUID(t)
 		insertSession(t, db, active, "active", "", "", nil)
 		for range 2 {
-			if attached, prior, err := s.Attach(ctx, active); err != nil || !attached || prior != "active" {
+			if attached, prior, err := s.Attach(ctx, active, ""); err != nil || !attached || prior != "active" {
 				t.Fatalf("Attach of an active session = %v, %q, %v; want true, active, nil", attached, prior, err)
 			}
 		}
 		if attachments(t, db, active) != 2 {
 			t.Fatalf("%d attachments recorded, want one per call", attachments(t, db, active))
+		}
+	})
+}
+
+// receipts counts the session_start receipts of id.
+func receipts(t *testing.T, db *storage.DB, eventID string) int {
+	t.Helper()
+	var n int
+	if err := db.Reader().QueryRowContext(context.Background(),
+		`SELECT count(*) FROM session_start_receipts WHERE event_id = $1`, eventID).Scan(&n); err != nil {
+		t.Fatalf("count receipts: %v", err)
+	}
+	return n
+}
+
+// A session_start that carries an id is attached once per id. A copy of
+// a session's first start, resent after the worker created the row, is
+// answered as the first copy was (not attached) and records no
+// attachment; a copy of a re-attaching start does not revive the row
+// again and records no second attachment; a new id is a new start. Many
+// copies at once still attach once. Receipts past their retention are
+// deleted.
+func TestAttachIsIdempotentPerEventIDOnBothBackends(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		s := NewStore(db)
+		forget := func(ids ...string) {
+			t.Cleanup(func() {
+				for _, id := range ids {
+					_, _ = db.ExecContext(context.Background(), `DELETE FROM session_start_receipts WHERE event_id = $1`, id)
+				}
+			})
+		}
+
+		// The first start of a new session, and a copy of it after the
+		// worker stored the row.
+		fresh, first := randomUUID(t), randomUUID(t)
+		forget(first)
+		if attached, _, err := s.Attach(ctx, fresh, first); err != nil || attached {
+			t.Fatalf("first copy: attached=%v err=%v, want false", attached, err)
+		}
+		insertSession(t, db, fresh, "active", "", "", nil)
+		attached, prior, err := s.Attach(ctx, fresh, strings.ToUpper(first))
+		if err != nil || attached || prior != "" {
+			t.Fatalf("resent copy: %v, %q, %v; want the first copy's answer (false) and no prior state", attached, prior, err)
+		}
+		if n := attachments(t, db, fresh); n != 0 {
+			t.Fatalf("a resent first start recorded %d attachments, want 0", n)
+		}
+		if n := receipts(t, db, first); n != 1 {
+			t.Fatalf("%d receipts for the start, want 1", n)
+		}
+
+		// A genuine re-attach (a new id) attaches; its copy does not
+		// revive the row a second time or add an attachment.
+		again := randomUUID(t)
+		forget(again)
+		if attached, prior, err := s.Attach(ctx, fresh, again); err != nil || !attached || prior != "active" {
+			t.Fatalf("re-attach with a new id: %v, %q, %v; want true, active", attached, prior, err)
+		}
+		closedSeq := int64(9)
+		closed, reopen := randomUUID(t), randomUUID(t)
+		forget(reopen)
+		insertSession(t, db, closed, "closed", "", "", &closedSeq)
+		if attached, prior, err := s.Attach(ctx, closed, reopen); err != nil || !attached || prior != "closed" {
+			t.Fatalf("re-attach of a closed row: %v, %q, %v; want true, closed", attached, prior, err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE sessions SET state = 'closed', closed_seq = 11 WHERE session_id = $1`, closed); err != nil {
+			t.Fatal(err)
+		}
+		if attached, prior, err := s.Attach(ctx, closed, reopen); err != nil || !attached || prior != "" {
+			t.Fatalf("copy of the re-attach: %v, %q, %v; want the first answer (true) and no prior state", attached, prior, err)
+		}
+		if state, _, _, _ := rowState(t, db, closed); state != "closed" {
+			t.Fatalf("a resent re-attach revived the row again: %s", state)
+		}
+		if n := attachments(t, db, closed); n != 1 {
+			t.Fatalf("%d attachments after a resent re-attach, want 1", n)
+		}
+
+		// Copies arriving together attach once.
+		busy, burst := randomUUID(t), randomUUID(t)
+		forget(burst)
+		insertSession(t, db, busy, "active", "", "", nil)
+		var wg sync.WaitGroup
+		answers := make(chan bool, 8)
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				attached, _, err := s.Attach(ctx, busy, burst)
+				if err != nil {
+					t.Errorf("concurrent copy: %v", err)
+				}
+				answers <- attached
+			}()
+		}
+		wg.Wait()
+		close(answers)
+		for a := range answers {
+			if !a {
+				t.Fatal("a concurrent copy was not given the first copy's answer (true)")
+			}
+		}
+		if n := attachments(t, db, busy); n != 1 {
+			t.Fatalf("%d attachments from concurrent copies, want 1", n)
+		}
+
+		// A receipt past its retention goes with the next attach; a
+		// recent one stays.
+		old, recent := randomUUID(t), randomUUID(t)
+		forget(old, recent)
+		for _, r := range []struct {
+			id  string
+			age time.Duration
+		}{{old, sessionStartReceiptRetention + time.Hour}, {recent, time.Hour}} {
+			if _, err := db.ExecContext(ctx,
+				`INSERT INTO session_start_receipts (event_id, session_id, received_at) VALUES ($1, $2, `+
+					db.Dialect.AddInterval(db.Dialect.Now(), "$3")+`)`,
+				r.id, randomUUID(t), -int64(r.age/time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		next := randomUUID(t)
+		forget(next)
+		if _, _, err := s.Attach(ctx, randomUUID(t), next); err != nil {
+			t.Fatal(err)
+		}
+		if receipts(t, db, old) != 0 || receipts(t, db, recent) != 1 {
+			t.Fatalf("after an attach: old receipt kept=%d, recent kept=%d; want 0 and 1", receipts(t, db, old), receipts(t, db, recent))
+		}
+
+		// An id that is not a UUID is no key: every arrival attaches.
+		if attached, _, err := s.Attach(ctx, busy, "not-a-uuid"); err != nil || !attached {
+			t.Fatalf("a start with a non-UUID id: %v, %v; want attached", attached, err)
+		}
+		if attached, _, err := s.Attach(ctx, busy, "not-a-uuid"); err != nil || !attached {
+			t.Fatalf("its second arrival: %v, %v; want attached", attached, err)
+		}
+		if n := attachments(t, db, busy); n != 3 {
+			t.Fatalf("%d attachments, want 3 (one per arrival of an id-less start)", n)
+		}
+	})
+}
+
+// RecordStart stamps once per start event id: a copy's later sequence
+// does not replace the first copy's, and a start with no receipt is
+// stamped as before.
+func TestRecordStartIsIdempotentPerEventIDOnBothBackends(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		s := NewStore(db)
+		row, start := randomUUID(t), randomUUID(t)
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM session_start_receipts WHERE event_id = $1`, start)
+		})
+		insertSession(t, db, row, "active", "", "", nil)
+		if attached, _, err := s.Attach(ctx, row, start); err != nil || !attached {
+			t.Fatalf("attach: %v, %v", attached, err)
+		}
+		if err := s.RecordStart(ctx, row, start, 10); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordStart(ctx, row, strings.ToUpper(start), 20); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, startSeq, _ := rowState(t, db, row); startSeq.Int64 != 10 {
+			t.Fatalf("start_seq = %v after a copy's stamp, want the first copy's 10", startSeq)
+		}
+		var receiptSeq sql.NullInt64
+		if err := db.Reader().QueryRowContext(ctx,
+			`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`, start).Scan(&receiptSeq); err != nil {
+			t.Fatal(err)
+		}
+		if receiptSeq.Int64 != 10 {
+			t.Fatalf("receipt start_seq = %v, want 10", receiptSeq)
+		}
+		// No receipt (the attach fell back): stamped as before.
+		if err := s.RecordStart(ctx, row, randomUUID(t), 30); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, startSeq, _ := rowState(t, db, row); startSeq.Int64 != 30 {
+			t.Fatalf("start_seq = %v after a start without a receipt, want 30", startSeq)
 		}
 	})
 }
@@ -126,14 +310,14 @@ func TestRecordStartOnBothBackends(t *testing.T) {
 
 		open := randomUUID(t)
 		insertSession(t, db, open, "active", "", "", nil)
-		if err := s.RecordStart(ctx, open, 10); err != nil {
+		if err := s.RecordStart(ctx, open, "", 10); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, startSeq, _ := rowState(t, db, open); !startSeq.Valid || startSeq.Int64 != 10 {
 			t.Fatalf("start_seq = %v, want 10", startSeq)
 		}
 		// A smaller sequence never lowers the stamp.
-		if err := s.RecordStart(ctx, open, 4); err != nil {
+		if err := s.RecordStart(ctx, open, "", 4); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, startSeq, _ := rowState(t, db, open); startSeq.Int64 != 10 {
@@ -144,7 +328,7 @@ func TestRecordStartOnBothBackends(t *testing.T) {
 		closedEarly := randomUUID(t)
 		insertSession(t, db, closedEarly, "closed", "", "", &earlier)
 		logs := captureLogs(t)
-		if err := s.RecordStart(ctx, strings.ToUpper(closedEarly), 12); err != nil {
+		if err := s.RecordStart(ctx, strings.ToUpper(closedEarly), "", 12); err != nil {
 			t.Fatal(err)
 		}
 		state, ended, startSeq, closedSeq := rowState(t, db, closedEarly)
@@ -159,7 +343,7 @@ func TestRecordStartOnBothBackends(t *testing.T) {
 		later := int64(20)
 		closedLate := randomUUID(t)
 		insertSession(t, db, closedLate, "closed", "", "", &later)
-		if err := s.RecordStart(ctx, closedLate, 12); err != nil {
+		if err := s.RecordStart(ctx, closedLate, "", 12); err != nil {
 			t.Fatal(err)
 		}
 		state, ended, startSeq, closedSeq = rowState(t, db, closedLate)

@@ -3,6 +3,9 @@ import {
   DISABLE_KEEPALIVE_WS_STORAGE_KEY,
   THEME_STORAGE_KEY,
 } from "./src/lib/constants";
+// The origin of the stack under test: http://localhost:4000 unless
+// FLIGHTDECK_TEST_BASE_URL names another (tests/e2e/_stack.ts).
+import { BASE_URL } from "./tests/e2e/_stack";
 
 // Hardcoded access token. Every request
 // (page navigations, XHRs, and fetches fired by the app) picks up
@@ -90,7 +93,7 @@ export default defineConfig({
   // test:e2e`` invocations on local dev boxes.
   globalTeardown: "./tests/e2e/globalTeardown.ts",
   use: {
-    baseURL: "http://localhost:4000",
+    baseURL: BASE_URL,
     // Auth-gated /v1/* endpoints need the bearer token on every
     // request the browser issues. Page navigations and XHRs both
     // pick this up; WebSocket upgrades use the ?token= query
@@ -121,7 +124,7 @@ export default defineConfig({
           cookies: [],
           origins: [
             {
-              origin: "http://localhost:4000",
+              origin: BASE_URL,
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_DARK },
                 { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
@@ -141,7 +144,7 @@ export default defineConfig({
           cookies: [],
           origins: [
             {
-              origin: "http://localhost:4000",
+              origin: BASE_URL,
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
                 { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
@@ -179,7 +182,7 @@ export default defineConfig({
           cookies: [],
           origins: [
             {
-              origin: "http://localhost:4000",
+              origin: BASE_URL,
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_DARK },
                 { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },
@@ -200,7 +203,7 @@ export default defineConfig({
           cookies: [],
           origins: [
             {
-              origin: "http://localhost:4000",
+              origin: BASE_URL,
               localStorage: [
                 { name: THEME_STORAGE_KEY, value: THEME_LIGHT },
                 { name: DISABLE_KEEPALIVE_WS_STORAGE_KEY, value: "1" },

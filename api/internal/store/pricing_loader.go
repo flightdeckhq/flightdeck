@@ -12,8 +12,8 @@
 // pricing.yaml path resolution order:
 //
 //  1. “FLIGHTDECK_PRICING_PATH“ env var, if set and non-empty
-//  2. “/etc/flightdeck/pricing.yaml“  (production container default;
-//     the api Dockerfile COPYs pricing.yaml to this path)
+//  2. “/etc/flightdeck/pricing.yaml“  (container default; the
+//     image's Dockerfile COPYs pricing.yaml to this path)
 //  3. “./pricing.yaml“                (dev default, relative to the
 //     process working directory)
 //

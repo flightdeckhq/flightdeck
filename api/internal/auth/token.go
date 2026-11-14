@@ -43,9 +43,9 @@ const (
 	// FLIGHTDECK_DEV=1). In every other environment, presenting
 	// "tok_dev" yields a 401 with devTokenReject. There is no path
 	// where this constant authenticates outside dev mode -- see
-	// Validate() below for the env-gate. CI and local docker-compose
-	// intentionally inherit the dev mode so existing tests pass
-	// without secret material.
+	// Validate() below for the env-gate. CI and the local dev stack
+	// run in dev mode on purpose, so the tests pass without secret
+	// material.
 	devTokenRaw      = "tok_dev"
 	devTokenReject   = "tok_dev is only valid in development mode. Create a production token in the Settings page."
 	productionPrefix = "ftd_"

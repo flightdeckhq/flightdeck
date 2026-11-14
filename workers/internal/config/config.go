@@ -55,7 +55,7 @@ type Config struct {
 	// enforces are minutes to hours long, so a finer tick cannot make
 	// a transition land meaningfully sooner in production and only
 	// adds one more sweep of the sessions table per tick. The dev
-	// stack sets it low (docker/docker-compose.dev.yml) so the
+	// stack sets it low (scripts/dev-stack.sh) so the
 	// integration tests that wait for a tick finish in seconds
 	// instead of idling for most of a minute each.
 	//

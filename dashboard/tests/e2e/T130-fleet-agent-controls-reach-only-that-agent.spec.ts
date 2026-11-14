@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { SWIMLANE_LOOKBACK_SEC, waitForFleetReady } from "./_fixtures";
+import { API_URL, INGEST_URL } from "./_stack";
 
 // T130 — the Fleet sidebar's agent-row controls reach every live run of
 // that agent that can act, and nothing else. Agents A and B share one
@@ -19,8 +20,8 @@ import { SWIMLANE_LOOKBACK_SEC, waitForFleetReady } from "./_fixtures";
 // periodic events would take a pending directive before the check.
 
 const AUTH = { Authorization: "Bearer tok_dev" };
-const INGEST = "http://localhost:4000/ingest/v1";
-const API = "http://localhost:4000/api/v1";
+const INGEST = `${INGEST_URL}/v1`;
+const API = `${API_URL}/v1`;
 const HOST = "e2e-fleet-controls-host";
 
 /** Age of the run the page never loads, in hours: past the swimlane's

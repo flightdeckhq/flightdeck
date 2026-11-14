@@ -33,53 +33,109 @@ from typing import Any, Callable, Literal
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
 
-# The stack under test. The defaults are the compose dev stack on
-# :4000. The flightdeck binary is tested by pointing
-# FLIGHTDECK_TEST_BASE_URL at it, with FLIGHTDECK_TEST_WORKER_LOG naming
-# the file its log goes to (there is no worker container to read).
-# There is no worker container to pause either, so the worker
-# container's name is blank for any stack but the dev stack (see
-# default_worker_container) and the tests that pause one skip. The
-# binary's database is named by one of two variables:
-#   FLIGHTDECK_TEST_DB         for a binary on Postgres: its database on
-#                              the same Postgres container, which the SQL
-#                              helpers shell into with psql;
+# The stack under test. The default is the dev stack `make dev` starts:
+# the flightdeck binary on :4000, on Postgres or on SQLite. Which of
+# the two, and where its log is, comes from the state file the dev
+# stack writes (scripts/dev-stack.sh, DEV_STACK_STATE_FILE), so the SQL
+# helpers always reach the database the running stack uses.
+#
+# Any other stack (a binary on a port of its own, the split test stack)
+# is named with FLIGHTDECK_TEST_BASE_URL, and describes itself through
+# the environment; the same variables override the state file on the
+# dev stack:
+#   FLIGHTDECK_TEST_DB         for a stack on Postgres: its database,
+#                              in the container
+#                              FLIGHTDECK_TEST_POSTGRES_CONTAINER names
+#                              (default docker-postgres-1), which the
+#                              SQL helpers shell into with psql;
 #   FLIGHTDECK_TEST_SQLITE_DB  for a binary on SQLite: the path of its
 #                              flightdeck.db, which the SQL helpers then
 #                              open with the stdlib sqlite3 module instead
 #                              of running psql. Tests marked postgres_only
 #                              skip, and the Postgres container name is
-#                              blank (see POSTGRES_CONTAINER).
-# A stack that is not the dev stack must name its database with one of
-# the two: stack_configuration_error refuses to run otherwise, because
-# the SQL helpers would fall back to the dev stack's own database.
-BASE_URL = os.environ.get("FLIGHTDECK_TEST_BASE_URL", "http://localhost:4000").rstrip("/")
+#                              blank (see POSTGRES_CONTAINER);
+#   FLIGHTDECK_TEST_WORKER_LOG the file the binary's log goes to, where
+#                              the tests read the worker's lines;
+#   FLIGHTDECK_TEST_WORKER_CONTAINER
+#                              the worker container of the split test
+#                              stack, which the pause tests pause and
+#                              whose log the tests read. The binary has
+#                              none, so it is blank unless named and the
+#                              tests that pause one skip.
+# A stack must name its database with one of the first two:
+# stack_configuration_error refuses to run otherwise, because the SQL
+# helpers have no safe default to write to.
+BASE_URL = os.environ.get("FLIGHTDECK_TEST_BASE_URL", "http://localhost:4000").rstrip(
+    "/"
+)
 INGESTION_URL = f"{BASE_URL}/ingest"
 API_URL = f"{BASE_URL}/api"
-SQLITE_DB = os.environ.get("FLIGHTDECK_TEST_SQLITE_DB", "")
-# The addresses the compose dev stack answers on. Only there do the
-# defaults below (its Postgres database, its worker container) name
-# what the suite is actually talking to.
+# The addresses the dev stack answers on.
 DEV_STACK_BASE_URLS = frozenset(
     {"http://localhost:4000", "http://127.0.0.1:4000", "http://[::1]:4000"}
 )
-DEV_STACK_WORKER_CONTAINER = "docker-workers-1"
-# The database the dev stack itself runs on, in the Postgres container
-# the SQL helpers shell into.
+# The database the dev stack runs on in its Postgres mode, and the
+# container that holds it.
 DEV_STACK_DATABASE = "flightdeck"
+DEV_STACK_POSTGRES_CONTAINER = "docker-postgres-1"
+# tests/shared/fixtures.py -> tests/ -> repo root. The dev stack writes
+# this file when it starts and removes it when it stops.
+DEV_STACK_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".dev",
+    "stack.env",
+)
+_SETTING_PREFIX = "FLIGHTDECK_TEST_"
+
+
+def read_stack_state(path: str) -> dict[str, str]:
+    """The ``FLIGHTDECK_TEST_*`` settings in a dev stack state file
+    (``KEY=VALUE`` lines), or an empty mapping when there is no file."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return {}
+    settings: dict[str, str] = {}
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.startswith(_SETTING_PREFIX):
+            settings[key] = value
+    return settings
+
+
+def stack_settings(
+    base_url: str, environ: Mapping[str, str], state: Mapping[str, str]
+) -> dict[str, str]:
+    """The ``FLIGHTDECK_TEST_*`` settings of the stack at ``base_url``:
+    the environment's, and on the dev stack the state file's for every
+    setting the environment leaves out. The state file describes the
+    dev stack only, so a stack at any other address never reads it."""
+    settings = {
+        key: value for key, value in environ.items() if key.startswith(_SETTING_PREFIX)
+    }
+    if base_url.rstrip("/") in DEV_STACK_BASE_URLS:
+        for key, value in state.items():
+            settings.setdefault(key, value)
+    return settings
 
 
 def stack_configuration_error(
-    base_url: str, test_db: str, sqlite_db: str
+    base_url: str,
+    test_db: str,
+    sqlite_db: str,
+    postgres_container: str = DEV_STACK_POSTGRES_CONTAINER,
 ) -> str | None:
     """Why the fixtures must not run against ``base_url`` with these
     settings, or None when they may.
 
-    The SQL helpers and the e2e seeder write to a database directly. A
-    stack other than the dev stack (the flightdeck binary on a port of
-    its own) has a database of its own; unless ``FLIGHTDECK_TEST_DB`` or
-    ``FLIGHTDECK_TEST_SQLITE_DB`` names it, those writes would land in
-    the dev stack's ``flightdeck`` database, whose rows other work uses.
+    The SQL helpers and the e2e seeder write to a database directly, so
+    the stack under test must say which one it uses. On the dev stack
+    the state file says it; a stack with neither setting has no dev
+    stack state behind it (it was not started by ``make dev``), and the
+    helpers would be guessing. A stack at another address that names
+    the dev stack's own database in the dev stack's own container would
+    write to rows other work uses.
     """
     if test_db and sqlite_db:
         return (
@@ -87,62 +143,68 @@ def stack_configuration_error(
             "under test has one database: set the one that names it"
         )
     on_dev_stack = base_url.rstrip("/") in DEV_STACK_BASE_URLS
-    if not on_dev_stack and test_db == DEV_STACK_DATABASE:
+    if (
+        not on_dev_stack
+        and test_db == DEV_STACK_DATABASE
+        and postgres_container == DEV_STACK_POSTGRES_CONTAINER
+    ):
         return (
-            f"FLIGHTDECK_TEST_DB is {DEV_STACK_DATABASE}, the dev stack's own database, "
-            f"while FLIGHTDECK_TEST_BASE_URL is {base_url}, which is not the dev stack: "
-            "the SQL helpers and the seeder would write to the dev stack's rows. Give "
-            "the stack under test a database of its own and name that one (or set "
-            "FLIGHTDECK_TEST_SQLITE_DB for a binary on SQLite)."
+            f"FLIGHTDECK_TEST_DB is {DEV_STACK_DATABASE} in {DEV_STACK_POSTGRES_CONTAINER}, "
+            f"the dev stack's own database, while FLIGHTDECK_TEST_BASE_URL is {base_url}, "
+            "which is not the dev stack: the SQL helpers and the seeder would write to "
+            "the dev stack's rows. Give the stack under test a database of its own and "
+            "name that one (or set FLIGHTDECK_TEST_SQLITE_DB for a binary on SQLite)."
         )
-    if on_dev_stack or test_db or sqlite_db:
+    if test_db or sqlite_db:
         return None
+    if on_dev_stack:
+        return (
+            f"FLIGHTDECK_TEST_BASE_URL is {base_url}, the dev stack's address, but there "
+            f"is no dev stack state at {DEV_STACK_STATE_FILE} and neither "
+            "FLIGHTDECK_TEST_DB nor FLIGHTDECK_TEST_SQLITE_DB names a database: the SQL "
+            "helpers and the seeder cannot tell which database the stack uses. Start "
+            "the stack with `make dev`, or name the database of whatever listens there."
+        )
     return (
         f"FLIGHTDECK_TEST_BASE_URL is {base_url}, which is not the dev stack "
         "(http://localhost:4000), and neither FLIGHTDECK_TEST_DB nor "
         "FLIGHTDECK_TEST_SQLITE_DB names its database: the SQL helpers and the seeder "
-        "would read and write the dev stack's flightdeck database instead. Set "
-        "FLIGHTDECK_TEST_SQLITE_DB to the binary's flightdeck.db, or FLIGHTDECK_TEST_DB "
-        "to its Postgres database."
+        "have no database to read and write. Set FLIGHTDECK_TEST_SQLITE_DB to the "
+        "binary's flightdeck.db, or FLIGHTDECK_TEST_DB to its Postgres database."
     )
 
 
-def default_worker_container(base_url: str) -> str:
-    """The worker container the pause tests and the log reader use when
-    ``FLIGHTDECK_TEST_WORKER_CONTAINER`` is not set: the dev stack's,
-    and only when the suite runs against the dev stack. Any other stack
-    is the flightdeck binary, which has no worker container; naming the
-    dev stack's there would pause a worker other work depends on."""
-    if base_url.rstrip("/") in DEV_STACK_BASE_URLS:
-        return DEV_STACK_WORKER_CONTAINER
-    return ""
-
-
+_settings = stack_settings(BASE_URL, os.environ, read_stack_state(DEV_STACK_STATE_FILE))
+SQLITE_DB = _settings.get("FLIGHTDECK_TEST_SQLITE_DB", "")
 _configuration_error = stack_configuration_error(
-    BASE_URL, os.environ.get("FLIGHTDECK_TEST_DB", ""), SQLITE_DB
+    BASE_URL,
+    _settings.get("FLIGHTDECK_TEST_DB", ""),
+    SQLITE_DB,
+    _settings.get("FLIGHTDECK_TEST_POSTGRES_CONTAINER", DEV_STACK_POSTGRES_CONTAINER),
 )
 if _configuration_error:
     raise RuntimeError(_configuration_error)
-# The dev stack's container names are the contract for the helpers that
-# shell into it (psql below, the worker log reader). A stack on SQLite
-# has no Postgres behind it, so the name is blank there: a psql call
-# with no SQLite path (the e2e seeder's backdates) is then refused by
-# the docker CLI instead of writing to the dev stack's database, whose
-# seeded rows carry the same ids.
+# The container the psql helpers shell into. A stack on SQLite has no
+# Postgres behind it, so the name is blank there: a psql call with no
+# SQLite path (the e2e seeder's backdates) is then refused by the
+# docker CLI instead of writing to a Postgres database, whose seeded
+# rows carry the same ids.
 POSTGRES_CONTAINER = (
     ""
     if SQLITE_DB
-    else os.environ.get("FLIGHTDECK_TEST_POSTGRES_CONTAINER", "docker-postgres-1")
+    else _settings.get(
+        "FLIGHTDECK_TEST_POSTGRES_CONTAINER", DEV_STACK_POSTGRES_CONTAINER
+    )
 )
-POSTGRES_DB = os.environ.get("FLIGHTDECK_TEST_DB", "flightdeck")
+POSTGRES_DB = _settings.get("FLIGHTDECK_TEST_DB", DEV_STACK_DATABASE)
 # The finest step a stored timestamp resolves: Postgres keeps
 # microseconds, SQLite the milliseconds of its strftime('%f'). A test
 # that compares a stored time with one it sent allows this much.
 DB_TIMESTAMP_RESOLUTION_US = 1000 if SQLITE_DB else 1
-WORKER_CONTAINER = os.environ.get(
-    "FLIGHTDECK_TEST_WORKER_CONTAINER", default_worker_container(BASE_URL)
-)
-WORKER_LOG_FILE = os.environ.get("FLIGHTDECK_TEST_WORKER_LOG", "")
+# No default for either: the binary has no worker container, and its
+# log is wherever the caller sent it.
+WORKER_CONTAINER = _settings.get("FLIGHTDECK_TEST_WORKER_CONTAINER", "")
+WORKER_LOG_FILE = _settings.get("FLIGHTDECK_TEST_WORKER_LOG", "")
 # A docker CLI call against a healthy daemon returns well within this;
 # the bound only keeps a hung daemon from stalling a poll forever.
 DOCKER_CLI_TIMEOUT_SECS = 20
@@ -1190,7 +1252,10 @@ def worker_paused() -> Iterator[None]:
     if not WORKER_CONTAINER:
         import pytest
 
-        pytest.skip("pausing the worker needs the compose worker container")
+        pytest.skip(
+            "pausing the worker needs the split test stack's worker container "
+            "(make test-split)"
+        )
     previous = signal.signal(signal.SIGTERM, _abort_on_signal)
     try:
         _docker("pause", WORKER_CONTAINER)
@@ -1419,6 +1484,12 @@ def worker_log_lines(
     """
     if WORKER_LOG_FILE:
         return _worker_log_file_lines(needles, tail, since)
+    if not WORKER_CONTAINER:
+        raise RuntimeError(
+            "no worker log to read: set FLIGHTDECK_TEST_WORKER_LOG to the file the "
+            "flightdeck binary's log goes to, or FLIGHTDECK_TEST_WORKER_CONTAINER to "
+            "the split test stack's worker container"
+        )
     args = ["logs", "--tail", str(tail)]
     if since is not None:
         if not isinstance(since, str):

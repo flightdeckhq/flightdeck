@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T119 — the Analytics Estimated Cost card says what its figure leaves
 // out. The seeded window holds metered sensor calls and subscription
@@ -17,7 +18,7 @@ test.describe("T119 — analytics cost note names what it excludes", () => {
     // the page's own response body is not readable once the page
     // updates its URL after load.
     const resp = await page.request.get(
-      "http://localhost:4000/api/v1/analytics?metric=estimated_cost&group_by=model&range=30d",
+      `${API_URL}/v1/analytics?metric=estimated_cost&group_by=model&range=30d`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "analytics API call must succeed").toBe(true);

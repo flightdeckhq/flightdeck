@@ -154,13 +154,13 @@ function firstSet(...values) {
  * manifest's ``default``, so the plugin keeps its own defaults.
  *
  * Rationale for each default:
- *   * ``server`` points at the dev nginx (localhost:4000). A
+ *   * ``server`` points at a local flightdeck (localhost:4000). A
  *     whitespace-only value is treated as unset so a user who sets
  *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
- *   * ``token`` defaults to ``tok_dev``, the seed token the dev
- *     compose stack accepts when ``ENVIRONMENT=dev``. Production
- *     deployments do not set ``ENVIRONMENT=dev`` so the seed token
- *     becomes inert there.
+ *   * ``token`` defaults to ``tok_dev``, the seed token a flightdeck
+ *     accepts when it listens on loopback only. A flightdeck that
+ *     other machines can reach refuses it, so the seed token is inert
+ *     there.
  *   * ``captureToolInputs`` defaults ON because the plugin only
  *     captures a sanitised whitelist (file paths, short command and
  *     query strings, <=200 chars). Without it tool events carry only

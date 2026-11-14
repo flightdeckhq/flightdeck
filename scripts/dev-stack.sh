@@ -73,9 +73,11 @@
 # the old NATS volume, which the binary does not read.
 # FLIGHTDECK_DEV_ALLOW_UNDRAINED=1 moves all the same.
 #
-# Reset. On Postgres, `reset` first says what it is about to delete (the
-# volume, and how many sessions and events are in it). It refuses when
-# nothing says this checkout started that Postgres. Above
+# Reset. On either database, `reset` refuses while something that is
+# not this stack listens on its port (a binary of another dev dir may be
+# using that database). On Postgres it first says what it is about to
+# delete (the volume, and how many sessions and events are in it). It
+# refuses when nothing says this checkout started that Postgres. Above
 # RESET_UNCONFIRMED_MAX_SESSIONS sessions, or when the database cannot
 # be counted, it wants the project's name: CONFIRM=<project> (`make
 # dev-reset CONFIRM=docker`), or typed at its prompt on a terminal.
@@ -691,8 +693,16 @@ confirm_postgres_reset() {
 }
 
 cmd_reset() {
-  local mode data
+  local mode data legacy=""
   data="$(data_dir)"
+  # What serves on the port must be this stack, as for `up`: a binary
+  # of another dev dir (or anything else) there may be using the very
+  # database this would delete, and the start that ends a reset would
+  # fail on the busy port only after the deletion.
+  if have_docker; then legacy="$(legacy_containers)"; fi
+  if ! running_pid >/dev/null && [ -z "$legacy" ] && port_taken; then
+    die "something listens on $LISTEN, and it is not this checkout's stack: it may be using the database a reset would delete, and the reset could not start the stack again. Nothing was deleted. Stop it first (make down where it was started), or give this stack its own FLIGHTDECK_DEV_PORT and FLIGHTDECK_DEV_PROJECT."
+  fi
   # The database to reset: the one asked for, else the running
   # stack's, else whichever this checkout has data in. There is no
   # default: a reset with nothing to go on deletes nothing.

@@ -357,9 +357,10 @@ All notable changes to Flightdeck are documented here.
   log. The hook still exits 0 and the session carries on. A first event
   the server does not answer within two seconds (a cold server's first
   event can take longer) is sent once more before any warning, so a
-  session that is being recorded is not reported as lost; the second
-  attempt is the same event, with the same id, so a server that stored
-  the first one and answered it late keeps one `session_start`.
+  session that is being recorded is not reported as lost. Every send of
+  a session's `session_start`, the second attempt and a later hook's
+  backstop alike, is the same event, with the same id and time, so a
+  server that stored one and answered it late keeps one.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

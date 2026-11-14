@@ -2479,6 +2479,16 @@ answer the next attempt at once, in which case the session is being
 recorded and no warning is shown. Only a timeout is tried again, and
 only while a whole attempt fits before the hook's 25-second deadline; a
 refused connection or a status is reported after the first attempt.
+Every send of a session's `session_start` is the same event, since a
+server can store one and answer after the poster gave up: its `id` (a
+UUID) and `timestamp` are recorded before the first POST in
+`start-pending-${sessionId}.json` (published with an exclusive link, so
+concurrent hooks converge on one) and reused by `SessionStart`'s second
+attempt and by a later hook's backstop, and the worker's
+`(id, occurred_at)` dedup keeps one. The record goes once a
+`session_start` is acknowledged, at `SessionEnd`, when ingestion refuses
+its time as clock skew, and when it is older than a day (half of
+ingestion's 48-hour window), which gets a new id and time.
 It is shown once per session (a marker,
 `start-notice-${sessionId}.txt`, so a `SessionStart` that fires again
 after a compaction does not repeat it) and only by `SessionStart`:

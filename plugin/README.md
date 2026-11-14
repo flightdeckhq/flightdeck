@@ -321,6 +321,8 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
 - `started-<sid>.txt`: marks that the server accepted the session's `session_start`, so later hooks do not send another.
 - `starting-<sid>.txt`: held by the one hook sending a session's `session_start` while concurrent hooks (parallel tool calls, a sub-agent's first hooks) skip it.
+- `start-pending-<sid>.json`: the `id` and time of a `session_start` sent and not yet acknowledged; every later send of it (`SessionStart`'s second attempt, a later hook's) is the same event, so a server that stored one and answered late keeps one. Removed once one is acknowledged, and at `SessionEnd`.
+- `start-notice-<sid>.txt`: marks that the session's "not recorded" warning was shown, so a `SessionStart` after a compaction does not repeat it; removed at `SessionEnd`.
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
 - `model-switch-<sid>.json`: the model the session last switched to and when, so the next `pre_call` is labelled with it.

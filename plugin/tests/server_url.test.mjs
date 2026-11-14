@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { describeStartFailure, resolveConfig, serverBaseUrl } from "../hooks/scripts/observe_cli.mjs";
 import { TIMEOUT_MS } from "../hooks/scripts/core/poster.mjs";
-import { assertIngestionContract, hookEnv, privateTmp, runScript } from "./contract_harness.mjs";
+import { assertIngestionContract, hookEnv, pollUntil, privateTmp, runScript } from "./contract_harness.mjs";
 
 // [configured value, the base URL it resolves to, why the case is here]
 const BASE_URL_CASES = [
@@ -264,6 +264,87 @@ describe("a session start the server is slow to answer", () => {
       assert.deepEqual(posts[1], posts[0], "the second attempt is the same event");
       assert.equal(stored.size, 1, "one session_start stored");
       assertIngestionContract(posts[0]);
+    } finally {
+      late.closeAllConnections?.();
+      late.close();
+    }
+  });
+
+  it("keeps one session_start when both attempts were stored late and a later hook sends the backstop", async () => {
+    // The server stores every POST at once and answers the first two
+    // after the poster has given up: SessionStart's two attempts both
+    // time out, yet both were stored. The next hook of the session sends
+    // the session_start backstop, which must be the same event again.
+    // Events are kept as the worker keeps them, once per id and time; an
+    // event with no id is a new one each time (the worker mints its id).
+    const stored = new Map();
+    const posts = [];
+    const late = await new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          if (req.method !== "POST" || req.url !== "/ingest/v1/events") {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end("{}");
+            return;
+          }
+          const event = JSON.parse(body);
+          posts.push(event);
+          stored.set(`${event.id ?? randomUUID()}@${event.timestamp}`, event);
+          const answer = () => {
+            if (res.destroyed) return;
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end('{"status":"ok","attached":false}');
+          };
+          if (posts.length <= 2) setTimeout(answer, TIMEOUT_MS + 500);
+          else answer();
+        });
+      });
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+    try {
+      const sessionId = randomUUID();
+      const native = `cc-${randomUUID()}`;
+      const env = hookEnv({}, {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${late.address().port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sessionId,
+      });
+      const start = await runScript(
+        JSON.stringify({ hook_event_name: "SessionStart", session_id: native, cwd: privateTmp, source: "startup" }),
+        env,
+      );
+      assert.equal(start.code, 0);
+      assert.equal(posts.length, 2, "SessionStart sent two attempts");
+      assert.match(JSON.parse(start.stdout).systemMessage, /no answer from .* \(timeout\)/);
+
+      const tool = await runScript(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          session_id: native,
+          cwd: privateTmp,
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          tool_response: { stdout: "ok", stderr: "" },
+          tool_use_id: "toolu_01pendingstart",
+          duration_ms: 3,
+        }),
+        env,
+      );
+      assert.equal(tool.code, 0, tool.stderr);
+      await pollUntil(() => posts.some((e) => e.event_type === "tool_call"), "the tool_call");
+      const starts = posts.filter((e) => e.event_type === "session_start");
+      assert.equal(starts.length, 3, "two SessionStart attempts and the backstop");
+      assert.deepEqual(
+        new Set(starts.map((e) => `${e.id}@${e.timestamp}`)).size,
+        1,
+        "every send of the session_start carries one id and one timestamp",
+      );
+      const storedStarts = [...stored.values()].filter((e) => e.event_type === "session_start");
+      assert.equal(storedStarts.length, 1, "one session_start stored");
+      assertIngestionContract(starts[2]);
     } finally {
       late.closeAllConnections?.();
       late.close();

@@ -16,6 +16,8 @@ import {
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  clearPendingSessionStart,
+  pendingSessionStart,
   releaseSessionStart,
   clearEndedMarker,
   readEndedMarker,
@@ -252,23 +254,26 @@ export async function ensureSessionStarted(server, token, sessionId, basePayload
 }
 
 /**
- * The session_start event of ``basePayload``'s session. Its ``id`` and
- * ``timestamp`` are fixed here, once, and a send that is tried again
- * sends this same object: a server can store an event and answer after
- * the poster has given up on it, and the worker stores an event once per
- * ``id`` and time, so the copy sent again is dropped instead of becoming
- * a second session_start.
+ * The session_start event of ``sessionId``. A server can store an event
+ * and answer after the poster has given up on it, and the worker stores
+ * an event once per ``id`` and time, so every send of a session's
+ * session_start is the same event: SessionStart's retry sends this same
+ * object, and a later hook's backstop rebuilds it with the ``id`` and
+ * ``timestamp`` of the pending one (state.mjs pendingSessionStart),
+ * until a session_start is acknowledged. The copy is dropped instead of
+ * becoming a second session_start.
  */
-export function buildSessionStartPayload(basePayload, extras = {}) {
+export function buildSessionStartPayload(sessionId, basePayload, extras = {}) {
+  const { id, timestamp } = pendingSessionStart(sessionId, { id: randomUUID(), timestamp: new Date().toISOString() });
   const startPayload = {
     ...basePayload,
-    id: randomUUID(),
+    id,
     event_type: "session_start",
     tool_name: null,
     tool_input: null,
     is_subagent_call: false,
     latency_ms: null,
-    timestamp: new Date().toISOString(),
+    timestamp,
     // Ingestion requires a non-empty sensor_version on every
     // session_start (plugin parity with the Python sensor's wire
     // contract). Plugin reports its own version since the Python
@@ -296,7 +301,7 @@ async function sendSessionStart(server, token, sessionId, basePayload, extras) {
   // A hook that held the claim before this one may have sent it.
   if (isSessionStarted(sessionId)) return null;
 
-  const startPayload = extras.payload ?? buildSessionStartPayload(basePayload, extras);
+  const startPayload = extras.payload ?? buildSessionStartPayload(sessionId, basePayload, extras);
 
   // Mark the session started only once the server has accepted the
   // session_start. If ingestion is down or rejects it, the next hook
@@ -305,5 +310,8 @@ async function sendSessionStart(server, token, sessionId, basePayload, extras) {
   // so content is dropped) only learns it from a session_start.
   const sent = await sendEvent(server, token, sessionId, startPayload);
   if (sent.accepted) markSessionStarted(sessionId);
+  // Refused for its time (outside ingestion's clock-skew window): that
+  // id and time can never be stored, so the next send is a new event.
+  else if (sent.clockSkew) clearPendingSessionStart(sessionId);
   return { ...sent, payload: startPayload };
 }

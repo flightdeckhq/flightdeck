@@ -17,6 +17,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -91,6 +92,7 @@ export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
     names.push(
       `started-${sessionId}.txt`,
       `start-notice-${sessionId}.txt`,
+      `${PENDING_START_PREFIX}${sessionId}.json`,
       `minted-${sessionId}.txt`,
       `model-${sessionId}.txt`,
       `model-switch-${sessionId}.json`,
@@ -321,6 +323,7 @@ export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = f
       `started-${sessionId}.txt`,
       `starting-${sessionId}.txt`,
       `start-notice-${sessionId}.txt`,
+      `${PENDING_START_PREFIX}${sessionId}.json`,
       `endpoint-${sessionId}.json`,
       `cwd-${sessionId}.txt`,
     );
@@ -446,7 +449,10 @@ export function releaseSessionStart(sessionId) {
   }
 }
 
-/** Record that the server accepted the session_start. Silent on failure. */
+/**
+ * Record that the server accepted the session_start, and forget the
+ * pending one (pendingSessionStart): it is stored. Silent on failure.
+ */
 export function markSessionStarted(sessionId) {
   const dir = stateDir();
   try {
@@ -455,11 +461,102 @@ export function markSessionStarted(sessionId) {
   } catch {
     /* silent */
   }
+  clearPendingSessionStart(sessionId);
 }
 
 /** Forget that ``sessionId``'s session_start was accepted, so the next one is sent. */
 export function clearSessionStarted(sessionId) {
   removeStateFile(`started-${sessionId}.txt`);
+  // The next one is a new start (a resumed sub-agent), not a copy.
+  clearPendingSessionStart(sessionId);
+}
+
+// ---------------------------------------------------------------------
+// Pending session_start. A session_start a hook sent and the server has
+// not acknowledged may still have been stored: a server can store an
+// event and answer after the poster has given up on it. Every send of
+// the session's session_start, the SessionStart hook's own attempts and
+// a later hook's backstop alike, carries the ``id`` and ``timestamp``
+// kept here, so the worker, which stores an event once per id and time,
+// drops the copies instead of storing a second session_start. The record
+// goes once a session_start is acknowledged (markSessionStarted).
+// ---------------------------------------------------------------------
+
+const PENDING_START_PREFIX = "start-pending-";
+
+// How old a pending session_start's timestamp may be and still be sent
+// again. Ingestion refuses an event more than 48 hours in the past (its
+// clock-skew window); half of that leaves a day for this machine's clock
+// to differ from the server's. An older record gets a new id and time:
+// a start the server refuses for its age would never be stored at all.
+export const PENDING_START_REUSE_MAX_MS = 24 * 60 * 60 * 1000;
+// How far ahead of this clock a pending timestamp may be (the clock was
+// set back since): well inside ingestion's five-minute future window.
+const PENDING_START_FUTURE_TOLERANCE_MS = 60 * 1000;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The pending record in ``path`` when it is usable at ``now``, else null. */
+function readPendingStart(path, now) {
+  const record = readJsonObject(path);
+  if (typeof record.id !== "string" || !UUID_RE.test(record.id) || typeof record.timestamp !== "string") {
+    return null;
+  }
+  const age = now - Date.parse(record.timestamp);
+  if (!(age < PENDING_START_REUSE_MAX_MS && age >= -PENDING_START_FUTURE_TOLERANCE_MS)) return null;
+  return { id: record.id, timestamp: record.timestamp };
+}
+
+/**
+ * The ``{id, timestamp}`` every send of ``sessionId``'s session_start
+ * carries: the pending record when there is a usable one, else
+ * ``fresh``, recorded as the pending one first. Hooks of one session run
+ * concurrently, so the record is published whole (written to a file of
+ * this process, then linked into place, which fails when another hook
+ * published one first) and a hook that loses reads the winner's; an
+ * unusable one (too old, unreadable) is replaced by ``fresh`` with an
+ * atomic rename, as is any record on a file system without hard links.
+ * With an unusable state directory the answer is ``fresh``, unrecorded.
+ */
+export function pendingSessionStart(sessionId, fresh, now = Date.now()) {
+  const dir = stateDir();
+  const path = join(dir, `${PENDING_START_PREFIX}${sessionId}.json`);
+  const existing = readPendingStart(path, now);
+  if (existing) return existing;
+  const partial = `${path}.${process.pid}.tmp`;
+  try {
+    mkdirOwnerOnly(dir);
+    writeFileSync(partial, JSON.stringify({ id: fresh.id, timestamp: fresh.timestamp }));
+    let published = false;
+    try {
+      linkSync(partial, path);
+      published = true;
+    } catch (err) {
+      if (err?.code === "EEXIST") {
+        // Another hook published one meanwhile, or the one there is
+        // unusable: take a usable one, else replace it below.
+        const winner = readPendingStart(path, now);
+        if (winner) return winner;
+      }
+      // A file system without hard links publishes by rename, which
+      // replaces instead of refusing.
+    }
+    if (!published) renameSync(partial, path);
+    return { id: fresh.id, timestamp: fresh.timestamp };
+  } catch {
+    return { id: fresh.id, timestamp: fresh.timestamp };
+  } finally {
+    try {
+      unlinkSync(partial);
+    } catch {
+      /* renamed, or never written */
+    }
+  }
+}
+
+/** Forget ``sessionId``'s pending session_start: the next send is a new event. */
+export function clearPendingSessionStart(sessionId) {
+  removeStateFile(`${PENDING_START_PREFIX}${sessionId}.json`);
 }
 
 /**

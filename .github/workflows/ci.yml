@@ -1328,6 +1328,7 @@ jobs:
           python3 -m unittest scripts/test_release_notes.py
           python3 -m unittest scripts/test_e2e_retried_tests.py
           python3 scripts/release_notes.py "v$(cat VERSION)" >/dev/null
+          python3 scripts/release_notes.py "v$(cat VERSION)-rc.1" >/dev/null
           shellcheck --version | head -2
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \

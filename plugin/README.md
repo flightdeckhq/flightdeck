@@ -67,7 +67,7 @@ Guarantees that hold regardless of the knob settings:
 
 - Raw file bodies written by `Write` and `Edit` are never forwarded. The sanitiser drops the body field at the source; it never reaches the network.
 - Tool arguments outside the whitelist (`file_path`, `command`, `query`, `pattern`, `prompt`) are dropped.
-- String values are cut (`prompt` at 100 characters; `command`, `query` and `pattern` at 200; `file_path` whole). A cut value ends with `…` and the input lists it in `truncated`, so a cut command never reads as the whole command.
+- String values are cut (`prompt` at 100 characters; `command`, `query` and `pattern` at 200; `file_path` whole). A cut value ends with `…`, so a cut command never reads as the whole command, and the event's tool block lists it in `truncated`, beside the input rather than inside it (`"truncated": ["/command"]`).
 - `FLIGHTDECK_CAPTURE_PROMPTS=false` zeroes every content field on every event type. The event still ships (so you see the session and token counts on the dashboard), but no prompt or response body is attached.
 - The error text of a failed tool call is content too (a command's stderr, an `Edit` failure quoting its `old_string`, a token a failed command printed): it is sent only when both knobs are on. Otherwise the `error` block keeps `error_type`, `error_class` and `interrupted`, and its `message` reads `<redacted>`. The server redacts the same field when the session was started with capture off.
 - Credentials in the server URL (`https://user:token@host`) are stripped before any request and never written to a log line; authenticate with the token option or `FLIGHTDECK_TOKEN`.

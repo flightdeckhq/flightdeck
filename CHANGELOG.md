@@ -318,9 +318,10 @@ All notable changes to Flightdeck are documented here.
   `command`, `query` and `pattern` to 200 characters and a sub-agent's
   `prompt` to 100, and cut them with no sign, so the session drawer
   showed a command that stopped mid-way as if it were the whole command.
-  A cut value now ends with `…` and the tool input lists the cut fields
-  in `truncated`; the bounds are unchanged. The bounds count characters,
-  so a cut no longer splits one in two.
+  A cut value now ends with `…` and the event's `tool_use` block lists
+  it in `truncated`, beside the input, as a JSON Pointer
+  (`"truncated": ["/command"]`, D272); the bounds are unchanged. The
+  bounds count characters, so a cut no longer splits one in two.
 - **A Claude Code session that is not being recorded says so.** When
   the server does not accept a session's first event (no answer, an
   address that is not a Flightdeck server's, a refused token), the

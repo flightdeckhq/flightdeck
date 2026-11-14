@@ -1966,24 +1966,26 @@ describe("observe_cli helpers", () => {
 
   describe("sanitizeToolInput", () => {
     it("keeps file_path and drops content", () => {
-      const result = sanitizeToolInput({
+      const { input, truncated } = sanitizeToolInput({
         file_path: "/src/app.ts",
         content: "secret-token-do-not-leak",
       });
-      assert.equal(result.file_path, "/src/app.ts");
-      assert.equal(result.content, undefined);
+      assert.equal(input.file_path, "/src/app.ts");
+      assert.equal(input.content, undefined);
+      assert.deepEqual(truncated, []);
     });
 
-    it("cuts command to 200 characters, marks the cut and lists the field", () => {
-      const result = sanitizeToolInput({ command: "a".repeat(300) });
-      assert.equal(result.command, "a".repeat(200) + "…");
-      assert.deepEqual(result.truncated, ["command"]);
+    it("cuts command to 200 characters, marks the cut and lists it beside the input", () => {
+      const { input, truncated } = sanitizeToolInput({ command: "a".repeat(300) });
+      assert.equal(input.command, "a".repeat(200) + "…");
+      assert.deepEqual(truncated, ["/command"]);
+      assert.equal("truncated" in input, false);
     });
 
-    it("cuts Task prompt to 100 characters, marks the cut and lists the field", () => {
-      const result = sanitizeToolInput({ prompt: "x".repeat(250) });
-      assert.equal(result.prompt, "x".repeat(100) + "…");
-      assert.deepEqual(result.truncated, ["prompt"]);
+    it("cuts Task prompt to 100 characters, marks the cut and lists it beside the input", () => {
+      const { input, truncated } = sanitizeToolInput({ prompt: "x".repeat(250) });
+      assert.equal(input.prompt, "x".repeat(100) + "…");
+      assert.deepEqual(truncated, ["/prompt"]);
     });
 
     it("returns null for empty / non-object input", () => {
@@ -1993,9 +1995,9 @@ describe("observe_cli helpers", () => {
     });
 
     it("retains query and pattern fields", () => {
-      const result = sanitizeToolInput({ query: "endpoints", pattern: "**/*.ts" });
-      assert.equal(result.query, "endpoints");
-      assert.equal(result.pattern, "**/*.ts");
+      const { input } = sanitizeToolInput({ query: "endpoints", pattern: "**/*.ts" });
+      assert.equal(input.query, "endpoints");
+      assert.equal(input.pattern, "**/*.ts");
     });
   });
 

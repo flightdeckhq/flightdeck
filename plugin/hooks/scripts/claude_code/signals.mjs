@@ -5,6 +5,7 @@
 // while prompt capture is on.
 
 import { boundedToken, truncateUtf8 } from "../core/config.mjs";
+import { jsonPointer } from "../core/cut.mjs";
 import { sanitizeToolInput, TOOL_INPUT_CUT_MARK } from "./tools.mjs";
 
 // Bound on a string in signal_data, matching ingestion's.
@@ -192,17 +193,18 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
     const safe = captureToolInputs && !isMcp ? sanitizeToolInput(hookEvent.tool_input) : null;
     // A value the whitelist cut, or that this byte bound cuts, ends with
     // the cut mark, and signal_data's ``truncated`` names it: a cut
-    // command must not read as the whole command. signal_data holds
-    // scalars only, so the list is comma-separated.
-    const truncated = new Set(safe?.truncated ?? []);
-    for (const [key, value] of Object.entries(safe ?? {})) {
-      if (key === "truncated") continue;
+    // command must not read as the whole command. signal_data is
+    // Flightdeck's own structure and holds scalars only, so the list is
+    // of field names, comma-separated, in the order of the fields.
+    const cutBefore = new Set(safe?.truncated ?? []);
+    const truncated = [];
+    for (const [key, value] of Object.entries(safe?.input ?? {})) {
       const bounded = cutMarkedValue(String(value));
       if (bounded === undefined) continue;
       signalData[key] = bounded.value;
-      if (bounded.cut) truncated.add(key);
+      if (bounded.cut || cutBefore.has(jsonPointer([key]))) truncated.push(key);
     }
-    if (truncated.size > 0) signalData.truncated = [...truncated].join(",");
+    if (truncated.length > 0) signalData.truncated = truncated.join(",");
   }
   const texts = {};
   if (capturePrompts) {

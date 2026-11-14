@@ -137,6 +137,7 @@
   .cmd pre{flex:1;min-width:0;background:none;border:0;border-radius:0;padding:0;font-size:14px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
   .cmd pre::before{content:attr(data-prompt);color:var(--orange);margin-right:10px}
   .cmd .copy{position:static;flex:none}
+  .cmd-os{display:none}
   .install-then{border-top:1px solid var(--line);padding:10px 18px 11px;font-size:13px;color:var(--dim)}
   .install-then code,.qs-note code{font-family:"B612 Mono",ui-monospace,monospace;font-size:12px;color:var(--ink)}
 
@@ -359,6 +360,15 @@
   .foot .ic{width:14px;height:14px;margin-right:5px}
   .attach-ic{width:13px;height:13px;vertical-align:-2px;margin-right:6px;opacity:.8}
 </style>
+<noscript><style>
+  /* without JavaScript: every section shown, both install commands listed under their platform, no tabs or copy buttons */
+  .r{opacity:1;transform:none}
+  .install-bar,.copy{display:none}
+  .cmd,.cmd[hidden]{display:flex;flex-wrap:wrap;row-gap:6px}
+  .cmd + .cmd{border-top:1px solid var(--line)}
+  .cmd-os{display:block;flex-basis:100%;font-family:"B612 Mono",ui-monospace,monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .codebox.one pre{padding-right:16px}
+</style></noscript>
 </head>
 <body>
 
@@ -435,16 +445,18 @@
         <button class="tab" type="button" role="tab" id="tab-win" aria-controls="cmd-win" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-windows"/></svg>Windows <span>(PowerShell)</span></button>
       </div>
       <div class="cmd" role="tabpanel" id="cmd-unix" aria-labelledby="tab-unix">
+        <span class="cmd-os">Linux and macOS</span>
         <pre id="code-install-unix" data-prompt="$">curl -fsSL https://flightdeck-hq.com/<wbr>install.sh | sh</pre>
         <button class="copy mono" type="button" data-for="code-install-unix">Copy</button>
       </div>
       <div class="cmd" role="tabpanel" id="cmd-win" aria-labelledby="tab-win" hidden>
+        <span class="cmd-os">Windows (PowerShell)</span>
         <pre id="code-install-win" data-prompt="PS>">irm https://flightdeck-hq.com/<wbr>install.ps1 | iex</pre>
         <button class="copy mono" type="button" data-for="code-install-win">Copy</button>
       </div>
       <p class="install-then">Then start it with <code>flightdeck</code>. The dashboard is at <code>http://localhost:4000</code>.</p>
     </div>
-    <p class="meta-line">One binary, with the database and the message bus inside it: nothing else to install.</p>
+    <p class="meta-line">One binary, with the database and the message bus inside it by default: nothing else to install.</p>
     <div class="ctas">
       <a class="btn btn-primary" href="#connect">Connect your agents</a>
       <a target="_blank" rel="noopener noreferrer" class="btn btn-ghost" href="https://github.com/flightdeckhq/flightdeck">View on GitHub</a>

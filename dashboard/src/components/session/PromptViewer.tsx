@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
@@ -1694,15 +1694,46 @@ function FieldLabel({ name, tone = "muted" }: { name: string; tone?: "muted" | "
  *  provider's messages is as long as the tool made it. */
 const TERMINAL_TEXT_MAX_HEIGHT_PX = 360;
 
+/** Whether the element ``ref`` holds is taller than its box, so its
+ *  text scrolls: measured after render and on every resize of the
+ *  element or its parent (a narrower drawer wraps more lines), as
+ *  TruncatedText measures its width. False until measured, and where
+ *  there is no layout. */
+function useScrollsVertically(ref: React.RefObject<HTMLElement | null>, content: string): boolean {
+  const [scrolls, setScrolls] = useState(false);
+  const check = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const next = el.scrollHeight > el.clientHeight;
+    setScrolls((prev) => (prev === next ? prev : next));
+  }, [ref]);
+  useEffect(() => {
+    check();
+  }, [content, check]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => check());
+    ro.observe(el);
+    if (el.parentElement) ro.observe(el.parentElement);
+    return () => ro.disconnect();
+  }, [ref, check]);
+  return scrolls;
+}
+
 /** Text as a terminal shows it, line breaks kept, scrolling past
- *  TERMINAL_TEXT_MAX_HEIGHT_PX (focusable, so the keys scroll it too);
- *  stderr is set apart by the error colour. */
+ *  TERMINAL_TEXT_MAX_HEIGHT_PX; stderr is set apart by the error
+ *  colour. A block whose text scrolls is a focusable region named
+ *  ``name``, so the keys scroll it too; one that fits is plain text and
+ *  stays out of the tab order. */
 function TerminalText({ text, name, tone = "muted" }: { text: string; name: string; tone?: "muted" | "error" }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  const scrolls = useScrollsVertically(ref, text);
   return (
     <pre
-      role="region"
-      aria-label={name}
-      tabIndex={0}
+      ref={ref}
+      {...(scrolls ? { role: "region", "aria-label": name, tabIndex: 0 } : {})}
+      data-scrolls={scrolls ? "true" : undefined}
       className="rounded-md p-2 font-mono text-[12px] leading-relaxed"
       style={{
         ...fieldTextStyle,
@@ -1751,12 +1782,16 @@ function textBlocksOf(value: unknown): TextBlock[] | null {
     : null;
 }
 
-/** Text content blocks as their texts. */
-function TextBlockList({ blocks }: { blocks: TextBlock[] }) {
+/** Text content blocks as their texts, each named after the result's
+ *  field that holds them (``content``, or ``content 2`` when there are
+ *  several), else by its place in the result. */
+function TextBlockList({ blocks, field }: { blocks: TextBlock[]; field?: string }) {
+  const nameOf = (i: number) =>
+    field ? (blocks.length > 1 ? `${field} ${i + 1}` : field) : `text block ${i + 1}`;
   return (
     <div className="space-y-2">
       {blocks.map((block, i) => (
-        <TerminalText key={i} text={block.text} name={`text block ${i + 1}`} />
+        <TerminalText key={i} text={block.text} name={nameOf(i)} />
       ))}
     </div>
   );
@@ -1824,7 +1859,7 @@ function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; 
       blocks.push(
         <div key={key} data-field={key} className="flex flex-col gap-1">
           <FieldLabel name={key} />
-          <TextBlockList blocks={textBlocks} />
+          <TextBlockList blocks={textBlocks} field={key} />
         </div>,
       );
     } else {

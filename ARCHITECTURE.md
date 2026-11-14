@@ -2565,25 +2565,33 @@ holds scalars only.
 
 ### Cut values in tool content
 
-A `tool_use` block whose input the plugin cut lists the cut values in
-`truncated`, beside `input`: an array of RFC 6901 JSON Pointers,
-relative to `input`, each to a value that ends with `…` because the
-plugin cut it, in the order the plugin cut them:
+A content block whose value the plugin cut lists the cut values in
+`truncated`, beside the value: an array of RFC 6901 JSON Pointers, each
+to a string that ends with `…` or a list that lost its trailing
+elements because the plugin cut it. A `tool_use` block's pointers are
+relative to its `input`, in the order the plugin cut them; a
+`tool_result` block's are relative to its parsed `content`, in document
+order (a list before the values cut inside it):
 
 ```json
 {"type": "tool_use", "name": "Bash",
  "input": {"command": "grep -rn tool_input dashboard/src | … | head…"},
  "truncated": ["/command"]}
+{"type": "tool_result",
+ "content": "{\"stdout\":\"=== RUN   TestStore…\",\"stderr\":\"\",\"interrupted\":false}",
+ "truncated": ["/stdout"]}
 ```
 
-A block with nothing cut has no `truncated`. The event's `tool_input`
-string is the JSON of the same sanitized `input`, so it carries no
-`truncated` either; the content block is the one place the list is
-kept. The pointers name the tool's own keys as they are, so a tool
-argument named `truncated` stays an argument, and a key with `/` or
-`~` in it is escaped as RFC 6901 says (`~1`, `~0`). The list covers the
-tool's input only: a `tool_result` block's output, cut at 2000
-characters, ends with `…` and carries no list.
+A `tool_result` whose content is a text cut at the bound (a string
+response, or a response whose structure alone is over the bound; see
+Tool output) lists `""`, the whole value, as does a list at the root
+that lost its tail. A block with nothing cut has no `truncated`. The
+event's `tool_input` string is the JSON of the same sanitized `input`,
+so it carries no `truncated` either; the content block is the one place
+the list is kept. The pointers name the tool's own keys as they are, so
+a tool argument named `truncated` stays an argument and a result field
+of that name (Glob's flag) stays the tool's, and a key with `/` or `~`
+in it is escaped as RFC 6901 says (`~1`, `~0`).
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
@@ -2601,11 +2609,9 @@ or of a file read shows what the tool returned, while the whole response
 would be stored again on every tool call of a session. The bound counts
 characters (code points), so a cut never splits one.
 
-Nothing is added inside the tool's response. What was cut is said beside
-it: a cut string ends with `…`, and the block lists every cut value in
-`truncated`, each an RFC 6901 JSON Pointer relative to the parsed
-`content`, in document order. This is the convention a cut tool input
-follows on its `tool_use` block.
+Nothing is added inside the tool's response: a cut string ends with
+`…`, and the block lists the cut values in `truncated` (see Cut values
+in tool content).
 
 - A string response (plain text) is stored as that text; over the bound
   it keeps its first 1999 characters followed by `…`, and `truncated` is

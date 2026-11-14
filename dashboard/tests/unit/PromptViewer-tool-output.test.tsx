@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
 
@@ -219,17 +219,70 @@ describe("text fields of a structured result", () => {
     expect(within(box).queryByTestId("tool-result-json-text")).toBeNull();
   });
 
-  it("makes a terminal block scroll past its height and reachable from the keyboard", async () => {
+  it("caps a terminal block's height; one whose text fits stays out of the tab order", async () => {
+    // jsdom lays nothing out: every block measures as fitting.
     const box = await renderResult(JSON.stringify({ stdout: "a\nb", stderr: "e" }));
     for (const name of ["stdout", "stderr"]) {
       const pre = within(box).getByTestId(`tool-result-${name}`).querySelector("pre")!;
-      expect(pre).toHaveAttribute("tabindex", "0");
-      expect(pre).toHaveAttribute("role", "region");
-      expect(pre).toHaveAttribute("aria-label", name);
       expect(pre.style.overflowY).toBe("auto");
       expect(pre.style.maxHeight).toBe("360px");
+      expect(pre).not.toHaveAttribute("tabindex");
+      expect(pre).not.toHaveAttribute("role");
+      expect(pre).not.toHaveAttribute("aria-label");
     }
-    expect(within(box).getByRole("region", { name: "stdout" })).toBeInTheDocument();
+    expect(within(box).queryByRole("region")).toBeNull();
+  });
+
+  describe("with text taller than its block", () => {
+    const saved = {
+      scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+      clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+    };
+    beforeEach(() => {
+      // A <pre> measures 800 px of text in a 360 px box; nothing else overflows.
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.tagName === "PRE" ? 800 : 0;
+        },
+      });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.tagName === "PRE" ? 360 : 0;
+        },
+      });
+    });
+    afterEach(() => {
+      for (const [key, descriptor] of Object.entries(saved)) {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+      }
+    });
+
+    it("makes a block that scrolls a focusable region named for its field", async () => {
+      const box = await renderResult(JSON.stringify({ stdout: "many\nlines", stderr: "e" }));
+      const stdout = await within(box).findByRole("region", { name: "stdout" });
+      expect(stdout).toHaveAttribute("tabindex", "0");
+      expect(stdout).toHaveAttribute("data-scrolls", "true");
+      expect(within(box).getByRole("region", { name: "stderr" })).toHaveAttribute("tabindex", "0");
+    });
+
+    it("names a text block after the field that holds it, numbered when there are several", async () => {
+      const one = await renderResult(
+        JSON.stringify({ status: "completed", content: [{ type: "text", text: "The fixture moved." }] }),
+      );
+      expect(await within(one).findByRole("region", { name: "content" })).toHaveTextContent("The fixture moved.");
+      cleanup();
+      const two = await renderResult(
+        JSON.stringify({ content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] }),
+      );
+      expect(await within(two).findByRole("region", { name: "content 1" })).toHaveTextContent("first");
+      expect(within(two).getByRole("region", { name: "content 2" })).toHaveTextContent("second");
+      cleanup();
+      const root = await renderResult(JSON.stringify([{ type: "text", text: "a list at the root" }]));
+      expect(await within(root).findByRole("region", { name: "text block 1" })).toHaveTextContent("a list at the root");
+    });
   });
 
   it("writes the cut notes and the field labels in the secondary text colour", async () => {

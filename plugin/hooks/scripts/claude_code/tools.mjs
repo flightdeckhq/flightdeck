@@ -5,7 +5,7 @@
 
 import { NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { boundedToken, MAX_MCP_IDENTITY_BYTES } from "../core/config.mjs";
-import { CUT_MARK, cutChars, jsonPointer, withTruncated } from "../core/cut.mjs";
+import { CUT_MARK, charCount, cutChars, headChars, jsonPointer, withTruncated } from "../core/cut.mjs";
 import { readCachedModel } from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
 
@@ -160,9 +160,9 @@ export function toolCallEventId(toolUseId) {
 // of a session.
 export const TOOL_OUTPUT_MAX_CHARS = 2000;
 
-// What ends a cut string after the characters kept: the same mark a cut
-// tool input ends with.
-export const TOOL_OUTPUT_CUT_MARK = "…";
+// What ends a cut string after the characters kept (core/cut.mjs): the
+// same mark a cut tool input ends with.
+export const TOOL_OUTPUT_CUT_MARK = CUT_MARK;
 
 // Nesting below this depth is not walked: the response is then kept as
 // the head of its JSON text (see boundToolOutput). Claude Code's tool
@@ -180,35 +180,6 @@ const TOOL_OUTPUT_MAX_KEPT_KEYS = Math.floor(TOOL_OUTPUT_MAX_CHARS / 4);
 // Stands for the elements of a list from the first one no cut can keep
 // on: cutAt stops there and names the list as cut.
 const UNKEEPABLE_TAIL = Object.freeze({});
-
-/** The first ``n`` code points of ``s``, and whether ``s`` has more. */
-function headChars(s, n) {
-  let i = 0;
-  let count = 0;
-  while (i < s.length && count < n) {
-    const unit = s.charCodeAt(i);
-    const pair = unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00;
-    i += pair ? 2 : 1;
-    count += 1;
-  }
-  return { head: s.slice(0, i), more: i < s.length };
-}
-
-/** The number of code points of ``s``. */
-function charCount(s) {
-  let count = 0;
-  for (let i = 0; i < s.length; i += 1) {
-    const unit = s.charCodeAt(i);
-    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) i += 1;
-    count += 1;
-  }
-  return count;
-}
-
-/** One reference token of an RFC 6901 JSON Pointer. */
-function pointerToken(key) {
-  return String(key).replace(/~/g, "~0").replace(/\//g, "~1");
-}
 
 /**
  * Whether the objects every cut of ``value`` keeps hold more than
@@ -296,7 +267,7 @@ function cutAt(value, cap, pointer, cuts) {
     for (let i = 0; i < value.length; i += 1) {
       if (value[i] === UNKEEPABLE_TAIL) break;
       const itemCuts = [];
-      const item = cutAt(value[i], cap, `${pointer}/${i}`, itemCuts);
+      const item = cutAt(value[i], cap, pointer + jsonPointer([i]), itemCuts);
       const cost = charCount(JSON.stringify(item)) + (out.length > 0 ? 1 : 0);
       if (out.length > 0 && used + cost > cap) break;
       out.push(item);
@@ -308,7 +279,7 @@ function cutAt(value, cap, pointer, cuts) {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cutAt(item, cap, `${pointer}/${pointerToken(key)}`, cuts)]),
+      Object.entries(value).map(([key, item]) => [key, cutAt(item, cap, pointer + jsonPointer([key]), cuts)]),
     );
   }
   return value;
@@ -436,12 +407,10 @@ export function buildToolCallPayload({
     const tools = [withTruncated({ type: "tool_use", name: toolName, input: sanitizedInput }, sanitized.truncated)];
     const response = [];
     if (cfg.capturePrompts && hookEvent.tool_response != null) {
-      // The block names the values the bound cut beside its content,
-      // never inside the tool's response.
+      // The values the bound cut are listed beside the content, never
+      // inside the tool's response (core/cut.mjs).
       const output = boundToolOutput(hookEvent.tool_response);
-      const block = { type: "tool_result", content: output.content };
-      if (output.truncated) block.truncated = output.truncated;
-      response.push(block);
+      response.push(withTruncated({ type: "tool_result", content: output.content }, output.truncated ?? []));
     }
     content = {
       provider: "anthropic",

@@ -7,12 +7,12 @@
  * with a Bash call whose stdout is far over that bound, then opens the
  * call's Prompts tab in the event drawer:
  *
- * - in the form the plugin stores now (cut inside the structure, so the
- *   text is JSON; the cut stdout ends with "…" and the tool_result block
- *   names it, `truncated: ["/stdout"]`, beside the content; the cut
- *   command of the input likewise on the tool_use block), Pretty shows
- *   stdout as terminal text with its line breaks, stderr and the other
- *   fields, and which fields were cut;
+ * - the call the plugin builds now, made by the plugin's own
+ *   buildToolCallPayload from a PostToolUse hook (the cut stdout ends
+ *   with "…" and the tool_result block names it, `["/stdout"]`, beside
+ *   the content; the cut command likewise on the tool_use block): Pretty
+ *   shows stdout as terminal text with its line breaks, scrolling in a
+ *   focusable region, stderr and the other fields, and what was cut;
  * - in the form earlier plugin versions stored (the JSON text cut at
  *   2000 characters with "…" appended), Pretty reads the fields up to
  *   the cut and says where the stored text ends;
@@ -30,6 +30,7 @@ import {
   anthropicPostCall,
   newRun,
   openEventDrawer,
+  pluginHookToolCall,
   pluginSessionStart,
   pluginToolCall,
   removeRun,
@@ -50,26 +51,11 @@ const STDOUT = Array.from(
 const STDERR = "go: downloading golang.org/x/sync v0.8.0";
 const BASH_RESPONSE = { stdout: STDOUT, stderr: STDERR, interrupted: false, isImage: false, noOutputExpected: false };
 
-/** What the plugin stores now: stdout cut so the whole JSON fits, marked;
- *  the block names it in `truncated`. Nothing is added inside the response. */
-function storedNow(): string {
-  // ASCII only, so a character is one UTF-16 unit.
-  let kept = OUTPUT_MAX_CHARS;
-  let text = "";
-  do {
-    kept -= 1;
-    text = JSON.stringify({ ...BASH_RESPONSE, stdout: STDOUT.slice(0, kept) + CUT_MARK });
-  } while (text.length > OUTPUT_MAX_CHARS);
-  return text;
-}
-
 /** What earlier plugin versions stored: the JSON text cut mid-way. */
 const STORED_BEFORE = JSON.stringify(BASH_RESPONSE).slice(0, OUTPUT_MAX_CHARS) + CUT_MARK;
 
-/** A command over the plugin's 200-character input bound, cut; the
- *  tool_use block names it. */
+/** A command over the plugin's 200-character input bound. */
 const LONG_COMMAND = `go test ./api/internal/store/... -run 'TestStoreEvents' -v -count=1 2>&1 | ${"tee -a /tmp/store-test.log | ".repeat(8)}tail -n 400`;
-const CUT_INPUT = { command: LONG_COMMAND.slice(0, 200) + CUT_MARK };
 
 async function openPrompts(page: import("@playwright/test").Page, run: Run, eventId: string): Promise<Locator> {
   const drawer = await openEventDrawer(page, run, eventId);
@@ -99,16 +85,23 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     removeRun(run);
   });
 
-  test("the output the plugin stores now: stdout as text, the cut fields named, Raw as stored", async ({
+  test("the call the plugin builds now: stdout as text, the cut values named, Raw as stored", async ({
     page,
     request,
   }) => {
-    const stored = storedNow();
-    expect(Object.keys(JSON.parse(stored))).toEqual(Object.keys(BASH_RESPONSE));
-    const events = await seedRun(request, run, [
-      pluginSessionStart(run),
-      pluginToolCall(run, 1, "Bash", CUT_INPUT, stored, { input: ["/command"], output: ["/stdout"] }),
-    ]);
+    const call = pluginHookToolCall(run, 1, {
+      tool_name: "Bash",
+      tool_input: { command: LONG_COMMAND, description: "Run the store tests" },
+      tool_response: BASH_RESPONSE,
+    });
+    // What the plugin built: both cuts named on their blocks, nothing
+    // added inside the input or the response.
+    const content = call.content as { tools: Array<Record<string, unknown>>; response: Array<Record<string, unknown>> };
+    expect(content.tools[0]!.truncated).toEqual(["/command"]);
+    expect(content.response[0]!.truncated).toEqual(["/stdout"]);
+    expect(Object.keys(JSON.parse(String(content.response[0]!.content)))).toEqual(Object.keys(BASH_RESPONSE));
+    expect(String(content.response[0]!.content).length).toBeLessThanOrEqual(OUTPUT_MAX_CHARS);
+    const events = await seedRun(request, run, [pluginSessionStart(run), call]);
     const drawer = await openPrompts(page, run, storedEvent(events, "tool_call").id);
 
     const response = drawer.getByTestId("prompt-box-response");
@@ -116,6 +109,13 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(result).toBeVisible();
     await expectTerminalText(result.getByTestId("tool-result-stdout"));
     await expect(result.getByTestId("tool-result-stderr")).toContainText(STDERR);
+    // The long stdout scrolls in its box, so it is a focusable region;
+    // the one-line stderr fits and stays out of the tab order.
+    const stdoutRegion = result.getByRole("region", { name: "stdout" });
+    await expect(stdoutRegion).toHaveAttribute("tabindex", "0");
+    await stdoutRegion.focus();
+    await expect(stdoutRegion).toBeFocused();
+    await expect(result.getByTestId("tool-result-stderr").locator("pre")).not.toHaveAttribute("tabindex");
     const scalars = result.getByTestId("tool-result-scalars");
     await expect(scalars).toContainText("interrupted:");
     await expect(scalars).toContainText("noOutputExpected:");

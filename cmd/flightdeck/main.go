@@ -462,7 +462,8 @@ func resolveDatabase(rawURL string, layout datadir.Layout) (database, error) {
 // those of the file when it exists; otherwise those of its directory,
 // where the file is about to be created. A link that points at a file
 // which does not exist yet is followed to the place the file will be
-// created, at most depth times.
+// created, at most depth times, each relative target taken from its
+// link's physical directory as the kernel takes it.
 func realPath(path string, depth int) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
@@ -480,7 +481,16 @@ func realPath(path string, depth int) (string, error) {
 			return "", rerr
 		}
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
+			// The kernel resolves a relative target against the link's
+			// physical directory, not the path it was reached by:
+			// through lnk -> real/sub, the target ../../other/db of
+			// real/sub/db names <base>/other/db, and SQLite creates the
+			// database there, not in the directory above <base>.
+			linkDir, derr := filepath.EvalSymlinks(filepath.Dir(path))
+			if derr != nil {
+				return "", derr
+			}
+			target = filepath.Join(linkDir, target)
 		}
 		return realPath(target, depth-1)
 	}

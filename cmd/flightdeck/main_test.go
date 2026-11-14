@@ -393,6 +393,40 @@ func TestResolveDatabase_ResolvesSymbolicLinks(t *testing.T) {
 	}
 }
 
+// A link to a file not created yet, reached through a linked directory,
+// names the place the kernel creates the file: lnk -> real/sub and
+// real/sub/db -> ../../other/db put lnk/db at <base>/other/db. A lexical
+// join of lnk/db's directory gives <root>/other/db, one level above
+// <base>, where a decoy file waits to be written into.
+func TestResolveDatabase_ARelativeTargetThroughALinkedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symbolic link needs a privilege on Windows")
+	}
+	root := realDir(t, t.TempDir())
+	base := filepath.Join(root, "base")
+	for _, dir := range []string{filepath.Join(base, "real", "sub"), filepath.Join(base, "other"), filepath.Join(root, "other")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decoy := filepath.Join(root, "other", "db")
+	if err := os.WriteFile(decoy, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("real", "sub"), filepath.Join(base, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "other", "db"), filepath.Join(base, "real", "sub", "db")); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(base, "other", "db")
+	layout := datadir.Layout{Root: base, Database: filepath.Join(base, datadir.DatabaseFile)}
+	got, err := resolveDatabase("sqlite://"+filepath.Join(base, "lnk", "db"), layout)
+	if err != nil || got.path != want || storage.SQLitePath(got.url) != want {
+		t.Errorf("resolveDatabase through lnk/db = %+v, %v; want %s, not the decoy %s", got, err, want, decoy)
+	}
+}
+
 // Each service's Postgres pool is a connection per processor within
 // the process's budget: the three pools, the root pool and the LISTEN
 // connections never add up to more than the budget, which is under the

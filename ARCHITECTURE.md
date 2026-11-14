@@ -10881,8 +10881,9 @@ have, and an earlier chart's release of a base up to 43, the longest
 whose Postgres StatefulSet (`<base>-postgres`, 52) could always start
 its pods, keeps every name. A StatefulSet's name is cut to 52, since
 the controller labels each pod with `controller-revision-hash`, the
-name, a dash and the revision's hash (the decimal FNV-32 sum, up to 10
-digits), in a label value of at most 63.
+name, a dash and the revision's hash, in a label value of at most 63.
+The hash is the decimal string of the revision's FNV-32 sum,
+safe-encoded one character per digit, so it is 1 to 10 characters.
 
 The chart passes the `FLIGHTDECK` stream's settings to the pods from
 `nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see

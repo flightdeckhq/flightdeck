@@ -965,7 +965,8 @@ All notable changes to Flightdeck are documented here.
   built on the release name cut to 43 characters, so a long release
   name no longer renders a Service or StatefulSet name Kubernetes
   refuses; a release of an earlier chart with a longer base gets new
-  Postgres names (the README says how to keep its data).
+  Postgres and NATS names (the README says how to keep the Postgres
+  data; the NATS rename loses only the events still queued).
 - **`make dev` runs the binary from source.** The contributor dev
   stack is the `flightdeck` binary built from the checkout, with the
   dashboard embedded, on `127.0.0.1:4000` beside one Postgres

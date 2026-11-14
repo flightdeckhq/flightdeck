@@ -234,6 +234,7 @@ flightdeck/
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
+├── scripts/test-install-ps1.ps1  # install.ps1 piped through iex against a local release layout, under Windows PowerShell 5.1 and 7
 ├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
 ├── scripts/readme-budget.sh    # The README's command budget: one install command, per-section and total limits, 300 lines
 ├── scripts/demo_seed.py        # Fills a throwaway flightdeck with invented agents, for the README's images
@@ -11092,7 +11093,16 @@ the install gate's checks (below) on the binary it builds and on that
 image, started on a new volume with a read-only root filesystem, and
 runs the checks against fake binaries that are each broken in one way
 (`scripts/test-install-gate.sh`): every fault must fail the gate within
-a bound, and a wedged binary must not hang it.
+a bound, and a wedged binary must not hang it. Both installers are run
+end to end against a local server with the release layout on every
+pull request: `scripts/test-install-sh.sh` on Linux, and
+`scripts/test-install-ps1.ps1` on Windows under Windows PowerShell 5.1
+and PowerShell 7, piped through `iex` as users run it. The PowerShell
+installer appends its directory to the user PATH by writing the Path
+value of `HKCU\Environment` back with the registry type it had and its
+`%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE`; it runs
+in a script block of its own, so the session that ran it keeps its own
+variables and preferences.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the

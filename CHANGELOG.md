@@ -102,7 +102,12 @@ All notable changes to Flightdeck are documented here.
   served from the project's site as copies of the repository's
   (`docs/install.sh`, `docs/install.ps1`, which CI keeps identical to
   the root files); the repository's raw address serves the same scripts
-  and is the fallback (D269).
+  and is the fallback (D269). The Windows installer runs under Windows
+  PowerShell 5.1 as well as PowerShell 7, appends its directory to the
+  user PATH without expanding the `%VARIABLES%` in it or changing its
+  registry type, and leaves no variable or preference of its own in
+  the session that ran it; CI runs it on Windows under both shells on
+  every pull request.
 
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens

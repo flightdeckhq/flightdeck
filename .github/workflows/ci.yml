@@ -1620,6 +1620,48 @@ jobs:
           print(f"marketplace.json OK: {len(data['plugins'])} plugin(s) validated")
           PY
 
+  # install.ps1 on Windows, on every pull request rather than first on a
+  # release tag: the install gate runs it only after a release is
+  # published. PSScriptAnalyzer as the gate runs it, then
+  # scripts/test-install-ps1.ps1 (the installer piped through iex
+  # against a local server with the release layout: checksum, the user
+  # PATH and its registry type, the caller's session left as it was,
+  # the refusals) under Windows PowerShell 5.1, which every Windows
+  # has, and under PowerShell 7.
+  installer-windows:
+    name: Installer on Windows (PowerShell 5.1 and 7)
+    runs-on: windows-2022
+    # Two runs of a script that takes seconds; fifteen minutes fails a
+    # hung server or download long before the six-hour default.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The test serves the release layout with `python -m http.server`.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The same analysis as the install gate's, with the same rule left
+      # out (the gate's comment says why).
+      - name: PSScriptAnalyzer on install.ps1
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer
+          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning,Error -ExcludeRule PSAvoidUsingWriteHost
+          $findings | Format-Table -AutoSize | Out-String | Write-Host
+          if ($findings) { throw "PSScriptAnalyzer: $($findings.Count) finding(s) in install.ps1" }
+
+      - name: install.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install-ps1.ps1 -Port 8766
+
+      - name: install.ps1 under PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-ps1.ps1 -Port 8767
+
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and
   # the all-in-one Docker image is built from the root Dockerfile, so a

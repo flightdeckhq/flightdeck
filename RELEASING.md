@@ -233,7 +233,7 @@ the leg in minutes.
 | linux-arm64 | ubuntu-24.04-arm | `install.sh`, with the same check of the site's copy |
 | macos-arm64 | macos-14 | `brew install flightdeckhq/tap/flightdeck`, `brew test`, the checks on the installed binary, then `brew services start flightdeck`: the same checks against the service on `:4000` (start-up block read from its log), `~/.flightdeck/flightdeck.db` exists, and the session is served after `brew services stop` and `start` |
 | macos-amd64 | macos-15-intel | `install.sh` |
-| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL of the tag (the `.zip`), after a check that `irm https://flightdeck-hq.com/install.ps1` returns the same script, then the checks under Git Bash |
+| windows-amd64 | windows-2022 | `install.ps1` piped from the raw URL of the tag under Windows PowerShell 5.1 (the `.zip`), after a check under 5.1 and PowerShell 7 that `irm https://flightdeck-hq.com/install.ps1` returns the same script, then the checks under Git Bash |
 
 Every leg checks `flightdeck --version` prints `flightdeck <tag>`. No
 leg starts or names a database: the binary's default, a SQLite file in

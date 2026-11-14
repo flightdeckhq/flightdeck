@@ -314,11 +314,12 @@ All notable changes to Flightdeck are documented here.
   so a tool's own fields, Glob's `truncated` flag among them, stay as
   the tool sent them. A string response is cut as text, named `[""]`.
   In the session drawer, Pretty shows a result's stdout and stderr as
-  terminal text with their line breaks (stderr set apart), its other
+  terminal text with their line breaks (stderr set apart, a long block
+  scrolling), text that holds JSON pretty-printed as before, its other
   fields compactly, and which values were cut and how much each kept.
   Results stored by earlier plugin versions, JSON text cut mid-way, are
   read up to the cut and shown the same way, with a note saying where
-  the stored text ends. A tool input whose block names cut fields shows
+  the stored text ends; a provider's tool result is never read so. A tool input whose block names cut fields shows
   how many characters each kept. Raw still shows the stored block.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled

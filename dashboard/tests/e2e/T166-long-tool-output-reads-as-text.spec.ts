@@ -17,19 +17,24 @@
  *   2000 characters with "…" appended), Pretty reads the fields up to
  *   the cut and says where the stored text ends;
  * - Raw shows the stored tool_result in both: its content as the stored
- *   string, and the block's list beside it.
+ *   string, and the block's list beside it;
+ * - only the plugin wrote that earlier form: a tool_result in an
+ *   Anthropic call's messages, reported by the sensor, whose text
+ *   happens to end with "…" is shown as stored.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
  */
 import { test, expect, type Locator } from "@playwright/test";
 import {
+  anthropicPostCall,
   newRun,
   openEventDrawer,
   pluginSessionStart,
   pluginToolCall,
   removeRun,
   seedRun,
+  sessionStart,
   storedEvent,
   type Run,
 } from "./_tool-content-run";
@@ -164,5 +169,30 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(raw).toContainText('"content": "{\\"stdout\\":\\"=== RUN');
     await expect(raw).toContainText(`${CUT_MARK}"`);
     await expect(response.getByTestId("tool-result-recovered")).toHaveCount(0);
+  });
+
+  test("a provider's tool_result that ends with … is shown as stored, not read as the plugin's cut", async ({
+    page,
+    request,
+  }) => {
+    const events = await seedRun(request, run, [
+      sessionStart(run, true),
+      anthropicPostCall(run, 1, {
+        system: "You run the tests.",
+        messages: [
+          { role: "user", content: "Run the store tests." },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_t166", content: STORED_BEFORE }] },
+        ],
+        tools: null,
+        response: { id: "msg_t166", type: "message", role: "assistant", content: [{ type: "text", text: "They pass." }] },
+      }),
+    ]);
+    const drawer = await openEventDrawer(page, run, storedEvent(events, "post_call").id);
+    await drawer.getByTestId("detail-tab-prompts").click();
+    const message = drawer.getByTestId("prompt-box-message-1");
+    await expect(message).toHaveAttribute("data-view", "pretty");
+    await expect(message.getByTestId("tool-result-raw")).toContainText('{"stdout":"=== RUN');
+    await expect(message.getByTestId("tool-result-recovered")).toHaveCount(0);
+    await expect(message.getByText(/the stored output ends at/)).toHaveCount(0);
   });
 });

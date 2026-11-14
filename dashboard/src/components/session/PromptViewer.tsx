@@ -5,6 +5,7 @@ import { fetchEventContent } from "@/lib/api";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SyntaxJson } from "@/components/ui/syntax-json";
+import { ClientType } from "@/lib/agent-identity";
 import {
   CUT_MARK,
   blockCutPointers,
@@ -19,6 +20,11 @@ import type { EventContent } from "@/lib/types";
 
 interface PromptViewerProps {
   eventId: string | null;
+  /** The client that reported the event. On a Claude Code plugin row
+   *  (``claude_code``) a tool result stored in the plugin's earlier cut
+   *  form (JSON text cut mid-way, then "…") is read up to the cut; any
+   *  other row's text is shown as stored. */
+  clientType?: string | null;
 }
 
 /* ---- Role badge styles ----
@@ -311,7 +317,7 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
 
 /* ---- Main component ---- */
 
-export function PromptViewer({ eventId }: PromptViewerProps) {
+export function PromptViewer({ eventId, clientType }: PromptViewerProps) {
   // fetchEventContent resolves null for any failed fetch: a 404 (capture
   // off for the session) or any other error. Either way the viewer shows
   // the capture-disabled message. Only this event's result is shown.
@@ -494,7 +500,11 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {content.response != null && !responseIsToolPlaceholder && (
         <Section title="Response">
           <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
-            <PrettyResponse response={content.response} provider={provider} />
+            <PrettyResponse
+              response={content.response}
+              provider={provider}
+              pluginRow={clientType === ClientType.ClaudeCode}
+            />
           </ViewBox>
         </Section>
       )}
@@ -1250,7 +1260,16 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
 
 /* ---- Pretty response renderer ---- */
 
-function PrettyResponse({ response, provider }: { response: unknown; provider: string }) {
+function PrettyResponse({
+  response,
+  provider,
+  pluginRow = false,
+}: {
+  response: unknown;
+  provider: string;
+  /** Whether the Claude Code plugin reported the event (see PromptViewerProps.clientType). */
+  pluginRow?: boolean;
+}) {
   if (!response) {
     return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
   }
@@ -1262,7 +1281,7 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
     if (response.length === 0) {
       return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no response)</div>;
     }
-    return <ToolResponseBlocks blocks={response} />;
+    return <ToolResponseBlocks blocks={response} pluginRow={pluginRow} />;
   }
 
   if (typeof response === "string") {
@@ -1432,7 +1451,7 @@ function KeyValueList({ data, cut }: { data: Record<string, unknown>; cut?: Read
 /** "cut at 200 characters", under or after a value the plugin cut. */
 function CutNote({ value }: { value: unknown }) {
   return (
-    <span data-testid="cut-note" className="font-mono text-[10px] italic" style={{ color: "var(--text-muted)" }}>
+    <span data-testid="cut-note" className="font-mono text-[10px] italic" style={{ color: "var(--text-secondary)" }}>
       {describeCut(value)}
     </span>
   );
@@ -1450,12 +1469,12 @@ function ToolInputFields({ input, pointers }: { input: Record<string, unknown>; 
 
 /* ---- Tool response block renderers (tool_call Pretty view) ---- */
 
-function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
+function ToolResponseBlocks({ blocks, pluginRow }: { blocks: unknown[]; pluginRow: boolean }) {
   return (
     <div className="space-y-2">
       {blocks.map((raw, i) => {
         if (isPlainObject(raw) && raw.type === "tool_result") {
-          return <ToolResultBlock key={i} block={raw} />;
+          return <ToolResultBlock key={i} block={raw} pluginRow={pluginRow} />;
         }
         return <ContentBlocks key={i} blocks={[raw]} />;
       })}
@@ -1473,7 +1492,16 @@ function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
  * followed by "…", with no list; such a text is read up to the cut. Raw
  * shows the block as stored either way. */
 
-function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
+function ToolResultBlock({
+  block,
+  pluginRow = false,
+}: {
+  block: Record<string, unknown>;
+  /** Whether the block is the Claude Code plugin's own (a hook
+   *  tool_call's response on a ``claude_code`` row): only then is a
+   *  text with no cut list but a trailing "…" its earlier cut form. */
+  pluginRow?: boolean;
+}) {
   const rawContent = block.content;
   const contentString = typeof rawContent === "string" ? rawContent : null;
   const pointers = blockCutPointers(block);
@@ -1520,10 +1548,11 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
 
   // The block names the whole content as cut: a text cut at the bound.
   const cutWhole = pointers?.includes("") ?? false;
-  const recovered =
-    contentString != null && (cutWhole || (!pointers && contentString.endsWith(CUT_MARK)))
-      ? readCutResult(contentString)
-      : null;
+  // The plugin's earlier cut form: no list, the JSON text cut and "…".
+  // Only the plugin wrote it; a provider's tool result that happens to
+  // end with "…" is shown as stored.
+  const earlierCutForm = pluginRow && !pointers && contentString?.endsWith(CUT_MARK) === true;
+  const recovered = contentString != null && (cutWhole || earlierCutForm) ? readCutResult(contentString) : null;
   if (recovered) {
     return (
       <div
@@ -1566,7 +1595,7 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
           <div
             data-testid="tool-result-truncated"
             className="mt-1 font-mono text-[10px] italic"
-            style={{ color: "var(--text-muted)" }}
+            style={{ color: "var(--text-secondary)" }}
           >
             … (truncated){cutWhole ? ` ${describeCut(contentString)}` : ""}
           </div>
@@ -1652,21 +1681,33 @@ function FieldLabel({ name, tone = "muted" }: { name: string; tone?: "muted" | "
     <span
       data-testid="kv-label"
       className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
-      style={{ color: tone === "error" ? "var(--danger)" : "var(--text-muted)" }}
+      style={{ color: tone === "error" ? "var(--danger)" : "var(--text-secondary)" }}
     >
       {name}
     </span>
   );
 }
 
-/** Text as a terminal shows it, line breaks kept; stderr is set apart
- *  by the error colour. */
-function TerminalText({ text, tone = "muted" }: { text: string; tone?: "muted" | "error" }) {
+/** The tallest a terminal block grows before it scrolls, in pixels:
+ *  about twenty lines, the height the MCP details give a result. A
+ *  plugin output is at most 2000 characters, but a tool_result in a
+ *  provider's messages is as long as the tool made it. */
+const TERMINAL_TEXT_MAX_HEIGHT_PX = 360;
+
+/** Text as a terminal shows it, line breaks kept, scrolling past
+ *  TERMINAL_TEXT_MAX_HEIGHT_PX (focusable, so the keys scroll it too);
+ *  stderr is set apart by the error colour. */
+function TerminalText({ text, name, tone = "muted" }: { text: string; name: string; tone?: "muted" | "error" }) {
   return (
     <pre
+      role="region"
+      aria-label={name}
+      tabIndex={0}
       className="rounded-md p-2 font-mono text-[12px] leading-relaxed"
       style={{
         ...fieldTextStyle,
+        maxHeight: TERMINAL_TEXT_MAX_HEIGHT_PX,
+        overflowY: "auto",
         borderLeft: `2px solid ${tone === "error" ? "var(--danger)" : "var(--border-strong)"}`,
       }}
     >
@@ -1682,7 +1723,7 @@ function FieldText({ name, text, testId }: { name: string; text: string; testId:
   return (
     <div data-testid={testId} data-field={name} className="flex flex-col gap-1">
       <FieldLabel name={name} tone={tone} />
-      <TerminalText text={text} tone={tone} />
+      <TerminalText text={text} name={name} tone={tone} />
     </div>
   );
 }
@@ -1692,7 +1733,7 @@ function TruncatedNote({ children }: { children: React.ReactNode }) {
     <div
       data-testid="tool-result-truncated"
       className="font-mono text-[10px] italic"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--text-secondary)" }}
     >
       … (truncated) {children}
     </div>
@@ -1715,7 +1756,7 @@ function TextBlockList({ blocks }: { blocks: TextBlock[] }) {
   return (
     <div className="space-y-2">
       {blocks.map((block, i) => (
-        <TerminalText key={i} text={block.text} />
+        <TerminalText key={i} text={block.text} name={`text block ${i + 1}`} />
       ))}
     </div>
   );
@@ -1744,7 +1785,8 @@ function CompactValue({ value }: { value: unknown }) {
 
 /**
  * A tool's structured result, every field as the tool sent it: stdout
- * and stderr as terminal text, other multi-line text the same way,
+ * and stderr as terminal text, text holding JSON pretty-printed, other
+ * multi-line text as terminal text,
  * nested objects as fields of their own, a list of text blocks as its
  * texts, other lists and deep objects as JSON, then the scalar fields
  * together on one line.
@@ -1754,7 +1796,17 @@ function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; 
   const scalars: Array<[string, unknown]> = [];
   for (const [key, value] of Object.entries(data)) {
     const textBlocks = textBlocksOf(value);
-    if (typeof value === "string" && value.length > 0 && (TERMINAL_FIELDS.has(key) || needsMultiline(value))) {
+    if (typeof value === "string" && !TERMINAL_FIELDS.has(key) && parseJsonContainer(value) !== undefined) {
+      // Text that holds a JSON object or list (a Read of a .json file, a
+      // field that carries JSON) is pretty-printed, as every other text
+      // box in the viewer does; stdout and stderr stay a terminal's text.
+      blocks.push(
+        <div key={key} data-testid="tool-result-json-text" data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <BlockValue value={value} />
+        </div>,
+      );
+    } else if (typeof value === "string" && value.length > 0 && (TERMINAL_FIELDS.has(key) || needsMultiline(value))) {
       const testId = TERMINAL_FIELDS.has(key) ? `tool-result-${key}` : "tool-result-text";
       blocks.push(<FieldText key={key} name={key} text={value} testId={testId} />);
     } else if (isCompactValue(value)) {
@@ -1794,7 +1846,7 @@ function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; 
         >
           {scalars.map(([key, value]) => (
             <span key={key} className="inline-flex items-baseline gap-1">
-              <span data-testid="kv-label" className="font-medium" style={{ color: "var(--text-muted)" }}>
+              <span data-testid="kv-label" className="font-medium" style={{ color: "var(--text-secondary)" }}>
                 {key}:
               </span>
               <CompactValue value={value} />

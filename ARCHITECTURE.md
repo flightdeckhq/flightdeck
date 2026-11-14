@@ -2498,11 +2498,17 @@ follows on its `tool_use` block.
   `{"type": "tool_result", "content": "{\"stdout\": \"=== RUN …\", \"stderr\":
   \"\", …}", "truncated": ["/stdout"]}`; a Read's cut is `/file/content`,
   an Agent report's `/content/0/text`.
-- A response whose structure alone is over the bound (hundreds of keys),
-  or that nests deeper than 32 levels, is stored as the head of its JSON
-  text followed by `…`, with `truncated: [""]`: a text cut at the bound,
-  as a string response is. An object wrapped around it would put a key
-  in the tool's output that the tool never sent.
+- A response whose structure alone is over the bound, or that nests
+  deeper than 32 levels, is stored as the head of its JSON text followed
+  by `…`, with `truncated: [""]`: a text cut at the bound, as a string
+  response is. An object wrapped around it would put a key in the
+  tool's output that the tool never sent. A cut keeps every key of each
+  object it keeps and the first element of each list, and a key costs at
+  least four characters of JSON, so a response whose kept objects hold
+  more than 500 keys is not copied or cut at all: the hook counts up to
+  that many keys and stores the head of the text. A list stops at the
+  first element (after its first) that alone holds more, and is named as
+  cut. A list at the root names itself as `""`.
 
 A response at or under the bound is stored whole, and its block has no
 `truncated`. A tool event rebuilt from the transcript (see Tool calls
@@ -7863,16 +7869,26 @@ their line breaks, `stderr` in the error colour, other multi-line text
 the same way, nested objects (a Read's `file`) as fields of their own,
 a list of text blocks as its texts, other lists as JSON and the scalar
 fields together on one line, every field as the tool sent it (Glob's
-own `truncated` flag is a field). A content that is a JSON object or
-list cut mid-way and followed by `…` (named whole, `[""]`, or a long
-output an earlier plugin version stored with no list) is read up to the
-cut by a tolerant reader (`lib/cut-json.ts`: one pass, every whole
-key/value pair and element, and the string it was reading where the
-text ends; a key, number or literal cut part-way is left out), shown
-the same way, and noted with where the stored text ends (`the stored
-output ends at 2,000 characters, inside stdout`); text that does not
-read so is shown as written, as is plain text. This applies wherever a
-`tool_result` block renders, in a message as in the plugin's response.
+own `truncated` flag is a field); a field other than `stdout` and
+`stderr` whose text holds a JSON object or list (a Read of a `.json`
+file) is pretty-printed instead. A terminal block scrolls past 360 px
+(about twenty lines) and takes keyboard focus, since a `tool_result` in
+a provider's messages is as long as the tool made it. A content that is
+a JSON object or list cut mid-way and followed by `…` is read up to the
+cut when the plugin wrote it so: when the block names it whole
+(`[""]`), or, with no list, when the block is in the `response` list of
+an event a Claude Code plugin reported (`client_type` `claude_code`),
+the form earlier plugin versions stored. A `tool_result` from any other
+source, in a provider's messages for one, is shown as stored even when
+its text ends with `…`. A tolerant reader (`lib/cut-json.ts`: one
+pass, at most 64 levels of nesting; every whole key/value pair and
+element, and the string it was reading where the text ends; a key,
+number or literal cut part-way is left out) reads the text, which is
+then shown the same way, with a note on where the stored text ends
+(`the stored output ends at 2,000 characters, inside stdout`). Text
+that does not read so is shown as written, as is plain text. The
+rendering of a `tool_result` applies wherever the block renders, in a
+message as in the plugin's response.
 Content stored with
 `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is

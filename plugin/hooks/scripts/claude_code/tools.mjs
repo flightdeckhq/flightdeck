@@ -133,6 +133,18 @@ export const TOOL_OUTPUT_CUT_MARK = "…";
 // responses nest three or four levels.
 const TOOL_OUTPUT_MAX_DEPTH = 32;
 
+// More keys than this never fit the bound, however their values are cut:
+// a key costs at least four characters of JSON (``"":0``). A cut keeps
+// every key of every object it keeps, so a response, or a list element,
+// whose kept objects hold more is not walked further (see
+// keepsTooManyKeys): a response of a million keys would otherwise be
+// copied and serialised a dozen times, for seconds, inside the hook.
+const TOOL_OUTPUT_MAX_KEPT_KEYS = Math.floor(TOOL_OUTPUT_MAX_CHARS / 4);
+
+// Stands for the elements of a list from the first one no cut can keep
+// on: cutAt stops there and names the list as cut.
+const UNKEEPABLE_TAIL = Object.freeze({});
+
 /** The first ``n`` code points of ``s``, and whether ``s`` has more. */
 function headChars(s, n) {
   let i = 0;
@@ -163,12 +175,38 @@ function pointerToken(key) {
 }
 
 /**
+ * Whether the objects every cut of ``value`` keeps hold more than
+ * TOOL_OUTPUT_MAX_KEPT_KEYS keys: a cut keeps every key of an object it
+ * keeps, and a list's first element. Stops counting at the limit, so it
+ * reads at most that many keys whatever the response's size.
+ */
+function keepsTooManyKeys(value) {
+  let keys = 0;
+  const pending = [value];
+  while (pending.length > 0) {
+    const item = pending.pop();
+    if (Array.isArray(item)) {
+      if (item.length > 0) pending.push(item[0]);
+    } else if (item !== null && typeof item === "object") {
+      for (const key in item) {
+        if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
+        keys += 1;
+        if (keys > TOOL_OUTPUT_MAX_KEPT_KEYS) return true;
+        pending.push(item[key]);
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * ``value`` without what no cut keeps: strings shortened to one
  * character more than the bound, lists to one element more (an element
- * costs at least two characters of JSON), so every cut of it is the cut
- * of ``value``. Null when it nests deeper than TOOL_OUTPUT_MAX_DEPTH.
- * Bounds the work of every later step by the bound and the number of
- * keys, whatever the response's size.
+ * costs at least two characters of JSON) and to the elements before the
+ * first one with too many keys to fit (UNKEEPABLE_TAIL in its place),
+ * so every cut of it is the cut of ``value``. Null when it nests deeper
+ * than TOOL_OUTPUT_MAX_DEPTH. Bounds the work of every later step by the
+ * bound, whatever the response's size.
  */
 function trimForCut(value, depth = 0) {
   if (depth > TOOL_OUTPUT_MAX_DEPTH) return null;
@@ -176,6 +214,11 @@ function trimForCut(value, depth = 0) {
   if (Array.isArray(value)) {
     const out = [];
     for (const item of value.slice(0, TOOL_OUTPUT_MAX_CHARS + 1)) {
+      // The first element is kept by every cut: the caller checked it.
+      if (out.length > 0 && keepsTooManyKeys(item)) {
+        out.push(UNKEEPABLE_TAIL);
+        break;
+      }
       const trimmed = trimForCut(item, depth + 1);
       if (trimmed === null && item !== null) return null;
       out.push(trimmed);
@@ -215,6 +258,7 @@ function cutAt(value, cap, pointer, cuts) {
     const out = [];
     let used = 0;
     for (let i = 0; i < value.length; i += 1) {
+      if (value[i] === UNKEEPABLE_TAIL) break;
       const itemCuts = [];
       const item = cutAt(value[i], cap, `${pointer}/${i}`, itemCuts);
       const cost = charCount(JSON.stringify(item)) + (out.length > 0 ? 1 : 0);
@@ -252,8 +296,9 @@ function cutAt(value, cap, pointer, cuts) {
  *   give up the characters. A cut string ends with the mark; a cut list
  *   keeps its leading elements. ``truncated`` names each,
  *   ``["/stdout"]``, ``["/content/0/text"]``.
- * - A response whose structure alone is over the bound (hundreds of
- *   keys), or that nests deeper than TOOL_OUTPUT_MAX_DEPTH, is kept as
+ * - A response whose structure alone is over the bound (more keys than
+ *   TOOL_OUTPUT_MAX_KEPT_KEYS in the objects every cut keeps), or that
+ *   nests deeper than TOOL_OUTPUT_MAX_DEPTH, is kept as
  *   the head of its JSON text followed by the mark, with ``[""]``: a
  *   text cut at the bound, as a string response is. Wrapping it in an
  *   object would put a key in the tool's output that the tool never
@@ -274,8 +319,14 @@ export function boundToolOutput(response) {
     // cycle): nothing of it can be kept as JSON.
     text = null;
   }
-  if (text != null && charCount(text) <= TOOL_OUTPUT_MAX_CHARS) return { content: text, truncated: null };
-  const trimmed = text == null ? null : trimForCut(response);
+  // A text longer than twice the bound in UTF-16 units has more than
+  // the bound in code points: no need to count them.
+  if (text != null && text.length <= 2 * TOOL_OUTPUT_MAX_CHARS && charCount(text) <= TOOL_OUTPUT_MAX_CHARS) {
+    return { content: text, truncated: null };
+  }
+  // No cut fits a response whose kept objects alone are over the bound:
+  // it is not copied or cut.
+  const trimmed = text == null || keepsTooManyKeys(response) ? null : trimForCut(response);
   if (trimmed !== null) {
     const fits = (cap) => {
       const cuts = [];

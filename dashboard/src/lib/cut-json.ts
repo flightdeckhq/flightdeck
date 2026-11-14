@@ -105,7 +105,9 @@ export interface CutJsonRead {
  *  768 KiB, so a longer text is not one of its tool outputs. */
 export const CUT_JSON_MAX_CHARS = 1_048_576;
 
-/** Containers nested deeper than this are not read. */
+/** The most levels of objects and lists a text is read through: the
+ *  root is the first, and a container on level 65 makes the text not
+ *  read. Claude Code's tool outputs nest three or four levels. */
 export const CUT_JSON_MAX_DEPTH = 64;
 
 class NotJson extends Error {}
@@ -158,8 +160,9 @@ class Reader {
     }
   }
 
+  /** A value whose container, if it is one, nests ``depth`` levels below
+   *  the root's (0). */
   value(depth: number): Slot {
-    if (depth > CUT_JSON_MAX_DEPTH) throw new NotJson();
     this.skipSpace();
     if (this.atEnd()) return { state: "none", path: [] };
     const c = this.text.charAt(this.pos);
@@ -247,6 +250,7 @@ class Reader {
   }
 
   private object(depth: number): Slot {
+    if (depth >= CUT_JSON_MAX_DEPTH) throw new NotJson();
     this.pos += 1;
     const obj: Record<string, unknown> = {};
     const partial = (path: JsonPath = [], inString = false): Slot => ({ state: "partial", value: obj, path, inString });
@@ -281,6 +285,7 @@ class Reader {
   }
 
   private list(depth: number): Slot {
+    if (depth >= CUT_JSON_MAX_DEPTH) throw new NotJson();
     this.pos += 1;
     const items: unknown[] = [];
     const partial = (path: JsonPath = [], inString = false): Slot => ({ state: "partial", value: items, path, inString });

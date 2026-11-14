@@ -159,6 +159,20 @@ export const contentPostCall = (run: Run, offsetSeconds: number, content: Record
     content: { ...content, session_id: run.sessionId, event_id: "" },
   });
 
+/** An Anthropic post_call the sensor reports, with the content envelope
+ *  it stores (T166: a message's tool_result as the provider received it). */
+export const anthropicPostCall = (run: Run, offsetSeconds: number, content: Record<string, unknown>) =>
+  event(run, "post_call", offsetSeconds, {
+    model: "claude-sonnet-4-5",
+    provider: "anthropic",
+    tokens_input: 1200,
+    tokens_output: 40,
+    tokens_total: 1240,
+    latency_ms: 1100,
+    has_content: true,
+    content: { provider: "anthropic", model: "claude-sonnet-4-5", ...content, session_id: run.sessionId, event_id: "" },
+  });
+
 /** The identity fields of the Claude Code plugin's events. */
 const PLUGIN_FIELDS = { client_type: "claude_code", agent_type: "coding", framework: "claude-code" };
 

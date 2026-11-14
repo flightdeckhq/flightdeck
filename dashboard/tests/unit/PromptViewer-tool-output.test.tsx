@@ -51,9 +51,17 @@ function pluginToolCall(
   } as EventContent;
 }
 
-async function renderResult(result: string, input?: Record<string, unknown>, cuts?: Cuts): Promise<HTMLElement> {
+/** The client a plugin row carries (the event's ``client_type``). */
+const PLUGIN_CLIENT = "claude_code";
+
+async function renderResult(
+  result: string,
+  input?: Record<string, unknown>,
+  cuts?: Cuts,
+  clientType: string | null = PLUGIN_CLIENT,
+): Promise<HTMLElement> {
   mockContent = pluginToolCall(result, input, cuts);
-  render(<PromptViewer eventId="e-tool-output" />);
+  render(<PromptViewer eventId="e-tool-output" clientType={clientType} />);
   return screen.findByTestId("prompt-box-response");
 }
 
@@ -187,6 +195,56 @@ describe("a structured tool result in Pretty", () => {
   });
 });
 
+describe("text fields of a structured result", () => {
+  it("pretty-prints a field whose text holds JSON, and keeps stdout holding JSON as terminal text", async () => {
+    const json = '{"name":"flightdeck","version":"0.8.0","scripts":{"test":"vitest"}}';
+    const box = await renderResult(
+      JSON.stringify({ type: "text", file: { filePath: "/repo/package.json", content: json }, stdout: json }),
+    );
+    const field = within(box).getByTestId("tool-result-json-text");
+    expect(field).toHaveAttribute("data-field", "content");
+    const pretty = within(field).getByTestId("pretty-json");
+    expect(pretty).toHaveTextContent('"version": "0.8.0"');
+    // Indented over several lines, syntax-coloured, as the viewer shows JSON text.
+    expect(pretty.querySelector("pre")?.textContent?.split("\n").length).toBeGreaterThan(3);
+    expect(pretty.querySelector("pre span")).not.toBeNull();
+    expect(within(box).getByTestId("tool-result-stdout").querySelector("pre")?.textContent).toBe(json);
+  });
+
+  it("shows multi-line plain text as terminal text", async () => {
+    const box = await renderResult(JSON.stringify({ result: "First line of the page.\nSecond line.", code: 200 }));
+    expect(within(box).getByTestId("tool-result-text").querySelector("pre")?.textContent).toBe(
+      "First line of the page.\nSecond line.",
+    );
+    expect(within(box).queryByTestId("tool-result-json-text")).toBeNull();
+  });
+
+  it("makes a terminal block scroll past its height and reachable from the keyboard", async () => {
+    const box = await renderResult(JSON.stringify({ stdout: "a\nb", stderr: "e" }));
+    for (const name of ["stdout", "stderr"]) {
+      const pre = within(box).getByTestId(`tool-result-${name}`).querySelector("pre")!;
+      expect(pre).toHaveAttribute("tabindex", "0");
+      expect(pre).toHaveAttribute("role", "region");
+      expect(pre).toHaveAttribute("aria-label", name);
+      expect(pre.style.overflowY).toBe("auto");
+      expect(pre.style.maxHeight).toBe("360px");
+    }
+    expect(within(box).getByRole("region", { name: "stdout" })).toBeInTheDocument();
+  });
+
+  it("writes the cut notes and the field labels in the secondary text colour", async () => {
+    const box = await renderResult(
+      JSON.stringify({ stdout: `${"o".repeat(50)}${MARK}`, interrupted: false }),
+      undefined,
+      { output: ["/stdout"] },
+    );
+    expect(within(box).getByTestId("tool-result-truncated").getAttribute("style")).toContain("var(--text-secondary)");
+    for (const label of within(box).getAllByTestId("kv-label")) {
+      expect(label.getAttribute("style")).toContain("var(--text-secondary)");
+    }
+  });
+});
+
 describe("a tool result an earlier plugin version stored cut mid-way", () => {
   /** What the old plugin stored: the JSON text's first 2000 characters, then the mark. */
   const oldCut = (response: unknown) => JSON.stringify(response).slice(0, 2000) + MARK;
@@ -225,7 +283,7 @@ describe("a tool result an earlier plugin version stored cut mid-way", () => {
   it("falls back to the stored text when it does not read as cut JSON", async () => {
     for (const stored of [`plain text output${MARK}`, `{not json at all${MARK}`, `{"stdout${MARK}`]) {
       mockContent = pluginToolCall(stored);
-      const view = render(<PromptViewer eventId={`e-${stored.length}`} />);
+      const view = render(<PromptViewer eventId={`e-${stored.length}`} clientType={PLUGIN_CLIENT} />);
       const box = await view.findByTestId("prompt-box-response");
       expect(within(box).getByTestId("tool-result-raw"), stored).toHaveTextContent(stored);
       expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("(truncated)");
@@ -238,6 +296,38 @@ describe("a tool result an earlier plugin version stored cut mid-way", () => {
     const box = await renderResult("total 0\ndrwxr-xr-x  2 u u 40 .");
     expect(within(box).getByTestId("tool-result-raw")).toHaveTextContent("total 0");
     expect(within(box).queryByTestId("tool-result-truncated")).toBeNull();
+  });
+});
+
+describe("the earlier cut form is the plugin's only", () => {
+  const oldCut = JSON.stringify({ stdout: STDOUT, stderr: "", interrupted: false }).slice(0, 2000) + MARK;
+
+  it("shows a text ending with … as stored on a row another client reported", async () => {
+    for (const clientType of [null, "flightdeck_sensor"]) {
+      mockContent = pluginToolCall(oldCut);
+      const view = render(<PromptViewer eventId={`e-${String(clientType)}`} clientType={clientType} />);
+      const box = await view.findByTestId("prompt-box-response");
+      expect(within(box).getByTestId("tool-result-raw")).toHaveTextContent('{"stdout":"=== RUN');
+      expect(within(box).queryByTestId("tool-result-recovered")).toBeNull();
+      expect(within(box).queryByText(/the stored output ends at/)).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("shows a provider's tool_result in a message as stored, even on a plugin row", async () => {
+    mockContent = {
+      ...pluginToolCall("ok"),
+      messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: oldCut }] }],
+    } as EventContent;
+    render(<PromptViewer eventId="e-message" clientType={PLUGIN_CLIENT} />);
+    const message = await screen.findByTestId("prompt-box-message-0");
+    expect(within(message).getByTestId("tool-result-raw")).toHaveTextContent('{"stdout":"=== RUN');
+    expect(within(message).queryByTestId("tool-result-recovered")).toBeNull();
+  });
+
+  it("reads the same text up to the cut on the plugin's own row", async () => {
+    const box = await renderResult(oldCut);
+    expect(within(box).getByTestId("tool-result-recovered")).toBeInTheDocument();
   });
 });
 

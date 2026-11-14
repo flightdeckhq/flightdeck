@@ -163,8 +163,15 @@ describe("readCutJson", () => {
 
   it("bounds its work: a text over the size limit or nested past the depth limit is not read", () => {
     expect(readCutJson(`{"a":"${"x".repeat(CUT_JSON_MAX_CHARS)}`)).toBeNull();
-    expect(readCutJson("[".repeat(CUT_JSON_MAX_DEPTH + 2))).toBeNull();
-    expect(readCutJson("[".repeat(CUT_JSON_MAX_DEPTH))).not.toBeNull();
+    // 64 levels are read, a 65th is not: as text cut inside the deepest
+    // list, and as whole JSON with a value on the deepest level.
+    expect(CUT_JSON_MAX_DEPTH).toBe(64);
+    expect(readCutJson("[".repeat(64))).not.toBeNull();
+    expect(readCutJson("[".repeat(65))).toBeNull();
+    expect(readCutJson(`${"[".repeat(64)}1${"]".repeat(64)}`)?.complete).toBe(true);
+    expect(readCutJson(`${"[".repeat(65)}1${"]".repeat(65)}`)).toBeNull();
+    expect(readCutJson(`${'{"a":'.repeat(64)}"deep`)?.cutPath).toHaveLength(64);
+    expect(readCutJson(`${'{"a":'.repeat(65)}"deep`)).toBeNull();
   });
 
   it("reads the old plugin's 2000-character cut of a long Bash result", () => {

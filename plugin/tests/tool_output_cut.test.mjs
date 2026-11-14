@@ -283,6 +283,45 @@ describe("boundToolOutput's characters", () => {
     assertCutString(out.content, JSON.stringify(response));
   });
 
+  it("does not copy or cut a response whose kept objects hold more keys than any cut can fit", () => {
+    // A key costs at least four characters of JSON, so 20,000 keys never
+    // fit 2000 characters. JSON.stringify reads each key once for the
+    // head of the text; the guard stops at its limit. Copying the
+    // response for a cut would read every key again (and a million keys
+    // took seconds in the hook).
+    const n = 20_000;
+    const target = Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, i]));
+    let reads = 0;
+    const response = new Proxy(target, {
+      get(t, key, receiver) {
+        if (typeof key === "string") reads += 1;
+        return Reflect.get(t, key, receiver);
+      },
+    });
+    const out = boundToolOutput(response);
+    assert.deepEqual(out.truncated, [""]);
+    assert.ok(out.content.startsWith('{"k0":0,"k1":1,'));
+    assert.equal(chars(out.content), MAX);
+    assert.ok(reads < n + MAX / 2, `read ${reads} keys of ${n}`);
+  });
+
+  it("stops a list at the first element no cut can keep, and names the list", () => {
+    const huge = Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`k${i}`, i]));
+    const { value, truncated } = bounded([{ type: "text", text: "first" }, huge, { type: "text", text: "after" }]);
+    assert.deepEqual(value, [{ type: "text", text: "first" }]);
+    // The list at the root is the whole content: its pointer is "".
+    assert.deepEqual(truncated, [""]);
+  });
+
+  it("still cuts inside the structure when the keys alone fit", () => {
+    const fields = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`k${i}`, i]));
+    const log = "x".repeat(5000);
+    const { value, truncated } = bounded({ ...fields, log });
+    assert.deepEqual(truncated, ["/log"]);
+    assert.equal(value.k149, 149);
+    assertCutString(value.log, log);
+  });
+
   it("keeps a response nested past the depth the cut walks as the head of its JSON text", () => {
     let response = { stdout: "z".repeat(3000) };
     for (let i = 0; i < 60; i++) response = { inner: response };

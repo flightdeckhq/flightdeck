@@ -253,7 +253,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
               {displayed.event_type === "session_signal" ? (
                 <SignalPromptsPanel event={displayed} />
               ) : displayed.has_content ? (
-                <PromptViewer eventId={displayed.id} />
+                <PromptViewer eventId={displayed.id} clientType={displayed.client_type} />
               ) : (
                 <NoEventContentForEvent event={displayed} />
               )}

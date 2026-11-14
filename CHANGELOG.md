@@ -357,6 +357,78 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **One `FLIGHTDECK_SERVER` value works for the sensor and the Claude
+  Code plugin.** The `flightdeck` start-up block prints its ingestion
+  URL (`http://localhost:4000/ingest`) as the value for both, but the
+  plugin appended `/ingest/v1/events` to it, posted to
+  `/ingest/ingest/v1/events`, got a 404 and recorded nothing. The plugin
+  now takes the base URL or the ingestion URL, with or without a
+  trailing slash, and so does a reverse proxy's prefix
+  (`https://example.com/fd`, `https://example.com/fd/ingest`). A base
+  URL with a trailing slash also failed before. The sensor accepted
+  both forms already; it now looks only at the URL's path, so a control
+  plane at `https://ingest.example.com` gets `/ingest` appended and its
+  API calls stay on that host (they went to `https://api.example.com`,
+  with the access token). The sensor, the plugin and the playground
+  apply one rule: a path whose last segment is `ingest` is the
+  ingestion URL, any other path (`/ingestion`, `/ingest-eu`) is the
+  base. Credentials in the server URL are dropped, with a warning, by
+  both, and neither the plugin's notice nor its log lines show them.
+  They are read from the URL's authority only: the plugin took an `@`
+  in the query or the fragment for the end of the credentials, so
+  `https://good.example#@evil.example` sent events, with the access
+  token, to `evil.example`.
+- **A cut tool input says it was cut.** The plugin keeps a tool's
+  `command`, `query` and `pattern` to 200 characters and a sub-agent's
+  `prompt` to 100, and cut them with no sign, so the session drawer
+  showed a command that stopped mid-way as if it were the whole command.
+  A cut value now ends with `…` and the event's `tool_use` block lists
+  it in `truncated`, beside the input, as a JSON Pointer
+  (`"truncated": ["/command"]`, D272); the bounds are unchanged. The
+  bounds count characters, so a cut no longer splits one in two.
+- **A long tool output reads as text in the Prompts tab.** The plugin
+  kept the first 2000 characters of a tool's response by cutting its
+  JSON text mid-way, so every Bash result over that showed in Pretty as
+  one line of escaped JSON (`{"stdout":"--- PASS: …\n=== RUN …`) while
+  Raw read better. The bound stays, but the plugin now cuts inside the
+  response: the long strings (stdout, a file's content) and lists are
+  shortened to one common length so the whole fits, and the stored
+  output stays valid JSON. Nothing is added inside the response: a cut
+  string ends with `…`, and the `tool_result` block names each cut
+  value beside its content, `"truncated": ["/stdout"]` (JSON Pointers),
+  so a tool's own fields, Glob's `truncated` flag among them, stay as
+  the tool sent them. A string response is cut as text, named `[""]`.
+  In the session drawer, Pretty shows a result's stdout and stderr as
+  terminal text with their line breaks (stderr set apart, a long block
+  scrolling), text that holds JSON pretty-printed as before, its other
+  fields compactly, and which values were cut and how much each kept.
+  Results stored by earlier plugin versions, JSON text cut mid-way, are
+  read up to the cut and shown the same way, with a note saying where
+  the stored text ends; a provider's tool result is never read so. A
+  tool input whose block names cut fields shows how many characters
+  each kept. Raw still shows the stored block (D274).
+- **A Claude Code session that is not being recorded says so.** When
+  the server does not accept a session's first event (no answer, an
+  address that is not a Flightdeck server's, a refused token), the
+  `SessionStart` hook shows a warning in Claude Code, once per session,
+  naming what happened and the setting to change; the token is never
+  printed. Before, the only trace was a line in Claude Code's debug
+  log. The hook still exits 0 and the session carries on. A first event
+  the server does not answer within two seconds (a cold server's first
+  event can take longer) is sent once more before any warning, so a
+  session that is being recorded is not reported as lost. Every send of
+  a session's `session_start`, the second attempt and a later hook's
+  backstop alike, is the same event, with the same id and time, so a
+  server that stored one and answered it late keeps one; a sub-agent's
+  child `session_start` too.
+- **A resent `session_start` no longer marks its session re-attached.**
+  Ingestion attached every arrival of a `session_start`, so a copy sent
+  again after a slow answer (the Claude Code plugin's retry, an
+  OpenTelemetry exporter's retried batch) recorded an attachment, which
+  the dashboard draws as a re-attached run, and moved the session's
+  start sequence. The event id is now the key: a start is attached and
+  stamped once per id, and a copy gets the first copy's answer (D273;
+  migration 000037 adds `session_start_receipts`).
 - **Instances that start together on one database all come up.** Two
   `flightdeck` binaries (or several workers' replicas) started at once
   on an empty Postgres database deadlocked in migration 30, whose index

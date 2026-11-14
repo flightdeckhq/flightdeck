@@ -528,7 +528,7 @@ flightdeck/
 │   │   │                       # agent-identity, agent-status, agents-filter, agents-format, agents-sort,
 │   │   │                       # fleet-ordering, relationship, policy-scope-labels, swimlane-lost-sub-agent,
 │   │   │                       # swimlane-lanes, events-cache-epoch, useSwimlaneScroll, allRowCollapsed,
-│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width
+│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width, cut-json
 │   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
 │   │   └── styles/             # globals.css (Tailwind import, @theme colour tokens), themes.css
 │   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
@@ -673,7 +673,17 @@ def init(
     default. The environment wins over a passed kwarg, as for every other
     knob; init warns when it overrides a different server. The server
     default is http://localhost:4000/ingest, the local flightdeck binary
-    or dev stack. The token default is the dev seed token tok_dev, and it
+    or dev stack. The server may be given as the ingestion URL (ending in
+    /ingest, what the binary's start-up block prints) or as the base URL
+    without it (http://localhost:4000, the Claude Code plugin's form), by
+    the plugin's rule: a path whose last segment is ingest is the
+    ingestion URL and the API URL replaces that segment with api; any
+    other path (/fd, /ingestion, /ingest-eu, /ingest/v2) is a base URL
+    and gets /ingest and /api appended. Only the path is looked at, so a
+    host named ingest.example.com is a host. Surrounding whitespace, the
+    query, the fragment, trailing slashes and the default port go, and
+    credentials in the URL are dropped with a WARNING, as the plugin
+    drops them. The token default is the dev seed token tok_dev, and it
     applies only when neither the server nor the token was supplied by
     kwarg or environment and the default server's host is loopback
     (localhost, 127.0.0.1, ::1); init then logs one WARNING naming the
@@ -686,7 +696,8 @@ def init(
 
     api_url is the base URL for control-plane calls (directive registration,
     sync, policy prefetch). Derived from server by replacing "/ingest" with
-    "/api" when None. Override via FLIGHTDECK_API_URL.
+    "/api" in its path when None, so it stays on the server's host.
+    Override via FLIGHTDECK_API_URL.
 
     limit sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
@@ -2204,8 +2215,45 @@ another stack without changing the saved options. The defaults live in
 the plugin (`core/config.mjs`), so the manifest declares none and an
 option the user never saved reaches the hooks unset. A blank value
 counts as unset. Credentials embedded in
-the server URL are stripped before use, and the default token prints
-a warning on every hook unless `FLIGHTDECK_QUIET=1`.
+the server URL (`https://user:secret@host`, or `user:secret@host` with
+no scheme) are stripped before use, with a warning: neither fetch nor
+the sensor's urllib sends them, as basic auth or otherwise, and left in
+they would reach every log line and notice that names the server. The
+plugin and the sensor both drop them; the access token is the one
+credential. Credentials are read from the URL's authority only, as the
+URL standard reads it: the span after `scheme://` up to the first `/`,
+`?`, `#` or `\` (a backslash ends an http(s) authority as a slash
+does), with the host after its last `@`. An `@` in the path, the query
+or the fragment is not userinfo, so `https://good.example#@evil.example`
+names good.example. The plugin checks a value with its URL parser
+first, the sensor and the playground with `urllib.parse` after reading
+`\` as `/`. A log line or notice never shows a server value that looks
+like an access token (`ftd_` or `tok_`, a token pasted into the wrong
+variable). The default token prints a warning on every hook unless
+`FLIGHTDECK_QUIET=1`.
+
+The server is one value for the plugin and the sensor, in either of two
+forms: the server's base URL (`http://localhost:4000`) or its ingestion
+URL (`http://localhost:4000/ingest`, what the `flightdeck` start-up
+block prints and the sensor's default has). `serverBaseUrl`
+(`core/config.mjs`) resolves both to the base URL, and it is the only
+place that decides: a final `/ingest` path segment is dropped, with or
+without a trailing slash, and every other path is kept, so a reverse
+proxy's prefix works in both forms (`https://example.com/fd` and
+`https://example.com/fd/ingest`) and a path that only ends in those
+letters (`/myingest`) or starts with them (`/ingestion`, `/ingest-eu`)
+is not touched. Surrounding whitespace, trailing slashes, a query
+string, a fragment and the scheme's default port are dropped, since
+the plugin appends its own paths; the scheme and the host are
+lower-cased. The plugin posts events to `<base>/ingest/v1/events` and
+reads MCP policies from `<base>/api` (`FLIGHTDECK_API_URL` overrides the
+latter). The sensor and the playground resolve every value to the same
+two endpoints by the same rule (see Sensor, Public API).
+`contracts/server_urls.json` holds the cases all three must agree on;
+`plugin/tests/server_url.test.mjs` runs them through the plugin, and
+`sensor/tests/unit/test_init_defaults.py` through the sensor and
+through the playground's copy (`playground/_helpers.py`, loaded by
+path), so both CI suites check all three.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
 environment variables (see Content Capture). A repository's project
 settings (`.claude/settings.json`, `.claude/settings.local.json`) can
@@ -2244,7 +2292,7 @@ Each value is sized for the hook's normal worst case:
 
 | Hook | Timeout (s) | Normal worst case |
 |---|---|---|
-| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
+| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s, and 2 s more when the first is not answered in time), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
 | `UserPromptSubmit` | 15 | the `session_start` backstop (git probes and its POST) and the `pre_call` POST (2 s each) |
 | `PreToolUse` | 10 | local reads only (the policy cache, remembered decisions and, with enforcement on, the control state), plus a 2 s heartbeat when the session has been quiet for 5 s |
 | `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
@@ -2421,6 +2469,49 @@ prompt the subagent was given, through the same claim and marker; the
 child's interior hooks give it one second to claim first, then send a
 `session_start` themselves only if it has not. The payload carries the `collectContext` dict.
 
+A failed POST writes one line to the hook's stderr (`[flightdeck]
+cannot reach <server>: <reason>. events dropped for this session.`) and
+the hook exits 0: the plugin fails open, and the next hook sends the
+`session_start` again. Claude Code keeps the stderr of a hook that
+exits 0 in its debug log only, so the `SessionStart` hook also tells
+the user when the server does not accept the session's first event: it
+prints `{"systemMessage": "..."}` on stdout, which Claude Code shows as
+a warning. The message says what happened and which setting to change:
+no answer (the server is not running, or the address is wrong), a 404
+or 405 (the address is not a Flightdeck server's; the message names the
+URL that was tried), a 421 (the server does not answer for the host
+name in the address), a 401 or 403 (the token was refused; the message
+names `FLIGHTDECK_TOKEN` and the token option, never the token), a
+value that is not an `http://` or `https://` URL, or any other status.
+A POST the server does not answer within its two seconds is sent once
+more before the user is told anything: a server's first event is its
+slowest, and a cold or loaded one can exceed the two seconds once and
+answer the next attempt at once, in which case the session is being
+recorded and no warning is shown. Only a timeout is tried again, and
+only while a whole attempt fits before the hook's 25-second deadline; a
+refused connection or a status is reported after the first attempt.
+Every send of a session's `session_start` is the same event, since a
+server can store one and answer after the poster gave up: its `id` (a
+UUID) and `timestamp` are recorded before the first POST in
+`start-pending-${sessionId}.json` (recorded under the file's lock
+directory, which re-reads it first, so concurrent hooks converge on one
+record on any file system, a stale record's replacement included) and
+reused by `SessionStart`'s second
+attempt and by a later hook's backstop, and the worker's
+`(id, occurred_at)` dedup keeps one. A sub-agent's child session has a
+record of its own: `SubagentStart`'s child `session_start` and the
+backstop a hook inside the sub-agent sends carry the same id and time,
+and a resume (`SubagentStart` for a child its `SubagentStop` closed)
+starts with a new one. The record goes once a
+`session_start` is acknowledged, at `SessionEnd`, when ingestion refuses
+its time as clock skew, and when it is older than a day (half of
+ingestion's 48-hour window), which gets a new id and time.
+It is shown once per session (a marker,
+`start-notice-${sessionId}.txt`, so a `SessionStart` that fires again
+after a compaction does not repeat it) and only by `SessionStart`:
+every other hook's stdout stays empty, since Claude Code adds a
+`UserPromptSubmit` hook's plain stdout to the model's context.
+
 `collectContext` is the Node.js parallel of the Python sensor's
 `context.py`: pid, process_name, os (Windows / Darwin / Linux), arch,
 hostname, user, node_version, working_dir, git_commit / git_branch /
@@ -2454,17 +2545,108 @@ cannot observe it.
 ### Tool input sanitisation
 
 `sanitizeToolInput(input)` is a strict whitelist that keeps ONLY:
-`file_path`, `command` (truncated to 200 chars), `query`, `pattern`,
-`prompt` (truncated to 100 chars). Everything else (content, message
-bodies, sub-agent contexts) is dropped. Returns `null` if no whitelisted
-field was present. Raw file bodies written by `Write` / `Edit` are never
-forwarded.
+`file_path`, `command`, `query`, `pattern` (each of the last three cut
+to 200 characters) and `prompt` (cut to 100). Everything else (content,
+message bodies, sub-agent contexts) is dropped. Returns `null` if no
+whitelisted field was present. Raw file bodies written by `Write` /
+`Edit` are never forwarded. The bounds count characters (code points),
+so a cut never splits one. A cut value keeps its first characters and
+ends with `…`, so a command cut mid-way does not read as the whole
+command, in the event's `tool_input` or in the Prompts tab. A value at
+its bound is sent whole. The sanitized input holds the tool's own keys
+only: which values were cut travels beside it (see Cut values in tool
+content below), never inside it, where it would read as one of the
+tool's arguments and could collide with an argument of that name. The
+same input in a permission or notification `session_signal` is cut
+again to `signal_data`'s 256 bytes; a value that bound cuts ends with
+`…` too, and `signal_data.truncated` names the cut fields,
+comma-separated, since `signal_data` is Flightdeck's own structure and
+holds scalars only.
+
+### Cut values in tool content
+
+A content block whose value the plugin cut lists the cut values in
+`truncated`, beside the value: an array of RFC 6901 JSON Pointers, each
+to a string that ends with `…` or a list that lost its trailing
+elements because the plugin cut it. A `tool_use` block's pointers are
+relative to its `input`, in the order the plugin cut them; a
+`tool_result` block's are relative to its parsed `content`, in document
+order (a list before the values cut inside it):
+
+```json
+{"type": "tool_use", "name": "Bash",
+ "input": {"command": "grep -rn tool_input dashboard/src | … | head…"},
+ "truncated": ["/command"]}
+{"type": "tool_result",
+ "content": "{\"stdout\":\"=== RUN   TestStore…\",\"stderr\":\"\",\"interrupted\":false}",
+ "truncated": ["/stdout"]}
+```
+
+A `tool_result` whose content is a text cut at the bound (a string
+response, or a response whose structure alone is over the bound; see
+Tool output) lists `""`, the whole value, as does a list at the root
+that lost its tail. A block with nothing cut has no `truncated`. The
+event's `tool_input` string is the JSON of the same sanitized `input`,
+so it carries no `truncated` either; the content block is the one place
+the list is kept. The pointers name the tool's own keys as they are, so
+a tool argument named `truncated` stays an argument and a result field
+of that name (Glob's flag) stays the tool's, and a key with `/` or `~`
+in it is escaped as RFC 6901 says (`~1`, `~0`).
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
 Consumed alongside `parent_session_id` by the dashboard's
 swimlane connectors and the SessionDrawer Sub-agents tab to render
 the parent's spawn event as the anchor for child rows.
+
+### Tool output
+
+With `capturePrompts` on, a `tool_call`'s content carries the tool's
+response as one `tool_result` block under `response`, whose `content` is
+a string of at most 2000 characters (`TOOL_OUTPUT_MAX_CHARS` in
+`tools.mjs`). The bound keeps a preview: the head of a command's output
+or of a file read shows what the tool returned, while the whole response
+would be stored again on every tool call of a session. The bound counts
+characters (code points), so a cut never splits one.
+
+Nothing is added inside the tool's response: a cut string ends with
+`…`, and the block lists the cut values in `truncated` (see Cut values
+in tool content).
+
+- A string response (plain text) is stored as that text; over the bound
+  it keeps its first 1999 characters followed by `…`, and `truncated` is
+  `[""]`, the whole value.
+- Any other response (Bash's `{stdout, stderr, interrupted, isImage,
+  noOutputExpected}`, Read's `{type, file: {filePath, content, …}}`,
+  Grep's, Glob's, Edit's, an Agent's report, a list of content blocks)
+  is stored as its JSON text, and stays valid JSON over the bound:
+  every string and every list longer than one common length is cut to
+  it, the largest length at which the text fits, so short values (a
+  stderr line, a path, a status) stay whole and the long ones give up
+  the characters. A cut string ends with `…`; a cut list keeps its
+  leading elements. Keys and every other value stay as the tool sent
+  them, Glob's own `truncated` flag included:
+  `{"type": "tool_result", "content": "{\"stdout\": \"=== RUN …\", \"stderr\":
+  \"\", …}", "truncated": ["/stdout"]}`; a Read's cut is `/file/content`,
+  an Agent report's `/content/0/text`.
+- A response whose structure alone is over the bound, or that nests
+  deeper than 32 levels, is stored as the head of its JSON text followed
+  by `…`, with `truncated: [""]`: a text cut at the bound, as a string
+  response is. An object wrapped around it would put a key in the
+  tool's output that the tool never sent. A cut keeps every key of each
+  object it keeps and the first element of each list, and a key costs at
+  least four characters of JSON, so a response whose kept objects hold
+  more than 500 keys is not copied or cut at all: the hook counts up to
+  that many keys and stores the head of the text. A list stops at the
+  first element (after its first) that alone holds more, and is named as
+  cut. A list at the root names itself as `""`.
+
+A response at or under the bound is stored whole, and its block has no
+`truncated`. A tool event rebuilt from the transcript (see Tool calls
+and failures) takes the response as the text of the transcript's
+`tool_result`, which is cut as a string. An `mcp_tool_call` stores its
+result in `tool_output` as the server returned it, within the event
+body limit (see Configuration).
 
 ### Tool calls and failures
 
@@ -3525,7 +3707,45 @@ control plane honours end-to-end:
    up; the worker's rules still apply if the stamp is missed. If the row
    does not exist the store is a no-op and the worker creates it
    downstream.
+
+   A `session_start` that carries an `id` is attached once per id: the
+   client-minted event id is the idempotency key of these side effects.
+   A client resends a start it gave up on (the Claude Code plugin sends
+   the same event, id and timestamp, until one is acknowledged; an
+   OpenTelemetry exporter retries a batch, whose derived ids repeat), and
+   the first copy may have been attached already. `Attach` records the id
+   in `session_start_receipts`, in the same transaction as the attach
+   (`ON CONFLICT (event_id) DO NOTHING`), with whether it attached; a copy
+   whose id is there for the same session revives nothing, writes no
+   `session_attachments` row and is answered with the first copy's
+   `attached`. A start whose id is another session's receipt is not a
+   copy: it is attached and stamped as a start without an id is, and
+   nothing is recorded for it (the other session's answer is never
+   handed out; refusing the event would drop it over an informational
+   side effect). `RecordStart` and the worker's upsert read only a
+   receipt of the start's own session, so the other session's recorded
+   sequence never stands in for this start's.
+   `RecordStart` keeps the lowest sequence a copy of the start was
+   published at: it records a sequence on the receipt only when it is
+   below the one recorded (in one transaction, the receipt locked on
+   Postgres), stamps the row only then, and when a copy published later
+   had stamped first, puts the lower sequence back on the row where the
+   copy's still stands. The worker keeps the same rule: it drops a copy
+   whose id is already stored before any side effect, and when two
+   copies of one start are processed at once (neither stored yet), its
+   session upsert takes the lower sequence from the receipt, or records
+   its own there and puts the row back from the higher one
+   (`ClaimStartSeq`, `LowerStartSeq`), so a copy's later sequence never
+   replaces the first copy's at ingestion or at the worker. The copy is
+   still published, since the first copy's publish may have failed after
+   the attach, and the worker stores the event once (`(id,
+   occurred_at)`). A receipt is kept 50
+   hours: ingestion refuses an event dated more than 48 hours back or 5
+   minutes ahead, so a copy of a start first received earlier than that
+   can no longer pass validation; `Attach` deletes older receipts. A
+   `session_start` without an `id` is attached on every arrival.
 3. **Response envelope — `attached: true` when the row pre-existed.**
+   A resent copy gets what the first copy got.
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
 5. **Dashboard — an attachment badge per recorded attachment.**
@@ -4856,8 +5076,10 @@ five focused functions:
 1. **`ingestion/internal/session/store.go::Attach`**.
    Synchronous on `session_start` so the HTTP response can report
    `attached=true`. Closed/lost → active, clearing `ended_at` and
-   `closed_seq`; writes one `session_attachments` row per arrival (the
-   only writer of those rows).
+   `closed_seq`; writes one `session_attachments` row per arrival of a
+   start event id it has not seen (the only writer of those rows; a
+   resent copy, recognised by its `session_start_receipts` row, writes
+   nothing).
 2. **`ingestion/internal/session/store.go::RecordStart`**.
    Runs once the event is published, when the row pre-existed. Stamps the
    start's stream sequence and revives a closed row whose `closed_seq` is
@@ -4866,12 +5088,19 @@ five focused functions:
    `closed_seq`. Best effort: it skips a row another writer holds instead
    of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
    if the row is still held it gives up and logs that, at most one line a
-   second per process. No attachment row.
+   second per process. No attachment row. Per start event id the row
+   keeps the lowest sequence of the start's copies: a copy's call with a
+   higher sequence than the one on the id's receipt stamps nothing, and
+   a lower one replaces it on the receipt and, where the higher still
+   stands, on the row.
 3. **`workers/internal/writer/writer.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
    `closed_seq` is greater than this start's stream sequence, which stays
-   closed; records the start's sequence in `start_seq`. Refreshes
+   closed; records the start's sequence in `start_seq`, the greater of
+   the stored and this start's, except that the copies of one start
+   (one event id with a receipt) leave the lowest of their sequences
+   (`ClaimStartSeq` before the upsert, `LowerStartSeq` after). Refreshes
    identity columns from the event payload; COALESCE and CASE branches
    let a lazy-created row absorb the real session_start data when it
    arrives. Real values are write-once; only the `"unknown"` sentinel is
@@ -5595,6 +5824,32 @@ row — only re-attachments. The session drawer and the timeline mark
 the `session_start` within two seconds of each row (see Session
 attachment flow).
 
+### `session_start_receipts`
+
+```sql
+CREATE TABLE session_start_receipts (
+    event_id    UUID PRIMARY KEY,
+    session_id  UUID NOT NULL,
+    attached    BOOLEAN NOT NULL DEFAULT FALSE,
+    start_seq   BIGINT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW
+);
+
+CREATE INDEX session_start_receipts_received_idx ON session_start_receipts (received_at);
+```
+
+One row per `session_start` event id ingestion has attached (see
+Session attachment flow): the session it started, whether it attached
+to an existing row, and the lowest stream sequence a copy of the start
+was published at, recorded by ingestion's re-attachment stamp or by the
+worker's session upsert, whichever handled a copy first. A resent copy
+of the start (same session)
+finds its row and changes nothing. `session_id`
+carries no foreign key: a session's first start is received before the
+worker creates the session row. Rows older than 50 hours are deleted by
+`Attach`, the age past which no copy of the start passes ingestion's
+clock-skew check.
+
 ### `events` (metadata only — no prompt content inline)
 
 ```sql
@@ -6022,6 +6277,7 @@ schema this history reaches at 000036.
 | 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
 | 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
 | 000036 | `otlp_spans.assembled_in`: the assembly that marked a record, with a check that it is set exactly when `assembled` is (records marked before it get their trace's `assembly_count`); the down file drops the column |
+| 000037 | `session_start_receipts` and its `received_at` index: one row per attached `session_start` event id, so a resent copy is not attached again; the down file drops the table |
 
 ---
 
@@ -7888,7 +8144,38 @@ over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 and any other value as JSON; the `{}` such a row holds in `response`
 is not shown as a response. The Claude Code plugin's hook `tool_call`
 keeps its `tool_use` block under `tools` and its `tool_result` under
-`response`, and shows them there. Content stored with
+`response`, and shows them there. A block that lists cut values in
+`truncated` (JSON Pointers; see Plugin > Tool output and Tool input
+sanitisation) has each named: an input field with how many characters
+it kept (`cut at 200 characters`), a result's values in one note
+(`stdout cut at 1,803 characters`, `filenames cut after 26 entries`,
+`content[0].text cut at 894 characters`). A `tool_result` whose content
+is a JSON object shows `stdout` and `stderr` as terminal text with
+their line breaks, `stderr` in the error colour, other multi-line text
+the same way, nested objects (a Read's `file`) as fields of their own,
+a list of text blocks as its texts, other lists as JSON and the scalar
+fields together on one line, every field as the tool sent it (Glob's
+own `truncated` flag is a field); a field other than `stdout` and
+`stderr` whose text holds a JSON object or list (a Read of a `.json`
+file) is pretty-printed instead. A terminal block scrolls past 360 px
+(about twenty lines) and takes keyboard focus, since a `tool_result` in
+a provider's messages is as long as the tool made it. A content that is
+a JSON object or list cut mid-way and followed by `…` is read up to the
+cut when the plugin wrote it so: when the block names it whole
+(`[""]`), or, with no list, when the block is in the `response` list of
+an event a Claude Code plugin reported (`client_type` `claude_code`),
+the form earlier plugin versions stored. A `tool_result` from any other
+source, in a provider's messages for one, is shown as stored even when
+its text ends with `…`. A tolerant reader (`lib/cut-json.ts`: one
+pass, at most 64 levels of nesting; every whole key/value pair and
+element, and the string it was reading where the text ends; a key,
+number or literal cut part-way is left out) reads the text, which is
+then shown the same way, with a note on where the stored text ends
+(`the stored output ends at 2,000 characters, inside stdout`). Text
+that does not read so is shown as written, as is plain text. The
+rendering of a `tool_result` applies wherever the block renders, in a
+message as in the plugin's response.
+Content stored with
 `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a
@@ -9718,8 +10005,11 @@ sanitiser is a strict whitelist implemented in
 - Keys kept: `file_path`, `command`, `query`, `pattern`, `prompt`. Every
   other field is dropped at the source; structured inputs that don't map
   onto one of these keys never reach the network.
-- String values truncated: `prompt` at 100 chars, everything else at 200.
-  Truncation happens before JSON serialisation.
+- String values cut: `prompt` at 100 characters, `command`, `query` and
+  `pattern` at 200; `file_path` is sent whole. A cut value ends with `…`
+  and is listed in the `tool_use` content block's `truncated`, beside the
+  input (see Plugin > Cut values in tool content). The cut happens
+  before JSON serialisation.
 - Raw file bodies written by `Write` / `Edit` are never forwarded. Those
   tools carry their body as the `content` key, which is not on the
   whitelist.
@@ -9744,7 +10034,10 @@ No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a
 whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
-is all-or-nothing per session.
+is all-or-nothing per session. The plugin keeps the head of each tool's
+output, at most 2000 characters cut inside its structure and the cut
+values named beside it (see Plugin > Tool output); that is a size
+bound, not a filter.
 
 The plugin and the sensor cut captured content that would take an
 event past the 768 KiB body limit, marking each cut string (see
@@ -10897,7 +11190,9 @@ package once its imports are, in import-path order, which puts this one
 before the NATS packages and so before any goroutine exists.
 
 **Start-up output.** One block on stdout: the version, the dashboard
-URL, the ingestion URL for `FLIGHTDECK_SERVER`, the token (or where it
+URL, the ingestion URL (the one value of `FLIGHTDECK_SERVER` for the
+sensor and the Claude Code plugin, both of which also accept the
+dashboard URL), the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
 engine's name), the host names answered (see Host check) and the bus
@@ -11426,7 +11721,7 @@ runs the services that way; the split test stack and
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_SERVER` | Ingestion base URL; overrides the `server=` kwarg; default `http://localhost:4000/ingest` |
+| `FLIGHTDECK_SERVER` | The control plane's address: its ingestion URL (`http://localhost:4000/ingest`, the default and what the start-up block prints) or its base URL (`http://localhost:4000`); overrides the `server=` kwarg. The Claude Code plugin reads the same variable and accepts the same two forms |
 | `FLIGHTDECK_TOKEN` | Access token; overrides the `token=` kwarg; defaults to `tok_dev` only when the server is also defaulted (see Sensor, Public API) |
 | `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
 | `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |

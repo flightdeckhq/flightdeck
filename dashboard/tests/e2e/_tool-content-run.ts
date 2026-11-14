@@ -1,6 +1,7 @@
 /**
  * A run that T162, T163 and T165 post through ingestion in the sensor's
- * own wire shape: a session_start declaring the capture posture, then
+ * own wire shape (T166 in the Claude Code plugin's): a session_start
+ * declaring the capture posture, then
  * calls whose captured content travels in the event_content envelope
  * (T165: OpenAI Responses and litellm text_completion post_calls). T162 and T163 post tool
  * calls whose captured arguments and result travel in the event_content
@@ -11,6 +12,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
@@ -157,6 +162,132 @@ export const contentPostCall = (run: Run, offsetSeconds: number, content: Record
     has_content: true,
     content: { ...content, session_id: run.sessionId, event_id: "" },
   });
+
+/** An Anthropic post_call the sensor reports, with the content envelope
+ *  it stores (T166: a message's tool_result as the provider received it). */
+export const anthropicPostCall = (run: Run, offsetSeconds: number, content: Record<string, unknown>) =>
+  event(run, "post_call", offsetSeconds, {
+    model: "claude-sonnet-4-5",
+    provider: "anthropic",
+    tokens_input: 1200,
+    tokens_output: 40,
+    tokens_total: 1240,
+    latency_ms: 1100,
+    has_content: true,
+    content: { provider: "anthropic", model: "claude-sonnet-4-5", ...content, session_id: run.sessionId, event_id: "" },
+  });
+
+/** The identity fields of the Claude Code plugin's events. */
+const PLUGIN_FIELDS = { client_type: "claude_code", agent_type: "coding", framework: "claude-code" };
+
+/** A session_start as the Claude Code plugin sends it, capture on (T166). */
+export const pluginSessionStart = (run: Run) =>
+  event(run, "session_start", 0, {
+    ...PLUGIN_FIELDS,
+    capture_prompts: true,
+    sensor_version: "e2e-fixture/0.0.0",
+    context: { os: "Linux", arch: "x86_64", hostname: HOST, user: "e2e" },
+  });
+
+/** A tool_call as the Claude Code plugin sends it (T166): the sanitised
+ *  input in ``tool_input`` and as a ``tool_use`` block under ``tools``,
+ *  and the tool's response as the stored text of a ``tool_result`` block
+ *  under ``response``. Each block names the values the plugin cut in its
+ *  own ``truncated`` (JSON Pointers), beside the value. */
+export const pluginToolCall = (
+  run: Run,
+  offsetSeconds: number,
+  toolName: string,
+  input: Record<string, unknown>,
+  storedResult: string,
+  cuts: { input?: string[]; output?: string[] } = {},
+) =>
+  event(run, "tool_call", offsetSeconds, {
+    ...PLUGIN_FIELDS,
+    model: "claude-opus-5-5",
+    tool_name: toolName,
+    tool_input: JSON.stringify(input),
+    latency_ms: 4200,
+    duration_ms: 4200,
+    has_content: true,
+    content: {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      system: null,
+      messages: [],
+      tools: [{ type: "tool_use", name: toolName, input, ...(cuts.input ? { truncated: cuts.input } : {}) }],
+      response: [{ type: "tool_result", content: storedResult, ...(cuts.output ? { truncated: cuts.output } : {}) }],
+      session_id: run.sessionId,
+      event_id: "",
+    },
+  });
+
+/** The Claude Code plugin's tool event builder. */
+const PLUGIN_TOOLS = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..", "..", "..", "plugin", "hooks", "scripts", "claude_code", "tools.mjs",
+);
+
+/** What a PostToolUse hook hands the plugin for one tool call. */
+export interface ToolHook {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_response: unknown;
+}
+
+/** The fields the Claude Code plugin's own ``buildToolCallPayload`` sends
+ *  for a PostToolUse hook, capture on: the sanitised ``tool_input`` and
+ *  the ``content`` whose ``tool_use`` and ``tool_result`` blocks carry
+ *  the values it cut and its ``truncated`` lists (T166). Run in a child
+ *  process with a throwaway plugin data dir, so the plugin reads no
+ *  state of this machine's. */
+export function pluginBuiltToolCall(hook: ToolHook): Record<string, unknown> {
+  const data = mkdtempSync(join(tmpdir(), "fd-e2e-plugin-"));
+  try {
+    const script = `
+      import { readFileSync } from "node:fs";
+      const { buildToolCallPayload } = await import(${JSON.stringify(pathToFileURL(PLUGIN_TOOLS).href)});
+      const hook = JSON.parse(readFileSync(0, "utf8"));
+      const payload = buildToolCallPayload({
+        cfg: { captureToolInputs: true, capturePrompts: true },
+        hookName: "PostToolUse",
+        hookEvent: hook,
+        toolName: hook.tool_name,
+        basePayload: { model: "claude-opus-5-5" },
+        sessionId: "e2e",
+      });
+      process.stdout.write(JSON.stringify(payload));`;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      input: JSON.stringify({ ...hook, tool_use_id: `toolu_${randomUUID().replace(/-/g, "")}` }),
+      env: { PATH: process.env.PATH ?? "", HOME: data, CLAUDE_PLUGIN_DATA: data },
+      encoding: "utf8",
+    });
+    expect(result.status, `the plugin's builder: ${result.stderr}`).toBe(0);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    return {
+      tool_name: payload.tool_name,
+      tool_input: payload.tool_input,
+      has_content: payload.has_content,
+      content: payload.content,
+    };
+  } finally {
+    rmSync(data, { recursive: true, force: true });
+  }
+}
+
+/** A tool_call whose content and tool_input the plugin's own builder
+ *  made for ``hook`` (pluginBuiltToolCall), on the run. */
+export const pluginHookToolCall = (run: Run, offsetSeconds: number, hook: ToolHook) => {
+  const built = pluginBuiltToolCall(hook);
+  return event(run, "tool_call", offsetSeconds, {
+    ...PLUGIN_FIELDS,
+    model: "claude-opus-5-5",
+    latency_ms: 4200,
+    duration_ms: 4200,
+    ...built,
+    content: { ...(built.content as Record<string, unknown>), session_id: run.sessionId, event_id: "" },
+  });
+};
 
 /** An MCP tool call with nothing captured: what a capture-off run sends,
  *  and what a capture-on run sends for a call with no arguments or result. */

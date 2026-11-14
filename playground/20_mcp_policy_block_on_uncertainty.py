@@ -49,7 +49,7 @@ async def run_demo() -> int:
     # fetch fails. The mcp_block_on_uncertainty=True kwarg is the
     # failsafe that blocks unmatched URLs anyway.
     os.environ["AGENT_FLAVOR"] = flavor
-    # Bypass init_sensor (which hardcodes api_url=API_URL) so we
+    # Bypass init_sensor (which leaves api_url to the sensor) so we
     # can point the sensor at an invalid port. The whole point of
     # this demo is to fail the preflight policy fetch — the
     # init_sensor convention assumes a reachable API.

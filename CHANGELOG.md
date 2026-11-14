@@ -398,7 +398,8 @@ All notable changes to Flightdeck are documented here.
   session that is being recorded is not reported as lost. Every send of
   a session's `session_start`, the second attempt and a later hook's
   backstop alike, is the same event, with the same id and time, so a
-  server that stored one and answered it late keeps one.
+  server that stored one and answered it late keeps one; a sub-agent's
+  child `session_start` too.
 - **A resent `session_start` no longer marks its session re-attached.**
   Ingestion attached every arrival of a `session_start`, so a copy sent
   again after a slow answer (the Claude Code plugin's retry, an

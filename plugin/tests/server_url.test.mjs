@@ -358,6 +358,91 @@ describe("a session start the server is slow to answer", () => {
     }
   });
 
+  it("keeps one child session_start when SubagentStart's was stored late and a child hook sends the backstop", async () => {
+    // The server stores every POST at once and answers the sub-agent's
+    // own session_start after the poster has given up on it; everything
+    // else at once. The child's next hook then sends the child's
+    // session_start backstop, which must be the same event again. Events
+    // are kept as the worker keeps them, once per id and time; one with
+    // no id is a new one each time.
+    const stored = new Map();
+    const posts = [];
+    const isChildStart = (e) => e.event_type === "session_start" && e.parent_session_id != null;
+    const late = await new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          if (req.method !== "POST" || req.url !== "/ingest/v1/events") {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end("{}");
+            return;
+          }
+          const event = JSON.parse(body);
+          posts.push(event);
+          stored.set(`${event.id ?? randomUUID()}@${event.timestamp}`, event);
+          const answer = () => {
+            if (res.destroyed) return;
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end('{"status":"ok","attached":false}');
+          };
+          if (isChildStart(event) && posts.filter(isChildStart).length === 1) setTimeout(answer, TIMEOUT_MS + 500);
+          else answer();
+        });
+      });
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+    try {
+      const outer = randomUUID();
+      const native = `cc-${randomUUID()}`;
+      const env = hookEnv({}, {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${late.address().port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: outer,
+      });
+      // The Agent tool's sub-agent, as the sub-agent tests drive it:
+      // SubagentStart with the agent's id and type, then a hook from
+      // inside it carrying the same agent_id.
+      const subagent = { session_id: native, cwd: privateTmp, agent_id: "apending1", agent_type: "general-purpose" };
+      const start = await runScript(
+        JSON.stringify({ hook_event_name: "SubagentStart", ...subagent, tool_input: { prompt: "count the files" } }),
+        env,
+      );
+      assert.equal(start.code, 0, start.stderr);
+      assert.equal(posts.filter(isChildStart).length, 1, "SubagentStart sent the child's session_start");
+      const inner = await runScript(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          ...subagent,
+          tool_name: "Bash",
+          tool_input: { command: "ls | wc -l" },
+          tool_response: { stdout: "7", stderr: "" },
+          tool_use_id: "toolu_01childpending",
+          duration_ms: 4,
+        }),
+        env,
+      );
+      assert.equal(inner.code, 0, inner.stderr);
+      await pollUntil(() => posts.some((e) => e.event_type === "tool_call" && e.parent_session_id === outer), "the child's tool_call");
+      const childStarts = posts.filter(isChildStart);
+      assert.equal(childStarts.length, 2, "SubagentStart's and the child hook's backstop");
+      assert.equal(childStarts[0].session_id, childStarts[1].session_id);
+      assert.match(childStarts[0].id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.equal(
+        new Set(childStarts.map((e) => `${e.id}@${e.timestamp}`)).size,
+        1,
+        "both sends of the child's session_start carry one id and one timestamp",
+      );
+      assert.equal([...stored.values()].filter(isChildStart).length, 1, "one child session_start stored");
+      assertIngestionContract(childStarts[0]);
+      assertIngestionContract(childStarts[1]);
+    } finally {
+      late.closeAllConnections?.();
+      late.close();
+    }
+  });
+
   it("does not try again when the answer is a configuration error", async () => {
     // A 404 from an address that is not a Flightdeck server's: a second
     // attempt would get the same answer, so the user is told at once.

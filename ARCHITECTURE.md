@@ -2496,7 +2496,11 @@ UUID) and `timestamp` are recorded before the first POST in
 `start-pending-${sessionId}.json` (published with an exclusive link, so
 concurrent hooks converge on one) and reused by `SessionStart`'s second
 attempt and by a later hook's backstop, and the worker's
-`(id, occurred_at)` dedup keeps one. The record goes once a
+`(id, occurred_at)` dedup keeps one. A sub-agent's child session has a
+record of its own: `SubagentStart`'s child `session_start` and the
+backstop a hook inside the sub-agent sends carry the same id and time,
+and a resume (`SubagentStart` for a child its `SubagentStop` closed)
+starts with a new one. The record goes once a
 `session_start` is acknowledged, at `SessionEnd`, when ingestion refuses
 its time as clock skew, and when it is older than a day (half of
 ingestion's 48-hour window), which gets a new id and time.

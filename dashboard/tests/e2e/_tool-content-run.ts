@@ -174,13 +174,15 @@ export const pluginSessionStart = (run: Run) =>
 /** A tool_call as the Claude Code plugin sends it (T166): the sanitised
  *  input in ``tool_input`` and as a ``tool_use`` block under ``tools``,
  *  and the tool's response as the stored text of a ``tool_result`` block
- *  under ``response``. */
+ *  under ``response``. Each block names the values the plugin cut in its
+ *  own ``truncated`` (JSON Pointers), beside the value. */
 export const pluginToolCall = (
   run: Run,
   offsetSeconds: number,
   toolName: string,
   input: Record<string, unknown>,
   storedResult: string,
+  cuts: { input?: string[]; output?: string[] } = {},
 ) =>
   event(run, "tool_call", offsetSeconds, {
     ...PLUGIN_FIELDS,
@@ -195,8 +197,8 @@ export const pluginToolCall = (
       model: "claude-opus-5-5",
       system: null,
       messages: [],
-      tools: [{ type: "tool_use", name: toolName, input }],
-      response: [{ type: "tool_result", content: storedResult }],
+      tools: [{ type: "tool_use", name: toolName, input, ...(cuts.input ? { truncated: cuts.input } : {}) }],
+      response: [{ type: "tool_result", content: storedResult, ...(cuts.output ? { truncated: cuts.output } : {}) }],
       session_id: run.sessionId,
       event_id: "",
     },

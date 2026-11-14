@@ -1,7 +1,7 @@
 // Claude Code tool events: the input sanitiser, the tool's own
 // duration, the structured error block for a failed tool, the event id
-// derived from Claude Code's tool_use_id, the tool's response bounded
-// as valid JSON, and the tool_call payload.
+// derived from Claude Code's tool_use_id, the tool's response cut to
+// its bound, and the tool_call payload.
 
 import { NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { boundedToken, MAX_MCP_IDENTITY_BYTES } from "../core/config.mjs";
@@ -112,25 +112,21 @@ export function toolCallEventId(toolUseId) {
 }
 
 // ---------------------------------------------------------------------
-// Tool output -- the head of a tool's response, kept valid JSON.
+// Tool output -- the head of a tool's response, cut inside its
+// structure, the cut values named beside it.
 // ---------------------------------------------------------------------
 
 // How much of a tool's response a tool_call's content keeps, in
-// characters (code points) of the stored text, marks and lists
-// included. It is a preview for the Prompts tab: the head of a
-// command's output or of a file read shows what the tool returned,
-// while the whole response (a test run's log, a file of thousands of
-// lines) would be stored again on every tool call of a session.
+// characters (code points) of the stored text. It is a preview for the
+// Prompts tab: the head of a command's output or of a file read shows
+// what the tool returned, while the whole response (a test run's log, a
+// file of thousands of lines) would be stored again on every tool call
+// of a session.
 export const TOOL_OUTPUT_MAX_CHARS = 2000;
 
-// What ends a cut string after the characters kept, and the last
-// element of a list whose trailing elements were dropped: the same mark
-// a cut tool input ends with.
+// What ends a cut string after the characters kept: the same mark a cut
+// tool input ends with.
 export const TOOL_OUTPUT_CUT_MARK = "…";
-
-// The key under which an object lists the fields of its own that were
-// cut, as a cut tool input lists its cut fields.
-const CUT_LIST_KEY = "truncated";
 
 // Nesting below this depth is not walked: the response is then kept as
 // the head of its JSON text (see boundToolOutput). Claude Code's tool
@@ -159,6 +155,11 @@ function charCount(s) {
     count += 1;
   }
   return count;
+}
+
+/** One reference token of an RFC 6901 JSON Pointer. */
+function pointerToken(key) {
+  return String(key).replace(/~/g, "~0").replace(/\//g, "~1");
 }
 
 /**
@@ -195,79 +196,75 @@ function trimForCut(value, depth = 0) {
 }
 
 /**
- * ``value`` with every string and list longer than ``cap`` cut to it:
- * a string to its first ``cap`` characters followed by the mark, a list
- * to the leading elements whose JSON fits in ``cap`` characters (the
- * first always stays, cut in its turn) followed by the mark. An object
- * keeps every key, cuts its values the same way and names the values it
- * cut in ``truncated``, in key order; that list replaces a
- * ``truncated`` field of the tool's own (Glob's flag) only when a value
- * was cut. Returns ``{value, cut}``.
+ * ``value`` with every string and list longer than ``cap`` cut to it: a
+ * string to its first ``cap`` characters followed by the mark, a list to
+ * the leading elements whose JSON fits in ``cap`` characters (the first
+ * always stays, cut in its turn). Keys, and every other value, stay as
+ * the tool sent them. The JSON Pointer of each cut value is appended to
+ * ``cuts``, in document order (a list before the values cut inside it).
  */
-function cutAt(value, cap) {
+function cutAt(value, cap, pointer, cuts) {
   if (typeof value === "string") {
     const { head, more } = headChars(value, cap);
-    return more ? { value: head + TOOL_OUTPUT_CUT_MARK, cut: true } : { value, cut: false };
+    if (!more) return value;
+    cuts.push(pointer);
+    return head + TOOL_OUTPUT_CUT_MARK;
   }
   if (Array.isArray(value)) {
+    const at = cuts.length;
     const out = [];
     let used = 0;
-    let cut = false;
-    for (const item of value) {
-      const next = cutAt(item, cap);
-      const cost = charCount(JSON.stringify(next.value)) + (out.length > 0 ? 1 : 0);
-      if (out.length > 0 && used + cost > cap) {
-        cut = true;
-        break;
-      }
-      out.push(next.value);
+    for (let i = 0; i < value.length; i += 1) {
+      const itemCuts = [];
+      const item = cutAt(value[i], cap, `${pointer}/${i}`, itemCuts);
+      const cost = charCount(JSON.stringify(item)) + (out.length > 0 ? 1 : 0);
+      if (out.length > 0 && used + cost > cap) break;
+      out.push(item);
       used += cost;
-      if (next.cut) cut = true;
+      cuts.push(...itemCuts);
     }
-    if (out.length < value.length) out.push(TOOL_OUTPUT_CUT_MARK);
-    return { value: out, cut };
+    if (out.length < value.length) cuts.splice(at, 0, pointer);
+    return out;
   }
   if (value && typeof value === "object") {
-    const entries = [];
-    const cutFields = [];
-    for (const [key, item] of Object.entries(value)) {
-      const next = cutAt(item, cap);
-      entries.push([key, next.value]);
-      if (next.cut && key !== CUT_LIST_KEY) cutFields.push(key);
-    }
-    if (cutFields.length > 0) entries.push([CUT_LIST_KEY, cutFields]);
-    // An object is never itself reported as cut: the object that holds
-    // a cut value lists it, however deep.
-    return { value: Object.fromEntries(entries), cut: false };
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cutAt(item, cap, `${pointer}/${pointerToken(key)}`, cuts)]),
+    );
   }
-  return { value, cut: false };
+  return value;
 }
 
 /**
- * A tool's response as the tool_call's ``tool_result`` content: a
- * string that is at most TOOL_OUTPUT_MAX_CHARS characters.
+ * A tool's response as the tool_call's ``tool_result``: ``content``, a
+ * string of at most TOOL_OUTPUT_MAX_CHARS characters, and ``truncated``,
+ * the RFC 6901 JSON Pointers of the values cut, relative to the parsed
+ * content (null when nothing was cut). Nothing is added inside the
+ * response: the list goes beside it, on the block.
  *
  * - A string response (plain text) over the bound keeps its first
- *   characters followed by TOOL_OUTPUT_CUT_MARK.
+ *   characters followed by TOOL_OUTPUT_CUT_MARK; ``truncated`` is
+ *   ``[""]``, the whole value.
  * - Any other response is its JSON text. Over the bound, it is cut
  *   inside its structure so the text stays valid JSON: every string
  *   and list longer than one common length is cut to it (the largest
  *   length that fits), so short fields (a command's stderr, a path, a
  *   status) stay whole and the long ones (stdout, a file's content)
- *   give up the characters; a cut string ends with the mark, a cut list
- *   ends with the mark as its last element, and each object names its
- *   cut values in ``truncated``. A content block of a list
- *   (``{type: "text", text}``) is such an object.
+ *   give up the characters. A cut string ends with the mark; a cut list
+ *   keeps its leading elements. ``truncated`` names each,
+ *   ``["/stdout"]``, ``["/content/0/text"]``.
  * - A response whose structure alone is over the bound (hundreds of
  *   keys), or that nests deeper than TOOL_OUTPUT_MAX_DEPTH, is kept as
- *   ``{"text": <the head of its JSON text>…, "truncated": ["text"]}``.
+ *   the head of its JSON text followed by the mark, with ``[""]``: a
+ *   text cut at the bound, as a string response is. Wrapping it in an
+ *   object would put a key in the tool's output that the tool never
+ *   sent.
  *
  * A response at or under the bound is kept whole, with no list.
  */
 export function boundToolOutput(response) {
   if (typeof response === "string") {
-    if (charCount(response) <= TOOL_OUTPUT_MAX_CHARS) return response;
-    return headChars(response, TOOL_OUTPUT_MAX_CHARS - 1).head + TOOL_OUTPUT_CUT_MARK;
+    if (charCount(response) <= TOOL_OUTPUT_MAX_CHARS) return { content: response, truncated: null };
+    return { content: headText(response), truncated: [""] };
   }
   let text;
   try {
@@ -277,12 +274,13 @@ export function boundToolOutput(response) {
     // cycle): nothing of it can be kept as JSON.
     text = null;
   }
-  if (text != null && charCount(text) <= TOOL_OUTPUT_MAX_CHARS) return text;
+  if (text != null && charCount(text) <= TOOL_OUTPUT_MAX_CHARS) return { content: text, truncated: null };
   const trimmed = text == null ? null : trimForCut(response);
   if (trimmed !== null) {
     const fits = (cap) => {
-      const candidate = JSON.stringify(cutAt(trimmed, cap).value);
-      return charCount(candidate) <= TOOL_OUTPUT_MAX_CHARS ? candidate : null;
+      const cuts = [];
+      const content = JSON.stringify(cutAt(trimmed, cap, "", cuts));
+      return charCount(content) <= TOOL_OUTPUT_MAX_CHARS ? { content, truncated: cuts } : null;
     };
     let best = fits(0);
     if (best !== null) {
@@ -303,28 +301,12 @@ export function boundToolOutput(response) {
       return best;
     }
   }
-  return headOfJsonText(text ?? "");
+  return { content: headText(text ?? ""), truncated: [""] };
 }
 
-/** ``{"text": <the head of ``text``>…, "truncated": ["text"]}`` within the bound. */
-function headOfJsonText(text) {
-  const envelope = (head) => JSON.stringify({ text: head + TOOL_OUTPUT_CUT_MARK, [CUT_LIST_KEY]: ["text"] });
-  // Each character costs at most six in JSON (a \u escape); search the
-  // longest head that fits.
-  let lo = 0;
-  let hi = TOOL_OUTPUT_MAX_CHARS;
-  let best = envelope("");
-  while (lo <= hi) {
-    const n = Math.floor((lo + hi) / 2);
-    const candidate = envelope(headChars(text, n).head);
-    if (charCount(candidate) <= TOOL_OUTPUT_MAX_CHARS) {
-      best = candidate;
-      lo = n + 1;
-    } else {
-      hi = n - 1;
-    }
-  }
-  return best;
+/** ``text``'s first characters followed by the mark, within the bound. */
+function headText(text) {
+  return headChars(text, TOOL_OUTPUT_MAX_CHARS - 1).head + TOOL_OUTPUT_CUT_MARK;
 }
 
 /**
@@ -365,10 +347,12 @@ export function buildToolCallPayload({
     const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
     const response = [];
     if (cfg.capturePrompts && hookEvent.tool_response != null) {
-      response.push({
-        type: "tool_result",
-        content: boundToolOutput(hookEvent.tool_response),
-      });
+      // The block names the values the bound cut beside its content,
+      // never inside the tool's response.
+      const output = boundToolOutput(hookEvent.tool_response);
+      const block = { type: "tool_result", content: output.content };
+      if (output.truncated) block.truncated = output.truncated;
+      response.push(block);
     }
     content = {
       provider: "anthropic",

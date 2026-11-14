@@ -1,13 +1,14 @@
-import { describe, it, expect } from "vitest";
 import {
   CUT_JSON_MAX_CHARS,
   CUT_JSON_MAX_DEPTH,
   CUT_MARK,
-  cutExtent,
-  cutFields,
+  blockCutPointers,
+  childPointer,
   describeCut,
+  describeCuts,
   formatJsonPath,
   readCutJson,
+  resolvePointer,
 } from "@/lib/cut-json";
 
 // The tolerant reader of a JSON text cut mid-way: what earlier plugin
@@ -177,22 +178,56 @@ describe("readCutJson", () => {
   });
 });
 
-describe("cut marks", () => {
-  it("cutFields reads a list of names, and nothing else", () => {
-    expect(cutFields({ command: "x…", truncated: ["command"] })).toEqual(["command"]);
-    expect(cutFields({ filenames: [], truncated: true })).toBeNull();
-    expect(cutFields({ truncated: [] })).toBeNull();
-    expect(cutFields({ truncated: ["a", 1] })).toBeNull();
-    expect(cutFields({ stdout: "x" })).toBeNull();
+describe("the cut list beside a block's value", () => {
+  it("blockCutPointers reads a list of JSON Pointers on the block, and nothing else", () => {
+    expect(blockCutPointers({ type: "tool_result", content: "x", truncated: ["/stdout", "/content/0/text"] })).toEqual([
+      "/stdout",
+      "/content/0/text",
+    ]);
+    expect(blockCutPointers({ type: "tool_result", content: "x…", truncated: [""] })).toEqual([""]);
+    expect(blockCutPointers({ type: "tool_result", content: "x" })).toBeNull();
+    expect(blockCutPointers({ truncated: true })).toBeNull();
+    expect(blockCutPointers({ truncated: [] })).toBeNull();
+    expect(blockCutPointers({ truncated: ["stdout"] })).toBeNull();
+    expect(blockCutPointers({ truncated: ["/a", 1] })).toBeNull();
   });
 
-  it("cutExtent and describeCut count what a cut kept", () => {
-    expect(cutExtent("🔧🔧…")).toEqual({ unit: "characters", kept: 2 });
+  it("resolvePointer follows keys and indices, unescapes ~1 and ~0, and finds nothing for a wrong step", () => {
+    const root = { file: { content: "c…" }, content: [{ text: "t…" }], "a/b~c": "x" };
+    expect(resolvePointer(root, "")).toEqual({ value: root, path: [] });
+    expect(resolvePointer(root, "/file/content")).toEqual({ value: "c…", path: ["file", "content"] });
+    expect(resolvePointer(root, "/content/0/text")).toEqual({ value: "t…", path: ["content", 0, "text"] });
+    expect(resolvePointer(root, "/a~1b~0c")).toEqual({ value: "x", path: ["a/b~c"] });
+    expect(resolvePointer(root, "/content/1/text")).toBeNull();
+    expect(resolvePointer(root, "/content/01")).toBeNull();
+    expect(resolvePointer(root, "/missing")).toBeNull();
+    expect(resolvePointer(root, "file")).toBeNull();
+    expect(resolvePointer({}, "/__proto__")).toBeNull();
+    expect(childPointer("", "a/b~c")).toBe("/a~1b~0c");
+    expect(childPointer("/content", 0)).toBe("/content/0");
+  });
+
+  it("describeCut counts what a cut kept", () => {
+    expect(describeCut("🔧🔧…")).toBe("cut at 2 characters");
     expect(describeCut(`${"a".repeat(200)}…`)).toBe("cut at 200 characters");
     expect(describeCut(`${"a".repeat(1915)}…`)).toBe("cut at 1,915 characters");
-    expect(describeCut(["/a.ts", "/b.ts", CUT_MARK])).toBe("cut after 2 entries");
-    expect(describeCut(["/a.ts", CUT_MARK])).toBe("cut after 1 entry");
+    expect(describeCut(["/a.ts", "/b.ts"])).toBe("cut after 2 entries");
+    expect(describeCut(["/a.ts"])).toBe("cut after 1 entry");
     expect(describeCut("no mark")).toBe("cut");
-    expect(cutExtent(["/a.ts"])).toBeNull();
+    expect(CUT_MARK).toBe("\u2026");
+  });
+
+  it("describeCuts names each listed value by its path, and skips a pointer that names nothing", () => {
+    const root = {
+      stdout: `${"o".repeat(1803)}…`,
+      filenames: ["/a.ts", "/b.ts"],
+      content: [{ type: "text", text: `${"r".repeat(894)}…` }],
+    };
+    expect(describeCuts(root, ["/stdout", "/filenames", "/content/0/text", "/gone"])).toEqual([
+      "stdout cut at 1,803 characters",
+      "filenames cut after 2 entries",
+      "content[0].text cut at 894 characters",
+    ]);
+    expect(describeCuts(`${"x".repeat(1999)}…`, [""])).toEqual(["the output cut at 1,999 characters"]);
   });
 });

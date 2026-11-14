@@ -306,17 +306,20 @@ All notable changes to Flightdeck are documented here.
   JSON text mid-way, so every Bash result over that showed in Pretty as
   one line of escaped JSON (`{"stdout":"--- PASS: …\n=== RUN …`) while
   Raw read better. The bound stays, but the plugin now cuts inside the
-  response: the long strings (stdout, a file's content) are shortened
-  to one common length so the whole fits, each cut string and list ends
-  with `…`, and the object holding a cut value names it in `truncated`,
-  so the stored output stays valid JSON. A string response is cut as
-  text, with the same mark. In the session drawer, Pretty shows a
-  result's stdout and stderr as terminal text with their line breaks
-  (stderr set apart), its other fields compactly, and which fields were
-  cut. Results stored by earlier plugin versions, JSON text cut
-  mid-way, are read up to the cut and shown the same way with a note
-  saying where the stored text ends. A tool input that lists cut fields
-  shows how many characters each kept. Raw still shows the stored value.
+  response: the long strings (stdout, a file's content) and lists are
+  shortened to one common length so the whole fits, and the stored
+  output stays valid JSON. Nothing is added inside the response: a cut
+  string ends with `…`, and the `tool_result` block names each cut
+  value beside its content, `"truncated": ["/stdout"]` (JSON Pointers),
+  so a tool's own fields, Glob's `truncated` flag among them, stay as
+  the tool sent them. A string response is cut as text, named `[""]`.
+  In the session drawer, Pretty shows a result's stdout and stderr as
+  terminal text with their line breaks (stderr set apart), its other
+  fields compactly, and which values were cut and how much each kept.
+  Results stored by earlier plugin versions, JSON text cut mid-way, are
+  read up to the cut and shown the same way, with a note saying where
+  the stored text ends. A tool input whose block names cut fields shows
+  how many characters each kept. Raw still shows the stored block.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

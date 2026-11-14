@@ -2471,14 +2471,20 @@ the parent's spawn event as the anchor for child rows.
 With `capturePrompts` on, a `tool_call`'s content carries the tool's
 response as one `tool_result` block under `response`, whose `content` is
 a string of at most 2000 characters (`TOOL_OUTPUT_MAX_CHARS` in
-`tools.mjs`), marks and lists included. The bound keeps a preview: the
-head of a command's output or of a file read shows what the tool
-returned, while the whole response would be stored again on every tool
-call of a session. The bound counts characters (code points), so a cut
-never splits one.
+`tools.mjs`). The bound keeps a preview: the head of a command's output
+or of a file read shows what the tool returned, while the whole response
+would be stored again on every tool call of a session. The bound counts
+characters (code points), so a cut never splits one.
 
-- A string response (plain text) is stored as that text; over the
-  bound it keeps its first 1999 characters followed by `…`.
+Nothing is added inside the tool's response. What was cut is said beside
+it: a cut string ends with `…`, and the block lists every cut value in
+`truncated`, each an RFC 6901 JSON Pointer relative to the parsed
+`content`, in document order. This is the convention a cut tool input
+follows on its `tool_use` block.
+
+- A string response (plain text) is stored as that text; over the bound
+  it keeps its first 1999 characters followed by `…`, and `truncated` is
+  `[""]`, the whole value.
 - Any other response (Bash's `{stdout, stderr, interrupted, isImage,
   noOutputExpected}`, Read's `{type, file: {filePath, content, …}}`,
   Grep's, Glob's, Edit's, an Agent's report, a list of content blocks)
@@ -2486,25 +2492,24 @@ never splits one.
   every string and every list longer than one common length is cut to
   it, the largest length at which the text fits, so short values (a
   stderr line, a path, a status) stay whole and the long ones give up
-  the characters. A cut string ends with `…`; a list whose trailing
-  elements were dropped ends with a `"…"` element; the object that
-  holds a cut value lists it in `truncated`, in key order, the same
-  convention as a cut tool input:
-  `{"stdout": "=== RUN …", "stderr": "", "interrupted": false, …,
-  "truncated": ["stdout"]}`. A Read's list is on its `file` object, a
-  cut text block's on the block. The list replaces a `truncated` field
-  the tool set itself (Glob's flag) only when one of that object's
-  values was cut.
-- A response whose structure alone is over the bound (hundreds of
-  keys), or that nests deeper than 32 levels, is stored as
-  `{"text": "<the head of its JSON text>…", "truncated": ["text"]}`.
+  the characters. A cut string ends with `…`; a cut list keeps its
+  leading elements. Keys and every other value stay as the tool sent
+  them, Glob's own `truncated` flag included:
+  `{"type": "tool_result", "content": "{\"stdout\": \"=== RUN …\", \"stderr\":
+  \"\", …}", "truncated": ["/stdout"]}`; a Read's cut is `/file/content`,
+  an Agent report's `/content/0/text`.
+- A response whose structure alone is over the bound (hundreds of keys),
+  or that nests deeper than 32 levels, is stored as the head of its JSON
+  text followed by `…`, with `truncated: [""]`: a text cut at the bound,
+  as a string response is. An object wrapped around it would put a key
+  in the tool's output that the tool never sent.
 
-A response at or under the bound is stored whole, with no `truncated`.
-A tool event rebuilt from the transcript (see Tool calls and failures)
-takes the response as the text of the transcript's `tool_result`, which
-is cut as a string. An `mcp_tool_call` stores its result in
-`tool_output` as the server returned it, within the event body limit
-(see Configuration).
+A response at or under the bound is stored whole, and its block has no
+`truncated`. A tool event rebuilt from the transcript (see Tool calls
+and failures) takes the response as the text of the transcript's
+`tool_result`, which is cut as a string. An `mcp_tool_call` stores its
+result in `tool_output` as the server returned it, within the event
+body limit (see Configuration).
 
 ### Tool calls and failures
 
@@ -7847,26 +7852,26 @@ over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 and any other value as JSON; the `{}` such a row holds in `response`
 is not shown as a response. The Claude Code plugin's hook `tool_call`
 keeps its `tool_use` block under `tools` and its `tool_result` under
-`response`, and shows them there. A `tool_use` input that lists cut
-fields in `truncated` (see Plugin > Tool input sanitisation) shows each
-listed field with how many characters it kept (`cut at 200
-characters`) and not the list itself. A `tool_result` whose content is
-a JSON object (Plugin > Tool output) shows `stdout` and `stderr` as
-terminal text with their line breaks, `stderr` in the error colour,
-other multi-line text the same way, nested objects (a Read's `file`) as
-fields of their own, a list of text blocks as its texts, other lists as
-JSON and the scalar fields together on one line; an object's
-`truncated` list becomes a note naming each cut field and how much of
-it was kept (`stdout cut at 1,915 characters`). A `truncated` that is
-not a list of names (Glob's flag) is a field like any other. A content
-that is a JSON object or list cut mid-way and followed by `…` (a long
-output an earlier plugin version stored) is read up to the cut by a
-tolerant reader (`lib/cut-json.ts`: one pass, every whole key/value
-pair and element, and the string it was reading where the text ends;
-a key, number or literal cut part-way is left out), shown the same
-way, and noted with where the stored text ends (`the stored output
-ends at 2,000 characters, inside stdout`); text that does not read so
-is shown as written, as is plain text. This applies wherever a
+`response`, and shows them there. A block that lists cut values in
+`truncated` (JSON Pointers; see Plugin > Tool output and Tool input
+sanitisation) has each named: an input field with how many characters
+it kept (`cut at 200 characters`), a result's values in one note
+(`stdout cut at 1,803 characters`, `filenames cut after 26 entries`,
+`content[0].text cut at 894 characters`). A `tool_result` whose content
+is a JSON object shows `stdout` and `stderr` as terminal text with
+their line breaks, `stderr` in the error colour, other multi-line text
+the same way, nested objects (a Read's `file`) as fields of their own,
+a list of text blocks as its texts, other lists as JSON and the scalar
+fields together on one line, every field as the tool sent it (Glob's
+own `truncated` flag is a field). A content that is a JSON object or
+list cut mid-way and followed by `…` (named whole, `[""]`, or a long
+output an earlier plugin version stored with no list) is read up to the
+cut by a tolerant reader (`lib/cut-json.ts`: one pass, every whole
+key/value pair and element, and the string it was reading where the
+text ends; a key, number or literal cut part-way is left out), shown
+the same way, and noted with where the stored text ends (`the stored
+output ends at 2,000 characters, inside stdout`); text that does not
+read so is shown as written, as is plain text. This applies wherever a
 `tool_result` block renders, in a message as in the plugin's response.
 Content stored with
 `provider=otel_genai` (an OpenTelemetry
@@ -9725,9 +9730,9 @@ No sanitiser applies. Outputs can carry arbitrary prompt-like content
 whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
 is all-or-nothing per session. The plugin keeps the head of each tool's
-output, at most 2000 characters cut inside its structure so it stays
-valid JSON (see Plugin > Tool output); that is a size bound, not a
-filter.
+output, at most 2000 characters cut inside its structure and the cut
+values named beside it (see Plugin > Tool output); that is a size
+bound, not a filter.
 
 The plugin and the sensor cut captured content that would take an
 event past the 768 KiB body limit, marking each cut string (see

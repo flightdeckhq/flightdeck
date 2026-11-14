@@ -8,15 +8,16 @@
  * call's Prompts tab in the event drawer:
  *
  * - in the form the plugin stores now (cut inside the structure, so the
- *   text is JSON: the cut stdout ends with "…" and is named in
- *   `truncated`; the cut command of the input likewise), Pretty shows
+ *   text is JSON; the cut stdout ends with "…" and the tool_result block
+ *   names it, `truncated: ["/stdout"]`, beside the content; the cut
+ *   command of the input likewise on the tool_use block), Pretty shows
  *   stdout as terminal text with its line breaks, stderr and the other
  *   fields, and which fields were cut;
  * - in the form earlier plugin versions stored (the JSON text cut at
  *   2000 characters with "…" appended), Pretty reads the fields up to
  *   the cut and says where the stored text ends;
- * - Raw shows the stored tool_result in both, its content as the stored
- *   string.
+ * - Raw shows the stored tool_result in both: its content as the stored
+ *   string, and the block's list beside it.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -44,14 +45,15 @@ const STDOUT = Array.from(
 const STDERR = "go: downloading golang.org/x/sync v0.8.0";
 const BASH_RESPONSE = { stdout: STDOUT, stderr: STDERR, interrupted: false, isImage: false, noOutputExpected: false };
 
-/** What the plugin stores now: stdout cut so the whole JSON fits, marked and listed. */
+/** What the plugin stores now: stdout cut so the whole JSON fits, marked;
+ *  the block names it in `truncated`. Nothing is added inside the response. */
 function storedNow(): string {
   // ASCII only, so a character is one UTF-16 unit.
   let kept = OUTPUT_MAX_CHARS;
   let text = "";
   do {
     kept -= 1;
-    text = JSON.stringify({ ...BASH_RESPONSE, stdout: STDOUT.slice(0, kept) + CUT_MARK, truncated: ["stdout"] });
+    text = JSON.stringify({ ...BASH_RESPONSE, stdout: STDOUT.slice(0, kept) + CUT_MARK });
   } while (text.length > OUTPUT_MAX_CHARS);
   return text;
 }
@@ -59,9 +61,10 @@ function storedNow(): string {
 /** What earlier plugin versions stored: the JSON text cut mid-way. */
 const STORED_BEFORE = JSON.stringify(BASH_RESPONSE).slice(0, OUTPUT_MAX_CHARS) + CUT_MARK;
 
-/** A command over the plugin's 200-character input bound, cut and listed. */
+/** A command over the plugin's 200-character input bound, cut; the
+ *  tool_use block names it. */
 const LONG_COMMAND = `go test ./api/internal/store/... -run 'TestStoreEvents' -v -count=1 2>&1 | ${"tee -a /tmp/store-test.log | ".repeat(8)}tail -n 400`;
-const CUT_INPUT = { command: LONG_COMMAND.slice(0, 200) + CUT_MARK, truncated: ["command"] };
+const CUT_INPUT = { command: LONG_COMMAND.slice(0, 200) + CUT_MARK };
 
 async function openPrompts(page: import("@playwright/test").Page, run: Run, eventId: string): Promise<Locator> {
   const drawer = await openEventDrawer(page, run, eventId);
@@ -96,10 +99,10 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     request,
   }) => {
     const stored = storedNow();
-    expect(JSON.parse(stored).truncated).toEqual(["stdout"]);
+    expect(Object.keys(JSON.parse(stored))).toEqual(Object.keys(BASH_RESPONSE));
     const events = await seedRun(request, run, [
       pluginSessionStart(run),
-      pluginToolCall(run, 1, "Bash", CUT_INPUT, stored),
+      pluginToolCall(run, 1, "Bash", CUT_INPUT, stored, { input: ["/command"], output: ["/stdout"] }),
     ]);
     const drawer = await openPrompts(page, run, storedEvent(events, "tool_call").id);
 
@@ -112,7 +115,7 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(scalars).toContainText("interrupted:");
     await expect(scalars).toContainText("noOutputExpected:");
     await expect(result.getByTestId("tool-result-truncated")).toContainText(/stdout cut at [\d,]+ characters/);
-    // The list itself is the note, not a field.
+    // The fields are the tool's own: the list is on the block, not among them.
     await expect(result.getByTestId("kv-label").filter({ hasText: /^truncated/ })).toHaveCount(0);
 
     // The cut command shows how much it kept.
@@ -121,13 +124,15 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(tool.getByTestId("cut-note")).toHaveText("cut at 200 characters");
     await expect(tool.getByTestId("kv-label")).toHaveText(["command"]);
 
-    // Raw is the stored tool_result: its content is the stored string.
+    // Raw is the stored tool_result: its content is the stored string,
+    // and the list sits beside it on the block.
     await drawer.getByTestId("prompt-box-response-raw").click();
     await expect(response).toHaveAttribute("data-view", "raw");
     const raw = drawer.getByTestId("prompt-box-response-raw-json");
     await expect(raw).toContainText('"type": "tool_result"');
     await expect(raw).toContainText('"content": "{\\"stdout\\":\\"=== RUN');
-    await expect(raw).toContainText('\\"truncated\\":[\\"stdout\\"]');
+    await expect(raw).toContainText(/"truncated": \[\s*"\/stdout"\s*\]/);
+    await expect(raw).not.toContainText('\\"truncated\\"');
     await expect(response.getByTestId("tool-result-parsed")).toHaveCount(0);
   });
 

@@ -6,10 +6,11 @@ import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import {
-  CUT_LIST_KEY,
   CUT_MARK,
-  cutFields,
+  blockCutPointers,
+  childPointer,
   describeCut,
+  describeCuts,
   formatJsonPath,
   readCutJson,
   type JsonPath,
@@ -460,7 +461,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
                 <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   {input != null && Object.keys(input).length > 0 && (
                     <div className="mt-2" data-testid="tool-use-input">
-                      <ToolInputFields input={input} />
+                      <ToolInputFields input={input} pointers={blockCutPointers(tool)} />
                     </div>
                   )}
                   {desc && <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
@@ -1438,14 +1439,13 @@ function CutNote({ value }: { value: unknown }) {
 }
 
 /** A plugin-captured tool call's input. The plugin cuts a long command,
- *  query, pattern or prompt, ends it with "…" and lists it in
- *  ``truncated``: each listed field says how much it kept, and the list
- *  itself is not shown as a field. An input with no list shows as it is. */
-function ToolInputFields({ input }: { input: Record<string, unknown> }) {
-  const cut = cutFields(input);
-  if (!cut) return <KeyValueList data={input} />;
-  const fields = Object.fromEntries(Object.entries(input).filter(([key]) => key !== CUT_LIST_KEY));
-  return <KeyValueList data={fields} cut={new Set(cut)} />;
+ *  query, pattern or prompt, ends it with "…" and names it in the
+ *  ``tool_use`` block's ``truncated`` (``"/command"``): each named field
+ *  says how much it kept. An input whose block names none shows as it is. */
+function ToolInputFields({ input, pointers }: { input: Record<string, unknown>; pointers: string[] | null }) {
+  if (!pointers) return <KeyValueList data={input} />;
+  const cut = new Set(Object.keys(input).filter((key) => pointers.includes(childPointer("", key))));
+  return <KeyValueList data={input} cut={cut} />;
 }
 
 /* ---- Tool response block renderers (tool_call Pretty view) ---- */
@@ -1466,15 +1466,17 @@ function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
 /* A tool_result's content is a string holding the tool's response: its
  * JSON text for a structured response (Bash's stdout and stderr, a
  * Read's file, an Agent's report), or plain text. The Claude Code plugin
- * keeps it within a bound and marks what it cut (lib/cut-json): a cut
- * string ends with "…", a cut list with a "…" element, and the object
- * holding a cut value names it in ``truncated``. Earlier plugin versions
- * stored the JSON text cut mid-way and followed by "…"; such a text is
- * read up to the cut. Raw shows the content as stored either way. */
+ * keeps it within a bound, cutting inside the structure, and names what
+ * it cut beside the content (lib/cut-json): the block's ``truncated``
+ * lists the JSON Pointer of each cut value, and a cut string ends with
+ * "…". Earlier plugin versions stored the JSON text cut mid-way and
+ * followed by "…", with no list; such a text is read up to the cut. Raw
+ * shows the block as stored either way. */
 
 function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
   const rawContent = block.content;
   const contentString = typeof rawContent === "string" ? rawContent : null;
+  const pointers = blockCutPointers(block);
 
   // Parse nested JSON content so structured fields (stdout, stderr,
   // interrupted, isImage, ...) render as fields rather than
@@ -1492,23 +1494,36 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
     return <ContentBlocks blocks={rawContent} />;
   }
 
+  const cutNote = pointers && parsed !== undefined ? describeCuts(parsed, pointers) : [];
+
   if (Array.isArray(parsed)) {
-    return <ToolResultList items={parsed} />;
+    return (
+      <div className="space-y-2">
+        <ToolResultList items={parsed} />
+        {cutNote.length > 0 && <TruncatedNote>{cutNote.join("; ")}</TruncatedNote>}
+      </div>
+    );
   }
 
   if (isPlainObject(parsed)) {
     return (
       <div
         data-testid="tool-result-parsed"
-        className="rounded-md p-2.5"
+        className="space-y-2 rounded-md p-2.5"
         style={{ background: "var(--bg-elevated)" }}
       >
         <ToolResultFields data={parsed} />
+        {cutNote.length > 0 && <TruncatedNote>{cutNote.join("; ")}</TruncatedNote>}
       </div>
     );
   }
 
-  const recovered = contentString != null ? readCutResult(contentString) : null;
+  // The block names the whole content as cut: a text cut at the bound.
+  const cutWhole = pointers?.includes("") ?? false;
+  const recovered =
+    contentString != null && (cutWhole || (!pointers && contentString.endsWith(CUT_MARK)))
+      ? readCutResult(contentString)
+      : null;
   if (recovered) {
     return (
       <div
@@ -1532,7 +1547,7 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
   if (contentString != null) {
     // Plain text the plugin cut ends with U+2026 (…). Surface that so the
     // user knows this is the cap, not a render bug.
-    const truncated = contentString.endsWith(CUT_MARK);
+    const truncated = cutWhole || contentString.endsWith(CUT_MARK);
     return (
       <div data-testid="tool-result-raw">
         <pre
@@ -1553,7 +1568,7 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
             className="mt-1 font-mono text-[10px] italic"
             style={{ color: "var(--text-muted)" }}
           >
-            … (truncated)
+            … (truncated){cutWhole ? ` ${describeCut(contentString)}` : ""}
           </div>
         )}
       </div>
@@ -1584,9 +1599,10 @@ interface CutResult {
 }
 
 /** A stored text that is a JSON object or list cut mid-way and followed
- *  by "…" (what earlier plugin versions stored for a long output), read
- *  up to the cut, with the string it ends in marked as cut. Null when the
- *  text is not one, or holds nothing whole to show. */
+ *  by "…" (a long output an earlier plugin version stored, or one whose
+ *  structure alone was over the bound), read up to the cut, with the
+ *  string it ends in marked as cut. Null when the text is not one, or
+ *  holds nothing whole to show. */
 function readCutResult(text: string): CutResult | null {
   if (!text.endsWith(CUT_MARK)) return null;
   const head = text.slice(0, -CUT_MARK.length);
@@ -1685,29 +1701,22 @@ function TruncatedNote({ children }: { children: React.ReactNode }) {
 
 type TextBlock = Record<string, unknown> & { text: string };
 
-/** The blocks of ``value`` when it is a list of text content blocks (an
- *  Agent's report), the "…" a cut list ends with aside; else null. */
+/** The blocks of ``value`` when it is a non-empty list of text content
+ *  blocks (an Agent's report); else null. */
 function textBlocksOf(value: unknown): TextBlock[] | null {
-  if (!Array.isArray(value)) return null;
-  const blocks = value.filter((item) => item !== CUT_MARK);
-  if (blocks.length === 0) return null;
-  return blocks.every((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string")
-    ? (blocks as TextBlock[])
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return value.every((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string")
+    ? (value as TextBlock[])
     : null;
 }
 
-/** Text content blocks as their texts, each with its cut note, and the
- *  list's own when its trailing blocks were dropped. */
-function TextBlockList({ list, blocks }: { list: unknown[]; blocks: TextBlock[] }) {
+/** Text content blocks as their texts. */
+function TextBlockList({ blocks }: { blocks: TextBlock[] }) {
   return (
     <div className="space-y-2">
       {blocks.map((block, i) => (
-        <div key={i} className="space-y-1">
-          <TerminalText text={block.text} />
-          {cutFields(block)?.includes("text") && <TruncatedNote>text {describeCut(block.text)}</TruncatedNote>}
-        </div>
+        <TerminalText key={i} text={block.text} />
       ))}
-      {list[list.length - 1] === CUT_MARK && <TruncatedNote>{describeCut(list)}</TruncatedNote>}
     </div>
   );
 }
@@ -1716,7 +1725,7 @@ function TextBlockList({ list, blocks }: { list: unknown[]; blocks: TextBlock[] 
  *  other list as JSON. */
 function ToolResultList({ items }: { items: unknown[] }) {
   const blocks = textBlocksOf(items);
-  return blocks ? <TextBlockList list={items} blocks={blocks} /> : <JsonBox data={items} />;
+  return blocks ? <TextBlockList blocks={blocks} /> : <JsonBox data={items} />;
 }
 
 /** A value short enough for the compact line of scalar fields. */
@@ -1734,20 +1743,17 @@ function CompactValue({ value }: { value: unknown }) {
 }
 
 /**
- * A tool's structured result: stdout and stderr as terminal text,
- * other multi-line text the same way, nested objects as fields of
- * their own, a list of text blocks as its texts, other lists and deep
- * objects as JSON, then the scalar fields together on one line. When
- * the object lists cut fields in ``truncated``, a note names each and
- * how much it kept, and the list is not shown as a field.
+ * A tool's structured result, every field as the tool sent it: stdout
+ * and stderr as terminal text, other multi-line text the same way,
+ * nested objects as fields of their own, a list of text blocks as its
+ * texts, other lists and deep objects as JSON, then the scalar fields
+ * together on one line.
  */
 function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; depth?: number }) {
-  const cut = cutFields(data);
   const blocks: React.ReactNode[] = [];
   const scalars: Array<[string, unknown]> = [];
   for (const [key, value] of Object.entries(data)) {
-    if (cut && key === CUT_LIST_KEY) continue;
-    const blockList = textBlocksOf(value);
+    const textBlocks = textBlocksOf(value);
     if (typeof value === "string" && value.length > 0 && (TERMINAL_FIELDS.has(key) || needsMultiline(value))) {
       const testId = TERMINAL_FIELDS.has(key) ? `tool-result-${key}` : "tool-result-text";
       blocks.push(<FieldText key={key} name={key} text={value} testId={testId} />);
@@ -1762,11 +1768,11 @@ function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; 
           </div>
         </div>,
       );
-    } else if (Array.isArray(value) && blockList) {
+    } else if (textBlocks) {
       blocks.push(
         <div key={key} data-field={key} className="flex flex-col gap-1">
           <FieldLabel name={key} />
-          <TextBlockList list={value} blocks={blockList} />
+          <TextBlockList blocks={textBlocks} />
         </div>,
       );
     } else {
@@ -1796,7 +1802,6 @@ function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; 
           ))}
         </div>
       )}
-      {cut && <TruncatedNote>{cut.map((name) => `${name} ${describeCut(data[name])}`).join("; ")}</TruncatedNote>}
     </div>
   );
 }

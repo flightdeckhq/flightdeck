@@ -6,10 +6,11 @@ import type { EventContent } from "@/lib/types";
 // The Pretty view of a Claude Code plugin tool_call's result: the
 // tool_result block's content is the tool's response as stored, its
 // JSON text within 2000 characters. The plugin cuts inside the
-// structure and marks the cut (a cut string ends with "…", a cut list
-// with a "…" element, the holding object names it in `truncated`);
-// earlier plugin versions stored the JSON text cut mid-way. Raw always
-// shows the stored value.
+// structure, ends a cut string with "…", and names each cut value
+// beside the content, in the block's `truncated`, as a JSON Pointer
+// (nothing is added inside the response). Earlier plugin versions
+// stored the JSON text cut mid-way, with no list. Raw always shows the
+// stored block.
 
 let mockContent: EventContent | null = null;
 
@@ -25,7 +26,18 @@ beforeEach(() => {
 const MARK = "…";
 const STDOUT = Array.from({ length: 80 }, (_, i) => `=== RUN   TestCase${i}\n--- PASS: TestCase${i} (0.00s)`).join("\n");
 
-function pluginToolCall(result: string, input: Record<string, unknown> = { command: "go test ./..." }): EventContent {
+interface Cuts {
+  /** The tool_result block's list of cut values. */
+  output?: string[];
+  /** The tool_use block's list of cut input fields. */
+  input?: string[];
+}
+
+function pluginToolCall(
+  result: string,
+  input: Record<string, unknown> = { command: "go test ./..." },
+  cuts: Cuts = {},
+): EventContent {
   return {
     event_id: "e-tool-output",
     session_id: "s-tool-output",
@@ -33,22 +45,18 @@ function pluginToolCall(result: string, input: Record<string, unknown> = { comma
     model: "claude-opus-5-5",
     system_prompt: null,
     messages: [],
-    tools: [{ type: "tool_use", name: "Bash", input }],
-    response: [{ type: "tool_result", content: result }],
+    tools: [{ type: "tool_use", name: "Bash", input, ...(cuts.input ? { truncated: cuts.input } : {}) }],
+    response: [{ type: "tool_result", content: result, ...(cuts.output ? { truncated: cuts.output } : {}) }],
     captured_at: "2026-11-14T00:00:00Z",
   } as EventContent;
 }
 
-async function renderResult(result: string, input?: Record<string, unknown>): Promise<HTMLElement> {
-  mockContent = pluginToolCall(result, input);
+async function renderResult(result: string, input?: Record<string, unknown>, cuts?: Cuts): Promise<HTMLElement> {
+  mockContent = pluginToolCall(result, input, cuts);
   render(<PromptViewer eventId="e-tool-output" />);
   return screen.findByTestId("prompt-box-response");
 }
 
-/** The JSON the plugin stores now for a Bash result whose stdout was cut. */
-function cutBash(fields: Record<string, unknown>, truncated: string[]): string {
-  return JSON.stringify({ ...fields, truncated });
-}
 
 describe("a structured tool result in Pretty", () => {
   it("shows stdout and stderr as terminal text with their line breaks, the flags compactly", async () => {
@@ -71,10 +79,12 @@ describe("a structured tool result in Pretty", () => {
     expect(within(result).queryByTestId("tool-result-truncated")).toBeNull();
   });
 
-  it("names the cut fields and how much each kept, and does not show the list as a field", async () => {
+  it("names the cut fields the block lists and how much each kept", async () => {
     const stdout = STDOUT.slice(0, 1500) + MARK;
     const box = await renderResult(
-      cutBash({ stdout, stderr: "", interrupted: false, isImage: false, noOutputExpected: false }, ["stdout"]),
+      JSON.stringify({ stdout, stderr: "", interrupted: false, isImage: false, noOutputExpected: false }),
+      undefined,
+      { output: ["/stdout"] },
     );
     const result = within(box).getByTestId("tool-result-parsed");
     const pre = within(result).getByTestId("tool-result-stdout").querySelector("pre");
@@ -84,8 +94,7 @@ describe("a structured tool result in Pretty", () => {
       "… (truncated) stdout cut at 1,500 characters",
     );
     const labels = within(result).getAllByTestId("kv-label").map((el) => el.textContent);
-    expect(labels).not.toContain("truncated:");
-    expect(labels).toContain("stdout");
+    expect(labels).toEqual(["stdout", "stderr:", "interrupted:", "isImage:", "noOutputExpected:"]);
     // An empty stderr is a compact field, not a block.
     expect(within(result).queryByTestId("tool-result-stderr")).toBeNull();
     expect(within(result).getByTestId("tool-result-scalars")).toHaveTextContent("stderr:(empty)");
@@ -93,39 +102,38 @@ describe("a structured tool result in Pretty", () => {
 
   it("names every cut field, in the order listed", async () => {
     const box = await renderResult(
-      cutBash({ stdout: `${"o".repeat(900)}${MARK}`, stderr: `${"e".repeat(900)}${MARK}`, interrupted: false }, [
-        "stdout",
-        "stderr",
-      ]),
+      JSON.stringify({ stdout: `${"o".repeat(900)}${MARK}`, stderr: `${"e".repeat(900)}${MARK}`, interrupted: false }),
+      undefined,
+      { output: ["/stdout", "/stderr"] },
     );
     expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent(
       "stdout cut at 900 characters; stderr cut at 900 characters",
     );
   });
 
-  it("shows a nested object as fields of its own, with its own cut note (Read)", async () => {
+  it("shows a nested object as fields of its own, and names a cut inside it by its path (Read)", async () => {
     const content = `1\timport x\n2\timport y\n3\t${MARK}`;
     const box = await renderResult(
-      JSON.stringify({
-        type: "text",
-        file: { filePath: "/repo/app.ts", content, numLines: 400, truncated: ["content"] },
-      }),
+      JSON.stringify({ type: "text", file: { filePath: "/repo/app.ts", content, numLines: 400 } }),
+      undefined,
+      { output: ["/file/content"] },
     );
     const nested = within(box).getByTestId("tool-result-nested");
     expect(nested).toHaveAttribute("data-field", "file");
     expect(within(nested).getByTestId("tool-result-text").querySelector("pre")?.textContent).toBe(content);
-    expect(within(nested).getByTestId("tool-result-truncated")).toHaveTextContent("content cut at");
     expect(within(nested).getByTestId("tool-result-scalars")).toHaveTextContent("filePath:/repo/app.ts");
-    // The top level lists nothing.
-    expect(within(box).getAllByTestId("tool-result-truncated")).toHaveLength(1);
+    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("file.content cut at 24 characters");
   });
 
-  it("names a list cut after its leading entries, and keeps a tool's own truncated flag as a field (Glob)", async () => {
-    const cutList = await renderResult(
-      JSON.stringify({ filenames: ["/a.ts", "/b.ts", MARK], durationMs: 3, numFiles: 90, truncated: ["filenames"] }),
+  it("names a list cut after its leading entries, and shows Glob's own truncated flag untouched (Glob)", async () => {
+    const box = await renderResult(
+      JSON.stringify({ filenames: ["/a.ts", "/b.ts"], durationMs: 3, numFiles: 90, truncated: false }),
+      undefined,
+      { output: ["/filenames"] },
     );
-    expect(within(cutList).getByTestId("tool-result-truncated")).toHaveTextContent("filenames cut after 2 entries");
-    expect(within(cutList).getByTestId("pretty-json")).toHaveTextContent("/b.ts");
+    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("filenames cut after 2 entries");
+    expect(within(box).getByTestId("pretty-json")).toHaveTextContent("/b.ts");
+    expect(within(box).getByTestId("tool-result-scalars")).toHaveTextContent("truncated:false");
   });
 
   it("shows Glob's own truncated flag as a field when nothing was cut", async () => {
@@ -134,29 +142,43 @@ describe("a structured tool result in Pretty", () => {
     expect(within(box).queryByTestId("tool-result-truncated")).toBeNull();
   });
 
-  it("shows a list of text blocks as their texts, each with its cut note (an Agent's report)", async () => {
+  it("shows a list of text blocks as their texts (an Agent's report)", async () => {
     const report = `Found it.\nThe fixture moved.${MARK}`;
     const box = await renderResult(
-      JSON.stringify({ status: "completed", content: [{ type: "text", text: report, truncated: ["text"] }] }),
+      JSON.stringify({ status: "completed", content: [{ type: "text", text: report }] }),
+      undefined,
+      { output: ["/content/0/text"] },
     );
     const pres = Array.from(box.querySelectorAll("pre")).map((p) => p.textContent);
     expect(pres).toContain(report);
-    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("text cut at");
+    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("content[0].text cut at 28 characters");
     expect(within(box).queryByTestId("pretty-json")).toBeNull();
   });
 
-  it("shows a response kept as the head of its JSON text as that text, with its note", async () => {
+  it("reads a response kept as the head of its JSON text (named whole) up to the cut", async () => {
     const keys = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [`key${i}`, i]));
-    const head = `${JSON.stringify(keys).slice(0, 1900)}${MARK}`;
-    const box = await renderResult(JSON.stringify({ text: head, truncated: ["text"] }));
-    expect(within(box).getByTestId("tool-result-text").querySelector("pre")?.textContent).toBe(head);
-    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("text cut at");
+    const head = `${JSON.stringify(keys).slice(0, 1999)}${MARK}`;
+    const box = await renderResult(head, undefined, { output: [""] });
+    const result = within(box).getByTestId("tool-result-recovered");
+    expect(within(result).getByTestId("tool-result-scalars")).toHaveTextContent("key0:0");
+    expect(within(result).getByTestId("tool-result-truncated")).toHaveTextContent(
+      "the stored output ends at 1,999 characters",
+    );
+  });
+
+  it("shows a plain-text output cut at the bound as written, with how much it kept", async () => {
+    const text = `${"line of output\n".repeat(140)}`.slice(0, 1999) + MARK;
+    const box = await renderResult(text, undefined, { output: [""] });
+    expect(within(box).getByTestId("tool-result-raw").querySelector("pre")?.textContent).toBe(text);
+    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("… (truncated) cut at 1,999 characters");
   });
 
   it("shows a top-level list of text blocks as text, and any other list as JSON", async () => {
-    const box = await renderResult(JSON.stringify([{ type: "text", text: `hello\nworld${MARK}`, truncated: ["text"] }]));
+    const box = await renderResult(JSON.stringify([{ type: "text", text: `hello\nworld${MARK}` }]), undefined, {
+      output: ["/0/text"],
+    });
     expect(Array.from(box.querySelectorAll("pre")).map((p) => p.textContent)).toContain(`hello\nworld${MARK}`);
-    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("text cut at 11 characters");
+    expect(within(box).getByTestId("tool-result-truncated")).toHaveTextContent("[0].text cut at 11 characters");
   });
 
   it("shows any other list as JSON", async () => {
@@ -220,22 +242,23 @@ describe("a tool result an earlier plugin version stored cut mid-way", () => {
 });
 
 describe("Raw of a tool result", () => {
-  it("shows the stored block, its content as the stored string, for either form", async () => {
-    const stored = cutBash({ stdout: `ok${MARK}`, stderr: "" }, ["stdout"]);
-    const box = await renderResult(stored);
+  it("shows the stored block, its content as the stored string and its list beside it", async () => {
+    const stored = JSON.stringify({ stdout: `ok${MARK}`, stderr: "" });
+    const box = await renderResult(stored, undefined, { output: ["/stdout"] });
     fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
     expect(box).toHaveAttribute("data-view", "raw");
     const raw = screen.getByTestId("prompt-box-response-raw-json");
     expect(raw.textContent).toContain('"type": "tool_result"');
     expect(raw.textContent).toContain(`"content": ${JSON.stringify(stored)}`);
+    expect(raw.textContent?.replace(/\s+/g, "")).toContain('"truncated":["/stdout"]');
     expect(within(box).queryByTestId("tool-result-parsed")).toBeNull();
   });
 });
 
 describe("a tool input the plugin cut", () => {
-  it("shows how many characters a listed field kept, and not the list", async () => {
+  it("shows how many characters a field the block lists kept", async () => {
     const command = `${"git log --oneline | ".repeat(10)}`.slice(0, 200) + MARK;
-    await renderResult("ok", { command, truncated: ["command"] });
+    await renderResult("ok", { command }, { input: ["/command"] });
     const tool = screen.getByTestId("prompt-box-tool-0");
     const input = within(tool).getByTestId("tool-use-input");
     expect(input).toHaveTextContent(command);
@@ -244,17 +267,17 @@ describe("a tool input the plugin cut", () => {
   });
 
   it("marks only the listed fields", async () => {
-    await renderResult("ok", {
-      file_path: "/repo/a.ts",
-      pattern: `${"*".repeat(200)}${MARK}`,
-      truncated: ["pattern"],
-    });
+    await renderResult(
+      "ok",
+      { file_path: "/repo/a.ts", pattern: `${"*".repeat(200)}${MARK}` },
+      { input: ["/pattern"] },
+    );
     const input = within(screen.getByTestId("prompt-box-tool-0")).getByTestId("tool-use-input");
     expect(within(input).getAllByTestId("cut-note")).toHaveLength(1);
     expect(within(input).getAllByTestId("kv-label").map((el) => el.textContent)).toEqual(["file_path:", "pattern"]);
   });
 
-  it("renders an input with no list as before", async () => {
+  it("renders an input whose block lists nothing as before, a truncated field of its own included", async () => {
     await renderResult("ok", { command: "ls -la", truncated: true });
     const input = within(screen.getByTestId("prompt-box-tool-0")).getByTestId("tool-use-input");
     expect(within(input).queryByTestId("cut-note")).toBeNull();

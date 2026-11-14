@@ -1,55 +1,84 @@
 /**
  * Reading values the Claude Code plugin cut to a bound.
  *
- * The plugin marks a cut: a string it cut ends with ``…``, a list whose
- * trailing elements it dropped ends with a ``"…"`` element, and the
- * object holding a cut value names it in ``truncated`` (a tool input's
- * ``command`` cut at 200 characters, a tool output's ``stdout`` cut to
- * fit 2000). Tool outputs stored by earlier plugin versions are instead
- * the response's JSON text cut mid-way and followed by ``…``:
+ * The plugin keeps a tool's input and output within bounds and says what
+ * it cut beside the value, never inside it: a cut string ends with
+ * ``…``, a cut list keeps its leading elements, and the content block
+ * (``tool_use`` for the input, ``tool_result`` for the output) lists
+ * each cut value in ``truncated`` as an RFC 6901 JSON Pointer into the
+ * block's input or parsed content (``"/command"``, ``"/stdout"``,
+ * ``"/content/0/text"``; ``""`` for the whole value, a text cut at the
+ * bound). Tool outputs stored by earlier plugin versions are instead the
+ * response's JSON text cut mid-way and followed by ``…``, with no list:
  * ``readCutJson`` reads such a text up to the cut.
  */
 
-/** What ends a value the plugin cut. */
+/** What ends a string the plugin cut. */
 export const CUT_MARK = "…";
 
-/** The key under which an object lists the fields of its own that were cut. */
+/** The key under which a content block lists the values it cut. */
 export const CUT_LIST_KEY = "truncated";
 
-/** The fields ``data`` lists as cut, or null when it lists none. A
- *  ``truncated`` that is not a list of names (Glob's own flag) is a
- *  field like any other. */
-export function cutFields(data: Record<string, unknown>): string[] | null {
-  const list = data[CUT_LIST_KEY];
+/** The JSON Pointers a content block lists as cut, or null when it
+ *  lists none (or its list is not a list of pointers). */
+export function blockCutPointers(block: Record<string, unknown>): string[] | null {
+  const list = block[CUT_LIST_KEY];
   if (!Array.isArray(list) || list.length === 0) return null;
-  return list.every((name) => typeof name === "string") ? (list as string[]) : null;
+  return list.every((p) => typeof p === "string" && (p === "" || p.startsWith("/"))) ? (list as string[]) : null;
 }
 
-/** How much of a cut value was kept: the characters of a string before
- *  the mark, or the elements of a list before its mark element. */
-export interface CutExtent {
-  unit: "characters" | "entries";
-  kept: number;
+/** The pointer of a field of an object, from the object's own pointer. */
+export function childPointer(pointer: string, key: string | number): string {
+  return `${pointer}/${String(key).replace(/~/g, "~0").replace(/\//g, "~1")}`;
 }
 
-export function cutExtent(value: unknown): CutExtent | null {
-  if (typeof value === "string" && value.endsWith(CUT_MARK)) {
-    return { unit: "characters", kept: Array.from(value).length - 1 };
+/** The value a JSON Pointer names in ``root``, and its path, or null
+ *  when it names nothing there. */
+export function resolvePointer(root: unknown, pointer: string): { value: unknown; path: JsonPath } | null {
+  if (pointer !== "" && !pointer.startsWith("/")) return null;
+  const tokens = pointer === "" ? [] : pointer.slice(1).split("/").map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+  let value: unknown = root;
+  const path: JsonPath = [];
+  for (const token of tokens) {
+    if (Array.isArray(value)) {
+      if (!/^(0|[1-9]\d*)$/.test(token) || Number(token) >= value.length) return null;
+      value = value[Number(token)];
+      path.push(Number(token));
+    } else if (value !== null && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, token)) {
+      value = (value as Record<string, unknown>)[token];
+      path.push(token);
+    } else {
+      return null;
+    }
   }
-  if (Array.isArray(value) && value.length > 0 && value[value.length - 1] === CUT_MARK) {
-    return { unit: "entries", kept: value.length - 1 };
-  }
-  return null;
+  return { value, path };
 }
 
-/** "cut at 200 characters", "cut after 26 entries", or "cut". */
+/** How much of a cut value was kept: "cut at 200 characters" for a
+ *  string ending with the mark, "cut after 26 entries" for a list,
+ *  "cut" otherwise. */
 export function describeCut(value: unknown): string {
-  const extent = cutExtent(value);
-  if (!extent) return "cut";
-  const n = extent.kept.toLocaleString("en-US");
-  return extent.unit === "characters"
-    ? `cut at ${n} character${extent.kept === 1 ? "" : "s"}`
-    : `cut after ${n} entr${extent.kept === 1 ? "y" : "ies"}`;
+  if (typeof value === "string" && value.endsWith(CUT_MARK)) {
+    const kept = Array.from(value).length - 1;
+    return `cut at ${kept.toLocaleString("en-US")} character${kept === 1 ? "" : "s"}`;
+  }
+  if (Array.isArray(value)) {
+    return `cut after ${value.length.toLocaleString("en-US")} entr${value.length === 1 ? "y" : "ies"}`;
+  }
+  return "cut";
+}
+
+/** "stdout cut at 1,803 characters", "content[0].text cut at 894
+ *  characters", one per listed pointer that names a value in ``root``. */
+export function describeCuts(root: unknown, pointers: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const pointer of pointers) {
+    const found = resolvePointer(root, pointer);
+    if (!found) continue;
+    const name = found.path.length > 0 ? formatJsonPath(found.path) : "the output";
+    out.push(`${name} ${describeCut(found.value)}`);
+  }
+  return out;
 }
 
 /* ---- The tolerant reader ---- */

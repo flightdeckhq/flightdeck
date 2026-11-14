@@ -212,6 +212,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         if: matrix.extras
+        with:
+          # CI's uv: the gate fails on the release, not on a new uv.
+          version: "0.12.24"
 
       # The same index lag as pip's: uv reads PyPI's simple index, which
       # can list the new version a minute after pip's view does (v0.9.0's

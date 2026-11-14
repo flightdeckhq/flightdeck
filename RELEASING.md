@@ -120,6 +120,11 @@ Tag as soon as the release PR merges. From the merge until the tag
 exists, `main`'s marketplace entry points at a `vX.Y.Z` ref that does not
 exist yet, so plugin installs and updates fail in that window.
 
+A dry run comes first, on the release PR's merge commit: tag
+`vX.Y.Z-rc.1` there ("Dry run: a pre-release tag" below) and wait for the
+Release run and the install gate to pass on every leg. The final tag then
+goes on that same commit.
+
 ```bash
 make release-tag VERSION=vX.Y.Z
 # or

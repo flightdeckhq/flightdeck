@@ -37,7 +37,10 @@
 #                           the key under HKEY_CURRENT_USER whose Path value is
 #                           the user PATH (default Environment). Only
 #                           scripts/test-install-ps1.ps1 sets it, to a throwaway
-#                           key, so that its runs never touch a real PATH.
+#                           key, so that its runs never touch a real PATH. It
+#                           must name a key under Software\flightdeck-test\;
+#                           any other value stops the script before it
+#                           downloads or changes anything.
 #
 # winget and scoop manifests are not published yet; this script and the
 # .zip on the release page are the Windows channels.
@@ -69,6 +72,24 @@
 
     if ($repoUrl -notmatch '^https://' -and $repoUrl -notmatch '^http://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(/|$)') {
         throw "install.ps1: FLIGHTDECK_RELEASE_URL must be https:// (or http://localhost for a local test server): $repoUrl"
+    }
+
+    # The user PATH is the Path value of HKCU\Environment. The installer's
+    # test points it at a throwaway key instead, and only a key under
+    # HKCU\Software\flightdeck-test\ is honoured: a stray setting must not
+    # send the PATH write anywhere else (a Run key, say) while the
+    # installer reports the PATH changed. Forward slashes count as
+    # backslashes, case is ignored, and a . or .. segment is refused.
+    $envKeyName = 'Environment'
+    if ($env:FLIGHTDECK_INSTALL_REGISTRY_KEY) {
+        $testKeyPrefix = 'Software\flightdeck-test\'
+        $requestedKey = (($env:FLIGHTDECK_INSTALL_REGISTRY_KEY.Trim() -replace '/', '\') -replace '\\+', '\').Trim('\')
+        $dotSegments = @($requestedKey.Split('\') | Where-Object { $_.Trim() -eq '.' -or $_.Trim() -eq '..' })
+        if (-not $requestedKey.StartsWith($testKeyPrefix, [StringComparison]::OrdinalIgnoreCase) -or $requestedKey.Length -le $testKeyPrefix.Length -or $dotSegments.Count -gt 0) {
+            throw "install.ps1: FLIGHTDECK_INSTALL_REGISTRY_KEY is for this repository's installer test and must name a key under HKCU\$testKeyPrefix, got '$($env:FLIGHTDECK_INSTALL_REGISTRY_KEY)'. Nothing was downloaded or changed; unset it to install normally."
+        }
+        $envKeyName = $requestedKey
+        Write-Host "Test registry key in use: the user PATH is read from and written to HKCU\$envKeyName (FLIGHTDECK_INSTALL_REGISTRY_KEY), not HKCU\Environment"
     }
 
     $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
@@ -165,7 +186,6 @@
     # with a warning, since some older programs read no further.
     $pathMaxLength = 32767
     $pathWarnLength = 2047
-    $envKeyName = if ($env:FLIGHTDECK_INSTALL_REGISTRY_KEY) { $env:FLIGHTDECK_INSTALL_REGISTRY_KEY } else { 'Environment' }
     $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($envKeyName)
     try {
         $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)

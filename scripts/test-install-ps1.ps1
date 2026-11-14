@@ -21,7 +21,10 @@
 # 32,767 is left as it is and the install stops; a failing broadcast of
 # the change is a warning; a pinned VERSION, with or without its v; and
 # the refusals (an invalid VERSION, a bad checksum, a missing checksum
-# entry, an unknown version, a plain-HTTP host).
+# entry, an unknown version, a plain-HTTP host); and the test-only
+# registry key override, honoured spelled with forward slashes or in
+# another case, refused before anything is downloaded or written when it
+# names a key outside HKCU\Software\flightdeck-test\.
 #
 # The user's real PATH is never touched. Every case points the installer
 # at a throwaway key, HKCU\Software\flightdeck-test\Environment-<random>,
@@ -93,6 +96,13 @@ function Set-PathValue([string]$keyName, $value) {
 function New-PathValue([string]$raw) {
     [pscustomobject]@{ Raw = $raw; Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
 }
+function Test-RegistryKey([string]$keyName) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($keyName)
+    if ($key) { $key.Close(); return $true }
+    return $false
+}
+# A key beside the test root, not under it: the installer must refuse it.
+$outsideKey = "Software\flightdeck-test-outside-$runId"
 
 $savedSessionPath = $env:Path
 $savedRealPath = $null
@@ -164,6 +174,9 @@ try {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     if ($out -match 'Checksum verified') { Write-Pass 'the checksum is verified' } else { Write-Failure 'the checksum is verified' $out }
+    # Out-String wraps long lines at the console's width; the checks on
+    # the installer's own messages fold line breaks into spaces.
+    if (($out -replace '\s+', ' ') -match ('Test registry key in use: the user PATH is read from and written to HKCU\\' + [regex]::Escape($testKey) + ' ')) { Write-Pass 'the installer says which test registry key it uses' } else { Write-Failure 'the installer says which test registry key it uses' $out }
     if ($out -match 'Signature of checksums.txt not checked: FLIGHTDECK_RELEASE_URL') { Write-Pass 'the installer says the signature was not checked for another URL' } else { Write-Failure 'the signature notice' $out }
     if (Test-Path (Join-Path $dir1 'flightdeck.exe')) { Write-Pass 'flightdeck.exe is installed' } else { Write-Failure 'flightdeck.exe is installed' $out }
     if (($env:Path -split ';') -contains $dir1) { Write-Pass 'the directory is on this session''s PATH' } else { Write-Failure 'the directory is on this session''s PATH' $env:Path }
@@ -171,7 +184,7 @@ try {
     if ($userPath.Raw -ceq "$fixturePath;$dir1") { Write-Pass 'the user PATH gains the directory and keeps %USERPROFILE% unexpanded' } else { Write-Failure 'the user PATH' $userPath.Raw }
     if ($userPath.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) { Write-Pass 'the user PATH stays REG_EXPAND_SZ' } else { Write-Failure 'the user PATH stays REG_EXPAND_SZ' "$($userPath.Kind)" }
     if ($callerErrorAction -eq 'Continue' -and $callerProgress -eq 'Continue') { Write-Pass 'the caller''s preferences are untouched' } else { Write-Failure 'the caller''s preferences are untouched' "ErrorActionPreference=$callerErrorAction ProgressPreference=$callerProgress" }
-    $leaked = @('asset', 'installDir', 'tmp', 'repoUrl', 'envKey', 'envKeyName', 'newPath', 'newLength') | Where-Object { Get-Variable -Name $_ -Scope Script -ErrorAction SilentlyContinue }
+    $leaked = @('asset', 'installDir', 'tmp', 'repoUrl', 'envKey', 'envKeyName', 'requestedKey', 'newPath', 'newLength') | Where-Object { Get-Variable -Name $_ -Scope Script -ErrorAction SilentlyContinue }
     if (-not $leaked) { Write-Pass 'no variable of the installer is left in the session' } else { Write-Failure 'no variable of the installer is left in the session' ($leaked -join ', ') }
 
     # ---- the cases that need no session check ---------------------------
@@ -254,6 +267,29 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
         if (-not $badVersion.Ok -and $badVersion.Text -match 'VERSION must be a release tag' -and -not (Test-Path (Join-Path $work 'inst13'))) { Write-Pass "VERSION '$bad' is refused before anything is downloaded" } else { Write-Failure "VERSION '$bad' is refused" $badVersion.Text }
     }
 
+    Write-Host '-- FLIGHTDECK_INSTALL_REGISTRY_KEY'
+    # The test key spelled with forward slashes, doubled and outer
+    # separators and in capitals is still the test key.
+    Set-PathValue $testKey (New-PathValue $fixturePath)
+    $dir14 = Join-Path $work 'inst14'
+    $env:FLIGHTDECK_INSTALL_REGISTRY_KEY = '/' + ($testKey.ToUpperInvariant() -replace '\\', '//') + '/'
+    $spelled = Invoke-Install -Dir $dir14
+    if ($spelled.Ok -and (Get-PathValue $testKey).Raw -ceq "$fixturePath;$dir14") { Write-Pass 'the test key spelled with slashes and in capitals is honoured' } else { Write-Failure 'the test key spelled with slashes and in capitals is honoured' "$($spelled.Text)`n$((Get-PathValue $testKey).Raw)" }
+    if (($spelled.Text -replace '\s+', ' ') -match ('HKCU\\' + [regex]::Escape($testKey) + ' \(FLIGHTDECK_INSTALL_REGISTRY_KEY\)')) { Write-Pass 'and named with backslashes' } else { Write-Failure 'and named with backslashes' $spelled.Text }
+    # Keys outside the test root: beside it, climbing out of it, and the
+    # root itself. None may be written; a run that wrote one would also
+    # have printed that it changed the PATH.
+    $refusedKeys = @("$outsideKey\Environment", "Software\flightdeck-test\..\flightdeck-test-outside-$runId", $testRoot)
+    foreach ($refusedKey in $refusedKeys) {
+        $env:FLIGHTDECK_INSTALL_REGISTRY_KEY = $refusedKey
+        $testBefore = (Get-PathValue $testKey).Raw
+        $refusedDir = Join-Path $work 'inst15'
+        $refused = Invoke-Install -Dir $refusedDir
+        if (-not $refused.Ok -and $refused.Text -match 'must name a key under HKCU\\Software\\flightdeck-test\\' -and -not (Test-Path $refusedDir) -and $null -eq (Get-PathValue $refusedKey) -and (Get-PathValue $testKey).Raw -ceq $testBefore) { Write-Pass "the registry key '$refusedKey' is refused and nothing is written" } else { Write-Failure "the registry key '$refusedKey' is refused" "$($refused.Text)`n$((Get-PathValue $refusedKey).Raw)" }
+    }
+    if (-not (Test-RegistryKey $outsideKey)) { Write-Pass 'no key outside the test root is created' } else { Write-Failure 'no key outside the test root is created' "HKCU\$outsideKey exists" }
+    $env:FLIGHTDECK_INSTALL_REGISTRY_KEY = $testKey
+
     Write-Host '-- refusals'
     $bad = Invoke-Install -Version 'v0.0.1-bad' -Dir (Join-Path $work 'inst3')
     if (-not $bad.Ok -and $bad.Text -match 'checksum mismatch' -and -not (Test-Path (Join-Path $work 'inst3\flightdeck.exe'))) { Write-Pass 'a bad checksum aborts the install' } else { Write-Failure 'a bad checksum aborts the install' $bad.Text }
@@ -296,6 +332,13 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wP
         [void][FlightdeckInstallTest.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$broadcast)
     }
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($testKey, $false)
+    # What a refused key would have left had the installer written it.
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($outsideKey, $false)
+    $rootKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($testRoot, $true)
+    if ($rootKey) {
+        $rootKey.DeleteValue('Path', $false)
+        $rootKey.Close()
+    }
     $parent = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($testRoot)
     if ($parent) {
         $empty = $parent.SubKeyCount -eq 0 -and $parent.ValueCount -eq 0

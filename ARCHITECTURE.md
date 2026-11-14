@@ -11659,7 +11659,10 @@ anything, and runs in a script block of its own, so the session that ran
 it keeps its own variables and preferences. Its test points it at a
 throwaway registry key (`FLIGHTDECK_INSTALL_REGISTRY_KEY`, a test-only
 override) so a run never touches a real PATH; CI adds one run against
-the runner's real `HKCU\Environment`.
+the runner's real `HKCU\Environment`. The installer honours that
+override only for a key under `HKCU\Software\flightdeck-test\`, and says
+so when it does; any other value stops it before it downloads or writes
+anything, so a stray setting cannot send the PATH write elsewhere.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the

@@ -3,12 +3,9 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -119,70 +116,18 @@ func lockPostgresMigrations(ctx context.Context, rawURL string) (func(), error) 
 	}, nil
 }
 
-// symlinkDepthLimit bounds how many dangling symbolic links
-// sqliteRealPath follows by hand; the kernel itself gives up at forty.
-const symlinkDepthLimit = 40
-
-// sqliteRealPath returns the absolute path of the SQLite database at
-// path with its symbolic links resolved: those of the file when it
-// exists; otherwise those of its directory, where the file is about to
-// be created, after following a chain of links that point at a file not
-// created yet (at most depth links), each relative target taken from
-// its link's physical directory as the kernel takes it. Two names for
-// one file through links are then one name, which is what the migration
-// lock is keyed on.
-func sqliteRealPath(path string, depth int) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return resolved, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	if info, lerr := os.Lstat(abs); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
-		if depth <= 0 {
-			return "", fmt.Errorf("%s: too many symbolic links", abs)
-		}
-		target, rerr := os.Readlink(abs)
-		if rerr != nil {
-			return "", rerr
-		}
-		if !filepath.IsAbs(target) {
-			// The kernel resolves a relative target against the link's
-			// physical directory, not the path it was reached by: through
-			// lnk -> real/sub, the target ../../other/db of real/sub/db is
-			// <base>/other/db, while a lexical join of lnk/db's directory
-			// would give the directory above <base>.
-			linkDir, derr := filepath.EvalSymlinks(filepath.Dir(abs))
-			if derr != nil {
-				return "", derr
-			}
-			target = filepath.Join(linkDir, target)
-		}
-		return sqliteRealPath(target, depth-1)
-	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, filepath.Base(abs)), nil
-}
-
 // sqliteMigrationMutex is the mutex that serialises the migrations of
 // one SQLite database file in this process.
 type sqliteMigrationMutex struct {
-	path string // the file's real path (sqliteRealPath)
+	path string // the file's real path (ResolveSQLitePath)
 	mu   sync.Mutex
 }
 
 // sqliteMigrationMutexes holds one entry per SQLite database file this
 // process has migrated. On platforms without file locks the mutex is
 // the only exclusion; elsewhere it also covers what the lock file
-// cannot: a hard link, which no path resolves (see mutexFor).
+// cannot: a hard link, which no path resolves (see
+// sqliteMigrationMutexFor).
 var (
 	sqliteMigrationRegistry sync.Mutex
 	sqliteMigrationMutexes  []*sqliteMigrationMutex
@@ -215,7 +160,7 @@ func sqliteMigrationMutexFor(path string) *sync.Mutex {
 }
 
 func lockSQLiteMigrations(ctx context.Context, path string) (func(), error) {
-	resolved, err := sqliteRealPath(path, symlinkDepthLimit)
+	resolved, err := ResolveSQLitePath(path)
 	if err != nil {
 		return nil, fmt.Errorf("storage: SQLite database path: %w", err)
 	}

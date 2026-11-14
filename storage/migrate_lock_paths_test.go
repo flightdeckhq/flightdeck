@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -114,89 +113,4 @@ func TestLockSQLiteMigrations_TwoFilesDoNotWaitForEachOther(t *testing.T) {
 		t.Fatalf("a second database's lock waited for the first's: %v", err)
 	}
 	other()
-}
-
-// A dangling link's relative target is taken from the link's physical
-// directory. lnk -> real/sub and real/sub/db -> ../../other/db: the
-// kernel puts lnk/db at <base>/other/db. A lexical join of lnk/db's
-// directory would give <root>/other/db, one level above <base>, which
-// here exists as a decoy that must not be chosen.
-func TestSQLiteRealPath_ARelativeTargetThroughALinkedDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating a symbolic link needs a privilege on Windows")
-	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := filepath.Join(root, "base")
-	for _, dir := range []string{filepath.Join(base, "real", "sub"), filepath.Join(base, "other"), filepath.Join(root, "other")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	decoy := filepath.Join(root, "other", "db")
-	if err := os.WriteFile(decoy, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join("real", "sub"), filepath.Join(base, "lnk")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join("..", "..", "other", "db"), filepath.Join(base, "real", "sub", "db")); err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(base, "other", "db")
-	for _, name := range []string{filepath.Join(base, "lnk", "db"), filepath.Join(base, "real", "sub", "db"), want} {
-		got, err := sqliteRealPath(name, symlinkDepthLimit)
-		if err != nil || got != want {
-			t.Errorf("sqliteRealPath(%s) = %q, %v; want %q (not the decoy %s)", name, got, err, want, decoy)
-		}
-	}
-	// And the lock follows it: the link's name and the target's exclude
-	// each other.
-	requireExcluded(t, filepath.Join(base, "lnk", "db"), want)
-}
-
-// A chain of dangling links, each relative to its own directory, ends at
-// the file the last one names; a loop is an error, not a hang.
-func TestSQLiteRealPath_AChainOfDanglingLinks(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating a symbolic link needs a privilege on Windows")
-	}
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(base, "a", "b"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// first -> a/second, a/second -> b/third, a/b/third -> ../../final.db
-	links := map[string]string{
-		filepath.Join(base, "first"):           filepath.Join("a", "second"),
-		filepath.Join(base, "a", "second"):     filepath.Join("b", "third"),
-		filepath.Join(base, "a", "b", "third"): filepath.Join("..", "..", "final.db"),
-	}
-	for link, target := range links {
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := sqliteRealPath(filepath.Join(base, "first"), symlinkDepthLimit)
-	if want := filepath.Join(base, "final.db"); err != nil || got != want {
-		t.Fatalf("sqliteRealPath = %q, %v; want %q", got, err, want)
-	}
-	// A chain longer than the limit is refused.
-	if _, err := sqliteRealPath(filepath.Join(base, "first"), 1); err == nil || !strings.Contains(err.Error(), "too many symbolic links") {
-		t.Fatalf("a chain over the limit: err = %v", err)
-	}
-	// A loop: loop1 -> loop2 -> loop1.
-	if err := os.Symlink("loop2", filepath.Join(base, "loop1")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("loop1", filepath.Join(base, "loop2")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sqliteRealPath(filepath.Join(base, "loop1"), symlinkDepthLimit); err == nil {
-		t.Fatal("a loop of links resolved")
-	}
 }

@@ -5350,9 +5350,13 @@ of the process for each database file; on a platform with no file lock
 (none of the release targets) the mutex alone serialises the migrations
 of one process. The database is recognised by its real path, symbolic
 links resolved (the file's own, or its directory's when the file is yet
-to be created, following a link to a file not created yet), so a caller
-that reaches it through a link and one that names its target take one
-lock file. A hard link has no path to resolve: within one process the
+to be created, following a chain of links to a file not created yet,
+each relative target read from its link's own directory as the kernel
+reads it), so a caller that reaches it through a link and one that
+names its target take one lock file. The binary opens the database by
+the path this resolution (`storage.ResolveSQLitePath`) gives, so the
+file the lock guards is the file that is migrated and served. A hard
+link has no path to resolve: within one process the
 mutex still recognises the file (`os.SameFile`), but two processes that
 reach one database through two hard links each lock a file of their own
 name and may migrate it at once, so a SQLite database is reached by one
@@ -10613,7 +10617,8 @@ that holds it (the holder writes its PID into the lock file). The
 default case is refused earlier, by the port. The database's lock file
 is named after the real path of the database: symbolic links are
 resolved first (those of the file, or of its directory when the file
-is yet to be created), so a second instance that reaches the file
+is yet to be created), by the storage module's resolution that the
+migration lock uses too, so a second instance that reaches the file
 through a link, or through a data dir that is a link, contends for
 the same lock. Two names that are not links to one another are not
 recognised as one file: a hard link, or the same file bind-mounted

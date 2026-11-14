@@ -322,10 +322,12 @@ func TestResolveDatabase(t *testing.T) {
 	}
 }
 
-// One database reached by different names is one database: a link to
-// the file, a link to its directory, a data dir that is itself a link,
-// and a link to a file that does not exist yet all resolve to the real
-// path, which is what the lock file is named after.
+// The binary names a SQLite database by storage.ResolveSQLitePath, the
+// resolution the migration lock is keyed on, which the storage module
+// tests for every kind of link. Here: a link given by --database-url and
+// a data dir that is a link both reach the real file, so the binary's
+// lock file, the file it serves and the migration lock name one file;
+// and a name the resolver refuses is refused with that name.
 func TestResolveDatabase_ResolvesSymbolicLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symbolic link needs a privilege on Windows")
@@ -339,57 +341,31 @@ func TestResolveDatabase_ResolvesSymbolicLinks(t *testing.T) {
 	if err := os.WriteFile(realDB, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := func(target, name string) string {
-		t.Helper()
-		path := filepath.Join(base, name)
-		if err := os.Symlink(target, path); err != nil {
-			t.Fatal(err)
-		}
-		return path
+	fileLink := filepath.Join(base, "sym.db")
+	if err := os.Symlink(realDB, fileLink); err != nil {
+		t.Fatal(err)
 	}
-	fileLink := link(realDB, "sym.db")
-	dirLink := link(realData, "d1-link")
-	chained := link(fileLink, "sym-of-sym.db")
-	relative := link(filepath.Join("d1", datadir.DatabaseFile), "relative.db")
+	dirLink := filepath.Join(base, "d1-link")
+	if err := os.Symlink(realData, dirLink); err != nil {
+		t.Fatal(err)
+	}
 	other := datadir.Layout{Root: base, Database: filepath.Join(base, datadir.DatabaseFile)}
 
-	for name, url := range map[string]string{
-		"a link to the file":      "sqlite://" + fileLink,
-		"a link to its directory": "sqlite://" + filepath.Join(dirLink, datadir.DatabaseFile),
-		"a link to a link":        "sqlite://" + chained,
-		"a relative link":         "sqlite://" + relative,
-		"the real path":           "sqlite://" + realDB,
-	} {
-		got, err := resolveDatabase(url, other)
-		if err != nil {
-			t.Errorf("%s: %v", name, err)
-			continue
-		}
-		if got.path != realDB || storage.SQLitePath(got.url) != realDB || got.display != realDB {
-			t.Errorf("%s: %+v, want the real file %s", name, got, realDB)
-		}
+	got, err := resolveDatabase("sqlite://"+fileLink, other)
+	if err != nil || got.path != realDB || storage.SQLitePath(got.url) != realDB || got.display != realDB {
+		t.Errorf("a link to the file: %+v, %v; want the real file %s", got, err, realDB)
 	}
-
-	// A data dir that is a link: its database is the real one.
 	linked := datadir.Layout{Root: dirLink, Database: filepath.Join(dirLink, datadir.DatabaseFile)}
 	if got, err := resolveDatabase("", linked); err != nil || got.path != realDB {
 		t.Errorf("a linked data dir: %+v, %v; want %s", got, err, realDB)
 	}
 
-	// A link to a file that does not exist yet resolves to where SQLite
-	// will create it, not to the link.
-	fresh := filepath.Join(realData, "fresh.db")
-	dangling := link(fresh, "dangling.db")
-	if got, err := resolveDatabase("sqlite://"+dangling, other); err != nil || got.path != fresh {
-		t.Errorf("a link to a file not yet created: %+v, %v; want %s", got, err, fresh)
-	}
-	// A link that points at itself is refused, not followed forever.
 	loop := filepath.Join(base, "loop.db")
 	if err := os.Symlink(loop, loop); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveDatabase("sqlite://"+loop, other); err == nil {
-		t.Error("a link to itself was accepted")
+	if _, err := resolveDatabase("sqlite://"+loop, other); err == nil || !strings.Contains(err.Error(), loop) {
+		t.Errorf("a link to itself: %v, want an error naming %s", err, loop)
 	}
 }
 

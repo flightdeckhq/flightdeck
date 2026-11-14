@@ -1,14 +1,15 @@
-{{- if .Values.nats.enabled -}}
+{{- if include "flightdeck.natsEnabled" . -}}
 {{- $component := "nats" -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
 spec:
   serviceName: {{ include "flightdeck.natsServiceName" . }}
   replicas: {{ .Values.nats.replicas }}
+  {{- include "flightdeck.pvcRetention" . | nindent 2 }}
   {{- if gt (int .Values.nats.replicas) 1 }}
   # A clustered JetStream server is not healthy until it reaches its
   # peers, so the pods start together rather than one at a time (the
@@ -36,16 +37,21 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nats
-          image: "{{ .Values.image.registry }}/{{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}"
+          image: {{ include "flightdeck.imageRef" (dict "root" . "image" .Values.nats.image "key" "nats.image") | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The server writes only its JetStream store, on the volume.
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           # JetStream enabled via CLI flag so NATS works without a config
-          # file. Matches docker/docker-compose.yml behaviour.
+          # file.
           args:
             - "--jetstream"
             - "--store_dir"
@@ -59,29 +65,31 @@ spec:
             {{- if gt (int .Values.nats.replicas) 1 }}
             - "--cluster_name"
             - {{ include "flightdeck.natsServiceName" . | quote }}
-            # With a token set, routes authenticate with it too, so the
-            # cluster port is not a way around client auth.
+            # The routes authenticate with the token too, so the cluster
+            # port is not a way around client auth.
             - "--cluster"
             - "nats://{{ include "flightdeck.natsRouteAuth" . }}0.0.0.0:{{ .Values.nats.clusterPort }}"
             - "--routes"
             - {{ include "flightdeck.natsRoutes" . | quote }}
             {{- end }}
-            {{- if .Values.nats.auth.token }}
             - "--auth"
             - "$(NATS_TOKEN)"
-            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            {{- if .Values.nats.auth.token }}
             - name: NATS_TOKEN
               valueFrom:
                 secretKeyRef:
+                  {{- $tokenRef := include "flightdeck.secretRef" (dict "root" . "path" "nats.auth.tokenSecret") | fromJson }}
+                  {{- if $tokenRef.name }}
+                  name: {{ $tokenRef.name | quote }}
+                  key: {{ $tokenRef.key | quote }}
+                  {{- else }}
                   name: {{ include "flightdeck.secretName" . }}
                   key: FLIGHTDECK_NATS_TOKEN
-            {{- end }}
+                  {{- end }}
           ports:
             - name: client
               containerPort: {{ .Values.nats.clientPort }}

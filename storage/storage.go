@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	// Postgres through pgx's database/sql adapter: the "pgx" driver name.
@@ -90,6 +91,46 @@ const sqliteBusyTimeoutMillis = 5000
 // handle has a read pool of its own (see Share), so the eight are per
 // service.
 const sqliteReaderConns = 8
+
+// sqliteTempDir is the directory SetSQLiteTempDir named; nil or ""
+// leaves SQLite's own choice.
+var sqliteTempDir atomic.Pointer[string]
+
+// SetSQLiteTempDir makes SQLite keep its temporary files in dir for
+// every SQLite connection this package opens after the call; "" goes
+// back to SQLite's own choice. dir must exist and be writable, or
+// opening a database fails with SQLite's "not a writable directory".
+//
+// SQLite writes temporary files when a statement needs more working
+// space than its cache: a sort or a GROUP BY over a few megabytes of
+// rows, an index build, a large statement journal. Left to itself it
+// puts them in $SQLITE_TMPDIR, $TMPDIR, /var/tmp, /usr/tmp, /tmp or the
+// working directory, whichever is writable first, and fails the
+// statement with "disk I/O error (6410)" when none is: the case of a
+// container with a read-only root filesystem, where an analytics query
+// over a large events table then answers 500. Keeping the files in
+// memory instead would trade that for the process's memory limit, so
+// the caller names a directory on the volume that holds the database.
+//
+// The setting is SQLite's own and it is one per process (PRAGMA
+// temp_store_directory, behind SQLite's temp-directory mutex), which is
+// why this is a package-level call and not an option of Open: call it
+// once, before the first Open. A directory that later disappears is
+// skipped by SQLite, which falls back to its own list.
+func SetSQLiteTempDir(dir string) {
+	sqliteTempDir.Store(&dir)
+}
+
+// sqliteTempDirPragma is the _pragma that applies SetSQLiteTempDir to a
+// connection, or "" when no directory is set. The path is a SQL string
+// literal: a quote in it is doubled.
+func sqliteTempDirPragma() string {
+	dir := sqliteTempDir.Load()
+	if dir == nil || *dir == "" {
+		return ""
+	}
+	return "temp_store_directory('" + strings.ReplaceAll(*dir, "'", "''") + "')"
+}
 
 // DB is an open database: the writer handle (the embedded *sql.DB),
 // the dialect, and on SQLite a separate read pool.
@@ -340,6 +381,8 @@ func (db *DB) Share(ctx context.Context) (*DB, error) {
 // match on both). The reader's connections are query_only, so a write
 // that reaches the read pool by mistake fails instead of racing the
 // writer. The writer additionally begins every transaction IMMEDIATE.
+// With SetSQLiteTempDir, every connection also names that directory
+// for SQLite's temporary files.
 func sqliteDSN(path string, writer bool) string {
 	q := url.Values{}
 	q["_pragma"] = []string{
@@ -348,6 +391,9 @@ func sqliteDSN(path string, writer bool) string {
 		"foreign_keys(1)",
 		"synchronous(NORMAL)",
 		"case_sensitive_like(1)",
+	}
+	if tempDir := sqliteTempDirPragma(); tempDir != "" {
+		q["_pragma"] = append(q["_pragma"], tempDir)
 	}
 	if writer {
 		q.Set("_txlock", "immediate")

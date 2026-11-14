@@ -91,8 +91,12 @@ updates:
       prefix: chore
       include: scope
 
+  # "/" is the root module that builds the flightdeck binary; it pins
+  # the same dependencies as the four service modules, so it moves with
+  # them in one PR.
   - package-ecosystem: gomod
     directories:
+      - "/"
       - "/api"
       - "/ingestion"
       - "/storage"
@@ -132,8 +136,14 @@ updates:
 
   # uv, not pip: the sensor's CI installs come from sensor/uv.lock, which
   # this ecosystem keeps in step with pyproject.toml.
+  # lockfile-only: pyproject.toml holds the sensor's published version
+  # ranges and the SDK-floor groups, which pin the oldest releases CI
+  # tests on purpose (openai-floor's httpx<0.28, llama-index-floor's
+  # exact pins). A manifest rewrite would move those floors; only the
+  # lock moves, and ranges change by hand.
   - package-ecosystem: uv
     directory: "/sensor"
+    versioning-strategy: lockfile-only
     schedule:
       interval: monthly
       time: "06:00"

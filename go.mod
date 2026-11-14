@@ -47,7 +47,7 @@ require (
 	github.com/swaggo/swag/v2 v2.0.0-rc6 // indirect
 	go.opentelemetry.io/proto/slim/otlp v1.11.1 // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect

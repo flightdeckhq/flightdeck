@@ -140,7 +140,9 @@ updates:
   # ranges and the SDK-floor groups, which pin the oldest releases CI
   # tests on purpose (openai-floor's httpx<0.28, llama-index-floor's
   # exact pins). A manifest rewrite would move those floors; only the
-  # lock moves, and ranges change by hand.
+  # lock moves, and ranges change by hand. This holds for security
+  # updates too: a fix outside a declared range raises no PR, the alert
+  # still shows in the Security tab, and the range is raised by hand.
   - package-ecosystem: uv
     directory: "/sensor"
     versioning-strategy: lockfile-only

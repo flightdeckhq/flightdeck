@@ -897,20 +897,16 @@ other connections; a larger change than this defect needs).
 ## D270 -- An operator can supply the dashboard token; it is stored and served as a minted one is
 
 **Date:** 2026-11-12
-**Decision:** outside loopback mode the `flightdeck` binary takes its
-dashboard token from the file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names,
-else from `FLIGHTDECK_DASHBOARD_TOKEN`, else mints one as before. A
-supplied value must have a minted token's form (`ftd_` and 32 lower-case
-hex digits) and is refused otherwise, without being echoed. It is stored
-as an `access_tokens` row named `Supplied dashboard token` (salted hash,
-the salt derived from the token so every instance writes the same row),
-never in `secrets.json`, and `/runtime-config.json` serves it exactly as
-it serves a minted token. A token supplied earlier stays valid until it
-is revoked in Settings. The file's mode is not checked.
-**Why:** several instances on one Postgres each minted a token of their
-own, and nobody could know one before the first start.
-**Rejected alternative:** replacing the earlier supplied token (the old
-pods of a rolling update still serve it); refusing a world-readable file
-(Kubernetes and Docker mount secrets 0644 / 0444); a random salt (two
-instances starting together would leave two rows); keeping the supplied
-token out of `/runtime-config.json` (the dashboard has no login).
+**Decision:** beyond loopback the binary takes its dashboard token from
+the file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names, else from
+`FLIGHTDECK_DASHBOARD_TOKEN`, else mints one. A supplied value must have
+a minted token's form or the start is refused, the value not echoed. It
+is stored as an `access_tokens` row with a salt derived from the token,
+so every instance writes the same row; never in `secrets.json`; served
+by `/runtime-config.json` as a minted one is. An earlier supplied token
+stays valid until revoked. The file's mode is not checked.
+**Why:** instances on one Postgres each minted their own token, and none
+could be known before the first start.
+**Rejected alternative:** replacing the earlier token (a rolling update's
+old pods still serve it); refusing a world-readable file (secret mounts
+are 0644 / 0444); a random salt (concurrent starts leave two rows).

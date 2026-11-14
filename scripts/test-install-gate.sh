@@ -252,6 +252,15 @@ left_clean "well-behaved fake"
 PASSED=$((PASSED + 1))
 echo "  ok: GATE OK (SQLite)"
 
+echo "-- ended outright (the Windows stop), the restart still serves the session"
+gate ok GATE_STOP_SIGNAL=KILL
+if [[ "$RC" != 0 ]]; then printf '%s\n' "$OUT" >&2; fail "the gate exited $RC with GATE_STOP_SIGNAL=KILL"; fi
+grep -q 'ended outright' <<<"$OUT" || { printf '%s\n' "$OUT" >&2; fail "the gate did not say it ended the binary outright"; }
+grep -q 'still served after the restart' <<<"$OUT" || { printf '%s\n' "$OUT" >&2; fail "the restart check did not run after the outright stop"; }
+left_clean "ended outright"
+PASSED=$((PASSED + 1))
+echo "  ok: ended outright, restart served"
+
 echo "-- each fault fails the gate, within the bound"
 expect_fail "a binary that exits at once" exit1 'install-gate: not ready'
 expect_fail "a binary that never listens and ignores SIGINT" deaf 'install-gate: not ready'
@@ -262,6 +271,7 @@ expect_fail "a binary that exits non-zero on SIGINT" bad-exit 'exited 3 on SIGIN
 expect_fail "a server that forgets the session over a restart" amnesia 'after the restart'
 expect_fail "a start-up block that names another database" wrong-db 'want a SQLite database'
 expect_fail "a data-dir mode warning" wide-dir 'wider than 0700'
+expect_fail "a stop signal the gate does not know" ok 'GATE_STOP_SIGNAL must be INT or KILL' GATE_STOP_SIGNAL=TERM
 expect_fail "a --version that is not the expected one" ok "--version printed 'flightdeck v0.0.0-fake'" GATE_EXPECT_VERSION=v9.9.9
 
 echo "-- a server that takes the port as the binary starts is not mistaken for it"

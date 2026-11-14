@@ -17,7 +17,9 @@
 #       Starts <binary> --listen <listen> --data-dir <fresh temp dir>
 #       [flag...] with its output in a log, checks it, stops it with
 #       SIGINT and requires a clean exit within GATE_STOP_TIMEOUT (a
-#       binary that has to be killed fails the gate), then starts it
+#       binary that has to be killed fails the gate; on Windows, where
+#       Git Bash cannot deliver a console Ctrl+C to a native process, it
+#       ends the process outright, see GATE_STOP_SIGNAL), then starts it
 #       again on the same data dir and requires the session to be
 #       served still. The binary's own settings are removed from its
 #       environment (FLIGHTDECK_DATABASE_URL and the others it reads),
@@ -52,6 +54,11 @@
 #   GATE_STORE_TIMEOUT    seconds for the posted session to appear in the
 #                         API (default 30; the embedded bus delivers in
 #                         milliseconds, the bound turns a hang into a failure)
+#   GATE_STOP_SIGNAL      the signal run mode stops the binary with:
+#                         INT (Ctrl+C) by default; KILL under Git Bash,
+#                         whose kill -INT a native Windows process
+#                         ignores, so the restart then checks what a
+#                         killed process left
 #   GATE_STOP_TIMEOUT     seconds the binary gets to exit after SIGINT
 #                         (default 75: its shutdown is two steps of at
 #                         most 30 seconds each, the HTTP drain and the
@@ -75,6 +82,19 @@ CURL=(curl --max-time "$REQUEST_TIMEOUT_SECS")
 # caller stopped to release its port (the header has the reason for the
 # default). Past it, run mode kills the process and fails.
 STOP_TIMEOUT_SECS="${GATE_STOP_TIMEOUT:-75}"
+# The signal that stops the binary. Git Bash cannot deliver a console
+# Ctrl+C to a native Windows process: its kill -INT is ignored, and the
+# process would only end at the timeout, killed. There the binary is
+# ended outright at once, as a closed window or a crash ends it.
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+  STOP_SIGNAL="${GATE_STOP_SIGNAL:-KILL}"
+else
+  STOP_SIGNAL="${GATE_STOP_SIGNAL:-INT}"
+fi
+case "$STOP_SIGNAL" in
+  INT | KILL) ;;
+  *) echo "install-gate: GATE_STOP_SIGNAL must be INT or KILL, not $STOP_SIGNAL" >&2; exit 1 ;;
+esac
 # How long the binary gets to exit when the gate has already failed and
 # is only cleaning up: long enough for a healthy binary to close its
 # files, so the data dir can be removed; a wedged one is killed after it.
@@ -245,14 +265,15 @@ RUN_WORK=""
 # end by itself.
 STOP_STATUS=0
 
-# stop_process PID GRACE-SECS sends SIGINT and waits for the process to
+# stop_process PID GRACE-SECS sends STOP_SIGNAL (SIGINT unless the
+# platform cannot deliver it) and waits for the process to
 # end, looking at it rather than blocking in `wait`: a binary that
 # ignores the signal would otherwise hold the gate for ever. Returns 0
 # when the process ended by itself (its status in STOP_STATUS), 1 when
 # it was still there after GRACE-SECS and was killed.
 stop_process() {
   local pid="$1" grace="$2" deadline
-  kill -INT "$pid" 2>/dev/null || true
+  kill -"$STOP_SIGNAL" "$pid" 2>/dev/null || true
   deadline=$((SECONDS + grace))
   while kill -0 "$pid" 2>/dev/null; do
     if ((SECONDS >= deadline)); then
@@ -337,12 +358,12 @@ run_stop() {
   RUN_PID=""
   if ((STOP_STATUS == 0)); then
     say "exited 0"
-  elif [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
-    # Git Bash cannot deliver a console Ctrl+C to a native process; the
-    # process is ended outright and the exit status after kill is not
-    # the binary's own. The restart below then starts from what a
-    # killed process left, which the binary must also recover from.
-    say "stopped (exit status not checked on Windows)"
+  elif [[ "$STOP_SIGNAL" == KILL ]]; then
+    # Ended outright (Git Bash cannot deliver a console Ctrl+C to a
+    # native process): the exit status is the kill's, not the binary's.
+    # The restart below starts from what a killed process left, which
+    # the binary must recover from.
+    say "ended outright (SIGKILL; the exit status is not the binary's)"
   else
     show_run_log
     die "flightdeck exited $STOP_STATUS on SIGINT"

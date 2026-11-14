@@ -18,7 +18,7 @@ name: Install gate
 #   ubuntu-24.04      amd64  install.sh (the curl | sh path), pip + uvx, docker run,
 #                            and the binary once more on a Postgres
 #   ubuntu-24.04-arm  arm64  install.sh
-#   macos-14          arm64  brew install flightdeckhq/tap/flightdeck, brew services
+#   macos-15          arm64  brew install flightdeckhq/tap/flightdeck, brew services
 #   macos-15-intel    amd64  install.sh
 #   windows-2022      amd64  install.ps1 (the irm | iex path, the .zip)
 #
@@ -270,7 +270,9 @@ jobs:
       matrix:
         include:
           - name: macos-arm64 (brew)
-            runner: macos-14
+            # macos-15 is arm64; the macos-14 image is retired ("The
+            # configuration 'macos-14-arm64-us-default' is not supported").
+            runner: macos-15
             channel: brew
           - name: macos-amd64 (install.sh)
             runner: macos-15-intel

@@ -5323,6 +5323,55 @@ nothing; the Helm chart's migrations ConfigMap (`helm/Makefile
 sync-migrations`) still copies the Postgres directory and is unused by
 the workers.
 
+**Instances that migrate at once.** Every instance applies the
+migrations when it starts (the binary's pods under one Deployment, the
+standalone workers' replicas), so several may call `storage.Migrate` on
+one database together. One of them applies the migrations; the others
+wait for it and then find the schema current. golang-migrate serialises
+on its own, but its Postgres driver does so with a session that blocks
+in `pg_advisory_lock` for as long as another instance migrates, and a
+blocked statement is an open transaction: a `CREATE INDEX CONCURRENTLY`
+(migration 000030) waits for every open transaction to end, the blocked
+one waits for the index builder's lock, and Postgres resolves the
+deadlock by cancelling the build, which leaves the schema dirty. Its
+SQLite driver's lock is a flag of each migrator object and excludes
+nothing. So `Migrate`, `MigrateDown` and `SchemaVersion` first take a
+lock of the storage module's own, before golang-migrate opens its
+session. On Postgres it is a session-level advisory lock on the key
+pair (`0x46444d47`, 1), a key space of its own (golang-migrate's key is
+a single bigint), asked for with `pg_try_advisory_lock` on a dedicated
+connection in statements that return at once, so a waiting instance
+holds no transaction for an index build to wait on. On SQLite it is an
+exclusive lock (`flock`, `LockFileEx` on Windows) on
+`<database>.migrate.lock` beside the database, created 0600, and a mutex
+of the process for each database file; on a platform with no file lock
+the mutex alone serialises the migrations of one process. A waiting
+instance asks four times a second, logs once that it waits and every 30
+seconds after, and gives up after ten minutes with an error that says
+another instance is migrating; its context (a signal, for the binary)
+ends the wait too. A holder that dies loses the lock at once: Postgres
+drops a session's advisory locks with its connection, the kernel drops
+a file lock with its process. An instance of an earlier version takes
+only golang-migrate's lock, so a rolling update whose old and new pods
+migrate at once can still meet the deadlock; a new version's
+migrations are applied by its first pod before the old pods restart.
+
+**A dirty schema.** golang-migrate marks the schema dirty when it
+starts a migration and clean when the migration is done. With the lock
+above, an instance finds it dirty only when the process applying a
+migration was killed or lost its connection mid-way, and the migration
+may be partly applied. Waiting does not change that, and forcing the
+version automatically could build later migrations on a half-applied
+one, so every instance that starts on a dirty schema refuses with a
+`storage.DirtyError`: it names the version and its file, says the
+migration was interrupted, and gives the recovery. Compare the database
+with that file, then record the outcome in `schema_migrations`: the
+version with `dirty = false` once its changes are all there, or the
+version before it with `dirty = false` once they are undone; the next
+start applies what is left. An interrupted `CREATE INDEX CONCURRENTLY`
+leaves an invalid index of that name, which is undone with `DROP INDEX
+CONCURRENTLY`.
+
 ### Bus
 
 `storage.Bus` carries the notifications the services exchange: a
@@ -10523,7 +10572,9 @@ beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
-cache; and the lock files below. With `--database-url postgres://…`
+cache; the lock files below; and, in SQLite mode,
+`flightdeck.db.migrate.lock`, which an instance holds while it applies
+the migrations (see Storage > Migrations). With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file

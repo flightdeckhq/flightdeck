@@ -93,6 +93,19 @@ if mode == "deaf":
     # Wedged before listening, and ignoring the signal.
     while True:
         time.sleep(3600)
+if mode == "usurped":
+    # What the real binary does when another server takes its port as it
+    # starts: the stranger answers at once, while this process is still
+    # alive and has printed nothing (it is loading); only then does it
+    # find the address busy and exit. FAKE_STRANGER_PIDFILE gets the
+    # stranger's pid, for the test to stop it.
+    import subprocess
+    env = dict(os.environ, FAKE_MODE="ok", FAKE_PIDFILE=os.environ["FAKE_STRANGER_PIDFILE"])
+    subprocess.Popen([sys.argv[0], "--listen", args[args.index("--listen") + 1], "--data-dir", str(data) + "-stranger"],
+                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1.5)
+    print("flightdeck: listen %s: address already in use" % args[args.index("--listen") + 1], file=sys.stderr)
+    sys.exit(1)
 
 TOKEN = "tok_dev"
 data.mkdir(parents=True, exist_ok=True)
@@ -250,6 +263,19 @@ expect_fail "a server that forgets the session over a restart" amnesia 'after th
 expect_fail "a start-up block that names another database" wrong-db 'want a SQLite database'
 expect_fail "a data-dir mode warning" wide-dir 'wider than 0700'
 expect_fail "a --version that is not the expected one" ok "--version printed 'flightdeck v0.0.0-fake'" GATE_EXPECT_VERSION=v9.9.9
+
+echo "-- a server that takes the port as the binary starts is not mistaken for it"
+STRANGER_PIDFILE="$TMP/stranger-usurper.pid"
+expect_fail "a stranger that answers while the binary is still loading" usurped \
+  'the binary started here has exited: something else is on that port' FAKE_STRANGER_PIDFILE="$STRANGER_PIDFILE"
+if [[ -s "$STRANGER_PIDFILE" ]]; then
+  kill -INT "$(cat "$STRANGER_PIDFILE")" 2>/dev/null || true
+  deadline=$((SECONDS + READY_WAIT_SECS))
+  while curl --max-time 2 -s -o /dev/null "$BASE/ingest/health"; do
+    ((SECONDS < deadline)) || fail "the usurping stranger did not stop"
+    sleep 0.2
+  done
+fi
 
 echo "-- a server already on the port is not mistaken for the binary"
 FAKE_MODE=ok "$FAKE" --listen "$LISTEN" --data-dir "$TMP/stranger" >"$TMP/stranger.log" 2>&1 &

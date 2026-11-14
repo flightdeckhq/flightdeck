@@ -126,9 +126,11 @@ const symlinkDepthLimit = 40
 // sqliteRealPath returns the absolute path of the SQLite database at
 // path with its symbolic links resolved: those of the file when it
 // exists; otherwise those of its directory, where the file is about to
-// be created, after following a link that points at a file not created
-// yet (at most depth times). Two names for one file through links are
-// then one name, which is what the migration lock is keyed on.
+// be created, after following a chain of links that point at a file not
+// created yet (at most depth links), each relative target taken from
+// its link's physical directory as the kernel takes it. Two names for
+// one file through links are then one name, which is what the migration
+// lock is keyed on.
 func sqliteRealPath(path string, depth int) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -150,7 +152,16 @@ func sqliteRealPath(path string, depth int) (string, error) {
 			return "", rerr
 		}
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(abs), target)
+			// The kernel resolves a relative target against the link's
+			// physical directory, not the path it was reached by: through
+			// lnk -> real/sub, the target ../../other/db of real/sub/db is
+			// <base>/other/db, while a lexical join of lnk/db's directory
+			// would give the directory above <base>.
+			linkDir, derr := filepath.EvalSymlinks(filepath.Dir(abs))
+			if derr != nil {
+				return "", derr
+			}
+			target = filepath.Join(linkDir, target)
 		}
 		return sqliteRealPath(target, depth-1)
 	}

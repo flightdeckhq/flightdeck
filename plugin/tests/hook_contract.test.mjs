@@ -1186,6 +1186,23 @@ describe("hook-contract helpers", () => {
       assert.equal(redactServerUrl("https://user:tok_secret@fd.example.com:8443/base"), "https://fd.example.com:8443/base");
       assert.equal(redactServerUrl("http://localhost:4000"), "http://localhost:4000");
       assert.equal(redactServerUrl("not a url"), "not a url");
+      // No scheme: what comes before an "@" ahead of the first "/" is
+      // userinfo too.
+      assert.equal(redactServerUrl("user:tok_secret@127.0.0.1:4901"), "127.0.0.1:4901");
+      assert.equal(redactServerUrl("user@host/path"), "host/path");
+      assert.equal(redactServerUrl("host/a@b"), "host/a@b");
+      assert.equal(redactServerUrl("https://host/a@b"), "https://host/a@b");
+      // Userinfo is in the authority only: an @ in the query, the
+      // fragment or after a backslash leaves the host before it alone.
+      assert.equal(redactServerUrl("https://good.example#@evil.example"), "https://good.example#@evil.example");
+      assert.equal(redactServerUrl("https://fd.example.com?ref=me@corp.example"), "https://fd.example.com?ref=me@corp.example");
+      assert.equal(redactServerUrl("https://good.example\\@evil.example/x"), "https://good.example\\@evil.example/x");
+      assert.equal(redactServerUrl("localhost:4000?x=a@b"), "localhost:4000?x=a@b");
+      // The host follows the authority's last @, as the URL parser reads it.
+      assert.equal(redactServerUrl("https://a@b@fd.example.com/x"), "https://fd.example.com/x");
+      assert.equal(redactServerUrl("https://user:pw@fd.example.com:badport/x"), "https://fd.example.com:badport/x");
+      assert.equal(redactUserinfo("GET https://h.example?x=a@b failed"), "GET https://h.example?x=a@b failed");
+      assert.equal(redactUserinfo("GET https://a@b@h.example/x failed"), "GET https://h.example/x failed");
       assert.equal(
         redactUserinfo("fetch failed: http://u:p@h:1/x and https://a:b@c/"),
         "fetch failed: http://h:1/x and https://c/",

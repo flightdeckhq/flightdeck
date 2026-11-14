@@ -50,6 +50,13 @@ import {
   readGitCache,
   readOrCreateSessionMarker,
   claimSessionStart,
+  claimStartFailureNotice,
+  clearPendingSessionStart,
+  clearSessionMarkers,
+  clearSessionStarted,
+  markSessionStarted,
+  pendingSessionStart,
+  PENDING_START_REUSE_MAX_MS,
   releaseSessionStart,
   stateDir,
   swapSessionCwd,
@@ -166,6 +173,8 @@ describe("touchSessionFiles", () => {
       `session-${key}.txt`,
       `git-${key}.json`,
       `started-${sid}.txt`,
+      `start-notice-${sid}.txt`,
+      `start-pending-${sid}.json`,
       `model-${sid}.txt`,
       `endpoint-${sid}.json`,
       `mcp-policy-${sid}.json`,
@@ -177,6 +186,117 @@ describe("touchSessionFiles", () => {
     assert.equal(getSessionId({ session_id: native }), sid, "the same session id");
     pruneStateDir({ dir });
     for (const name of files) assert.equal(existsSync(join(dir, name)), true, `${name} kept`);
+  });
+});
+
+describe("the start-failure notice marker", () => {
+  it("is claimed once per session and removed with the session's other markers at its end", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const native = randomUUID();
+    const key = markerKeyFor(native);
+    const sid = getSessionId({ session_id: native });
+    assert.equal(claimStartFailureNotice(sid), true, "the first notice is shown");
+    assert.equal(claimStartFailureNotice(sid), false, "a compaction's SessionStart does not repeat it");
+    assert.equal(existsSync(join(stateDir(), `start-notice-${sid}.txt`)), true);
+    // SessionEnd clears the markers; a resumed session is told again,
+    // as a new one is.
+    clearSessionMarkers(key, sid);
+    assert.equal(existsSync(join(stateDir(), `start-notice-${sid}.txt`)), false);
+    assert.equal(claimStartFailureNotice(sid), true, "a resumed session is told again");
+  });
+});
+
+describe("the pending session_start", () => {
+  const fresh = () => ({ id: randomUUID(), timestamp: new Date().toISOString() });
+  const pendingFile = (sid) => join(stateDir(), `start-pending-${sid}.json`);
+
+  it("is recorded by the first send and reused by every later one until acknowledged", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    const first = fresh();
+    assert.deepEqual(pendingSessionStart(sid, first), first, "the first send records its own");
+    // Another hook's send, even one that minted a different event, sends
+    // the recorded one.
+    assert.deepEqual(pendingSessionStart(sid, fresh()), first);
+    assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), first);
+    markSessionStarted(sid);
+    assert.equal(existsSync(pendingFile(sid)), false, "an acknowledged start forgets it");
+    const next = fresh();
+    assert.deepEqual(pendingSessionStart(sid, next), next);
+    clearPendingSessionStart(sid);
+    assert.equal(existsSync(pendingFile(sid)), false);
+  });
+
+  // Eight hook processes asking for the session's pending start at once.
+  async function race(sid) {
+    const script = `
+      import { pendingSessionStart } from ${JSON.stringify(new URL("../hooks/scripts/core/state.mjs", import.meta.url).href)};
+      import { randomUUID } from "node:crypto";
+      const got = pendingSessionStart(${JSON.stringify(sid)}, { id: randomUUID(), timestamp: new Date().toISOString() });
+      process.stdout.write(JSON.stringify(got));
+    `;
+    const run = () =>
+      new Promise((resolve, reject) => {
+        execFile(process.execPath, ["--input-type=module", "-e", script], { env: process.env }, (err, stdout) =>
+          err ? reject(err) : resolve(JSON.parse(stdout)),
+        );
+      });
+    return Promise.all(Array.from({ length: 8 }, run));
+  }
+
+  it("converges concurrent hooks on one record", async () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    const results = await race(sid);
+    assert.equal(new Set(results.map((r) => `${r.id}@${r.timestamp}`)).size, 1, "every hook got the same event");
+    assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), results[0]);
+    assert.deepEqual(
+      readdirSync(stateDir()).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock")),
+      [],
+      "no partial file or lock is left behind",
+    );
+  });
+
+  it("converges concurrent hooks replacing a record too old to send", async () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    mkdirSync(stateDir(), { recursive: true });
+    const old = { id: randomUUID(), timestamp: new Date(Date.now() - PENDING_START_REUSE_MAX_MS - 60_000).toISOString() };
+    writeFileSync(pendingFile(sid), JSON.stringify(old));
+    const results = await race(sid);
+    assert.equal(new Set(results.map((r) => `${r.id}@${r.timestamp}`)).size, 1, "every hook got the same new event");
+    assert.notEqual(results[0].id, old.id, "the old record was replaced");
+    assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), results[0]);
+  });
+
+  it("replaces a record too old to send, or unreadable, with a new event", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    mkdirSync(stateDir(), { recursive: true });
+    const old = { id: randomUUID(), timestamp: new Date(Date.now() - PENDING_START_REUSE_MAX_MS - 1000).toISOString() };
+    writeFileSync(pendingFile(sid), JSON.stringify(old));
+    const next = fresh();
+    assert.deepEqual(pendingSessionStart(sid, next), next, "ingestion would refuse the old time");
+    assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), next);
+    writeFileSync(pendingFile(sid), "{not json");
+    const third = fresh();
+    assert.deepEqual(pendingSessionStart(sid, third), third);
+    writeFileSync(pendingFile(sid), JSON.stringify({ id: "not-a-uuid", timestamp: new Date().toISOString() }));
+    const fourth = fresh();
+    assert.deepEqual(pendingSessionStart(sid, fourth), fourth);
+  });
+
+  it("is removed with the session's markers at its end, and when a start is to be sent anew", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const native = randomUUID();
+    const key = markerKeyFor(native);
+    const sid = getSessionId({ session_id: native });
+    pendingSessionStart(sid, fresh());
+    clearSessionMarkers(key, sid);
+    assert.equal(existsSync(pendingFile(sid)), false, "SessionEnd forgets it");
+    pendingSessionStart(sid, fresh());
+    clearSessionStarted(sid);
+    assert.equal(existsSync(pendingFile(sid)), false, "a resumed sub-agent's start is a new event");
   });
 });
 

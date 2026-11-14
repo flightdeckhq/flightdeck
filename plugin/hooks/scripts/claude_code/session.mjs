@@ -3,8 +3,10 @@
 // through the core/state.mjs marker, clearing those markers on
 // SessionEnd, and the session_start backstop.
 
+import { randomUUID } from "node:crypto";
+
 import { PLUGIN_VERSION } from "../core/config.mjs";
-import { postEvent } from "../core/poster.mjs";
+import { sendEvent } from "../core/poster.mjs";
 import {
   clearSessionMarkers,
   cwdMarkerKey,
@@ -14,6 +16,8 @@ import {
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  clearPendingSessionStart,
+  pendingSessionStart,
   releaseSessionStart,
   clearEndedMarker,
   readEndedMarker,
@@ -225,35 +229,51 @@ async function waitUntil(condition, maxMs) {
   }
 }
 
+/**
+ * Send ``sessionId``'s session_start unless it was accepted already or
+ * another hook is sending it. Returns the sendEvent result of the POST
+ * this call made, with the event it sent as ``payload``, or null when it
+ * made none. ``extras.payload``, a ``payload`` an earlier call returned,
+ * is sent again as it is: see buildSessionStartPayload.
+ */
 export async function ensureSessionStarted(server, token, sessionId, basePayload, extras = {}) {
-  if (isSessionStarted(sessionId)) return;
+  if (isSessionStarted(sessionId)) return null;
   if (basePayload.parent_session_id) {
     await waitUntil(() => isSessionStarted(sessionId) || isSessionStartClaimed(sessionId), SUBAGENT_START_GRACE_MS);
   }
   if (!claimSessionStart(sessionId)) {
     // Another hook is sending it: let it land before this hook's event.
     await waitUntil(() => isSessionStarted(sessionId) || !isSessionStartClaimed(sessionId), SESSION_START_WAIT_MS);
-    return;
+    return null;
   }
   try {
-    await sendSessionStart(server, token, sessionId, basePayload, extras);
+    return await sendSessionStart(server, token, sessionId, basePayload, extras);
   } finally {
     releaseSessionStart(sessionId);
   }
 }
 
-async function sendSessionStart(server, token, sessionId, basePayload, extras) {
-  // A hook that held the claim before this one may have sent it.
-  if (isSessionStarted(sessionId)) return;
-
+/**
+ * The session_start event of ``sessionId``. A server can store an event
+ * and answer after the poster has given up on it, and the worker stores
+ * an event once per ``id`` and time, so every send of a session's
+ * session_start is the same event: SessionStart's retry sends this same
+ * object, and a later hook's backstop rebuilds it with the ``id`` and
+ * ``timestamp`` of the pending one (state.mjs pendingSessionStart),
+ * until a session_start is acknowledged. The copy is dropped instead of
+ * becoming a second session_start.
+ */
+export function buildSessionStartPayload(sessionId, basePayload, extras = {}) {
+  const { id, timestamp } = pendingSessionStart(sessionId, { id: randomUUID(), timestamp: new Date().toISOString() });
   const startPayload = {
     ...basePayload,
+    id,
     event_type: "session_start",
     tool_name: null,
     tool_input: null,
     is_subagent_call: false,
     latency_ms: null,
-    timestamp: new Date().toISOString(),
+    timestamp,
     // Ingestion requires a non-empty sensor_version on every
     // session_start (plugin parity with the Python sensor's wire
     // contract). Plugin reports its own version since the Python
@@ -274,13 +294,24 @@ async function sendSessionStart(server, token, sessionId, basePayload, extras) {
   });
   if (startContext) startPayload.context = startContext;
   if (extras.model) startPayload.model = extras.model;
+  return startPayload;
+}
+
+async function sendSessionStart(server, token, sessionId, basePayload, extras) {
+  // A hook that held the claim before this one may have sent it.
+  if (isSessionStarted(sessionId)) return null;
+
+  const startPayload = extras.payload ?? buildSessionStartPayload(sessionId, basePayload, extras);
 
   // Mark the session started only once the server has accepted the
   // session_start. If ingestion is down or rejects it, the next hook
   // sends it again: session_start carries the capture posture, and a
   // session whose row was created from a later event (posture unknown,
   // so content is dropped) only learns it from a session_start.
-  if (!(await postEvent(server, token, sessionId, startPayload))) return;
-
-  markSessionStarted(sessionId);
+  const sent = await sendEvent(server, token, sessionId, startPayload);
+  if (sent.accepted) markSessionStarted(sessionId);
+  // Refused for its time (outside ingestion's clock-skew window): that
+  // id and time can never be stored, so the next send is a new event.
+  else if (sent.clockSkew) clearPendingSessionStart(sessionId);
+  return { ...sent, payload: startPayload };
 }

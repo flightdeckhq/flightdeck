@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 import pytest
 
@@ -118,8 +119,11 @@ def test_session_attachment_multiple() -> None:
     detail = get_session_detail(sid)
     attachments = detail["attachments"]
     assert len(attachments) == 2
-    # Chronological: first attachment strictly before second.
-    assert attachments[0] < attachments[1], attachments
+    # Chronological: first attachment strictly before second. Compared as
+    # times: the API trims trailing zeros of the fraction, so the text
+    # "…53.83Z" sorts after "…53.835Z".
+    first, second = (datetime.fromisoformat(a) for a in attachments)
+    assert first < second, attachments
 
 
 def test_session_attachment_invalid_uuid_warns(

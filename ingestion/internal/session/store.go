@@ -75,14 +75,125 @@ func canonical(sessionID string) string {
 //     (true, priorState, nil). The caller does not log (the sensor is
 //     simply resuming).
 //
+// eventID is the session_start's own id. A start that carries one is
+// attached once per id: the id is recorded in session_start_receipts
+// in the same transaction as the attach, with the answer, and a copy
+// of the start sent again (a client that gave up on a slow answer, an
+// exporter retrying a batch) finds it there, changes nothing and gets
+// that answer back, with an empty priorState. A start without an id,
+// with one that is not a UUID, or with the id of another session's
+// start (a client bug; that session's answer is not handed out) is
+// attached on every arrival and recorded nowhere.
+//
 // On any other database error, the function returns (false, "", err)
 // and the caller MUST fall back to attached=false rather than block
 // the ingestion path -- the attached flag is informational, not
 // load-bearing.
-func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, error) {
+func (s *Store) Attach(ctx context.Context, sessionID, eventID string) (bool, string, error) {
 	sessionID = canonical(sessionID)
+	eventID = canonicalEventID(eventID)
+	if eventID == "" {
+		return attachIn(ctx, s.db.Reader(), s.db, sessionID)
+	}
+	// One transaction for the receipt and the attach: a copy that
+	// arrives meanwhile waits for it (Postgres holds the receipt's key
+	// until commit, SQLite has one writer) and then finds the receipt
+	// with its answer, and an attach that fails takes its receipt with
+	// it, so the client's next copy is attached afresh.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("attach %s: begin: %w", sessionID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO session_start_receipts (event_id, session_id)
+		VALUES ($1, $2)
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, sessionID)
+	if err != nil {
+		return false, "", fmt.Errorf("record session_start %s of %s: %w", eventID, sessionID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, "", fmt.Errorf("record session_start %s of %s: %w", eventID, sessionID, err)
+	}
+	recorded := n > 0
+	if !recorded {
+		var attached bool
+		var owner string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT attached, CAST(session_id AS TEXT) FROM session_start_receipts WHERE event_id = $1`, eventID,
+		).Scan(&attached, &owner); err != nil {
+			return false, "", fmt.Errorf("read session_start %s of %s: %w", eventID, sessionID, err)
+		}
+		if canonical(owner) == sessionID {
+			// A copy of a start already attached: its answer, nothing else.
+			return attached, "", tx.Commit()
+		}
+		// The id is another session's start: not a copy of this one.
+		// It is attached as a start without an id is, on this arrival,
+		// and no receipt is recorded for it (the id's is the other
+		// session's), so the other session's answer is never handed out.
+	}
+	attached, priorState, err := attachIn(ctx, tx, tx, sessionID)
+	if err != nil {
+		return false, priorState, err
+	}
+	if !recorded {
+		if err := tx.Commit(); err != nil {
+			return false, priorState, fmt.Errorf("attach %s: commit: %w", sessionID, err)
+		}
+		return attached, priorState, nil
+	}
+	if attached {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE session_start_receipts SET attached = TRUE WHERE event_id = $1`, eventID,
+		); err != nil {
+			return false, priorState, fmt.Errorf("record session_start %s of %s: %w", eventID, sessionID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM session_start_receipts WHERE received_at < `+s.db.Dialect.AddInterval(s.db.Dialect.Now(), "$1"),
+		-int64(sessionStartReceiptRetention/time.Second),
+	); err != nil {
+		return false, priorState, fmt.Errorf("prune session_start receipts: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, priorState, fmt.Errorf("attach %s: commit: %w", sessionID, err)
+	}
+	return attached, priorState, nil
+}
+
+// sessionStartReceiptRetention is how long a session_start receipt is
+// kept. Ingestion refuses an event dated more than 48 hours in the past
+// or 5 minutes in the future, so no copy of a start first received
+// longer ago than that passes validation again; the rest is margin.
+const sessionStartReceiptRetention = 50 * time.Hour
+
+// canonicalEventID returns an event id in the form the receipts key
+// takes (lower-case 8-4-4-4-12 hex), or "" when id is not a UUID in
+// that layout.
+func canonicalEventID(id string) string {
+	if !canonicalUUID.MatchString(id) {
+		return ""
+	}
+	return strings.ToLower(id)
+}
+
+// querier is what the attach runs its statements on: the database, or
+// a transaction.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// attachIn is the attach itself (see Attach), reading the row through
+// reader and writing through writer: the read pool and the database
+// outside a transaction, the transaction for both inside one (a read
+// that must see the transaction's own writes runs on it).
+func attachIn(ctx context.Context, reader, writer querier, sessionID string) (bool, string, error) {
 	var priorState string
-	err := s.db.Reader().QueryRowContext(ctx,
+	err := reader.QueryRowContext(ctx,
 		`SELECT state FROM sessions WHERE session_id = $1`,
 		sessionID,
 	).Scan(&priorState)
@@ -107,7 +218,7 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		// session_attachments.
 		// closed_seq goes with ended_at: the row is no longer closed by
 		// any session_end, so the worker's ordering rules start afresh.
-		if _, err := s.db.ExecContext(ctx, `
+		if _, err := writer.ExecContext(ctx, `
 			UPDATE sessions
 			SET state = 'active',
 			    ended_at = NULL,
@@ -123,7 +234,7 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 	// driven agent re-attached. Migration 000009 replaced the earlier
 	// single-column last_attached_at design with this table because
 	// the column only preserved the most recent timestamp.
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := writer.ExecContext(ctx, `
 		INSERT INTO session_attachments (session_id)
 		VALUES ($1)
 	`, sessionID); err != nil {
@@ -308,7 +419,10 @@ var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-
 // on its session row (sessions.start_seq), keeping the greater of the
 // stored and the new value. The worker compares a session_end's sequence
 // against it: an end published before the start belongs to the previous
-// run and must not close the re-attached session.
+// run and must not close the re-attached session. eventID is the
+// start's own id: a start that has one is stamped at the lowest
+// sequence any copy of it was published at (claimStartStamp), however
+// often it is resent and in whatever order the copies' stamps run.
 //
 // The previous run's session_end can be processed by the worker between
 // Attach's read and this write, closing the row that Attach found
@@ -336,13 +450,83 @@ var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-
 // their tokens up. On SQLite writers never hold a row against each
 // other (one writer connection, transactions begin IMMEDIATE), so the
 // stamp applies on its first attempt whenever the row exists.
-func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
+func (s *Store) RecordStart(ctx context.Context, sessionID, eventID string, seq uint64) error {
 	// Zero means unknown; a sequence beyond the bigint range (which no
 	// stream reaches) is treated the same rather than wrapped.
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
-	return stampWithRetry(ctx, canonical(sessionID), int64(seq), recordStartRetryDelays, s.recordStart, stampGiveUps)
+	sessionID = canonical(sessionID)
+	if eventID = canonicalEventID(eventID); eventID != "" {
+		stamp, replaced, err := s.claimStartStamp(ctx, sessionID, eventID, int64(seq))
+		if err != nil || !stamp {
+			return err
+		}
+		if replaced > 0 {
+			// A copy published later stamped the row first: put the
+			// first copy's sequence back where the copy's still stands.
+			// Not where a later start has stamped the row since.
+			if _, err := s.db.ExecContext(ctx,
+				`UPDATE sessions SET start_seq = $2 WHERE session_id = $1 AND start_seq = $3`,
+				sessionID, int64(seq), replaced,
+			); err != nil {
+				return fmt.Errorf("lower session_start %s sequence on %s: %w", eventID, sessionID, err)
+			}
+			return nil
+		}
+	}
+	return stampWithRetry(ctx, sessionID, int64(seq), recordStartRetryDelays, s.recordStart, stampGiveUps)
+}
+
+// claimStartStamp records seq as the stamp of start eventID on its
+// receipt when it is the lowest sequence a copy of the start was
+// published at so far, and reports what to do with the row: stamp is
+// true for such a sequence and false for a later copy's (the first
+// copy's stamp stands: a later sequence would make the worker take a
+// session_end published between the two for an earlier run's), and
+// replaced is the receipt's previous sequence when a copy published
+// later had stamped first (the narrow race of two copies' stamps), 0
+// otherwise. A start with no receipt of its own session (Attach failed
+// and the caller fell back, or the id is another session's start, which
+// Attach treats as a start without an id) is stamped as before. The
+// read and the write run in one
+// transaction, the receipt's row locked on Postgres, so two copies'
+// stamps are taken in turn.
+func (s *Store) claimStartStamp(ctx context.Context, sessionID, eventID string, seq int64) (stamp bool, replaced int64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("record session_start %s sequence: begin: %w", eventID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	lock := ""
+	if s.db.Backend == storage.Postgres {
+		lock = " FOR UPDATE"
+	}
+	var current sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT start_seq FROM session_start_receipts WHERE event_id = $1 AND session_id = $2`+lock, eventID, sessionID,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("read session_start %s sequence: %w", eventID, err)
+	}
+	if current.Valid && current.Int64 <= seq {
+		return false, 0, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE session_start_receipts SET start_seq = $2 WHERE event_id = $1 AND session_id = $3`, eventID, seq, sessionID,
+	); err != nil {
+		return false, 0, fmt.Errorf("record session_start %s sequence: %w", eventID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, 0, fmt.Errorf("record session_start %s sequence: commit: %w", eventID, err)
+	}
+	if current.Valid {
+		return true, current.Int64, nil
+	}
+	return true, 0, nil
 }
 
 // stampFunc is one attempt of the re-attachment stamp. applied is false

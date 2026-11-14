@@ -13,7 +13,7 @@
     "server": {
       "type": "string",
       "title": "Flightdeck server",
-      "description": "Base URL of your Flightdeck stack, for example https://flightdeck.example.com. Leave empty for a local make dev stack (http://localhost:4000). FLIGHTDECK_SERVER overrides it."
+      "description": "Address of your Flightdeck server, for example https://flightdeck.example.com; the ingestion URL its start-up block prints (ending in /ingest) works too. Leave empty for a local server (http://localhost:4000). FLIGHTDECK_SERVER overrides it."
     },
     "token": {
       "type": "string",

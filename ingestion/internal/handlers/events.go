@@ -160,10 +160,12 @@ type DirectiveLookup interface {
 // RecordStart then stamps the published session_start's stream
 // sequence on the row, so the worker treats a previous run's
 // session_end that is still queued as superseded instead of closing
-// the re-attached run. See ingestion/internal/session/store.go.
+// the re-attached run. eventID is the session_start's own id: a start
+// resent with the same id is attached and stamped once, and its copies
+// get the first copy's answer. See ingestion/internal/session/store.go.
 type SessionAttacher interface {
-	Attach(ctx context.Context, sessionID string) (attached bool, priorState string, err error)
-	RecordStart(ctx context.Context, sessionID string, seq uint64) error
+	Attach(ctx context.Context, sessionID, eventID string) (attached bool, priorState string, err error)
+	RecordStart(ctx context.Context, sessionID, eventID string, seq uint64) error
 }
 
 // DirectiveResponse represents the directive payload returned in the response envelope.
@@ -335,8 +337,11 @@ func EventsHandler(
 		// informational, the event payload itself must still flow to
 		// the worker.
 		attached := false
+		// The client-minted event id: a session_start resent with it is
+		// attached once, and its copies get the first copy's answer.
+		eventID, _ := payload["id"].(string)
 		if eventType == "session_start" && sessAttacher != nil {
-			att, priorState, err := sessAttacher.Attach(ctx, sessionID)
+			att, priorState, err := sessAttacher.Attach(ctx, sessionID, eventID)
 			if err != nil {
 				slog.Error("session attach lookup failed",
 					"session_id", sessionID,
@@ -370,7 +375,7 @@ func EventsHandler(
 		// closed by it. Best effort: the worker's own ordering rules
 		// still apply if this write fails.
 		if attached && seq > 0 && sessAttacher != nil {
-			if err := sessAttacher.RecordStart(ctx, sessionID, seq); err != nil {
+			if err := sessAttacher.RecordStart(ctx, sessionID, eventID, seq); err != nil {
 				slog.Warn("record session_start sequence failed",
 					"session_id", sessionID,
 					"seq", seq,

@@ -69,13 +69,12 @@ export async function dispatchMcpPolicySessionStart({
   // honoured only as a fallback when the payload carries no flavor.
   const flavor =
     (basePayload && basePayload.flavor) || process.env.AGENT_FLAVOR || "claude-code";
-  // The plugin's ``cfg.server`` is the ingestion-side base
-  // (default http://localhost:4000); the API endpoints live under
-  // ``/api``. process.env.FLIGHTDECK_API_URL overrides for prod
-  // deployments where the API is on a separate hostname.
-  const apiUrl =
-    process.env.FLIGHTDECK_API_URL
-    || `${cfg.server.replace(/\/ingest$/, "")}/api`;
+  // ``cfg.server`` is the server's base URL (default
+  // http://localhost:4000), whichever form was configured; the API
+  // endpoints live under ``/api``. process.env.FLIGHTDECK_API_URL
+  // overrides for prod deployments where the API is on a separate
+  // hostname.
+  const apiUrl = process.env.FLIGHTDECK_API_URL || `${cfg.server}/api`;
   const policies = await fetchPolicies(apiUrl, cfg.token, flavor);
   writeSessionPolicyCache(sessionId, policies);
 

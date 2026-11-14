@@ -458,15 +458,15 @@ def test_init_preserves_ingest_suffix_when_present(
         flightdeck_sensor.teardown()
 
 
-def test_init_preserves_ingest_with_trailing_slash(
+def test_init_drops_the_trailing_slash_after_ingest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Server URL with /ingest/ (trailing slash) is left unchanged.
+    """Server URL with /ingest/ (trailing slash) is the ingestion URL.
 
-    The normalization check is ``if "/ingest" not in server`` -- a
-    trailing slash after /ingest is still a containment match so the
-    suffix is not double-appended. The trailing slash itself is
-    preserved verbatim (callers occasionally intend it).
+    The last path segment, trailing slashes aside, is ``ingest``, so
+    nothing is appended; the slash goes, as the Claude Code plugin drops
+    it (``contracts/server_urls.json``), and the sensor's own paths are
+    appended to ``.../ingest``.
     """
     import flightdeck_sensor
 
@@ -481,6 +481,6 @@ def test_init_preserves_ingest_with_trailing_slash(
     )
     try:
         assert flightdeck_sensor._session is not None
-        assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest/"
+        assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()

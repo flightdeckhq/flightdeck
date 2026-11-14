@@ -7,6 +7,7 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from .conftest import (
     get_session,
@@ -70,10 +71,12 @@ def test_multiple_events_returned_in_order() -> None:
         f"expected >= 3 events for session {sid}, got {len(events)}"
     )
 
-    # Events should be in chronological order
-    timestamps = [e["occurred_at"] for e in events]
+    # Events should be in chronological order, compared as times: the
+    # API trims trailing zeros of the fraction, so the text "…53.83Z"
+    # sorts after "…53.835Z".
+    timestamps = [datetime.fromisoformat(e["occurred_at"]) for e in events]
     assert timestamps == sorted(timestamps), (
-        f"events not in chronological order: {timestamps}"
+        f"events not in chronological order: {[e['occurred_at'] for e in events]}"
     )
 
 

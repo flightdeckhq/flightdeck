@@ -50,7 +50,7 @@ func TestRecordStartIgnoresUnknownOrOverflowingSequences(t *testing.T) {
 	// return proves the guard ran first.
 	s := &Store{}
 	for _, seq := range []uint64{0, math.MaxInt64 + 1, math.MaxUint64} {
-		if err := s.RecordStart(context.Background(), "s1", seq); err != nil {
+		if err := s.RecordStart(context.Background(), "s1", "", seq); err != nil {
 			t.Fatalf("RecordStart(%d) = %v, want nil", seq, err)
 		}
 	}

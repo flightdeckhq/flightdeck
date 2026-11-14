@@ -4,6 +4,7 @@
 
 import { NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { boundedToken, MAX_MCP_IDENTITY_BYTES } from "../core/config.mjs";
+import { CUT_MARK, cutChars, jsonPointer, withTruncated } from "../core/cut.mjs";
 import { readCachedModel } from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
 
@@ -24,15 +25,50 @@ const TOOL_ERROR_MESSAGE_MAX_CHARS = 1000;
 // Tool input sanitisation -- safe whitelist only.
 // ---------------------------------------------------------------------
 
+// How much of a free-text tool input leaves the machine, in characters
+// (code points): a shell command, a search query or a glob pattern up
+// to 200, a sub-agent's prompt up to 100. They are privacy and size
+// bounds: the values ride inline on the event row, next to the
+// metadata, whatever the capture of prompts, and a prompt can carry
+// anything the user typed.
+export const TOOL_INPUT_TEXT_MAX_CHARS = 200;
+export const TOOL_INPUT_PROMPT_MAX_CHARS = 100;
+
+// What ends a value that was cut (core/cut.mjs).
+export const TOOL_INPUT_CUT_MARK = CUT_MARK;
+
+// The whitelisted free-text fields and their bounds, in the order they
+// are reported.
+const BOUNDED_TOOL_INPUT_FIELDS = [
+  ["command", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["query", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["pattern", TOOL_INPUT_TEXT_MAX_CHARS],
+  ["prompt", TOOL_INPUT_PROMPT_MAX_CHARS],
+];
+
+/**
+ * The tool input the plugin reports: ``file_path``, and ``command``,
+ * ``query``, ``pattern`` and ``prompt`` within their bounds; nothing
+ * else (file bodies, message content, sub-agent context). Returns
+ * ``{input, truncated}``: ``input`` holds those keys only, a value over
+ * its bound keeping its first characters followed by
+ * TOOL_INPUT_CUT_MARK, and ``truncated`` lists every such value as a
+ * JSON Pointer relative to ``input`` (``/command``), in the order above,
+ * for the ``tool_use`` block to carry beside the input. Null when no
+ * whitelisted field is present.
+ */
 export function sanitizeToolInput(input) {
   if (!input || typeof input !== "object") return null;
   const safe = {};
+  const truncated = [];
   if (input.file_path) safe.file_path = input.file_path;
-  if (input.command) safe.command = String(input.command).slice(0, 200);
-  if (input.query) safe.query = String(input.query).slice(0, 200);
-  if (input.pattern) safe.pattern = String(input.pattern).slice(0, 200);
-  if (input.prompt) safe.prompt = String(input.prompt).slice(0, 100);
-  return Object.keys(safe).length > 0 ? safe : null;
+  for (const [field, maxChars] of BOUNDED_TOOL_INPUT_FIELDS) {
+    if (!input[field]) continue;
+    const { text, cut } = cutChars(input[field], maxChars);
+    safe[field] = text;
+    if (cut) truncated.push(jsonPointer([field]));
+  }
+  return Object.keys(safe).length > 0 ? { input: safe, truncated } : null;
 }
 
 /**
@@ -128,10 +164,11 @@ export function buildToolCallPayload({
   sessionId,
   timestamp = new Date().toISOString(),
 }) {
-  const sanitizedInput =
+  const sanitized =
     cfg.captureToolInputs && hookEvent.tool_input
       ? sanitizeToolInput(hookEvent.tool_input)
       : null;
+  const sanitizedInput = sanitized?.input ?? null;
   const toolInputJson = sanitizedInput ? JSON.stringify(sanitizedInput) : null;
 
   const isSubagentCall = toolName === "Task";
@@ -145,7 +182,8 @@ export function buildToolCallPayload({
   let content = null;
   let hasContent = false;
   if (cfg.captureToolInputs && toolName && sanitizedInput) {
-    const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
+    // The cut values are listed beside the input, not in it (core/cut.mjs).
+    const tools = [withTruncated({ type: "tool_use", name: toolName, input: sanitizedInput }, sanitized.truncated)];
     const response = [];
     if (cfg.capturePrompts && hookEvent.tool_response != null) {
       const out =

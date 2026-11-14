@@ -73,13 +73,56 @@ export function truncateUtf8(value, maxBytes) {
   return bytes.subarray(0, end).toString("utf8");
 }
 
+// Userinfo is part of a URL's authority only: the span after
+// ``scheme://`` and before the first ``/``, ``?``, ``#`` or ``\`` (which
+// the URL standard reads as ``/`` in an http(s) URL), up to the
+// authority's last ``@``. An ``@`` after any of them is in the path, the
+// query or the fragment, and the host is what comes before it.
+const AUTHORITY_USERINFO_RE = /^(\s*[a-z][a-z0-9+.-]*:\/\/)[^/?#\\]*@/i;
+// Without a scheme, the same span from the start of the value.
+const LEADING_USERINFO_RE = /^(\s*)[^/?#\\]*@/;
+const SCHEME_AUTHORITY_RE = /^\s*[a-z][a-z0-9+.-]*:\/\//i;
+
 /**
- * The control-plane URL without its userinfo, for log lines: a server
- * configured as ``https://user:token@host`` must not leak the token into
- * stderr or the worker log.
+ * The control-plane URL without its userinfo: a server configured as
+ * ``https://user:token@host``, or as ``user:token@host`` with no scheme,
+ * must not leak the token into stderr, the worker log or the notice the
+ * user sees, and resolveConfig drops it before the URL is used. A value
+ * the URL parser reads parses first: one with no username and no
+ * password is returned unchanged, so ``https://good.example#@evil``
+ * keeps naming good.example. Otherwise only the authority's userinfo
+ * goes (AUTHORITY_USERINFO_RE), as the parser would read it.
  */
 export function redactServerUrl(server) {
-  return String(server).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+  const text = String(server);
+  if (!SCHEME_AUTHORITY_RE.test(text)) return text.replace(LEADING_USERINFO_RE, "$1");
+  let url = null;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    // Not a URL the parser takes (a bad port, say): the pattern alone.
+  }
+  if (url && url.username === "" && url.password === "") return text;
+  return text.replace(AUTHORITY_USERINFO_RE, "$1");
+}
+
+// An access token in a value that should hold the server's address:
+// the prefix of every token a Flightdeck server accepts, ``ftd_`` for
+// one it minted and ``tok_`` for the development token.
+const TOKEN_LIKE_RE = /(?:^|[^a-z0-9])(?:ftd|tok)_/i;
+
+// What a message shows in place of a server address that looks like an
+// access token (a token pasted into FLIGHTDECK_SERVER, say).
+export const HIDDEN_SERVER = "<server address not shown: it looks like an access token>";
+
+/**
+ * ``server`` as a log line or a notice shows it: without its userinfo
+ * (redactServerUrl), and replaced by HIDDEN_SERVER when what is left
+ * looks like an access token.
+ */
+export function displayServerUrl(server) {
+  const redacted = redactServerUrl(server);
+  return TOKEN_LIKE_RE.test(redacted) ? HIDDEN_SERVER : redacted;
 }
 
 // Plugin version stamped on every session_start (parity with the
@@ -123,10 +166,63 @@ export function parseBool(value, fallback) {
   return fallback;
 }
 
-// The default server, a local ``make dev`` stack, and the seed token
-// that stack accepts when ``ENVIRONMENT=dev``.
+// The default server, a local ``flightdeck`` (the binary, or the
+// ``make dev`` stack, which runs it), and the seed token a flightdeck
+// accepts when it listens on loopback only.
 export const DEFAULT_SERVER = "http://localhost:4000";
 export const DEFAULT_TOKEN = "tok_dev";
+
+// The path a Flightdeck origin publishes its ingestion API under. The
+// plugin builds its endpoints from the origin's base URL
+// (``<base>/ingest/v1/events``, ``<base>/api/v1/...``).
+const INGEST_PATH = "/ingest";
+
+/** ``path`` without trailing slashes and without a final ``/ingest`` segment. */
+function withoutIngest(path) {
+  const trimmed = path.replace(/\/+$/, "");
+  // endsWith("/ingest") is true only for a whole last segment:
+  // "/fd/ingest" yes, "/myingest" and "/ingestion" no.
+  return trimmed.endsWith(INGEST_PATH) ? trimmed.slice(0, -INGEST_PATH.length).replace(/\/+$/, "") : trimmed;
+}
+
+/**
+ * The base URL of the Flightdeck server a configured value names.
+ *
+ * One value must work for the sensor and the plugin. The ``flightdeck``
+ * binary prints its ingestion URL (``http://host:4000/ingest``), which
+ * is the form the Python sensor's ``FLIGHTDECK_SERVER`` takes, while
+ * the plugin appends ``/ingest/v1/events`` to a base URL
+ * (``http://host:4000``). Both forms name the same server, so both
+ * resolve to the base here, and this is the only place that decides:
+ *
+ *   * a final ``/ingest`` path segment is dropped, with or without a
+ *     trailing slash; a path that merely ends in those letters
+ *     (``/myingest``) or continues past them (``/ingestion``) is kept;
+ *   * a path prefix stays (``https://example.com/fd`` and
+ *     ``https://example.com/fd/ingest`` both give
+ *     ``https://example.com/fd``);
+ *   * trailing slashes, a query string and a fragment are dropped: the
+ *     plugin appends a path, so none of them could reach the server;
+ *   * the scheme and the host are lower-cased, as URLs compare.
+ *
+ * A value that is not an http(s) URL (no scheme, a typo) cannot work
+ * either way; it is returned with the same trimming so the failed
+ * request's log line names what was configured. A blank value gives "".
+ */
+export function serverBaseUrl(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "") return "";
+  let url = null;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Not a URL at all; trimmed as text below.
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:") || url.host === "") {
+    return withoutIngest(raw.replace(/[?#].*$/s, ""));
+  }
+  return `${url.protocol}//${url.host}${withoutIngest(url.pathname)}`;
+}
 
 /** The first value that is a non-blank string, trimmed, or "". */
 function firstSet(...values) {
@@ -157,6 +253,9 @@ function firstSet(...values) {
  *   * ``server`` points at a local flightdeck (localhost:4000). A
  *     whitespace-only value is treated as unset so a user who sets
  *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
+ *     The resolved ``server`` is always the base URL: the ingestion
+ *     URL the binary prints (``.../ingest``) and the base both resolve
+ *     to it (see serverBaseUrl).
  *   * ``token`` defaults to ``tok_dev``, the seed token a flightdeck
  *     accepts when it listens on loopback only. A flightdeck that
  *     other machines can reach refuses it, so the seed token is inert
@@ -191,8 +290,10 @@ export function resolveConfig(env = process.env) {
   // "https://user:token@host" server could never work and would only
   // leak the token into every failed-POST log line. Strip the userinfo
   // and say so; the bearer token is the one credential the plugin uses.
-  const server = redactServerUrl(rawServer);
-  if (server !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
+  const redacted = redactServerUrl(rawServer);
+  // The base URL, whichever form was configured (see serverBaseUrl).
+  const server = serverBaseUrl(redacted);
+  if (redacted !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
       "[flightdeck] WARN: the server URL carries credentials; " +
         "they are ignored. Authenticate with the token option or FLIGHTDECK_TOKEN.\n",

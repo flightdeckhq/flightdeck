@@ -147,11 +147,12 @@ func runHealth(opts cli.Options, stdout, stderr *os.File) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), health.Timeout)
 	defer cancel()
-	if err := health.Check(ctx, target); err != nil {
+	answered, err := health.Check(ctx, target)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "unhealthy:", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "healthy: %s answers /api/health and /ingest/health\n", target.Base)
+	_, _ = fmt.Fprintf(stdout, "healthy: %s answers /api/health and /ingest/health\n", answered)
 	return 0
 }
 
@@ -216,10 +217,15 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return dataDirInUse(err, layout.Root)
 	}
 	defer dirLock.Release()
-	// The lock is held: whatever an earlier process left in the
-	// temporary directory belongs to nobody.
-	if err := datadir.CleanTmp(layout.Tmp); err != nil {
-		slog.Warn("temporary files of an earlier run were not removed", "err", err)
+	// The lock is held: whatever SQLite files an earlier process left in
+	// the temporary directory belong to nobody. Without the directory
+	// SQLite in this mode would have nowhere for its temporary files.
+	tmpWarning, err := datadir.PrepareTmp(layout.Tmp)
+	if err != nil {
+		return err
+	}
+	if tmpWarning != "" {
+		slog.Warn(tmpWarning)
 	}
 	secrets, err := datadir.LoadSecrets(layout.Secrets)
 	if err != nil {

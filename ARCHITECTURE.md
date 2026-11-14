@@ -10543,9 +10543,15 @@ directory before it opens or migrates the database
 every connection). The files stay on disk, not in memory
 (`temp_store=MEMORY` would bound a large sort by the container's memory
 limit instead of the volume), and on the volume that holds the database
-itself. SQLite removes each file as it opens it, so the directory is
-normally empty; the binary empties it at every start, once it holds the
-data dir's lock, in case a killed process left something. The
+itself. SQLite removes each file as it opens it (or opens it unnamed),
+so the directory is normally empty. At every start, once it holds the
+data dir's lock, the binary removes what a killed process may have left
+there, and nothing else: only files named with SQLite's temporary-file
+prefix, `etilqs_`, so a `tmp` that is shared (a data dir of `/`, whose
+`tmp` is the system's) loses nothing that is not SQLite's. `tmp` is
+looked at without following it: a symbolic link or a file in its place
+is removed itself (a link's target is never touched), a new 0700
+directory is made, and a warning says what was replaced. The
 standalone services keep SQLite's own choice. Nothing else in the
 process writes a temporary file: the embedded NATS keeps its own under
 `nats/`, and the certificate cache under `acme/`.
@@ -10722,12 +10728,18 @@ domain>`) and the Ingress hosts, which an ingress controller passes on
 as the `Host`.
 
 The fleet stream (`/api/v1/stream`) carries the token in its URL,
-because a browser cannot set a header on a WebSocket. A request for it
-with an `Origin` header is answered 403 unless the origin's host is the
-host that was asked for (the dashboard's own page; the port may differ
-behind a proxy) or one of the hosts above, in every mode, the one
-without a list included. A client that is not a browser sends no
-`Origin` and is held to its token alone. The REST API keeps its CORS
+because a browser cannot set a header on a WebSocket. With the Host
+check on, a request for it with an `Origin` header is answered 403
+unless the origin's host is the host that was asked for (the
+dashboard's own page; the port may differ behind a proxy) or one of the
+hosts above; the body names the page's host and the setting that admits
+it, as the 421 does. With the check off (a listen beyond loopback and no
+list) the `Origin` is not checked, as the stream never checked it before
+the Host check existed: such an instance is commonly behind a reverse
+proxy that rewrites the `Host` to its upstream address
+(`proxy_pass http://127.0.0.1:4000`) while the browser's `Origin` keeps
+the public name, which the binary cannot know. A client that is not a
+browser sends no `Origin`. Either way the stream needs its token. The REST API keeps its CORS
 policy (`FLIGHTDECK_CORS_ORIGIN`): a page on another site cannot read
 `/runtime-config.json`, which carries no CORS header, so it has no
 token to send. The standalone query API accepts any `Origin` on the
@@ -10861,12 +10873,12 @@ password and a part of that URL. The `flightdeck` service takes the
 image's health check, `flightdeck health` (see Health checks), so
 `docker compose ps` reports it `healthy` once it serves and another
 service can wait for it with `depends_on: condition: service_healthy`.
-The image answers only `localhost` and IP addresses
-(`FLIGHTDECK_ALLOWED_HOSTS=localhost`; see Host check): the published
-port is reached as `127.0.0.1` or `localhost`, and a service that
-reaches `flightdeck` by its service name on the compose network needs
-`FLIGHTDECK_ALLOWED_HOSTS: localhost,flightdeck` in the service's
-environment. Both
+The service passes `FLIGHTDECK_ALLOWED_HOSTS` through from the shell or
+`docker/.env`, defaulting to the image's `localhost` (see Host check):
+the published port is reached as `127.0.0.1` or `localhost` with nothing
+set, and a deployment reached by any other name (a LAN name with
+`FLIGHTDECK_PUBLISH_HOST=0.0.0.0`, a reverse proxy's host, the service
+name `flightdeck` from another container) lists it there. Both
 services log through Docker's `json-file` driver with rotation: a
 container's log file is rotated at 20 MiB and five files are kept, so
 one container holds at most 100 MiB of logs. Without it the driver
@@ -11248,17 +11260,27 @@ environment (`--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
 no arguments it finds an instance that was configured through the
 environment, as the image is, and the default one on `127.0.0.1:4000`.
 A listen address on every interface (`:4000`, `0.0.0.0:4000`,
-`[::]:4000`) is probed on loopback; one that names an interface or a
-host is probed there, since nothing listens on loopback then. With
-`--domain` it probes `https://127.0.0.1:443` with the domain as the TLS
-server name, which the certificate policy requires, and does not verify
-the certificate: the probe goes to the machine's own listener, sends
-nothing secret and trusts nothing it reads beyond the status, while a
-handshake that fails for want of a certificate still fails the check.
-It sends no token (the health routes need none), opens neither the data
+`[::]:4000`) is probed on `127.0.0.1`, and on `::1` when nothing can be
+connected to there (a listener on IPv6 only), within the same three
+seconds: a container may have no IPv6 on its loopback, and `::1` first
+would fail on an instance that serves. An answer that is wrong at the
+first address is not retried at the second. One that names an
+interface or a host is probed there, since nothing listens on loopback
+then. With `--domain` it probes `https://127.0.0.1:443` with the domain
+as the TLS server name and the `Host`, which the certificate policy
+requires, and does not verify the certificate. That is safe: the probe
+goes to the machine's own loopback, which nothing on the network can
+answer in its place, sends nothing secret, and trusts nothing it reads
+beyond the status, while a handshake that fails for want of a
+certificate still fails the check. On an instance that has no
+certificate cached yet, the first probe's handshake is what makes
+`autocert` request one, which can take longer than the probe's three
+seconds; the image's 60-second start period covers that issuance. It
+sends no token (the health routes need none), opens neither the data
 dir nor the database, and gives itself three seconds for both probes.
-A mistyped flag exits 1 as well, because Docker reserves exit status 2
-of a health check command.
+A mistyped flag prints one line, the error, and exits 1, because
+Docker reserves exit status 2 of a health check command and keeps the
+output in the container's health log.
 
 The image declares the check (`HEALTHCHECK --interval=10s --timeout=5s
 --start-period=60s --retries=3 CMD ["/usr/local/bin/flightdeck",

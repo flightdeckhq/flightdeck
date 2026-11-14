@@ -28,9 +28,9 @@ func TestTargetFor(t *testing.T) {
 		want                 Target
 	}{
 		{"the default listen address", "127.0.0.1:4000", "", Target{Base: "http://127.0.0.1:4000"}},
-		{"a port alone, the image's listen address", ":4000", "", Target{Base: "http://127.0.0.1:4000"}},
-		{"every IPv4 interface, a custom port", "0.0.0.0:5000", "", Target{Base: "http://127.0.0.1:5000"}},
-		{"every IPv6 interface", "[::]:4000", "", Target{Base: "http://[::1]:4000"}},
+		{"a port alone, the image's listen address", ":4000", "", Target{Base: "http://127.0.0.1:4000", Fallback: "http://[::1]:4000"}},
+		{"every IPv4 interface, a custom port", "0.0.0.0:5000", "", Target{Base: "http://127.0.0.1:5000", Fallback: "http://[::1]:5000"}},
+		{"every IPv6 interface: IPv4 loopback first", "[::]:4000", "", Target{Base: "http://127.0.0.1:4000", Fallback: "http://[::1]:4000"}},
 		{"IPv6 loopback", "[::1]:4000", "", Target{Base: "http://[::1]:4000"}},
 		{"one LAN address: nothing listens on loopback", "10.0.0.5:4000", "", Target{Base: "http://10.0.0.5:4000"}},
 		{"localhost", "localhost:4100", "", Target{Base: "http://localhost:4100"}},
@@ -79,7 +79,77 @@ func check(t *testing.T, target Target, budget time.Duration) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	return Check(ctx, target)
+	_, err := Check(ctx, target)
+	return err
+}
+
+// serveOn starts a flightdeck stand-in on addr ("127.0.0.1:0", "[::1]:0")
+// and returns its port, or skips the test when this machine has no such
+// address.
+func serveOn(t *testing.T, addr string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Skipf("no %s on this machine: %v", addr, err)
+	}
+	srv := &http.Server{Handler: flightdeck(t, nil), ReadHeaderTimeout: checkBudget}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// --listen [::]:p reaches an instance that answers on 127.0.0.1 only: a
+// container with no IPv6 on its loopback.
+func TestCheck_AnyInterfaceReachesAnIPv4OnlyLoopback(t *testing.T) {
+	port := serveOn(t, "127.0.0.1:0")
+	target, err := TargetFor("[::]:"+port, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkBudget)
+	defer cancel()
+	answered, err := Check(ctx, target)
+	if err != nil || answered != "http://127.0.0.1:"+port {
+		t.Fatalf("answered %q, err %v; want 127.0.0.1", answered, err)
+	}
+}
+
+// And an instance that answers on ::1 only is reached by the fallback.
+func TestCheck_AnyInterfaceFallsBackToIPv6Loopback(t *testing.T) {
+	port := serveOn(t, "[::1]:0")
+	target, err := TargetFor(":"+port, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkBudget)
+	defer cancel()
+	answered, err := Check(ctx, target)
+	if err != nil || answered != "http://[::1]:"+port {
+		t.Fatalf("answered %q, err %v; want the ::1 fallback", answered, err)
+	}
+}
+
+// A fallback is tried only when nothing could be connected to: a wrong
+// answer at the first address is the answer.
+func TestCheck_AWrongAnswerIsNotRetriedElsewhere(t *testing.T) {
+	port := serveOn(t, "127.0.0.1:0")
+	srv := httptest.NewServer(flightdeck(t, map[string]http.HandlerFunc{
+		"/api/health": func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "down", http.StatusServiceUnavailable) },
+	}))
+	defer srv.Close()
+	_, err := Check(context.Background(), Target{Base: srv.URL, Fallback: "http://127.0.0.1:" + port})
+	if err == nil || !strings.Contains(err.Error(), "status 503") {
+		t.Fatalf("err = %v, want the first address's 503", err)
+	}
+	// Nothing at either: both are named.
+	_, err = Check(context.Background(), Target{Base: "http://127.0.0.1:1", Fallback: "http://127.0.0.1:2"})
+	if err == nil || !strings.Contains(err.Error(), "127.0.0.1:1/api/health") || !strings.Contains(err.Error(), "127.0.0.1:2/api/health") {
+		t.Fatalf("err = %v, want both addresses named", err)
+	}
 }
 
 func TestCheck_Healthy(t *testing.T) {

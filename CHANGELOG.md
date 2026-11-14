@@ -46,7 +46,9 @@ All notable changes to Flightdeck are documented here.
   ingestion API answer, prints one line and exits 0 or 1. It takes the
   server's `--listen` and `--domain` (or `FLIGHTDECK_LISTEN` and
   `FLIGHTDECK_DOMAIN`), needs no token and touches neither the data dir
-  nor the database. The Docker image, which has no shell or curl, runs
+  nor the database. A listen on every interface is probed on
+  `127.0.0.1`, then on `::1`, so a container without IPv6 on its
+  loopback is still found healthy. The Docker image, which has no shell or curl, runs
   it as its `HEALTHCHECK`, so `docker ps` shows the container `healthy`
   and a Compose `depends_on: condition: service_healthy` works; a
   Kubernetes exec probe runs the same command. The image now sets its
@@ -67,8 +69,11 @@ All notable changes to Flightdeck are documented here.
   Docker image (which sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`); a
   listen address beyond loopback with no list answers any name, as
   before. A container reached by a name (a Compose service name, a
-  reverse proxy's host) needs that name in the list. The fleet stream
-  also refuses a browser page of another site (403).
+  reverse proxy's host) needs that name in the list, which compose
+  passes through from `docker/.env`. With the check on, the fleet
+  stream also refuses a browser page of another site (403, naming the
+  setting); with it off, it checks no `Origin`, so a reverse proxy that
+  rewrites the `Host` to its upstream keeps the live feed.
 
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
@@ -337,8 +342,10 @@ All notable changes to Flightdeck are documented here.
   the analytics requests answered 500 (`disk I/O error (6410)`) and the
   pricing table's sync at start failed. The binary now keeps SQLite's
   temporary files in `<data dir>/tmp` (mode 0700, emptied at every
-  start), on disk and on the volume that holds the database, so
-  everything it writes is under the data dir.
+  start of the files SQLite left there, and of nothing else), on disk
+  and on the volume that holds the database, so everything it writes is
+  under the data dir. A symbolic link or a file in place of `tmp` is
+  replaced, never followed.
 - **The start-up block of a container shows an address a person can
   use.** For a listen on every interface (`:4000`, the image's) the
   block printed `http://<host name>:4000`, and a container's host name

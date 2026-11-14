@@ -185,16 +185,38 @@ func (g *hostGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The fleet stream is the one route a browser opens with the token
-	// in the URL. A page on another site that opens it must come from a
-	// name this instance is known by, whatever the mode; a client that
-	// is not a browser sends no Origin.
-	if r.URL.Path == websocketPath {
+	// in the URL. With the Host check on, a page that opens it must come
+	// from a name this instance answers for; a client that is not a
+	// browser sends no Origin. With the check off (a listen beyond
+	// loopback and no list) the Origin is not checked either, as before
+	// the Host check existed: such an instance is commonly behind a
+	// proxy that rewrites the Host to its upstream address while the
+	// browser's Origin keeps the public name, and a name this binary
+	// cannot know would otherwise cut the live feed. The stream still
+	// needs its token.
+	if g.policy.Enforce && r.URL.Path == websocketPath {
 		if origin := r.Header.Get("Origin"); origin != "" && !g.originAllowed(origin, host, ok) {
-			refuse(w, http.StatusForbidden, "the fleet stream is not opened from pages of another site")
+			refuse(w, http.StatusForbidden, foreignOrigin(origin))
 			return
 		}
 	}
 	g.next.ServeHTTP(w, r)
+}
+
+// foreignOrigin is the 403 body's message for a page whose origin the
+// instance does not answer for: the origin's host as the server read
+// it, bounded as a Host is (hostOf), and the setting that admits it.
+func foreignOrigin(origin string) string {
+	u, err := url.Parse(origin)
+	if err == nil && u.Host != "" {
+		if host, ok := hostOf(u.Host); ok {
+			return fmt.Sprintf("the fleet stream is not opened from pages of %q, a host this server does not answer for; "+
+				"if it is this dashboard's address, add %s to the comma-separated list in FLIGHTDECK_ALLOWED_HOSTS or "+
+				"--allowed-hosts and restart the server", host, host)
+		}
+	}
+	return "the fleet stream is not opened from a page whose origin is not a host this server answers for " +
+		"(FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts lists them)"
 }
 
 // originAllowed reports whether a page at origin may open the stream of

@@ -308,3 +308,25 @@ func TestParse_AllowedHosts(t *testing.T) {
 		}
 	}
 }
+
+// A mistyped flag of the health command prints nothing itself (the
+// binary prints the error as one line); -h still prints the usage.
+func TestParse_HealthCommandBadFlagPrintsNoUsage(t *testing.T) {
+	var out bytes.Buffer
+	_, err := Parse([]string{"health", "--nope"}, envOf(nil), &out)
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("err = %v, want the flag named", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("the usage was printed for a bad flag:\n%s", out.String())
+	}
+	out.Reset()
+	if _, err := Parse([]string{"health", "-h"}, envOf(nil), &out); !errors.Is(err, ErrHelp) || !strings.Contains(out.String(), "flightdeck health [flags]") || !strings.Contains(out.String(), "-listen") {
+		t.Fatalf("health -h: err %v, output %q", err, out.String())
+	}
+	// The server keeps the usage on a bad flag.
+	out.Reset()
+	if _, err := Parse([]string{"--nope"}, envOf(nil), &out); err == nil || !strings.Contains(out.String(), "Usage: flightdeck") {
+		t.Fatalf("the server's bad flag: err %v, output %q", err, out.String())
+	}
+}

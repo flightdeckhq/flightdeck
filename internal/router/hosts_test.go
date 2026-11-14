@@ -214,15 +214,22 @@ func TestHostPolicy_StreamOrigin(t *testing.T) {
 		{"domain: the dashboard's own page", domain, "fd.example.com", "https://fd.example.com", 200},
 		{"domain: another site", domain, "fd.example.com", "https://evil.example", 403},
 
-		// Every name is answered, but the stream still opens only for
-		// the page of the name that was asked for.
+		// The Host check off: the Origin is not checked either, as before
+		// the Host check existed, and the stream needs its token alone.
 		{"open: the dashboard's own page, by a LAN name", open, "nas.lan:4000", "http://nas.lan:4000", 200},
 		{"open: the same name behind a TLS proxy on another port", open, "fd.example.com", "https://fd.example.com:8443", 200},
-		{"open: a page on another site", open, "nas.lan:4000", "https://evil.example", 403},
+		{"open: a proxy that rewrites the Host to its upstream", open, "127.0.0.1:4000", "https://fd.example.com", 200},
+		{"open: a proxy that rewrites the Host to a service name", open, "flightdeck:4000", "https://fd.example.com", 200},
+		{"open: a page on another site", open, "nas.lan:4000", "https://evil.example", 200},
 		{"open: a page at an address", open, "nas.lan:4000", "http://192.168.1.10:4000", 200},
 
 		{"listed: a page of a listed name, another listed Host", listed, "fd.internal:4000", "https://dash.internal", 200},
 		{"listed: a page on another site", listed, "fd.internal:4000", "https://evil.example", 403},
+		// The Host-rewriting proxy with the check on: the upstream Host
+		// is an address (always answered); the page's name must be listed.
+		{"listed: a proxy's upstream Host, the page's name listed", listed, "127.0.0.1:4000", "https://dash.internal", 200},
+		{"listed: a proxy's upstream Host, the page's name not listed", listed, "127.0.0.1:4000", "https://fd.example.com", 403},
+		{"domain: a proxy's upstream Host, the domain's page", domain, "127.0.0.1:443", "https://fd.example.com", 200},
 	}
 	for _, c := range cases {
 		headers := map[string]string{}
@@ -234,9 +241,20 @@ func TestHostPolicy_StreamOrigin(t *testing.T) {
 			t.Errorf("%s: GET %s with Host %q and Origin %q answered %d, want %d", c.name, websocketPath, c.host, c.origin, rec.Code, c.want)
 		}
 	}
+	// A refusal names the page's host and the setting that admits it.
+	rec := answer(guarded(listed), http.MethodGet, websocketPath, "127.0.0.1:4000", map[string]string{"Origin": "https://FD.Example.com:8443"})
+	for _, want := range []string{`\"fd.example.com\"`, "add fd.example.com to the comma-separated list in FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts"} {
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("a foreign page's refusal: %d %s, want 403 with %s", rec.Code, rec.Body.String(), want)
+		}
+	}
+	if rec := answer(guarded(listed), http.MethodGet, websocketPath, "127.0.0.1:4000", map[string]string{"Origin": "null"}); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "FLIGHTDECK_ALLOWED_HOSTS or --allowed-hosts") {
+		t.Errorf("an opaque origin's refusal: %d %s", rec.Code, rec.Body.String())
+	}
+
 	// The Origin rule is the stream's alone: the REST API has its own
 	// CORS policy and a token a page on another site cannot read.
-	rec := answer(guarded(loopback), http.MethodGet, "/api/v1/sessions", "localhost:4000", map[string]string{"Origin": "https://evil.example"})
+	rec = answer(guarded(loopback), http.MethodGet, "/api/v1/sessions", "localhost:4000", map[string]string{"Origin": "https://evil.example"})
 	if rec.Code != 200 {
 		t.Errorf("a REST request with a foreign Origin answered %d, want 200: only the stream checks it", rec.Code)
 	}

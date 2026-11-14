@@ -876,6 +876,11 @@ func TestBinary_KeepsItsTemporaryFilesInTheDataDir(t *testing.T) {
 	if err := os.WriteFile(beside, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Not SQLite's: left alone, even inside tmp.
+	foreign := filepath.Join(tmp, "someone-elses-file")
+	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	port := freePort(t)
 	start(t, "127.0.0.1:"+port, port, dataDir)
@@ -891,6 +896,9 @@ func TestBinary_KeepsItsTemporaryFilesInTheDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(beside); err != nil {
 		t.Errorf("a file beside tmp was removed: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("a file in tmp that is not SQLite's was removed: %v", err)
 	}
 }
 

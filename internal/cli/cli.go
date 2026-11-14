@@ -109,7 +109,19 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		fs.PrintDefaults()
 	}
 
+	usage := fs.Usage
+	if o.Health {
+		// A health check's output is a container's health log: a
+		// mistyped flag is one line (the caller prints the error), not
+		// the whole usage. -h still prints it.
+		fs.SetOutput(io.Discard)
+		fs.Usage = func() {}
+	}
 	if err := fs.Parse(args); err != nil {
+		if o.Health && errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(out)
+			usage()
+		}
 		return Options{}, err
 	}
 	if fs.NArg() > 0 {

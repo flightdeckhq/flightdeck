@@ -19,7 +19,10 @@
 # container's log also prints the token, on the first start only. It is
 # why the port is published on 127.0.0.1 by default: whoever can reach
 # the origin can read the token. Set FLIGHTDECK_PUBLISH_HOST=0.0.0.0
-# only behind a firewall or a proxy that authenticates.
+# only behind a firewall or a proxy that authenticates, and set
+# FLIGHTDECK_ALLOWED_HOSTS to the names it is then reached by (a LAN
+# name, the proxy's host): the container answers only localhost and IP
+# addresses unless they are listed, and answers any other name 421.
 #
 # Postgres instead of SQLite: add docker-compose.postgres.yml (a
 # bundled Postgres and the database URL), or set
@@ -36,6 +39,8 @@
 #   FLIGHTDECK_PUBLISH_PORT  host port (4000); the container always listens on 4000
 #   FLIGHTDECK_DATABASE_URL  a Postgres URL; empty keeps SQLite in /data
 #   FLIGHTDECK_DOMAIN        public host name for TLS; empty serves plain HTTP
+#   FLIGHTDECK_ALLOWED_HOSTS host names answered besides localhost and IP
+#                            addresses, comma separated (localhost)
 #   FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS, FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB
 #                            how long, and up to what size, the bus keeps
 #                            events (72 hours, 5120 MiB)
@@ -46,12 +51,13 @@
 # it serves, and another service can wait for it with
 # `depends_on: {flightdeck: {condition: service_healthy}}`.
 #
-# Host names: the image answers only localhost and IP addresses
-# (FLIGHTDECK_ALLOWED_HOSTS=localhost), so a page on another site cannot
-# reach it through a browser under a name of its own. The published port
-# is reached as 127.0.0.1 or localhost. A container that reaches this
-# service by its name, http://flightdeck:4000, needs that name listed:
-# FLIGHTDECK_ALLOWED_HOSTS: "localhost,flightdeck" under environment.
+# Host names: the container answers only localhost, IP addresses and
+# the names in FLIGHTDECK_ALLOWED_HOSTS (default: localhost), so a page
+# on another site cannot reach it through a browser under a name of its
+# own. The published port is reached as 127.0.0.1 or localhost. Reached
+# by any other name (a LAN name, a reverse proxy's host, this service's
+# name from another container, http://flightdeck:4000), list it, comma
+# separated, in docker/.env: FLIGHTDECK_ALLOWED_HOSTS=localhost,flightdeck
 
 # A fixed project name: the containers and volumes are named the same
 # whichever directory the file is run from, and never collide with the
@@ -69,6 +75,9 @@ services:
     environment:
       FLIGHTDECK_DATABASE_URL: ${FLIGHTDECK_DATABASE_URL:-}
       FLIGHTDECK_DOMAIN: ${FLIGHTDECK_DOMAIN:-}
+      # The names the container answers for besides localhost and IP
+      # addresses (the image's default is localhost alone); see above.
+      FLIGHTDECK_ALLOWED_HOSTS: ${FLIGHTDECK_ALLOWED_HOSTS:-localhost}
       # The FLIGHTDECK stream's limits, which the binary applies to the
       # stream at startup. The stream keeps processed and unprocessed
       # events alike until a limit removes the oldest, so events the

@@ -51,6 +51,12 @@ var endpoints = []struct{ path, service string }{
 type Target struct {
 	// Base is the URL the health routes are appended to.
 	Base string
+	// Fallback, when set, is the URL tried when nothing can be
+	// connected to at Base: an instance listening on every interface is
+	// reached on 127.0.0.1 first and on ::1 after it, since a container
+	// may have no IPv6 on its loopback, and an IPv6-only listener no
+	// IPv4.
+	Fallback string
 	// ServerName is the instance's --domain: the TLS server name and
 	// the Host header the probes send, as a browser's request for the
 	// domain carries them; empty over plain HTTP.
@@ -61,8 +67,9 @@ type Target struct {
 // --listen and --domain, the two settings that decide where it serves.
 // With a domain the instance serves TLS on :443 and ignores --listen.
 // A listen address on every interface (":4000", "0.0.0.0:4000",
-// "[::]:4000") is reached on loopback; one that names an interface or
-// a host is reached there, since nothing listens on loopback then.
+// "[::]:4000") is reached on loopback, 127.0.0.1 and then ::1; one that
+// names an interface or a host is reached there, since nothing listens
+// on loopback then.
 func TargetFor(listen, domain string) (Target, error) {
 	if domain != "" {
 		port := strings.TrimPrefix(serve.HTTPSPort, ":")
@@ -75,21 +82,20 @@ func TargetFor(listen, domain string) (Target, error) {
 	if port == "" {
 		return Target{}, fmt.Errorf("listen address %q has no port", listen)
 	}
-	if host == "" {
-		host = loopbackV4
-	} else if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-		if ip.To4() != nil {
-			host = loopbackV4
-		} else {
-			host = loopbackV6
-		}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		return Target{
+			Base:     "http://" + net.JoinHostPort(loopbackV4, port),
+			Fallback: "http://" + net.JoinHostPort(loopbackV6, port),
+		}, nil
 	}
 	return Target{Base: "http://" + net.JoinHostPort(host, port)}, nil
 }
 
-// Check probes both health routes of t and returns nil when each
-// answers 200 with its service's own body. The first failure is
-// returned, naming the URL. ctx bounds the check (see Timeout).
+// Check probes both health routes of t and returns the base URL that
+// answered when each answers 200 with its service's own body. When
+// nothing can be connected to at t.Base it tries t.Fallback, in the
+// same ctx. The first failure is returned, naming the URL (both, when
+// the fallback failed too). ctx bounds the check (see Timeout).
 //
 // The probes send no token: the health routes need none. Over TLS the
 // certificate is not verified. The probe goes to this machine's own
@@ -97,7 +103,7 @@ func TargetFor(listen, domain string) (Target, error) {
 // "the services answer"; verifying would add failures that are not the
 // instance's (a clock that is off, a private CA) while a handshake
 // that fails for want of any certificate still fails the check.
-func Check(ctx context.Context, t Target) error {
+func Check(ctx context.Context, t Target) (answered string, err error) {
 	// A transport of its own, not the default one: no proxy from the
 	// environment (the target is this machine) and no connection kept
 	// past the command.
@@ -117,12 +123,37 @@ func Check(ctx context.Context, t Target) error {
 		// A redirect is not a health answer.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	err = checkBase(ctx, client, t.Base, t.ServerName)
+	if err == nil {
+		return t.Base, nil
+	}
+	if t.Fallback == "" || !notConnected(err) {
+		return "", err
+	}
+	// Nothing to connect to at the first address: the second, in what is
+	// left of ctx.
+	if ferr := checkBase(ctx, client, t.Fallback, t.ServerName); ferr != nil {
+		return "", fmt.Errorf("%w; %w", err, ferr)
+	}
+	return t.Fallback, nil
+}
+
+// checkBase probes both health routes under base.
+func checkBase(ctx context.Context, client *http.Client, base, host string) error {
 	for _, e := range endpoints {
-		if err := probe(ctx, client, t.Base+e.path, t.ServerName, e.service); err != nil {
+		if err := probe(ctx, client, base+e.path, host, e.service); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// notConnected reports whether err is a failure to connect at all (a
+// refusal, an address the machine does not have), not an answer that
+// was wrong or late.
+func notConnected(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 func probe(ctx context.Context, client *http.Client, target, host, service string) error {

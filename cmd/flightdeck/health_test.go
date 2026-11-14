@@ -102,11 +102,12 @@ func TestBinary_HealthCommand(t *testing.T) {
 			t.Fatalf("exit %d, output %q; want 1 and one line starting %q", code, out, want)
 		}
 	})
-	t.Run("a mistyped flag is unhealthy, not a usage status", func(t *testing.T) {
-		// Docker reserves exit status 2 of a health check command.
+	t.Run("a mistyped flag is unhealthy, not a usage status, in one line", func(t *testing.T) {
+		// Docker reserves exit status 2 of a health check command, and
+		// keeps the output in the container's health log.
 		code, out := runHealthCommand(t, nil, "--no-such-flag")
-		if code != 1 {
-			t.Fatalf("exit %d, want 1:\n%s", code, out)
+		if code != 1 || strings.Count(out, "\n") != 1 || !strings.Contains(out, "no-such-flag") {
+			t.Fatalf("exit %d, output %q; want 1 and one line naming the flag", code, out)
 		}
 	})
 

@@ -1,8 +1,9 @@
 // A value the plugin cuts, and the list that says so. A text value cut
 // to a bound keeps its first characters and ends with CUT_MARK; the
-// content block it belongs to lists it in ``truncated``, beside the
-// block's data and never inside it, as RFC 6901 JSON Pointers relative
-// to that data (ARCHITECTURE.md, Plugin > Cut values in tool content).
+// ``tool_use`` block of a cut tool input lists it in ``truncated``,
+// beside ``input`` and never inside it, as RFC 6901 JSON Pointers
+// relative to ``input`` (ARCHITECTURE.md, Plugin > Cut values in tool
+// content).
 
 // What ends a value that was cut, after the characters kept, so that a
 // command cut mid-way does not read as the whole command.

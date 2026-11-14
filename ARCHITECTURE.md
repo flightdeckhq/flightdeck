@@ -2559,11 +2559,10 @@ holds scalars only.
 
 ### Cut values in tool content
 
-A content block the plugin cut values of lists them in `truncated`,
-beside the block's data: an array of RFC 6901 JSON Pointers, each to a
-value that ends with `…` because the plugin cut it, in the order the
-plugin cut them. A `tool_use` block's pointers are relative to its
-`input`:
+A `tool_use` block whose input the plugin cut lists the cut values in
+`truncated`, beside `input`: an array of RFC 6901 JSON Pointers,
+relative to `input`, each to a value that ends with `…` because the
+plugin cut it, in the order the plugin cut them:
 
 ```json
 {"type": "tool_use", "name": "Bash",
@@ -2576,7 +2575,9 @@ string is the JSON of the same sanitized `input`, so it carries no
 `truncated` either; the content block is the one place the list is
 kept. The pointers name the tool's own keys as they are, so a tool
 argument named `truncated` stays an argument, and a key with `/` or
-`~` in it is escaped as RFC 6901 says (`~1`, `~0`).
+`~` in it is escaped as RFC 6901 says (`~1`, `~0`). The list covers the
+tool's input only: a `tool_result` block's output, cut at 2000
+characters, ends with `…` and carries no list.
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.

@@ -1,5 +1,6 @@
 {{- $component := "flightdeck" -}}
 {{- include "flightdeck.validate" . -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
 {{- /*
 The flightdeck pods: one binary each, a StatefulSet so that every pod
 keeps a data dir of its own across restarts and rolling updates (the
@@ -147,9 +148,25 @@ spec:
             # temporary files of a large sort here.
             - name: tmp
               mountPath: /tmp
+            {{- if $dashboardToken.name }}
+            # The dashboard token every pod serves
+            # (FLIGHTDECK_DASHBOARD_TOKEN_FILE).
+            - name: dashboard-token
+              mountPath: {{ include "flightdeck.dashboardTokenDir" . }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if $dashboardToken.name }}
+        - name: dashboard-token
+          secret:
+            secretName: {{ $dashboardToken.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ $dashboardToken.key | quote }}
+                path: {{ include "flightdeck.dashboardTokenFile" . }}
+        {{- end }}
       {{- with .Values.flightdeck.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

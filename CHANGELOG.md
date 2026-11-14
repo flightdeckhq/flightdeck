@@ -959,9 +959,13 @@ All notable changes to Flightdeck are documented here.
   read-only root filesystem; images can be pinned by digest;
   `flightdeck.extraEnvFrom` and an optional NetworkPolicy for the
   metrics ports are new, and `flightdeck.extraEnv` refuses a name that
-  reads like a secret. Resource names are built on the release name
-  cut to 43 characters, so a long release name no longer renders a
-  Service or StatefulSet name Kubernetes refuses.
+  reads like a secret. `flightdeck.dashboardTokenSecret` gives every
+  pod one dashboard token you supply, mounted from your Secret as the
+  file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names. Resource names are
+  built on the release name cut to 43 characters, so a long release
+  name no longer renders a Service or StatefulSet name Kubernetes
+  refuses; a release of an earlier chart with a longer base gets new
+  Postgres names (the README says how to keep its data).
 - **`make dev` runs the binary from source.** The contributor dev
   stack is the `flightdeck` binary built from the checkout, with the
   dashboard embedded, on `127.0.0.1:4000` beside one Postgres

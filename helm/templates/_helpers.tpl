@@ -10,8 +10,9 @@ Common helpers for the flightdeck chart.
 The base of every resource name, at most 43 characters: the longest
 name built on it, the headless Service <base>-flightdeck-headless, is
 then 63, the most a Service name (a DNS label) may have. 43 also keeps
-the names an earlier chart gave a release whose Postgres StatefulSet
-ran, so an upgrade finds its volume claims.
+every name an earlier chart gave a release of a base up to 43, the
+longest whose Postgres StatefulSet (<base>-postgres, 52) could always
+start its pods, so its upgrade finds the volume claims.
 */}}
 {{- define "flightdeck.fullname" -}}
 {{- if .Values.fullnameOverride -}}
@@ -381,7 +382,8 @@ so the DSN helper and the Secret stay byte-aligned.
 
 {{/*
 A Secret reference among the values, {name, key} (postgres.externalUrlSecret,
-postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret),
+postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret,
+flightdeck.dashboardTokenSecret),
 as JSON for fromJson, so every template reads the four one way. Null
 reads as unset, name and key empty: --set <path>=null removes the
 entry, defaults included. Anything but a map fails the render, naming
@@ -423,6 +425,10 @@ run is a mistake worth naming. Checked once, from flightdeck.validate.
 {{- $pgPassword := include "flightdeck.secretRef" (dict "root" . "path" "postgres.passwordSecret") | fromJson -}}
 {{- $natsUrl := include "flightdeck.secretRef" (dict "root" . "path" "nats.externalUrlSecret") | fromJson -}}
 {{- $natsToken := include "flightdeck.secretRef" (dict "root" . "path" "nats.auth.tokenSecret") | fromJson -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
+{{- if and $dashboardToken.name (not $dashboardToken.key) -}}
+{{- fail "flightdeck.dashboardTokenSecret.key must name the key of the token in that Secret" -}}
+{{- end -}}
 {{- if and $pg.externalUrl $pgUrl.name -}}
 {{- fail "postgres.externalUrl and postgres.externalUrlSecret.name are both set: give the database URL once, as the value or from the Secret" -}}
 {{- end -}}
@@ -465,19 +471,27 @@ run is a mistake worth naming. Checked once, from flightdeck.validate.
 flightdeck.extraEnv lands in the ConfigMap, in plain text, so a name
 that reads like a secret is refused, in any case: one containing
 PASSWORD, PASSWD, SECRET, TOKEN, CREDENTIAL or APIKEY, or with KEY,
-URL, URI, DSN, PASS or PWD as a word of it (words split at _ - .). A
-URL may carry a password, and the binary reads no setting that is a
-URL without one. It is a guard against a slip, not a scanner: a secret
-under another name goes through. Secrets belong in a Secret (the
+URL, URI, DSN, PASS or PWD as a word of it (words split at _ - .),
+unless its last word is FILE: such a name holds the path of a file
+(FLIGHTDECK_DASHBOARD_TOKEN_FILE), not its content. A URL may carry a
+password, and the binary reads no setting that is a URL without one.
+It is a guard against a slip, not a scanner: a secret under another
+name goes through. Secrets belong in a Secret (the
 chart's values that have a Secret form, or extraEnvFrom), and a
 setting the guard refuses that is no secret in a ConfigMap of yours,
 through extraEnvFrom. A name the chart's ConfigMap sets itself is
-refused too, since the key would be there twice with one value lost,
+refused too, since the key would be there twice with one value lost
+(FLIGHTDECK_DASHBOARD_TOKEN_FILE when flightdeck.dashboardTokenSecret
+is set: the pod's env entry would win),
 and so are a name a ConfigMap cannot have and a value that is a map
 or a list.
 */}}
 {{- define "flightdeck.validateExtraEnv" -}}
 {{- $own := list "FLIGHTDECK_WORKER_POOL_SIZE" "FLIGHTDECK_RATE_LIMIT_PER_MINUTE" "SHUTDOWN_TIMEOUT_SECS" "FLIGHTDECK_CORS_ORIGIN" "FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS" "FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB" "FLIGHTDECK_NATS_STREAM_REPLICAS" "FLIGHTDECK_ALLOWED_HOSTS" "AGENT_FLAVOR" "AGENT_TYPE" "FLIGHTDECK_UNAVAILABLE_POLICY" "FLIGHTDECK_CAPTURE_PROMPTS" -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
+{{- if $dashboardToken.name -}}
+{{- $own = append $own "FLIGHTDECK_DASHBOARD_TOKEN_FILE" -}}
+{{- end -}}
 {{- range $name, $value := .Values.flightdeck.extraEnv -}}
 {{- $upper := upper $name -}}
 {{- if not (regexMatch "^[-._a-zA-Z0-9]+$" $name) -}}
@@ -486,11 +500,11 @@ or a list.
 {{- if or (kindIs "map" $value) (kindIs "slice" $value) -}}
 {{- fail (printf "flightdeck.extraEnv.%s must be a string, a number or a boolean, not a %s (with --set, a dot in a name splits it: write it as \\.)" $name (kindOf $value)) -}}
 {{- end -}}
-{{- if or (regexMatch "PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|APIKEY" $upper) (regexMatch "(^|[-._])(KEY|URL|URI|DSN|PASS|PWD)([-._]|$)" $upper) -}}
+{{- if and (not (regexMatch "[-._]FILE$" $upper)) (or (regexMatch "PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|APIKEY" $upper) (regexMatch "(^|[-._])(KEY|URL|URI|DSN|PASS|PWD)([-._]|$)" $upper)) -}}
 {{- fail (printf "flightdeck.extraEnv.%s reads like a secret, and extraEnv goes into the ConfigMap in plain text. The database and NATS URLs, the Postgres password and the NATS token have values of their own with a Secret form (postgres.externalUrlSecret, postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret); anything else goes in a Secret of yours, or, if it is no secret, a ConfigMap of yours, through flightdeck.extraEnvFrom" $name) -}}
 {{- end -}}
 {{- if has $upper $own -}}
-{{- fail (printf "flightdeck.extraEnv.%s is set by the chart from its own value (values.yaml; for FLIGHTDECK_ALLOWED_HOSTS, flightdeck.extraAllowedHosts): set that value instead, since the ConfigMap would carry the key twice" $name) -}}
+{{- fail (printf "flightdeck.extraEnv.%s is set by the chart from its own value (values.yaml; for FLIGHTDECK_ALLOWED_HOSTS, flightdeck.extraAllowedHosts; for FLIGHTDECK_DASHBOARD_TOKEN_FILE, flightdeck.dashboardTokenSecret): set that value instead, since the pods would see the key twice" $name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -630,8 +644,10 @@ from the operator's own Secrets: the chart cannot write those into its
 Secret, so the URLs are built in the pod spec instead. A URL from a
 Secret is read as it is; a password or a token from a Secret is read
 into FD_POSTGRES_PASSWORD or FD_NATS_TOKEN and the kubelet expands it
-into the URL ($(NAME) refers to an entry earlier in the list). Empty
-when every secret is a value, which the chart's Secret carries.
+into the URL ($(NAME) refers to an entry earlier in the list). The
+dashboard token is a file the StatefulSet mounts from its Secret, and
+FLIGHTDECK_DASHBOARD_TOKEN_FILE names it. Empty when every secret is
+a value, which the chart's Secret carries.
 */}}
 {{- define "flightdeck.secretEnv" -}}
 {{- $pg := .Values.postgres -}}
@@ -670,7 +686,19 @@ when every secret is a value, which the chart's Secret carries.
 - name: FLIGHTDECK_NATS_URL
   value: {{ printf "nats://$(FD_NATS_TOKEN)@%s:%d" (include "flightdeck.natsClientServiceName" .) (int $nats.clientPort) | quote }}
 {{- end }}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson }}
+{{- if $dashboardToken.name }}
+- name: FLIGHTDECK_DASHBOARD_TOKEN_FILE
+  value: {{ printf "%s/%s" (include "flightdeck.dashboardTokenDir" .) (include "flightdeck.dashboardTokenFile" .) | quote }}
+{{- end }}
 {{- end -}}
+
+{{/*
+Where the StatefulSet mounts flightdeck.dashboardTokenSecret, read-only,
+and the name of the token's file there.
+*/}}
+{{- define "flightdeck.dashboardTokenDir" -}}/etc/flightdeck/dashboard-token{{- end -}}
+{{- define "flightdeck.dashboardTokenFile" -}}token{{- end -}}
 
 {{/*
 Validated NATS token, required whenever the cluster is rendered. The

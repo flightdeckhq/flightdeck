@@ -1,5 +1,6 @@
 {{- $sts := include "flightdeck.statefulSetName" (dict "root" . "component" "flightdeck") -}}
 {{- $svc := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
+{{- $dashboardToken := include "flightdeck.secretRef" (dict "root" . "path" "flightdeck.dashboardTokenSecret") | fromJson -}}
 {{- if .Release.IsUpgrade }}
 Flightdeck is upgraded: the StatefulSet {{ $sts }} in namespace {{ .Release.Namespace }}
 now runs on {{ include "flightdeck.databaseIdentity" . }}.
@@ -26,8 +27,16 @@ Then open http://localhost:4000. The access token for the sensor and
 the plugin is what the dashboard itself loads:
 
   curl -s http://localhost:4000/runtime-config.json
-
+{{ if $dashboardToken.name }}
+Every pod serves the token in the Secret {{ $dashboardToken.name }}, key {{ $dashboardToken.key }}
+(flightdeck.dashboardTokenSecret). A pod whose token is not "ftd_" and
+32 random lower-case hex digits does not start, and its log says why.
+{{- else }}
 Each pod mints a token on its first start (its log prints it once, in
-the start-up block), and the Settings page mints more. Whoever can
-reach the Service can read that token: expose it only behind an Ingress
-or a network that authenticates.
+the start-up block), and each is valid on every pod; with
+flightdeck.dashboardTokenSecret every pod serves one token you supply.
+{{- end }}
+
+The Settings page mints more tokens. Whoever can reach the Service can
+read the token: expose it only behind an Ingress or a network that
+authenticates.

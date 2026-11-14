@@ -10855,10 +10855,16 @@ the replica count. Each pod opens at most 80 Postgres connections
 `max_connections` at 80 for every pod it may run (the HPA's maximum
 when it is on) plus 20 for everything else, and refuses a
 `postgres.maxConnections` set below that; a Postgres outside the chart
-needs the same room, or a pooler, which the chart cannot check. Every
-pod mints a dashboard token of its own on its first start, each valid
-on every pod because they are rows of `access_tokens`, so the Settings
-page lists one `Bootstrap token` per pod that ever started.
+needs the same room, or a pooler, which the chart cannot check. With
+`flightdeck.dashboardTokenSecret` (a Secret's name and key) every pod
+serves one supplied dashboard token: the chart mounts the key
+read-only as a file at `/etc/flightdeck/dashboard-token/token` and
+sets `FLIGHTDECK_DASHBOARD_TOKEN_FILE` to it, never the variable that
+carries the token itself, which would put it in the pod's environment.
+Without it every pod mints a dashboard token of its own on its first
+start, each valid on every pod because they are rows of
+`access_tokens`, so the Settings page lists one `Bootstrap token` per
+pod that ever started.
 
 The probes are HTTP on the public port: startup and readiness on
 `/ingest/health`, liveness on `/api/health`, with five minutes allowed
@@ -10871,10 +10877,12 @@ Every resource is named `<base>-<component>`, the base (the release
 name, with `-flightdeck` when it lacks it, or `fullnameOverride`) cut
 to 43 characters: the longest name, the headless
 `<base>-flightdeck-headless` Service, is then the 63 a DNS label may
-have, and the names an earlier chart gave a release whose Postgres ran
-stay the same. A StatefulSet's name is cut to 52, since the controller
-labels each pod with `controller-revision-hash`, the name and up to 11
-characters more, in a label value of at most 63.
+have, and an earlier chart's release of a base up to 43, the longest
+whose Postgres StatefulSet (`<base>-postgres`, 52) could always start
+its pods, keeps every name. A StatefulSet's name is cut to 52, since
+the controller labels each pod with `controller-revision-hash`, the
+name, a dash and the revision's hash (the decimal FNV-32 sum, up to 10
+digits), in a label value of at most 63.
 
 The chart passes the `FLIGHTDECK` stream's settings to the pods from
 `nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see

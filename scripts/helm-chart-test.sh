@@ -99,7 +99,7 @@ PG=(--set postgres.enabled=true --set postgres.password=ci-test-password)
 NATS_TOKEN=(--set nats.auth.token=ci-test-nats-token)
 EXTERNAL_PG=(--set 'postgres.externalUrl=postgres://u:p@db.example.com:5432/d?sslmode=require')
 
-helm lint "$CHART"
+helm lint --strict "$CHART"
 
 # --- One pod on SQLite: the default -----------------------------------------
 render default
@@ -382,12 +382,43 @@ has ref-null-bundled '^  POSTGRES_PASSWORD: "ci-test-password"$'
 has ref-null-bundled '^  FLIGHTDECK_NATS_TOKEN: "ci-test-nats-token"$'
 render ref-null-external --set postgres.externalUrlSecret=null "${EXTERNAL_PG[@]}"
 has ref-null-external '^    flightdeck/database: "postgres db.example.com:5432/d \(external\)"$'
-for path in postgres.externalUrlSecret postgres.passwordSecret nats.externalUrlSecret nats.auth.tokenSecret; do
+for path in postgres.externalUrlSecret postgres.passwordSecret nats.externalUrlSecret nats.auth.tokenSecret \
+  flightdeck.dashboardTokenSecret; do
   refuse "$path must be a Secret reference" --set "$path=postgres://u:hunter2@db.example.com/d"
   checks=$((checks + 1))
   if grep -q hunter2 "$OUT/refused.err"; then fail "the refusal for $path repeats the value"; fi
 done
 refuse "nats.auth must be a map, not a string" --set nats.auth=x
+
+# --- The dashboard token from the operator's Secret -------------------------
+# A file every pod reads, mounted read-only from the Secret, named by
+# FLIGHTDECK_DASHBOARD_TOKEN_FILE; never the variable that carries the
+# token, which would put it in the pod's environment.
+render dashboard-token "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=3 \
+  --set flightdeck.dashboardTokenSecret.name=fd-token
+has dashboard-token '^            - name: FLIGHTDECK_DASHBOARD_TOKEN_FILE$'
+has dashboard-token '^              value: "/etc/flightdeck/dashboard-token/token"$'
+has dashboard-token '^            - name: dashboard-token$'
+has dashboard-token '^              mountPath: /etc/flightdeck/dashboard-token$'
+has dashboard-token '^              readOnly: true$'
+has dashboard-token '^            secretName: "fd-token"$'
+has dashboard-token '^            defaultMode: 0440$'
+has dashboard-token '^              - key: "token"$'
+has dashboard-token '^                path: token$'
+lacks dashboard-token 'FLIGHTDECK_DASHBOARD_TOKEN(:|"?$)'
+count dashboard-token '^        - name: dashboard-token$' 1
+render dashboard-token-key --set flightdeck.dashboardTokenSecret.name=fd-token \
+  --set flightdeck.dashboardTokenSecret.key=dashboard
+has dashboard-token-key '^              - key: "dashboard"$'
+# Unset or null: no file, no variable, no volume.
+for r in default ref-null; do
+  lacks "$r" 'DASHBOARD_TOKEN'
+  lacks "$r" 'dashboard-token'
+done
+render dashboard-token-null --set flightdeck.dashboardTokenSecret=null
+lacks dashboard-token-null 'DASHBOARD_TOKEN|dashboard-token'
+refuse "flightdeck.dashboardTokenSecret.key must name" --set flightdeck.dashboardTokenSecret.name=fd-token \
+  --set flightdeck.dashboardTokenSecret.key=
 refuse "flightdeck.metrics.networkPolicy must be a map" --set flightdeck.metrics.networkPolicy=on
 
 # --- Secrets in the plain-text ConfigMap, and its own keys ---------------------
@@ -400,6 +431,16 @@ for name in FLIGHTDECK_DATABASE_URL FLIGHTDECK_NATS_URL FLIGHTDECK_DASHBOARD_TOK
   refuse "reads like a secret" --set "flightdeck.extraEnv.$name=x"
 done
 refuse "is not a name a ConfigMap can carry" --set 'flightdeck.extraEnv.A\ B=x'
+# A name whose last word is FILE holds a path: it goes through, unless
+# the chart sets it itself.
+render extra-env-file --set flightdeck.extraEnv.FLIGHTDECK_DASHBOARD_TOKEN_FILE=/run/t \
+  --set flightdeck.extraEnv.DB_PASSWORD_FILE=/run/p --set 'flightdeck.extraEnv.TLS_KEY\.FILE=/run/k'
+has extra-env-file '^  "FLIGHTDECK_DASHBOARD_TOKEN_FILE": "/run/t"$'
+has extra-env-file '^  "DB_PASSWORD_FILE": "/run/p"$'
+has extra-env-file '^  "TLS_KEY.FILE": "/run/k"$'
+refuse "is set by the chart from its own value" --set flightdeck.dashboardTokenSecret.name=fd-token \
+  --set flightdeck.extraEnv.FLIGHTDECK_DASHBOARD_TOKEN_FILE=/run/t
+refuse "reads like a secret" --set flightdeck.extraEnv.FLIGHTDECK_DASHBOARD_TOKEN_FILES=x
 refuse "must be a string, a number or a boolean, not a map" --set flightdeck.extraEnv.LOG.LEVEL=x
 refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_ALLOWED_HOSTS=x
 refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_WORKER_POOL_SIZE=4
@@ -536,6 +577,10 @@ wrapped "${PG[@]}" --show-only templates/zz-notes.yaml >"$OUT/notes-install.yaml
 lacks notes-install 'never moves data'
 has notes-install 'Flightdeck is starting as the StatefulSet flightdeck-flightdeck'
 has notes-install 'Database  Postgres \(the chart.s own StatefulSet\)'
+has notes-install 'Each pod mints a token on its first start'
+wrapped --set flightdeck.dashboardTokenSecret.name=fd-token --show-only templates/zz-notes.yaml >"$OUT/notes-token.yaml"
+has notes-token 'Every pod serves the token in the Secret fd-token, key token'
+lacks notes-token 'Each pod mints'
 # A database and a bus from the operator's Secrets are outside the chart.
 wrapped --set postgres.externalUrlSecret.name=db --set nats.externalUrlSecret.name=bus \
   --show-only templates/zz-notes.yaml >"$OUT/notes-secret-urls.yaml"

@@ -130,6 +130,27 @@ flightdeck:
   #     - secretRef:
   #         name: flightdeck-extra
   extraEnvFrom: []
+  # The dashboard token, from a Secret you created: the chart mounts the
+  # key read-only as a file and points FLIGHTDECK_DASHBOARD_TOKEN_FILE
+  # at it (never FLIGHTDECK_DASHBOARD_TOKEN, which would put it in the
+  # pod's environment). Every pod then serves this one token, however
+  # many there are, and it is known before the first start. It must be
+  # "ftd_" and 32 random lower-case hex digits; a pod refuses to start
+  # on anything else, which the chart cannot check:
+  #   kubectl create secret generic flightdeck-dashboard-token \
+  #     --from-literal=token="ftd_$(openssl rand -hex 16)"
+  # Without it each pod mints a token of its own on its first start;
+  # each is valid on every pod, since tokens are rows of the database
+  # the pods share, and Settings lists one "Bootstrap token" per pod.
+  # To rotate it: put the new token in the Secret, restart every pod
+  # (kubectl rollout restart statefulset/<release>-flightdeck: the pods
+  # read the file at start), then revoke the old one in Settings
+  # ("Supplied dashboard token (ftd_xxxx)"). The old one stays valid
+  # until then, so a pod not yet restarted keeps working; revoked
+  # earlier, it is stored again by the next pod that starts with it.
+  dashboardTokenSecret:
+    name: ""
+    key: token
   # Host names the binary answers for, besides the ones the chart lists
   # (FLIGHTDECK_ALLOWED_HOSTS): the Service and headless Service in
   # their short and qualified forms, every pod's DNS name, the Ingress

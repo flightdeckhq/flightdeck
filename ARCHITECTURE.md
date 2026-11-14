@@ -2493,8 +2493,10 @@ refused connection or a status is reported after the first attempt.
 Every send of a session's `session_start` is the same event, since a
 server can store one and answer after the poster gave up: its `id` (a
 UUID) and `timestamp` are recorded before the first POST in
-`start-pending-${sessionId}.json` (published with an exclusive link, so
-concurrent hooks converge on one) and reused by `SessionStart`'s second
+`start-pending-${sessionId}.json` (recorded under the file's lock
+directory, which re-reads it first, so concurrent hooks converge on one
+record on any file system, a stale record's replacement included) and
+reused by `SessionStart`'s second
 attempt and by a later hook's backstop, and the worker's
 `(id, occurred_at)` dedup keeps one. A sub-agent's child session has a
 record of its own: `SubagentStart`'s child `session_start` and the
@@ -3657,11 +3659,19 @@ control plane honours end-to-end:
    the first copy may have been attached already. `Attach` records the id
    in `session_start_receipts`, in the same transaction as the attach
    (`ON CONFLICT (event_id) DO NOTHING`), with whether it attached; a copy
-   whose id is there revives nothing, writes no `session_attachments`
-   row and is answered with the first copy's `attached`. `RecordStart`
-   stamps once per id: it sets the receipt's `start_seq` only while it is
-   unset, and stamps the row only then, so a copy's later sequence never
-   replaces the first copy's. The copy is still published, since the
+   whose id is there for the same session revives nothing, writes no
+   `session_attachments` row and is answered with the first copy's
+   `attached`. A start whose id is another session's receipt is not a
+   copy: it is attached as a start without an id is, and nothing is
+   recorded for it (the other session's answer is never handed out;
+   refusing the event would drop it over an informational side effect).
+   `RecordStart` keeps the lowest sequence a copy of the start was
+   published at: it records a sequence on the receipt only when it is
+   below the one recorded (in one transaction, the receipt locked on
+   Postgres), stamps the row only then, and when a copy published later
+   had stamped first, puts the lower sequence back on the row where the
+   copy's still stands, so a copy's later sequence never replaces the
+   first copy's. The copy is still published, since the
    first copy's publish may have failed after the attach, and the worker
    stores the event once (`(id, occurred_at)`). A receipt is kept 50
    hours: ingestion refuses an event dated more than 48 hours back or 5
@@ -5012,9 +5022,11 @@ five focused functions:
    `closed_seq`. Best effort: it skips a row another writer holds instead
    of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
    if the row is still held it gives up and logs that, at most one line a
-   second per process. No attachment row. Once per start event id: the
-   first call records its sequence on the id's receipt, and a later call
-   for the same id stamps nothing.
+   second per process. No attachment row. Per start event id the row
+   keeps the lowest sequence of the start's copies: a copy's call with a
+   higher sequence than the one on the id's receipt stamps nothing, and
+   a lower one replaces it on the receipt and, where the higher still
+   stands, on the row.
 3. **`workers/internal/writer/writer.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
@@ -5675,9 +5687,10 @@ CREATE INDEX session_start_receipts_received_idx ON session_start_receipts (rece
 ```
 
 One row per `session_start` event id ingestion has attached (see
-Session attachment flow): whether the start attached to an existing
-row, and the stream sequence its re-attachment stamp recorded. A resent
-copy of the start finds its row and changes nothing. `session_id`
+Session attachment flow): the session it started, whether it attached
+to an existing row, and the lowest stream sequence a copy's
+re-attachment stamp recorded. A resent copy of the start (same session)
+finds its row and changes nothing. `session_id`
 carries no foreign key: a session's first start is received before the
 worker creates the session row. Rows older than 50 hours are deleted by
 `Attach`, the age past which no copy of the start passes ingestion's

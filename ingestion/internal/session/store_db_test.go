@@ -244,6 +244,35 @@ func TestAttachIsIdempotentPerEventIDOnBothBackends(t *testing.T) {
 			t.Fatalf("after an attach: old receipt kept=%d, recent kept=%d; want 0 and 1", receipts(t, db, old), receipts(t, db, recent))
 		}
 
+		// Another session's start id is not a copy of this session's
+		// start: this session gets its own answer (no row: not attached),
+		// nothing is recorded under the id for it, and the other
+		// session's receipt is left as it was.
+		stranger := randomUUID(t)
+		attached, prior, err = s.Attach(ctx, stranger, reopen)
+		if err != nil || attached || prior != "" {
+			t.Fatalf("a start reusing another session's id: %v, %q, %v; want this session's own answer (false)", attached, prior, err)
+		}
+		insertSession(t, db, stranger, "active", "", "", nil)
+		for range 2 {
+			if attached, prior, err := s.Attach(ctx, stranger, reopen); err != nil || !attached || prior != "active" {
+				t.Fatalf("a start reusing another session's id, row present: %v, %q, %v; want attached as an id-less start", attached, prior, err)
+			}
+		}
+		if n := attachments(t, db, stranger); n != 2 {
+			t.Fatalf("%d attachments for the clashing start, want one per arrival (2)", n)
+		}
+		var owner string
+		var ownerAttached bool
+		if err := db.Reader().QueryRowContext(ctx,
+			`SELECT CAST(session_id AS TEXT), attached FROM session_start_receipts WHERE event_id = $1`, reopen,
+		).Scan(&owner, &ownerAttached); err != nil {
+			t.Fatal(err)
+		}
+		if owner != closed || !ownerAttached {
+			t.Fatalf("the receipt is %s attached=%v, want the first session's (%s, true) kept", owner, ownerAttached, closed)
+		}
+
 		// An id that is not a UUID is no key: every arrival attaches.
 		if attached, _, err := s.Attach(ctx, busy, "not-a-uuid"); err != nil || !attached {
 			t.Fatalf("a start with a non-UUID id: %v, %v; want attached", attached, err)
@@ -289,6 +318,52 @@ func TestRecordStartIsIdempotentPerEventIDOnBothBackends(t *testing.T) {
 		if receiptSeq.Int64 != 10 {
 			t.Fatalf("receipt start_seq = %v, want 10", receiptSeq)
 		}
+		// The narrow race: a copy published later stamps before the
+		// first copy does. The first copy's lower sequence replaces it
+		// on the receipt and on the row; a still later copy changes
+		// nothing.
+		raced, racedStart := randomUUID(t), randomUUID(t)
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM session_start_receipts WHERE event_id = $1`, racedStart)
+		})
+		insertSession(t, db, raced, "active", "", "", nil)
+		if attached, _, err := s.Attach(ctx, raced, racedStart); err != nil || !attached {
+			t.Fatalf("attach: %v, %v", attached, err)
+		}
+		for _, seq := range []uint64{25, 15, 35} {
+			if err := s.RecordStart(ctx, raced, racedStart, seq); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, startSeq, _ := rowState(t, db, raced); startSeq.Int64 != 15 {
+			t.Fatalf("start_seq = %v after the copies' stamps 25, 15, 35; want the lowest, 15", startSeq)
+		}
+		if err := db.Reader().QueryRowContext(ctx,
+			`SELECT start_seq FROM session_start_receipts WHERE event_id = $1`, racedStart).Scan(&receiptSeq); err != nil {
+			t.Fatal(err)
+		}
+		if receiptSeq.Int64 != 15 {
+			t.Fatalf("receipt start_seq = %v, want 15", receiptSeq)
+		}
+		// Once a later start (a new id) has stamped the row, a late first
+		// copy of the earlier start lowers its receipt only.
+		later := randomUUID(t)
+		t.Cleanup(func() {
+			_, _ = db.ExecContext(context.Background(), `DELETE FROM session_start_receipts WHERE event_id = $1`, later)
+		})
+		if _, _, err := s.Attach(ctx, raced, later); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordStart(ctx, raced, later, 50); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordStart(ctx, raced, racedStart, 12); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, startSeq, _ := rowState(t, db, raced); startSeq.Int64 != 50 {
+			t.Fatalf("start_seq = %v, want the later start's 50 kept", startSeq)
+		}
+
 		// No receipt (the attach fell back): stamped as before.
 		if err := s.RecordStart(ctx, row, randomUUID(t), 30); err != nil {
 			t.Fatal(err)

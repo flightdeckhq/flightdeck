@@ -17,7 +17,6 @@ import {
   chmodSync,
   closeSync,
   existsSync,
-  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -496,10 +495,9 @@ const PENDING_START_FUTURE_TOLERANCE_MS = 60 * 1000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The pending record in ``path`` when it is usable at ``now``, else null. */
-function readPendingStart(path, now) {
-  const record = readJsonObject(path);
-  if (typeof record.id !== "string" || !UUID_RE.test(record.id) || typeof record.timestamp !== "string") {
+/** ``record`` as a pending session_start when it is usable at ``now``, else null. */
+function usablePendingStart(record, now) {
+  if (!record || typeof record.id !== "string" || !UUID_RE.test(record.id) || typeof record.timestamp !== "string") {
     return null;
   }
   const age = now - Date.parse(record.timestamp);
@@ -510,48 +508,24 @@ function readPendingStart(path, now) {
 /**
  * The ``{id, timestamp}`` every send of ``sessionId``'s session_start
  * carries: the pending record when there is a usable one, else
- * ``fresh``, recorded as the pending one first. Hooks of one session run
- * concurrently, so the record is published whole (written to a file of
- * this process, then linked into place, which fails when another hook
- * published one first) and a hook that loses reads the winner's; an
- * unusable one (too old, unreadable) is replaced by ``fresh`` with an
- * atomic rename, as is any record on a file system without hard links.
+ * ``fresh``, recorded as the pending one first. A usable record is
+ * read without a lock: it changes only once it is cleared or too old.
+ * Recording one, in place of none or of an unusable one (too old,
+ * unreadable), runs under the record's lock directory and re-reads the
+ * record there (updateJsonObject), so hooks racing to record converge on
+ * the first one's on any file system: the lock is a directory created
+ * with mkdir, and the record is written to a file of this process and
+ * renamed into place. Like every locked state update, a hook that waits
+ * longer than STATE_LOCK_WAIT_MS for the lock goes ahead without it.
  * With an unusable state directory the answer is ``fresh``, unrecorded.
  */
 export function pendingSessionStart(sessionId, fresh, now = Date.now()) {
-  const dir = stateDir();
-  const path = join(dir, `${PENDING_START_PREFIX}${sessionId}.json`);
-  const existing = readPendingStart(path, now);
+  const path = join(stateDir(), `${PENDING_START_PREFIX}${sessionId}.json`);
+  const mine = { id: fresh.id, timestamp: fresh.timestamp };
+  const existing = usablePendingStart(readJsonObject(path), now);
   if (existing) return existing;
-  const partial = `${path}.${process.pid}.tmp`;
-  try {
-    mkdirOwnerOnly(dir);
-    writeFileSync(partial, JSON.stringify({ id: fresh.id, timestamp: fresh.timestamp }));
-    let published = false;
-    try {
-      linkSync(partial, path);
-      published = true;
-    } catch (err) {
-      if (err?.code === "EEXIST") {
-        // Another hook published one meanwhile, or the one there is
-        // unusable: take a usable one, else replace it below.
-        const winner = readPendingStart(path, now);
-        if (winner) return winner;
-      }
-      // A file system without hard links publishes by rename, which
-      // replaces instead of refusing.
-    }
-    if (!published) renameSync(partial, path);
-    return { id: fresh.id, timestamp: fresh.timestamp };
-  } catch {
-    return { id: fresh.id, timestamp: fresh.timestamp };
-  } finally {
-    try {
-      unlinkSync(partial);
-    } catch {
-      /* renamed, or never written */
-    }
-  }
+  const recorded = updateJsonObject(path, (current) => usablePendingStart(current, now) ?? mine);
+  return usablePendingStart(recorded, now) ?? mine;
 }
 
 /** Forget ``sessionId``'s pending session_start: the next send is a new event. */

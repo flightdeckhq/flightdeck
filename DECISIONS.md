@@ -1000,14 +1000,15 @@ input.
 
 **Date:** 2026-11-14
 **Decision:** ingestion records each `session_start` event id it attaches
-in `session_start_receipts`, in the attach transaction, with the answer
-it gave. A copy with a recorded id revives nothing, writes no attachment,
-stamps no stream sequence and gets the first copy's `attached`; it is
-still published, and the worker stores the event once. Clients resend a
-start as the same event (one id, one timestamp). Receipts live 50 hours.
+in `session_start_receipts`, in the attach transaction, with the session
+and the answer. A copy (same id, same session) revives nothing, writes no
+attachment and gets the first copy's `attached`; the row keeps the lowest
+stream sequence of the copies. Copies are still published; the worker
+stores the event once. A start reusing another session's id is attached
+as an id-less start is, unrecorded. Receipts live 50 hours.
 **Why:** a client that gives up on a slow answer resends; the attach ran
 at ingestion before the worker could drop the copy, so a session started
 once showed an attachment per resend.
-**Rejected alternative:** looking the id up in the events table (racy:
-the first copy may still be on the bus); an id column on
-`session_attachments` (a session's first start writes no attachment row).
+**Rejected alternative:** looking the id up in the events table (racy);
+an id column on `session_attachments` (a first start writes no row);
+refusing a clashing id with a 4xx (drops the event over a side effect).

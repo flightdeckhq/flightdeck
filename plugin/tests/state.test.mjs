@@ -227,9 +227,8 @@ describe("the pending session_start", () => {
     assert.equal(existsSync(pendingFile(sid)), false);
   });
 
-  it("converges concurrent hooks on one record", async () => {
-    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
-    const sid = randomUUID();
+  // Eight hook processes asking for the session's pending start at once.
+  async function race(sid) {
     const script = `
       import { pendingSessionStart } from ${JSON.stringify(new URL("../hooks/scripts/core/state.mjs", import.meta.url).href)};
       import { randomUUID } from "node:crypto";
@@ -242,14 +241,32 @@ describe("the pending session_start", () => {
           err ? reject(err) : resolve(JSON.parse(stdout)),
         );
       });
-    const results = await Promise.all(Array.from({ length: 8 }, run));
+    return Promise.all(Array.from({ length: 8 }, run));
+  }
+
+  it("converges concurrent hooks on one record", async () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    const results = await race(sid);
     assert.equal(new Set(results.map((r) => `${r.id}@${r.timestamp}`)).size, 1, "every hook got the same event");
     assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), results[0]);
     assert.deepEqual(
-      readdirSync(stateDir()).filter((name) => name.endsWith(".tmp")),
+      readdirSync(stateDir()).filter((name) => name.endsWith(".tmp") || name.endsWith(".lock")),
       [],
-      "no partial file is left behind",
+      "no partial file or lock is left behind",
     );
+  });
+
+  it("converges concurrent hooks replacing a record too old to send", async () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    mkdirSync(stateDir(), { recursive: true });
+    const old = { id: randomUUID(), timestamp: new Date(Date.now() - PENDING_START_REUSE_MAX_MS - 60_000).toISOString() };
+    writeFileSync(pendingFile(sid), JSON.stringify(old));
+    const results = await race(sid);
+    assert.equal(new Set(results.map((r) => `${r.id}@${r.timestamp}`)).size, 1, "every hook got the same new event");
+    assert.notEqual(results[0].id, old.id, "the old record was replaced");
+    assert.deepEqual(JSON.parse(readFileSync(pendingFile(sid), "utf8")), results[0]);
   });
 
   it("replaces a record too old to send, or unreadable, with a new event", () => {

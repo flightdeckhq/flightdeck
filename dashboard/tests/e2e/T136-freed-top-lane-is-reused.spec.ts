@@ -47,12 +47,24 @@ test.describe("T136 — A freed top lane is reused", () => {
 		await expect(aEnd).toHaveAttribute("data-run-lane", "0");
 		await expect(aEnd).toHaveAttribute("data-end-kind", "closed");
 
-		// The top-edge glyphs sit above the bottom-edge one.
-		const aBox = await start(roles.a).boundingBox();
-		const bBox = await start(roles.b).boundingBox();
-		const cBox = await start(roles.c).boundingBox();
-		expect(aBox && bBox && cBox).toBeTruthy();
-		expect(cBox!.y).toBeLessThan(bBox!.y);
-		expect(Math.abs(aBox!.y - cBox!.y)).toBeLessThan(1);
+		// The top-edge glyphs sit above the bottom-edge one. The three
+		// tops come from one synchronous pass: the rows above move this
+		// one 9 px when the divider between the live and the recent
+		// agents comes or goes (an agent another spec has just posted
+		// for passes 15 s without an event), so boxes read one call at
+		// a time can be 9 px apart on the same lane.
+		const [aTop, bTop, cTop] = await row.evaluate(
+			(el, ids) =>
+				ids.map((id) => {
+					const glyph = el.querySelector(`[data-testid="swimlane-run-bracket-start-${id}"]`);
+					return glyph ? glyph.getBoundingClientRect().top : null;
+				}),
+			[prefix(roles.a), prefix(roles.b), prefix(roles.c)],
+		);
+		expect(aTop).not.toBeNull();
+		expect(bTop).not.toBeNull();
+		expect(cTop).not.toBeNull();
+		expect(cTop!).toBeLessThan(bTop!);
+		expect(Math.abs(aTop! - cTop!)).toBeLessThan(1);
 	});
 });

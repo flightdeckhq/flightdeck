@@ -28,7 +28,8 @@
 #   down     stop the binary, and the containers when this checkout
 #            started them (see "Whose containers") and no other client
 #            uses the database (a stack of another dev dir of this
-#            checkout). Volumes and the data dir stay.
+#            checkout); when the database cannot be asked, the
+#            container stays. Volumes and the data dir stay.
 #   reset    delete the data of the database being started (postgres:
 #            the compose volumes; sqlite: the SQLite file) and the bus
 #            store, and start again. The only command that deletes
@@ -87,7 +88,10 @@
 # sessions, or when the database cannot be counted, it wants a name:
 # FLIGHTDECK_DEV_CONFIRM=<project> on Postgres (`make dev-reset
 # FLIGHTDECK_DEV_CONFIRM=docker`), FLIGHTDECK_DEV_CONFIRM=sqlite on
-# SQLite, or the same typed at its prompt on a terminal.
+# SQLite, or the same typed at its prompt on a terminal. The checks and
+# the deletion are not one step: on Postgres the deletion is `compose
+# down -v`, so a stack that connects in the seconds between (a `make
+# dev` of another dev dir) is cut off with the database it just found.
 #
 # Environment (a second stack beside a running one sets the first three):
 #   FLIGHTDECK_DEV_PROJECT   compose project (default docker, so the
@@ -128,10 +132,16 @@ PG_DATABASE=flightdeck
 PG_VOLUME="${PROJECT}_postgres_data"
 PG_BASE_URL="postgres://flightdeck:flightdeck_dev@127.0.0.1:$PG_PORT"
 # The application_name this dev dir's binary connects to Postgres with,
-# so that reset can tell its connections from any other client's: the
-# dev dir's checksum, since two dev dirs of one checkout share the
-# project, the container and the database.
-PG_APPLICATION_NAME="flightdeck-dev-$(printf '%s' "$DEV_DIR" | cksum | cut -d' ' -f1)"
+# so that reset and down can tell its connections from any other
+# client's: a checksum of the dev dir, since two dev dirs of one
+# checkout share the project, the container and the database. The dev
+# dir is created here and hashed as its physical path (pwd -P), so a
+# relative or symlinked spelling of one dir gives one name, on its
+# first run as on later ones. cksum is a 32-bit CRC: two dev dirs share
+# a name about once in four billion pairs, and reset would then take
+# the other dev dir's binary for its own.
+mkdir -p "$DEV_DIR"
+PG_APPLICATION_NAME="flightdeck-dev-$(printf '%s' "$(cd "$DEV_DIR" && pwd -P)" | cksum | cut -d' ' -f1)"
 COMPOSE_DIR="$ROOT/docker"
 
 export FLIGHTDECK_DEV_PG_PORT="$PG_PORT"
@@ -474,7 +484,9 @@ answers() {
 }
 
 # wait_ready <pid>: until the binary started here serves, or is gone, or
-# the time is up. Serving takes three things together. The process is
+# READY_TIMEOUT_SECS have passed on the clock (the probes' own waits,
+# each at most PROBE_TIMEOUT_SECS, count). Serving takes three things
+# together. The process is
 # alive. Its own log holds the end of its start-up block: the binary
 # binds its listener before anything else and prints that block just
 # before it starts serving, so only then is an answer on the port its
@@ -483,8 +495,8 @@ answers() {
 # meantime answers just as well while this binary, still loading, has
 # yet to find the address busy and exit.
 wait_ready() {
-  local pid="$1" i
-  for ((i = 0; i < READY_TIMEOUT_SECS; i++)); do
+  local pid="$1" deadline=$((SECONDS + READY_TIMEOUT_SECS))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     alive "$pid" || return 1
     if grep -q '^Press Ctrl+C to stop' "$LOG" 2>/dev/null && answers; then
       return 0
@@ -660,9 +672,14 @@ cmd_down() {
   # stack of another dev dir of this checkout, or a psql session, and
   # removing the container would cut it off. The seven-container stack's
   # own services are the exception: they go with the container.
+  # A database that cannot be asked keeps its container too: that a
+  # client is connected is as likely as not.
   if [ -z "$legacy" ] && [ -n "$(running_container postgres)" ]; then
     local others
-    others="$(pg_other_clients || true)"
+    if ! others="$(pg_other_clients)"; then
+      say "could not ask the Postgres database which clients it has: the container is left running, since removing it would cut off any that are connected. Once nothing uses it: ${COMPOSE[*]} down"
+      return 0
+    fi
     if [ -n "$others" ]; then
       say "the Postgres container is in use by other clients ($(printf '%s' "$others" | sort -u | paste -sd ';' - | sed 's/;/; /g')): it is left running; make down in the dev dir of that stack stops it"
       return 0
@@ -690,8 +707,6 @@ pg_rows() {
   esac
 }
 
-# confirm_postgres_reset: say what `reset` is about to delete and stop
-# unless it may: see "Reset" in the header.
 # confirm_count <sessions> <word> <what the word is>: go ahead when
 # the database holds a seed or less; otherwise only with the word, as
 # FLIGHTDECK_DEV_CONFIRM or typed at a prompt on a terminal. An empty
@@ -706,10 +721,10 @@ confirm_count() {
     return 0
   fi
   if [ -n "${FLIGHTDECK_DEV_CONFIRM:-}" ]; then
-    die "FLIGHTDECK_DEV_CONFIRM=$FLIGHTDECK_DEV_CONFIRM is not $what ($word): nothing was deleted"
+    die "FLIGHTDECK_DEV_CONFIRM=$FLIGHTDECK_DEV_CONFIRM is not $what: nothing was deleted"
   fi
   if [ -t 0 ] && [ -t 1 ]; then
-    printf 'Type %s (%s) to delete them, anything else to keep them: ' "$what" "$word"
+    printf 'Type %s to delete them, anything else to keep them: ' "$word"
     read -r answer || answer=""
     [ "$answer" = "$word" ] || die "not confirmed: nothing was deleted"
     return 0
@@ -725,6 +740,8 @@ pg_other_clients() {
     "SELECT coalesce(nullif(application_name, ''), '(no application name)') || ' (' || coalesce(host(client_addr), 'local socket') || ')' FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid() AND application_name IS DISTINCT FROM '$PG_APPLICATION_NAME' ORDER BY 1" 2>/dev/null
 }
 
+# confirm_postgres_reset: say what `reset` is about to delete and stop
+# unless it may: see "Reset" in the header.
 confirm_postgres_reset() {
   local data="$1" sessions events others
   have_docker || die "no docker daemon answers: there is no Postgres volume to reset"
@@ -743,7 +760,7 @@ confirm_postgres_reset() {
   sessions="$(pg_rows sessions)"
   events="$(pg_rows events)"
   say "reset is about to delete the $PG_VOLUME volume (the Postgres database: ${sessions:-an unknown number of} sessions, ${events:-an unknown number of} events) and the bus store in $data/nats"
-  confirm_count "$sessions" "$PROJECT" "the compose project name"
+  confirm_count "$sessions" "$PROJECT" "the compose project name, $PROJECT"
 }
 
 # sqlite_rows <file> <table>: how many rows the table of a SQLite file
@@ -806,7 +823,7 @@ confirm_sqlite_reset() {
     events=0
   fi
   say "reset is about to delete the SQLite database $data/flightdeck.db (${sessions:-an unknown number of} sessions, ${events:-an unknown number of} events) and the bus store in $data/nats"
-  confirm_count "$sessions" sqlite "the word sqlite"
+  confirm_count "$sessions" sqlite sqlite
 }
 
 cmd_reset() {

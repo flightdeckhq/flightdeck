@@ -12,11 +12,14 @@
 #     running binary);
 #   - the order of a move from the seven-container stack, and what a
 #     binary that does not start leaves behind;
-#   - a port that already answers, and a binary that exits while a
-#     stranger answers on its port;
+#   - a port that already answers, a binary that exits while a
+#     stranger answers on its port, and one that accepts connections
+#     and never answers;
 #   - an old stack's queue that cannot be read, or is not empty;
 #   - containers another checkout started: `up`, `down` and `reset`;
 #   - every way `reset` refuses, and the ways it goes ahead;
+#   - `down` beside another client of the database, and on a database
+#     it cannot ask;
 #   - the Makefile's refusal to run the split test stack under a
 #     project whose volumes are a real database's.
 #
@@ -83,16 +86,23 @@ trap cleanup EXIT
 
 mkdir -p "$TMP/bin" "$F/containers" "$FOREIGN"
 
-# An HTTP server that answers 200 to every GET: server.py <port>.
+# An HTTP server that answers 200 to every GET: server.py <port>. With
+# a second argument `silent` it accepts every connection and never
+# answers: the first request holds its one thread, the rest wait in the
+# listen backlog.
 cat >"$F/server.py" <<'PY'
 import http.server
 import sys
+import time
 
 port = int(sys.argv[1])
+silent = sys.argv[2:] == ["silent"]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if silent:
+            time.sleep(3600)
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
@@ -108,6 +118,8 @@ PY
 # process after this file, and the script looks for a process named
 # flightdeck. $F/binary_mode picks what it does:
 #   ok        serve until SIGTERM
+#   silent    the same, on a server that accepts every connection and
+#             never answers
 #   exit      say the address is in use and exit 1
 #   usurped   what the real binary does when a stranger takes its
 #             port as it starts: the stranger answers both health
@@ -140,7 +152,11 @@ case "$mode" in
     exit 1
     ;;
 esac
-python3 "$F/server.py" "$port" &
+if [ "$mode" = silent ]; then
+  python3 "$F/server.py" "$port" silent &
+else
+  python3 "$F/server.py" "$port" &
+fi
 child=$!
 trap 'kill "$child" 2>/dev/null; exit 0' TERM INT
 echo "Flightdeck fake"
@@ -606,7 +622,7 @@ expect_serving
 ENVV=(FLIGHTDECK_DEV_CONFIRM=docker)
 stack reset
 expect_status 1
-expect_out "FLIGHTDECK_DEV_CONFIRM=docker is not the compose project name ($PROJECT)"
+expect_out "FLIGHTDECK_DEV_CONFIRM=docker is not the compose project name, $PROJECT: nothing was deleted"
 expect_no_call '^docker compose .* down'
 expect_serving
 passed
@@ -666,7 +682,8 @@ passed
 fresh "reset refuses while something that is not this stack serves on its port"
 container postgres "$OURS"
 mv "$F/containers/postgres-$PROJECT" "$F/containers/pg-$PROJECT"
-printf '%s\n' "$PROJECT" >"$DEV/postgres.project" 2>/dev/null || { mkdir -p "$DEV" && printf '%s\n' "$PROJECT" >"$DEV/postgres.project"; }
+mkdir -p "$DEV"
+printf '%s\n' "$PROJECT" >"$DEV/postgres.project"
 echo 3 >"$F/pg_sessions"
 echo 40 >"$F/pg_events"
 stranger
@@ -778,6 +795,59 @@ expect_status 0
 expect_state "pg-$PROJECT" gone
 passed
 
+# ---- the follow-ups of the third review -----------------------------
+
+fresh "down leaves the Postgres container running when it cannot ask the database"
+stack up postgres
+touch "$F/pg_down"
+stack down
+expect_status 0
+expect_out "could not ask the Postgres database which clients it has: the container is left running"
+expect_out "docker compose -p $PROJECT -f $OURS/docker-compose.dev.yml down"
+expect_state "pg-$PROJECT" running
+expect_no_call '^docker compose .* down'
+expect_not_serving
+rm -f "$F/pg_down"
+stack down
+expect_status 0
+expect_state "pg-$PROJECT" gone
+passed
+
+# Without the bound on each probe, the first one would wait for an
+# answer that never comes, and the run would end only at
+# RUN_BOUND_SECS. With it, the start gives up READY_SECS after it began
+# waiting, plus one probe.
+fresh "a binary that accepts connections and never answers fails the start within the readiness wait"
+echo silent >"$F/binary_mode"
+began=$SECONDS
+stack up sqlite
+took=$((SECONDS - began))
+expect_status 1
+expect_out "flightdeck is not serving after ${READY_SECS}s"
+expect_out "not ready"
+expect_not_serving
+[ "$took" -le $((READY_SECS * 2)) ] || fail "the start took ${took}s, more than $((READY_SECS * 2))s"
+passed
+
+fresh "the application_name of a dev dir does not depend on how its path is written"
+stack up postgres
+expect_status 0
+first="$(grep -oE 'application_name=flightdeck-dev-[0-9]+' "$F/calls.log" | head -n1)"
+stack down
+rm -f "$TMP/dev-link"
+ln -s "$DEV" "$TMP/dev-link"
+: >"$F/calls.log"
+ENVV=(FLIGHTDECK_DEV_DIR="$TMP/dev-link/")
+stack up postgres
+expect_status 0
+second="$(grep -oE 'application_name=flightdeck-dev-[0-9]+' "$F/calls.log" | head -n1)"
+[ -n "$first" ] || fail "the binary got no application_name"
+[ "$first" = "$second" ] || fail "the dev dir and a symlink to it give two names: '$first', '$second'"
+ENVV=(FLIGHTDECK_DEV_DIR="$TMP/dev-link/")
+stack down
+rm -f "$TMP/dev-link"
+passed
+
 # sqlite_db <sessions>: a SQLite file in the data dir with that many
 # sessions and twice as many events.
 sqlite_db() {
@@ -808,7 +878,7 @@ expect_serving
 ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
 stack reset
 expect_status 1
-expect_out "is not the word sqlite"
+expect_out "FLIGHTDECK_DEV_CONFIRM=$PROJECT is not sqlite: nothing was deleted"
 ENVV=(FLIGHTDECK_DEV_CONFIRM=sqlite)
 stack reset
 expect_status 0

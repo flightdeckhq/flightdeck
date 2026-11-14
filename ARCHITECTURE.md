@@ -10856,7 +10856,8 @@ dev-reset` refuses. A second stack beside a running one has a compose
 project, a port and a Postgres port of its own. Within one checkout,
 `make down` of a dev dir leaves the Postgres container running while
 another client still uses the database (the stack of another dev dir,
-which the database lists by its `application_name`).
+which the database lists by its `application_name`, a checksum of the
+dev dir's physical path), and when it cannot ask the database.
 
 `make dev-reset` refuses while the database is in use by anything but
 this dev dir's own binary, since the start that ends the reset would
@@ -10874,7 +10875,9 @@ than 100 sessions (the test fixtures are about 60), or one that cannot
 be counted, is deleted only with its name, as
 `FLIGHTDECK_DEV_CONFIRM=<project>` on Postgres or
 `FLIGHTDECK_DEV_CONFIRM=sqlite` on SQLite, or typed at a prompt on a
-terminal.
+terminal. The checks come before the deletion, not with it: a
+stack that connects to the Postgres in between is cut off when
+`compose down -v` deletes the volume.
 
 `make dev` takes over a compose project that still runs the services
 as containers. Containers of the services `nginx`, `dashboard`,

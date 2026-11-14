@@ -11101,9 +11101,18 @@ pull request: `scripts/test-install-sh.sh` on Linux, and
 and PowerShell 7, piped through `iex` as users run it. The PowerShell
 installer appends its directory to the user PATH by writing the Path
 value of `HKCU\Environment` back with the registry type it had and its
-`%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE`; it runs
-in a script block of its own, so the session that ran it keeps its own
-variables and preferences.
+`%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE` (a failed
+broadcast is a warning: the PATH is already written). A directory
+already on the PATH, spelled with a variable, in quotes or with a
+trailing backslash, is not added again; a PATH the entry would take past
+the 32,767 characters Windows allows a variable is left unchanged and
+the installer stops, and one past 2,047 is written with a warning. It
+refuses a `VERSION` that is not a release tag before downloading
+anything, and runs in a script block of its own, so the session that ran
+it keeps its own variables and preferences. Its test points it at a
+throwaway registry key (`FLIGHTDECK_INSTALL_REGISTRY_KEY`, a test-only
+override) so a run never touches a real PATH; CI adds one run against
+the runner's real `HKCU\Environment`.
 
 The release workflow (`release.yml`, on a `v*` tag) first checks that the
 tag names the version every file carries and runs `govulncheck` on the

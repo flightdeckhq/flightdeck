@@ -106,8 +106,10 @@ All notable changes to Flightdeck are documented here.
   PowerShell 5.1 as well as PowerShell 7, appends its directory to the
   user PATH without expanding the `%VARIABLES%` in it or changing its
   registry type, and leaves no variable or preference of its own in
-  the session that ran it; CI runs it on Windows under both shells on
-  every pull request.
+  the session that ran it. It refuses a `VERSION` that is not a release
+  tag, never takes the PATH past the 32,767 characters Windows allows,
+  and does not add a directory the PATH already has in quotes. CI runs
+  it on Windows under both shells on every pull request.
 
 - **The sensor wraps the OpenAI Agents SDK.** With `openai-agents` 0.6 or
   later (`pip install flightdeck-sensor[openai-agents]`), `patch()` opens

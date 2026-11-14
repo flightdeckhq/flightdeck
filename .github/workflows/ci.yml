@@ -1657,7 +1657,9 @@ jobs:
   # against a local server with the release layout: checksum, the user
   # PATH and its registry type, the caller's session left as it was,
   # the refusals) under Windows PowerShell 5.1, which every Windows
-  # has, and under PowerShell 7.
+  # has, and under PowerShell 7. The test writes a throwaway registry
+  # key; -UseRealRegistry adds a run against the runner's real
+  # HKCU\Environment, the code path users get.
   installer-windows:
     name: Installer on Windows (PowerShell 5.1 and 7)
     runs-on: windows-2022
@@ -1686,11 +1688,11 @@ jobs:
 
       - name: install.ps1 under Windows PowerShell 5.1
         shell: powershell
-        run: ./scripts/test-install-ps1.ps1 -Port 8766
+        run: ./scripts/test-install-ps1.ps1 -Port 8766 -UseRealRegistry
 
       - name: install.ps1 under PowerShell 7
         shell: pwsh
-        run: ./scripts/test-install-ps1.ps1 -Port 8767
+        run: ./scripts/test-install-ps1.ps1 -Port 8767 -UseRealRegistry
 
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and

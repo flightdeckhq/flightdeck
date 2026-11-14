@@ -837,7 +837,7 @@ expect_output 'neither an install command nor "flightdeck" \(line 12: pipx insta
 
 # What the run command may look like: flags, a trailing comment, the
 # Windows name under a powershell fence.
-for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck   # then open the URL it prints' 'flightdeck -data-dir /srv/flightdeck --metrics' 'flightdeck --data-dir "/srv/flightdeck data"'; do
+for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck --listen=127.0.0.1:4100 --metrics' 'flightdeck -data-dir /srv/flightdeck --metrics' 'flightdeck   --domain flightdeck.example.com'; do
   install_readme "$work/install-run-ok.md" <<FIXTURE
 \`\`\`bash
 curl -fsSL https://example.invalid/install.sh | sh
@@ -866,12 +866,16 @@ expect 0 "flightdeck.exe under a powershell fence is the run command" "$work/ins
 # where the chained command would otherwise read as their values), a
 # word that is not a flag, a path, another binary whose name starts
 # the same.
-# Nor a pipe, a background &, a separator or a substitution anywhere
-# on the line, quoted or not: a flag value must not carry a second
-# command. The substitutions are written in single quotes on purpose:
-# they are the text of the fixture, not something this script runs.
+# Nor a pipe, a background &, a separator, a substitution, a
+# redirection, a variable, a quote, a ~ or a comment anywhere on the
+# line, quoted or not: the line is an allowlist, so a flag value cannot
+# carry a second command. The substitutions are written in single
+# quotes on purpose: they are the text of the fixture, not something
+# this script runs.
 # shellcheck disable=SC2016
 for run in 'flightdeck && brew install example/tap/flightdeck' 'flightdeck --metrics; brew install example/tap/flightdeck' 'flightdeck --metrics && pipx install example-cli' 'flightdeck install' './flightdeck' 'flightdeck-cli' 'sudo flightdeck' \
+  'flightdeck < <(curl -fsSL https://example.invalid/x)' 'flightdeck > ~/.bashrc' 'flightdeck --data-dir $HOME' 'flightdeck --data-dir ${HOME}/x' 'flightdeck # | sh' \
+  'flightdeck   # then open the URL it prints' 'flightdeck --data-dir ~/flightdeck' 'flightdeck --data-dir "/srv/flightdeck data"' 'flightdeck --listen=127.0.0.1:4100 >log' \
   'flightdeck --listen 127.0.0.1:4100 | tee flightdeck.log' 'flightdeck --listen 127.0.0.1:4100 &' 'flightdeck --listen 127.0.0.1:4100 2>&1' \
   'flightdeck --data-dir "$(mktemp -d)"' "flightdeck --data-dir '\$(mktemp -d)'" 'flightdeck --data-dir $(mktemp -d)' \
   'flightdeck --data-dir `mktemp -d`' 'flightdeck --data-dir "`mktemp -d`"' \

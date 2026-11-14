@@ -26,12 +26,18 @@
 # to close that gap. Read this script before piping it to iex.
 #
 # Overrides, as environment variables (a piped script takes no parameters):
-#   VERSION                 a release tag (v1.2.3); default: the latest release
+#   VERSION                 a release tag (v1.2.3, v1.2.3-rc.1; the v is optional);
+#                           default: the latest release
 #   INSTALL_DIR             where flightdeck.exe goes
 #   FLIGHTDECK_RELEASE_URL  the repository URL the release assets hang off
 #                           (default https://github.com/flightdeckhq/flightdeck);
 #                           HTTPS only except localhost; the signature is checked
 #                           only for the default URL
+#   FLIGHTDECK_INSTALL_REGISTRY_KEY
+#                           the key under HKEY_CURRENT_USER whose Path value is
+#                           the user PATH (default Environment). Only
+#                           scripts/test-install-ps1.ps1 sets it, to a throwaway
+#                           key, so that its runs never touch a real PATH.
 #
 # winget and scoop manifests are not published yet; this script and the
 # .zip on the release page are the Windows channels.
@@ -74,6 +80,9 @@
     if ($arch -eq 'amd64' -and $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { $arch = 'arm64' }
 
     $asset = "${binary}_windows_${arch}.zip"
+    if ($env:VERSION -and $env:VERSION -notmatch '^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+        throw "install.ps1: VERSION must be a release tag such as v0.9.0 or v0.9.0-rc.1, got '$($env:VERSION)'"
+    }
     if ($env:VERSION) {
         $version = if ($env:VERSION.StartsWith('v')) { $env:VERSION } else { "v$($env:VERSION)" }
         $base = "$repoUrl/releases/download/$version"
@@ -147,38 +156,59 @@
     # read without expanding them and written back with the type it had, so
     # the only change is the one entry appended. ([Environment]::
     # SetEnvironmentVariable would store it as REG_SZ with every variable
-    # expanded.) A directory already on the PATH, spelled with a variable or
-    # not, is not added again.
-    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-    if (-not $envKey) { $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
+    # expanded.) A directory already on the PATH, spelled with a variable,
+    # in quotes or with a trailing backslash, is not added again.
+    #
+    # Windows allows an environment variable 32,767 characters: a PATH the
+    # entry would take past that is left as it is and the installer stops,
+    # saying where flightdeck.exe is. Past 2,047 characters it is written
+    # with a warning, since some older programs read no further.
+    $pathMaxLength = 32767
+    $pathWarnLength = 2047
+    $envKeyName = if ($env:FLIGHTDECK_INSTALL_REGISTRY_KEY) { $env:FLIGHTDECK_INSTALL_REGISTRY_KEY } else { 'Environment' }
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($envKeyName)
     try {
         $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         $pathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
         if (($envKey.GetValueNames() -contains 'Path') -and $envKey.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::String) {
             $pathKind = [Microsoft.Win32.RegistryValueKind]::String
         }
-        $wanted = $installDir.TrimEnd('\')
+        $wanted = $installDir.Trim().Trim('"').TrimEnd('\')
         $entries = @($userPath -split ';') + @($env:Path -split ';') |
+            ForEach-Object { $_.Trim().Trim('"') } |
             Where-Object { $_ } |
             ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') }
         if ($entries -notcontains $wanted) {
             $newPath = if (-not $userPath) { $installDir } elseif ($userPath.EndsWith(';')) { "$userPath$installDir" } else { "$userPath;$installDir" }
+            $newLength = [Environment]::ExpandEnvironmentVariables($newPath).Length
+            if ($newLength -gt $pathMaxLength) {
+                throw "install.ps1: adding $installDir would make your user PATH $newLength characters long, more than the $pathMaxLength Windows allows, so your PATH is unchanged. flightdeck is installed: run it as & '$exe', or shorten your PATH and run this installer again."
+            }
             $envKey.SetValue('Path', $newPath, $pathKind)
             $env:Path = "$env:Path;$installDir"
             # Tell running programs the environment changed (what
             # SetEnvironmentVariable does after writing), so a terminal
             # started from the Start menu or Explorer from now on has the
             # new PATH: HWND_BROADCAST, WM_SETTINGCHANGE, "Environment",
-            # SMTO_ABORTIFHUNG, at most five seconds.
-            if (-not ('FlightdeckInstaller.NativeMethods' -as [type])) {
-                Add-Type -Namespace FlightdeckInstaller -Name NativeMethods -MemberDefinition @'
+            # SMTO_ABORTIFHUNG, at most five seconds. The PATH is already
+            # written, so a failure here (Add-Type is refused in
+            # Constrained Language Mode) is only a warning.
+            try {
+                if (-not ('FlightdeckInstaller.NativeMethods' -as [type])) {
+                    Add-Type -Namespace FlightdeckInstaller -Name NativeMethods -MemberDefinition @'
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
 '@
+                }
+                $broadcastResult = [UIntPtr]::Zero
+                [void][FlightdeckInstaller.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$broadcastResult)
+            } catch {
+                Write-Warning "Could not tell running programs that the PATH changed ($($_.Exception.Message)). Windows started from the Start menu may not see it until you sign out and back in."
             }
-            $broadcastResult = [UIntPtr]::Zero
-            [void][FlightdeckInstaller.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$broadcastResult)
             Write-Host "Added $installDir to your user PATH: flightdeck runs in this window now and in windows opened from now on; reopen any other window that is already open."
+            if ($newLength -gt $pathWarnLength) {
+                Write-Warning "Your user PATH is now $newLength characters long. Some older programs read only its first $pathWarnLength characters; if one of them cannot find a program, shorten your PATH."
+            }
         }
     } finally {
         $envKey.Close()

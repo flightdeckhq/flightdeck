@@ -487,7 +487,7 @@ header has the counting rules):
 | What | Budget |
 |---|---|
 | The install blocks under `## Install`: one right after a line that reads **Linux and macOS**, one right after **Windows** (emphasis, a colon and words in parentheses aside), both required | exactly one command each, on one line |
-| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it, flags allowed but no pipe, `&`, `;`, `$(` or backtick; nothing else) |
+| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it, with flags whose values are letters, digits and `_ : . / , -` only; nothing else) |
 | `## Connect your agents` | 4 commands |
 | `## Self-hosting` | 6 commands |
 | The whole README, the channels folded in `<details>` included | 20 commands, 300 lines |

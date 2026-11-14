@@ -24,9 +24,10 @@
 #
 # Beside the install blocks the section may show one more command, the
 # one that starts the binary: `flightdeck`, alone or followed by flags
-# (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged,
-# with no pipe, `&`, `;`, `$(` or backtick anywhere on its line, quoted
-# or not, so nothing else can ride on it.
+# (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged.
+# The line is held to an allowlist (RUN_COMMAND_RE below), so nothing
+# else can ride on it: no pipe, redirection, separator, substitution,
+# variable, quote or comment.
 # Any other visible command in the section fails the run, labelled or
 # not. A second install command therefore fails wherever it is put: in
 # a platform's block, chained onto its line, in a second block under
@@ -169,11 +170,15 @@ LINES_MAX=300
 INSTALL_HEADING="Install"
 # The only command the install section may show besides the install
 # blocks: the binary's own name, with or without `.exe`, alone or
-# followed by flags. An extended regular expression, matched against
-# the whole command; it reaches awk through -v, which reads backslash
-# escapes, so the dot is written as a bracket expression and \t is a
-# tab by the time awk compiles it.
-RUN_COMMAND_RE='^flightdeck([.]exe)?([ \t]+-.*)?$'
+# followed by flags, each a dash or two and a name, with its value
+# after `=` or as the next word. It is an allowlist: a value is made of
+# letters, digits and `_ : . / , -` only, so a pipe, a redirection, a
+# separator, a substitution, a variable, a quote, a `~` or a `#`
+# comment on the line fails it. An extended regular expression, matched
+# against the whole line; it reaches awk through -v, which reads
+# backslash escapes, so the dot is written as a bracket expression and
+# \t is a tab by the time awk compiles it.
+RUN_COMMAND_RE='^flightdeck([.]exe)?([ \t]+--?[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9_:./,-]+)?([ \t]+[A-Za-z0-9_:./,][A-Za-z0-9_:./,-]*)?)*$'
 CONNECT_HEADING="Connect your agents"
 SELF_HOSTING_HEADING="Self-hosting"
 
@@ -358,14 +363,14 @@ counts() {
     # the heredocs it opens. Inside the body of a heredoc that feeds a
     # shell no further heredoc is opened: the lines of a nested one are
     # counted as commands, which errs towards counting.
-    function count_commands(s,    i, n, ch, nx, prev, q, has, segs, r, r1, fed, cut, cmd) {
-      n = length(s); q = ""; has = 0; segs = 0; prev = " "; fed = -1; cut = n + 1
+    function count_commands(s,    i, n, ch, nx, prev, q, has, segs, r, r1, fed, cmd) {
+      n = length(s); q = ""; has = 0; segs = 0; prev = " "; fed = -1
       for (i = 1; i <= n; i++) {
         ch = substr(s, i, 1)
         if (q == sq) { if (ch == sq) { q = "" }; continue }
         if (q == dq) { if (dqesc != "" && ch == dqesc) { i++ } else if (ch == dq) { q = "" }; continue }
         if (ch == " " || ch == "\t") { prev = " "; continue }
-        if (hashcomments && ch == "#" && prev == " ") { cut = i; break }
+        if (hashcomments && ch == "#" && prev == " ") { break }
         if (ch == esc) { i++; has = 1; prev = ch; continue }
         if ((singlequotes && ch == sq) || ch == dq) { q = ch; has = 1; prev = ch; continue }
         nx = substr(s, i + 1, 1)
@@ -410,9 +415,11 @@ counts() {
       # A visible command of the install section outside the install
       # block must be the run command, and nothing chained onto it.
       if (inrun) {
-        cmd = substr(s, 1, cut - 1)
+        # The whole line, a trailing comment included: nothing may ride
+        # on the run command, not even text after a #.
+        cmd = s
         sub(/^[ \t]+/, "", cmd); sub(/[ \t]+$/, "", cmd)
-        if (segs != 1 || cmd !~ runre || cmd ~ /[|&;`]/ || index(cmd, "$(") > 0) {
+        if (cmd !~ runre) {
           if (++others == 1) { otherline = NR; othercmd = substr(cmd, 1, 60) }
         }
       }

@@ -1431,8 +1431,12 @@ jobs:
           from packaging.metadata import Metadata
           for path in sys.argv[1:]:
               with zipfile.ZipFile(path) as zf:
-                  name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
-                  Metadata.from_email(zf.read(name), validate=True)
+                  names = zf.namelist()
+                  name = next(n for n in names if n.endswith(".dist-info/METADATA"))
+                  metadata = Metadata.from_email(zf.read(name), validate=True)
+                  dist_info = name.rsplit("/", 1)[0]
+                  for license_file in metadata.license_files or []:
+                      assert f"{dist_info}/licenses/{license_file}" in names, license_file
               print("metadata valid:", path)
           PY
           cmp "$RUNNER_TEMP"/wheels-1/*manylinux*.whl "$RUNNER_TEMP"/wheels-2/*manylinux*.whl

@@ -23,10 +23,10 @@ The `FLIGHTDECK` NATS stream that carries events from ingestion to the workers k
 
 Reach the dashboard at `http://localhost:4000/` (or `https://flightdeck.example.com/`). Go to **Settings → Access tokens → Create** to mint a token for your agents. The token's plaintext is shown once at creation; copy it into your secret store before closing the modal.
 
-Point an agent:
+Point an agent (the Python sensor and the Claude Code plugin read the same two variables; the server's ingestion URL, ending in `/ingest`, works as the address too):
 
 ```bash
-export FLIGHTDECK_SERVER="https://flightdeck.example.com/ingest"
+export FLIGHTDECK_SERVER="https://flightdeck.example.com"
 export FLIGHTDECK_TOKEN="ftd_..."
 ```
 

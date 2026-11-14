@@ -69,7 +69,7 @@ Call `patch()` before any framework or user code constructs a client. In practic
 
 | Variable                        | Purpose                                                         |
 |---------------------------------|-----------------------------------------------------------------|
-| `FLIGHTDECK_SERVER`             | Ingestion base URL. Overrides the `server=` kwarg. Default `http://localhost:4000/ingest`. |
+| `FLIGHTDECK_SERVER`             | The server's address: its base URL (`https://flightdeck.example.com`) or its ingestion URL (`https://flightdeck.example.com/ingest`, what the start-up block prints). Overrides the `server=` kwarg. Default `http://localhost:4000/ingest`. The Claude Code plugin reads the same variable and takes the same two forms. |
 | `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg. Defaults to `tok_dev` only when the server is defaulted too. |
 | `FLIGHTDECK_API_URL`            | Control-plane base URL. Derived from `FLIGHTDECK_SERVER` if unset. |
 | `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |

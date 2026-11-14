@@ -84,7 +84,7 @@ flightdeck_sensor.patch()
 
 Those two lines go at the top of your entrypoint; nothing else in your code changes. Every call your agent makes through the Anthropic or OpenAI SDK or litellm, directly or inside a framework, is reported, with prompt capture off until you turn it on. [sensor/README.md](sensor/README.md) has the agent identity model, the environment variables and the known limitations.
 
-For a Flightdeck on another machine, set `FLIGHTDECK_TOKEN` and `FLIGHTDECK_SERVER`: the sensor takes the ingestion address (`https://flightdeck.example.com/ingest`), the plugin the bare one (`https://flightdeck.example.com`). Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](guides/opentelemetry.md).
+For a Flightdeck on another machine, set `FLIGHTDECK_SERVER` to its address (`https://flightdeck.example.com`; the ingestion URL its start-up block prints works too) and `FLIGHTDECK_TOKEN` to a token minted under **Settings → Access tokens**: the plugin and the sensor take the same two values. Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](guides/opentelemetry.md).
 
 ## What you get
 

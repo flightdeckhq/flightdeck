@@ -1012,3 +1012,20 @@ once showed an attachment per resend.
 **Rejected alternative:** looking the id up in the events table (racy);
 an id column on `session_attachments` (a first start writes no row);
 refusing a clashing id with a 4xx (drops the event over a side effect).
+
+## D274 -- A cut tool output is cut inside its structure and listed beside the tool_result content
+
+**Date:** 2026-11-14
+**Decision:** extends D272 to `tool_result` blocks. The plugin keeps a
+tool's response to 2000 characters by cutting inside its structure:
+every string and list longer than one common length is cut to it, so
+the stored `content` stays the response's JSON text. The block lists
+each cut value in `truncated`, as RFC 6901 Pointers into the parsed
+`content` (`["/stdout"]`); `[""]` when the content is a text cut at the
+bound (a string response, or a structure over the bound by itself).
+**Why:** a JSON text cut mid-way no longer parses, and the Prompts tab
+showed it as escaped JSON; a list inside the response would collide
+with the tool's own keys (Glob's `truncated` flag).
+**Rejected alternative:** cutting the serialised text; a `truncated`
+key or a `"…"` element inside the response; proportional shares (they
+shorten a short stderr when stdout is long).

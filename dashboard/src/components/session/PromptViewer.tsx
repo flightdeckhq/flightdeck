@@ -1,14 +1,30 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SyntaxJson } from "@/components/ui/syntax-json";
+import { ClientType } from "@/lib/agent-identity";
+import {
+  CUT_MARK,
+  blockCutPointers,
+  childPointer,
+  describeCut,
+  describeCuts,
+  formatJsonPath,
+  readCutJson,
+  type JsonPath,
+} from "@/lib/cut-json";
 import type { EventContent } from "@/lib/types";
 
 interface PromptViewerProps {
   eventId: string | null;
+  /** The client that reported the event. On a Claude Code plugin row
+   *  (``claude_code``) a tool result stored in the plugin's earlier cut
+   *  form (JSON text cut mid-way, then "…") is read up to the cut; any
+   *  other row's text is shown as stored. */
+  clientType?: string | null;
 }
 
 /* ---- Role badge styles ----
@@ -301,7 +317,7 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
 
 /* ---- Main component ---- */
 
-export function PromptViewer({ eventId }: PromptViewerProps) {
+export function PromptViewer({ eventId, clientType }: PromptViewerProps) {
   // fetchEventContent resolves null for any failed fetch: a 404 (capture
   // off for the session) or any other error. Either way the viewer shows
   // the capture-disabled message. Only this event's result is shown.
@@ -451,7 +467,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
                 <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   {input != null && Object.keys(input).length > 0 && (
                     <div className="mt-2" data-testid="tool-use-input">
-                      <KeyValueList data={input} />
+                      <ToolInputFields input={input} pointers={blockCutPointers(tool)} />
                     </div>
                   )}
                   {desc && <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
@@ -484,7 +500,11 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {content.response != null && !responseIsToolPlaceholder && (
         <Section title="Response">
           <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
-            <PrettyResponse response={content.response} provider={provider} />
+            <PrettyResponse
+              response={content.response}
+              provider={provider}
+              pluginRow={clientType === ClientType.ClaudeCode}
+            />
           </ViewBox>
         </Section>
       )}
@@ -1240,7 +1260,16 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
 
 /* ---- Pretty response renderer ---- */
 
-function PrettyResponse({ response, provider }: { response: unknown; provider: string }) {
+function PrettyResponse({
+  response,
+  provider,
+  pluginRow = false,
+}: {
+  response: unknown;
+  provider: string;
+  /** Whether the Claude Code plugin reported the event (see PromptViewerProps.clientType). */
+  pluginRow?: boolean;
+}) {
   if (!response) {
     return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
   }
@@ -1252,7 +1281,7 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
     if (response.length === 0) {
       return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no response)</div>;
     }
-    return <ToolResponseBlocks blocks={response} />;
+    return <ToolResponseBlocks blocks={response} pluginRow={pluginRow} />;
   }
 
   if (typeof response === "string") {
@@ -1378,11 +1407,14 @@ function BlockValue({ value }: { value: unknown }) {
   );
 }
 
-function KeyValueList({ data }: { data: Record<string, unknown> }) {
+/** ``data``'s fields, each labelled; a field in ``cut`` carries a note
+ *  saying how much of it was kept. */
+function KeyValueList({ data, cut }: { data: Record<string, unknown>; cut?: ReadonlySet<string> }) {
   const entries = Object.entries(data);
   return (
     <div className="space-y-1.5">
       {entries.map(([key, value]) => {
+        const note = cut?.has(key) ? <CutNote value={value} /> : null;
         if (needsMultiline(value)) {
           return (
             <div key={key} className="flex flex-col gap-1">
@@ -1394,6 +1426,7 @@ function KeyValueList({ data }: { data: Record<string, unknown> }) {
                 {key}
               </span>
               <BlockValue value={value} />
+              {note}
             </div>
           );
         }
@@ -1407,6 +1440,7 @@ function KeyValueList({ data }: { data: Record<string, unknown> }) {
               {key}:
             </span>
             <InlineValue value={value} />
+            {note}
           </div>
         );
       })}
@@ -1414,14 +1448,33 @@ function KeyValueList({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+/** "cut at 200 characters", under or after a value the plugin cut. */
+function CutNote({ value }: { value: unknown }) {
+  return (
+    <span data-testid="cut-note" className="font-mono text-[10px] italic" style={{ color: "var(--text-secondary)" }}>
+      {describeCut(value)}
+    </span>
+  );
+}
+
+/** A plugin-captured tool call's input. The plugin cuts a long command,
+ *  query, pattern or prompt, ends it with "…" and names it in the
+ *  ``tool_use`` block's ``truncated`` (``"/command"``): each named field
+ *  says how much it kept. An input whose block names none shows as it is. */
+function ToolInputFields({ input, pointers }: { input: Record<string, unknown>; pointers: string[] | null }) {
+  if (!pointers) return <KeyValueList data={input} />;
+  const cut = new Set(Object.keys(input).filter((key) => pointers.includes(childPointer("", key))));
+  return <KeyValueList data={input} cut={cut} />;
+}
+
 /* ---- Tool response block renderers (tool_call Pretty view) ---- */
 
-function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
+function ToolResponseBlocks({ blocks, pluginRow }: { blocks: unknown[]; pluginRow: boolean }) {
   return (
     <div className="space-y-2">
       {blocks.map((raw, i) => {
         if (isPlainObject(raw) && raw.type === "tool_result") {
-          return <ToolResultBlock key={i} block={raw} />;
+          return <ToolResultBlock key={i} block={raw} pluginRow={pluginRow} />;
         }
         return <ContentBlocks key={i} blocks={[raw]} />;
       })}
@@ -1429,13 +1482,33 @@ function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
   );
 }
 
-function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
+/* A tool_result's content is a string holding the tool's response: its
+ * JSON text for a structured response (Bash's stdout and stderr, a
+ * Read's file, an Agent's report), or plain text. The Claude Code plugin
+ * keeps it within a bound, cutting inside the structure, and names what
+ * it cut beside the content (lib/cut-json): the block's ``truncated``
+ * lists the JSON Pointer of each cut value, and a cut string ends with
+ * "…". Earlier plugin versions stored the JSON text cut mid-way and
+ * followed by "…", with no list; such a text is read up to the cut. Raw
+ * shows the block as stored either way. */
+
+function ToolResultBlock({
+  block,
+  pluginRow = false,
+}: {
+  block: Record<string, unknown>;
+  /** Whether the block is the Claude Code plugin's own (a hook
+   *  tool_call's response on a ``claude_code`` row): only then is a
+   *  text with no cut list but a trailing "…" its earlier cut form. */
+  pluginRow?: boolean;
+}) {
   const rawContent = block.content;
   const contentString = typeof rawContent === "string" ? rawContent : null;
+  const pointers = blockCutPointers(block);
 
   // Parse nested JSON content so structured fields (stdout, stderr,
-  // interrupted, isImage, ...) render as a labeled list rather than
-  // escape-encoded soup. Parse-failure falls back to the raw string.
+  // interrupted, isImage, ...) render as fields rather than
+  // escape-encoded soup.
   let parsed: unknown = undefined;
   if (contentString != null) {
     try {
@@ -1449,26 +1522,61 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
     return <ContentBlocks blocks={rawContent} />;
   }
 
+  const cutNote = pointers && parsed !== undefined ? describeCuts(parsed, pointers) : [];
+
   if (Array.isArray(parsed)) {
-    return <JsonBox data={parsed} />;
+    return (
+      <div className="space-y-2">
+        <ToolResultList items={parsed} />
+        {cutNote.length > 0 && <TruncatedNote>{cutNote.join("; ")}</TruncatedNote>}
+      </div>
+    );
   }
 
   if (isPlainObject(parsed)) {
     return (
       <div
         data-testid="tool-result-parsed"
-        className="rounded-md p-2.5"
+        className="space-y-2 rounded-md p-2.5"
         style={{ background: "var(--bg-elevated)" }}
       >
-        <KeyValueList data={parsed} />
+        <ToolResultFields data={parsed} />
+        {cutNote.length > 0 && <TruncatedNote>{cutNote.join("; ")}</TruncatedNote>}
+      </div>
+    );
+  }
+
+  // The block names the whole content as cut: a text cut at the bound.
+  const cutWhole = pointers?.includes("") ?? false;
+  // The plugin's earlier cut form: no list, the JSON text cut and "…".
+  // Only the plugin wrote it; a provider's tool result that happens to
+  // end with "…" is shown as stored.
+  const earlierCutForm = pluginRow && !pointers && contentString?.endsWith(CUT_MARK) === true;
+  const recovered = contentString != null && (cutWhole || earlierCutForm) ? readCutResult(contentString) : null;
+  if (recovered) {
+    return (
+      <div
+        data-testid="tool-result-recovered"
+        className="space-y-2 rounded-md p-2.5"
+        style={{ background: "var(--bg-elevated)" }}
+      >
+        {Array.isArray(recovered.value) ? (
+          <ToolResultList items={recovered.value} />
+        ) : (
+          <ToolResultFields data={recovered.value} />
+        )}
+        <TruncatedNote>
+          the stored output ends at {recovered.storedChars.toLocaleString("en-US")} characters, {recovered.where};
+          nothing after it was stored
+        </TruncatedNote>
       </div>
     );
   }
 
   if (contentString != null) {
-    // Plugin truncates tool output at 2000 chars, appending U+2026 (…).
-    // Surface that so the user knows this is the cap, not a render bug.
-    const truncated = contentString.endsWith("\u2026");
+    // Plain text the plugin cut ends with U+2026 (…). Surface that so the
+    // user knows this is the cap, not a render bug.
+    const truncated = cutWhole || contentString.endsWith(CUT_MARK);
     return (
       <div data-testid="tool-result-raw">
         <pre
@@ -1487,9 +1595,9 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
           <div
             data-testid="tool-result-truncated"
             className="mt-1 font-mono text-[10px] italic"
-            style={{ color: "var(--text-muted)" }}
+            style={{ color: "var(--text-secondary)" }}
           >
-            … (truncated)
+            … (truncated){cutWhole ? ` ${describeCut(contentString)}` : ""}
           </div>
         )}
       </div>
@@ -1508,5 +1616,284 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
     >
       {JSON.stringify(rawContent, null, 2)}
     </pre>
+  );
+}
+
+interface CutResult {
+  value: Record<string, unknown> | unknown[];
+  /** Where the stored text ends: "inside stdout", "after the last field shown". */
+  where: string;
+  /** The stored text's length before its mark, in characters. */
+  storedChars: number;
+}
+
+/** A stored text that is a JSON object or list cut mid-way and followed
+ *  by "…" (a long output an earlier plugin version stored, or one whose
+ *  structure alone was over the bound), read up to the cut, with the
+ *  string it ends in marked as cut. Null when the text is not one, or
+ *  holds nothing whole to show. */
+function readCutResult(text: string): CutResult | null {
+  if (!text.endsWith(CUT_MARK)) return null;
+  const head = text.slice(0, -CUT_MARK.length);
+  const read = readCutJson(head);
+  if (!read || read.complete) return null;
+  const size = Array.isArray(read.value) ? read.value.length : Object.keys(read.value).length;
+  if (size === 0) return null;
+  if (read.cutInString) markCutString(read.value, read.cutPath);
+  return {
+    value: read.value,
+    where: read.cutPath.length > 0 ? `inside ${formatJsonPath(read.cutPath)}` : "after the last field shown",
+    storedChars: Array.from(head).length,
+  };
+}
+
+/** End the string at ``path`` with the cut mark, as the plugin ends a
+ *  string it cuts. */
+function markCutString(root: unknown, path: JsonPath): void {
+  let holder: unknown = root;
+  for (const step of path.slice(0, -1)) {
+    if (holder === null || typeof holder !== "object") return;
+    holder = (holder as Record<string | number, unknown>)[step];
+  }
+  const last = path[path.length - 1];
+  if (last === undefined || holder === null || typeof holder !== "object") return;
+  const fields = holder as Record<string | number, unknown>;
+  const value = fields[last];
+  if (typeof value === "string") fields[last] = value + CUT_MARK;
+}
+
+/** The deepest nested object shown as fields; deeper ones show as JSON. */
+const TOOL_RESULT_MAX_NESTING = 3;
+
+/** The fields shown as a terminal's output. */
+const TERMINAL_FIELDS = new Set(["stdout", "stderr"]);
+
+const fieldTextStyle: React.CSSProperties = {
+  background: "var(--bg)",
+  color: "var(--text)",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  margin: 0,
+};
+
+function FieldLabel({ name, tone = "muted" }: { name: string; tone?: "muted" | "error" }) {
+  return (
+    <span
+      data-testid="kv-label"
+      className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
+      style={{ color: tone === "error" ? "var(--danger)" : "var(--text-secondary)" }}
+    >
+      {name}
+    </span>
+  );
+}
+
+/** The tallest a terminal block grows before it scrolls, in pixels:
+ *  about twenty lines, the height the MCP details give a result. A
+ *  plugin output is at most 2000 characters, but a tool_result in a
+ *  provider's messages is as long as the tool made it. */
+const TERMINAL_TEXT_MAX_HEIGHT_PX = 360;
+
+/** Whether the element ``ref`` holds is taller than its box, so its
+ *  text scrolls: measured after render and on every resize of the
+ *  element or its parent (a narrower drawer wraps more lines), as
+ *  TruncatedText measures its width. False until measured, and where
+ *  there is no layout. */
+function useScrollsVertically(ref: React.RefObject<HTMLElement | null>, content: string): boolean {
+  const [scrolls, setScrolls] = useState(false);
+  const check = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const next = el.scrollHeight > el.clientHeight;
+    setScrolls((prev) => (prev === next ? prev : next));
+  }, [ref]);
+  useEffect(() => {
+    check();
+  }, [content, check]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => check());
+    ro.observe(el);
+    if (el.parentElement) ro.observe(el.parentElement);
+    return () => ro.disconnect();
+  }, [ref, check]);
+  return scrolls;
+}
+
+/** Text as a terminal shows it, line breaks kept, scrolling past
+ *  TERMINAL_TEXT_MAX_HEIGHT_PX; stderr is set apart by the error
+ *  colour. A block whose text scrolls is a focusable region named
+ *  ``name``, so the keys scroll it too; one that fits is plain text and
+ *  stays out of the tab order. A block that holds the focus stays a
+ *  region until it loses it: one that stops scrolling under the focus
+ *  (a wider drawer) would otherwise drop the focus to the page. */
+function TerminalText({ text, name, tone = "muted" }: { text: string; name: string; tone?: "muted" | "error" }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  const scrolls = useScrollsVertically(ref, text);
+  const [focused, setFocused] = useState(false);
+  return (
+    <pre
+      ref={ref}
+      {...(scrolls || focused ? { role: "region", "aria-label": name, tabIndex: 0 } : {})}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      data-scrolls={scrolls ? "true" : undefined}
+      className="rounded-md p-2 font-mono text-[12px] leading-relaxed"
+      style={{
+        ...fieldTextStyle,
+        maxHeight: TERMINAL_TEXT_MAX_HEIGHT_PX,
+        overflowY: "auto",
+        borderLeft: `2px solid ${tone === "error" ? "var(--danger)" : "var(--border-strong)"}`,
+      }}
+    >
+      {text}
+    </pre>
+  );
+}
+
+/** A labelled text field: a command's stdout or stderr, or any other
+ *  multi-line string (a file's content, a fetched page). */
+function FieldText({ name, text, testId }: { name: string; text: string; testId: string }) {
+  const tone = name === "stderr" ? "error" : "muted";
+  return (
+    <div data-testid={testId} data-field={name} className="flex flex-col gap-1">
+      <FieldLabel name={name} tone={tone} />
+      <TerminalText text={text} name={name} tone={tone} />
+    </div>
+  );
+}
+
+function TruncatedNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-testid="tool-result-truncated"
+      className="font-mono text-[10px] italic"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      … (truncated) {children}
+    </div>
+  );
+}
+
+type TextBlock = Record<string, unknown> & { text: string };
+
+/** The blocks of ``value`` when it is a non-empty list of text content
+ *  blocks (an Agent's report); else null. */
+function textBlocksOf(value: unknown): TextBlock[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return value.every((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string")
+    ? (value as TextBlock[])
+    : null;
+}
+
+/** Text content blocks as their texts, each named after the result's
+ *  field that holds them (``content``, or ``content 2`` when there are
+ *  several), else by its place in the result. */
+function TextBlockList({ blocks, field }: { blocks: TextBlock[]; field?: string }) {
+  const nameOf = (i: number) =>
+    field ? (blocks.length > 1 ? `${field} ${i + 1}` : field) : `text block ${i + 1}`;
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, i) => (
+        <TerminalText key={i} text={block.text} name={nameOf(i)} />
+      ))}
+    </div>
+  );
+}
+
+/** A result that is a list: text content blocks as their texts, any
+ *  other list as JSON. */
+function ToolResultList({ items }: { items: unknown[] }) {
+  const blocks = textBlocksOf(items);
+  return blocks ? <TextBlockList blocks={blocks} /> : <JsonBox data={items} />;
+}
+
+/** A value short enough for the compact line of scalar fields. */
+function isCompactValue(value: unknown): boolean {
+  if (typeof value === "string") return !needsMultiline(value);
+  if (Array.isArray(value)) return value.length === 0;
+  if (isPlainObject(value)) return Object.keys(value).length === 0;
+  return true;
+}
+
+function CompactValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) return <span style={{ color: "var(--text-muted)" }}>[]</span>;
+  if (isPlainObject(value)) return <span style={{ color: "var(--text-muted)" }}>{"{}"}</span>;
+  return <InlineValue value={value} />;
+}
+
+/**
+ * A tool's structured result, every field as the tool sent it: stdout
+ * and stderr as terminal text, text holding JSON pretty-printed, other
+ * multi-line text as terminal text,
+ * nested objects as fields of their own, a list of text blocks as its
+ * texts, other lists and deep objects as JSON, then the scalar fields
+ * together on one line.
+ */
+function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; depth?: number }) {
+  const blocks: React.ReactNode[] = [];
+  const scalars: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(data)) {
+    const textBlocks = textBlocksOf(value);
+    if (typeof value === "string" && !TERMINAL_FIELDS.has(key) && parseJsonContainer(value) !== undefined) {
+      // Text that holds a JSON object or list (a Read of a .json file, a
+      // field that carries JSON) is pretty-printed, as every other text
+      // box in the viewer does; stdout and stderr stay a terminal's text.
+      blocks.push(
+        <div key={key} data-testid="tool-result-json-text" data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <BlockValue value={value} />
+        </div>,
+      );
+    } else if (typeof value === "string" && value.length > 0 && (TERMINAL_FIELDS.has(key) || needsMultiline(value))) {
+      const testId = TERMINAL_FIELDS.has(key) ? `tool-result-${key}` : "tool-result-text";
+      blocks.push(<FieldText key={key} name={key} text={value} testId={testId} />);
+    } else if (isCompactValue(value)) {
+      scalars.push([key, value]);
+    } else if (isPlainObject(value) && depth < TOOL_RESULT_MAX_NESTING) {
+      blocks.push(
+        <div key={key} data-testid="tool-result-nested" data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <div className="pl-2" style={{ borderLeft: "1px solid var(--border)" }}>
+            <ToolResultFields data={value} depth={depth + 1} />
+          </div>
+        </div>,
+      );
+    } else if (textBlocks) {
+      blocks.push(
+        <div key={key} data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <TextBlockList blocks={textBlocks} field={key} />
+        </div>,
+      );
+    } else {
+      blocks.push(
+        <div key={key} data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <BlockValue value={value} />
+        </div>,
+      );
+    }
+  }
+  return (
+    <div className="space-y-2">
+      {blocks}
+      {scalars.length > 0 && (
+        <div
+          data-testid="tool-result-scalars"
+          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-[12px]"
+        >
+          {scalars.map(([key, value]) => (
+            <span key={key} className="inline-flex items-baseline gap-1">
+              <span data-testid="kv-label" className="font-medium" style={{ color: "var(--text-secondary)" }}>
+                {key}:
+              </span>
+              <CompactValue value={value} />
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

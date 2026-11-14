@@ -2188,7 +2188,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
           event.event_type === "session_signal"
             ? <SignalPromptsPanel event={event} />
             : event.has_content
-              ? <PromptViewer eventId={event.id} />
+              ? <PromptViewer eventId={event.id} clientType={event.client_type ?? session?.client_type} />
               : <NoEventContent event={event} session={session} />
         )}
         {activeTab === "neighbors" && (
@@ -2270,7 +2270,7 @@ function PromptsTab({
         <div className="px-3 py-2" style={{ borderBottom: "1px solid var(--border)" }}>
           <Button variant="ghost" size="sm" className="text-xs" onClick={() => onSelectEvent(null)}>← Back to event list</Button>
         </div>
-        <PromptViewer eventId={selectedEventId} />
+        <PromptViewer eventId={selectedEventId} clientType={session?.client_type} />
       </div>
     );
   }

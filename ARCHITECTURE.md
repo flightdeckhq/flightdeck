@@ -528,7 +528,7 @@ flightdeck/
 │   │   │                       # agent-identity, agent-status, agents-filter, agents-format, agents-sort,
 │   │   │                       # fleet-ordering, relationship, policy-scope-labels, swimlane-lost-sub-agent,
 │   │   │                       # swimlane-lanes, events-cache-epoch, useSwimlaneScroll, allRowCollapsed,
-│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width
+│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width, cut-json
 │   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
 │   │   └── styles/             # globals.css (Tailwind import, @theme colour tokens), themes.css
 │   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
@@ -2565,31 +2565,88 @@ holds scalars only.
 
 ### Cut values in tool content
 
-A `tool_use` block whose input the plugin cut lists the cut values in
-`truncated`, beside `input`: an array of RFC 6901 JSON Pointers,
-relative to `input`, each to a value that ends with `…` because the
-plugin cut it, in the order the plugin cut them:
+A content block whose value the plugin cut lists the cut values in
+`truncated`, beside the value: an array of RFC 6901 JSON Pointers, each
+to a string that ends with `…` or a list that lost its trailing
+elements because the plugin cut it. A `tool_use` block's pointers are
+relative to its `input`, in the order the plugin cut them; a
+`tool_result` block's are relative to its parsed `content`, in document
+order (a list before the values cut inside it):
 
 ```json
 {"type": "tool_use", "name": "Bash",
  "input": {"command": "grep -rn tool_input dashboard/src | … | head…"},
  "truncated": ["/command"]}
+{"type": "tool_result",
+ "content": "{\"stdout\":\"=== RUN   TestStore…\",\"stderr\":\"\",\"interrupted\":false}",
+ "truncated": ["/stdout"]}
 ```
 
-A block with nothing cut has no `truncated`. The event's `tool_input`
-string is the JSON of the same sanitized `input`, so it carries no
-`truncated` either; the content block is the one place the list is
-kept. The pointers name the tool's own keys as they are, so a tool
-argument named `truncated` stays an argument, and a key with `/` or
-`~` in it is escaped as RFC 6901 says (`~1`, `~0`). The list covers the
-tool's input only: a `tool_result` block's output, cut at 2000
-characters, ends with `…` and carries no list.
+A `tool_result` whose content is a text cut at the bound (a string
+response, or a response whose structure alone is over the bound; see
+Tool output) lists `""`, the whole value, as does a list at the root
+that lost its tail. A block with nothing cut has no `truncated`. The
+event's `tool_input` string is the JSON of the same sanitized `input`,
+so it carries no `truncated` either; the content block is the one place
+the list is kept. The pointers name the tool's own keys as they are, so
+a tool argument named `truncated` stays an argument and a result field
+of that name (Glob's flag) stays the tool's, and a key with `/` or `~`
+in it is escaped as RFC 6901 says (`~1`, `~0`).
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
 Consumed alongside `parent_session_id` by the dashboard's
 swimlane connectors and the SessionDrawer Sub-agents tab to render
 the parent's spawn event as the anchor for child rows.
+
+### Tool output
+
+With `capturePrompts` on, a `tool_call`'s content carries the tool's
+response as one `tool_result` block under `response`, whose `content` is
+a string of at most 2000 characters (`TOOL_OUTPUT_MAX_CHARS` in
+`tools.mjs`). The bound keeps a preview: the head of a command's output
+or of a file read shows what the tool returned, while the whole response
+would be stored again on every tool call of a session. The bound counts
+characters (code points), so a cut never splits one.
+
+Nothing is added inside the tool's response: a cut string ends with
+`…`, and the block lists the cut values in `truncated` (see Cut values
+in tool content).
+
+- A string response (plain text) is stored as that text; over the bound
+  it keeps its first 1999 characters followed by `…`, and `truncated` is
+  `[""]`, the whole value.
+- Any other response (Bash's `{stdout, stderr, interrupted, isImage,
+  noOutputExpected}`, Read's `{type, file: {filePath, content, …}}`,
+  Grep's, Glob's, Edit's, an Agent's report, a list of content blocks)
+  is stored as its JSON text, and stays valid JSON over the bound:
+  every string and every list longer than one common length is cut to
+  it, the largest length at which the text fits, so short values (a
+  stderr line, a path, a status) stay whole and the long ones give up
+  the characters. A cut string ends with `…`; a cut list keeps its
+  leading elements. Keys and every other value stay as the tool sent
+  them, Glob's own `truncated` flag included:
+  `{"type": "tool_result", "content": "{\"stdout\": \"=== RUN …\", \"stderr\":
+  \"\", …}", "truncated": ["/stdout"]}`; a Read's cut is `/file/content`,
+  an Agent report's `/content/0/text`.
+- A response whose structure alone is over the bound, or that nests
+  deeper than 32 levels, is stored as the head of its JSON text followed
+  by `…`, with `truncated: [""]`: a text cut at the bound, as a string
+  response is. An object wrapped around it would put a key in the
+  tool's output that the tool never sent. A cut keeps every key of each
+  object it keeps and the first element of each list, and a key costs at
+  least four characters of JSON, so a response whose kept objects hold
+  more than 500 keys is not copied or cut at all: the hook counts up to
+  that many keys and stores the head of the text. A list stops at the
+  first element (after its first) that alone holds more, and is named as
+  cut. A list at the root names itself as `""`.
+
+A response at or under the bound is stored whole, and its block has no
+`truncated`. A tool event rebuilt from the transcript (see Tool calls
+and failures) takes the response as the text of the transcript's
+`tool_result`, which is cut as a string. An `mcp_tool_call` stores its
+result in `tool_output` as the server returned it, within the event
+body limit (see Configuration).
 
 ### Tool calls and failures
 
@@ -8004,7 +8061,38 @@ over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 and any other value as JSON; the `{}` such a row holds in `response`
 is not shown as a response. The Claude Code plugin's hook `tool_call`
 keeps its `tool_use` block under `tools` and its `tool_result` under
-`response`, and shows them there. Content stored with
+`response`, and shows them there. A block that lists cut values in
+`truncated` (JSON Pointers; see Plugin > Tool output and Tool input
+sanitisation) has each named: an input field with how many characters
+it kept (`cut at 200 characters`), a result's values in one note
+(`stdout cut at 1,803 characters`, `filenames cut after 26 entries`,
+`content[0].text cut at 894 characters`). A `tool_result` whose content
+is a JSON object shows `stdout` and `stderr` as terminal text with
+their line breaks, `stderr` in the error colour, other multi-line text
+the same way, nested objects (a Read's `file`) as fields of their own,
+a list of text blocks as its texts, other lists as JSON and the scalar
+fields together on one line, every field as the tool sent it (Glob's
+own `truncated` flag is a field); a field other than `stdout` and
+`stderr` whose text holds a JSON object or list (a Read of a `.json`
+file) is pretty-printed instead. A terminal block scrolls past 360 px
+(about twenty lines) and takes keyboard focus, since a `tool_result` in
+a provider's messages is as long as the tool made it. A content that is
+a JSON object or list cut mid-way and followed by `…` is read up to the
+cut when the plugin wrote it so: when the block names it whole
+(`[""]`), or, with no list, when the block is in the `response` list of
+an event a Claude Code plugin reported (`client_type` `claude_code`),
+the form earlier plugin versions stored. A `tool_result` from any other
+source, in a provider's messages for one, is shown as stored even when
+its text ends with `…`. A tolerant reader (`lib/cut-json.ts`: one
+pass, at most 64 levels of nesting; every whole key/value pair and
+element, and the string it was reading where the text ends; a key,
+number or literal cut part-way is left out) reads the text, which is
+then shown the same way, with a note on where the stored text ends
+(`the stored output ends at 2,000 characters, inside stdout`). Text
+that does not read so is shown as written, as is plain text. The
+rendering of a `tool_result` applies wherever the block renders, in a
+message as in the plugin's response.
+Content stored with
 `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a
@@ -9863,7 +9951,10 @@ No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a
 whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
-is all-or-nothing per session.
+is all-or-nothing per session. The plugin keeps the head of each tool's
+output, at most 2000 characters cut inside its structure and the cut
+values named beside it (see Plugin > Tool output); that is a size
+bound, not a filter.
 
 The plugin and the sensor cut captured content that would take an
 event past the 768 KiB body limit, marking each cut string (see

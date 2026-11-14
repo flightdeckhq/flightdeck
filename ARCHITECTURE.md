@@ -5324,10 +5324,11 @@ standalone workers binary does, so no compose file and no chart
 carries migration files.
 
 **Instances that migrate at once.** Every instance applies the
-migrations when it starts (the binary's pods under one Deployment, the
-standalone workers' replicas), so several may call `storage.Migrate` on
-one database together. One of them applies the migrations; the others
-wait for it and then find the schema current. golang-migrate serialises
+migrations when it starts (the chart's flightdeck pods, which their
+StatefulSet starts in parallel, and the standalone workers' replicas),
+so several may call `storage.Migrate` on one database together. One of
+them applies the migrations; the others wait for it and then find the
+schema current. golang-migrate serialises
 on its own, but its Postgres driver does so with a session that blocks
 in `pg_advisory_lock` for as long as another instance migrates, and a
 blocked statement is an open transaction: a `CREATE INDEX CONCURRENTLY`
@@ -5378,9 +5379,10 @@ session and releases the lock halfway, letting a waiting instance in;
 leave it unset for the migrating role, or above the longest migration.
 
 An instance of an earlier version takes only golang-migrate's lock. A
-rolling update keeps the old pods running while the new ones start and
-migrate, and a running pod does not migrate again, so the update is
-safe as long as no old pod restarts while a new one is migrating: an old
+rolling update replaces the pods one at a time, the old pods not yet
+replaced keep running while a new one starts and migrates, and a
+running pod does not migrate again, so the update is safe as long as
+no old pod restarts while a new one is migrating: an old
 pod that restarts then (a crash, an eviction, a node drain) waits in
 golang-migrate's blocking lock, and against an index built
 concurrently that is the deadlock again.

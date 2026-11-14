@@ -11,10 +11,11 @@ import (
 )
 
 // Instances that start together on one database each apply the
-// migrations (the binary's pods under one Deployment, the standalone
-// workers' replicas). golang-migrate serialises them itself, but on
-// Postgres it does so with a session that blocks in pg_advisory_lock
-// for as long as another instance migrates. A blocked statement is an
+// migrations (the chart's flightdeck pods, which their StatefulSet
+// starts in parallel, and the standalone workers' replicas).
+// golang-migrate serialises them itself, but on Postgres it does so
+// with a session that blocks in pg_advisory_lock for as long as another
+// instance migrates. A blocked statement is an
 // open transaction, and CREATE INDEX CONCURRENTLY waits for every open
 // transaction to finish, while the blocked one waits for the index
 // builder's lock: Postgres detects the deadlock and cancels the build,

@@ -21,9 +21,10 @@ import (
 )
 
 // Instances that start together on one database each apply the
-// migrations at start (the binary's pods under one Deployment, the
-// standalone workers' replicas). They must all succeed and leave the
-// schema at the newest version, not dirty.
+// migrations at start (the chart's flightdeck pods, which their
+// StatefulSet starts in parallel, and the standalone workers'
+// replicas). They must all succeed and leave the schema at the newest
+// version, not dirty.
 
 // concurrentMigrators is how many instances start at once in these
 // tests: more than the two that left a database dirty at version 30,

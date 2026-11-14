@@ -65,7 +65,9 @@ sensor (`sensor/pyproject.toml`), the plugin (`plugin/package.json`,
 `plugin/.claude-plugin/plugin.json`), the marketplace entry (`version` and
 `source.ref` in `.claude-plugin/marketplace.json`), the Helm chart
 (`version`, `appVersion` and the default `image.tag`), the Helm section
-of `guides/self-hosting.md` and the two services' Swagger version. CI fails if any of them
+of `guides/self-hosting.md`, the compose file's image (`docker/docker-compose.yml`)
+and the commented default in `docker/.env.example`, and the two services'
+Swagger version. CI fails if any of them
 differs from `VERSION` (`make version-check`).
 
 `main` is protected, so a release is two steps: the version bump goes
@@ -87,12 +89,12 @@ first tag whose release carries the binary:
 - [x] **#303 and #313 are merged** (Compose and the Helm chart on the
   one image), which the README's Compose and Helm lines and
   `guides/self-hosting.md` describe.
-- [ ] **The README with the install commands (#314) is merged, after
+- [x] **The README with the install commands (#314) is merged, after
   them.** From that merge until the final tag is out, `main`'s README
   and the site show install commands that find no binary and a sensor
   snippet that fails against flightdeck-sensor 0.8.0, so merge it when
   the release is next.
-- [ ] **Pages has deployed and serves this `main`'s installers.** Both
+- [x] **Pages has deployed and serves this `main`'s installers.** Both
   must answer 200 with the bytes of the files about to be tagged:
 
   ```bash

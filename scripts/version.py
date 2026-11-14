@@ -64,6 +64,13 @@ LOCATIONS: list[tuple[str, str, int]] = [
         r"(?m)^    image: \$\{FLIGHTDECK_IMAGE:-flightdeckhq/flightdeck:v(?P<v>[^}]+)\}$",
         1,
     ),
+    # The commented default in the compose variables' example, so a copy
+    # of it pins the release the checkout is at.
+    (
+        "docker/.env.example",
+        r"(?m)^# FLIGHTDECK_IMAGE=flightdeckhq/flightdeck:v(?P<v>\S+)$",
+        1,
+    ),
     ("guides/self-hosting.md", r"The chart is at `version` (?P<v>[^ ]+) with", 1),
     ("guides/self-hosting.md", r"with `appVersion` (?P<v>[^;]+);", 1),
     ("guides/self-hosting.md", r"the default `image\.tag` is `v(?P<v>[^`]+)`", 1),

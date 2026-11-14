@@ -930,6 +930,22 @@ writes Postgres SQL); a NATS container (one Go package needs a server,
 which `scripts/go-db-tests.sh` starts); a hook that pauses the
 in-process workers (test-only code in the product).
 
+## D268 -- The Helm chart runs the one image as a StatefulSet, more than one pod only on Postgres and a shared NATS
+
+**Date:** 2026-11-12
+**Decision:** one StatefulSet of `flightdeckhq/flightdeck`, a volume per
+pod; one pod on SQLite and the embedded bus by default. More than one
+replica, or the HPA, is refused without a Postgres and a shared NATS.
+**Why:** a SQLite file has one process (D262) and each embedded bus is
+its own, so several pods on either would split the data behind one
+Service with no error.
+**Rejected alternative:** a Deployment (one claim serves one pod; a
+rolling update meets the old pod's data-dir lock); scaling on SQLite
+with a warning; the volume's root as the data dir with plain `fsGroup`
+(the kubelet widens `secrets.json`, which the binary then refuses).
+**Also:** an upgrade onto another database is refused (the chart moves no
+data); every secret may come from the operator's Secret, `{name, key}`.
+
 ## D269 -- The installers are served from the project's domain, as copies CI keeps identical
 
 **Date:** 2026-11-12

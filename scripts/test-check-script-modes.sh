@@ -105,6 +105,20 @@ workflow_line '# scripts/a.sh is described in a comment'
 expect 0 "a script named only in a comment"
 
 fixture
+script scripts/c.py -x '#!/usr/bin/env python3'
+workflow_line '- run: |'
+workflow_line "    ruff check --config x.toml scripts/other.py \\"
+workflow_line '      scripts/c.py scripts/test_c.py'
+expect 0 "a 100644 script named on a continuation line, an argument"
+
+fixture
+script scripts/b.sh -x
+workflow_line '- run: |'
+workflow_line "    FOO=1 \\"
+workflow_line '      scripts/b.sh run'
+expect 1 "a 100644 script run after a continued environment prefix" "scripts/b.sh"
+
+fixture
 script scripts/a.sh -x
 workflow_line '- name: Gate (scripts/a.sh binary)'
 workflow_line '  if: matrix.channel == 1 || scripts/a.sh'

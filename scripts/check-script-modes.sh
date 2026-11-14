@@ -25,6 +25,8 @@ cd "$ROOT"
 
 # command_words prints the command word of every simple command in the
 # Makefile and the workflows, one per line, without a leading "./".
+# A line that ends in a backslash continues on the next one, so the
+# words of a continuation line are arguments, not a command.
 # Comment lines are dropped, and so is every "key: value" line whose key
 # is not "run" (a step's name, a matrix entry, a Make target: text, not
 # a command); "&&", "||", ";", "|" and "(" start a new command; Make's
@@ -37,10 +39,11 @@ command_words() {
     files+=("$f")
   done < <(git ls-files -- '.github/workflows/*.yml' '.github/workflows/*.yaml')
   [ "${#files[@]}" -gt 0 ] || return 0
-  sed -E \
+  awk '{ if (sub(/\\$/, "")) printf "%s ", $0; else print }' "${files[@]}" |
+    sed -E \
     -e '/^[[:space:]]*#/d' \
     -e '/^[[:space:]]*(-[[:space:]]+)?run:/!{/^[[:space:]]*(-[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.-]*:([[:space:]]|$)/d;}' \
-    -e 's/(&&|\|\|)/;/g' "${files[@]}" |
+    -e 's/(&&|\|\|)/;/g' |
     tr ';|(' '\n' |
     sed -E \
       -e 's/^[[:space:]@-]+//' \

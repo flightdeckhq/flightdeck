@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import sys
 from typing import Any, TypedDict
 
@@ -53,6 +54,26 @@ _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 LITELLM_PRICE_LIST_HOST = "raw.githubusercontent.com"
 
 network: list[str] = []
+
+# litellm's own loggers. Their records pass through litellm's diagnostics
+# filter, which imports litellm.rust_bridge.catalog.
+LITELLM_LOGGERS = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
+
+
+def _quiet_litellm_logging() -> None:
+    """Drop litellm's log records before they reach its diagnostics filter.
+
+    When its price-list download fails (the guard refuses it), ``import
+    litellm`` starts a retry thread while the package is still being
+    imported and logs the failure; the thread logs its own. Each record
+    goes through litellm's diagnostics filter, which imports
+    ``litellm.rust_bridge.catalog``, and two threads importing it while
+    the package is half imported can raise ``_DeadlockError``. The
+    records are litellm's, not the sensor's, and this child checks only
+    what the sensor patches and which hosts are reached.
+    """
+    for name in LITELLM_LOGGERS:
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
 
 
 def _guard(event: str, args: tuple[Any, ...]) -> None:
@@ -98,6 +119,7 @@ def _use(sdk: str, server: str) -> bool:
         )
         return "_flightdeck_patched" in Messages.__dict__
     if sdk == "litellm":
+        _quiet_litellm_logging()
         import litellm
 
         litellm.completion(

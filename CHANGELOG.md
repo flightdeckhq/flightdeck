@@ -66,6 +66,28 @@ All notable changes to Flightdeck are documented here.
 - `GET /v1/analytics?granularity=hour` buckets by hour (`date` is
   `YYYY-MM-DDTHH:00Z`); it grouped by calendar day before.
 
+- **The dashboard token can be supplied.** Outside loopback the binary
+  minted its dashboard token on the first start, so nobody could know it
+  beforehand and every instance on one Postgres database minted its own.
+  `FLIGHTDECK_DASHBOARD_TOKEN_FILE` now names a file that holds the
+  token (a mounted Kubernetes or Docker secret) and
+  `FLIGHTDECK_DASHBOARD_TOKEN` holds it directly; the file is preferred
+  and wins when both are set, since a variable is visible to anything
+  that can read the process's environment (`/proc/<pid>/environ`,
+  `docker inspect`, child processes). The value must look like a
+  minted token (`printf 'ftd_%s' "$(openssl rand -hex 16)"`) and not
+  typed (a repeated half or a run of consecutive digits is refused);
+  it is refused otherwise without being repeated. It is stored once,
+  as an access token named after its prefix (`Supplied dashboard token
+  (ftd_a07a)`), however many instances start with it; the start-up
+  block prints where it came from, never the token. A token supplied
+  earlier stays valid until it is revoked, so that old pods of a
+  rolling update keep working. To rotate, supply the new token, restart
+  every instance, then revoke the old row in Settings; a row revoked
+  while its token is still supplied comes back at the next start.
+  `/runtime-config.json` serves it to the dashboard as it serves a
+  minted one, so use a value that protects nothing else.
+
 - **`flightdeck_sensor.init()` needs no arguments against a local
   stack.** `server` and `token` are optional: each resolves as the kwarg,
   else `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN`, else the default

@@ -10635,7 +10635,57 @@ like any other), prints it once in the start-up block, and keeps the
 plaintext in `secrets.json` so `/runtime-config.json` can hand it to the
 dashboard on every start. On a later start the stored token is
 validated against the database and re-minted if it no longer resolves
-(a new database under an old data dir). `/runtime-config.json` serves
+(a new database under an old data dir).
+
+An operator can supply the token instead, so that it is known before
+the first start and several instances on one Postgres database share
+one: `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names a file that holds it (a
+mounted Kubernetes or Docker secret), and `FLIGHTDECK_DASHBOARD_TOKEN`
+holds it directly. The file is the preferred form, and wins when both
+are set (the binary says which one it used): a value in a variable is
+visible to anything that can read the process's environment
+(`/proc/<pid>/environ`, `docker inspect`, every child process), a file
+only to what can read the file. The value must have the form of a
+minted token, `ftd_` followed by 32 lower-case hex digits (`printf
+'ftd_%s' "$(openssl rand -hex 16)"`), and must not look typed: fewer
+than eight distinct digits, a second half that repeats the first, or a
+walk where every digit is one above or below the one before
+(`0123456789abcdef…`) is refused. A refused value stops the start, on
+any listen address, with a message that names the variable and the
+expected form and never the value. The file is read once at start,
+surrounding white space is dropped, and its mode is not checked:
+Kubernetes mounts a secret 0644 and Docker 0444, inside a container
+that has no other user. The binary stores the token as an
+`access_tokens` row named after its prefix, `Supplied dashboard token
+(ftd_a07a)`, with a salted hash like any other token. A minted token's
+salt is random; a supplied token's is derived from the token,
+`SHA256("flightdeck supplied access token salt\0" || token)`, so every
+instance computes the same row and the insert is `ON CONFLICT DO
+NOTHING` on the hash: instances starting together all succeed and leave
+one row. That is no weaker. The salt is stored beside the hash in both
+cases, so what it adds is that equal tokens hash differently and that
+no precomputed table applies. A supplied token is unique by
+construction, and 128 random bits cannot be searched offline, salt or
+none. The token is not written to `secrets.json`, the start-up block
+prints `supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE` and the row's name
+in place of the token, and no log line or error carries it.
+`/runtime-config.json` serves it to the dashboard as it serves a minted
+token, so it is a secret of this deployment's dashboard and nothing
+else: do not reuse a value that protects anything more.
+
+When the supplied token changes, the new one is stored and served, and
+the earlier one stays valid until it is revoked in Settings. That is the
+default on purpose: during a rolling update the pods that still run
+with the old value keep serving it to their dashboards, and revoking it
+on the first new start would answer those 401. To rotate: supply the
+new token, restart every instance, then revoke the old row (the one
+named after the old token's prefix) in Settings. The converse holds as
+well: a row revoked while its token is still supplied is stored again
+by the next start, so to stop using a supplied token, remove the
+variable (or replace its value), restart, and then revoke. Without the
+variables the binary mints, as above. On a loopback listen the
+development token is used, and a well-formed supplied token is ignored
+with a warning (a malformed one stops the start there too). `/runtime-config.json` serves
 the dashboard token to anyone who can reach the origin, so the origin
 is the trust boundary: a non-loopback deployment protects it at the
 network edge or with `--domain`. Further tokens are minted in the
@@ -10940,6 +10990,11 @@ over the defaults.
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
+
+Two more variables have no flag, since a flag's value shows in the
+process list: `FLIGHTDECK_DASHBOARD_TOKEN_FILE`, the path of a file
+holding the dashboard token the operator supplies, and
+`FLIGHTDECK_DASHBOARD_TOKEN`, the token itself (see Auth bootstrap).
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.

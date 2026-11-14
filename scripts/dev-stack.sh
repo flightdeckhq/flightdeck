@@ -454,9 +454,10 @@ answers() {
 
 # wait_ready <pid>: until the binary started here serves, or is gone, or
 # the time is up. Serving takes three things together. The process is
-# alive. Its own log holds the end of its start-up block, which it
-# prints once it holds its listener and its services run: only then is
-# an answer on the port its answer. And both health endpoints answer.
+# alive. Its own log holds the end of its start-up block: the binary
+# binds its listener before anything else and prints that block just
+# before it starts serving, so only then is an answer on the port its
+# answer. And both health endpoints answer.
 # An answer alone proves nothing: a server that took the port in the
 # meantime answers just as well while this binary, still loading, has
 # yet to find the address busy and exit.

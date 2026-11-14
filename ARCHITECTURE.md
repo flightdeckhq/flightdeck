@@ -10883,10 +10883,16 @@ up, and only then stops what the new binary replaces (the checkout's
 running binary, or the seven-container stack, below) and starts the
 binary. A build that fails leaves what was running as it was. The
 start refuses when something that is not this checkout's stack already
-listens on its port, and once both health endpoints answer it checks
-that the process it started is the one alive behind them: a stranger
-on the port would otherwise answer the probe while the binary exits on
-the busy address, and the suites would run against the stranger.
+listens on its port. It counts the binary as serving only when three
+things hold together: the process it started is alive, that process's
+own log holds the end of its start-up block, and both health endpoints
+answer. The binary binds its listener before anything else and prints
+that block just before it starts serving, so the block in its log says
+the port is its own. An answer and a live process are not enough: a
+stranger that takes the port as the binary starts answers both probes
+while the binary is still loading, and the binary finds the address
+busy and exits only afterwards, so the suites would run against the
+stranger.
 
 The stack's commands act on the containers their own checkout started.
 Compose records on every container the directory of the compose files

@@ -58,6 +58,12 @@ LOCATIONS: list[tuple[str, str, int]] = [
     ("helm/Chart.yaml", r"(?m)^version: (?P<v>\S+)$", 1),
     ("helm/Chart.yaml", r'(?m)^appVersion: "(?P<v>[^"]+)"$', 1),
     ("helm/values.yaml", r'(?m)^  tag: "v(?P<v>[^"]+)"$', 1),
+    # The image the user compose file runs.
+    (
+        "docker/docker-compose.yml",
+        r"(?m)^    image: \$\{FLIGHTDECK_IMAGE:-flightdeckhq/flightdeck:v(?P<v>[^}]+)\}$",
+        1,
+    ),
     ("README.md", r"The chart is at `version` (?P<v>[^ ]+) with", 1),
     ("README.md", r"with `appVersion` (?P<v>[^;]+);", 1),
     ("README.md", r"the default `image\.tag` is `v(?P<v>[^`]+)`", 1),

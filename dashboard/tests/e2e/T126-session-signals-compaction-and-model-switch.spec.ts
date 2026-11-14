@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { API_URL } from "./_stack";
 
 // T126 — Claude Code's compaction and model switch reach the dashboard
 // as session_signal events. The seed puts two on the coding agent's
@@ -20,7 +21,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
     page,
   }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);
@@ -57,7 +58,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
 
   test("notifications, denials, commands, tasks, directory, settings changes and MCP input name what happened in the feed line", async ({ page }) => {
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
+      `${API_URL}/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

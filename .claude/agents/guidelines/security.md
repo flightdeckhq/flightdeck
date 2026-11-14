@@ -209,7 +209,7 @@ Flightdeck conventions (see `CLAUDE.md`):
   endpoint; that endpoint is served with the
   `Cache-Control: no-store, no-cache, must-revalidate` triplet — any
   change that weakens this is a critical finding.
-- **Container hardening.** The production Dockerfile runs as
-  non-root (`USER` directive), the nginx base image is pinned by
-  SHA, and CI workflows declare least-privilege `permissions:`
+- **Container hardening.** The image's Dockerfile runs as non-root
+  (`USER` directive) on a distroless base, its base images are pinned
+  by digest, and CI workflows declare least-privilege `permissions:`
   blocks. Regressions here are critical.

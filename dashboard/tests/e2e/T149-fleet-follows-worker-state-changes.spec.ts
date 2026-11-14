@@ -33,10 +33,11 @@ import { randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "../../src/lib/constants";
 import { bringSwimlaneRowIntoView, openAgentDrawerFromRow, waitForFleetReady } from "./_fixtures";
+import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
 const AUTH = { Authorization: "Bearer tok_dev" };
-const INGEST = "http://localhost:4000/ingest/v1";
-const API = "http://localhost:4000/api/v1";
+const INGEST = `${INGEST_URL}/v1`;
+const API = `${API_URL}/v1`;
 const HOST = "e2e-t149-host";
 
 /** How long the setup waits for the worker to store a run. */
@@ -131,12 +132,12 @@ function psql(sql: string, vars: Record<string, string>): string {
   const args = [
     "exec",
     "-i",
-    "docker-postgres-1",
+    POSTGRES_CONTAINER,
     "psql",
     "-U",
     "flightdeck",
     "-d",
-    "flightdeck",
+    POSTGRES_DB,
     "-tA",
     "-v",
     "ON_ERROR_STOP=1",

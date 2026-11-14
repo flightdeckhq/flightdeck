@@ -1,11 +1,11 @@
 // Runtime-config-driven access-token bootstrap.
 //
-// Production dashboards ship as a static SPA bundle behind nginx; the
-// access token comes from /runtime-config.json (a single JSON file
-// the deployer mounts over /usr/share/nginx/html/runtime-config.json
-// at deploy time). Operators rotate tokens by editing the file and
-// reloading nginx — no rebuild, no fresh image. Same trust boundary
-// as before: anyone on the dashboard origin can fetch the file.
+// The dashboard ships as a static SPA bundle inside the flightdeck
+// binary; the access token comes from /runtime-config.json, which the
+// binary answers itself with the token of its own start (the
+// development token on loopback, the token it minted otherwise). No
+// token is baked into the bundle. The trust boundary is the origin:
+// anyone who can reach the dashboard can fetch the token.
 //
 // Bootstrap order at app start:
 //   1. Fetch /runtime-config.json. Validate. Hold the token in memory.

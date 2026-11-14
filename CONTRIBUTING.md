@@ -487,7 +487,7 @@ header has the counting rules):
 | What | Budget |
 |---|---|
 | The install blocks under `## Install`: one right after a line that reads **Linux and macOS**, one right after **Windows** (emphasis, a colon and words in parentheses aside), both required | exactly one command each, on one line |
-| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it; nothing else) |
+| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it, flags allowed but no pipe, `&`, `;`, `$(` or backtick; nothing else) |
 | `## Connect your agents` | 4 commands |
 | `## Self-hosting` | 6 commands |
 | The whole README, the channels folded in `<details>` included | 20 commands, 300 lines |
@@ -501,7 +501,8 @@ sample-language tag (`json`, `yaml`, `python` and the like), which the
 script does not count: tag it as the shell it is for (`bash`,
 `powershell`, `text`), or the script fails naming the line. A step a
 reader types goes in a code block, not in a sentence, where it would not
-be counted.
+be counted. An HTML comment or a `<details>` left open is an error too,
+since GitHub would hide or fold everything after it.
 
 When a README change goes over, the detail moves to the page that owns
 it and the README links there; nothing a user needs leaves the

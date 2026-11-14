@@ -20,7 +20,8 @@
 # spelling, tags inside an HTML comment, an element closed before the
 # fence, an escaped tag and a tag in an indented code block fold
 # nothing; an empty summary and a collapsed element inside an open one
-# do. A <details> left open is an error.
+# do. A <details> left open is an error, and so is an HTML comment
+# left open; a `<!--` in inline code or in a fence opens none.
 #
 # The counting rule, one fixture per clause of the script's header:
 # every fence counts unless its language is a sample (powershell, zsh,
@@ -836,7 +837,7 @@ expect_output 'neither an install command nor "flightdeck" \(line 12: pipx insta
 
 # What the run command may look like: flags, a trailing comment, the
 # Windows name under a powershell fence.
-for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck   # then open the URL it prints' 'flightdeck -data-dir /srv/flightdeck --metrics'; do
+for run in 'flightdeck' 'flightdeck --listen 127.0.0.1:4100' 'flightdeck   # then open the URL it prints' 'flightdeck -data-dir /srv/flightdeck --metrics' 'flightdeck --data-dir "/srv/flightdeck data"'; do
   install_readme "$work/install-run-ok.md" <<FIXTURE
 \`\`\`bash
 curl -fsSL https://example.invalid/install.sh | sh
@@ -865,7 +866,16 @@ expect 0 "flightdeck.exe under a powershell fence is the run command" "$work/ins
 # where the chained command would otherwise read as their values), a
 # word that is not a flag, a path, another binary whose name starts
 # the same.
-for run in 'flightdeck && brew install example/tap/flightdeck' 'flightdeck --metrics; brew install example/tap/flightdeck' 'flightdeck --metrics && pipx install example-cli' 'flightdeck install' './flightdeck' 'flightdeck-cli' 'sudo flightdeck'; do
+# Nor a pipe, a background &, a separator or a substitution anywhere
+# on the line, quoted or not: a flag value must not carry a second
+# command. The substitutions are written in single quotes on purpose:
+# they are the text of the fixture, not something this script runs.
+# shellcheck disable=SC2016
+for run in 'flightdeck && brew install example/tap/flightdeck' 'flightdeck --metrics; brew install example/tap/flightdeck' 'flightdeck --metrics && pipx install example-cli' 'flightdeck install' './flightdeck' 'flightdeck-cli' 'sudo flightdeck' \
+  'flightdeck --listen 127.0.0.1:4100 | tee flightdeck.log' 'flightdeck --listen 127.0.0.1:4100 &' 'flightdeck --listen 127.0.0.1:4100 2>&1' \
+  'flightdeck --data-dir "$(mktemp -d)"' "flightdeck --data-dir '\$(mktemp -d)'" 'flightdeck --data-dir $(mktemp -d)' \
+  'flightdeck --data-dir `mktemp -d`' 'flightdeck --data-dir "`mktemp -d`"' \
+  "flightdeck --flag 'a && b'" 'flightdeck --flag "a; b"' 'flightdeck --flag "a | b"'; do
   install_readme "$work/install-run-bad.md" <<FIXTURE
 \`\`\`bash
 curl -fsSL https://example.invalid/install.sh | sh
@@ -1080,6 +1090,45 @@ brew install example/tap/flightdeck
     </details>
 FIXTURE
 expect_output '^ +4 +0 +Install$' "its command is visible"
+
+# An HTML comment left open hides the rest of the page on GitHub.
+# Refused, in report mode as well; the comment opens on line 4.
+rule_error 'rule\.md:4: the HTML comment opened on this line is never closed' "an unclosed HTML comment is an error that names its line" <<'FIXTURE'
+Text.
+<!-- a note that never ends
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule_error 'rule\.md:5: the HTML comment opened on this line is never closed' "a comment that opens after one that closed, and stays open, is named" <<'FIXTURE'
+Text.
+<!-- closed --> and then
+<!-- open
+```bash
+flightdeck
+```
+FIXTURE
+
+# A `<!--` in inline code or in a fence is text: no comment opens.
+rule 1 "a <!-- in inline code opens no comment" <<'FIXTURE'
+Write `<!--` to start a comment and `-->` to end it; `<!--` alone is text.
+
+```bash
+flightdeck
+```
+FIXTURE
+
+rule 1 "a <!-- in a fence opens no comment" <<'FIXTURE'
+```html
+<!-- an example
+```
+
+```bash
+flightdeck
+```
+FIXTURE
 
 # A <details> left open would fold everything after it. Refused, in
 # report mode as well; the tag is on line 4 of the fixture.

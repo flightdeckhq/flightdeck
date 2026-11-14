@@ -24,7 +24,9 @@
 #
 # Beside the install blocks the section may show one more command, the
 # one that starts the binary: `flightdeck`, alone or followed by flags
-# (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged.
+# (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged,
+# with no pipe, `&`, `;`, `$(` or backtick anywhere on its line, quoted
+# or not, so nothing else can ride on it.
 # Any other visible command in the section fails the run, labelled or
 # not. A second install command therefore fails wherever it is put: in
 # a platform's block, chained onto its line, in a second block under
@@ -55,7 +57,10 @@
 #     this errs towards counting the fences as visible).
 # The tags are read on lines outside fences, in any letter case. A
 # `<details>` that is never closed would fold everything after it: it
-# is an error (exit 1) that names the line it opened on.
+# is an error (exit 1) that names the line it opened on. So is an HTML
+# comment that is never closed: GitHub hides everything after a `<!--`
+# that has no `-->`, and the tags and labels in it would be misread. A
+# `<!--` inside inline code or inside a fence opens no comment.
 #
 # Which fences: every fenced block, tagged or not, except the ones
 # whose language is a code or data sample (SAMPLE_LANGUAGES below). A
@@ -407,7 +412,7 @@ counts() {
       if (inrun) {
         cmd = substr(s, 1, cut - 1)
         sub(/^[ \t]+/, "", cmd); sub(/[ \t]+$/, "", cmd)
-        if (segs != 1 || cmd !~ runre) {
+        if (segs != 1 || cmd !~ runre || cmd ~ /[|&;`]/ || index(cmd, "$(") > 0) {
           if (++others == 1) { otherline = NR; othercmd = substr(cmd, 1, 60) }
         }
       }
@@ -441,11 +446,25 @@ counts() {
           if (j == 0) { return out }
           s = substr(s, j + 3); incomment = 0
         }
-        i = index(s, "<!--")
+        # A comment opens outside inline code only; the mask keeps the
+        # positions of s.
+        i = index(mask_code(s), "<!--")
         if (i == 0) { return out s }
         out = out substr(s, 1, i - 1)
-        s = substr(s, i + 4); incomment = 1
+        s = substr(s, i + 4); incomment = 1; commentline = NR
       }
+    }
+
+    # s with each inline code span replaced by as many x characters.
+    function mask_code(s,    out, k, pad) {
+      out = ""
+      while (match(s, /`[^`]*`/)) {
+        pad = ""
+        for (k = 0; k < RLENGTH; k++) { pad = pad "x" }
+        out = out substr(s, 1, RSTART - 1) pad
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return out s
     }
 
     # Reads the <details> and </details> tags of a line outside fences
@@ -663,6 +682,9 @@ counts() {
       }
       if (ndetails > 0) {
         fail(sprintf("%s:%d: the <details> opened on this line is never closed", FILENAME, detailsline))
+      }
+      if (incomment) {
+        fail(sprintf("%s:%d: the HTML comment opened on this line is never closed: GitHub hides everything after it", FILENAME, commentline))
       }
       for (i = 1; i <= n; i++) { printf "S\t%d\t%d\t%s\n", count[order[i]], folded[order[i]], order[i] }
       printf "T\t%d\n", total

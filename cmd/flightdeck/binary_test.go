@@ -353,6 +353,10 @@ func newUUID(t *testing.T) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
+// migrationsLockSuffix names the lock file the storage module holds
+// while it applies a SQLite database's migrations, beside the database.
+const migrationsLockSuffix = ".migrate.lock"
+
 // sqliteFiles lists what is in dataDir whose name starts with the
 // database file's name: the database and whatever SQLite keeps beside it.
 func sqliteFiles(t *testing.T, dataDir string) map[string]os.FileInfo {
@@ -432,11 +436,20 @@ func TestBinary_SQLiteKeepsEverythingAcrossAStopAndARestart(t *testing.T) {
 
 	// A clean stop leaves one database file: the write-ahead log was
 	// checkpointed into it and removed with its shared-memory file.
+	// Beside it stay the two lock files, the instance's and the
+	// migrations' (storage's <database>.migrate.lock): a lock file is
+	// never removed, since a process that opened it to wait would then
+	// hold its lock on a file a newcomer no longer finds.
 	files = sqliteFiles(t, dataDir)
 	for name := range files {
-		if name != datadir.DatabaseFile && name != datadir.DatabaseFile+lockSuffix {
+		switch name {
+		case datadir.DatabaseFile, datadir.DatabaseFile + lockSuffix, datadir.DatabaseFile + migrationsLockSuffix:
+		default:
 			t.Errorf("%s is left beside the database after a clean stop", name)
 		}
+	}
+	if info := files[datadir.DatabaseFile+migrationsLockSuffix]; info != nil && runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("%s has mode %04o, want 0600", datadir.DatabaseFile+migrationsLockSuffix, info.Mode().Perm())
 	}
 	if files[datadir.DatabaseFile] == nil || files[datadir.DatabaseFile].Size() == 0 {
 		t.Fatalf("the database file is missing or empty after the stop: %v", files)

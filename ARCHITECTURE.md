@@ -5552,6 +5552,89 @@ binary applies the embedded set of its backend at start, as the
 standalone workers binary does, so no compose file and no chart
 carries migration files.
 
+**Instances that migrate at once.** Every instance applies the
+migrations when it starts (the chart's flightdeck pods, which their
+StatefulSet starts in parallel, and the standalone workers' replicas),
+so several may call `storage.Migrate` on one database together. One of
+them applies the migrations; the others wait for it and then find the
+schema current. golang-migrate serialises
+on its own, but its Postgres driver does so with a session that blocks
+in `pg_advisory_lock` for as long as another instance migrates, and a
+blocked statement is an open transaction: a `CREATE INDEX CONCURRENTLY`
+(migration 000030) waits for every open transaction to end, the blocked
+one waits for the index builder's lock, and Postgres resolves the
+deadlock by cancelling the build, which leaves the schema dirty. Its
+SQLite driver's lock is a flag of each migrator object and excludes
+nothing. So `Migrate`, `MigrateDown` and `SchemaVersion` first take a
+lock of the storage module's own, before golang-migrate opens its
+session. On Postgres it is a session-level advisory lock on the key
+pair (`0x46444d47`, 1), a key space of its own (golang-migrate's key is
+a single bigint), asked for with `pg_try_advisory_lock` on a dedicated
+connection in statements that return at once, so a waiting instance
+holds no transaction for an index build to wait on. On SQLite it is an
+exclusive lock (`flock`, `LockFileEx` on Windows) on
+`<database>.migrate.lock` beside the database, created 0600, and a mutex
+of the process for each database file; on a platform with no file lock
+(none of the release targets) the mutex alone serialises the migrations
+of one process. The database is recognised by its real path, symbolic
+links resolved (the file's own, or its directory's when the file is yet
+to be created, following a chain of links to a file not created yet,
+each relative target read from its link's own directory as the kernel
+reads it), so a caller that reaches it through a link and one that
+names its target take one lock file. The binary opens the database by
+the path this resolution (`storage.ResolveSQLitePath`) gives, so the
+file the lock guards is the file that is migrated and served. A hard
+link has no path to resolve: within one process the
+mutex still recognises the file (`os.SameFile`), but two processes that
+reach one database through two hard links each lock a file of their own
+name and may migrate it at once, so a SQLite database is reached by one
+path, or by symbolic links to it. A waiting
+instance asks four times a second, logs once that it waits and every 30
+seconds after, and gives up after ten minutes with an error that says
+another instance is migrating; its context (a signal, for the binary)
+ends the wait too. A holder that dies loses the lock at once: Postgres
+drops a session's advisory locks with its connection, the kernel drops
+a file lock with its process.
+
+The Postgres lock is a session's, so the URL the binary migrates with
+must reach the server directly or through a pooler in session mode: a
+transaction pooler (PgBouncer with `pool_mode = transaction`) hands the
+session's statements to different server connections, so the lock is
+not held by the session that asked for it and the instances are not
+serialised. While an instance migrates, its lock session is idle (the
+migrations run on golang-migrate's own connection), so a server
+`idle_session_timeout` shorter than the longest migration ends that
+session and releases the lock halfway, letting a waiting instance in;
+leave it unset for the migrating role, or above the longest migration.
+
+An instance of an earlier version takes only golang-migrate's lock. A
+rolling update replaces the pods one at a time, the old pods not yet
+replaced keep running while a new one starts and migrates, and a
+running pod does not migrate again, so the update is safe as long as
+no old pod restarts while a new one is migrating: an old
+pod that restarts then (a crash, an eviction, a node drain) waits in
+golang-migrate's blocking lock, and against an index built
+concurrently that is the deadlock again.
+
+**A dirty schema.** golang-migrate marks the schema dirty when it
+starts a migration and clean when the migration is done. With the lock
+above, an instance finds it dirty only when the process applying a
+migration was killed or lost its connection mid-way, and the migration
+may be partly applied. Waiting does not change that, and forcing the
+version automatically could build later migrations on a half-applied
+one, so every instance that starts on a dirty schema refuses with a
+`storage.DirtyError`: it names the version and its file, says the
+migration was interrupted, and gives the recovery. Compare the database
+with that file, then record the outcome in `schema_migrations`: the
+version with `dirty = false` once its changes are all there, or the
+version before it with `dirty = false` once they are undone; the next
+start applies what is left. For the first migration, undone means an
+empty table (`DELETE FROM schema_migrations`): golang-migrate records
+"nothing applied" as no row, and refuses a version 0 row with `no
+migration found for version 0`. An interrupted `CREATE INDEX CONCURRENTLY`
+leaves an invalid index of that name, which is undone with `DROP INDEX
+CONCURRENTLY`.
+
 ### Bus
 
 `storage.Bus` carries the notifications the services exchange: a
@@ -10804,8 +10887,10 @@ beside it while the binary runs), absent when `--database-url` names
 another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
-cache; `tmp/` (mode 0700), SQLite's temporary files (below); and the
-lock files below. With `--database-url postgres://…`
+cache; `tmp/` (mode 0700), SQLite's temporary files (below); the lock
+files below; and, in SQLite mode, `flightdeck.db.migrate.lock`, which
+an instance holds while it applies the migrations (see Storage >
+Migrations). With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file
@@ -10857,7 +10942,8 @@ that holds it (the holder writes its PID into the lock file). The
 default case is refused earlier, by the port. The database's lock file
 is named after the real path of the database: symbolic links are
 resolved first (those of the file, or of its directory when the file
-is yet to be created), so a second instance that reaches the file
+is yet to be created), by the storage module's resolution that the
+migration lock uses too, so a second instance that reaches the file
 through a link, or through a data dir that is a link, contends for
 the same lock. Two names that are not links to one another are not
 recognised as one file: a hard link, or the same file bind-mounted

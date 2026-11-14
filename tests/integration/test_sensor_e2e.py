@@ -56,6 +56,7 @@ from .conftest import (
     TOKEN,
     delete_flavor_data,
     exec_sql,
+    instant,
     query_rows,
     wait_until,
 )
@@ -2184,7 +2185,9 @@ def test_pattern_d_custom_then_shutdown_ordering(
             # _apply_directive(SHUTDOWN) waits for the event queue
             # (which contains the prior custom directive_result event)
             # before setting _shutdown_requested.
-            assert custom_event["occurred_at"] <= shutdown_event["occurred_at"], (
+            custom_at = instant(custom_event["occurred_at"])
+            shutdown_at = instant(shutdown_event["occurred_at"])
+            assert custom_at <= shutdown_at, (
                 f"directive ordering broken: custom={custom_event['occurred_at']} "
                 f"shutdown={shutdown_event['occurred_at']}"
             )

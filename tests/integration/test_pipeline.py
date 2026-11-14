@@ -7,11 +7,11 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
 from .conftest import (
     get_session,
     get_session_event_count,
+    instant,
     make_event,
     post_event,
     post_heartbeat,
@@ -71,12 +71,10 @@ def test_multiple_events_returned_in_order() -> None:
         f"expected >= 3 events for session {sid}, got {len(events)}"
     )
 
-    # Events should be in chronological order, compared as times: the
-    # API trims trailing zeros of the fraction, so the text "…53.83Z"
-    # sorts after "…53.835Z".
-    timestamps = [datetime.fromisoformat(e["occurred_at"]) for e in events]
-    assert timestamps == sorted(timestamps), (
-        f"events not in chronological order: {[e['occurred_at'] for e in events]}"
+    # Events should be in chronological order
+    timestamps = [e["occurred_at"] for e in events]
+    assert timestamps == sorted(timestamps, key=instant), (
+        f"events not in chronological order: {timestamps}"
     )
 
 
@@ -98,7 +96,7 @@ def test_heartbeat_updates_last_seen() -> None:
 
     def _last_seen_updated() -> bool:
         cur = get_session(sid)["session"].get("last_seen_at")
-        return cur is not None and cur > initial_last_seen
+        return cur is not None and instant(cur) > instant(initial_last_seen)
 
     wait_until(
         _last_seen_updated,
@@ -111,7 +109,7 @@ def test_heartbeat_updates_last_seen() -> None:
     assert updated_last_seen is not None, (
         f"session {sid} detail missing last_seen_at after heartbeat"
     )
-    assert updated_last_seen >= initial_last_seen, (
+    assert instant(updated_last_seen) >= instant(initial_last_seen), (
         f"expected last_seen_at to increase after heartbeat, "
         f"initial={initial_last_seen}, updated={updated_last_seen}"
     )

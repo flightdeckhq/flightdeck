@@ -429,6 +429,21 @@ All notable changes to Flightdeck are documented here.
   start sequence. The event id is now the key: a start is attached and
   stamped once per id, and a copy gets the first copy's answer (D273;
   migration 000037 adds `session_start_receipts`).
+- **Instances that start together on one database all come up.** Two
+  `flightdeck` binaries (or several workers' replicas) started at once
+  on an empty Postgres database deadlocked in migration 30, whose index
+  is built `CONCURRENTLY`: the instance waiting for golang-migrate's
+  lock held a transaction the index build waited for. Postgres cancelled
+  the build, and the schema was left dirty at version 30, so neither
+  instance started again. The storage module now takes a lock of its own
+  before golang-migrate does, asked for in statements that return at
+  once, so the others wait without holding anything; they then find the
+  schema current. On SQLite a lock file beside the database
+  (`flightdeck.db.migrate.lock`) does the same for several processes,
+  which before failed with `database is locked`. A waiting instance logs
+  that it waits and gives up after ten minutes. A schema an interrupted
+  migration left dirty is refused with the version, its file and the
+  steps to recover, and is never forced.
 - **Analytics no longer fail on a read-only root filesystem.** With
   `docker run --read-only` (or `readOnlyRootFilesystem: true`) SQLite
   had no directory for its temporary files, which it needs once a sort

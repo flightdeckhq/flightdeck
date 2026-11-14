@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -85,10 +84,6 @@ func postgresServicePoolConns(numCPU int) int {
 	share := (postgresConnBudget - postgresRootPoolConns - postgresListenConns) / postgresServices
 	return min(max(storage.PostgresMinOpenConns, numCPU), share)
 }
-
-// symlinkDepthLimit bounds how many dangling symbolic links realPath
-// follows by hand; the kernel itself gives up at forty.
-const symlinkDepthLimit = 40
 
 // databaseConnectBudget is how long the binary keeps trying to reach a
 // database that does not answer yet: a Postgres that starts beside it
@@ -471,13 +466,14 @@ type database struct {
 // resolveDatabase turns --database-url into the database of this run:
 // the SQLite file in the data dir when none is given, otherwise the URL
 // as given. A SQLite path is made absolute and its symbolic links are
-// resolved, so the lock file, the start-up block and the storage module
-// all name the one real file, whatever the working directory and
-// whichever name the file was reached by: two processes that name one
-// database through different links then contend for one lock. The
-// SQLite URL is built by the storage module's own helper, which
-// carries the path verbatim: a data dir with spaces, "#", "?", "%" or
-// a Windows drive letter names the same file in every one of them.
+// resolved by storage.ResolveSQLitePath, so the lock file, the start-up
+// block and the storage module all name the one real file, whatever the
+// working directory and whichever name the file was reached by: two
+// processes that name one database through different links then contend
+// for one lock. The SQLite URL is built by the storage module's own
+// helper, which carries the path verbatim: a data dir with spaces, "#",
+// "?", "%" or a Windows drive letter names the same file in every one
+// of them.
 func resolveDatabase(rawURL string, layout datadir.Layout) (database, error) {
 	path := layout.Database
 	if rawURL != "" {
@@ -492,45 +488,13 @@ func resolveDatabase(rawURL string, layout datadir.Layout) (database, error) {
 			return database{}, fmt.Errorf("SQLite database path: %w", err)
 		}
 	}
-	resolved, err := realPath(path, symlinkDepthLimit)
+	// The storage module's resolution, the one its migration lock is
+	// keyed on: the file migrated and the file served are one file.
+	resolved, err := storage.ResolveSQLitePath(path)
 	if err != nil {
 		return database{}, fmt.Errorf("SQLite database %s: %w", path, err)
 	}
 	return database{backend: storage.SQLite, url: storage.SQLiteURL(resolved), path: resolved, display: resolved}, nil
-}
-
-// realPath returns the absolute path with its symbolic links resolved:
-// those of the file when it exists; otherwise those of its directory,
-// where the file is about to be created. A link that points at a file
-// which does not exist yet is followed to the place the file will be
-// created, at most depth times.
-func realPath(path string, depth int) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return resolved, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
-		if depth <= 0 {
-			return "", fmt.Errorf("%s: too many symbolic links", path)
-		}
-		target, rerr := os.Readlink(path)
-		if rerr != nil {
-			return "", rerr
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
-		}
-		return realPath(target, depth-1)
-	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
-	if err != nil {
-		// The os error names the directory that is missing.
-		return "", err
-	}
-	return filepath.Join(dir, filepath.Base(path)), nil
 }
 
 // connectionURL is the URL the process's database, and through it every

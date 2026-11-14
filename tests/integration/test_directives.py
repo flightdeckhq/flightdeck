@@ -25,6 +25,7 @@ from .conftest import (
     TOKEN,
     exec_sql,
     get_session,
+    instant,
     make_event,
     post_event,
     query_rows,
@@ -441,7 +442,7 @@ def test_directive_last_seen_updated() -> None:
             for d in body_.get("directives", []):
                 if d["fingerprint"] == fp:
                     latest = d
-                    return d["last_seen_at"] > first_last_seen
+                    return instant(d["last_seen_at"]) > instant(first_last_seen)
             return False
 
         wait_until(
@@ -453,7 +454,7 @@ def test_directive_last_seen_updated() -> None:
 
         match2 = latest
         assert match2 is not None
-        assert match2["last_seen_at"] > first_last_seen, (
+        assert instant(match2["last_seen_at"]) > instant(first_last_seen), (
             f"expected last_seen_at to advance after sync, "
             f"first={first_last_seen} second={match2['last_seen_at']}"
         )

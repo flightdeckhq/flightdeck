@@ -19,6 +19,7 @@ from .conftest import (
     exec_sql,
     get_session,
     get_session_detail,
+    instant,
     make_event,
     post_event,
     post_heartbeat,
@@ -1462,7 +1463,7 @@ def test_child_event_bumps_active_parent_last_seen() -> None:
     )
 
     def _parent_advanced() -> bool:
-        return _read_parent_last_seen(parent_sid) > pre_bump
+        return instant(_read_parent_last_seen(parent_sid)) > instant(pre_bump)
 
     wait_until(
         _parent_advanced,

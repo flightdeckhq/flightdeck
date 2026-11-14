@@ -30,6 +30,7 @@ from .conftest import (
     create_drifted_agent,
     delete_drifted_agent,
     get_agent_rollup,
+    instant,
     post_admin_reconcile,
 )
 
@@ -140,7 +141,7 @@ def test_reconcile_corrects_last_seen_at_drift() -> None:
         after = get_agent_rollup(agent_id)
         assert after is not None
         # last_seen_at moved earlier (away from NOW+1h drifted value).
-        assert str(after["last_seen_at"]) < str(before["last_seen_at"])
+        assert instant(after["last_seen_at"]) < instant(before["last_seen_at"])
     finally:
         delete_drifted_agent(agent_id)
 

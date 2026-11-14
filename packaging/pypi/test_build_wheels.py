@@ -110,8 +110,12 @@ class BuildWheelsTest(unittest.TestCase):
             self.assertTrue(metadata.startswith(first_line))
             self.assertIn("Name: flightdeck-cli\n", metadata)
             self.assertIn("Version: 0.9.0\n", metadata)
-            self.assertIn("License: Apache-2.0\n", metadata)
+            self.assertIn("License-Expression: Apache-2.0\n", metadata)
             self.assertIn("License-File: LICENSE\n", metadata)
+            # PEP 639: a license expression replaces the License field and
+            # the license classifiers, which an index may refuse beside it.
+            self.assertNotIn("\nLicense: ", metadata)
+            self.assertNotIn("Classifier: License ::", metadata)
             self.assertIn("Requires-Python: >=3.8\n", metadata)
             self.assertIn("# flightdeck-cli", metadata, "README is the long description")
 

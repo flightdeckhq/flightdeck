@@ -301,6 +301,22 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A long tool output reads as text in the Prompts tab.** The plugin
+  kept the first 2000 characters of a tool's response by cutting its
+  JSON text mid-way, so every Bash result over that showed in Pretty as
+  one line of escaped JSON (`{"stdout":"--- PASS: …\n=== RUN …`) while
+  Raw read better. The bound stays, but the plugin now cuts inside the
+  response: the long strings (stdout, a file's content) are shortened
+  to one common length so the whole fits, each cut string and list ends
+  with `…`, and the object holding a cut value names it in `truncated`,
+  so the stored output stays valid JSON. A string response is cut as
+  text, with the same mark. In the session drawer, Pretty shows a
+  result's stdout and stderr as terminal text with their line breaks
+  (stderr set apart), its other fields compactly, and which fields were
+  cut. Results stored by earlier plugin versions, JSON text cut
+  mid-way, are read up to the cut and shown the same way with a note
+  saying where the stored text ends. A tool input that lists cut fields
+  shows how many characters each kept. Raw still shows the stored value.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

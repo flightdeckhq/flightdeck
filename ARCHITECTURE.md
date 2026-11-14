@@ -528,7 +528,7 @@ flightdeck/
 │   │   │                       # agent-identity, agent-status, agents-filter, agents-format, agents-sort,
 │   │   │                       # fleet-ordering, relationship, policy-scope-labels, swimlane-lost-sub-agent,
 │   │   │                       # swimlane-lanes, events-cache-epoch, useSwimlaneScroll, allRowCollapsed,
-│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width
+│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width, cut-json
 │   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
 │   │   └── styles/             # globals.css (Tailwind import, @theme colour tokens), themes.css
 │   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
@@ -7847,7 +7847,28 @@ over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 and any other value as JSON; the `{}` such a row holds in `response`
 is not shown as a response. The Claude Code plugin's hook `tool_call`
 keeps its `tool_use` block under `tools` and its `tool_result` under
-`response`, and shows them there. Content stored with
+`response`, and shows them there. A `tool_use` input that lists cut
+fields in `truncated` (see Plugin > Tool input sanitisation) shows each
+listed field with how many characters it kept (`cut at 200
+characters`) and not the list itself. A `tool_result` whose content is
+a JSON object (Plugin > Tool output) shows `stdout` and `stderr` as
+terminal text with their line breaks, `stderr` in the error colour,
+other multi-line text the same way, nested objects (a Read's `file`) as
+fields of their own, a list of text blocks as its texts, other lists as
+JSON and the scalar fields together on one line; an object's
+`truncated` list becomes a note naming each cut field and how much of
+it was kept (`stdout cut at 1,915 characters`). A `truncated` that is
+not a list of names (Glob's flag) is a field like any other. A content
+that is a JSON object or list cut mid-way and followed by `…` (a long
+output an earlier plugin version stored) is read up to the cut by a
+tolerant reader (`lib/cut-json.ts`: one pass, every whole key/value
+pair and element, and the string it was reading where the text ends;
+a key, number or literal cut part-way is left out), shown the same
+way, and noted with where the stored text ends (`the stored output
+ends at 2,000 characters, inside stdout`); text that does not read so
+is shown as written, as is plain text. This applies wherever a
+`tool_result` block renders, in a message as in the plugin's response.
+Content stored with
 `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a

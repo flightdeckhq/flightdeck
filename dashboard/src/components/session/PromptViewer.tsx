@@ -5,6 +5,15 @@ import { fetchEventContent } from "@/lib/api";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SyntaxJson } from "@/components/ui/syntax-json";
+import {
+  CUT_LIST_KEY,
+  CUT_MARK,
+  cutFields,
+  describeCut,
+  formatJsonPath,
+  readCutJson,
+  type JsonPath,
+} from "@/lib/cut-json";
 import type { EventContent } from "@/lib/types";
 
 interface PromptViewerProps {
@@ -451,7 +460,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
                 <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   {input != null && Object.keys(input).length > 0 && (
                     <div className="mt-2" data-testid="tool-use-input">
-                      <KeyValueList data={input} />
+                      <ToolInputFields input={input} />
                     </div>
                   )}
                   {desc && <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
@@ -1378,11 +1387,14 @@ function BlockValue({ value }: { value: unknown }) {
   );
 }
 
-function KeyValueList({ data }: { data: Record<string, unknown> }) {
+/** ``data``'s fields, each labelled; a field in ``cut`` carries a note
+ *  saying how much of it was kept. */
+function KeyValueList({ data, cut }: { data: Record<string, unknown>; cut?: ReadonlySet<string> }) {
   const entries = Object.entries(data);
   return (
     <div className="space-y-1.5">
       {entries.map(([key, value]) => {
+        const note = cut?.has(key) ? <CutNote value={value} /> : null;
         if (needsMultiline(value)) {
           return (
             <div key={key} className="flex flex-col gap-1">
@@ -1394,6 +1406,7 @@ function KeyValueList({ data }: { data: Record<string, unknown> }) {
                 {key}
               </span>
               <BlockValue value={value} />
+              {note}
             </div>
           );
         }
@@ -1407,11 +1420,32 @@ function KeyValueList({ data }: { data: Record<string, unknown> }) {
               {key}:
             </span>
             <InlineValue value={value} />
+            {note}
           </div>
         );
       })}
     </div>
   );
+}
+
+/** "cut at 200 characters", under or after a value the plugin cut. */
+function CutNote({ value }: { value: unknown }) {
+  return (
+    <span data-testid="cut-note" className="font-mono text-[10px] italic" style={{ color: "var(--text-muted)" }}>
+      {describeCut(value)}
+    </span>
+  );
+}
+
+/** A plugin-captured tool call's input. The plugin cuts a long command,
+ *  query, pattern or prompt, ends it with "…" and lists it in
+ *  ``truncated``: each listed field says how much it kept, and the list
+ *  itself is not shown as a field. An input with no list shows as it is. */
+function ToolInputFields({ input }: { input: Record<string, unknown> }) {
+  const cut = cutFields(input);
+  if (!cut) return <KeyValueList data={input} />;
+  const fields = Object.fromEntries(Object.entries(input).filter(([key]) => key !== CUT_LIST_KEY));
+  return <KeyValueList data={fields} cut={new Set(cut)} />;
 }
 
 /* ---- Tool response block renderers (tool_call Pretty view) ---- */
@@ -1429,13 +1463,22 @@ function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
   );
 }
 
+/* A tool_result's content is a string holding the tool's response: its
+ * JSON text for a structured response (Bash's stdout and stderr, a
+ * Read's file, an Agent's report), or plain text. The Claude Code plugin
+ * keeps it within a bound and marks what it cut (lib/cut-json): a cut
+ * string ends with "…", a cut list with a "…" element, and the object
+ * holding a cut value names it in ``truncated``. Earlier plugin versions
+ * stored the JSON text cut mid-way and followed by "…"; such a text is
+ * read up to the cut. Raw shows the content as stored either way. */
+
 function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
   const rawContent = block.content;
   const contentString = typeof rawContent === "string" ? rawContent : null;
 
   // Parse nested JSON content so structured fields (stdout, stderr,
-  // interrupted, isImage, ...) render as a labeled list rather than
-  // escape-encoded soup. Parse-failure falls back to the raw string.
+  // interrupted, isImage, ...) render as fields rather than
+  // escape-encoded soup.
   let parsed: unknown = undefined;
   if (contentString != null) {
     try {
@@ -1450,7 +1493,7 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
   }
 
   if (Array.isArray(parsed)) {
-    return <JsonBox data={parsed} />;
+    return <ToolResultList items={parsed} />;
   }
 
   if (isPlainObject(parsed)) {
@@ -1460,15 +1503,36 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
         className="rounded-md p-2.5"
         style={{ background: "var(--bg-elevated)" }}
       >
-        <KeyValueList data={parsed} />
+        <ToolResultFields data={parsed} />
+      </div>
+    );
+  }
+
+  const recovered = contentString != null ? readCutResult(contentString) : null;
+  if (recovered) {
+    return (
+      <div
+        data-testid="tool-result-recovered"
+        className="space-y-2 rounded-md p-2.5"
+        style={{ background: "var(--bg-elevated)" }}
+      >
+        {Array.isArray(recovered.value) ? (
+          <ToolResultList items={recovered.value} />
+        ) : (
+          <ToolResultFields data={recovered.value} />
+        )}
+        <TruncatedNote>
+          the stored output ends at {recovered.storedChars.toLocaleString("en-US")} characters, {recovered.where};
+          nothing after it was stored
+        </TruncatedNote>
       </div>
     );
   }
 
   if (contentString != null) {
-    // Plugin truncates tool output at 2000 chars, appending U+2026 (…).
-    // Surface that so the user knows this is the cap, not a render bug.
-    const truncated = contentString.endsWith("\u2026");
+    // Plain text the plugin cut ends with U+2026 (…). Surface that so the
+    // user knows this is the cap, not a render bug.
+    const truncated = contentString.endsWith(CUT_MARK);
     return (
       <div data-testid="tool-result-raw">
         <pre
@@ -1508,5 +1572,231 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
     >
       {JSON.stringify(rawContent, null, 2)}
     </pre>
+  );
+}
+
+interface CutResult {
+  value: Record<string, unknown> | unknown[];
+  /** Where the stored text ends: "inside stdout", "after the last field shown". */
+  where: string;
+  /** The stored text's length before its mark, in characters. */
+  storedChars: number;
+}
+
+/** A stored text that is a JSON object or list cut mid-way and followed
+ *  by "…" (what earlier plugin versions stored for a long output), read
+ *  up to the cut, with the string it ends in marked as cut. Null when the
+ *  text is not one, or holds nothing whole to show. */
+function readCutResult(text: string): CutResult | null {
+  if (!text.endsWith(CUT_MARK)) return null;
+  const head = text.slice(0, -CUT_MARK.length);
+  const read = readCutJson(head);
+  if (!read || read.complete) return null;
+  const size = Array.isArray(read.value) ? read.value.length : Object.keys(read.value).length;
+  if (size === 0) return null;
+  if (read.cutInString) markCutString(read.value, read.cutPath);
+  return {
+    value: read.value,
+    where: read.cutPath.length > 0 ? `inside ${formatJsonPath(read.cutPath)}` : "after the last field shown",
+    storedChars: Array.from(head).length,
+  };
+}
+
+/** End the string at ``path`` with the cut mark, as the plugin ends a
+ *  string it cuts. */
+function markCutString(root: unknown, path: JsonPath): void {
+  let holder: unknown = root;
+  for (const step of path.slice(0, -1)) {
+    if (holder === null || typeof holder !== "object") return;
+    holder = (holder as Record<string | number, unknown>)[step];
+  }
+  const last = path[path.length - 1];
+  if (last === undefined || holder === null || typeof holder !== "object") return;
+  const fields = holder as Record<string | number, unknown>;
+  const value = fields[last];
+  if (typeof value === "string") fields[last] = value + CUT_MARK;
+}
+
+/** The deepest nested object shown as fields; deeper ones show as JSON. */
+const TOOL_RESULT_MAX_NESTING = 3;
+
+/** The fields shown as a terminal's output. */
+const TERMINAL_FIELDS = new Set(["stdout", "stderr"]);
+
+const fieldTextStyle: React.CSSProperties = {
+  background: "var(--bg)",
+  color: "var(--text)",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  margin: 0,
+};
+
+function FieldLabel({ name, tone = "muted" }: { name: string; tone?: "muted" | "error" }) {
+  return (
+    <span
+      data-testid="kv-label"
+      className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
+      style={{ color: tone === "error" ? "var(--danger)" : "var(--text-muted)" }}
+    >
+      {name}
+    </span>
+  );
+}
+
+/** Text as a terminal shows it, line breaks kept; stderr is set apart
+ *  by the error colour. */
+function TerminalText({ text, tone = "muted" }: { text: string; tone?: "muted" | "error" }) {
+  return (
+    <pre
+      className="rounded-md p-2 font-mono text-[12px] leading-relaxed"
+      style={{
+        ...fieldTextStyle,
+        borderLeft: `2px solid ${tone === "error" ? "var(--danger)" : "var(--border-strong)"}`,
+      }}
+    >
+      {text}
+    </pre>
+  );
+}
+
+/** A labelled text field: a command's stdout or stderr, or any other
+ *  multi-line string (a file's content, a fetched page). */
+function FieldText({ name, text, testId }: { name: string; text: string; testId: string }) {
+  const tone = name === "stderr" ? "error" : "muted";
+  return (
+    <div data-testid={testId} data-field={name} className="flex flex-col gap-1">
+      <FieldLabel name={name} tone={tone} />
+      <TerminalText text={text} tone={tone} />
+    </div>
+  );
+}
+
+function TruncatedNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-testid="tool-result-truncated"
+      className="font-mono text-[10px] italic"
+      style={{ color: "var(--text-muted)" }}
+    >
+      … (truncated) {children}
+    </div>
+  );
+}
+
+type TextBlock = Record<string, unknown> & { text: string };
+
+/** The blocks of ``value`` when it is a list of text content blocks (an
+ *  Agent's report), the "…" a cut list ends with aside; else null. */
+function textBlocksOf(value: unknown): TextBlock[] | null {
+  if (!Array.isArray(value)) return null;
+  const blocks = value.filter((item) => item !== CUT_MARK);
+  if (blocks.length === 0) return null;
+  return blocks.every((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string")
+    ? (blocks as TextBlock[])
+    : null;
+}
+
+/** Text content blocks as their texts, each with its cut note, and the
+ *  list's own when its trailing blocks were dropped. */
+function TextBlockList({ list, blocks }: { list: unknown[]; blocks: TextBlock[] }) {
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, i) => (
+        <div key={i} className="space-y-1">
+          <TerminalText text={block.text} />
+          {cutFields(block)?.includes("text") && <TruncatedNote>text {describeCut(block.text)}</TruncatedNote>}
+        </div>
+      ))}
+      {list[list.length - 1] === CUT_MARK && <TruncatedNote>{describeCut(list)}</TruncatedNote>}
+    </div>
+  );
+}
+
+/** A result that is a list: text content blocks as their texts, any
+ *  other list as JSON. */
+function ToolResultList({ items }: { items: unknown[] }) {
+  const blocks = textBlocksOf(items);
+  return blocks ? <TextBlockList list={items} blocks={blocks} /> : <JsonBox data={items} />;
+}
+
+/** A value short enough for the compact line of scalar fields. */
+function isCompactValue(value: unknown): boolean {
+  if (typeof value === "string") return !needsMultiline(value);
+  if (Array.isArray(value)) return value.length === 0;
+  if (isPlainObject(value)) return Object.keys(value).length === 0;
+  return true;
+}
+
+function CompactValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) return <span style={{ color: "var(--text-muted)" }}>[]</span>;
+  if (isPlainObject(value)) return <span style={{ color: "var(--text-muted)" }}>{"{}"}</span>;
+  return <InlineValue value={value} />;
+}
+
+/**
+ * A tool's structured result: stdout and stderr as terminal text,
+ * other multi-line text the same way, nested objects as fields of
+ * their own, a list of text blocks as its texts, other lists and deep
+ * objects as JSON, then the scalar fields together on one line. When
+ * the object lists cut fields in ``truncated``, a note names each and
+ * how much it kept, and the list is not shown as a field.
+ */
+function ToolResultFields({ data, depth = 0 }: { data: Record<string, unknown>; depth?: number }) {
+  const cut = cutFields(data);
+  const blocks: React.ReactNode[] = [];
+  const scalars: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (cut && key === CUT_LIST_KEY) continue;
+    const blockList = textBlocksOf(value);
+    if (typeof value === "string" && value.length > 0 && (TERMINAL_FIELDS.has(key) || needsMultiline(value))) {
+      const testId = TERMINAL_FIELDS.has(key) ? `tool-result-${key}` : "tool-result-text";
+      blocks.push(<FieldText key={key} name={key} text={value} testId={testId} />);
+    } else if (isCompactValue(value)) {
+      scalars.push([key, value]);
+    } else if (isPlainObject(value) && depth < TOOL_RESULT_MAX_NESTING) {
+      blocks.push(
+        <div key={key} data-testid="tool-result-nested" data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <div className="pl-2" style={{ borderLeft: "1px solid var(--border)" }}>
+            <ToolResultFields data={value} depth={depth + 1} />
+          </div>
+        </div>,
+      );
+    } else if (Array.isArray(value) && blockList) {
+      blocks.push(
+        <div key={key} data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <TextBlockList list={value} blocks={blockList} />
+        </div>,
+      );
+    } else {
+      blocks.push(
+        <div key={key} data-field={key} className="flex flex-col gap-1">
+          <FieldLabel name={key} />
+          <BlockValue value={value} />
+        </div>,
+      );
+    }
+  }
+  return (
+    <div className="space-y-2">
+      {blocks}
+      {scalars.length > 0 && (
+        <div
+          data-testid="tool-result-scalars"
+          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-[12px]"
+        >
+          {scalars.map(([key, value]) => (
+            <span key={key} className="inline-flex items-baseline gap-1">
+              <span data-testid="kv-label" className="font-medium" style={{ color: "var(--text-muted)" }}>
+                {key}:
+              </span>
+              <CompactValue value={value} />
+            </span>
+          ))}
+        </div>
+      )}
+      {cut && <TruncatedNote>{cut.map((name) => `${name} ${describeCut(data[name])}`).join("; ")}</TruncatedNote>}
+    </div>
   );
 }

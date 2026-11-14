@@ -1,6 +1,7 @@
 /**
  * A run that T162, T163 and T165 post through ingestion in the sensor's
- * own wire shape: a session_start declaring the capture posture, then
+ * own wire shape (T166 in the Claude Code plugin's): a session_start
+ * declaring the capture posture, then
  * calls whose captured content travels in the event_content envelope
  * (T165: OpenAI Responses and litellm text_completion post_calls). T162 and T163 post tool
  * calls whose captured arguments and result travel in the event_content
@@ -156,6 +157,49 @@ export const contentPostCall = (run: Run, offsetSeconds: number, content: Record
     latency_ms: 900,
     has_content: true,
     content: { ...content, session_id: run.sessionId, event_id: "" },
+  });
+
+/** The identity fields of the Claude Code plugin's events. */
+const PLUGIN_FIELDS = { client_type: "claude_code", agent_type: "coding", framework: "claude-code" };
+
+/** A session_start as the Claude Code plugin sends it, capture on (T166). */
+export const pluginSessionStart = (run: Run) =>
+  event(run, "session_start", 0, {
+    ...PLUGIN_FIELDS,
+    capture_prompts: true,
+    sensor_version: "e2e-fixture/0.0.0",
+    context: { os: "Linux", arch: "x86_64", hostname: HOST, user: "e2e" },
+  });
+
+/** A tool_call as the Claude Code plugin sends it (T166): the sanitised
+ *  input in ``tool_input`` and as a ``tool_use`` block under ``tools``,
+ *  and the tool's response as the stored text of a ``tool_result`` block
+ *  under ``response``. */
+export const pluginToolCall = (
+  run: Run,
+  offsetSeconds: number,
+  toolName: string,
+  input: Record<string, unknown>,
+  storedResult: string,
+) =>
+  event(run, "tool_call", offsetSeconds, {
+    ...PLUGIN_FIELDS,
+    model: "claude-opus-5-5",
+    tool_name: toolName,
+    tool_input: JSON.stringify(input),
+    latency_ms: 4200,
+    duration_ms: 4200,
+    has_content: true,
+    content: {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      system: null,
+      messages: [],
+      tools: [{ type: "tool_use", name: toolName, input }],
+      response: [{ type: "tool_result", content: storedResult }],
+      session_id: run.sessionId,
+      event_id: "",
+    },
   });
 
 /** An MCP tool call with nothing captured: what a capture-off run sends,

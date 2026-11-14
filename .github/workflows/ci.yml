@@ -1176,6 +1176,9 @@ jobs:
     needs: e2e-shard
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    # About a minute: download the shards' reports, merge them, list the
+    # retried tests. Ten bounds a download or an npm ci that hangs.
+    timeout-minutes: 10
     env:
       # How many tests may pass only on a retry before the job fails.
       # Every such test is listed in the job summary and gets a warning

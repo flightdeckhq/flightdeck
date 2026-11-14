@@ -26,8 +26,9 @@
 #            ran on; the Postgres container keeps running. Run it after
 #            a change to the Go or dashboard sources.
 #   down     stop the binary, and the containers when this checkout
-#            started them (see "Whose containers"). Volumes and the
-#            data dir stay.
+#            started them (see "Whose containers") and no other client
+#            uses the database (a stack of another dev dir of this
+#            checkout). Volumes and the data dir stay.
 #   reset    delete the data of the database being started (postgres:
 #            the compose volumes; sqlite: the SQLite file) and the bus
 #            store, and start again. The only command that deletes
@@ -73,14 +74,20 @@
 # the old NATS volume, which the binary does not read.
 # FLIGHTDECK_DEV_ALLOW_UNDRAINED=1 moves all the same.
 #
-# Reset. On either database, `reset` refuses while something that is
-# not this stack listens on its port (a binary of another dev dir may be
-# using that database). On Postgres it first says what it is about to
-# delete (the volume, and how many sessions and events are in it). It
-# refuses when nothing says this checkout started that Postgres. Above
-# RESET_UNCONFIRMED_MAX_SESSIONS sessions, or when the database cannot
-# be counted, it wants the project's name: CONFIRM=<project> (`make
-# dev-reset CONFIRM=docker`), or typed at its prompt on a terminal.
+# Reset. `reset` first says what it is about to delete (on Postgres the
+# volume, on SQLite the file, and how many sessions and events are in
+# it). It refuses while the database is in use by anything but this dev
+# dir's own binary: something else listening on its port; on Postgres,
+# a connection of any other client (a binary of another dev dir of this
+# checkout on another port, a psql session; each dev stack's binary
+# connects with an application_name of its own, which is how its
+# connections are told apart); on SQLite, another process holding the
+# data dir's lock. On Postgres it refuses when nothing says this
+# checkout started that Postgres. Above RESET_UNCONFIRMED_MAX_SESSIONS
+# sessions, or when the database cannot be counted, it wants a name:
+# FLIGHTDECK_DEV_CONFIRM=<project> on Postgres (`make dev-reset
+# FLIGHTDECK_DEV_CONFIRM=docker`), FLIGHTDECK_DEV_CONFIRM=sqlite on
+# SQLite, or the same typed at its prompt on a terminal.
 #
 # Environment (a second stack beside a running one sets the first three):
 #   FLIGHTDECK_DEV_PROJECT   compose project (default docker, so the
@@ -96,8 +103,8 @@
 #   FLIGHTDECK_DEV_WEBUI     0 leaves the dashboard bundle as it is (an
 #                            empty one answers 503 on /; the API and
 #                            ingestion work without it)
-#   FLIGHTDECK_DEV_TAKEOVER, FLIGHTDECK_DEV_ALLOW_UNDRAINED, CONFIRM
-#                            the three deliberate overrides above
+#   FLIGHTDECK_DEV_TAKEOVER, FLIGHTDECK_DEV_ALLOW_UNDRAINED,
+#   FLIGHTDECK_DEV_CONFIRM   the three deliberate overrides above
 #   FLIGHTDECK_DEV_READY_TIMEOUT_SECS, FLIGHTDECK_DEV_STOP_TIMEOUT_SECS,
 #   FLIGHTDECK_DEV_DRAIN_TIMEOUT_SECS
 #                            the three waits below, for the script's
@@ -120,6 +127,11 @@ PG_CONTAINER="$PROJECT-postgres-1"
 PG_DATABASE=flightdeck
 PG_VOLUME="${PROJECT}_postgres_data"
 PG_BASE_URL="postgres://flightdeck:flightdeck_dev@127.0.0.1:$PG_PORT"
+# The application_name this dev dir's binary connects to Postgres with,
+# so that reset can tell its connections from any other client's: the
+# dev dir's checksum, since two dev dirs of one checkout share the
+# project, the container and the database.
+PG_APPLICATION_NAME="flightdeck-dev-$(printf '%s' "$DEV_DIR" | cksum | cut -d' ' -f1)"
 COMPOSE_DIR="$ROOT/docker"
 
 export FLIGHTDECK_DEV_PG_PORT="$PG_PORT"
@@ -155,6 +167,12 @@ DRAIN_TIMEOUT_SECS="${FLIGHTDECK_DEV_DRAIN_TIMEOUT_SECS:-30}"
 # suite or any real use is well past it, and a database someone works
 # from holds thousands.
 RESET_UNCONFIRMED_MAX_SESSIONS=100
+# The longest one readiness probe and one read of the old stack's NATS
+# monitor may take. A server that accepts the connection and never
+# answers would otherwise hold the probe, and the whole start, without
+# a bound; both answer in milliseconds when they answer at all, and the
+# loops around them retry every second.
+PROBE_TIMEOUT_SECS=2
 
 # The longest log line `dump` prints. The binary's lines are a few
 # hundred characters; the cut keeps one pathological line (an error
@@ -316,7 +334,7 @@ port_taken() {
 # cannot be read. Unknown is not empty.
 queue_state() {
   local out
-  if ! out="$(docker exec "$1" wget -qO- 'http://localhost:8222/jsz?consumers=true' 2>/dev/null)"; then
+  if ! out="$(docker exec "$1" wget -qO- -T "$PROBE_TIMEOUT_SECS" 'http://localhost:8222/jsz?consumers=true' 2>/dev/null)"; then
     printf unknown
     return 0
   fi
@@ -451,7 +469,8 @@ alive() {
 
 # answers: whether both health endpoints answer on the stack's address.
 answers() {
-  curl -sf -o /dev/null "http://$LISTEN/api/health" && curl -sf -o /dev/null "http://$LISTEN/ingest/health"
+  curl -sf --max-time "$PROBE_TIMEOUT_SECS" -o /dev/null "http://$LISTEN/api/health" &&
+    curl -sf --max-time "$PROBE_TIMEOUT_SECS" -o /dev/null "http://$LISTEN/ingest/health"
 }
 
 # wait_ready <pid>: until the binary started here serves, or is gone, or
@@ -558,7 +577,7 @@ cmd_up() {
     say "Postgres container ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"
     "${COMPOSE[@]}" up -d --wait postgres
     printf '%s\n' "$PROJECT" >"$OWNER"
-    db_args=(--database-url "$PG_BASE_URL/$PG_DATABASE?sslmode=disable")
+    db_args=(--database-url "$PG_BASE_URL/$PG_DATABASE?sslmode=disable&application_name=$PG_APPLICATION_NAME")
   fi
 
   # Now what the new binary replaces.
@@ -637,6 +656,18 @@ cmd_down() {
     return 0
   fi
   legacy="$(legacy_containers)"
+  # This dev dir's binary is stopped; a client still connected is a
+  # stack of another dev dir of this checkout, or a psql session, and
+  # removing the container would cut it off. The seven-container stack's
+  # own services are the exception: they go with the container.
+  if [ -z "$legacy" ] && [ -n "$(running_container postgres)" ]; then
+    local others
+    others="$(pg_other_clients || true)"
+    if [ -n "$others" ]; then
+      say "the Postgres container is in use by other clients ($(printf '%s' "$others" | sort -u | paste -sd ';' - | sed 's/;/; /g')): it is left running; make down in the dev dir of that stack stops it"
+      return 0
+    fi
+  fi
   [ -z "$legacy" ] || stop_legacy_services lenient
   say "containers down (volumes kept)"
   "${COMPOSE[@]}" down --remove-orphans
@@ -661,8 +692,41 @@ pg_rows() {
 
 # confirm_postgres_reset: say what `reset` is about to delete and stop
 # unless it may: see "Reset" in the header.
+# confirm_count <sessions> <word> <what the word is>: go ahead when
+# the database holds a seed or less; otherwise only with the word, as
+# FLIGHTDECK_DEV_CONFIRM or typed at a prompt on a terminal. An empty
+# count (the database could not be counted) needs the word too.
+confirm_count() {
+  local sessions="$1" word="$2" what="$3" answer
+  if [ -n "$sessions" ] && [ "$sessions" -le "$RESET_UNCONFIRMED_MAX_SESSIONS" ]; then
+    return 0
+  fi
+  if [ "${FLIGHTDECK_DEV_CONFIRM:-}" = "$word" ]; then
+    say "confirmed: FLIGHTDECK_DEV_CONFIRM=$word"
+    return 0
+  fi
+  if [ -n "${FLIGHTDECK_DEV_CONFIRM:-}" ]; then
+    die "FLIGHTDECK_DEV_CONFIRM=$FLIGHTDECK_DEV_CONFIRM is not $what ($word): nothing was deleted"
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf 'Type %s (%s) to delete them, anything else to keep them: ' "$what" "$word"
+    read -r answer || answer=""
+    [ "$answer" = "$word" ] || die "not confirmed: nothing was deleted"
+    return 0
+  fi
+  die "the database holds more than a seed (over $RESET_UNCONFIRMED_MAX_SESSIONS sessions, or it could not be counted): nothing was deleted. To delete it, name it: make dev-reset FLIGHTDECK_DEV_CONFIRM=$word"
+}
+
+# pg_other_clients: the other clients connected to the stack's database,
+# one "application_name (address)" per line: every client backend but
+# this dev dir's binary and the psql asking.
+pg_other_clients() {
+  docker exec "$PG_CONTAINER" psql -U flightdeck -d "$PG_DATABASE" -tAX -v ON_ERROR_STOP=1 -c \
+    "SELECT coalesce(nullif(application_name, ''), '(no application name)') || ' (' || coalesce(host(client_addr), 'local socket') || ')' FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid() AND application_name IS DISTINCT FROM '$PG_APPLICATION_NAME' ORDER BY 1" 2>/dev/null
+}
+
 confirm_postgres_reset() {
-  local data="$1" sessions events answer
+  local data="$1" sessions events others
   have_docker || die "no docker daemon answers: there is no Postgres volume to reset"
   # shellcheck disable=SC2046  # ids, one per line
   refuse_foreign "delete that stack's database" $(project_containers postgres) $(legacy_containers)
@@ -670,26 +734,79 @@ confirm_postgres_reset() {
     die "nothing says this checkout started the Postgres of compose project $PROJECT (no container of it started from $COMPOSE_DIR, no $OWNER): refusing to delete the $PG_VOLUME volume. Start the stack here first (make dev), or delete the volume yourself: docker compose -p $PROJECT -f docker/docker-compose.dev.yml down -v"
   fi
   "${COMPOSE[@]}" up -d --wait postgres >/dev/null
+  if ! others="$(pg_other_clients)"; then
+    die "could not ask the database which clients it has: nothing was deleted"
+  fi
+  if [ -n "$others" ]; then
+    die "the database is in use by other clients: $(printf '%s' "$others" | sort | uniq -c | sed 's/^ *\([0-9]*\) /\1 x /' | paste -sd ';' - | sed 's/;/; /g'). A dev stack of another dev dir of this checkout (on another FLIGHTDECK_DEV_PORT) uses it, or a psql session, or this dev dir's own binary started before reset checked this (make dev-restart, then run this again). Stop them first; nothing was deleted."
+  fi
   sessions="$(pg_rows sessions)"
   events="$(pg_rows events)"
   say "reset is about to delete the $PG_VOLUME volume (the Postgres database: ${sessions:-an unknown number of} sessions, ${events:-an unknown number of} events) and the bus store in $data/nats"
-  if [ -n "$sessions" ] && [ "$sessions" -le "$RESET_UNCONFIRMED_MAX_SESSIONS" ]; then
-    return 0
+  confirm_count "$sessions" "$PROJECT" "the compose project name"
+}
+
+# sqlite_rows <file> <table>: how many rows the table of a SQLite file
+# holds; 0 when it has no such table (never migrated); empty when the
+# file cannot be read (no sqlite3 and no python3, or not a database).
+sqlite_rows() {
+  local file="$1" table="$2" n
+  if command -v sqlite3 >/dev/null 2>&1; then
+    n="$(sqlite3 -readonly "$file" "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'" 2>/dev/null)" || n=""
+    case "$n" in
+      0) printf 0 ;;
+      1) sqlite3 -readonly "$file" "SELECT count(*) FROM $table" 2>/dev/null || true ;;
+    esac
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$table" 2>/dev/null <<'PY' || true
+import sqlite3, sys
+db = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+if db.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", (sys.argv[2],)).fetchone()[0]:
+    print(db.execute("SELECT count(*) FROM %s" % sys.argv[2]).fetchone()[0])
+else:
+    print(0)
+PY
   fi
-  if [ "${CONFIRM:-}" = "$PROJECT" ]; then
-    say "confirmed: CONFIRM=$PROJECT"
-    return 0
+}
+
+# data_dir_locked <data dir>: whether a process holds the binary's lock
+# on the data dir (an exclusive flock on flightdeck.lock, which every
+# running binary takes); empty when that cannot be told (no python3 and
+# no flock).
+data_dir_locked() {
+  local lock="$1/flightdeck.lock"
+  [ -f "$lock" ] || { printf no; return 0; }
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import fcntl, sys
+f = open(sys.argv[1])
+try:
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(1)' "$lock" 2>/dev/null; then printf no; else printf yes; fi
+  elif command -v flock >/dev/null 2>&1; then
+    if flock -n "$lock" true 2>/dev/null; then printf no; else printf yes; fi
   fi
-  if [ -n "${CONFIRM:-}" ]; then
-    die "CONFIRM=$CONFIRM does not name the compose project ($PROJECT): nothing was deleted"
+}
+
+confirm_sqlite_reset() {
+  local data="$1" sessions events locked
+  # This dev dir's own binary holds the lock while it runs, and no other
+  # process can then hold it; with ours stopped, a holder is another dev
+  # dir's binary on the same data dir.
+  if ! running_pid >/dev/null; then
+    locked="$(data_dir_locked "$data")"
+    if [ "$locked" = yes ]; then
+      die "another process holds the lock on $data (a dev stack of another dev dir of this checkout, on another FLIGHTDECK_DEV_PORT, runs on it): stop it first; nothing was deleted"
+    fi
   fi
-  if [ -t 0 ] && [ -t 1 ]; then
-    printf 'Type the compose project name (%s) to delete them, anything else to keep them: ' "$PROJECT"
-    read -r answer || answer=""
-    [ "$answer" = "$PROJECT" ] || die "not confirmed: nothing was deleted"
-    return 0
+  sessions="$(sqlite_rows "$data/flightdeck.db" sessions)"
+  events="$(sqlite_rows "$data/flightdeck.db" events)"
+  if [ ! -f "$data/flightdeck.db" ]; then
+    sessions=0
+    events=0
   fi
-  die "the database holds more than a seed (over $RESET_UNCONFIRMED_MAX_SESSIONS sessions, or it could not be counted): nothing was deleted. To delete it, name the project: make dev-reset CONFIRM=$PROJECT"
+  say "reset is about to delete the SQLite database $data/flightdeck.db (${sessions:-an unknown number of} sessions, ${events:-an unknown number of} events) and the bus store in $data/nats"
+  confirm_count "$sessions" sqlite "the word sqlite"
 }
 
 cmd_reset() {
@@ -723,7 +840,7 @@ cmd_reset() {
     "${COMPOSE[@]}" down -v --remove-orphans
     rm -rf "$data/nats"
   else
-    say "reset is about to delete the SQLite database $data/flightdeck.db and the bus store in $data/nats"
+    confirm_sqlite_reset "$data"
     stop_binary
     rm -rf "$data/nats" "$data/flightdeck.db" "$data/flightdeck.db-wal" "$data/flightdeck.db-shm"
   fi

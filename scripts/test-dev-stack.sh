@@ -120,12 +120,13 @@ cat >"$F/flightdeck" <<'SH'
 #!/bin/bash
 F="$FAKE_STATE"
 mode="$(cat "$F/binary_mode" 2>/dev/null || echo ok)"
+args="$*"
 port=""
 while [ $# -gt 0 ]; do
   [ "$1" != --listen ] || port="${2##*:}"
   shift
 done
-echo "flightdeck start mode=$mode" >>"$F/calls.log"
+echo "flightdeck start mode=$mode $args" >>"$F/calls.log"
 case "$mode" in
   exit)
     echo "flightdeck: listen tcp 127.0.0.1:$port: bind: address already in use" >&2
@@ -230,6 +231,7 @@ case "$cmd" in
         [ ! -f "$F/pg_down" ] || exit 2
         sql="${*: -1}"
         case "$sql" in
+          *pg_stat_activity*) cat "$F/pg_others" 2>/dev/null || true ;;
           *to_regclass*) if [ -f "$F/pg_sessions" ]; then echo t; else echo f; fi ;;
           *"FROM public.sessions"*) cat "$F/pg_sessions" ;;
           *"FROM public.events"*) cat "$F/pg_events" ;;
@@ -286,7 +288,7 @@ stack() {
   set +e
   OUT="$(timeout "$RUN_BOUND_SECS" env \
     -u FLIGHTDECK_DEV_DB -u FLIGHTDECK_DEV_BUILD -u FLIGHTDECK_DEV_ARGS -u FLIGHTDECK_DEV_PG_PORT \
-    -u FLIGHTDECK_DEV_TAKEOVER -u FLIGHTDECK_DEV_ALLOW_UNDRAINED -u CONFIRM \
+    -u FLIGHTDECK_DEV_TAKEOVER -u FLIGHTDECK_DEV_ALLOW_UNDRAINED -u FLIGHTDECK_DEV_CONFIRM \
     PATH="$TMP/bin:$PATH" FAKE_STATE="$F" FAKE_LOAD_SECS="$FAKE_LOAD_SECS" \
     FLIGHTDECK_DEV_PROJECT="$PROJECT" FLIGHTDECK_DEV_PORT="$PORT" \
     FLIGHTDECK_DEV_DIR="$DEV" FLIGHTDECK_DEV_DATA_DIR="$DATA" FLIGHTDECK_DEV_WEBUI=0 \
@@ -306,7 +308,7 @@ fresh() {
   kill_pidfile "$F/stranger.pid"
   pkill -KILL -f "$F/server.py" 2>/dev/null || true
   rm -rf "$DEV" "$DATA" "$F/containers" "$F/calls.log" "$F/monitor" "$F/pg_sessions" "$F/pg_events" \
-    "$F/pg_down" "$F/go_fail" "$F/compose_up_fail" "$F/binary_mode" "$F/volume_removed"
+    "$F/pg_down" "$F/go_fail" "$F/compose_up_fail" "$F/binary_mode" "$F/volume_removed" "$F/pg_others"
   mkdir -p "$F/containers"
   : >"$F/calls.log"
 }
@@ -598,13 +600,13 @@ stack reset
 expect_status 1
 expect_out "${PROJECT}_postgres_data"
 expect_out "13750 sessions, 209842 events"
-expect_out "make dev-reset CONFIRM=$PROJECT"
+expect_out "make dev-reset FLIGHTDECK_DEV_CONFIRM=$PROJECT"
 expect_no_call '^docker compose .* down'
 expect_serving
-ENVV=(CONFIRM=docker)
+ENVV=(FLIGHTDECK_DEV_CONFIRM=docker)
 stack reset
 expect_status 1
-expect_out "CONFIRM=docker does not name the compose project ($PROJECT)"
+expect_out "FLIGHTDECK_DEV_CONFIRM=docker is not the compose project name ($PROJECT)"
 expect_no_call '^docker compose .* down'
 expect_serving
 passed
@@ -613,7 +615,7 @@ fresh "reset goes ahead with the project's name"
 stack up postgres
 echo 13750 >"$F/pg_sessions"
 echo 209842 >"$F/pg_events"
-ENVV=(CONFIRM="$PROJECT")
+ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
 stack reset
 expect_status 0
 expect_out "13750 sessions, 209842 events"
@@ -641,12 +643,12 @@ expect_call '^docker compose .* down -v --remove-orphans'
 expect_serving
 passed
 
-fresh "reset refuses a database it cannot count"
+fresh "reset refuses a database it cannot ask"
 stack up postgres
 touch "$F/pg_down"
 stack reset
 expect_status 1
-expect_out "an unknown number of sessions"
+expect_out "could not ask the database which clients it has"
 expect_no_call '^docker compose .* down'
 expect_serving
 passed
@@ -669,7 +671,7 @@ echo 3 >"$F/pg_sessions"
 echo 40 >"$F/pg_events"
 stranger
 for args in "" postgres sqlite; do
-  ENVV=(CONFIRM="$PROJECT")
+  ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
   # shellcheck disable=SC2086  # an empty args runs reset with none
   stack reset $args
   expect_status 1
@@ -685,7 +687,7 @@ fresh "reset refuses another checkout's Postgres, with or without a confirmation
 container postgres "$FOREIGN"
 mv "$F/containers/postgres-$PROJECT" "$F/containers/pg-$PROJECT"
 echo 13750 >"$F/pg_sessions"
-ENVV=(CONFIRM="$PROJECT")
+ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
 stack reset postgres
 expect_status 1
 expect_out "were started from $FOREIGN"
@@ -735,6 +737,116 @@ expect_no_call '^docker compose'
 split dev-split SPLIT_PROJECT=fdtest-split
 expect_status 0
 expect_call '^docker compose -p fdtest-split -f docker/docker-compose.split.yml up -d --wait'
+passed
+
+# ---- the follow-ups of the second review ----------------------------
+
+fresh "the binary connects with an application_name of its dev dir, which reset leaves out"
+stack up postgres
+expect_status 0
+expect_call '^flightdeck start mode=ok .*application_name=flightdeck-dev-[0-9]+'
+app="$(grep -oE 'application_name=flightdeck-dev-[0-9]+' "$F/calls.log" | head -n1 | cut -d= -f2)"
+stack reset
+expect_status 0
+expect_call "application_name IS DISTINCT FROM '$app'"
+passed
+
+fresh "reset refuses while other clients use the Postgres database, and names them"
+stack up postgres
+printf 'flightdeck-dev-123 (172.18.0.1)\nflightdeck-dev-123 (172.18.0.1)\npsql (local socket)\n' >"$F/pg_others"
+ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
+stack reset
+expect_status 1
+expect_out "the database is in use by other clients: 2 x flightdeck-dev-123 (172.18.0.1); 1 x psql (local socket)"
+expect_out "nothing was deleted"
+expect_no_call '^docker compose .* down'
+expect_serving
+passed
+
+fresh "down leaves the Postgres container running while another client uses it"
+stack up postgres
+printf 'flightdeck-dev-456 (172.18.0.1)\n' >"$F/pg_others"
+stack down
+expect_status 0
+expect_out "the Postgres container is in use by other clients (flightdeck-dev-456 (172.18.0.1))"
+expect_state "pg-$PROJECT" running
+expect_no_call '^docker compose .* down'
+expect_not_serving
+rm -f "$F/pg_others"
+stack down
+expect_status 0
+expect_state "pg-$PROJECT" gone
+passed
+
+# sqlite_db <sessions>: a SQLite file in the data dir with that many
+# sessions and twice as many events.
+sqlite_db() {
+  mkdir -p "$DATA"
+  rm -f "$DATA/flightdeck.db"
+  python3 - "$DATA/flightdeck.db" "$1" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("CREATE TABLE sessions (session_id TEXT)")
+db.execute("CREATE TABLE events (event_id TEXT)")
+n = int(sys.argv[2])
+db.executemany("INSERT INTO sessions VALUES (?)", [(str(i),) for i in range(n)])
+db.executemany("INSERT INTO events VALUES (?)", [(str(i),) for i in range(2 * n)])
+db.commit()
+PY
+}
+
+fresh "a SQLite reset counts first, and wants the word sqlite above a seed"
+stack up sqlite
+expect_status 0
+sqlite_db 150
+stack reset
+expect_status 1
+expect_out "150 sessions, 300 events"
+expect_out "make dev-reset FLIGHTDECK_DEV_CONFIRM=sqlite"
+[ -f "$DATA/flightdeck.db" ] || fail "the SQLite file was deleted"
+expect_serving
+ENVV=(FLIGHTDECK_DEV_CONFIRM="$PROJECT")
+stack reset
+expect_status 1
+expect_out "is not the word sqlite"
+ENVV=(FLIGHTDECK_DEV_CONFIRM=sqlite)
+stack reset
+expect_status 0
+[ ! -e "$DATA/flightdeck.db" ] || fail "the SQLite file is still there"
+expect_serving
+passed
+
+fresh "a SQLite reset of a seed-sized database goes ahead, of one it cannot read does not"
+stack up sqlite
+sqlite_db 40
+stack reset
+expect_status 0
+expect_out "40 sessions, 80 events"
+printf 'not a database' >"$DATA/flightdeck.db"
+stack reset
+expect_status 1
+expect_out "an unknown number of sessions"
+passed
+
+fresh "a SQLite reset refuses while another process holds the data dir's lock"
+mkdir -p "$DATA"
+: >"$DATA/flightdeck.db"
+python3 -c 'import fcntl, sys, time
+f = open(sys.argv[1], "w")
+fcntl.flock(f, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+time.sleep(60)' "$DATA/flightdeck.lock" "$F/locked" &
+holder=$!
+for ((i = 0; i < 50; i++)); do [ -e "$F/locked" ] && break; sleep 0.1; done
+stack reset sqlite
+expect_status 1
+expect_out "another process holds the lock on $DATA"
+[ -f "$DATA/flightdeck.db" ] || fail "the SQLite file was deleted"
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null || true
+rm -f "$F/locked"
+stack reset sqlite
+expect_status 0
 passed
 
 printf '%s cases passed\n' "$PASSED"

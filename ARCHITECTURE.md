@@ -10853,18 +10853,28 @@ with the same compose project, `make dev` refuses (it would stop that
 stack, or attach a second binary to its database), `make down` stops
 only its own binary and leaves the containers running, and `make
 dev-reset` refuses. A second stack beside a running one has a compose
-project, a port and a Postgres port of its own.
+project, a port and a Postgres port of its own. Within one checkout,
+`make down` of a dev dir leaves the Postgres container running while
+another client still uses the database (the stack of another dev dir,
+which the database lists by its `application_name`).
 
-`make dev-reset` refuses while something that is not this stack
-listens on its port: a binary started from another dev dir may be
-using the database, and the start that ends the reset would fail on
-the busy port only after the deletion. On Postgres it says what it is
-about to delete: the volume, and the number of sessions and events in
-it. It refuses when neither a container nor the dev dir says this
-checkout started that Postgres. A database with more than 100 sessions
-(the test fixtures are about 60), or one that cannot be counted, is
-deleted only with the compose project's name, as `CONFIRM=<project>`
-or typed at a prompt on a terminal.
+`make dev-reset` refuses while the database is in use by anything but
+this dev dir's own binary, since the start that ends the reset would
+fail only after the deletion: something else listening on its port; on
+Postgres, a connection of any other client, which the database itself
+lists (`pg_stat_activity`): each dev stack's binary connects with an
+`application_name` of its dev dir, so the connections of a stack of
+another dev dir of the same checkout, on another port, are told from
+its own, and so are a psql session's; on SQLite, another process
+holding the data dir's lock. It says what it is about to delete: the
+Postgres volume or the SQLite file, and the number of sessions and
+events in it. On Postgres it refuses when neither a container nor the
+dev dir says this checkout started that Postgres. A database with more
+than 100 sessions (the test fixtures are about 60), or one that cannot
+be counted, is deleted only with its name, as
+`FLIGHTDECK_DEV_CONFIRM=<project>` on Postgres or
+`FLIGHTDECK_DEV_CONFIRM=sqlite` on SQLite, or typed at a prompt on a
+terminal.
 
 `make dev` takes over a compose project that still runs the services
 as containers. Containers of the services `nginx`, `dashboard`,
@@ -11081,7 +11091,11 @@ runs `scripts/install-gate.sh`. Every leg starts `flightdeck` with no
 database and nothing else configured, since that is the install a new
 user makes: the script removes the binary's settings from its
 environment and requires the start-up block to name a SQLite database
-in the data dir. Then: health, the token from the start-up block,
+in the data dir. When the script starts the binary itself, it counts
+it as ready only once the binary's own output since that start holds
+the end of its start-up block, the health endpoint answers and the
+process is alive: an answer alone could come from a server that took
+the port while the binary was still loading. Then: health, the token from the start-up block,
 `/runtime-config.json`, the dashboard, a 401 from the query API and from
 ingestion for a request with no token and for one with a wrong token
 (with authentication broken open every other check would still pass),
@@ -11304,7 +11318,7 @@ targets:
 | `make dev` | Start the dev stack (`scripts/dev-stack.sh`): the binary from source on `:4000`, on Postgres; `DB=sqlite` for SQLite |
 | `make dev-restart` | Rebuild the binary and restart it |
 | `make down` | Stop the dev stack; volumes and the data dir stay |
-| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again; `CONFIRM=<project>` for a Postgres database with more than a test seed |
+| `make dev-reset` | Stop the dev stack, delete its database and bus store, start again; `FLIGHTDECK_DEV_CONFIRM=<project>` (Postgres) or `sqlite` for a database with more than a test seed |
 | `make logs` | Follow the binary's log |
 | `make test` | Per-component unit tests (sensor, ingestion, workers, api, dashboard) |
 | `make test-integration` | Run pytest against the dev stack, on the database it was started with |

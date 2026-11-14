@@ -920,8 +920,11 @@ All notable changes to Flightdeck are documented here.
   stack, or a running binary, serving. `make dev-reset` stays the only
   command that deletes data; on Postgres it says how many sessions and
   events it is about to delete, and a database with more than a test
-  seed is deleted only with the compose project's name (`make
-  dev-reset CONFIRM=docker`). The commands leave another checkout's
+  seed is deleted only with its name (`make dev-reset
+  FLIGHTDECK_DEV_CONFIRM=docker` on Postgres, `sqlite` on SQLite);
+  it refuses while another client uses the database (a stack of
+  another dev dir on another port, a psql session). The commands
+  leave another checkout's
   containers alone: from a second checkout on the same compose project
   `make dev` and `make dev-reset` refuse and `make down` stops only
   its own binary. `make

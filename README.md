@@ -11,10 +11,7 @@
     <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
     <a href="https://github.com/flightdeckhq/flightdeck/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/flightdeckhq/flightdeck/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   </p>
-  <a href="assets/readme/fleet-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/fleet-dark.png">
-    <img alt="The Flightdeck fleet view: every agent on one live timeline, with its LLM calls, tool calls and policy events as they happen." src="assets/readme/fleet-light.png" width="440">
-  </picture></a>
+  <a href="assets/readme/fleet-dark.png"><img alt="The Flightdeck fleet view: every agent on one live timeline, with its LLM calls, tool calls and policy events as they happen." src="assets/readme/fleet-dark.png" width="440"></a>
 </div>
 
 ## Install
@@ -92,9 +89,9 @@ Flightdeck is an observability and control plane for AI agents that you host you
 
 <table>
   <tr>
-    <td width="33%" valign="top"><a href="assets/readme/tile-timeline-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-timeline-dark.png"><img alt="A detail of the fleet timeline: agents and their sub-agents, one row each, with events arriving." src="assets/readme/tile-timeline-light.png"></picture></a><br><sub>A live fleet timeline</sub></td>
-    <td width="33%" valign="top"><a href="assets/readme/tile-agents-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-agents-dark.png"><img alt="The agents table: tokens, latency, errors, sessions and cost per agent over seven days." src="assets/readme/tile-agents-light.png"></picture></a><br><sub>Cost and tokens per agent</sub></td>
-    <td width="33%" valign="top"><a href="assets/readme/tile-control-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/tile-control-dark.png"><img alt="A run's drawer: a blocked MCP call at the top of its timeline and the Stop Agent button in its header." src="assets/readme/tile-control-light.png"></picture></a><br><sub>A blocked MCP call and the kill switch</sub></td>
+    <td width="33%" valign="top"><a href="assets/readme/tile-timeline-dark.png"><img alt="A detail of the fleet timeline: agents and their sub-agents, one row each, with events arriving." src="assets/readme/tile-timeline-dark.png"></a><br><sub>A live fleet timeline</sub></td>
+    <td width="33%" valign="top"><a href="assets/readme/tile-agents-dark.png"><img alt="The agents table: tokens, latency, errors, sessions and cost per agent over seven days." src="assets/readme/tile-agents-dark.png"></a><br><sub>Cost and tokens per agent</sub></td>
+    <td width="33%" valign="top"><a href="assets/readme/tile-control-dark.png"><img alt="A run's drawer: a blocked MCP call at the top of its timeline and the Stop Agent button in its header." src="assets/readme/tile-control-dark.png"></a><br><sub>A blocked MCP call and the kill switch</sub></td>
   </tr>
 </table>
 

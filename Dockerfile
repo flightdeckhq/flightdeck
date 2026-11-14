@@ -27,9 +27,24 @@
 # The schema is created on the first start; /data then holds only the
 # bus store and secrets.json, and is still worth a volume.
 #
+# Configuration. The image sets the binary's data dir and listen
+# address in the environment (FLIGHTDECK_DATA_DIR=/data,
+# FLIGHTDECK_LISTEN=:4000), not as flags, so the health check below,
+# `docker exec <container> flightdeck health` and a Kubernetes exec
+# probe read the same values as the server. Change either with `-e`;
+# a flag after the image name still wins for the server, but the
+# health check does not see it.
+#
 # Publish the port on 127.0.0.1 (as above) unless other machines should
 # reach it: the dashboard token is served to anyone who can reach the
-# origin. :4000 inside the container is not a loopback address, so the
+# origin. The container answers for `localhost` and for IP addresses
+# (FLIGHTDECK_ALLOWED_HOSTS=localhost, set below), so a page on another
+# site cannot reach it through the browser under a name of its own (DNS
+# rebinding). Reached by a name instead (a Compose service name, a
+# reverse proxy's host), add that name:
+#   -e FLIGHTDECK_ALLOWED_HOSTS=localhost,flightdeck,fd.example.com
+# A request for any other name is answered 421 naming the host and
+# this variable, and logged; "*" answers every name. :4000 inside the container is not a loopback address, so the
 # binary mints an access token on its first start, prints it once in the
 # start-up block (treat the container's logs as the secret they carry)
 # and keeps it in /data/secrets.json, mode 0600, for the next starts.
@@ -80,4 +95,23 @@ COPY pricing.yaml /etc/flightdeck/pricing.yaml
 VOLUME /data
 EXPOSE 4000
 USER nonroot
-ENTRYPOINT ["/usr/local/bin/flightdeck", "--data-dir", "/data", "--listen", ":4000"]
+ENV FLIGHTDECK_DATA_DIR=/data \
+    FLIGHTDECK_LISTEN=:4000 \
+    FLIGHTDECK_ALLOWED_HOSTS=localhost
+# `flightdeck health` asks the instance in this container whether its
+# query API and its ingestion API answer, and exits 0 or 1. The image
+# has no shell and no curl, so the binary is its own probe; exec form,
+# for the same reason. The values:
+#   interval 10s      how soon a wedged instance shows as unhealthy; a
+#                     check is one process start and two requests on
+#                     loopback.
+#   timeout 5s        above the three seconds the command gives itself,
+#                     so it reports why it failed and is not killed
+#                     mid-probe.
+#   start-period 60s  the binary waits up to a minute for a database
+#                     that is still starting and then migrates it;
+#                     failures in that window do not count.
+#   retries 3         one slow answer does not mark the container.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["/usr/local/bin/flightdeck", "health"]
+ENTRYPOINT ["/usr/local/bin/flightdeck"]

@@ -32,6 +32,9 @@ func TestEnsure_CreatesTheLayoutPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if l.Tmp != filepath.Join(l.Root, "tmp") {
+		t.Fatalf("Tmp = %q, want tmp inside the data dir", l.Tmp)
+	}
 	for _, p := range []string{l.Root, l.NATS, l.ACME} {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -216,4 +219,111 @@ func TestLoadSecrets_RejectsBadJSON(t *testing.T) {
 	if _, err := LoadSecrets(path); err == nil {
 		t.Fatal("want a parse error")
 	}
+}
+
+func prepared(t *testing.T) Layout {
+	t.Helper()
+	l, err := Ensure(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+func requirePrivateDir(t *testing.T, dir string) {
+	t.Helper()
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("%s is not a directory: %v %v", dir, info, err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s has mode %04o, want 0700", dir, info.Mode().Perm())
+	}
+}
+
+func TestPrepareTmp_CreatesTheDirectory(t *testing.T) {
+	l := prepared(t)
+	if _, err := os.Lstat(l.Tmp); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Ensure made tmp (lstat: %v); PrepareTmp makes it", err)
+	}
+	warning, err := PrepareTmp(l.Tmp)
+	if err != nil || warning != "" {
+		t.Fatalf("warning %q, err %v", warning, err)
+	}
+	requirePrivateDir(t, l.Tmp)
+}
+
+// Only SQLite's own leftovers go: a shared directory, or the system's
+// /tmp under a data dir of "/", keeps everything else.
+func TestPrepareTmp_RemovesOnlySQLiteFiles(t *testing.T) {
+	l := prepared(t)
+	if err := os.Mkdir(l.Tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ours := []string{SQLiteTempPrefix + "1a2b3c4d", SQLiteTempPrefix + "ffff0"}
+	foreign := []string{"notes.txt", ".hidden", "xetilqs_1", "etilqs", "systemd-private-abc"}
+	for _, name := range append(append([]string{}, ours...), foreign...) {
+		if err := os.WriteFile(filepath.Join(l.Tmp, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(l.Tmp, SQLiteTempPrefix+"dir", "inside"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	warning, err := PrepareTmp(l.Tmp)
+	if err != nil || warning != "" {
+		t.Fatalf("warning %q, err %v", warning, err)
+	}
+	for _, name := range ours {
+		if _, err := os.Stat(filepath.Join(l.Tmp, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s, a file SQLite left, is still there", name)
+		}
+	}
+	for _, name := range append(foreign, SQLiteTempPrefix+"dir/inside") {
+		if _, err := os.Stat(filepath.Join(l.Tmp, name)); err != nil {
+			t.Errorf("%s was removed; only SQLite's temporary files may be: %v", name, err)
+		}
+	}
+}
+
+// A symbolic link in place of tmp is removed, never followed: its
+// target keeps everything in it.
+func TestPrepareTmp_ReplacesASymbolicLinkAndLeavesItsTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symbolic link needs a privilege on Windows")
+	}
+	l := prepared(t)
+	target := t.TempDir()
+	for _, name := range []string{"precious.txt", SQLiteTempPrefix + "not-ours-either"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, l.Tmp); err != nil {
+		t.Fatal(err)
+	}
+	warning, err := PrepareTmp(l.Tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(warning, "was a symbolic link") {
+		t.Fatalf("warning = %q, want it to say what was replaced", warning)
+	}
+	requirePrivateDir(t, l.Tmp)
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("the link's target lost files: %d entries, err %v", len(entries), err)
+	}
+}
+
+func TestPrepareTmp_ReplacesAFile(t *testing.T) {
+	l := prepared(t)
+	if err := os.WriteFile(l.Tmp, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	warning, err := PrepareTmp(l.Tmp)
+	if err != nil || !strings.Contains(warning, "was a file") {
+		t.Fatalf("warning %q, err %v", warning, err)
+	}
+	requirePrivateDir(t, l.Tmp)
 }

@@ -67,6 +67,8 @@ type mockSessAttacher struct {
 	priorState string
 	err        error
 	called     []string
+	// eventIDs collects the event id each Attach call was given.
+	eventIDs []string
 	// recorded collects the (session_id, seq) pairs RecordStart saw;
 	// recordErr is what RecordStart answers after recording.
 	recorded  []recordedStart
@@ -75,16 +77,18 @@ type mockSessAttacher struct {
 
 type recordedStart struct {
 	sessionID string
+	eventID   string
 	seq       uint64
 }
 
-func (m *mockSessAttacher) Attach(_ context.Context, sessionID string) (bool, string, error) {
+func (m *mockSessAttacher) Attach(_ context.Context, sessionID, eventID string) (bool, string, error) {
 	m.called = append(m.called, sessionID)
+	m.eventIDs = append(m.eventIDs, eventID)
 	return m.attached, m.priorState, m.err
 }
 
-func (m *mockSessAttacher) RecordStart(_ context.Context, sessionID string, seq uint64) error {
-	m.recorded = append(m.recorded, recordedStart{sessionID: sessionID, seq: seq})
+func (m *mockSessAttacher) RecordStart(_ context.Context, sessionID, eventID string, seq uint64) error {
+	m.recorded = append(m.recorded, recordedStart{sessionID: sessionID, eventID: eventID, seq: seq})
 	return m.recordErr
 }
 
@@ -1232,6 +1236,36 @@ func TestEventsHandler_SessionStartRecordsItsSequenceWhenAttached(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+// The session_start's own id reaches the attach and the stamp, which
+// attach and stamp once per id (a resent copy gets the first answer).
+func TestEventsHandler_SessionStartPassesItsEventIDToTheAttacher(t *testing.T) {
+	attacher := &mockSessAttacher{attached: true, priorState: "active"}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{},
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	const eventID = "33333333-3333-4333-8333-333333333333"
+	body := `{"id":"` + eventID + `","session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
+	for range 2 {
+		req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer valid-token")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+	if len(attacher.eventIDs) != 2 || attacher.eventIDs[0] != eventID || attacher.eventIDs[1] != eventID {
+		t.Fatalf("Attach got event ids %v, want %s twice", attacher.eventIDs, eventID)
+	}
+	if len(attacher.recorded) != 2 || attacher.recorded[0].eventID != eventID || attacher.recorded[1].eventID != eventID {
+		t.Fatalf("RecordStart got %+v, want the event id on each call", attacher.recorded)
 	}
 }
 

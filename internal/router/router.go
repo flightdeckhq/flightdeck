@@ -2,7 +2,8 @@
 // embedded dashboard at /, the generated /runtime-config.json, the query
 // API under /api and the ingestion API under /ingest, each path forwarded
 // as sent (the services strip their own prefix). A bare /v1/... path is
-// answered 404 with a hint, never routed to a service.
+// answered 404 with a hint, never routed to a service. Every request
+// passes the host check first (hosts.go).
 package router
 
 import (
@@ -28,6 +29,9 @@ type Config struct {
 	UI fs.FS
 	// Token is the access token /runtime-config.json hands the dashboard.
 	Token string
+	// Hosts decides which Host headers are answered, on every route
+	// (hosts.go). The zero value answers all of them.
+	Hosts HostPolicy
 	// IngestReadTimeout and IngestWriteTimeout are the per-request
 	// deadlines on /ingest, the ingestion service's own; APIReadTimeout
 	// is the read deadline on /api other than the WebSocket. Zero leaves
@@ -85,7 +89,7 @@ func New(c Config) http.Handler {
 	})
 	mux.HandleFunc("/v1/", v1Hint)
 	mux.Handle("/", &ui{fsys: c.UI, built: fsHas(c.UI, "index.html")})
-	return mux
+	return &hostGuard{policy: c.Hosts, next: mux}
 }
 
 // withDeadlines sets the connection's read and write deadlines for the

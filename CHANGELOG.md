@@ -41,6 +41,40 @@ All notable changes to Flightdeck are documented here.
   `app` package (`ingestion/app`, `workers/app`, `api/app`) the binary
   and the standalone services share.
 
+- **`flightdeck health` and a health check in the image.** `flightdeck
+  health` asks the running instance whether its query API and its
+  ingestion API answer, prints one line and exits 0 or 1. It takes the
+  server's `--listen` and `--domain` (or `FLIGHTDECK_LISTEN` and
+  `FLIGHTDECK_DOMAIN`), needs no token and touches neither the data dir
+  nor the database. A listen on every interface is probed on
+  `127.0.0.1`, then on `::1`, so a container without IPv6 on its
+  loopback is still found healthy. The Docker image, which has no shell or curl, runs
+  it as its `HEALTHCHECK`, so `docker ps` shows the container `healthy`
+  and a Compose `depends_on: condition: service_healthy` works; a
+  Kubernetes exec probe runs the same command. The image now sets its
+  data dir and listen address as `FLIGHTDECK_DATA_DIR=/data` and
+  `FLIGHTDECK_LISTEN=:4000` in the environment instead of as flags, so
+  the health check reads what the server reads.
+
+- **The binary answers only for the names it is known by.** The
+  dashboard's token is served by `/runtime-config.json` with no
+  credential, so a page on another site could reach a loopback-only
+  `flightdeck` through the user's browser under a name of its own (DNS
+  rebinding) and read it. Every request's `Host` is now checked: an IP
+  address, `localhost`, the `--domain` and the names in the new
+  `--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`) are answered, anything
+  else gets 421 naming the refused host and the setting to add it to,
+  and is logged once per host name. The check is on for a
+  loopback listen, with `--domain`, whenever a list is set, and in the
+  Docker image (which sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`); a
+  listen address beyond loopback with no list answers any name, as
+  before. A container reached by a name (a Compose service name, a
+  reverse proxy's host) needs that name in the list, which compose
+  passes through from `docker/.env`. With the check on, the fleet
+  stream also refuses a browser page of another site (403, naming the
+  setting); with it off, it checks no `Origin`, so a reverse proxy that
+  rewrites the `Host` to its upstream keeps the live feed.
+
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
   through the `storage` boundary: plain `database/sql` on either engine,
@@ -335,6 +369,75 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **One `FLIGHTDECK_SERVER` value works for the sensor and the Claude
+  Code plugin.** The `flightdeck` start-up block prints its ingestion
+  URL (`http://localhost:4000/ingest`) as the value for both, but the
+  plugin appended `/ingest/v1/events` to it, posted to
+  `/ingest/ingest/v1/events`, got a 404 and recorded nothing. The plugin
+  now takes the base URL or the ingestion URL, with or without a
+  trailing slash, and so does a reverse proxy's prefix
+  (`https://example.com/fd`, `https://example.com/fd/ingest`). A base
+  URL with a trailing slash also failed before. The sensor accepted
+  both forms already; it now looks only at the URL's path, so a control
+  plane at `https://ingest.example.com` gets `/ingest` appended and its
+  API calls stay on that host (they went to `https://api.example.com`,
+  with the access token). The sensor, the plugin and the playground
+  apply one rule: a path whose last segment is `ingest` is the
+  ingestion URL, any other path (`/ingestion`, `/ingest-eu`) is the
+  base. Credentials in the server URL are dropped, with a warning, by
+  both, and neither the plugin's notice nor its log lines show them.
+  They are read from the URL's authority only: the plugin took an `@`
+  in the query or the fragment for the end of the credentials, so
+  `https://good.example#@evil.example` sent events, with the access
+  token, to `evil.example`.
+- **A cut tool input says it was cut.** The plugin keeps a tool's
+  `command`, `query` and `pattern` to 200 characters and a sub-agent's
+  `prompt` to 100, and cut them with no sign, so the session drawer
+  showed a command that stopped mid-way as if it were the whole command.
+  A cut value now ends with `…` and the event's `tool_use` block lists
+  it in `truncated`, beside the input, as a JSON Pointer
+  (`"truncated": ["/command"]`, D272); the bounds are unchanged. The
+  bounds count characters, so a cut no longer splits one in two.
+- **A Claude Code session that is not being recorded says so.** When
+  the server does not accept a session's first event (no answer, an
+  address that is not a Flightdeck server's, a refused token), the
+  `SessionStart` hook shows a warning in Claude Code, once per session,
+  naming what happened and the setting to change; the token is never
+  printed. Before, the only trace was a line in Claude Code's debug
+  log. The hook still exits 0 and the session carries on. A first event
+  the server does not answer within two seconds (a cold server's first
+  event can take longer) is sent once more before any warning, so a
+  session that is being recorded is not reported as lost. Every send of
+  a session's `session_start`, the second attempt and a later hook's
+  backstop alike, is the same event, with the same id and time, so a
+  server that stored one and answered it late keeps one; a sub-agent's
+  child `session_start` too.
+- **A resent `session_start` no longer marks its session re-attached.**
+  Ingestion attached every arrival of a `session_start`, so a copy sent
+  again after a slow answer (the Claude Code plugin's retry, an
+  OpenTelemetry exporter's retried batch) recorded an attachment, which
+  the dashboard draws as a re-attached run, and moved the session's
+  start sequence. The event id is now the key: a start is attached and
+  stamped once per id, and a copy gets the first copy's answer (D273;
+  migration 000037 adds `session_start_receipts`).
+- **Analytics no longer fail on a read-only root filesystem.** With
+  `docker run --read-only` (or `readOnlyRootFilesystem: true`) SQLite
+  had no directory for its temporary files, which it needs once a sort
+  or a `GROUP BY` outgrows its cache: on a database of 300,000 events
+  the analytics requests answered 500 (`disk I/O error (6410)`) and the
+  pricing table's sync at start failed. The binary now keeps SQLite's
+  temporary files in `<data dir>/tmp` (mode 0700, emptied at every
+  start of the files SQLite left there, and of nothing else), on disk
+  and on the volume that holds the database, so everything it writes is
+  under the data dir. A symbolic link or a file in place of `tmp` is
+  replaced, never followed.
+- **The start-up block of a container shows an address a person can
+  use.** For a listen on every interface (`:4000`, the image's) the
+  block printed `http://<host name>:4000`, and a container's host name
+  is its id. It now prints `http://<this-host>:4000` with a note to put
+  the machine's name or address in its place; a loopback listen still
+  reads `http://localhost:4000`, an address on one interface is shown
+  as given, and `--domain` shows `https://<domain>`.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

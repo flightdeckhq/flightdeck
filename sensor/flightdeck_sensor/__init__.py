@@ -15,6 +15,7 @@ import functools
 import importlib
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -394,6 +395,12 @@ def init(
     kwarg, like every other knob here; see the override warning
     below). ``server`` defaults to ``http://localhost:4000/ingest``,
     where the ``flightdeck`` binary and the dev compose stack listen.
+    It may be given as the ingestion URL (a path whose last segment is
+    ``ingest``, the form the binary prints) or as the base URL without
+    it (``http://localhost:4000``, the form the Claude Code plugin's
+    default has): both name the same control plane, by the plugin's
+    rule. Surrounding whitespace is ignored, and credentials in the URL
+    (``https://user:secret@host``) are dropped with a WARNING.
     ``token`` defaults to the dev seed ``tok_dev`` **only** when the
     server was defaulted as well and that default's host is loopback;
     init then logs one WARNING naming the token in use and how to set
@@ -418,8 +425,9 @@ def init(
 
     ``api_url`` is the base URL for control-plane calls (directive
     registration, directive sync, policy prefetch).  When *None*,
-    derived from *server* by replacing ``/ingest`` with ``/api``.
-    Override via ``FLIGHTDECK_API_URL`` env var.
+    derived from *server*: the ingestion URL with its last path
+    segment, ``ingest``, replaced by ``api``.  Override via
+    ``FLIGHTDECK_API_URL`` env var.
 
     ``limit`` sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
@@ -514,27 +522,40 @@ def init(
         # overrides a non-empty caller-supplied server with a different
         # value, then keep the env value.
         env_server = os.environ.get(_env.ENV_SERVER)
-        if env_server is not None and server and env_server != server:
+        if env_server is not None and server and env_server.strip() != server.strip():
             _log.warning(
                 "%s=%r overrides the server=%r passed to init(); using the "
                 "environment value. Unset %s if this was not intended.",
                 _env.ENV_SERVER,
-                env_server,
-                server,
+                _without_userinfo(env_server.strip()),
+                _without_userinfo(server.strip()),
                 _env.ENV_SERVER,
             )
         # ``None`` means "not supplied" for both values; an empty string
         # is a supplied-but-blank value and stays an error, so a shell
         # with ``FLIGHTDECK_TOKEN=""`` cannot fall through to the dev
-        # token.
+        # token. Surrounding whitespace is not part of the value (a
+        # quoted ``.env`` line, a pasted address), as for the plugin.
         resolved_server = env_server if env_server is not None else server
         server_defaulted = resolved_server is None
         if server_defaulted:
             resolved_server = _env.DEFAULT_SERVER
+        resolved_server = (resolved_server or "").strip()
         if not resolved_server:
             raise ConfigurationError(
                 f"server URL is required: pass server= or set {_env.ENV_SERVER}"
             )
+        # Credentials in the server URL are dropped, as the plugin drops
+        # them: neither sends them, and every log line and error message
+        # below names the server. The access token is the one credential.
+        without_userinfo = _without_userinfo(resolved_server)
+        if without_userinfo != _as_the_plugin_reads_it(resolved_server):
+            _log.warning(
+                "The server URL carries credentials; they are ignored. "
+                "Authenticate with token= or %s.",
+                _env.ENV_TOKEN,
+            )
+            resolved_server = without_userinfo
 
         env_token = os.environ.get(_env.ENV_TOKEN)
         resolved_token = env_token if env_token is not None else token
@@ -571,16 +592,12 @@ def init(
             _env.ENV_ALLOW_INSECURE_TRANSPORT, allow_insecure_transport
         )
 
-        # Normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
-        # always carry the ``/ingest`` suffix. The Claude Code plugin
-        # uses the same env var without the suffix (it appends
-        # ``/ingest/v1/events`` itself), so a developer running both
-        # tools on one machine would otherwise hit a silent 404 when
-        # a sensor script inherited the plugin's env. ``/ingest`` is
-        # added idempotently -- a URL that already contains it stays
-        # unchanged.
-        if "/ingest" not in resolved_server:
-            resolved_server = resolved_server.rstrip("/") + "/ingest"
+        # One ``FLIGHTDECK_SERVER`` value serves the sensor and the
+        # Claude Code plugin: the base URL (``http://host:4000``) and
+        # the ingestion URL (``http://host:4000/ingest``) name the same
+        # control plane, and both resolve to the ingestion URL here, by
+        # the plugin's rule (``contracts/server_urls.json``).
+        resolved_server, derived_api_url = _resolve_server_urls(resolved_server)
 
         # Same silent-override guard for the control-plane API URL.
         env_api_url = os.environ.get(_env.ENV_API_URL)
@@ -593,9 +610,7 @@ def init(
                 api_url,
                 _env.ENV_API_URL,
             )
-        resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url
-        if not resolved_api_url:
-            resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
+        resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url or derived_api_url
 
         capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
         resolved_billing_mode = (
@@ -1040,6 +1055,108 @@ def _is_valid_uuid(value: str) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
+
+
+# The path segments a Flightdeck origin publishes its two APIs under.
+_INGEST_PATH = "/ingest"
+_API_PATH = "/api"
+
+# The port a URL implies for each scheme, which the resolved URLs leave
+# out, as the plugin's do.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+# Userinfo without a scheme: what comes before the last ``@`` ahead of
+# the first ``/``, ``?``, ``#`` or ``\``, the span a URL's authority
+# would take.
+_LEADING_USERINFO_RE = re.compile(r"^[^/?#\\]*@")
+# A value with a scheme and an authority (``scheme://``).
+_SCHEME_AUTHORITY_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_HTTP_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _as_the_plugin_reads_it(server: str) -> str:
+    r"""*server* with each ``\`` of an http(s) URL read as ``/``.
+
+    The URL standard, which the Claude Code plugin's parser follows,
+    ends an http(s) URL's authority at a backslash as at a slash;
+    ``urllib.parse`` does not, and would read the host of
+    ``https://good.example\@evil.example`` as ``evil.example``.
+    """
+    return server.replace("\\", "/") if _HTTP_SCHEME_RE.match(server) else server
+
+
+def _without_userinfo(server: str) -> str:
+    """*server* without the userinfo of ``https://user:token@host`` or
+    ``user:token@host``. Neither the sensor's HTTP client nor the
+    plugin's sends it (as basic auth or otherwise); left in, it would
+    reach log lines and error messages, token included.
+
+    Userinfo is part of the authority only, which ``urllib.parse``
+    splits out: an ``@`` in the path, the query or the fragment
+    (``https://good.example#@evil.example``) is not userinfo, and the
+    host stays the one before it. In the authority, the host follows
+    the last ``@``.
+    """
+    value = _as_the_plugin_reads_it(server)
+    if not _SCHEME_AUTHORITY_RE.match(value):
+        return _LEADING_USERINFO_RE.sub("", value, count=1)
+    try:
+        netloc = urllib.parse.urlsplit(value).netloc
+    except ValueError:
+        netloc = ""
+    if "@" not in netloc:
+        return value
+    start = value.index("//") + 2
+    if value[start : start + len(netloc)] != netloc:
+        # urlsplit dropped characters (a tab or a newline) from the
+        # value: rebuild it from the parts instead.
+        parts = urllib.parse.urlsplit(value)
+        return urllib.parse.urlunsplit(parts._replace(netloc=netloc.rpartition("@")[2]))
+    return value[:start] + netloc.rpartition("@")[2] + value[start + len(netloc) :]
+
+
+def _resolve_server_urls(server: str) -> tuple[str, str]:
+    """Return ``(ingestion URL, control-plane API URL)`` for *server*.
+
+    *server* may be the control plane's base URL (``http://host:4000``,
+    ``https://example.com/fd``) or its ingestion URL (the same with
+    ``/ingest``), the form the ``flightdeck`` binary prints. The rule is
+    the Claude Code plugin's and the playground's
+    (``contracts/server_urls.json`` holds the cases all three must agree
+    on, and the sensor's unit suite and the plugin's assert them): a
+    path whose last segment is ``ingest``, trailing slashes aside, is
+    the ingestion URL, and the API URL is that path with the segment
+    replaced by ``api``; any other path is a base URL and gets
+    ``/ingest`` and ``/api`` appended. ``/ingestion``, ``/ingest-eu``
+    and ``/ingest/v2`` are base paths.
+
+    Only the path is looked at, so a control plane at
+    ``https://ingest.example.com`` is a base URL whose API is
+    ``https://ingest.example.com/api``. Surrounding whitespace,
+    userinfo, the query, the fragment, trailing slashes and the
+    scheme's default port are dropped, and the scheme and host are
+    lower-cased. A value that is not an http(s) URL with a host comes
+    back as it is (without whitespace and userinfo) for both, so the
+    egress validation reports it.
+    """
+    value = _without_userinfo(server.strip())
+    try:
+        parts = urllib.parse.urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return value, value
+    scheme = parts.scheme.lower()
+    host = parts.hostname
+    if scheme not in _DEFAULT_PORTS or not host:
+        return value, value
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != _DEFAULT_PORTS[scheme]:
+        netloc = f"{netloc}:{port}"
+    base_path = parts.path.rstrip("/")
+    if base_path.endswith(_INGEST_PATH):
+        base_path = base_path[: -len(_INGEST_PATH)].rstrip("/")
+    base = f"{scheme}://{netloc}{base_path}"
+    return base + _INGEST_PATH, base + _API_PATH
 
 
 def _is_loopback_server(url: str) -> bool:

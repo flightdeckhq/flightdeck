@@ -982,3 +982,54 @@ could be known before the first start.
 **Rejected alternative:** revoking the earlier token (401s the old pods);
 a rotate setting (restart and revoke do it); refusing a world-readable
 file (secret mounts are 0644 / 0444); a random salt (two rows).
+
+## D271 -- The binary checks the Host of every request on loopback, with --domain and with a list
+
+**Date:** 2026-11-12
+**Decision:** every request passes a `Host` check before any route,
+except on a listen beyond loopback with no `--domain` and no
+`--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`; `*` turns it off). IP
+addresses, `localhost`, the domain and the list are answered, ports not
+compared; anything else gets 421 naming the host and the setting. The
+fleet stream refuses (403) a foreign browser `Origin` in every mode. The
+image sets the list to `localhost`.
+**Why:** `/runtime-config.json` hands out the dashboard token with no
+credential, so a DNS-rebinding page could read it from a loopback-only
+instance; such a page always uses its own name, never an address.
+**Rejected alternative:** enforcing on every listen (locks out a LAN or
+proxy name the binary cannot know); comparing ports (forwards change
+them); guarding only that file (the page then calls the API).
+
+## D272 -- A cut tool input is listed beside the tool_use block's input, as JSON Pointers
+
+**Date:** 2026-11-14
+**Decision:** a `tool_use` content block whose input the plugin cut
+carries `truncated` next to `input`: an array of RFC 6901 JSON Pointers,
+relative to `input`, one per value that ends with `…` because it was
+cut (`{"type": "tool_use", "name": "Bash", "input": {...}, "truncated":
+["/command"]}`). The sanitized `input` and the event's `tool_input`
+string hold the tool's own keys only. `signal_data.truncated` stays a
+comma-separated list: `signal_data` is Flightdeck's own structure.
+**Why:** the list describes the value, not the tool call. Inside the
+input it read as a tool argument in the dashboard's argument list and in
+`tool_input`, and a tool with an argument named `truncated` would lose
+it. Pointers name nested values and escape any key.
+**Rejected alternative:** a `truncated` key inside the tool's own
+input.
+
+## D273 -- A resent session_start is attached once: its event id is the idempotency key
+
+**Date:** 2026-11-14
+**Decision:** ingestion records each `session_start` event id it attaches
+in `session_start_receipts`, in the attach transaction, with the session
+and the answer. A copy (same id, same session) revives nothing, writes no
+attachment and gets the first copy's `attached`; the row keeps the lowest
+stream sequence of the copies. Copies are still published; the worker
+stores the event once. A start reusing another session's id is attached
+as an id-less start is, unrecorded. Receipts live 50 hours.
+**Why:** a client that gives up on a slow answer resends; the attach ran
+at ingestion before the worker could drop the copy, so a session started
+once showed an attachment per resend.
+**Rejected alternative:** looking the id up in the events table (racy);
+an id column on `session_attachments` (a first start writes no row);
+refusing a clashing id with a 4xx (drops the event over a side effect).

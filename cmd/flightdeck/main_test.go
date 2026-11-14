@@ -12,27 +12,128 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
+	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/storage"
 )
 
 func TestPublicURL(t *testing.T) {
-	host, _ := os.Hostname()
 	cases := []struct {
-		opts cli.Options
-		want string
+		name         string
+		opts         cli.Options
+		want         string
+		anyInterface bool
 	}{
-		{cli.Options{Listen: "127.0.0.1:4000"}, "http://localhost:4000"},
-		{cli.Options{Listen: "localhost:4100"}, "http://localhost:4100"},
-		{cli.Options{Listen: ":4000"}, "http://" + host + ":4000"},
-		{cli.Options{Listen: "0.0.0.0:4000"}, "http://" + host + ":4000"},
-		{cli.Options{Listen: "10.0.0.5:4000"}, "http://10.0.0.5:4000"},
-		{cli.Options{Listen: ":4000", Domain: "fd.example.com"}, "https://fd.example.com"},
+		{"the default, loopback", cli.Options{Listen: "127.0.0.1:4000"}, "http://localhost:4000", false},
+		{"localhost and another port", cli.Options{Listen: "localhost:4100"}, "http://localhost:4100", false},
+		{"IPv6 loopback", cli.Options{Listen: "[::1]:4000"}, "http://localhost:4000", false},
+		{"every IPv4 interface", cli.Options{Listen: "0.0.0.0:4000"}, "http://<this-host>:4000", true},
+		{"a port alone, the image's listen address", cli.Options{Listen: ":4000"}, "http://<this-host>:4000", true},
+		{"every IPv6 interface", cli.Options{Listen: "[::]:4000"}, "http://<this-host>:4000", true},
+		{"every interface, spelled out", cli.Options{Listen: "[0:0:0:0:0:0:0:0]:8080"}, "http://<this-host>:8080", true},
+		{"one LAN address", cli.Options{Listen: "10.0.0.5:4000"}, "http://10.0.0.5:4000", false},
+		{"one IPv6 address", cli.Options{Listen: "[fd00::5]:4000"}, "http://[fd00::5]:4000", false},
+		{"a host name", cli.Options{Listen: "fd.internal:4000"}, "http://fd.internal:4000", false},
+		{"a domain", cli.Options{Listen: ":4000", Domain: "example.com"}, "https://example.com", false},
+		{"a domain over a loopback listen", cli.Options{Listen: "127.0.0.1:4000", Domain: "fd.example.com"}, "https://fd.example.com", false},
+		{"an address with no port", cli.Options{Listen: "nonsense"}, "http://nonsense", false},
 	}
 	for _, c := range cases {
-		if got := publicURL(c.opts); got != c.want {
-			t.Errorf("publicURL(%+v) = %q, want %q", c.opts, got, c.want)
+		got, anyInterface := publicURL(c.opts)
+		if got != c.want || anyInterface != c.anyInterface {
+			t.Errorf("%s: publicURL(%+v) = %q, %v; want %q, %v", c.name, c.opts, got, anyInterface, c.want, c.anyInterface)
+		}
+	}
+}
+
+// The start-up block never shows the operating system's host name: in
+// a container that is the container's id, which no browser resolves.
+func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		t.Skip("this machine has no host name to keep out of the block")
+	}
+	layout := datadir.Layout{Root: "/data", NATS: "/data/nats", Secrets: "/data/secrets.json"}
+	db := database{backend: storage.SQLite, display: "/data/flightdeck.db"}
+	block := func(opts cli.Options, dev bool, allowed ...string) string {
+		t.Helper()
+		f, err := os.CreateTemp(t.TempDir(), "banner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		token := bootstrap.Result{Token: "ftd_0123456789abcdef", Minted: !dev}
+		if dev {
+			token = bootstrap.Result{Token: bootstrap.DevToken, Dev: true}
+		}
+		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true)
+		out, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+
+	for _, listen := range []string{":4000", "0.0.0.0:4000", "[::]:4000"} {
+		out := block(cli.Options{Listen: listen}, false)
+		if host != "localhost" && strings.Contains(out, host) {
+			t.Errorf("--listen %s: the block names the host name %q:\n%s", listen, host, out)
+		}
+		for _, want := range []string{
+			"  Dashboard   http://<this-host>:4000   (every interface of this machine: put its name or address in place of <this-host>)\n",
+			"  Ingestion   http://<this-host>:4000/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("--listen %s: the block lacks %q:\n%s", listen, want, out)
+			}
+		}
+	}
+
+	out := block(cli.Options{Listen: "127.0.0.1:4000"}, true)
+	for _, want := range []string{
+		"  Dashboard   http://localhost:4000\n",
+		"  Ingestion   http://localhost:4000/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("loopback: the block lacks %q:\n%s", want, out)
+		}
+	}
+
+	// The hosts answered, in each mode of the host check.
+	for _, c := range []struct {
+		name    string
+		opts    cli.Options
+		dev     bool
+		allowed []string
+		want    string
+	}{
+		{"loopback", cli.Options{Listen: "127.0.0.1:4000"}, true, nil,
+			"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"the image (a list of localhost)", cli.Options{Listen: ":4000"}, false, []string{"localhost"},
+			"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"a list", cli.Options{Listen: ":4000"}, false, []string{"fd.internal", ".corp.example"},
+			"  Hosts       localhost, IP addresses, fd.internal, .corp.example   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"a domain", cli.Options{Listen: ":4000", Domain: "fd.example.com"}, false, nil,
+			"  Hosts       localhost, IP addresses, fd.example.com   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)\n"},
+		{"beyond loopback, no list", cli.Options{Listen: ":4000"}, false, nil,
+			"  Hosts       any host name   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n"},
+		{"the list says any", cli.Options{Listen: "127.0.0.1:4000"}, true, []string{"*"},
+			"  Hosts       any host name   (FLIGHTDECK_ALLOWED_HOSTS limits it to the names this server is reached by)\n"},
+	} {
+		if out := block(c.opts, c.dev, c.allowed...); !strings.Contains(out, c.want) {
+			t.Errorf("%s: the block lacks %q:\n%s", c.name, c.want, out)
+		}
+	}
+
+	out = block(cli.Options{Listen: ":4000", Domain: "example.com"}, false)
+	for _, want := range []string{
+		"  Dashboard   https://example.com\n",
+		"  Ingestion   https://example.com/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--domain: the block lacks %q:\n%s", want, out)
 		}
 	}
 }

@@ -67,7 +67,7 @@ Guarantees that hold regardless of the knob settings:
 
 - Raw file bodies written by `Write` and `Edit` are never forwarded. The sanitiser drops the body field at the source; it never reaches the network.
 - Tool arguments outside the whitelist (`file_path`, `command`, `query`, `pattern`, `prompt`) are dropped.
-- String values are truncated (`prompt` at 100 chars, everything else at 200 chars).
+- String values are cut (`prompt` at 100 characters; `command`, `query` and `pattern` at 200; `file_path` whole). A cut value ends with `…`, so a cut command never reads as the whole command, and the event's tool block lists it in `truncated`, beside the input rather than inside it (`"truncated": ["/command"]`).
 - `FLIGHTDECK_CAPTURE_PROMPTS=false` zeroes every content field on every event type. The event still ships (so you see the session and token counts on the dashboard), but no prompt or response body is attached.
 - The error text of a failed tool call is content too (a command's stderr, an `Edit` failure quoting its `old_string`, a token a failed command printed): it is sent only when both knobs are on. Otherwise the `error` block keeps `error_type`, `error_class` and `interrupted`, and its `message` reads `<redacted>`. The server redacts the same field when the session was started with capture off.
 - Credentials in the server URL (`https://user:token@host`) are stripped before any request and never written to a log line; authenticate with the token option or `FLIGHTDECK_TOKEN`.
@@ -78,7 +78,7 @@ Guarantees that hold regardless of the knob settings:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Base URL of your Flightdeck stack. Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. Overrides the `server` option. |
+| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Address of your Flightdeck server, in either form: the base URL (`http://localhost:4000`) or the ingestion URL the `flightdeck` start-up block prints (`http://localhost:4000/ingest`), which is also what the Python sensor takes, so one value serves both. Hooks fire `POST <base>/ingest/v1/events`. Overrides the `server` option. |
 | `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Bearer token used in the `Authorization` header. Overrides the `token` option. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
@@ -224,13 +224,21 @@ sensor reports, even when the run loads it. See the
 
 ### "I don't see my session at all"
 
-Quick health check:
+When the server does not accept the session's first event, Claude Code shows a warning from the plugin at the start of the session, once:
 
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" "$FLIGHTDECK_SERVER/ingest/health"
+```
+Flightdeck: no answer from http://localhost:4000 (ECONNREFUSED). Start flightdeck, or set FLIGHTDECK_SERVER or the plugin's server option to the address it prints when it starts. Nothing from this session is recorded until the server accepts an event.
 ```
 
-Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check the server option or `FLIGHTDECK_SERVER` and that the stack is actually running (`docker ps` should show `docker-ingestion-1` healthy). If you get `401` or `403`, the token is wrong.
+The same warning names an address that is not a Flightdeck server's (`has no ingestion API at <url> (HTTP 404)`) and a refused token (`refused the access token (HTTP 401)`; the token itself is never printed). The session carries on either way: the plugin fails open.
+
+Quick health check, with the base URL of your server:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:4000/ingest/health"
+```
+
+Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check the server option or `FLIGHTDECK_SERVER` and that the server is actually running. If you get `401` or `403`, the token is wrong.
 
 ### "cannot reach" stderr line on every Claude run
 
@@ -313,6 +321,8 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
 - `started-<sid>.txt`: marks that the server accepted the session's `session_start`, so later hooks do not send another.
 - `starting-<sid>.txt`: held by the one hook sending a session's `session_start` while concurrent hooks (parallel tool calls, a sub-agent's first hooks) skip it.
+- `start-pending-<sid>.json`: the `id` and time of a `session_start` sent and not yet acknowledged; every later send of it (`SessionStart`'s second attempt, a later hook's, and for a sub-agent's child session `SubagentStart`'s and a hook's inside the sub-agent) is the same event, so a server that stored one and answered late keeps one. Removed once one is acknowledged, and at `SessionEnd`.
+- `start-notice-<sid>.txt`: marks that the session's "not recorded" warning was shown, so a `SessionStart` after a compaction does not repeat it; removed at `SessionEnd`.
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
 - `model-switch-<sid>.json`: the model the session last switched to and when, so the next `pre_call` is labelled with it.

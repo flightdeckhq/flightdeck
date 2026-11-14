@@ -119,6 +119,19 @@ workflow_line '      scripts/b.sh run'
 expect 1 "a 100644 script run after a continued environment prefix" "scripts/b.sh"
 
 fixture
+script scripts/b.sh -x
+workflow_line '- run: |'
+workflow_line "    # a comment that ends in a backslash \\"
+workflow_line '    scripts/b.sh run'
+expect 1 "a 100644 script run on the line after a comment that ends in a backslash" "scripts/b.sh"
+
+fixture
+script scripts/b.sh -x
+make_line "@echo the Makefile ends in a continuation \\"
+printf -- '- run: scripts/b.sh run\n' >"$work/repo/.github/workflows/ci.yml"
+expect 1 "a 100644 script on a file's first line after a file that ends in a backslash" "scripts/b.sh"
+
+fixture
 script scripts/a.sh -x
 workflow_line '- name: Gate (scripts/a.sh binary)'
 workflow_line '  if: matrix.channel == 1 || scripts/a.sh'

@@ -26,7 +26,12 @@ cd "$ROOT"
 # command_words prints the command word of every simple command in the
 # Makefile and the workflows, one per line, without a leading "./".
 # A line that ends in a backslash continues on the next one, so the
-# words of a continuation line are arguments, not a command.
+# words of a continuation line are arguments, not a command. A comment
+# line is never joined: the shell does not continue a comment, so the
+# line after it is a command of its own (make does continue a comment
+# outside a recipe, and that line is then checked too, which can only
+# flag more). The joining stops at the end of each file, so a file
+# whose last line ends in a backslash cannot hide the next file's first.
 # Comment lines are dropped, and so is every "key: value" line whose key
 # is not "run" (a step's name, a matrix entry, a Make target: text, not
 # a command); "&&", "||", ";", "|" and "(" start a new command; Make's
@@ -39,7 +44,17 @@ command_words() {
     files+=("$f")
   done < <(git ls-files -- '.github/workflows/*.yml' '.github/workflows/*.yaml')
   [ "${#files[@]}" -gt 0 ] || return 0
-  awk '{ if (sub(/\\$/, "")) printf "%s ", $0; else print }' "${files[@]}" |
+  awk '
+    FNR == 1 && held != "" { print held; held = "" }
+    held == "" && /^[[:space:]]*#/ { print; next }
+    {
+      line = held $0
+      held = ""
+      if (sub(/\\$/, "", line)) { held = line " "; next }
+      print line
+    }
+    END { if (held != "") print held }
+  ' "${files[@]}" |
     sed -E \
     -e '/^[[:space:]]*#/d' \
     -e '/^[[:space:]]*(-[[:space:]]+)?run:/!{/^[[:space:]]*(-[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.-]*:([[:space:]]|$)/d;}' \

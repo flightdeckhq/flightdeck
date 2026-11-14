@@ -288,7 +288,7 @@ func (c *child) postEvent(t *testing.T, token, sessionID, agentID, flavor, event
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /ingest/v1/events: %v", err)
+		t.Fatalf("POST /ingest/v1/events: %v\nthe binary's output:\n%s", err, c.out.String())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

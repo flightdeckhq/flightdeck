@@ -234,7 +234,7 @@ func TestSchemaParity(t *testing.T) {
 			t.Errorf("indexesWithoutSQLiteEquivalent names %q, which Postgres does not have", name)
 		}
 	}
-	if len(pgShape.tables) != 17 {
-		t.Errorf("postgres has %d tables, want 17 (update this count with the schema)", len(pgShape.tables))
+	if len(pgShape.tables) != 18 {
+		t.Errorf("postgres has %d tables, want 18 (update this count with the schema)", len(pgShape.tables))
 	}
 }

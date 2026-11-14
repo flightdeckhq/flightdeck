@@ -6,9 +6,10 @@ import { hostname as osHostname } from "node:os";
 
 import { deriveAgentId } from "../agent_id.mjs";
 import { boundedToken, MAX_SIGNAL_BYTES } from "../core/config.mjs";
-import { postEvent, setDirectiveSink } from "../core/poster.mjs";
+import { describeStartFailure, postEvent, setDirectiveSink, TIMEOUT_MS } from "../core/poster.mjs";
 import {
   cacheSessionModel,
+  claimStartFailureNotice,
   clearGitCache,
   markerKeyFor,
   pruneStateDir,
@@ -56,6 +57,43 @@ import {
 import { owedToolCallEntry, sendOwedToolCalls, sendToolEvent } from "./tool_events.mjs";
 import { buildToolCallPayload } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
+
+// How many times SessionStart sends the session's first event when the
+// server does not answer in time (TIMEOUT_MS, two seconds, per attempt).
+// A server's first event is its slowest (the token is looked up, the
+// session attached and the stream written with nothing cached), and a
+// cold or loaded one can take longer than that once; the second attempt
+// then meets a warm server. Telling the user "not recorded" after the
+// first would be wrong more often than right. Two attempts add at most
+// two seconds to a SessionStart whose normal worst case is about ten,
+// inside the hook's 25-second deadline (HOOK_FLUSH_DEADLINE_MS) and its
+// 30-second timeout in hooks.json. Only a timeout is tried again: a
+// refused connection, a 404, a 421 or a refused token is a
+// configuration error a second attempt cannot change, and the user is
+// told at once.
+const SESSION_START_ATTEMPTS = 2;
+
+/** True when ``started`` is a session_start POST the server did not answer in time. */
+function startTimedOut(started) {
+  return Boolean(started) && !started.accepted && started.status === null && started.reason === "timeout";
+}
+
+/**
+ * Tell the user, once per session, that the server did not accept the
+ * session's first event: a wrong address (404), a refused token, or no
+ * answer. The failed-POST line on stderr reaches only Claude Code's
+ * debug log, so a mistyped FLIGHTDECK_SERVER used to look exactly like
+ * a working install. ``systemMessage`` is the hook output Claude Code
+ * shows the user as a warning; the hook still exits 0 and the session
+ * goes on (the plugin fails open), and later hooks keep trying.
+ * ``started`` is ensureSessionStarted's result: null when this hook
+ * sent nothing.
+ */
+function noticeStartFailure(cfg, sessionId, started) {
+  if (!started || started.accepted) return;
+  if (!claimStartFailureNotice(sessionId)) return;
+  process.stdout.write(JSON.stringify({ systemMessage: describeStartFailure(cfg.server, started) }) + "\n");
+}
 
 // Set by the sensor's Claude Agent SDK interceptor in the environment of
 // a CLI run it reports.
@@ -389,7 +427,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     // Decide the billing mode and platform here, afresh on every start
     // or resume, so later hooks read them from the cache.
     resolveSessionEndpoint(sessionId, { refresh: true });
-    await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+    const startExtras = {
       model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
       capturePrompts: cfg.capturePrompts,
@@ -398,7 +436,21 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       // Code session came to be. A resumed or forked session is
       // otherwise indistinguishable from a fresh one.
       sessionSource: typeof hookEvent.source === "string" ? hookEvent.source : null,
-    });
+    };
+    let started = await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, startExtras);
+    for (let attempt = 1; attempt < SESSION_START_ATTEMPTS && startTimedOut(started); attempt++) {
+      // Only while a whole attempt still fits before the hook's own
+      // deadline; past it the notice is the truth.
+      if (Date.now() + TIMEOUT_MS > hookDeadline) break;
+      // The same event again, its id and timestamp unchanged: a server
+      // that stored the first attempt and answered it late drops this
+      // copy instead of storing a second session_start.
+      started = await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+        ...startExtras,
+        payload: started.payload,
+      });
+    }
+    noticeStartFailure(cfg, sessionId, started);
     // Fetch + cache the MCP Protection Policy and emit
     // policy_mcp_warn / policy_mcp_block events for any non-allow
     // decisions per declared MCP server. Best-effort; failures

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -78,7 +79,7 @@ func publishOTLPEvents(
 				return i, err
 			}
 			if !ev.SkipAttach {
-				attached = attachSession(ctx, attacher, ev.SessionID)
+				attached = attachSession(ctx, attacher, ev.SessionID, eventIDOf(payload))
 			}
 		}
 		subject := inats.SubjectForEventType(ev.EventType)
@@ -90,7 +91,7 @@ func publishOTLPEvents(
 			return i, errOTLPPublishGivenUp{subject: subject}
 		}
 		if attached {
-			if err := attacher.RecordStart(ctx, ev.SessionID, seq); err != nil {
+			if err := attacher.RecordStart(ctx, ev.SessionID, eventIDOf(payload), seq); err != nil {
 				slog.Warn("record session_start sequence failed",
 					"session_id", ev.SessionID, "seq", seq, "err", err)
 			}
@@ -117,15 +118,29 @@ func stampSessionStartToken(payload []byte, token auth.ValidationResult) ([]byte
 	return stamped, nil
 }
 
+// eventIDOf reads the id of an event payload, "" when it has none. The
+// dialects derive a session_start's id from the session and its first
+// record, so an exporter that retries a batch sends the same id, which
+// the attach treats as one start.
+func eventIDOf(payload []byte) string {
+	var ev struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &ev); err != nil {
+		return ""
+	}
+	return ev.ID
+}
+
 // attachSession runs the session-attachment check for a session_start
 // and reports whether it attached to an existing row. A failed check is
 // logged and treated as not attached: the flag is informational and the
 // event must still flow.
-func attachSession(ctx context.Context, attacher SessionAttacher, sessionID string) bool {
+func attachSession(ctx context.Context, attacher SessionAttacher, sessionID, eventID string) bool {
 	if attacher == nil {
 		return false
 	}
-	attached, priorState, err := attacher.Attach(ctx, sessionID)
+	attached, priorState, err := attacher.Attach(ctx, sessionID, eventID)
 	if err != nil {
 		slog.Error("session attach lookup failed", "session_id", sessionID, "err", err)
 		return false

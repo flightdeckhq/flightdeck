@@ -18,6 +18,7 @@ import {
 	fixtureSessionId,
 	waitForFleetReady,
 } from "./_fixtures";
+import { HOVER_SHOWS_MS, hoverUntil } from "./_hover";
 
 const { name, roles } = LANE_FIXTURES.handoff;
 
@@ -66,10 +67,14 @@ test.describe("T138 — Back-to-back runs keep both glyphs", () => {
 			[end, firstPrefix],
 			[start, secondPrefix],
 		] as const) {
-			await glyph.hover();
+			// The glyph can move from under the pointer between the
+			// hover and the check (hoverUntil says how), so the two are
+			// one retried block.
 			const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefix}"]`);
-			await expect(tooltip).toBeVisible();
-			await expect(tooltip).toContainText(`run ${prefix}`);
+			await hoverUntil(
+				() => glyph.hover(),
+				() => expect(tooltip).toContainText(`run ${prefix}`, { timeout: HOVER_SHOWS_MS }),
+			);
 		}
 	});
 });

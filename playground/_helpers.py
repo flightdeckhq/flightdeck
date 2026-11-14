@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -20,13 +22,85 @@ from typing import Any
 # Endpoints + auth — single source of truth for every playground script.
 # ---------------------------------------------------------------------
 
-INGESTION_URL = os.environ.get("FLIGHTDECK_SERVER", "http://localhost:4000/ingest")
-API_URL = os.environ.get(
-    "FLIGHTDECK_API_URL",
-    INGESTION_URL.rstrip("/").replace("/ingest", "/api")
-    if "/ingest" in INGESTION_URL
-    else INGESTION_URL.rstrip("/") + "/api",
-)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+_LEADING_USERINFO_RE = re.compile(r"^[^/?#\\]*@")
+_SCHEME_AUTHORITY_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_HTTP_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _without_userinfo(value: str) -> str:
+    """*value* without userinfo, which is part of the URL's authority only
+    (``flightdeck_sensor._without_userinfo``): an ``@`` in the path, the
+    query or the fragment leaves the host before it alone, a backslash
+    ends an http(s) authority as the URL standard reads it, and the host
+    follows the authority's last ``@``."""
+    if _HTTP_SCHEME_RE.match(value):
+        value = value.replace("\\", "/")
+    if not _SCHEME_AUTHORITY_RE.match(value):
+        return _LEADING_USERINFO_RE.sub("", value, count=1)
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    if "@" not in parts.netloc:
+        return value
+    host = parts.netloc.rpartition("@")[2]
+    return urllib.parse.urlunsplit(parts._replace(netloc=host))
+
+
+def server_urls(value: str) -> tuple[str, str]:
+    """Return ``(ingestion URL, API URL)`` for a ``FLIGHTDECK_SERVER`` value.
+
+    The sensor's rule (``flightdeck_sensor._resolve_server_urls``) and the
+    Claude Code plugin's, copied here because the OpenTelemetry GenAI
+    scripts import this module from venvs without the sensor;
+    ``contracts/server_urls.json`` holds the cases all three resolve
+    alike, and ``sensor/tests/unit/test_init_defaults.py`` runs them
+    through this function too. A path whose last segment is ``ingest`` is the ingestion URL,
+    and the API URL is that path with the segment replaced by ``api``;
+    any other path is the server's base URL and gets ``/ingest`` and
+    ``/api`` appended. Only the path is looked at, never the host.
+
+    >>> server_urls("http://localhost:4000/ingest")
+    ('http://localhost:4000/ingest', 'http://localhost:4000/api')
+    >>> server_urls("http://localhost:4000/")
+    ('http://localhost:4000/ingest', 'http://localhost:4000/api')
+    >>> server_urls("https://ingest.example.com")
+    ('https://ingest.example.com/ingest', 'https://ingest.example.com/api')
+    >>> server_urls("https://example.com/ingest-gw/ingest")
+    ('https://example.com/ingest-gw/ingest', 'https://example.com/ingest-gw/api')
+    >>> server_urls("https://example.com/ingestion")
+    ('https://example.com/ingestion/ingest', 'https://example.com/ingestion/api')
+    >>> server_urls("https://good.example#@evil.example")
+    ('https://good.example/ingest', 'https://good.example/api')
+    >>> server_urls("not a url")
+    ('not a url', 'not a url')
+    """
+    stripped = _without_userinfo(value.strip())
+    try:
+        parts = urllib.parse.urlsplit(stripped)
+        port = parts.port
+    except ValueError:
+        return stripped, stripped
+    scheme = parts.scheme.lower()
+    host = parts.hostname
+    if scheme not in _DEFAULT_PORTS or not host:
+        return stripped, stripped
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != _DEFAULT_PORTS[scheme]:
+        netloc = f"{netloc}:{port}"
+    base_path = parts.path.rstrip("/")
+    if base_path.endswith("/ingest"):
+        base_path = base_path[: -len("/ingest")].rstrip("/")
+    base = f"{scheme}://{netloc}{base_path}"
+    return base + "/ingest", base + "/api"
+
+
+# The value as configured, which init_sensor hands the sensor so that the
+# sensor's own resolution (the same rule) is the one in force.
+_SERVER = os.environ.get("FLIGHTDECK_SERVER", "http://localhost:4000/ingest")
+INGESTION_URL, _DERIVED_API_URL = server_urls(_SERVER)
+API_URL = os.environ.get("FLIGHTDECK_API_URL") or _DERIVED_API_URL
 API_TOKEN = os.environ.get("FLIGHTDECK_TOKEN", "tok_dev")
 
 
@@ -135,17 +209,11 @@ def init_sensor(
 
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
-    These are the sensor's own ``init()`` defaults; the helper keeps its
-    copy (``INGESTION_URL`` / ``API_TOKEN``) because ``assert_event_landed``
-    and the other HTTP helpers in this module need the same values for
-    their own requests, and passes them explicitly so the two never drift.
-
-    The sensor's ``init()`` normalises a plugin-style
-    ``FLIGHTDECK_SERVER`` (no ``/ingest`` suffix) on its own, so this
-    helper no longer needs to. We still compute ``api_url`` by replacing
-    ``/ingest`` with ``/api`` for the default case so the
-    ``assert_event_landed`` caller in this module has a base URL to
-    hit without another env-var override.
+    These are the sensor's own ``init()`` defaults. The sensor gets the
+    server value as configured and resolves it itself; the helper
+    resolves the same value by the same rule (``server_urls``) into
+    ``INGESTION_URL`` / ``API_URL`` for ``assert_event_landed`` and the
+    other HTTP helpers in this module, so the two never drift.
     """
     # Wire-level ``flavor`` column propagation. Sensor reads
     # AGENT_FLAVOR from env; setting it explicitly guarantees the
@@ -158,9 +226,8 @@ def init_sensor(
     import flightdeck_sensor
 
     flightdeck_sensor.init(
-        server=INGESTION_URL,
+        server=_SERVER,
         token=API_TOKEN,
-        api_url=API_URL,
         session_id=session_id,
         capture_prompts=capture_prompts,
         agent_type=agent_type,

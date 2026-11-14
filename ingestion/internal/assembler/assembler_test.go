@@ -386,14 +386,14 @@ type recordingAttacher struct {
 	recorded []string
 }
 
-func (a *recordingAttacher) Attach(_ context.Context, sessionID string) (bool, string, error) {
+func (a *recordingAttacher) Attach(_ context.Context, sessionID, _ string) (bool, string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.attached = append(a.attached, sessionID)
 	return true, "closed", nil
 }
 
-func (a *recordingAttacher) RecordStart(_ context.Context, sessionID string, _ uint64) error {
+func (a *recordingAttacher) RecordStart(_ context.Context, sessionID, _ string, _ uint64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.recorded = append(a.recorded, sessionID)

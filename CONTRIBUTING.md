@@ -58,12 +58,16 @@ something else already listens on its port. A stack beside a running one
 needs its own `FLIGHTDECK_DEV_PROJECT`, `FLIGHTDECK_DEV_PORT` and
 `FLIGHTDECK_DEV_PG_PORT`.
 
-**`make dev-reset` and a database with data.** On Postgres it prints the
-volume it is about to delete and how many sessions and events are in it. A
-database with more than 100 sessions (a test seed is about 60), or one it
-cannot count, is deleted only when you name the compose project: `make
-dev-reset CONFIRM=docker`, or type the name at its prompt in a terminal.
-It refuses, on either database, while something else listens on its port.
+**`make dev-reset` and a database with data.** It prints what it is about to
+delete (the Postgres volume or the SQLite file) and how many sessions and
+events are in it. A database with more than 100 sessions (a test seed is
+about 60), or one it cannot count, is deleted only when you name it: the
+compose project on Postgres (`make dev-reset FLIGHTDECK_DEV_CONFIRM=docker`),
+`sqlite` on SQLite, or the same typed at its prompt in a terminal. It refuses
+while the database is in use by anything but this checkout's own stack:
+something else listening on its port, on Postgres any other client (a stack of
+another dev dir of this checkout on another port, a psql session; it lists
+them), on SQLite another process holding the data dir.
 
 For dashboard work with hot reload, run `npm run dev` in `dashboard/` beside
 the stack: Vite serves the sources on `http://localhost:3000` and proxies
@@ -391,8 +395,10 @@ This runs:
 
 Run `shellcheck` on any script under `scripts/` you touch
 (`uvx --from shellcheck-py shellcheck scripts/<name>.sh` needs no install).
-After a change to the user compose files run `scripts/compose-smoke.sh <image>`
-against an image built with `docker build -t flightdeck:dev .`.
+After a change to the Helm chart run `make -C helm test`, which renders every
+supported shape and every refusal (`scripts/helm-chart-test.sh`); after a
+change to the user compose files, `scripts/compose-smoke.sh <image>` against
+an image built with `docker build -t flightdeck:dev .`.
 
 `make lint` and CI both fail when `gofmt -l .` lists any file in storage,
 ingestion, workers or api; run `gofmt -w .` in that module to fix what it lists. Use the gofmt from the
@@ -594,8 +600,7 @@ Migration files live in the `storage` module, one directory per backend:
 `storage/migrations/postgres/` (the full history) and
 `storage/migrations/sqlite/` (`000001_baseline`, the Postgres schema at 000036
 translated once, then one pair per later change). The Go binaries embed both
-directories; the Helm chart copies the Postgres one (`make -C helm
-sync-migrations`), which nothing reads.
+directories.
 
 ### Creating a new migration
 
@@ -622,8 +627,8 @@ The `flightdeck` binary applies every pending migration of its database's
 backend each time it starts, before any service runs, from the files embedded
 in it. On the dev stack that is `make dev-restart` after you add a migration
 (or `make dev-reset` for an empty database). There is no separate migrate
-command, in development or under Docker Compose, which runs the same binary:
-a new version migrates when its container starts.
+command, in development or in a deployment: Docker Compose and the Helm chart
+run the same binary, so a new version migrates when its container starts.
 
 ### Verifying migrations applied
 

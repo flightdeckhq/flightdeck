@@ -41,6 +41,40 @@ All notable changes to Flightdeck are documented here.
   `app` package (`ingestion/app`, `workers/app`, `api/app`) the binary
   and the standalone services share.
 
+- **`flightdeck health` and a health check in the image.** `flightdeck
+  health` asks the running instance whether its query API and its
+  ingestion API answer, prints one line and exits 0 or 1. It takes the
+  server's `--listen` and `--domain` (or `FLIGHTDECK_LISTEN` and
+  `FLIGHTDECK_DOMAIN`), needs no token and touches neither the data dir
+  nor the database. A listen on every interface is probed on
+  `127.0.0.1`, then on `::1`, so a container without IPv6 on its
+  loopback is still found healthy. The Docker image, which has no shell or curl, runs
+  it as its `HEALTHCHECK`, so `docker ps` shows the container `healthy`
+  and a Compose `depends_on: condition: service_healthy` works; a
+  Kubernetes exec probe runs the same command. The image now sets its
+  data dir and listen address as `FLIGHTDECK_DATA_DIR=/data` and
+  `FLIGHTDECK_LISTEN=:4000` in the environment instead of as flags, so
+  the health check reads what the server reads.
+
+- **The binary answers only for the names it is known by.** The
+  dashboard's token is served by `/runtime-config.json` with no
+  credential, so a page on another site could reach a loopback-only
+  `flightdeck` through the user's browser under a name of its own (DNS
+  rebinding) and read it. Every request's `Host` is now checked: an IP
+  address, `localhost`, the `--domain` and the names in the new
+  `--allowed-hosts` (`FLIGHTDECK_ALLOWED_HOSTS`) are answered, anything
+  else gets 421 naming the refused host and the setting to add it to,
+  and is logged once per host name. The check is on for a
+  loopback listen, with `--domain`, whenever a list is set, and in the
+  Docker image (which sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`); a
+  listen address beyond loopback with no list answers any name, as
+  before. A container reached by a name (a Compose service name, a
+  reverse proxy's host) needs that name in the list, which compose
+  passes through from `docker/.env`. With the check on, the fleet
+  stream also refuses a browser page of another site (403, naming the
+  setting); with it off, it checks no `Origin`, so a reverse proxy that
+  rewrites the `Host` to its upstream keeps the live feed.
+
 - **The query API runs on SQLite or Postgres.** Every store of the API
   (`api/internal/store`), the token validator and the WebSocket hub go
   through the `storage` boundary: plain `database/sql` on either engine,
@@ -65,6 +99,28 @@ All notable changes to Flightdeck are documented here.
   other search inputs do.
 - `GET /v1/analytics?granularity=hour` buckets by hour (`date` is
   `YYYY-MM-DDTHH:00Z`); it grouped by calendar day before.
+
+- **The dashboard token can be supplied.** Outside loopback the binary
+  minted its dashboard token on the first start, so nobody could know it
+  beforehand and every instance on one Postgres database minted its own.
+  `FLIGHTDECK_DASHBOARD_TOKEN_FILE` now names a file that holds the
+  token (a mounted Kubernetes or Docker secret) and
+  `FLIGHTDECK_DASHBOARD_TOKEN` holds it directly; the file is preferred
+  and wins when both are set, since a variable is visible to anything
+  that can read the process's environment (`/proc/<pid>/environ`,
+  `docker inspect`, child processes). The value must look like a
+  minted token (`printf 'ftd_%s' "$(openssl rand -hex 16)"`) and not
+  typed (a repeated half or a run of consecutive digits is refused);
+  it is refused otherwise without being repeated. It is stored once,
+  as an access token named after its prefix (`Supplied dashboard token
+  (ftd_a07a)`), however many instances start with it; the start-up
+  block prints where it came from, never the token. A token supplied
+  earlier stays valid until it is revoked, so that old pods of a
+  rolling update keep working. To rotate, supply the new token, restart
+  every instance, then revoke the old row in Settings; a row revoked
+  while its token is still supplied comes back at the next start.
+  `/runtime-config.json` serves it to the dashboard as it serves a
+  minted one, so use a value that protects nothing else.
 
 - **`flightdeck_sensor.init()` needs no arguments against a local
   stack.** `server` and `token` are optional: each resolves as the kwarg,
@@ -301,6 +357,35 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **One `FLIGHTDECK_SERVER` value works for the sensor and the Claude
+  Code plugin.** The `flightdeck` start-up block prints its ingestion
+  URL (`http://localhost:4000/ingest`) as the value for both, but the
+  plugin appended `/ingest/v1/events` to it, posted to
+  `/ingest/ingest/v1/events`, got a 404 and recorded nothing. The plugin
+  now takes the base URL or the ingestion URL, with or without a
+  trailing slash, and so does a reverse proxy's prefix
+  (`https://example.com/fd`, `https://example.com/fd/ingest`). A base
+  URL with a trailing slash also failed before. The sensor accepted
+  both forms already; it now looks only at the URL's path, so a control
+  plane at `https://ingest.example.com` gets `/ingest` appended and its
+  API calls stay on that host (they went to `https://api.example.com`,
+  with the access token). The sensor, the plugin and the playground
+  apply one rule: a path whose last segment is `ingest` is the
+  ingestion URL, any other path (`/ingestion`, `/ingest-eu`) is the
+  base. Credentials in the server URL are dropped, with a warning, by
+  both, and neither the plugin's notice nor its log lines show them.
+  They are read from the URL's authority only: the plugin took an `@`
+  in the query or the fragment for the end of the credentials, so
+  `https://good.example#@evil.example` sent events, with the access
+  token, to `evil.example`.
+- **A cut tool input says it was cut.** The plugin keeps a tool's
+  `command`, `query` and `pattern` to 200 characters and a sub-agent's
+  `prompt` to 100, and cut them with no sign, so the session drawer
+  showed a command that stopped mid-way as if it were the whole command.
+  A cut value now ends with `…` and the event's `tool_use` block lists
+  it in `truncated`, beside the input, as a JSON Pointer
+  (`"truncated": ["/command"]`, D272); the bounds are unchanged. The
+  bounds count characters, so a cut no longer splits one in two.
 - **A long tool output reads as text in the Prompts tab.** The plugin
   kept the first 2000 characters of a tool's response by cutting its
   JSON text mid-way, so every Bash result over that showed in Pretty as
@@ -319,8 +404,49 @@ All notable changes to Flightdeck are documented here.
   fields compactly, and which values were cut and how much each kept.
   Results stored by earlier plugin versions, JSON text cut mid-way, are
   read up to the cut and shown the same way, with a note saying where
-  the stored text ends; a provider's tool result is never read so. A tool input whose block names cut fields shows
-  how many characters each kept. Raw still shows the stored block.
+  the stored text ends; a provider's tool result is never read so. A
+  tool input whose block names cut fields shows how many characters
+  each kept. Raw still shows the stored block (D274).
+- **A Claude Code session that is not being recorded says so.** When
+  the server does not accept a session's first event (no answer, an
+  address that is not a Flightdeck server's, a refused token), the
+  `SessionStart` hook shows a warning in Claude Code, once per session,
+  naming what happened and the setting to change; the token is never
+  printed. Before, the only trace was a line in Claude Code's debug
+  log. The hook still exits 0 and the session carries on. A first event
+  the server does not answer within two seconds (a cold server's first
+  event can take longer) is sent once more before any warning, so a
+  session that is being recorded is not reported as lost. Every send of
+  a session's `session_start`, the second attempt and a later hook's
+  backstop alike, is the same event, with the same id and time, so a
+  server that stored one and answered it late keeps one; a sub-agent's
+  child `session_start` too.
+- **A resent `session_start` no longer marks its session re-attached.**
+  Ingestion attached every arrival of a `session_start`, so a copy sent
+  again after a slow answer (the Claude Code plugin's retry, an
+  OpenTelemetry exporter's retried batch) recorded an attachment, which
+  the dashboard draws as a re-attached run, and moved the session's
+  start sequence. The event id is now the key: a start is attached and
+  stamped once per id, and a copy gets the first copy's answer (D273;
+  migration 000037 adds `session_start_receipts`).
+- **Analytics no longer fail on a read-only root filesystem.** With
+  `docker run --read-only` (or `readOnlyRootFilesystem: true`) SQLite
+  had no directory for its temporary files, which it needs once a sort
+  or a `GROUP BY` outgrows its cache: on a database of 300,000 events
+  the analytics requests answered 500 (`disk I/O error (6410)`) and the
+  pricing table's sync at start failed. The binary now keeps SQLite's
+  temporary files in `<data dir>/tmp` (mode 0700, emptied at every
+  start of the files SQLite left there, and of nothing else), on disk
+  and on the volume that holds the database, so everything it writes is
+  under the data dir. A symbolic link or a file in place of `tmp` is
+  replaced, never followed.
+- **The start-up block of a container shows an address a person can
+  use.** For a listen on every interface (`:4000`, the image's) the
+  block printed `http://<host name>:4000`, and a container's host name
+  is its id. It now prints `http://<this-host>:4000` with a note to put
+  the machine's name or address in its place; a loopback listen still
+  reads `http://localhost:4000`, an address on one interface is shown
+  as given, and `--domain` shows `https://<domain>`.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the
@@ -928,6 +1054,43 @@ All notable changes to Flightdeck are documented here.
   healthcheck (the image has no shell to run one). An install of the
   earlier compose files keeps its data by setting
   `FLIGHTDECK_DATABASE_URL` to its Postgres.
+- **The Helm chart runs the one image as a StatefulSet.** With the
+  default values it is one pod and nothing else: SQLite and the
+  embedded bus on the pod's own volume. `postgres.enabled=true` with
+  `postgres.password` runs the chart's Postgres, and
+  `postgres.externalUrl` uses yours. More than one replica, or the HPA,
+  needs a Postgres and a NATS the pods share (the chart's cluster with
+  `nats.auth.token`, or the new `nats.externalUrl`), and the render
+  refuses anything else with the reason: on SQLite or the embedded bus
+  every pod would have data of its own. The chart's Postgres gets
+  `max_connections` for 80 connections per pod it may run
+  (`postgres.maxConnections` overrides it upwards). The values
+  `api.*`, `ingestion.*`, `workers.*` and `dashboard.*`, the JWT and
+  admin secrets and the migrations ConfigMap are gone; `flightdeck.*`
+  replaces them. **An existing release must set `postgres.enabled=true`
+  to stay on the chart's Postgres**: it was implied before, and without
+  it the pods start on an empty SQLite database (the Postgres volume
+  claim stays). `kubectl logs <release>-flightdeck-0` shows the token
+  of the first start, as the install notes say. Every secret can come
+  from a Secret you created (`postgres.externalUrlSecret`,
+  `postgres.passwordSecret`, `nats.externalUrlSecret`,
+  `nats.auth.tokenSecret`) instead of a value. An upgrade that would
+  move the release to another database fails unless
+  `allowDatabaseChange=true`, since the chart does not move data. The
+  pods set `FLIGHTDECK_ALLOWED_HOSTS` to the Service, pod and Ingress
+  names (`flightdeck.extraAllowedHosts` adds more). Every pod runs under
+  the default seccomp profile, the bundled Postgres and NATS with a
+  read-only root filesystem; images can be pinned by digest;
+  `flightdeck.extraEnvFrom` and an optional NetworkPolicy for the
+  metrics ports are new, and `flightdeck.extraEnv` refuses a name that
+  reads like a secret. `flightdeck.dashboardTokenSecret` gives every
+  pod one dashboard token you supply, mounted from your Secret as the
+  file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names. Resource names are
+  built on the release name cut to 43 characters, so a long release
+  name no longer renders a Service or StatefulSet name Kubernetes
+  refuses; a release of an earlier chart with a longer base gets new
+  Postgres and NATS names (the README says how to keep the Postgres
+  data; the NATS rename loses only the events still queued).
 - **`make dev` runs the binary from source.** The contributor dev
   stack is the `flightdeck` binary built from the checkout, with the
   dashboard embedded, on `127.0.0.1:4000` beside one Postgres
@@ -940,8 +1103,11 @@ All notable changes to Flightdeck are documented here.
   stack, or a running binary, serving. `make dev-reset` stays the only
   command that deletes data; on Postgres it says how many sessions and
   events it is about to delete, and a database with more than a test
-  seed is deleted only with the compose project's name (`make
-  dev-reset CONFIRM=docker`). The commands leave another checkout's
+  seed is deleted only with its name (`make dev-reset
+  FLIGHTDECK_DEV_CONFIRM=docker` on Postgres, `sqlite` on SQLite);
+  it refuses while another client uses the database (a stack of
+  another dev dir on another port, a psql session). The commands
+  leave another checkout's
   containers alone: from a second checkout on the same compose project
   `make dev` and `make dev-reset` refuse and `make down` stops only
   its own binary. `make
@@ -959,10 +1125,9 @@ All notable changes to Flightdeck are documented here.
 - **The per-service Docker images are no longer published.**
   `flightdeckhq/flightdeck-ingestion`, `-workers`, `-api` and
   `-dashboard` are replaced by the one `flightdeckhq/flightdeck` image,
-  which Docker Compose runs. Their Dockerfiles, the nginx front door
-  (`docker/nginx`) and the compose production and E2E overlays are
-  gone with them; the Helm chart moves to the one image in a following
-  change.
+  which Docker Compose and the Helm chart run. Their Dockerfiles, the
+  nginx front door (`docker/nginx`), the compose production and E2E
+  overlays and the chart's per-service templates are gone with them.
 
 ## v0.8.0 — 2026-10-31
 

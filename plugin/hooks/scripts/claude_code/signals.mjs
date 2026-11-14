@@ -5,7 +5,8 @@
 // while prompt capture is on.
 
 import { boundedToken, truncateUtf8 } from "../core/config.mjs";
-import { sanitizeToolInput } from "./tools.mjs";
+import { jsonPointer } from "../core/cut.mjs";
+import { sanitizeToolInput, TOOL_INPUT_CUT_MARK } from "./tools.mjs";
 
 // Bound on a string in signal_data, matching ingestion's.
 export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
@@ -142,6 +143,24 @@ function cutValue(value) {
 }
 
 /**
+ * A tool input value for signal_data: on one line and within
+ * MAX_SIGNAL_DATA_VALUE_BYTES, ending with TOOL_INPUT_CUT_MARK when the
+ * bound cut it. ``cut`` says whether it did. Undefined when nothing
+ * usable is left.
+ */
+function cutMarkedValue(value) {
+  const oneLine = value.replace(/[\x00-\x1f\x7f]+/g, " ");
+  if (Buffer.byteLength(oneLine, "utf8") <= MAX_SIGNAL_DATA_VALUE_BYTES) {
+    const whole = signalValue(oneLine);
+    return typeof whole === "string" ? { value: whole, cut: false } : undefined;
+  }
+  const room = MAX_SIGNAL_DATA_VALUE_BYTES - Buffer.byteLength(TOOL_INPUT_CUT_MARK, "utf8");
+  const kept = truncateUtf8(oneLine, room).replace(new RegExp(`${TOOL_INPUT_CUT_MARK}$`), "");
+  const marked = signalValue(kept + TOOL_INPUT_CUT_MARK);
+  return typeof marked === "string" ? { value: marked, cut: true } : undefined;
+}
+
+/**
  * The session_signal payload for one of the SIGNAL_HOOKS. ``model`` is
  * the switched-to model for model_switched and null otherwise, so only
  * a model switch moves the session's model.
@@ -172,10 +191,20 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
     // rather than dropped.
     const isMcp = typeof server === "string" || String(hookEvent.tool_name ?? "").startsWith("mcp__");
     const safe = captureToolInputs && !isMcp ? sanitizeToolInput(hookEvent.tool_input) : null;
-    for (const [key, value] of Object.entries(safe ?? {})) {
-      const bounded = cutValue(String(value));
-      if (bounded !== undefined) signalData[key] = bounded;
+    // A value the whitelist cut, or that this byte bound cuts, ends with
+    // the cut mark, and signal_data's ``truncated`` names it: a cut
+    // command must not read as the whole command. signal_data is
+    // Flightdeck's own structure and holds scalars only, so the list is
+    // of field names, comma-separated, in the order of the fields.
+    const cutBefore = new Set(safe?.truncated ?? []);
+    const truncated = [];
+    for (const [key, value] of Object.entries(safe?.input ?? {})) {
+      const bounded = cutMarkedValue(String(value));
+      if (bounded === undefined) continue;
+      signalData[key] = bounded.value;
+      if (bounded.cut || cutBefore.has(jsonPointer([key]))) truncated.push(key);
     }
+    if (truncated.length > 0) signalData.truncated = truncated.join(",");
   }
   const texts = {};
   if (capturePrompts) {

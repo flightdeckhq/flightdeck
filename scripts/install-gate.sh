@@ -140,16 +140,32 @@ startup_checks() {
   say "database: $EXPECT_DATABASE"
 }
 
+# wait_ready BASE [ALIVE-CMD [STARTED-CMD]]: until STARTED-CMD succeeds
+# and BASE answers, or ALIVE-CMD fails, or the time is up.
 wait_ready() {
-  local base="$1" alive_cmd="${2:-true}" deadline
+  local base="$1" alive_cmd="${2:-true}" started_cmd="${3:-true}" deadline
   # A deadline, not a count of attempts: one attempt can itself take
   # REQUEST_TIMEOUT_SECS.
   deadline=$((SECONDS + READY_TIMEOUT))
-  until "${CURL[@]}" -sf -o /dev/null "$base/ingest/health"; do
+  until eval "$started_cmd" && "${CURL[@]}" -sf -o /dev/null "$base/ingest/health"; do
     eval "$alive_cmd" || return 1
     ((SECONDS < deadline)) || return 1
     sleep 1
   done
+}
+
+# run_started OFFSET: whether the binary's output since byte OFFSET of
+# RUN_LOG holds the end of its start-up block. The binary binds its
+# listener before anything else and prints the block just before it
+# serves, so the block in its own output says the port is its own: an
+# answer on the port alone could be a server that took it while this
+# binary was still loading, and that binary exits on the busy address
+# only afterwards. The output is read whole before it is searched (a
+# pipe into grep -q fails under pipefail when grep stops early).
+run_started() {
+  local out
+  out="$(tail -c +"$(($1 + 1))" "$RUN_LOG" 2>/dev/null)" || return 1
+  grep -q '^Press Ctrl+C to stop' <<<"$out"
 }
 
 # expect_401 WHAT CURL-ARG... requires the request to be answered 401.
@@ -291,21 +307,25 @@ run_start() {
   if "${CURL[@]}" -s -o /dev/null "$base/ingest/health"; then
     die "something already answers on $base; the gate needs the port for the binary it starts"
   fi
+  # The log is appended to by the restart: only what this start writes
+  # counts.
+  local offset=0
+  [[ ! -f "$RUN_LOG" ]] || offset="$(wc -c <"$RUN_LOG")"
+  offset="${offset//[[:space:]]/}"
   "$@" >>"$RUN_LOG" 2>&1 &
   RUN_PID=$!
-  if ! wait_ready "$base" "kill -0 $RUN_PID 2>/dev/null"; then
-    printf 'flightdeck is not ready after %ss; its output:\n' "$READY_TIMEOUT" >&2
-    show_run_log
-    die "not ready"
+  if wait_ready "$base" "kill -0 $RUN_PID 2>/dev/null" "run_started $offset" && kill -0 "$RUN_PID" 2>/dev/null; then
+    return 0
   fi
-  # Something answered: it must be the process started here. A server
-  # that took the port in the meantime answers just as well while this
-  # binary exits on the busy port, and the checks would then pass
-  # against a stranger.
-  if ! kill -0 "$RUN_PID" 2>/dev/null; then
+  # A binary that has exited while something answers on its port lost
+  # the port to that something; the checks would run against it.
+  if ! kill -0 "$RUN_PID" 2>/dev/null && "${CURL[@]}" -s -o /dev/null "$base/ingest/health"; then
     show_run_log
     die "$base answers, but the binary started here has exited: something else is on that port"
   fi
+  printf 'flightdeck is not ready after %ss; its output:\n' "$READY_TIMEOUT" >&2
+  show_run_log
+  die "not ready"
 }
 
 run_stop() {

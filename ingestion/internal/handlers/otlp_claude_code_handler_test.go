@@ -52,14 +52,14 @@ type fakeAttacher struct {
 	recorded map[string]uint64
 }
 
-func (a *fakeAttacher) Attach(_ context.Context, id string) (bool, string, error) {
+func (a *fakeAttacher) Attach(_ context.Context, id, _ string) (bool, string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.attached = append(a.attached, id)
 	return a.prior != "", a.prior, nil
 }
 
-func (a *fakeAttacher) RecordStart(_ context.Context, id string, seq uint64) error {
+func (a *fakeAttacher) RecordStart(_ context.Context, id, _ string, seq uint64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.recorded == nil {

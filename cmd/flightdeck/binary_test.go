@@ -288,7 +288,7 @@ func (c *child) postEvent(t *testing.T, token, sessionID, agentID, flavor, event
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /ingest/v1/events: %v", err)
+		t.Fatalf("POST /ingest/v1/events: %v\nthe binary's output:\n%s", err, c.out.String())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -859,6 +859,49 @@ func TestBinary_AnUnparsablePostgresURLIsRefusedWithoutItsPassword(t *testing.T)
 
 // An explicit sqlite:// URL is served from that file, relative paths
 // included, and the data dir then holds no database of its own.
+// The binary keeps SQLite's temporary files in <data dir>/tmp, so that
+// a read-only root filesystem leaves it a place for them, and empties
+// that directory at every start.
+func TestBinary_KeepsItsTemporaryFilesInTheDataDir(t *testing.T) {
+	dataDir := filepath.Join(tempDir(t), "data")
+	tmp := filepath.Join(dataDir, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	leftover := filepath.Join(tmp, "etilqs_left_by_a_killed_process")
+	if err := os.WriteFile(leftover, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beside := filepath.Join(dataDir, "not-temporary")
+	if err := os.WriteFile(beside, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Not SQLite's: left alone, even inside tmp.
+	foreign := filepath.Join(tmp, "someone-elses-file")
+	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	port := freePort(t)
+	start(t, "127.0.0.1:"+port, port, dataDir)
+	info, err := os.Stat(tmp)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("no tmp directory in the data dir: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Errorf("tmp has mode %04o, want 0700", info.Mode().Perm())
+	}
+	if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the file an earlier run left in tmp is still there (stat: %v)", err)
+	}
+	if _, err := os.Stat(beside); err != nil {
+		t.Errorf("a file beside tmp was removed: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("a file in tmp that is not SQLite's was removed: %v", err)
+	}
+}
+
 func TestBinary_ExplicitSQLiteURL(t *testing.T) {
 	skipWithoutSignals(t)
 	dataDir := filepath.Join(tempDir(t), "data")

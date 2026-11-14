@@ -546,6 +546,15 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		}
 	}
 
+	// The row keeps the lowest stream sequence of the start's copies:
+	// with two copies of one start in flight at once (neither stored,
+	// so Process let both through), the later one upserts with the
+	// earlier one's sequence, or lowers the row back to it.
+	startSeq, replacedSeq, err := sp.w.ClaimStartSeq(ctx, e.SessionID, e.ID, e.StreamSeq)
+	if err != nil {
+		return fmt.Errorf("session start: %w", err)
+	}
+
 	// attributed is true when this start inserted the row or claimed a
 	// parent stub that a sub-agent's session_start wrote first, so the
 	// session counts toward the agent once whichever of the two the
@@ -559,11 +568,16 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		e.TokenID, e.TokenName,
 		e.ParentSessionID, e.AgentRole,
 		e.CapturePrompts,
-		e.StreamSeq,
+		startSeq,
 		eventTime(e),
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
+	}
+	if replacedSeq > 0 {
+		if err := sp.w.LowerStartSeq(ctx, e.SessionID, replacedSeq, startSeq); err != nil {
+			return fmt.Errorf("session start: %w", err)
+		}
 	}
 	if attributed {
 		if bErr := sp.w.BumpAgentSessionCount(ctx, e.AgentID); bErr != nil {

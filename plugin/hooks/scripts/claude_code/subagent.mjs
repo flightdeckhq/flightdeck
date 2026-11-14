@@ -4,14 +4,16 @@
 // session_end, and the size-routed capture of the messages between
 // parent and child.
 
+import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { PLUGIN_VERSION } from "../core/config.mjs";
-import { postEvent, sendEvent } from "../core/poster.mjs";
+import { sendEvent } from "../core/poster.mjs";
 import {
   claimSessionStart,
+  clearPendingSessionStart,
   clearSessionStarted,
   clearSubagentEnded,
   dropOwedSubagentEnd,
@@ -21,6 +23,7 @@ import {
   markSubagentEnded,
   owedToolCallHeld,
   oweSubagentEnd,
+  pendingSessionStart,
   readOwedSubagentEnds,
   releaseOwedSubagentEnd,
   releaseSessionStart,
@@ -727,7 +730,18 @@ async function startSubagent({ cfg, hookEvent, outerSessionId, childBase, role, 
   // any other, so the child's interior hooks do not send another one.
   if (isSessionStarted(childSessionId) || !claimSessionStart(childSessionId)) return;
   try {
-    if (await postEvent(cfg.server, cfg.token, childSessionId, payload)) markSessionStarted(childSessionId);
+    // The child's pending session_start, as for any session's (state.mjs
+    // pendingSessionStart): one id and time for every send of it, this
+    // one and a child hook's backstop after a POST the server stored but
+    // answered late, so the worker keeps one. A resume cleared the
+    // previous execution's above, so its start is a new event.
+    const pending = pendingSessionStart(childSessionId, { id: randomUUID(), timestamp: payload.timestamp });
+    payload.id = pending.id;
+    payload.timestamp = pending.timestamp;
+    const sent = await sendEvent(cfg.server, cfg.token, childSessionId, payload);
+    if (sent.accepted) markSessionStarted(childSessionId);
+    // Refused for its time: that id and time can never be stored.
+    else if (sent.clockSkew) clearPendingSessionStart(childSessionId);
   } finally {
     releaseSessionStart(childSessionId);
   }

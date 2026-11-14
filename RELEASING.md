@@ -73,104 +73,6 @@ differs from `VERSION` (`make version-check`).
 `main` is protected, so a release is two steps: the version bump goes
 through a pull request, and only the tag is pushed directly.
 
-### Before the first release that ships the binary
-
-The README on `main` tells a new user to run
-`curl -fsSL https://flightdeck-hq.com/install.sh | sh` (or
-`irm https://flightdeck-hq.com/install.ps1 | iex` on Windows), then to
-connect a Python agent with `pip install flightdeck-sensor` and
-`flightdeck_sensor.init()` with no arguments. All of that works only when
-everything below holds: v0.8.0 and earlier have no binary assets, and
-flightdeck-sensor 0.8.0, the latest on PyPI, requires `server` and
-`token` (the no-argument `init()` first ships in the release after
-v0.8.0). So each line is a gate, in this order, before and after the
-first tag whose release carries the binary:
-
-- [x] **#303 and #313 are merged** (Compose and the Helm chart on the
-  one image), which the README's Compose and Helm lines and
-  `guides/self-hosting.md` describe.
-- [x] **The README with the install commands (#314) is merged, after
-  them.** From that merge until the final tag is out, `main`'s README
-  and the site show install commands that find no binary and a sensor
-  snippet that fails against flightdeck-sensor 0.8.0, so merge it when
-  the release is next.
-- [x] **Pages has deployed and serves this `main`'s installers.** Both
-  must answer 200 with the bytes of the files about to be tagged:
-
-  ```bash
-  curl -fsSI https://flightdeck-hq.com/install.sh
-  curl -fsSL https://flightdeck-hq.com/install.sh | cmp - install.sh
-  curl -fsSL https://flightdeck-hq.com/install.ps1 | cmp - install.ps1
-  ```
-
-  The install gate repeats the comparison against the tag's scripts and
-  goes red when the site serves anything else.
-- [ ] **A dry run passes first.** Once the release PR (step 1) has
-  set `VERSION` to `X.Y.Z` on `main`, tag `vX.Y.Z-rc.1` there as "Dry
-  run: a pre-release tag" below describes (a new `-rc.N` after each
-  fix; the version guard requires the rc's `X.Y.Z` to match `VERSION`). The
-  Release workflow publishes the pre-release: the GitHub pre-release
-  with its assets, `flightdeck-cli` as `X.Y.ZrcN` on PyPI and the image
-  as `flightdeckhq/flightdeck:vX.Y.Z-rc.N` on Docker Hub; no Homebrew
-  formula and no flightdeck-sensor. Then:
-  - the install gate is green on all five legs (it starts when the
-    Release workflow succeeds; `gh run list --workflow install-gate.yml`
-    shows it). Its installer legs also require the site to serve the
-    tag's `install.sh` and `install.ps1`; on an rc its macos-arm64 leg
-    installs with `install.sh`, since the tap carries no pre-release;
-  - the channels, by hand, on a machine whose `localhost:4000` holds no
-    real data (a fresh VM). The installers come from the site, pinned to
-    the rc because their default, the latest release, skips
-    pre-releases:
-
-    ```bash
-    curl -fsSL https://flightdeck-hq.com/install.sh | VERSION=vX.Y.Z-rc.N sh
-    pip install flightdeck-cli==X.Y.ZrcN
-    docker run --rm flightdeckhq/flightdeck:vX.Y.Z-rc.N --version
-    ```
-
-    ```powershell
-    $env:VERSION = 'vX.Y.Z-rc.N'; irm https://flightdeck-hq.com/install.ps1 | iex
-    ```
-
-    Each `flightdeck --version` prints `flightdeck vX.Y.Z-rc.N`, and
-    `flightdeck` started from the shell installer serves the dashboard
-    on `http://localhost:4000`. Homebrew cannot be checked on an rc: the
-    tap gets a formula from a stable tag only, and is checked after the
-    final tag (below).
-
-  Only then the final tag, `vX.Y.Z` (step 2), on the same `main`.
-- [ ] **The final release has its assets**, which are what the
-  installers download: the six archives, `checksums.txt` and its
-  Sigstore bundle. `gh release view vX.Y.Z --json assets -q
-  '.assets[].name'` lists them, and the install gate, green on all five
-  legs, installs from them, the macos-arm64 leg through `brew install
-  flightdeckhq/tap/flightdeck` and `brew services`.
-- [ ] **flightdeck-sensor X.Y.Z is on PyPI and the README's snippet
-  runs.** The final tag publishes it in the same run as the binary
-  (the `publish-sensor` job, stable tags only, after `flightdeck-cli`),
-  so the sensor with the no-argument `init()` reaches PyPI with the
-  release that makes the install commands work, never after it. If
-  `publish-sensor` failed, the install commands work while the README's
-  sensor snippet does not: re-run it ("If a release fails", case 2)
-  before announcing the release. Then, on a machine where a
-  `flightdeck` from this release is the only thing on
-  `localhost:4000`, in a fresh virtualenv: `pip install
-  flightdeck-sensor` resolves to `X.Y.Z`, and the README's lines
-
-  ```python
-  import flightdeck_sensor
-
-  flightdeck_sensor.init()
-  flightdeck_sensor.patch()
-  ```
-
-  run with one warning (the development token in use) and no error,
-  and the session appears in the dashboard.
-
-Later releases need none of this: CI keeps the site's copies identical
-to the root installers. Delete this section once that release is out.
-
 ### 1. Open the release PR
 
 ```bash
@@ -217,6 +119,11 @@ release PR.
 Tag as soon as the release PR merges. From the merge until the tag
 exists, `main`'s marketplace entry points at a `vX.Y.Z` ref that does not
 exist yet, so plugin installs and updates fail in that window.
+
+A dry run comes first, on the release PR's merge commit: tag
+`vX.Y.Z-rc.1` there ("Dry run: a pre-release tag" below) and wait for the
+Release run and the install gate to pass on every leg. The final tag then
+goes on that same commit.
 
 ```bash
 make release-tag VERSION=vX.Y.Z
@@ -374,6 +281,11 @@ release notes are the `X.Y.Z` section that PR dated (the CHANGELOG's
 Unreleased section only for a pre-release of a version not dated yet).
 A fix merged after the release PR adds its entry to that dated section,
 not to Unreleased, so the final release's notes carry it.
+
+The final tag goes on the commit its dry run passed on, so that commit
+carries both tags; the release workflow names the pushed tag to
+goreleaser (`GORELEASER_CURRENT_TAG`), which would otherwise take the
+higher-sorting `-rc.N`.
 
 A second dry run after a fix is a new tag, `-rc.2`: PyPI never
 replaces a published file (the publish step skips a version that already

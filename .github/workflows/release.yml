@@ -178,6 +178,13 @@ jobs:
           args: release --clean --skip=before --release-notes "${{ runner.temp }}/release-notes.md"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The tag this run was pushed for. Without it goreleaser takes
+          # the highest-sorting tag on the commit, and a final tag on
+          # its dry run's commit (vX.Y.Z beside vX.Y.Z-rc.N, as
+          # RELEASING.md asks) sorts below the rc: v0.9.0's first run
+          # built the rc's version and tried to upload into the rc's
+          # release (422 on every asset).
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
           # A fine-grained token with contents: write on homebrew-tap;
           # the GITHUB_TOKEN cannot push to another repository. Unused
           # on a pre-release (the formula is skipped).

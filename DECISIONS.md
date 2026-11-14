@@ -933,16 +933,15 @@ in-process workers (test-only code in the product).
 ## D270 -- An operator can supply the dashboard token; it is stored and served as a minted one is
 
 **Date:** 2026-11-12
-**Decision:** beyond loopback the binary takes its dashboard token from
-the file `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names, else from
-`FLIGHTDECK_DASHBOARD_TOKEN`, else mints one. A supplied value must have
-a minted token's form or the start is refused, the value not echoed. It
-is stored as an `access_tokens` row with a salt derived from the token,
-so every instance writes the same row; never in `secrets.json`; served
-by `/runtime-config.json` as a minted one is. An earlier supplied token
-stays valid until revoked. The file's mode is not checked.
+**Decision:** beyond loopback the token comes from the file
+`FLIGHTDECK_DASHBOARD_TOKEN_FILE` names, else `FLIGHTDECK_DASHBOARD_TOKEN`,
+else is minted. A value not shaped like a minted token stops the start.
+It is stored as a row named after its prefix, salted with a value derived
+from it so every instance writes one row, and served as a minted one is.
+An earlier supplied token stays valid until revoked: the deliberate
+default, since a rolling update's old pods still serve it.
 **Why:** instances on one Postgres each minted their own token, and none
 could be known before the first start.
-**Rejected alternative:** replacing the earlier token (a rolling update's
-old pods still serve it); refusing a world-readable file (secret mounts
-are 0644 / 0444); a random salt (concurrent starts leave two rows).
+**Rejected alternative:** revoking the earlier token (401s the old pods);
+a rotate setting (restart and revoke do it); refusing a world-readable
+file (secret mounts are 0644 / 0444); a random salt (two rows).

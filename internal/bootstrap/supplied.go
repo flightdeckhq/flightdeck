@@ -18,9 +18,20 @@ const (
 	TokenEnv = "FLIGHTDECK_DASHBOARD_TOKEN"
 )
 
-// SuppliedTokenName is the name of the access token the binary stores
-// for a supplied dashboard token, as the Settings page lists it.
+// SuppliedTokenName is the start of the name of the access token the
+// binary stores for a supplied dashboard token; SuppliedTokenNameFor
+// adds the token's prefix.
 const SuppliedTokenName = "Supplied dashboard token"
+
+// SuppliedTokenNameFor is the name the Settings page lists a supplied
+// token under: SuppliedTokenName and the token's first eight
+// characters, "Supplied dashboard token (ftd_a07a)". A token supplied
+// earlier stays valid until it is revoked (see EnsureToken), and the
+// prefix tells the old row from the new one. The prefix is no more than
+// the Settings page shows of any token.
+func SuppliedTokenNameFor(token string) string {
+	return fmt.Sprintf("%s (%s)", SuppliedTokenName, token[:min(len(token), tokenPrefixShown)])
+}
 
 const (
 	// tokenPrefix and tokenHexDigits are the form of a minted token,
@@ -29,6 +40,10 @@ const (
 	// and 128 random bits is what makes a bearer token unguessable.
 	tokenPrefix    = "ftd_"
 	tokenHexDigits = 32
+	// tokenPrefixShown is how much of a token its name and the Settings
+	// page show: "ftd_" and four digits, the prefix the token store keeps
+	// in the clear and the validator looks a token up by.
+	tokenPrefixShown = 8
 	// minDistinctDigits is the fewest distinct hex digits a supplied
 	// token may have. It catches the values typed by hand (all zeros,
 	// "deadbeef" repeated); 16 random bytes have fewer than eight
@@ -134,5 +149,34 @@ func checkSupplied(raw string) error {
 	if distinct < minDistinctDigits {
 		return fmt.Errorf("the value is not random (fewer than %d distinct digits): %w", minDistinctDigits, errTokenForm)
 	}
+	// Two patterns a person types that have enough distinct digits: one
+	// half written twice (64 bits at most), and a walk where every digit
+	// is one above or one below the one before (0123456789abcdef twice,
+	// fedcba9876543210...). Random digits are such a walk with a
+	// chance of (2/16)^31, and repeat a half with a chance of 16^-16.
+	if digits[:tokenHexDigits/2] == digits[tokenHexDigits/2:] {
+		return fmt.Errorf("the value is not random (its second half repeats the first): %w", errTokenForm)
+	}
+	if isDigitWalk(digits) {
+		return fmt.Errorf("the value is not random (each digit is one away from the one before): %w", errTokenForm)
+	}
 	return nil
+}
+
+// isDigitWalk reports whether every hex digit of digits is one above or
+// one below the digit before it, modulo 16. digits holds lower-case hex
+// digits only.
+func isDigitWalk(digits string) bool {
+	value := func(c byte) int {
+		if c <= '9' {
+			return int(c - '0')
+		}
+		return int(c-'a') + 10
+	}
+	for i := 1; i < len(digits); i++ {
+		if step := (value(digits[i]) - value(digits[i-1]) + 16) % 16; step != 1 && step != 15 {
+			return false
+		}
+	}
+	return true
 }

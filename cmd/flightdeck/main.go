@@ -672,7 +672,7 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	case dev:
 		p("  Token       %s   (development token: the server listens on loopback only)\n", token.Token)
 	case token.Source != "":
-		p("  Token       supplied by %s   (named %q in Settings)\n", token.Source, bootstrap.SuppliedTokenName)
+		p("  Token       supplied by %s   (named %q in Settings)\n", token.Source, bootstrap.SuppliedTokenNameFor(token.Token))
 	case token.Minted:
 		p("  Token       %s   (minted now, named %q in Settings; kept in %s)\n", token.Token, bootstrap.TokenName, layout.Secrets)
 	default:

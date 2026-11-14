@@ -10641,32 +10641,51 @@ An operator can supply the token instead, so that it is known before
 the first start and several instances on one Postgres database share
 one: `FLIGHTDECK_DASHBOARD_TOKEN_FILE` names a file that holds it (a
 mounted Kubernetes or Docker secret), and `FLIGHTDECK_DASHBOARD_TOKEN`
-holds it directly; the file wins when both are set, because it is the
-form that stays out of the process environment (`docker inspect`, a
-crash report), and the binary says which one it used. The value must
-have the form of a minted token, `ftd_` followed by 32 lower-case hex
-digits (`printf 'ftd_%s' "$(openssl rand -hex 16)"`), with at least
-eight distinct digits; anything else stops the start with a message
-that names the variable and the expected form and never the value. The
-file is read once at start, surrounding white space is dropped, and its
-mode is not checked: Kubernetes mounts a secret 0644 and Docker 0444,
-inside a container that has no other user. The binary stores the token
-as an `access_tokens` row named `Supplied dashboard token`, hashed with
-a salt like any other; the salt is derived from the token, so every
+holds it directly. The file is the preferred form, and wins when both
+are set (the binary says which one it used): a value in a variable is
+visible to anything that can read the process's environment
+(`/proc/<pid>/environ`, `docker inspect`, every child process), a file
+only to what can read the file. The value must have the form of a
+minted token, `ftd_` followed by 32 lower-case hex digits (`printf
+'ftd_%s' "$(openssl rand -hex 16)"`), and must not look typed: fewer
+than eight distinct digits, a second half that repeats the first, or a
+walk where every digit is one above or below the one before
+(`0123456789abcdef…`) is refused. A refused value stops the start, on
+any listen address, with a message that names the variable and the
+expected form and never the value. The file is read once at start,
+surrounding white space is dropped, and its mode is not checked:
+Kubernetes mounts a secret 0644 and Docker 0444, inside a container
+that has no other user. The binary stores the token as an
+`access_tokens` row named after its prefix, `Supplied dashboard token
+(ftd_a07a)`, with a salted hash like any other token. A minted token's
+salt is random; a supplied token's is derived from the token,
+`SHA256("flightdeck supplied access token salt\0" || token)`, so every
 instance computes the same row and the insert is `ON CONFLICT DO
 NOTHING` on the hash: instances starting together all succeed and leave
-one row. It is not written to `secrets.json`, the start-up block prints
-`supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE` in place of the token, and
-no log line or error carries it. `/runtime-config.json` serves it to
-the dashboard as it serves a minted token, so it is a secret of this
-deployment's dashboard and nothing else: do not reuse a value that
-protects anything more. When the supplied token changes, the new one is
-stored and served and the earlier one stays valid until it is revoked
-in Settings (both rows carry the name; the prefix and the creation time
-tell them apart): the pods of a rolling update that still run with the
-old value keep working. Without the variables the binary mints, as
-above. On a loopback listen the development token is used and a
-supplied token is ignored with a warning. `/runtime-config.json` serves
+one row. That is no weaker. The salt is stored beside the hash in both
+cases, so what it adds is that equal tokens hash differently and that
+no precomputed table applies. A supplied token is unique by
+construction, and 128 random bits cannot be searched offline, salt or
+none. The token is not written to `secrets.json`, the start-up block
+prints `supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE` and the row's name
+in place of the token, and no log line or error carries it.
+`/runtime-config.json` serves it to the dashboard as it serves a minted
+token, so it is a secret of this deployment's dashboard and nothing
+else: do not reuse a value that protects anything more.
+
+When the supplied token changes, the new one is stored and served, and
+the earlier one stays valid until it is revoked in Settings. That is the
+default on purpose: during a rolling update the pods that still run
+with the old value keep serving it to their dashboards, and revoking it
+on the first new start would answer those 401. To rotate: supply the
+new token, restart every instance, then revoke the old row (the one
+named after the old token's prefix) in Settings. The converse holds as
+well: a row revoked while its token is still supplied is stored again
+by the next start, so to stop using a supplied token, remove the
+variable (or replace its value), restart, and then revoke. Without the
+variables the binary mints, as above. On a loopback listen the
+development token is used, and a well-formed supplied token is ignored
+with a warning (a malformed one stops the start there too). `/runtime-config.json` serves
 the dashboard token to anyone who can reach the origin, so the origin
 is the trust boundary: a non-loopback deployment protects it at the
 network edge or with `--domain`. Further tokens are minted in the

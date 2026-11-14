@@ -22,7 +22,7 @@ func envMap(m map[string]string) func(string) string {
 }
 
 func TestCheckSupplied(t *testing.T) {
-	for _, ok := range []string{goodToken, "ftd_0123456789abcdef0123456789abcdef", "ftd_c0ffee1234567890abcdef0987654321"} {
+	for _, ok := range []string{goodToken, "ftd_c0ffee1234567890abcdef0987654321", "ftd_8e1f4a7c2b9d0e3f6a5c8b1d4e7f0a29"} {
 		if err := checkSupplied(ok); err != nil {
 			t.Errorf("a well-formed token was refused: %v", err)
 		}
@@ -43,6 +43,11 @@ func TestCheckSupplied(t *testing.T) {
 		"one digit repeated":           "ftd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"a word repeated":              "ftd_deadbeefdeadbeefdeadbeefdeadbeef",
 		"seven distinct digits":        "ftd_01234560123456012345601234560123",
+		"one half written twice":       "ftd_3f9c1e7a5b2d4c6e3f9c1e7a5b2d4c6e",
+		"the digits in order, twice":   "ftd_0123456789abcdef0123456789abcdef",
+		"the digits in reverse":        "ftd_fedcba9876543210fedcba9876543210",
+		"a walk up and down":           "ftd_0123456789abcdedcba9876543210123",
+		"a walk from the middle":       "ftd_789abcdef0123456789abcdef0123456",
 		"a token with a newline in it": "ftd_3f9c1e7a5b2d4c6e\n8f0a1b3c5d7e9f1",
 	}
 	for name, value := range refused {
@@ -51,7 +56,7 @@ func TestCheckSupplied(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 			continue
 		}
-		if !strings.Contains(err.Error(), "ftd_") || !strings.Contains(err.Error(), "openssl rand -hex 16") {
+		if !strings.Contains(err.Error(), `"ftd_" followed by`) || !strings.Contains(err.Error(), "openssl rand -hex 16") {
 			t.Errorf("%s: the error does not say what a token looks like: %v", name, err)
 		}
 		// The message never repeats the value, nor its digits.
@@ -151,10 +156,66 @@ func TestLoadSupplied(t *testing.T) {
 func suppliedRowCount(t *testing.T, db *storage.DB) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM access_tokens WHERE name = $1", SuppliedTokenName).Scan(&n); err != nil {
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM access_tokens WHERE name LIKE $1", SuppliedTokenName+" (%").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func suppliedRowNamed(t *testing.T, db *storage.DB, token string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM access_tokens WHERE name = $1", SuppliedTokenNameFor(token)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n == 1
+}
+
+func TestSuppliedTokenNameFor(t *testing.T) {
+	if got := SuppliedTokenNameFor(goodToken); got != "Supplied dashboard token (ftd_3f9c)" {
+		t.Fatalf("SuppliedTokenNameFor = %q", got)
+	}
+	// The name shows the prefix the Settings page shows of any token,
+	// and nothing more of it.
+	if strings.Contains(SuppliedTokenNameFor(goodToken), goodToken[8:]) {
+		t.Fatal("the name carries more of the token than its prefix")
+	}
+}
+
+// Revoking a supplied token while it is still supplied is undone by the
+// next start, which stores it again: the rotation removes the variable
+// (or replaces its value) and restarts every instance first, and revokes
+// the old row after.
+func TestEnsureToken_ARevokedTokenStillSuppliedIsStoredAgain(t *testing.T) {
+	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
+		ctx := context.Background()
+		secretsPath := filepath.Join(t.TempDir(), "secrets.json")
+		secrets, err := datadir.LoadSecrets(secretsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		supplied := &Supplied{Token: "ftd_5b2d4c6e8f0a1b3c5d7e9f1a3f9c1e7a", Source: TokenFileEnv}
+		if _, err := EnsureToken(ctx, db, secrets, secretsPath, false, supplied); err != nil {
+			t.Fatal(err)
+		}
+		// Revoked in Settings, as the API's DELETE does.
+		if _, err := db.ExecContext(ctx, "DELETE FROM access_tokens WHERE name = $1", SuppliedTokenNameFor(supplied.Token)); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := apiapp.TokenValid(ctx, db, supplied.Token); err != nil || ok {
+			t.Fatalf("after the revoke the token resolves (%v, %v)", ok, err)
+		}
+		// The next start, the variable still set.
+		if _, err := EnsureToken(ctx, db, secrets, secretsPath, false, supplied); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := apiapp.TokenValid(ctx, db, supplied.Token); err != nil || !ok {
+			t.Fatalf("the next start did not store the still-supplied token again (%v, %v)", ok, err)
+		}
+		if !suppliedRowNamed(t, db, supplied.Token) {
+			t.Fatal("the stored row is not named after the token's prefix")
+		}
+	})
 }
 
 // A supplied token is stored once across restarts, is what the
@@ -183,6 +244,9 @@ func TestEnsureToken_Supplied(t *testing.T) {
 		if n := suppliedRowCount(t, db) - before; n != 1 {
 			t.Fatalf("%d rows after three starts with one supplied token, want 1", n)
 		}
+		if !suppliedRowNamed(t, db, first.Token) {
+			t.Fatalf("no row named %q", SuppliedTokenNameFor(first.Token))
+		}
 		if ok, err := apiapp.TokenValid(ctx, db, first.Token); err != nil || !ok {
 			t.Fatalf("the supplied token does not resolve: %v, %v", ok, err)
 		}
@@ -204,6 +268,11 @@ func TestEnsureToken_Supplied(t *testing.T) {
 		for _, tok := range []string{first.Token, second.Token} {
 			if ok, err := apiapp.TokenValid(ctx, db, tok); err != nil || !ok {
 				t.Fatalf("after the change, both the old and the new token must resolve (%v, %v)", ok, err)
+			}
+			// Each row is named after its own token's prefix, so the
+			// Settings page tells the old one from the new one.
+			if !suppliedRowNamed(t, db, tok) {
+				t.Fatalf("no row named %q", SuppliedTokenNameFor(tok))
 			}
 		}
 

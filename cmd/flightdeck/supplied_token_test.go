@@ -35,7 +35,7 @@ func (c *child) suppliedTokenCount(t *testing.T, token string) int {
 	}
 	n := 0
 	for _, r := range rows {
-		if r.Name == "Supplied dashboard token" {
+		if strings.HasPrefix(r.Name, "Supplied dashboard token (ftd_") {
 			n++
 		}
 	}
@@ -78,7 +78,7 @@ func TestBinary_ASuppliedDashboardToken(t *testing.T) {
 		t.Fatalf("%d access tokens named for the supplied one, want 1", n)
 	}
 	out := c.out.String()
-	if !strings.Contains(out, `  Token       supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE   (named "Supplied dashboard token" in Settings)`) {
+	if !strings.Contains(out, `  Token       supplied by FLIGHTDECK_DASHBOARD_TOKEN_FILE   (named "Supplied dashboard token (ftd_7e9f)" in Settings)`) {
 		t.Fatalf("the start-up block does not say where the token came from:\n%s", out)
 	}
 	requireNoToken(t, out, suppliedTokenA)

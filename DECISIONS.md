@@ -943,3 +943,5 @@ Service with no error.
 rolling update meets the old pod's data-dir lock); scaling on SQLite
 with a warning; the volume's root as the data dir with plain `fsGroup`
 (the kubelet widens `secrets.json`, which the binary then refuses).
+**Also:** an upgrade onto another database is refused (the chart moves no
+data); every secret may come from the operator's Secret, `{name, key}`.

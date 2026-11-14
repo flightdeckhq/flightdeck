@@ -1,4 +1,4 @@
-{{- if and .Values.flightdeck.metrics.enabled .Values.flightdeck.metrics.networkPolicy.enabled }}
+{{- if include "flightdeck.metricsNetworkPolicy" . }}
 {{- $component := "flightdeck" -}}
 {{- /*
 The metrics ports carry no auth. This policy lets only the peers in

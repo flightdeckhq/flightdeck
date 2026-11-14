@@ -10817,6 +10817,15 @@ default; the three metrics ports are declared on the pod and listed on
 the headless `<release>-flightdeck-metrics` Service, never on the
 Service the Ingress routes to.
 
+Every resource is named `<base>-<component>`, the base (the release
+name, with `-flightdeck` when it lacks it, or `fullnameOverride`) cut
+to 43 characters: the longest name, the headless
+`<base>-flightdeck-headless` Service, is then the 63 a DNS label may
+have, and the names an earlier chart gave a release whose Postgres ran
+stay the same. A StatefulSet's name is cut to 52, since the controller
+labels each pod with `controller-revision-hash`, the name and up to 11
+characters more, in a label value of at most 63.
+
 The chart passes the `FLIGHTDECK` stream's settings to the pods from
 `nats.jetstream.stream` (`maxAgeHours`, `maxSizeMiB`, `replicas`; see
 Worker / Event Processing > The FLIGHTDECK stream). On the chart's NATS
@@ -10852,16 +10861,24 @@ and the kubelet expands it into the URL the chart writes in the pod
 spec, so such a value must be URL-safe (the chart cannot encode what
 it does not see). The checksum annotations cover the chart's Secret,
 not the operator's, so a change to those needs a restart of the pods.
+A Secret reference reads null as unset and fails the render for any
+other value that is not a map, naming the path but not the value.
 `flightdeck.extraEnv` goes into the ConfigMap in plain text, so the
-render refuses a secret there (the database and NATS URLs, the
-dashboard token, any name ending in `_PASSWORD` or `_TOKEN`) and any
-key the chart sets itself; `flightdeck.extraEnvFrom` adds env sources
-after the chart's own.
+render refuses, in any case, a name that reads like a secret (one
+containing `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `CREDENTIAL` or
+`APIKEY`, or with `KEY`, `URL`, `URI`, `DSN`, `PASS` or `PWD` as a
+word: a URL may carry a password, and the binary reads no URL setting
+without one), a key the chart sets itself and a key a ConfigMap cannot
+carry. It is a guard against a slip, not a scanner.
+`flightdeck.extraEnvFrom` adds env sources after the chart's own, so
+their keys override the chart's ConfigMap and Secret unseen by these
+checks; the env entries built from the operator's Secrets still win.
 
 The StatefulSet carries the database the release runs on as the
 annotation `flightdeck/database` (`sqlite`, the chart's Postgres, an
 external one named by host, port and database, never its credentials,
-or the Secret its URL comes from). An upgrade reads it from the
+or the name and key of the Secret its URL comes from, so a Secret
+repointed at another database is not seen). An upgrade reads it from the
 running StatefulSet with `lookup` and fails when the database would
 change, unless `allowDatabaseChange=true`: the chart does not move
 data, so such an upgrade starts the pods on the new database as it is.

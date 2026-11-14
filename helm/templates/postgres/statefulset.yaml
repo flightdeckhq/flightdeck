@@ -9,7 +9,7 @@ rationale: the chart does not ship HA or backups.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
 spec:
@@ -75,9 +75,10 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  {{- if .Values.postgres.passwordSecret.name }}
-                  name: {{ .Values.postgres.passwordSecret.name }}
-                  key: {{ .Values.postgres.passwordSecret.key }}
+                  {{- $passwordRef := include "flightdeck.secretRef" (dict "root" . "path" "postgres.passwordSecret") | fromJson }}
+                  {{- if $passwordRef.name }}
+                  name: {{ $passwordRef.name | quote }}
+                  key: {{ $passwordRef.key | quote }}
                   {{- else }}
                   name: {{ include "flightdeck.secretName" . }}
                   key: POSTGRES_PASSWORD

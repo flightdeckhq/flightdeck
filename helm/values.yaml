@@ -27,6 +27,10 @@
 # image.tag is pinned to the release this chart ships with
 # (scripts/version.py keeps it in step with the VERSION file).
 
+# The resources are named <base>-<component>, the base being
+# fullnameOverride, or the release name (with -<nameOverride or
+# flightdeck> appended when it does not contain it), cut to 43
+# characters so every name fits Kubernetes's limits.
 nameOverride: ""
 fullnameOverride: ""
 
@@ -106,15 +110,22 @@ flightdeck:
   shutdownTimeoutSecs: 30
   # Further FLIGHTDECK_* tunables (ARCHITECTURE.md, Deployment), as
   # name: value. They land in the ConfigMap, in plain text, so the
-  # render refuses a secret there: FLIGHTDECK_DATABASE_URL,
-  # FLIGHTDECK_NATS_URL, FLIGHTDECK_DASHBOARD_TOKEN and any name ending
-  # in _PASSWORD or _TOKEN. Those come from the Secret values above, or
-  # from a Secret of yours through extraEnvFrom. It also refuses a name
-  # the chart sets itself, which would be a duplicate key.
+  # render refuses a name that reads like a secret, in any case: one
+  # containing PASSWORD, PASSWD, SECRET, TOKEN, CREDENTIAL or APIKEY,
+  # or with KEY, URL, URI, DSN, PASS or PWD as a word of it (a URL may
+  # carry a password). That guards against a slip; it does not find a
+  # secret under another name. Secrets come from the Secret values
+  # above, or from a Secret of yours through extraEnvFrom, which also
+  # takes a refused name that is no secret (a configMapRef). It also
+  # refuses a name the chart sets itself, which would be a duplicate key.
   extraEnv: {}
   # More env sources for the flightdeck container, as envFrom entries
-  # (secretRef or configMapRef); they come after the chart's own, so a
-  # key in them overrides the chart's. Example:
+  # (secretRef or configMapRef). They come after the chart's ConfigMap
+  # and Secret, so a key in them overrides the chart's, and the chart
+  # does not see it: a FLIGHTDECK_DATABASE_URL here moves the pods to
+  # that database past the upgrade check, a FLIGHTDECK_ALLOWED_HOSTS
+  # replaces the chart's list. (The env entries the *Secret values set
+  # are not overridden: env wins over envFrom.) Example:
   #   extraEnvFrom:
   #     - secretRef:
   #         name: flightdeck-extra
@@ -206,6 +217,10 @@ nats:
     # --set nats.auth.token=<strong-random-token>; letters, digits and
     # . _ ~ - only, since it is placed in NATS URLs (openssl rand -hex 32).
     # With replicas > 1 the cluster routes authenticate with it as well.
+    # A token given here is in the chart's Secret, and the pods carry
+    # checksum/secret, a SHA-256 of that Secret, as an annotation, so
+    # whoever can read pods can test guesses against it: use a random
+    # token, as above, or tokenSecret, which the checksum does not cover.
     token: ""
     # The token from a Secret you created, instead of token. The same
     # characters only: the chart cannot check a Secret's value, and
@@ -298,14 +313,21 @@ postgres:
   # cluster (helm template, Argo CD), and roll the pods with a password
   # the database never had.
   #
+  # A password given here is in the chart's Secret, and the pods carry
+  # checksum/secret, a SHA-256 of that Secret, as an annotation, so
+  # whoever can read pods can test guesses against it: use a random
+  # password (openssl rand -hex 24), or passwordSecret, which the
+  # checksum does not cover.
+  #
   # Postgres takes the password only when it creates its database, on
   # the first start with an empty volume. Changing this value later
   # changes what the pods send, not what the database expects, and the
   # pods then fail to connect; the claim outlives an uninstall, so a
   # reinstall keeps the old password too. To rotate it, change it in
-  # the database first, then here:
-  #   kubectl -n <ns> exec <release>-postgres-0 -- \
-  #     psql -U flightdeck -d flightdeck -c "ALTER USER flightdeck PASSWORD '<new>'"
+  # the database first (psql asks for the new one, so it stays off the
+  # command line and out of the shell history), then here:
+  #   kubectl -n <ns> exec -it <release>-postgres-0 -- \
+  #     psql -U flightdeck -d flightdeck -c '\password flightdeck'
   #   helm upgrade ... --set postgres.password=<new>
   password: ""
   # The password from a Secret you created, instead of password. Use

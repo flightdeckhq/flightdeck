@@ -15,7 +15,7 @@ and share one NATS, and FLIGHTDECK_DATABASE_URL names their Postgres.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
   annotations:

@@ -10,7 +10,7 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: StatefulSet
-    name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+    name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   minReplicas: {{ .Values.flightdeck.hpa.minReplicas }}
   maxReplicas: {{ .Values.flightdeck.hpa.maxReplicas }}
   metrics:

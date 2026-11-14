@@ -23,7 +23,7 @@ data:
   FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB: {{ include "flightdeck.natsStreamMaxSizeMiB" . | quote }}
   FLIGHTDECK_NATS_STREAM_REPLICAS: {{ include "flightdeck.natsStreamReplicas" . | quote }}
   {{- range $name, $value := .Values.flightdeck.extraEnv }}
-  {{ $name }}: {{ $value | quote }}
+  {{ $name | quote }}: {{ $value | quote }}
   {{- end }}
   # Agent-side defaults -- consumed only if an operator wires them into an
   # agent deployment. The binary ignores these.

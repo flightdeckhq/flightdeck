@@ -3,7 +3,7 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
+  name: {{ include "flightdeck.statefulSetName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
 spec:
@@ -82,9 +82,10 @@ spec:
             - name: NATS_TOKEN
               valueFrom:
                 secretKeyRef:
-                  {{- if .Values.nats.auth.tokenSecret.name }}
-                  name: {{ .Values.nats.auth.tokenSecret.name }}
-                  key: {{ .Values.nats.auth.tokenSecret.key }}
+                  {{- $tokenRef := include "flightdeck.secretRef" (dict "root" . "path" "nats.auth.tokenSecret") | fromJson }}
+                  {{- if $tokenRef.name }}
+                  name: {{ $tokenRef.name | quote }}
+                  key: {{ $tokenRef.key | quote }}
                   {{- else }}
                   name: {{ include "flightdeck.secretName" . }}
                   key: FLIGHTDECK_NATS_TOKEN

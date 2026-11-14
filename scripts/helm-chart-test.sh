@@ -13,9 +13,11 @@
 # bus, a bundled Postgres without a password or with too few
 # connections, a NATS cluster without a usable token, stream settings
 # the pods would refuse at start, a secret given twice or where nothing
-# reads it, a secret in the plain-text ConfigMap, a host name the pods
-# could not answer for, a bad image digest, a negative replica count,
-# and an upgrade that would move the release to another database.
+# reads it, a Secret reference that is not one, a secret in the
+# plain-text ConfigMap, a host name the pods could not answer for, a
+# bad image digest, a negative replica count, and an upgrade that would
+# move the release to another database. Long release names render
+# names Kubernetes accepts.
 #
 # Every successful render is also checked against the Kubernetes
 # schemas with kubeconform when it is installed (CI installs it and
@@ -43,12 +45,13 @@ fail() {
 # chart's kubeVersion admits for the renders made with --kube-version.
 SCHEMA_VERSION_DEFAULT=1.31.0
 
-# render <name> [helm args...]: the chart rendered to $OUT/<name>.yaml.
-# A render made with --kube-version is validated against that version.
+# render <name> [helm args...]: the chart rendered to $OUT/<name>.yaml,
+# as the release $RELEASE (default flightdeck). A render made with
+# --kube-version is validated against that version.
 render() {
   local name="$1" kube="$SCHEMA_VERSION_DEFAULT" arg prev=""
   shift
-  helm template flightdeck "$CHART" "$@" >"$OUT/$name.yaml" 2>"$OUT/$name.err" ||
+  helm template "${RELEASE:-flightdeck}" "$CHART" "$@" >"$OUT/$name.yaml" 2>"$OUT/$name.err" ||
     { cat "$OUT/$name.err" >&2; fail "$name: the render failed for: $*"; }
   for arg in "$@"; do
     [ "$prev" != --kube-version ] || kube="${arg#v}"
@@ -331,18 +334,18 @@ has secret-refs '^              value: "postgres://flightdeck:\$\(FD_POSTGRES_PA
 has secret-refs '^            - name: FD_NATS_TOKEN$'
 has secret-refs '^              value: "nats://\$\(FD_NATS_TOKEN\)@flightdeck-nats-client:4222"$'
 # The Postgres and NATS pods read the same Secrets.
-count secret-refs '^                  name: pg-creds$' 2
-count secret-refs '^                  name: nats-creds$' 2
-has secret-refs '^                  key: tok$'
-lacks secret-refs 'key: (POSTGRES_PASSWORD|FLIGHTDECK_NATS_TOKEN)$'
+count secret-refs '^                  name: "pg-creds"$' 2
+count secret-refs '^                  name: "nats-creds"$' 2
+has secret-refs '^                  key: "tok"$'
+lacks secret-refs 'key: "?(POSTGRES_PASSWORD|FLIGHTDECK_NATS_TOKEN)"?$'
 # The external URLs from Secrets, read as they are.
 render secret-urls --set postgres.externalUrlSecret.name=db --set flightdeck.replicas=2 \
   --set nats.externalUrlSecret.name=bus --set nats.externalUrlSecret.key=nats-url
 lacks secret-urls '^  (FLIGHTDECK_DATABASE_URL|FLIGHTDECK_NATS_URL|POSTGRES_USER):'
 has secret-urls '^            - name: FLIGHTDECK_DATABASE_URL$'
-has secret-urls '^                  name: db$'
-has secret-urls '^                  key: url$'
-has secret-urls '^                  key: nats-url$'
+has secret-urls '^                  name: "db"$'
+has secret-urls '^                  key: "url"$'
+has secret-urls '^                  key: "nats-url"$'
 count secret-urls '^kind: StatefulSet$' 1
 has secret-urls '^    flightdeck/database: "postgres from Secret db, key url \(external\)"$'
 # With values only, the flightdeck container has no env entry: the
@@ -365,17 +368,48 @@ refuse "are both set: give the token once" "${PG[@]}" "${NATS_TOKEN[@]}" --set f
 refuse "nats.auth.tokenSecret is set, but the chart runs no NATS cluster" --set nats.auth.tokenSecret.name=nats-creds
 refuse "nats.enabled=true and nats.externalUrl (or nats.externalUrlSecret)" "${PG[@]}" \
   --set nats.enabled=true --set nats.externalUrlSecret.name=bus
+# A reference set to null is unset, as if never given; one that is not
+# a map is refused by its path, without the value, which may be the
+# secret itself given in the wrong place.
+render ref-null --set postgres.externalUrlSecret=null --set nats.externalUrlSecret=null \
+  --set nats.auth.tokenSecret=null --set flightdeck.metrics.networkPolicy=null
+same default ref-null config
+same default ref-null secret
+lacks ref-null '^          env:$'
+render ref-null-bundled "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=2 \
+  --set postgres.passwordSecret=null --set nats.auth.tokenSecret=null
+has ref-null-bundled '^  POSTGRES_PASSWORD: "ci-test-password"$'
+has ref-null-bundled '^  FLIGHTDECK_NATS_TOKEN: "ci-test-nats-token"$'
+render ref-null-external --set postgres.externalUrlSecret=null "${EXTERNAL_PG[@]}"
+has ref-null-external '^    flightdeck/database: "postgres db.example.com:5432/d \(external\)"$'
+for path in postgres.externalUrlSecret postgres.passwordSecret nats.externalUrlSecret nats.auth.tokenSecret; do
+  refuse "$path must be a Secret reference" --set "$path=postgres://u:hunter2@db.example.com/d"
+  checks=$((checks + 1))
+  if grep -q hunter2 "$OUT/refused.err"; then fail "the refusal for $path repeats the value"; fi
+done
+refuse "nats.auth must be a map, not a string" --set nats.auth=x
+refuse "flightdeck.metrics.networkPolicy must be a map" --set flightdeck.metrics.networkPolicy=on
 
 # --- Secrets in the plain-text ConfigMap, and its own keys ---------------------
-for name in FLIGHTDECK_DATABASE_URL FLIGHTDECK_NATS_URL FLIGHTDECK_DASHBOARD_TOKEN PGPASSWORD_TOKEN \
-  SOME_PASSWORD flightdeck_nats_token; do
-  refuse "would put a secret in the ConfigMap" --set "flightdeck.extraEnv.$name=x"
+# A name that reads like a secret, in any case: one of the words
+# anywhere, the short ones as a word of the name.
+for name in FLIGHTDECK_DATABASE_URL FLIGHTDECK_NATS_URL FLIGHTDECK_DASHBOARD_TOKEN FLIGHTDECK_POSTGRES_URL \
+  FLIGHTDECK_JWT_SECRET FLIGHTDECK_ADMIN_PASSWORD SOME_PASSWORD flightdeck_nats_token db_url 'Db\.Passwd' \
+  GITHUB_APITOKEN AWS_SECRET_ACCESS_KEY My-Api-Key SERVICE_DSN LDAP_URI MAIL_PASS SMTP_PWD GCP_CREDENTIALS \
+  STRIPE_APIKEY KEY URL; do
+  refuse "reads like a secret" --set "flightdeck.extraEnv.$name=x"
 done
+refuse "is not a name a ConfigMap can carry" --set 'flightdeck.extraEnv.A\ B=x'
+refuse "must be a string, a number or a boolean, not a map" --set flightdeck.extraEnv.LOG.LEVEL=x
 refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_ALLOWED_HOSTS=x
 refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_WORKER_POOL_SIZE=4
+# The short words only as words: MONKEY has KEY, CURLY has URL.
 render extra-env --set flightdeck.extraEnv.FLIGHTDECK_LOG_LEVEL=debug \
+  --set flightdeck.extraEnv.FLIGHTDECK_PRICING_PATH=/etc/pricing.yaml --set flightdeck.extraEnv.MONKEY_CURLY=1 \
   --set 'flightdeck.extraEnvFrom[0].secretRef.name=flightdeck-extra'
-has extra-env '^  FLIGHTDECK_LOG_LEVEL: "debug"$'
+has extra-env '^  "FLIGHTDECK_LOG_LEVEL": "debug"$'
+has extra-env '^  "FLIGHTDECK_PRICING_PATH": "/etc/pricing.yaml"$'
+has extra-env '^  "MONKEY_CURLY": "1"$'
 has extra-env '^                name: flightdeck-extra$'
 
 # --- FLIGHTDECK_ALLOWED_HOSTS ---------------------------------------------------
@@ -501,6 +535,67 @@ has notes-upgrade 'never moves data between databases'
 wrapped "${PG[@]}" --show-only templates/zz-notes.yaml >"$OUT/notes-install.yaml"
 lacks notes-install 'never moves data'
 has notes-install 'Flightdeck is starting as the StatefulSet flightdeck-flightdeck'
+has notes-install 'Database  Postgres \(the chart.s own StatefulSet\)'
+# A database and a bus from the operator's Secrets are outside the chart.
+wrapped --set postgres.externalUrlSecret.name=db --set nats.externalUrlSecret.name=bus \
+  --show-only templates/zz-notes.yaml >"$OUT/notes-secret-urls.yaml"
+has notes-secret-urls 'Database  Postgres outside the chart'
+has notes-secret-urls 'Bus       NATS outside the chart'
+
+# --- Names -------------------------------------------------------------------------
+# Helm takes a release name of up to 53 characters. Every name the
+# chart builds must fit: 63 for any object (a DNS label for a Service),
+# 52 for a StatefulSet, whose pods' controller-revision-hash label adds
+# up to 11; no two objects of a kind may share one; and the pods answer
+# for the names they are reached by.
+FULL=("${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.hpa.enabled=true --set ingress.enabled=true \
+  --set flightdeck.metrics.networkPolicy.enabled=true \
+  --set 'flightdeck.metrics.networkPolicy.from[0].podSelector.matchLabels.app=prometheus')
+# names <render>: "<kind> <metadata.name>" of every object.
+names() {
+  awk '/^---/ { kind = "" } /^kind: / { kind = $2 } /^[^ #]/ { meta = ($0 ~ /^metadata:/) }
+    meta && kind != "" && /^  name: / { gsub(/"/, "", $2); print kind, $2 }' "$OUT/$1.yaml"
+}
+names_fit() {
+  local r="$1" bad
+  checks=$((checks + 1))
+  bad="$(names "$r" | awk 'length($2) > 63 || ($1 == "StatefulSet" && length($2) > 52)')"
+  [ -z "$bad" ] || fail "$r: names too long: $bad"
+  checks=$((checks + 1))
+  bad="$(names "$r" | sort | uniq -d)"
+  [ -z "$bad" ] || fail "$r: names used twice: $bad"
+  # The flightdeck StatefulSet's headless Service is rendered, and its
+  # pods' names are allowed; the HPA scales that StatefulSet.
+  local headless sts
+  headless="$(sed -n 's/^  serviceName: //p' "$OUT/$r.yaml" | grep -- '-headless$')"
+  sts="$(names "$r" | awk '$1 == "StatefulSet" && $2 ~ /-flightd/ { print $2 }')"
+  checks=$((checks + 1))
+  names "$r" | grep -qx -- "Service $headless" || fail "$r: no Service $headless"
+  host "$r" ".$headless"
+  host "$r" ".$headless.default.svc.cluster.local"
+  checks=$((checks + 1))
+  [ "$(sed -n '/^  scaleTargetRef:/,/^  [a-z]/s/^    name: //p' "$OUT/$r.yaml")" = "$sts" ] ||
+    fail "$r: the HPA does not scale the StatefulSet $sts"
+}
+RELEASE=observability-platform-production-eu-west-1-cluster-a render long "${FULL[@]}"
+names_fit long
+RELEASE=flightdeck-observability-production-eu-west-1-clstr-a render long-flightdeck "${FULL[@]}"
+names_fit long-flightdeck
+render long-override "${FULL[@]}" --set fullnameOverride=a-full-name-override-of-sixty-three-characters-for-the-test-x
+names_fit long-override
+# A base of 43 characters keeps every name an earlier chart gave it
+# (its Postgres ran, at 52); only the flightdeck StatefulSet is cut.
+BASE43=flightdeck-observability-prod-eu-west-1-clu
+RELEASE=$BASE43 render base43 "${FULL[@]}"
+names_fit base43
+has base43 "^  name: $BASE43-postgres\$"
+has base43 "^  name: $BASE43-nats\$"
+has base43 "^  name: $BASE43-flightdeck\$"
+has base43 "^  name: $BASE43-flightde\$"
+has base43 "^  serviceName: $BASE43-flightdeck-headless\$"
+# The default release keeps its names.
+names_fit hpa
+has hpa '^  name: flightdeck-flightdeck$'
 
 # --- Schemas -----------------------------------------------------------------------
 # Every successful render against the Kubernetes schemas: strict (an

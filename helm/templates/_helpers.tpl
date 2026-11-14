@@ -6,15 +6,22 @@ Common helpers for the flightdeck chart.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+The base of every resource name, at most 43 characters: the longest
+name built on it, the headless Service <base>-flightdeck-headless, is
+then 63, the most a Service name (a DNS label) may have. 43 also keeps
+the names an earlier chart gave a release whose Postgres StatefulSet
+ran, so an upgrade finds its volume claims.
+*/}}
 {{- define "flightdeck.fullname" -}}
 {{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- .Values.fullnameOverride | trunc 43 | trimSuffix "-" -}}
 {{- else -}}
 {{- $name := default .Chart.Name .Values.nameOverride -}}
 {{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 43 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 43 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -28,6 +35,16 @@ Component-scoped name: <release>-<component>
 */}}
 {{- define "flightdeck.componentName" -}}
 {{- printf "%s-%s" (include "flightdeck.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+A StatefulSet's name, <release>-<component> cut to 52 characters: the
+controller labels each pod with controller-revision-hash, the name
+and up to 11 characters more, and a label value has at most 63. Only
+the flightdeck StatefulSet of a 42- or 43-character base is cut.
+*/}}
+{{- define "flightdeck.statefulSetName" -}}
+{{- include "flightdeck.componentName" . | trunc 52 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -105,7 +122,8 @@ Whether the pods use a Postgres outside the chart, "true" or "": its
 URL given as postgres.externalUrl or in postgres.externalUrlSecret.
 */}}
 {{- define "flightdeck.postgresExternal" -}}
-{{- if or .Values.postgres.externalUrl .Values.postgres.externalUrlSecret.name -}}true{{- end -}}
+{{- $ref := include "flightdeck.secretRef" (dict "root" . "path" "postgres.externalUrlSecret") | fromJson -}}
+{{- if or .Values.postgres.externalUrl $ref.name -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -121,7 +139,8 @@ Whether the pods use a NATS outside the chart, "true" or "": its URL
 given as nats.externalUrl or in nats.externalUrlSecret.
 */}}
 {{- define "flightdeck.natsExternal" -}}
-{{- if or .Values.nats.externalUrl .Values.nats.externalUrlSecret.name -}}true{{- end -}}
+{{- $ref := include "flightdeck.secretRef" (dict "root" . "path" "nats.externalUrlSecret") | fromJson -}}
+{{- if or .Values.nats.externalUrl $ref.name -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -131,11 +150,12 @@ and the notes print it. An external Postgres is named by host, port and
 database (never its credentials), or by the Secret its URL comes from.
 */}}
 {{- define "flightdeck.databaseIdentity" -}}
+{{- $urlRef := include "flightdeck.secretRef" (dict "root" . "path" "postgres.externalUrlSecret") | fromJson -}}
 {{- if .Values.postgres.externalUrl -}}
 {{- $u := urlParse .Values.postgres.externalUrl -}}
 postgres {{ $u.host }}{{ $u.path }} (external)
-{{- else if .Values.postgres.externalUrlSecret.name -}}
-postgres from Secret {{ .Values.postgres.externalUrlSecret.name }}, key {{ .Values.postgres.externalUrlSecret.key }} (external)
+{{- else if $urlRef.name -}}
+postgres from Secret {{ $urlRef.name }}, key {{ $urlRef.key }} (external)
 {{- else if .Values.postgres.enabled -}}
 postgres {{ include "flightdeck.postgresServiceName" . }} (the chart's)
 {{- else -}}
@@ -161,7 +181,7 @@ tool), and an empty previous never fails.
 
 {{- define "flightdeck.checkDatabaseChange" -}}
 {{- if .Release.IsUpgrade -}}
-{{- $sts := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "flightdeck.componentName" (dict "root" . "component" "flightdeck")) -}}
+{{- $sts := lookup "apps/v1" "StatefulSet" .Release.Namespace (include "flightdeck.statefulSetName" (dict "root" . "component" "flightdeck")) -}}
 {{- $previous := "" -}}
 {{- if $sts -}}
 {{- $previous = dig "metadata" "annotations" "flightdeck/database" "" $sts -}}
@@ -205,12 +225,25 @@ The bus they must share is checked by flightdeck.natsEnabled.
 {{- include "flightdeck.validateSecrets" . -}}
 {{- include "flightdeck.validateExtraEnv" . -}}
 {{- include "flightdeck.checkDatabaseChange" . -}}
-{{- if and .Values.flightdeck.metrics.enabled .Values.flightdeck.metrics.networkPolicy.enabled (not .Values.flightdeck.metrics.networkPolicy.from) -}}
+{{- if and (include "flightdeck.metricsNetworkPolicy" .) (not .Values.flightdeck.metrics.networkPolicy.from) -}}
 {{- fail "flightdeck.metrics.networkPolicy.enabled needs flightdeck.metrics.networkPolicy.from: the NetworkPolicy peers (a namespaceSelector, a podSelector) that may reach the metrics ports; without any, nothing could scrape them" -}}
 {{- end -}}
 {{- if and (include "flightdeck.multiReplica" .) (eq (include "flightdeck.database" .) "sqlite") -}}
 {{- fail "more than one flightdeck pod (flightdeck.replicas above 1, or flightdeck.hpa.enabled) needs a Postgres database: on SQLite every pod would have a database of its own, since one process serves a SQLite file. Set postgres.enabled=true with postgres.password (the chart's Postgres) or postgres.externalUrl=<dsn>, or run one replica" -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Whether the metrics NetworkPolicy is rendered, "true" or "": metrics on
+and flightdeck.metrics.networkPolicy.enabled. A null networkPolicy is
+off; anything else but a map fails the render.
+*/}}
+{{- define "flightdeck.metricsNetworkPolicy" -}}
+{{- $policy := .Values.flightdeck.metrics.networkPolicy | default dict -}}
+{{- if not (kindIs "map" $policy) -}}
+{{- fail (printf "flightdeck.metrics.networkPolicy must be a map, {enabled, from}, not a %s" (kindOf $policy)) -}}
+{{- end -}}
+{{- if and .Values.flightdeck.metrics.enabled $policy.enabled -}}true{{- end -}}
 {{- end -}}
 
 {{/*
@@ -347,6 +380,38 @@ so the DSN helper and the Secret stay byte-aligned.
 {{- end -}}
 
 {{/*
+A Secret reference among the values, {name, key} (postgres.externalUrlSecret,
+postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret),
+as JSON for fromJson, so every template reads the four one way. Null
+reads as unset, name and key empty: --set <path>=null removes the
+entry, defaults included. Anything but a map fails the render, naming
+the path but not the value, which may be a secret given in the wrong
+place.
+*/}}
+{{- define "flightdeck.secretRef" -}}
+{{- $v := .root.Values -}}
+{{- $set := true -}}
+{{- $at := list -}}
+{{- range $k := splitList "." .path -}}
+{{- if $set -}}
+{{- if not (kindIs "map" $v) -}}
+{{- fail (printf "%s must be a map, not a %s" (join "." $at) (kindOf $v)) -}}
+{{- end -}}
+{{- $v = index $v $k -}}
+{{- $at = append $at $k -}}
+{{- $set = not (kindIs "invalid" $v) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $set -}}
+{{- dict "name" "" "key" "" | toJson -}}
+{{- else if kindIs "map" $v -}}
+{{- dict "name" (toString ($v.name | default "")) "key" (toString ($v.key | default "")) | toJson -}}
+{{- else -}}
+{{- fail (printf "%s must be a Secret reference, {name: <Secret>, key: <key in it>}, not a %s: set %s.name (and .key when it is not the default)" .path (kindOf $v) .path) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Each secret has one source, a value or a Secret of the operator's
 (name and key), and a Secret given for something the chart does not
 run is a mistake worth naming. Checked once, from flightdeck.validate.
@@ -354,57 +419,75 @@ run is a mistake worth naming. Checked once, from flightdeck.validate.
 {{- define "flightdeck.validateSecrets" -}}
 {{- $pg := .Values.postgres -}}
 {{- $nats := .Values.nats -}}
-{{- if and $pg.externalUrl $pg.externalUrlSecret.name -}}
+{{- $pgUrl := include "flightdeck.secretRef" (dict "root" . "path" "postgres.externalUrlSecret") | fromJson -}}
+{{- $pgPassword := include "flightdeck.secretRef" (dict "root" . "path" "postgres.passwordSecret") | fromJson -}}
+{{- $natsUrl := include "flightdeck.secretRef" (dict "root" . "path" "nats.externalUrlSecret") | fromJson -}}
+{{- $natsToken := include "flightdeck.secretRef" (dict "root" . "path" "nats.auth.tokenSecret") | fromJson -}}
+{{- if and $pg.externalUrl $pgUrl.name -}}
 {{- fail "postgres.externalUrl and postgres.externalUrlSecret.name are both set: give the database URL once, as the value or from the Secret" -}}
 {{- end -}}
-{{- if and $pg.password $pg.passwordSecret.name -}}
+{{- if and $pg.password $pgPassword.name -}}
 {{- fail "postgres.password and postgres.passwordSecret.name are both set: give the password once, as the value or from the Secret" -}}
 {{- end -}}
-{{- if $pg.passwordSecret.name -}}
+{{- if $pgPassword.name -}}
 {{- if not (include "flightdeck.postgresBundled" .) -}}
 {{- fail "postgres.passwordSecret is set, but the chart runs no Postgres of its own (postgres.enabled is false, or the database is external), so nothing would read it" -}}
 {{- end -}}
-{{- if not $pg.passwordSecret.key -}}
+{{- if not $pgPassword.key -}}
 {{- fail "postgres.passwordSecret.key must name the key of the password in that Secret" -}}
 {{- end -}}
 {{- else if include "flightdeck.postgresBundled" . -}}
 {{- $_ := include "flightdeck.postgresPassword" . -}}
 {{- end -}}
-{{- if and $pg.externalUrlSecret.name (not $pg.externalUrlSecret.key) -}}
+{{- if and $pgUrl.name (not $pgUrl.key) -}}
 {{- fail "postgres.externalUrlSecret.key must name the key of the URL in that Secret" -}}
 {{- end -}}
-{{- if and $nats.externalUrl $nats.externalUrlSecret.name -}}
+{{- if and $nats.externalUrl $natsUrl.name -}}
 {{- fail "nats.externalUrl and nats.externalUrlSecret.name are both set: give the NATS URL once, as the value or from the Secret" -}}
 {{- end -}}
-{{- if and $nats.externalUrlSecret.name (not $nats.externalUrlSecret.key) -}}
+{{- if and $natsUrl.name (not $natsUrl.key) -}}
 {{- fail "nats.externalUrlSecret.key must name the key of the URL in that Secret" -}}
 {{- end -}}
-{{- if and $nats.auth.token $nats.auth.tokenSecret.name -}}
+{{- if and $nats.auth.token $natsToken.name -}}
 {{- fail "nats.auth.token and nats.auth.tokenSecret.name are both set: give the token once, as the value or from the Secret" -}}
 {{- end -}}
-{{- if $nats.auth.tokenSecret.name -}}
+{{- if $natsToken.name -}}
 {{- if not (include "flightdeck.natsEnabled" .) -}}
 {{- fail "nats.auth.tokenSecret is set, but the chart runs no NATS cluster (one pod uses its embedded bus, and an external NATS takes its token in its URL), so nothing would read it" -}}
 {{- end -}}
-{{- if not $nats.auth.tokenSecret.key -}}
+{{- if not $natsToken.key -}}
 {{- fail "nats.auth.tokenSecret.key must name the key of the token in that Secret" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-flightdeck.extraEnv lands in the ConfigMap, in plain text, so a secret
-there is refused (it belongs in a Secret: the chart's values that have
-a Secret form, or extraEnvFrom), and so is a name the chart's ConfigMap
-sets itself, which would be a duplicate key with one value lost.
+flightdeck.extraEnv lands in the ConfigMap, in plain text, so a name
+that reads like a secret is refused, in any case: one containing
+PASSWORD, PASSWD, SECRET, TOKEN, CREDENTIAL or APIKEY, or with KEY,
+URL, URI, DSN, PASS or PWD as a word of it (words split at _ - .). A
+URL may carry a password, and the binary reads no setting that is a
+URL without one. It is a guard against a slip, not a scanner: a secret
+under another name goes through. Secrets belong in a Secret (the
+chart's values that have a Secret form, or extraEnvFrom), and a
+setting the guard refuses that is no secret in a ConfigMap of yours,
+through extraEnvFrom. A name the chart's ConfigMap sets itself is
+refused too, since the key would be there twice with one value lost,
+and so are a name a ConfigMap cannot have and a value that is a map
+or a list.
 */}}
 {{- define "flightdeck.validateExtraEnv" -}}
-{{- $secrets := list "FLIGHTDECK_DATABASE_URL" "FLIGHTDECK_NATS_URL" "FLIGHTDECK_DASHBOARD_TOKEN" -}}
 {{- $own := list "FLIGHTDECK_WORKER_POOL_SIZE" "FLIGHTDECK_RATE_LIMIT_PER_MINUTE" "SHUTDOWN_TIMEOUT_SECS" "FLIGHTDECK_CORS_ORIGIN" "FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS" "FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB" "FLIGHTDECK_NATS_STREAM_REPLICAS" "FLIGHTDECK_ALLOWED_HOSTS" "AGENT_FLAVOR" "AGENT_TYPE" "FLIGHTDECK_UNAVAILABLE_POLICY" "FLIGHTDECK_CAPTURE_PROMPTS" -}}
-{{- range $name, $_ := .Values.flightdeck.extraEnv -}}
+{{- range $name, $value := .Values.flightdeck.extraEnv -}}
 {{- $upper := upper $name -}}
-{{- if or (has $upper $secrets) (hasSuffix "_PASSWORD" $upper) (hasSuffix "_TOKEN" $upper) -}}
-{{- fail (printf "flightdeck.extraEnv.%s would put a secret in the ConfigMap, in plain text. The database and NATS URLs and the NATS token have values of their own with a Secret form (postgres.externalUrlSecret, postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret); anything else goes in a Secret of yours, through flightdeck.extraEnvFrom" $name) -}}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]+$" $name) -}}
+{{- fail (printf "flightdeck.extraEnv: %q is not a name a ConfigMap can carry (letters, digits and - . _ only)" $name) -}}
+{{- end -}}
+{{- if or (kindIs "map" $value) (kindIs "slice" $value) -}}
+{{- fail (printf "flightdeck.extraEnv.%s must be a string, a number or a boolean, not a %s (with --set, a dot in a name splits it: write it as \\.)" $name (kindOf $value)) -}}
+{{- end -}}
+{{- if or (regexMatch "PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|APIKEY" $upper) (regexMatch "(^|[-._])(KEY|URL|URI|DSN|PASS|PWD)([-._]|$)" $upper) -}}
+{{- fail (printf "flightdeck.extraEnv.%s reads like a secret, and extraEnv goes into the ConfigMap in plain text. The database and NATS URLs, the Postgres password and the NATS token have values of their own with a Secret form (postgres.externalUrlSecret, postgres.passwordSecret, nats.externalUrlSecret, nats.auth.tokenSecret); anything else goes in a Secret of yours, or, if it is no secret, a ConfigMap of yours, through flightdeck.extraEnvFrom" $name) -}}
 {{- end -}}
 {{- if has $upper $own -}}
 {{- fail (printf "flightdeck.extraEnv.%s is set by the chart from its own value (values.yaml; for FLIGHTDECK_ALLOWED_HOSTS, flightdeck.extraAllowedHosts): set that value instead, since the ConfigMap would carry the key twice" $name) -}}
@@ -553,33 +636,37 @@ when every secret is a value, which the chart's Secret carries.
 {{- define "flightdeck.secretEnv" -}}
 {{- $pg := .Values.postgres -}}
 {{- $nats := .Values.nats -}}
-{{- if $pg.externalUrlSecret.name }}
+{{- $pgUrl := include "flightdeck.secretRef" (dict "root" . "path" "postgres.externalUrlSecret") | fromJson -}}
+{{- $pgPassword := include "flightdeck.secretRef" (dict "root" . "path" "postgres.passwordSecret") | fromJson -}}
+{{- $natsUrl := include "flightdeck.secretRef" (dict "root" . "path" "nats.externalUrlSecret") | fromJson -}}
+{{- $natsToken := include "flightdeck.secretRef" (dict "root" . "path" "nats.auth.tokenSecret") | fromJson -}}
+{{- if $pgUrl.name }}
 - name: FLIGHTDECK_DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: {{ $pg.externalUrlSecret.name }}
-      key: {{ $pg.externalUrlSecret.key }}
-{{- else if and (include "flightdeck.postgresBundled" .) $pg.passwordSecret.name }}
+      name: {{ $pgUrl.name | quote }}
+      key: {{ $pgUrl.key | quote }}
+{{- else if and (include "flightdeck.postgresBundled" .) $pgPassword.name }}
 - name: FD_POSTGRES_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ $pg.passwordSecret.name }}
-      key: {{ $pg.passwordSecret.key }}
+      name: {{ $pgPassword.name | quote }}
+      key: {{ $pgPassword.key | quote }}
 - name: FLIGHTDECK_DATABASE_URL
   value: {{ printf "postgres://%s:$(FD_POSTGRES_PASSWORD)@%s:%d/%s?sslmode=%s" (include "flightdeck.urlUserinfoEscape" $pg.user) (include "flightdeck.postgresServiceName" .) (int $pg.port) $pg.database $pg.sslmode | quote }}
 {{- end }}
-{{- if $nats.externalUrlSecret.name }}
+{{- if $natsUrl.name }}
 - name: FLIGHTDECK_NATS_URL
   valueFrom:
     secretKeyRef:
-      name: {{ $nats.externalUrlSecret.name }}
-      key: {{ $nats.externalUrlSecret.key }}
-{{- else if and (include "flightdeck.natsEnabled" .) $nats.auth.tokenSecret.name }}
+      name: {{ $natsUrl.name | quote }}
+      key: {{ $natsUrl.key | quote }}
+{{- else if and (include "flightdeck.natsEnabled" .) $natsToken.name }}
 - name: FD_NATS_TOKEN
   valueFrom:
     secretKeyRef:
-      name: {{ $nats.auth.tokenSecret.name }}
-      key: {{ $nats.auth.tokenSecret.key }}
+      name: {{ $natsToken.name | quote }}
+      key: {{ $natsToken.key | quote }}
 - name: FLIGHTDECK_NATS_URL
   value: {{ printf "nats://$(FD_NATS_TOKEN)@%s:%d" (include "flightdeck.natsClientServiceName" .) (int $nats.clientPort) | quote }}
 {{- end }}
@@ -613,7 +700,7 @@ itself is ignored by the server). Pod DNS comes from the headless
 Service: <statefulset>-<ordinal>.<service>.
 */}}
 {{- define "flightdeck.natsRoutes" -}}
-{{- $sts := include "flightdeck.componentName" (dict "root" . "component" "nats") -}}
+{{- $sts := include "flightdeck.statefulSetName" (dict "root" . "component" "nats") -}}
 {{- $svc := include "flightdeck.natsServiceName" . -}}
 {{- $auth := include "flightdeck.natsRouteAuth" . -}}
 {{- $routes := list -}}

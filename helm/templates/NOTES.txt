@@ -1,6 +1,7 @@
-{{- $name := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
+{{- $sts := include "flightdeck.statefulSetName" (dict "root" . "component" "flightdeck") -}}
+{{- $svc := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
 {{- if .Release.IsUpgrade }}
-Flightdeck is upgraded: the StatefulSet {{ $name }} in namespace {{ .Release.Namespace }}
+Flightdeck is upgraded: the StatefulSet {{ $sts }} in namespace {{ .Release.Namespace }}
 now runs on {{ include "flightdeck.databaseIdentity" . }}.
 
 The chart never moves data between databases. If this release ran on
@@ -11,15 +12,15 @@ release it refuses such an upgrade unless allowDatabaseChange=true; a
 release installed by an earlier chart, or rendered without access to
 the cluster, is not checked.
 {{- else }}
-Flightdeck is starting as the StatefulSet {{ $name }} in namespace {{ .Release.Namespace }}.
+Flightdeck is starting as the StatefulSet {{ $sts }} in namespace {{ .Release.Namespace }}.
 {{- end }}
 
-  Database  {{ if eq (include "flightdeck.database" .) "sqlite" }}SQLite, on each pod's own volume{{ else if .Values.postgres.externalUrl }}Postgres (postgres.externalUrl){{ else }}Postgres (the chart's own StatefulSet){{ end }}
-  Bus       {{ if .Values.nats.externalUrl }}NATS (nats.externalUrl){{ else if include "flightdeck.natsEnabled" . }}NATS (the chart's cluster of {{ .Values.nats.replicas }}){{ else }}embedded in the pod{{ end }}
+  Database  {{ if eq (include "flightdeck.database" .) "sqlite" }}SQLite, on each pod's own volume{{ else if include "flightdeck.postgresExternal" . }}Postgres outside the chart{{ else }}Postgres (the chart's own StatefulSet){{ end }}
+  Bus       {{ if include "flightdeck.natsExternal" . }}NATS outside the chart{{ else if include "flightdeck.natsEnabled" . }}NATS (the chart's cluster of {{ .Values.nats.replicas }}){{ else }}embedded in the pod{{ end }}
 
 The dashboard{{ if .Values.ingress.enabled }} is at http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}. Without the Ingress, forward the Service:{{ else }}, once the pod is ready (a first start creates the database), through a port-forward:{{ end }}
 
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $name }} 4000:{{ .Values.flightdeck.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $svc }} 4000:{{ .Values.flightdeck.service.port }}
 
 Then open http://localhost:4000. The access token for the sensor and
 the plugin is what the dashboard itself loads:

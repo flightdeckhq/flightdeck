@@ -193,7 +193,7 @@ sdk-majors = [
 # argument httpx 0.28 removed, so httpx is held below 0.28 with it.
 openai-floor = [
     "openai==1.26.0",
-    "httpx<0.28",
+    "httpx<0.29",
 ]
 # The oldest releases of the provider SDKs the extras admit, together.
 # CI's SDK-floors lane installs this group with the test extra and runs
@@ -220,7 +220,7 @@ sdk-floors = [
 # the framework lane tests the newest releases.
 llama-index-floor = [
     "llama-index-core==0.14.0",
-    "llama-index-workflows==2.0.0",
+    "llama-index-workflows==2.26.1",
     "llama-index-llms-openai==0.5.6",
 ]
 

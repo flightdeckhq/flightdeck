@@ -1,0 +1,215 @@
+{
+  "about": "One FLIGHTDECK_SERVER value for the Python sensor, the Claude Code plugin and the playground. Each value is an http(s) URL as a user may set it; ingest and api are the ingestion URL and the API URL it names. A path whose last segment is ingest (trailing slashes aside) is the ingestion URL and the API is the same path with that segment replaced by api; any other path is the server's base URL and gets /ingest and /api appended. Surrounding whitespace, credentials, the query, the fragment, trailing slashes and the scheme's default port go; the scheme and the host are lower-cased. The sensor (_resolve_server_urls), the plugin (serverBaseUrl) and the playground (_helpers.server_urls) each assert every row.",
+  "cases": [
+    {
+      "value": "http://localhost:4000",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "the base URL, the plugin's default form"
+    },
+    {
+      "value": "http://localhost:4000/",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "the base URL with a trailing slash"
+    },
+    {
+      "value": "http://localhost:4000/ingest",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "the ingestion URL the start-up block prints"
+    },
+    {
+      "value": "http://localhost:4000/ingest/",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "the ingestion URL with a trailing slash"
+    },
+    {
+      "value": "http://localhost:4000/ingest///",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "several trailing slashes"
+    },
+    {
+      "value": "http://127.0.0.1:4100/ingest",
+      "ingest": "http://127.0.0.1:4100/ingest",
+      "api": "http://127.0.0.1:4100/api",
+      "why": "an IP address and another port"
+    },
+    {
+      "value": "http://[::1]:4000/ingest",
+      "ingest": "http://[::1]:4000/ingest",
+      "api": "http://[::1]:4000/api",
+      "why": "an IPv6 literal"
+    },
+    {
+      "value": "https://flightdeck.example.com",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "a public host, base form"
+    },
+    {
+      "value": "https://flightdeck.example.com/ingest",
+      "ingest": "https://flightdeck.example.com/ingest",
+      "api": "https://flightdeck.example.com/api",
+      "why": "a public host, ingestion form"
+    },
+    {
+      "value": "https://example.com/fd",
+      "ingest": "https://example.com/fd/ingest",
+      "api": "https://example.com/fd/api",
+      "why": "a reverse proxy's path prefix, base form"
+    },
+    {
+      "value": "https://example.com/fd/",
+      "ingest": "https://example.com/fd/ingest",
+      "api": "https://example.com/fd/api",
+      "why": "a path prefix with a trailing slash"
+    },
+    {
+      "value": "https://example.com/fd/ingest",
+      "ingest": "https://example.com/fd/ingest",
+      "api": "https://example.com/fd/api",
+      "why": "a path prefix, ingestion form"
+    },
+    {
+      "value": "https://example.com/fd/ingest/",
+      "ingest": "https://example.com/fd/ingest",
+      "api": "https://example.com/fd/api",
+      "why": "a path prefix, ingestion form, trailing slash"
+    },
+    {
+      "value": "HTTP://LocalHost:4000/ingest",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "an upper-case scheme and host"
+    },
+    {
+      "value": "HTTPS://Example.COM/FD/ingest",
+      "ingest": "https://example.com/FD/ingest",
+      "api": "https://example.com/FD/api",
+      "why": "the path keeps its case"
+    },
+    {
+      "value": "https://example.com/myingest",
+      "ingest": "https://example.com/myingest/ingest",
+      "api": "https://example.com/myingest/api",
+      "why": "a last segment that only ends in the letters"
+    },
+    {
+      "value": "https://example.com/pre-ingest",
+      "ingest": "https://example.com/pre-ingest/ingest",
+      "api": "https://example.com/pre-ingest/api",
+      "why": "the letters after a hyphen"
+    },
+    {
+      "value": "https://example.com/ingestion",
+      "ingest": "https://example.com/ingestion/ingest",
+      "api": "https://example.com/ingestion/api",
+      "why": "a longer word that starts with them"
+    },
+    {
+      "value": "https://example.com/ingest-eu",
+      "ingest": "https://example.com/ingest-eu/ingest",
+      "api": "https://example.com/ingest-eu/api",
+      "why": "a segment that starts with ingest-"
+    },
+    {
+      "value": "https://example.com/fd/ingest-proxy",
+      "ingest": "https://example.com/fd/ingest-proxy/ingest",
+      "api": "https://example.com/fd/ingest-proxy/api",
+      "why": "ingest- inside a prefix"
+    },
+    {
+      "value": "https://example.com/ingest-gw/ingest",
+      "ingest": "https://example.com/ingest-gw/ingest",
+      "api": "https://example.com/ingest-gw/api",
+      "why": "ingest- earlier in the path, ingest last"
+    },
+    {
+      "value": "https://example.com/Ingest",
+      "ingest": "https://example.com/Ingest/ingest",
+      "api": "https://example.com/Ingest/api",
+      "why": "paths are case-sensitive: not the ingestion segment"
+    },
+    {
+      "value": "https://example.com/ingest/v2",
+      "ingest": "https://example.com/ingest/v2/ingest",
+      "api": "https://example.com/ingest/v2/api",
+      "why": "ingest is not the last segment"
+    },
+    {
+      "value": "https://example.com/ingest/ingest",
+      "ingest": "https://example.com/ingest/ingest",
+      "api": "https://example.com/ingest/api",
+      "why": "one segment is replaced, not two"
+    },
+    {
+      "value": "https://ingest.example.com",
+      "ingest": "https://ingest.example.com/ingest",
+      "api": "https://ingest.example.com/api",
+      "why": "a host named ingest, base form"
+    },
+    {
+      "value": "https://ingest.example.com/ingest",
+      "ingest": "https://ingest.example.com/ingest",
+      "api": "https://ingest.example.com/api",
+      "why": "a host named ingest, ingestion form"
+    },
+    {
+      "value": "http://ingest:4000",
+      "ingest": "http://ingest:4000/ingest",
+      "api": "http://ingest:4000/api",
+      "why": "a host named ingest with a port"
+    },
+    {
+      "value": "http://localhost:4000/ingest?debug=1",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "a query string after the ingestion URL"
+    },
+    {
+      "value": "http://localhost:4000?debug=1",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "a query string after the base URL"
+    },
+    {
+      "value": "http://localhost:4000/ingest#top",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "a fragment"
+    },
+    {
+      "value": "http://localhost:80/ingest",
+      "ingest": "http://localhost/ingest",
+      "api": "http://localhost/api",
+      "why": "the scheme's default port is implied"
+    },
+    {
+      "value": "https://example.com:443/fd/ingest",
+      "ingest": "https://example.com/fd/ingest",
+      "api": "https://example.com/fd/api",
+      "why": "https's default port is implied"
+    },
+    {
+      "value": "https://example.com:8443/ingest",
+      "ingest": "https://example.com:8443/ingest",
+      "api": "https://example.com:8443/api",
+      "why": "another port is kept"
+    },
+    {
+      "value": "https://user:secret@example.com/ingest",
+      "ingest": "https://example.com/ingest",
+      "api": "https://example.com/api",
+      "why": "credentials in the URL are dropped"
+    },
+    {
+      "value": "  http://localhost:4000/ingest \n",
+      "ingest": "http://localhost:4000/ingest",
+      "api": "http://localhost:4000/api",
+      "why": "surrounding whitespace"
+    }
+  ]
+}

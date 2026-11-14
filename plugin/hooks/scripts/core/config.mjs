@@ -75,11 +75,32 @@ export function truncateUtf8(value, maxBytes) {
 
 /**
  * The control-plane URL without its userinfo, for log lines: a server
- * configured as ``https://user:token@host`` must not leak the token into
- * stderr or the worker log.
+ * configured as ``https://user:token@host``, or as ``user:token@host``
+ * with no scheme, must not leak the token into stderr, the worker log
+ * or the notice the user sees. Without a scheme, everything up to an
+ * ``@`` that comes before the first ``/`` is userinfo.
  */
 export function redactServerUrl(server) {
-  return String(server).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+  return String(server).replace(/^([a-z][a-z0-9+.-]*:\/\/)?[^@/]*@/i, "$1");
+}
+
+// An access token in a value that should hold the server's address:
+// the prefix of every token a Flightdeck server accepts, ``ftd_`` for
+// one it minted and ``tok_`` for the development token.
+const TOKEN_LIKE_RE = /(?:^|[^a-z0-9])(?:ftd|tok)_/i;
+
+// What a message shows in place of a server address that looks like an
+// access token (a token pasted into FLIGHTDECK_SERVER, say).
+export const HIDDEN_SERVER = "<server address not shown: it looks like an access token>";
+
+/**
+ * ``server`` as a log line or a notice shows it: without its userinfo
+ * (redactServerUrl), and replaced by HIDDEN_SERVER when what is left
+ * looks like an access token.
+ */
+export function displayServerUrl(server) {
+  const redacted = redactServerUrl(server);
+  return TOKEN_LIKE_RE.test(redacted) ? HIDDEN_SERVER : redacted;
 }
 
 // Plugin version stamped on every session_start (parity with the

@@ -4,7 +4,7 @@
 //
 // Uses only Node.js built-in modules (global fetch, AbortController).
 
-import { redactServerUrl, truncateUtf8 } from "./config.mjs";
+import { displayServerUrl, HIDDEN_SERVER, redactServerUrl, truncateUtf8 } from "./config.mjs";
 
 // Abort the fire-and-forget event POST after 2s. The hook runs inline in the
 // Claude Code tool lifecycle, so a hung or unreachable control plane must
@@ -41,7 +41,7 @@ export const TIMEOUT_MS = 2000;
  */
 export function logUnreachable(server, shortError) {
   process.stderr.write(
-    `[flightdeck] cannot reach ${redactServerUrl(server)}: ${redactUserinfo(shortError)}. events dropped for this session.\n`,
+    `[flightdeck] cannot reach ${displayServerUrl(server)}: ${redactUserinfo(shortError)}. events dropped for this session.\n`,
   );
 }
 
@@ -309,15 +309,18 @@ export async function sendEvent(server, token, sessionId, payload) {
  * accepted: one sentence on what happened and one on what to change.
  * ``server`` is the base URL the plugin resolved and ``sent`` a failed
  * sendEvent result. The text never carries the token: a refused token
- * is named by where it is set, not by its value.
+ * is named by where it is set, not by its value, credentials in the
+ * server address are dropped, with or without a scheme, and an address
+ * that looks like a token is not shown at all (displayServerUrl).
  */
 export function describeStartFailure(server, sent) {
-  const where = redactServerUrl(server);
+  const where = displayServerUrl(server);
   const unrecorded = "Nothing from this session is recorded until the server accepts an event.";
   const serverSetting = "FLIGHTDECK_SERVER or the plugin's server option";
-  if (!/^https?:\/\//i.test(where)) {
+  if (!/^https?:\/\//i.test(redactServerUrl(server))) {
+    const named = where === HIDDEN_SERVER ? `(${HIDDEN_SERVER.slice(1, -1)})` : `"${where}"`;
     return (
-      `Flightdeck: the server address "${where}" is not an http:// or https:// URL. ` +
+      `Flightdeck: the server address ${named} is not an http:// or https:// URL. ` +
       `Set ${serverSetting} to the address flightdeck prints when it starts, for example ${EXAMPLE_SERVER}. ${unrecorded}`
     );
   }

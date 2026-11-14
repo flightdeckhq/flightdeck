@@ -12,9 +12,11 @@ workflow) proves override precedence rather than masking it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,6 +27,10 @@ from flightdeck_sensor.core.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+# The server values the sensor, the Claude Code plugin and the
+# playground resolve alike.
+_SERVER_URL_CASES = Path(__file__).resolve().parents[3] / "contracts" / "server_urls.json"
 
 _SCRUB = (
     "FLIGHTDECK_SERVER",
@@ -230,7 +236,8 @@ def test_empty_env_token_does_not_fall_through_to_dev_token() -> None:
         ("http://localhost:4000", "http://localhost:4000/ingest"),
         ("http://localhost:4000/", "http://localhost:4000/ingest"),
         ("http://localhost:4000/ingest", "http://localhost:4000/ingest"),
-        ("http://localhost:4000/ingest/", "http://localhost:4000/ingest/"),
+        ("http://localhost:4000/ingest/", "http://localhost:4000/ingest"),
+        ("  http://localhost:4000/ingest\n", "http://localhost:4000/ingest"),
     ],
 )
 def test_env_server_ingest_suffix_normalisation(env_server: str, expected: str) -> None:
@@ -241,87 +248,74 @@ def test_env_server_ingest_suffix_normalisation(env_server: str, expected: str) 
     assert _config().server == expected
 
 
+def _server_url_cases() -> list[dict[str, str]]:
+    """The cases the sensor, the Claude Code plugin and the playground
+    each resolve to the same ingestion and API URLs."""
+    doc = json.loads(_SERVER_URL_CASES.read_text())
+    return doc["cases"]  # type: ignore[no-any-return]
+
+
+@pytest.mark.parametrize("case", _server_url_cases(), ids=lambda c: c["why"])
+def test_resolve_server_urls_matches_the_plugin(case: dict[str, str]) -> None:
+    assert flightdeck_sensor._resolve_server_urls(case["value"]) == (case["ingest"], case["api"])
+
+
 @pytest.mark.parametrize(
-    ("server", "ingest_url", "api_url"),
+    ("server", "resolved"),
     [
-        # The base URL: the plugin's default form, a compose-era value.
-        ("http://localhost:4000", "http://localhost:4000/ingest", "http://localhost:4000/api"),
-        ("http://localhost:4000/", "http://localhost:4000/ingest", "http://localhost:4000/api"),
-        # The ingestion URL the binary's start-up block prints.
-        (
-            "http://localhost:4000/ingest",
-            "http://localhost:4000/ingest",
-            "http://localhost:4000/api",
-        ),
-        (
-            "http://localhost:4000/ingest/",
-            "http://localhost:4000/ingest/",
-            "http://localhost:4000/api",
-        ),
-        # A reverse proxy's path prefix, both forms.
-        ("https://example.com/fd", "https://example.com/fd/ingest", "https://example.com/fd/api"),
-        ("https://example.com/fd/", "https://example.com/fd/ingest", "https://example.com/fd/api"),
-        (
-            "https://example.com/fd/ingest",
-            "https://example.com/fd/ingest",
-            "https://example.com/fd/api",
-        ),
-        # A host whose name starts with "ingest" is a host, not a path:
-        # the base form gets /ingest, and the API stays on that host.
-        (
-            "https://ingest.example.com",
-            "https://ingest.example.com/ingest",
-            "https://ingest.example.com/api",
-        ),
-        (
-            "https://ingest.example.com/ingest",
-            "https://ingest.example.com/ingest",
-            "https://ingest.example.com/api",
-        ),
-        ("http://ingest:4000", "http://ingest:4000/ingest", "http://ingest:4000/api"),
-        # A path that only ends in the letters is a base URL.
-        (
-            "https://example.com/myingest",
-            "https://example.com/myingest/ingest",
-            "https://example.com/myingest/api",
-        ),
-        # A path that names ingest somewhere is used as written.
-        (
-            "https://example.com/ingest-eu",
-            "https://example.com/ingest-eu",
-            "https://example.com/api-eu",
-        ),
-        (
-            "https://example.com/ingest/v2",
-            "https://example.com/ingest/v2",
-            "https://example.com/api/v2",
-        ),
-        # The sensor appends its own paths: a query or fragment goes.
-        (
-            "http://localhost:4000?debug=1",
-            "http://localhost:4000/ingest",
-            "http://localhost:4000/api",
-        ),
-        (
-            "http://localhost:4000/ingest?debug=1#x",
-            "http://localhost:4000/ingest",
-            "http://localhost:4000/api",
-        ),
-        # The scheme is lower-cased, as URLs compare.
-        (
-            "HTTP://localhost:4000/ingest",
-            "http://localhost:4000/ingest",
-            "http://localhost:4000/api",
-        ),
-        ("http://[::1]:4000", "http://[::1]:4000/ingest", "http://[::1]:4000/api"),
         # Not a URL the sensor can use; the egress validation refuses
-        # it, so it only has to come back recognisable.
-        ("localhost:4000", "localhost:4000/ingest", "localhost:4000/api"),
-        ("http://[::1", "http://[::1", "http://[::1"),
+        # it, so it only has to come back recognisable, and without
+        # credentials.
+        ("localhost:4000", "localhost:4000"),
+        ("example.com/ingest", "example.com/ingest"),
+        ("ftp://example.com/ingest", "ftp://example.com/ingest"),
+        ("http://[::1", "http://[::1"),
+        ("http://localhost:99999/ingest", "http://localhost:99999/ingest"),
+        ("user:tok_secret@127.0.0.1:4901", "127.0.0.1:4901"),
     ],
 )
-def test_resolve_server_urls(server: str, ingest_url: str, api_url: str) -> None:
-    assert flightdeck_sensor._resolve_server_urls(server) == (ingest_url, api_url)
+def test_resolve_server_urls_leaves_a_value_it_cannot_use(server: str, resolved: str) -> None:
+    assert flightdeck_sensor._resolve_server_urls(server) == (resolved, resolved)
+
+
+def test_credentials_in_the_server_url_are_dropped_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        flightdeck_sensor.init(
+            server="https://user:hunter2@flightdeck.example.com/ingest", token="tok", quiet=True
+        )
+    cfg = _config()
+    assert cfg.server == "https://flightdeck.example.com/ingest"
+    assert cfg.api_url == "https://flightdeck.example.com/api"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("carries credentials; they are ignored" in m for m in messages)
+    assert not any("hunter2" in m for m in messages)
+
+
+def test_a_missing_token_error_does_not_repeat_the_url_credentials() -> None:
+    with _clean_env(), pytest.raises(ConfigurationError) as raised:
+        flightdeck_sensor.init(server="https://user:hunter2@flightdeck.example.com", quiet=True)
+    assert "hunter2" not in str(raised.value)
+    assert "https://flightdeck.example.com" in str(raised.value)
+
+
+def test_the_override_warning_does_not_repeat_url_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
+        os.environ["FLIGHTDECK_SERVER"] = "https://env:hunter2@a.example.com"
+        flightdeck_sensor.init(server="https://kw:swordfish@b.example.com", token="tok", quiet=True)
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "overrides the server=" in messages
+    assert "hunter2" not in messages and "swordfish" not in messages
+    assert _config().server == "https://a.example.com/ingest"
+
+
+def test_a_blank_server_is_still_an_error() -> None:
+    with _clean_env(), pytest.raises(ConfigurationError, match="server URL is required"):
+        os.environ["FLIGHTDECK_SERVER"] = "  "
+        flightdeck_sensor.init(token="tok", quiet=True)
 
 
 @pytest.mark.parametrize(

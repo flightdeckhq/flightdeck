@@ -10,11 +10,12 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { describeStartFailure, resolveConfig, serverBaseUrl } from "../hooks/scripts/observe_cli.mjs";
+import { TIMEOUT_MS } from "../hooks/scripts/core/poster.mjs";
 import { assertIngestionContract, hookEnv, privateTmp, runScript } from "./contract_harness.mjs";
 
 // [configured value, the base URL it resolves to, why the case is here]
@@ -72,6 +73,37 @@ describe("serverBaseUrl", () => {
         (value) => `${serverBaseUrl(value)}/ingest/v1/events`,
       );
       assert.deepEqual([...new Set(endpoints)], [`${base}/ingest/v1/events`]);
+    }
+  });
+});
+
+// The cases the sensor (_resolve_server_urls), the plugin and the
+// playground each resolve to the same ingestion and API URLs.
+const SHARED_CASES = JSON.parse(
+  readFileSync(new URL("../../contracts/server_urls.json", import.meta.url), "utf8"),
+).cases;
+
+describe("contracts/server_urls.json", () => {
+  for (const { value, ingest, api, why } of SHARED_CASES) {
+    it(`${JSON.stringify(value)} -> ${ingest}, ${api} (${why})`, () => {
+      const base = serverBaseUrl(value);
+      assert.equal(`${base}/ingest`, ingest);
+      assert.equal(`${base}/api`, api);
+      const configured = resolveConfig({ FLIGHTDECK_QUIET: "1", FLIGHTDECK_TOKEN: "tok_test", FLIGHTDECK_SERVER: value });
+      assert.equal(`${configured.server}/ingest`, ingest);
+    });
+  }
+
+  it("holds the cases the reviewer named", () => {
+    const values = new Set(SHARED_CASES.map((c) => c.value));
+    for (const value of [
+      "https://example.com/ingestion",
+      "https://example.com/ingest-eu",
+      "https://example.com/fd/ingest-proxy",
+      "https://example.com/ingest-gw/ingest",
+      "https://ingest.example.com",
+    ]) {
+      assert.ok(values.has(value), value);
     }
   });
 });
@@ -189,6 +221,55 @@ describe("a session start the server is slow to answer", () => {
     assert.ok(result.wallMs < 15000, `the hook took ${result.wallMs} ms`);
   });
 
+  it("sends the same event again after a timeout, so a server that stored the first copy keeps one", async () => {
+    // The server stores the first POST at once and answers it after the
+    // poster has given up, as a loaded flightdeck can. It keeps events as
+    // the worker does, once per id and time; an event with no id is a new
+    // one each time (the worker mints its id).
+    const stored = new Map();
+    const posts = [];
+    const late = await new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          const event = JSON.parse(body);
+          posts.push(event);
+          stored.set(`${event.id ?? randomUUID()}@${event.timestamp}`, event);
+          const answer = () => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end('{"status":"ok","attached":false}');
+          };
+          if (posts.length === 1) setTimeout(answer, TIMEOUT_MS + 500);
+          else answer();
+        });
+      });
+      server.listen(0, "127.0.0.1", () => resolve(server));
+    });
+    try {
+      const sessionId = randomUUID();
+      const result = await runScript(
+        sessionStartInput(privateTmp),
+        hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${late.address().port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: sessionId,
+        }),
+      );
+      assert.equal(result.code, 0);
+      assert.equal(posts.length, 2, "the first attempt timed out and was sent again");
+      assert.equal(result.stdout, "", "the second attempt was answered: no notice");
+      assert.match(posts[0].id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.deepEqual(posts[1], posts[0], "the second attempt is the same event");
+      assert.equal(stored.size, 1, "one session_start stored");
+      assertIngestionContract(posts[0]);
+    } finally {
+      late.closeAllConnections?.();
+      late.close();
+    }
+  });
+
   it("does not try again when the answer is a configuration error", async () => {
     // A 404 from an address that is not a Flightdeck server's: a second
     // attempt would get the same answer, so the user is told at once.
@@ -271,6 +352,27 @@ describe("describeStartFailure", () => {
       failed(null, "request to https://user:hunter2@example.com/ingest/v1/events failed"),
     );
     assert.doesNotMatch(text, /hunter2/);
+  });
+
+  it("drops credentials from an address with no scheme, which it names as not a URL", () => {
+    const text = describeStartFailure("user:tok_secret@127.0.0.1:4901", failed(null, "ERR_INVALID_URL"));
+    assert.match(text, /the server address "127\.0\.0\.1:4901" is not an http:\/\/ or https:\/\/ URL/);
+    assert.doesNotMatch(text, /tok_secret|user:/);
+  });
+
+  it("never shows an address that looks like an access token", () => {
+    // A token pasted into FLIGHTDECK_SERVER, alone or after a path.
+    for (const value of ["ftd_3f9c1e7a5b2d4c6e", "tok_dev", " ftd_abc ", "user@ftd_abc", "https://example.com/tok_abc"]) {
+      for (const sent of [failed(null, "ERR_INVALID_URL"), failed(404, "HTTP 404"), failed(null, "timeout")]) {
+        const text = describeStartFailure(value, sent);
+        assert.doesNotMatch(text, /ftd_|tok_/, `${JSON.stringify(value)} -> ${text}`);
+        assert.match(text, /server address not shown: it looks like an access token/);
+      }
+    }
+    assert.match(
+      describeStartFailure("ftd_3f9c1e7a5b2d4c6e", failed(null, "ERR_INVALID_URL")),
+      /^Flightdeck: the server address \(server address not shown: it looks like an access token\) is not an http:\/\/ or https:\/\/ URL\./,
+    );
   });
 
   it("says in every case that the session is not recorded", () => {
@@ -475,6 +577,30 @@ describe("a session start the server does not accept", () => {
     } finally {
       refusing.server.closeAllConnections?.();
       refusing.server.close();
+    }
+  });
+
+  it("never echoes the token of a server address with credentials and no scheme", async () => {
+    // fetch refuses the value, which is not an http(s) URL; neither the
+    // notice nor the stderr lines may carry what came before the "@".
+    const secret = "tok_secret_9d2f";
+    const result = await runScript(
+      sessionStartInput(privateTmp),
+      // Not quiet, so the stderr warnings are checked too.
+      hookEnv({}, {
+        FLIGHTDECK_SERVER: `user:${secret}@127.0.0.1:4901`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_QUIET: "0",
+        CLAUDE_SESSION_ID: randomUUID(),
+      }),
+    );
+    assert.equal(result.code, 0, "the hook fails open");
+    const message = notice(result.stdout);
+    assert.match(message, /^Flightdeck: the server address "127\.0\.0\.1:4901" is not an http:\/\/ or https:\/\/ URL\./);
+    assert.match(result.stderr, /the server URL carries credentials; they are ignored/);
+    assert.match(result.stderr, /cannot reach 127\.0\.0\.1:4901: /);
+    for (const text of [result.stdout, result.stderr]) {
+      assert.ok(!text.includes(secret) && !text.includes("user:"), `the credentials appear in: ${text}`);
     }
   });
 

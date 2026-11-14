@@ -442,7 +442,13 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       // Only while a whole attempt still fits before the hook's own
       // deadline; past it the notice is the truth.
       if (Date.now() + TIMEOUT_MS > hookDeadline) break;
-      started = await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, startExtras);
+      // The same event again, its id and timestamp unchanged: a server
+      // that stored the first attempt and answered it late drops this
+      // copy instead of storing a second session_start.
+      started = await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+        ...startExtras,
+        payload: started.payload,
+      });
     }
     noticeStartFailure(cfg, sessionId, started);
     // Fetch + cache the MCP Protection Policy and emit

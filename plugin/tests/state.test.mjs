@@ -50,6 +50,8 @@ import {
   readGitCache,
   readOrCreateSessionMarker,
   claimSessionStart,
+  claimStartFailureNotice,
+  clearSessionMarkers,
   releaseSessionStart,
   stateDir,
   swapSessionCwd,
@@ -166,6 +168,7 @@ describe("touchSessionFiles", () => {
       `session-${key}.txt`,
       `git-${key}.json`,
       `started-${sid}.txt`,
+      `start-notice-${sid}.txt`,
       `model-${sid}.txt`,
       `endpoint-${sid}.json`,
       `mcp-policy-${sid}.json`,
@@ -177,6 +180,23 @@ describe("touchSessionFiles", () => {
     assert.equal(getSessionId({ session_id: native }), sid, "the same session id");
     pruneStateDir({ dir });
     for (const name of files) assert.equal(existsSync(join(dir, name)), true, `${name} kept`);
+  });
+});
+
+describe("the start-failure notice marker", () => {
+  it("is claimed once per session and removed with the session's other markers at its end", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const native = randomUUID();
+    const key = markerKeyFor(native);
+    const sid = getSessionId({ session_id: native });
+    assert.equal(claimStartFailureNotice(sid), true, "the first notice is shown");
+    assert.equal(claimStartFailureNotice(sid), false, "a compaction's SessionStart does not repeat it");
+    assert.equal(existsSync(join(stateDir(), `start-notice-${sid}.txt`)), true);
+    // SessionEnd clears the markers; a resumed session is told again,
+    // as a new one is.
+    clearSessionMarkers(key, sid);
+    assert.equal(existsSync(join(stateDir(), `start-notice-${sid}.txt`)), false);
+    assert.equal(claimStartFailureNotice(sid), true, "a resumed session is told again");
   });
 });
 

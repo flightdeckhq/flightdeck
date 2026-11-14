@@ -313,7 +313,11 @@ All notable changes to Flightdeck are documented here.
   both forms already; it now looks only at the URL's path, so a control
   plane at `https://ingest.example.com` gets `/ingest` appended and its
   API calls stay on that host (they went to `https://api.example.com`,
-  with the access token).
+  with the access token). The sensor, the plugin and the playground
+  apply one rule: a path whose last segment is `ingest` is the
+  ingestion URL, any other path (`/ingestion`, `/ingest-eu`) is the
+  base. Credentials in the server URL are dropped, with a warning, by
+  both, and neither the plugin's notice nor its log lines show them.
 - **A cut tool input says it was cut.** The plugin keeps a tool's
   `command`, `query` and `pattern` to 200 characters and a sub-agent's
   `prompt` to 100, and cut them with no sign, so the session drawer
@@ -331,7 +335,9 @@ All notable changes to Flightdeck are documented here.
   log. The hook still exits 0 and the session carries on. A first event
   the server does not answer within two seconds (a cold server's first
   event can take longer) is sent once more before any warning, so a
-  session that is being recorded is not reported as lost.
+  session that is being recorded is not reported as lost; the second
+  attempt is the same event, with the same id, so a server that stored
+  the first one and answered it late keeps one `session_start`.
 - **Tokens were counted twice when a worker stopped under load.** A
   stop (SIGINT, SIGTERM, `docker compose restart workers`) cancelled
   the message each worker lane was processing; one cancelled after the

@@ -1186,6 +1186,12 @@ describe("hook-contract helpers", () => {
       assert.equal(redactServerUrl("https://user:tok_secret@fd.example.com:8443/base"), "https://fd.example.com:8443/base");
       assert.equal(redactServerUrl("http://localhost:4000"), "http://localhost:4000");
       assert.equal(redactServerUrl("not a url"), "not a url");
+      // No scheme: what comes before an "@" ahead of the first "/" is
+      // userinfo too.
+      assert.equal(redactServerUrl("user:tok_secret@127.0.0.1:4901"), "127.0.0.1:4901");
+      assert.equal(redactServerUrl("user@host/path"), "host/path");
+      assert.equal(redactServerUrl("host/a@b"), "host/a@b");
+      assert.equal(redactServerUrl("https://host/a@b"), "https://host/a@b");
       assert.equal(
         redactUserinfo("fetch failed: http://u:p@h:1/x and https://a:b@c/"),
         "fetch failed: http://h:1/x and https://c/",

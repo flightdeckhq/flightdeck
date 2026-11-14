@@ -90,6 +90,7 @@ export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
   if (sessionId) {
     names.push(
       `started-${sessionId}.txt`,
+      `start-notice-${sessionId}.txt`,
       `minted-${sessionId}.txt`,
       `model-${sessionId}.txt`,
       `model-switch-${sessionId}.json`,
@@ -319,6 +320,7 @@ export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = f
     targets.push(
       `started-${sessionId}.txt`,
       `starting-${sessionId}.txt`,
+      `start-notice-${sessionId}.txt`,
       `endpoint-${sessionId}.json`,
       `cwd-${sessionId}.txt`,
     );
@@ -464,8 +466,11 @@ export function clearSessionStarted(sessionId) {
  * Claim the one "this session is not being recorded" notice of
  * ``sessionId``: true the first time, false once it has been shown, so
  * a SessionStart that fires again in the session (a compaction) does
- * not repeat it. With an unusable state directory the answer is true:
- * a repeated notice is better than none.
+ * not repeat it. The marker lives as the session's other markers do:
+ * every hook refreshes it (touchSessionFiles) and SessionEnd removes it
+ * (clearSessionMarkers), so a session resumed after its end is told
+ * again, as a new one is. With an unusable state directory the answer
+ * is true: a repeated notice is better than none.
  */
 export function claimStartFailureNotice(sessionId) {
   const dir = stateDir();

@@ -675,10 +675,15 @@ def init(
     default is http://localhost:4000/ingest, the local flightdeck binary
     or dev stack. The server may be given as the ingestion URL (ending in
     /ingest, what the binary's start-up block prints) or as the base URL
-    without it (http://localhost:4000, the Claude Code plugin's form):
-    a path without /ingest gets it appended, and a path that has it is
-    used as written. Only the path is looked at, so a host named
-    ingest.example.com is a host. The token default is the dev seed token tok_dev, and it
+    without it (http://localhost:4000, the Claude Code plugin's form), by
+    the plugin's rule: a path whose last segment is ingest is the
+    ingestion URL and the API URL replaces that segment with api; any
+    other path (/fd, /ingestion, /ingest-eu, /ingest/v2) is a base URL
+    and gets /ingest and /api appended. Only the path is looked at, so a
+    host named ingest.example.com is a host. Surrounding whitespace, the
+    query, the fragment, trailing slashes and the default port go, and
+    credentials in the URL are dropped with a WARNING, as the plugin
+    drops them. The token default is the dev seed token tok_dev, and it
     applies only when neither the server nor the token was supplied by
     kwarg or environment and the default server's host is loopback
     (localhost, 127.0.0.1, ::1); init then logs one WARNING naming the
@@ -2210,8 +2215,15 @@ another stack without changing the saved options. The defaults live in
 the plugin (`core/config.mjs`), so the manifest declares none and an
 option the user never saved reaches the hooks unset. A blank value
 counts as unset. Credentials embedded in
-the server URL are stripped before use, and the default token prints
-a warning on every hook unless `FLIGHTDECK_QUIET=1`.
+the server URL (`https://user:secret@host`, or `user:secret@host` with
+no scheme) are stripped before use, with a warning: neither fetch nor
+the sensor's urllib sends them, as basic auth or otherwise, and left in
+they would reach every log line and notice that names the server. The
+plugin and the sensor both drop them; the access token is the one
+credential. A log line or notice never shows a server value that looks
+like an access token (`ftd_` or `tok_`, a token pasted into the wrong
+variable). The default token prints a warning on every hook unless
+`FLIGHTDECK_QUIET=1`.
 
 The server is one value for the plugin and the sensor, in either of two
 forms: the server's base URL (`http://localhost:4000`) or its ingestion
@@ -2222,12 +2234,15 @@ place that decides: a final `/ingest` path segment is dropped, with or
 without a trailing slash, and every other path is kept, so a reverse
 proxy's prefix works in both forms (`https://example.com/fd` and
 `https://example.com/fd/ingest`) and a path that only ends in those
-letters (`/myingest`) is not touched. Trailing slashes, a query string
-and a fragment are dropped, since the plugin appends its own paths; the
-scheme and the host are lower-cased. The plugin posts events to
-`<base>/ingest/v1/events` and reads MCP policies from `<base>/api`
-(`FLIGHTDECK_API_URL` overrides the latter). The sensor resolves the
-same two forms to the same endpoints (see Sensor, Public API).
+letters (`/myingest`) or starts with them (`/ingestion`, `/ingest-eu`)
+is not touched. Surrounding whitespace, trailing slashes, a query
+string, a fragment and the scheme's default port are dropped, since
+the plugin appends its own paths; the scheme and the host are
+lower-cased. The plugin posts events to `<base>/ingest/v1/events` and
+reads MCP policies from `<base>/api` (`FLIGHTDECK_API_URL` overrides the
+latter). The sensor and the playground resolve every value to the same
+two endpoints by the same rule (see Sensor, Public API);
+`contracts/server_urls.json` holds the cases all three assert.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
 environment variables (see Content Capture). A repository's project
 settings (`.claude/settings.json`, `.claude/settings.local.json`) can

@@ -58,17 +58,27 @@ type hookResult struct {
 // configuration and sessionID as the Flightdeck session to report.
 func runSessionStartHook(t *testing.T, node, server, token, sessionID string) hookResult {
 	t.Helper()
-	script, err := filepath.Abs(filepath.Join("..", "..", "plugin", "hooks", "scripts", "observe_cli.mjs"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	work := t.TempDir()
-	event, err := json.Marshal(map[string]string{
+	return runHook(t, node, work, map[string]any{
 		"hook_event_name": "SessionStart",
 		"session_id":      "claude-" + sessionID,
 		"cwd":             work,
 		"source":          "startup",
-	})
+	}, server, token, sessionID)
+}
+
+// runHook runs the plugin's hook entry point for one hook event, as
+// Claude Code does, in work (its cwd, home and plugin data directory:
+// the hooks of one session share it, as they share Claude Code's), with
+// server and token as its configuration and sessionID as the Flightdeck
+// session to report.
+func runHook(t *testing.T, node, work string, hookEvent map[string]any, server, token, sessionID string) hookResult {
+	t.Helper()
+	script, err := filepath.Abs(filepath.Join("..", "..", "plugin", "hooks", "scripts", "observe_cli.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := json.Marshal(hookEvent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,4 +211,113 @@ func TestBinary_ThePluginStoresASessionWithEveryFormOfTheServerAddress(t *testin
 			t.Errorf("the token appears in the hook's output:\nstdout: %s\nstderr: %s", got.stdout, got.stderr)
 		}
 	})
+
+	t.Run("a cut tool input is stored with the cut listed beside the input", func(t *testing.T) {
+		requireCutToolInputStored(t, c, node)
+	})
+}
+
+// toolInputMaxChars is the plugin's bound on a tool's command
+// (TOOL_INPUT_TEXT_MAX_CHARS in plugin/hooks/scripts/claude_code/tools.mjs).
+const toolInputMaxChars = 200
+
+// storedEvent is one event of GET /api/v1/sessions/{id}.
+type storedEvent struct {
+	ID        string          `json:"id"`
+	EventType string          `json:"event_type"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// eventOf waits until sessionID has an event of eventType and returns it.
+func eventOf(t *testing.T, c *child, sessionID, eventType string) storedEvent {
+	t.Helper()
+	var found storedEvent
+	waitFor(t, "a "+eventType+" event of session "+sessionID, storeTimeout, func() bool {
+		var session struct {
+			Events []storedEvent `json:"events"`
+		}
+		if c.get(t, "/api/v1/sessions/"+sessionID, "tok_dev", &session) != http.StatusOK {
+			return false
+		}
+		for _, e := range session.Events {
+			if e.EventType == eventType {
+				found = e
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
+
+// requireCutToolInputStored runs one session's SessionStart, a
+// PostToolUse and a PermissionRequest for a Bash command over the
+// plugin's bound through the hook entry point, and requires what the
+// binary stores: the tool_use block's input holds the tool's own keys,
+// the command cut and ending with "…", and the block lists the cut
+// beside the input as a JSON Pointer; the permission signal's
+// signal_data names it too.
+func requireCutToolInputStored(t *testing.T, c *child, node string) {
+	t.Helper()
+	sessionID := newUUID(t)
+	work := t.TempDir()
+	claudeSession := "claude-" + sessionID
+	command := "echo " + strings.Repeat("x", 295)
+	want := command[:toolInputMaxChars] + "…"
+	for _, hookEvent := range []map[string]any{
+		{"hook_event_name": "SessionStart", "session_id": claudeSession, "cwd": work, "source": "startup"},
+		{
+			"hook_event_name": "PostToolUse", "session_id": claudeSession, "cwd": work, "tool_name": "Bash",
+			"tool_input":    map[string]any{"command": command, "description": "print a long line"},
+			"tool_response": map[string]any{"stdout": "ok", "stderr": ""},
+			"tool_use_id":   "toolu_01binarycut", "duration_ms": 9,
+		},
+		{
+			"hook_event_name": "PermissionRequest", "session_id": claudeSession, "cwd": work, "tool_name": "Bash",
+			"tool_input": map[string]any{"command": command},
+		},
+	} {
+		got := runHook(t, node, work, hookEvent, c.base+"/ingest", "tok_dev", sessionID)
+		if got.err != nil || strings.Contains(got.stderr, "cannot reach") {
+			t.Fatalf("%s: the hook failed or its POST was not accepted: %v\nstderr: %s", hookEvent["hook_event_name"], got.err, got.stderr)
+		}
+	}
+
+	toolCall := eventOf(t, c, sessionID, "tool_call")
+	var content struct {
+		Tools []struct {
+			Type      string            `json:"type"`
+			Name      string            `json:"name"`
+			Input     map[string]string `json:"input"`
+			Truncated []string          `json:"truncated"`
+		} `json:"tools"`
+	}
+	if code := c.get(t, "/api/v1/events/"+toolCall.ID+"/content", "tok_dev", &content); code != http.StatusOK {
+		t.Fatalf("GET the tool_call's content answered %d, want 200", code)
+	}
+	if len(content.Tools) != 1 {
+		t.Fatalf("the tool_call's content has %d tool blocks, want 1: %+v", len(content.Tools), content.Tools)
+	}
+	block := content.Tools[0]
+	if block.Type != "tool_use" || block.Name != "Bash" {
+		t.Errorf("tool block = %s %s, want tool_use Bash", block.Type, block.Name)
+	}
+	if len(block.Input) != 1 || block.Input["command"] != want {
+		t.Errorf("tool_use input = %q, want only the command cut to %d characters and ending with the mark", block.Input, toolInputMaxChars)
+	}
+	if len(block.Truncated) != 1 || block.Truncated[0] != "/command" {
+		t.Errorf("tool_use truncated = %q, want [\"/command\"] beside the input", block.Truncated)
+	}
+
+	signal := eventOf(t, c, sessionID, "session_signal")
+	var payload struct {
+		Signal     string            `json:"signal"`
+		SignalData map[string]string `json:"signal_data"`
+	}
+	if err := json.Unmarshal(signal.Payload, &payload); err != nil {
+		t.Fatalf("the session_signal's payload: %v in %s", err, signal.Payload)
+	}
+	if payload.Signal != "permission_requested" || payload.SignalData["command"] != want || payload.SignalData["truncated"] != "command" {
+		t.Errorf("permission signal = %s %q, want permission_requested with the cut command and truncated=command", payload.Signal, payload.SignalData)
+	}
 }

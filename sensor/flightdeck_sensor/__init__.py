@@ -389,11 +389,11 @@ def init(
 ) -> None:
     """Initialize the sensor and start the run.
 
-    ``server`` and ``token`` each resolve as: the kwarg when passed,
-    else the ``FLIGHTDECK_SERVER`` / ``FLIGHTDECK_TOKEN`` environment
-    variable, else the default (the environment wins over a passed
-    kwarg, like every other knob here; see the override warning
-    below). ``server`` defaults to ``http://localhost:4000/ingest``,
+    ``server`` and ``token`` each resolve as: the
+    ``FLIGHTDECK_SERVER`` / ``FLIGHTDECK_TOKEN`` environment variable
+    when it is set, else the kwarg, else the default (see the
+    environment list below for the other arguments and the override
+    warning). ``server`` defaults to ``http://localhost:4000/ingest``,
     where the ``flightdeck`` binary and the dev compose stack listen.
     It may be given as the ingestion URL (a path whose last segment is
     ``ingest``, the form the binary prints) or as the base URL without
@@ -435,8 +435,7 @@ def init(
 
     ``session_id`` is an optional caller-supplied run identifier.
     When provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which
-    takes precedence over the kwarg in line with ``FLIGHTDECK_SERVER``
-    / ``AGENT_FLAVOR``), the sensor uses the caller's value verbatim
+    wins over the kwarg, as ``FLIGHTDECK_SERVER`` does), the sensor uses the caller's value verbatim
     instead of generating a UUID. If a run with that ID already
     exists in the control plane, the backend attaches this execution
     to the prior run; the sensor logs INFO on the first response
@@ -450,6 +449,7 @@ def init(
     ``"production"`` because the Python sensor runs inside production
     agents; developer-driven smoke (playground, CI runners) flips the
     kwarg or the ``FLIGHTDECK_AGENT_TYPE`` env var to ``"coding"``.
+    A passed kwarg wins over the env var.
     The pre-v0.4.0 values (``"autonomous"``, ``"supervised"``,
     ``"batch"``) are NO LONGER accepted -- this is a deliberate
     breaking change recorded in CHANGELOG.md.
@@ -459,27 +459,36 @@ def init(
     or ``FLIGHTDECK_AGENT_NAME`` env var to override (e.g. a
     Kubernetes deployment name, a CI job id, etc.). Override via
     env var when the running process cannot know its own label at
-    code time.
+    code time; a passed kwarg wins over the env var.
 
-    Reads from environment (overrides parameters):
+    Reads from environment. A variable marked "wins" takes effect even
+    when its kwarg is passed. A WARNING naming both values is logged
+    when ``FLIGHTDECK_SERVER`` or ``FLIGHTDECK_API_URL`` overrides a
+    kwarg with a different value (compared as written); the other
+    overrides are silent. The agent identity pair is the other way
+    round: a passed *agent_type* or *agent_name* wins over its
+    variables.
 
-    - ``FLIGHTDECK_SERVER`` -- ingestion base URL (overrides *server*)
-    - ``FLIGHTDECK_TOKEN`` -- access token (overrides *token*)
-    - ``FLIGHTDECK_API_URL`` -- control-plane base URL (overrides *api_url*)
-    - ``FLIGHTDECK_SESSION_ID`` -- run id hint (overrides *session_id*)
-    - ``FLIGHTDECK_AGENT_TYPE`` / ``AGENT_TYPE`` -- overrides *agent_type*;
-      must be ``coding`` or ``production``
-    - ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR`` -- overrides *agent_name*
-      (``AGENT_FLAVOR`` retained for wire-level ``flavor`` field compatibility)
+    - ``FLIGHTDECK_SERVER`` -- the server's address, its base URL or its
+      ingestion URL (wins over *server*)
+    - ``FLIGHTDECK_TOKEN`` -- access token (wins over *token*)
+    - ``FLIGHTDECK_API_URL`` -- control-plane base URL (wins over *api_url*)
+    - ``FLIGHTDECK_SESSION_ID`` -- run id hint (wins over *session_id*)
+    - ``FLIGHTDECK_AGENT_TYPE``, else ``AGENT_TYPE`` -- used when
+      *agent_type* is not passed; must be ``coding`` or ``production``
+    - ``FLIGHTDECK_AGENT_NAME``, else ``AGENT_FLAVOR`` -- used when
+      *agent_name* is not passed. ``AGENT_FLAVOR``, when set, is also
+      the wire-level ``flavor`` field, whatever *agent_name* is
     - ``FLIGHTDECK_HOSTNAME`` -- overrides ``socket.gethostname()`` (useful
       for k8s pod grouping)
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
-    - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable
+    - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable, ``"false"``
+      to disable (wins over *capture_prompts*)
     - ``FLIGHTDECK_ALLOW_INSECURE_TRANSPORT`` -- ``"true"`` to allow plain
-      ``http://`` egress to a non-local control plane (overrides
+      ``http://`` egress to a non-local control plane (wins over
       *allow_insecure_transport*)
     - ``FLIGHTDECK_BILLING_MODE`` -- ``metered``, ``subscription`` or
-      ``local`` (overrides *billing_mode*)
+      ``local`` (wins over *billing_mode*)
 
     ``billing_mode`` says how this agent's LLM calls are paid for, which
     decides whether the dashboard counts them as spend. Left unset, every
@@ -514,8 +523,9 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
-        # Env-var precedence is preserved (env wins over the kwarg,
-        # matching every other init() knob), but a silent override of an
+        # Env-var precedence is preserved (env wins over the kwarg, as
+        # for the other connection and capture knobs; the agent identity
+        # kwargs are the exception), but a silent override of an
         # explicitly-passed value is the vulnerability — a stale/hostile
         # FLIGHTDECK_SERVER in the environment could redirect egress with
         # no signal. Warn (naming both values) when the environment
@@ -623,7 +633,7 @@ def init(
             )
 
         # session_id resolution follows the same env-wins pattern as
-        # FLIGHTDECK_SERVER / AGENT_FLAVOR: env var overrides kwarg,
+        # FLIGHTDECK_SERVER: env var overrides kwarg,
         # and a falsy env var falls through to the kwarg. An empty
         # string from either source is treated as "not provided" so a
         # misconfigured shell (FLIGHTDECK_SESSION_ID="") still auto-
@@ -655,7 +665,8 @@ def init(
             )
 
         # Resolve agent identity. Precedence is
-        # kwarg > env > default, matching every other init() param.
+        # kwarg > env > default, the reverse of the connection and
+        # capture knobs above, where the environment wins.
         # ``FLIGHTDECK_AGENT_TYPE`` wins over the legacy ``AGENT_TYPE``
         # env var so operators migrating from v0.3.x can set either;
         # same pattern for ``FLIGHTDECK_AGENT_NAME`` / ``AGENT_FLAVOR``.

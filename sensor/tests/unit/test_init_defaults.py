@@ -1,7 +1,7 @@
 """``init()`` with no arguments: server and token defaults and the
 loopback gate on the dev token.
 
-Resolution per value is kwarg, then environment variable, then default.
+Resolution per value is environment variable, then kwarg, then default.
 The token default (``tok_dev``) applies only when the server was
 defaulted too and its host is loopback; a server the caller chose
 without a token raises. Both the scrubbed-environment and the

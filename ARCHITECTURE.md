@@ -681,10 +681,10 @@ def init(
     """
     Initialize the sensor.
 
-    server and token each resolve as: the kwarg if passed, else the
-    FLIGHTDECK_SERVER / FLIGHTDECK_TOKEN environment variable, else the
-    default. The environment wins over a passed kwarg, as for every other
-    knob; init warns when it overrides a different server. The server
+    server and token each resolve as: the FLIGHTDECK_SERVER /
+    FLIGHTDECK_TOKEN environment variable when it is set, else the kwarg,
+    else the default; init warns when the environment overrides a server
+    kwarg with a different value. The server
     default is http://localhost:4000/ingest, the local flightdeck binary
     or dev stack. The server may be given as the ingestion URL (ending in
     /ingest, what the binary's start-up block prints) or as the base URL
@@ -722,8 +722,15 @@ def init(
     session with that ID already exists, the backend attaches this execution
     to the prior row.
 
-    Reads from environment (override init params):
-        FLIGHTDECK_SERVER             -- ingestion base URL
+    Reads from environment. Each variable with an init param wins over
+    that param when set, except the agent identity pair: a passed
+    agent_type or agent_name wins over AGENT_TYPE / FLIGHTDECK_AGENT_TYPE
+    and AGENT_FLAVOR / FLIGHTDECK_AGENT_NAME (the FLIGHTDECK_ name over
+    the legacy one; AGENT_FLAVOR, when set, is also the session's
+    flavor). init logs a WARNING when FLIGHTDECK_SERVER or
+    FLIGHTDECK_API_URL overrides a kwarg with a different value; the
+    other overrides are silent.
+        FLIGHTDECK_SERVER             -- the server's address (base or ingestion URL)
         FLIGHTDECK_TOKEN              -- access token
         FLIGHTDECK_API_URL            -- control-plane base URL
         FLIGHTDECK_SESSION_ID         -- session-id hint
@@ -731,8 +738,10 @@ def init(
         AGENT_TYPE / FLIGHTDECK_AGENT_TYPE   -- "coding" or "production"
         FLIGHTDECK_HOSTNAME           -- override socket.gethostname
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
-        FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable
+        FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable, "false" to disable
         FLIGHTDECK_BILLING_MODE       -- "metered" / "subscription" / "local"
+        FLIGHTDECK_ALLOW_INSECURE_TRANSPORT -- "true" allows plain http://
+                                         to a non-local control plane
 
     When capture_prompts=False (default):
         Event payloads contain token counts, model, latency, tool names only.
@@ -2993,9 +3002,9 @@ sessions extend the derivation with a conditional 6th input,
 | Field | Vocabulary | Source |
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
-| `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
+| `agent_type` | `coding` \| `production` | Sensor `init` kwarg, else `FLIGHTDECK_AGENT_TYPE`, else `AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
 | `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
-| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
+| `agent_name` | string | Sensor `init` kwarg, else `FLIGHTDECK_AGENT_NAME`, else `AGENT_FLAVOR` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
@@ -3641,7 +3650,7 @@ control plane honours end-to-end:
 
 1. **Sensor — `init` accepts `session_id`.** The caller passes a stable
    ID via the kwarg OR exports `FLIGHTDECK_SESSION_ID`. The env var wins
-   over the kwarg, same precedence as `FLIGHTDECK_SERVER` / `AGENT_FLAVOR`.
+   over the kwarg, same precedence as `FLIGHTDECK_SERVER`.
 2. **Ingestion — synchronous attachment check on `session_start`.** On
    arrival of a `session_start` event the ingestion API calls
    `session.Store.Attach(session_id)` against the database (through
@@ -11559,14 +11568,15 @@ runs the services that way; the split test stack and
 |---|---|
 | `FLIGHTDECK_SERVER` | The control plane's address: its ingestion URL (`http://localhost:4000/ingest`, the default and what the start-up block prints) or its base URL (`http://localhost:4000`); overrides the `server=` kwarg. The Claude Code plugin reads the same variable and accepts the same two forms |
 | `FLIGHTDECK_TOKEN` | Access token; overrides the `token=` kwarg; defaults to `tok_dev` only when the server is also defaulted (see Sensor, Public API) |
-| `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
-| `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |
-| `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture |
-| `FLIGHTDECK_BILLING_MODE` | `metered`, `subscription` or `local`; overrides the billing mode the sensor detects (see Cost estimation) |
+| `FLIGHTDECK_API_URL` | Control-plane base URL; overrides the `api_url=` kwarg (derived from server if neither is set) |
+| `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs; overrides the `session_id=` kwarg |
+| `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture, `false` to turn it off; overrides the `capture_prompts=` kwarg |
+| `FLIGHTDECK_BILLING_MODE` | `metered`, `subscription` or `local`; overrides the `billing_mode=` kwarg and the billing mode the sensor detects (see Cost estimation) |
+| `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` | `true` allows plain `http://` to a non-local control plane; overrides the `allow_insecure_transport=` kwarg |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` |
 | `FLIGHTDECK_HOSTNAME` | Override `socket.gethostname` |
-| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}` |
-| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production`. Any other value raises `ConfigurationError` |
+| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}`. The `agent_name=` kwarg wins over both, `FLIGHTDECK_AGENT_NAME` over `AGENT_FLAVOR`; `AGENT_FLAVOR`, when set, is also the session's `flavor` |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` | `coding` or `production`. The `agent_type=` kwarg wins over both, `FLIGHTDECK_AGENT_TYPE` over `AGENT_TYPE`. Any other value raises `ConfigurationError` |
 
 **Postgres:** standard Postgres environment plus the optional
 `POSTGRES_PASSWORD` / `POSTGRES_USER` / `POSTGRES_DB` for the bundled

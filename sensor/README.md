@@ -15,16 +15,18 @@ flightdeck_sensor.init()
 flightdeck_sensor.patch()
 ```
 
-`init()` resolves `server` and `token` each as: the kwarg, else the
-`FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` environment variable, else the
-default. The server default is `http://localhost:4000/ingest`, where the
-`flightdeck` binary and the dev compose stack listen. The token default
-is the dev seed `tok_dev`, used only when the server was defaulted as
-well and its host is loopback; `init()` logs one WARNING when it is in
-use. A server supplied without a token raises `ConfigurationError` (a
-`ValueError`) naming both variables, whatever its host: the sensor never
-sends `tok_dev` to a server you chose. The environment wins over a passed
-kwarg, as for every other `init()` knob.
+`init()` resolves `server` and `token` each as: the `FLIGHTDECK_SERVER`
+/ `FLIGHTDECK_TOKEN` environment variable when it is set, else the
+kwarg, else the default. The server default is
+`http://localhost:4000/ingest`, where the `flightdeck` binary and the
+dev compose stack listen. The token default is the dev seed `tok_dev`,
+used only when the server was defaulted as well and its host is
+loopback; `init()` logs one WARNING when it is in use. A server
+supplied without a token raises `ConfigurationError` (a `ValueError`)
+naming both variables, whatever its host: the sensor never sends
+`tok_dev` to a server you chose. [Environment
+variables](#environment-variables) gives the precedence of every other
+`init()` argument that has a variable.
 
 ## Identity
 
@@ -69,15 +71,19 @@ Call `patch()` before any framework or user code constructs a client. In practic
 
 | Variable                        | Purpose                                                         |
 |---------------------------------|-----------------------------------------------------------------|
-| `FLIGHTDECK_SERVER`             | The server's address: its base URL (`https://flightdeck.example.com`) or its ingestion URL (`https://flightdeck.example.com/ingest`, what the start-up block prints). Overrides the `server=` kwarg. Default `http://localhost:4000/ingest`. The Claude Code plugin reads the same variable and takes the same two forms. |
-| `FLIGHTDECK_TOKEN`              | Access token. Overrides the `token=` kwarg. Defaults to `tok_dev` only when the server is defaulted too. |
-| `FLIGHTDECK_API_URL`            | Control-plane base URL. Derived from `FLIGHTDECK_SERVER` if unset. |
-| `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs.                   |
-| `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture.                          |
+| `FLIGHTDECK_SERVER`             | The server's address: its base URL (`https://flightdeck.example.com`) or its ingestion URL (`https://flightdeck.example.com/ingest`, what the start-up block prints). Wins over the `server=` kwarg. Default `http://localhost:4000/ingest`. The Claude Code plugin reads the same variable and takes the same two forms. |
+| `FLIGHTDECK_TOKEN`              | Access token. Wins over the `token=` kwarg. Defaults to `tok_dev` only when the server is defaulted too. |
+| `FLIGHTDECK_API_URL`            | Control-plane base URL. Wins over the `api_url=` kwarg; derived from the server when neither is set. |
+| `FLIGHTDECK_SESSION_ID`         | Stable session UUID for orchestrator re-runs. Wins over the `session_id=` kwarg. |
+| `FLIGHTDECK_CAPTURE_PROMPTS`    | `true` to enable full payload capture, `false` to turn it off. Wins over the `capture_prompts=` kwarg. |
+| `FLIGHTDECK_BILLING_MODE`       | `metered`, `subscription` or `local`. Wins over the `billing_mode=` kwarg. |
+| `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` | `true` to allow plain `http://` to a control plane that is not local. Wins over the `allow_insecure_transport=` kwarg. |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` when the control plane is down.  |
-| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`.    |
-| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production`. Default: `production`. Any other value raises `ConfigurationError`. |
+| `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label. Default: `{user}@{hostname}`. The `agent_name=` kwarg wins over both, and `FLIGHTDECK_AGENT_NAME` over `AGENT_FLAVOR`. `AGENT_FLAVOR`, when set, is also the session's `flavor`, whatever the label. |
+| `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE`   | `coding` or `production`. Default: `production`. The `agent_type=` kwarg wins over both, and `FLIGHTDECK_AGENT_TYPE` over `AGENT_TYPE`. Any other value raises `ConfigurationError`. |
 | `FLIGHTDECK_HOSTNAME`           | Override `socket.gethostname()` (useful for k8s pod grouping).  |
+
+A variable that wins over its kwarg does so even when the kwarg is passed, so an exported value redirects an agent that hard-codes its configuration. `init()` logs a WARNING naming both values when `FLIGHTDECK_SERVER` or `FLIGHTDECK_API_URL` overrides a kwarg with a different value (compared as written, so a server's base URL and its ingestion URL count as different); the other overrides are silent. A blank `FLIGHTDECK_SERVER` or `FLIGHTDECK_TOKEN` is an error, not an absent value. A blank `FLIGHTDECK_API_URL`, `FLIGHTDECK_SESSION_ID` or `FLIGHTDECK_BILLING_MODE` falls through to the kwarg, and `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_ALLOW_INSECURE_TRANSPORT` take effect only as `true`, `1`, `yes`, `false`, `0` or `no`, in any case.
 
 ### Threading model
 

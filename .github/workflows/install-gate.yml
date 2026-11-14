@@ -213,12 +213,21 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         if: matrix.extras
 
+      # The same index lag as pip's: uv reads PyPI's simple index, which
+      # can list the new version a minute after pip's view does (v0.9.0's
+      # gate failed here with "no version of flightdeck-cli==0.9.0" while
+      # pip had installed it). --refresh asks again on each attempt.
       - name: uvx flightdeck-cli
         if: matrix.extras
         env:
           PEP440: ${{ needs.resolve.outputs.pep440 }}
         run: |
-          uvx --from "flightdeck-cli==$PEP440" flightdeck-cli --version | grep -qx "flightdeck $TAG"
+          for i in $(seq 1 20); do
+            if uvx --refresh --from "flightdeck-cli==$PEP440" flightdeck-cli --version >"$RUNNER_TEMP/uvx.out"; then break; fi
+            [ "$i" -lt 20 ] || { echo "::error::flightdeck-cli==$PEP440 not resolvable by uv after 10 minutes"; exit 1; }
+            sleep 30
+          done
+          grep -qx "flightdeck $TAG" "$RUNNER_TEMP/uvx.out"
           uvx --from "flightdeck-cli==$PEP440" flightdeck --version | grep -qx "flightdeck $TAG"
 
       - name: docker run flightdeckhq/flightdeck

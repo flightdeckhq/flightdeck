@@ -28,7 +28,7 @@
   "name": "Flightdeck",
   "url": "https://flightdeck-hq.com/",
   "applicationCategory": "DeveloperApplication",
-  "operatingSystem": "Self-hosted (Docker, Kubernetes)",
+  "operatingSystem": "Linux, macOS, Windows",
   "license": "https://www.apache.org/licenses/LICENSE-2.0",
   "codeRepository": "https://github.com/flightdeckhq/flightdeck",
   "description": "Self-hosted observability and control plane for production and coding agents: live per-agent timelines and a fleet-wide feed, token budgets, MCP allow/block rules, and live directives.",
@@ -113,6 +113,33 @@
   .meta-line + .meta-line{margin-top:5px}
   .meta-line code{font-family:"B612 Mono",ui-monospace,monospace;font-size:11.5px;color:var(--ink)}
   .meta-line a{color:var(--cyan)}
+
+  /* install: one command per platform, in the hero */
+  .install{
+    margin-top:30px;max-width:640px;
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;
+    background:linear-gradient(180deg,var(--tile),var(--raised));
+    box-shadow:0 14px 44px rgba(0,0,0,.3);
+  }
+  .install-bar{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+  .tab{
+    display:inline-flex;align-items:center;gap:7px;
+    font-family:"B612 Mono",ui-monospace,monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--dim);background:none;border:0;border-bottom:2px solid transparent;
+    padding:11px 10px 9px;cursor:pointer;white-space:nowrap;transition:color .15s ease,border-color .15s ease;
+  }
+  .tab .ic{width:13px;height:13px}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--orange)}
+  .tab:focus-visible{outline-offset:-3px}
+  .cmd{display:flex;align-items:center;gap:12px;padding:16px 14px 16px 18px}
+  .cmd[hidden]{display:none}
+  .cmd pre{flex:1;min-width:0;background:none;border:0;border-radius:0;padding:0;font-size:14px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cmd pre::before{content:attr(data-prompt);color:var(--orange);margin-right:10px}
+  .cmd .copy{position:static;flex:none}
+  .cmd-os{display:none}
+  .install-then{border-top:1px solid var(--line);padding:10px 18px 11px;font-size:13px;color:var(--dim)}
+  .install-then code,.qs-note code{font-family:"B612 Mono",ui-monospace,monospace;font-size:12px;color:var(--ink)}
 
   /* signature strip: the logo, blown up */
   .strip{
@@ -256,6 +283,25 @@
   .copy:hover{color:var(--orange);border-color:var(--orange)}
   .qs-foot{margin-top:24px;font-size:14px;color:var(--dim)}
   .qs-foot code{font-family:"B612 Mono",monospace;font-size:12.5px;color:var(--ink)}
+  .qs-step{
+    display:flex;align-items:center;gap:12px;margin-bottom:18px;scroll-margin-top:96px;
+    font-size:13px;font-weight:400;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);
+  }
+  .qs-step b{
+    display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;flex:none;
+    border:1px solid var(--orange);border-radius:50%;color:var(--orange);font-weight:400;font-size:12px;letter-spacing:0;
+  }
+  .qs-note + .qs-step{margin-top:44px}
+  .qs-rows{display:grid;grid-template-columns:210px minmax(0,1fr);gap:12px 20px;align-items:center}
+  .qs-rows h3{font-size:15.5px;font-weight:700;display:flex;align-items:center;gap:9px}
+  .qs-rows h3 .ic{width:16px;height:16px;color:var(--dim)}
+  .qs-rows h3 span,.install .tab span{color:var(--dim)}
+  .codebox.one pre{padding-right:78px;white-space:pre-wrap;overflow-wrap:anywhere}
+  .codebox.one .copy{top:50%;transform:translateY(-50%)}
+  .codebox.multi .copy{top:auto;bottom:8px}
+  .qs-col .after{margin:10px 0 0}
+  .qs-note{margin-top:18px;font-size:14px;color:var(--dim)}
+  .qs-note strong{color:var(--ink);font-weight:400}
 
   footer{margin-top:84px;border-top:1px solid var(--line);padding:28px 0 44px}
   .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--dim)}
@@ -263,7 +309,11 @@
   .foot a:hover{color:var(--orange)}
 
   @media (max-width:740px){
-    .caps,.qs,.duo{grid-template-columns:1fr}
+    .caps,.qs,.duo{grid-template-columns:minmax(0,1fr)}
+    .qs-rows{grid-template-columns:minmax(0,1fr);gap:8px}
+    .qs-rows .codebox{margin-bottom:12px}
+    .install{margin-top:24px}
+    .cmd pre{font-size:13px}
     .callsign{flex-basis:78px;font-size:10.5px}
     .hero{padding-top:52px}
     .bar svg{height:46px}
@@ -272,6 +322,19 @@
     .row{gap:10px}
     .strip{padding:12px 12px 10px}
     .legend{gap:10px;font-size:10px}
+  }
+
+  /* phones: the header keeps the logo and the GitHub button; the install tabs tighten */
+  @media (max-width:600px){
+    .bar nav .n-wide{display:none}
+  }
+  @media (max-width:480px){
+    .bar nav .n-mid{display:none}
+    .install-bar{padding:0 4px}
+    .tab{padding:11px 6px 9px;gap:5px;letter-spacing:.05em}
+  }
+  @media (max-width:380px){
+    .install .tab span{display:none}
   }
 
   /* icons and polish */
@@ -297,6 +360,15 @@
   .foot .ic{width:14px;height:14px;margin-right:5px}
   .attach-ic{width:13px;height:13px;vertical-align:-2px;margin-right:6px;opacity:.8}
 </style>
+<noscript><style>
+  /* without JavaScript: every section shown, both install commands listed under their platform, no tabs or copy buttons */
+  .r{opacity:1;transform:none}
+  .install-bar,.copy{display:none}
+  .cmd,.cmd[hidden]{display:flex;flex-wrap:wrap;row-gap:6px}
+  .cmd + .cmd{border-top:1px solid var(--line)}
+  .cmd-os{display:block;flex-basis:100%;font-family:"B612 Mono",ui-monospace,monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .codebox.one pre{padding-right:16px}
+</style></noscript>
 </head>
 <body>
 
@@ -315,6 +387,8 @@
   <symbol id="i-helm" viewBox="0 0 24 24"><path d="M12.337 0c-.475 0-.861 1.016-.861 2.269 0 .527.069 1.011.183 1.396a8.514 8.514 0 0 0-3.961 1.22 5.229 5.229 0 0 0-.595-1.093c-.606-.866-1.34-1.436-1.79-1.43a.381.381 0 0 0-.217.066c-.39.273-.123 1.326.596 2.353.267.381.559.705.84.948a8.683 8.683 0 0 0-1.528 1.716h1.734a7.179 7.179 0 0 1 5.381-2.421 7.18 7.18 0 0 1 5.382 2.42h1.733a8.687 8.687 0 0 0-1.32-1.53c.35-.249.735-.643 1.078-1.133.719-1.027.986-2.08.596-2.353a.382.382 0 0 0-.217-.065c-.45-.007-1.184.563-1.79 1.43a4.897 4.897 0 0 0-.676 1.325 8.52 8.52 0 0 0-3.899-1.42c.12-.39.193-.887.193-1.429 0-1.253-.386-2.269-.862-2.269zM1.624 9.443v5.162h1.358v-1.968h1.64v1.968h1.357V9.443H4.62v1.838H2.98V9.443zm5.912 0v5.162h3.21v-1.108H8.893v-.95h1.64v-1.142h-1.64v-.84h1.853V9.443zm4.698 0v5.162h3.218v-1.362h-1.86v-3.8zm4.706 0v5.162h1.364v-2.643l1.357 1.225 1.35-1.232v2.65h1.365V9.443h-.614l-2.1 1.914-2.109-1.914zm-11.82 7.28a8.688 8.688 0 0 0 1.412 1.548 5.206 5.206 0 0 0-.841.948c-.719 1.027-.985 2.08-.596 2.353.39.273 1.289-.338 2.007-1.364a5.23 5.23 0 0 0 .595-1.092 8.514 8.514 0 0 0 3.961 1.219 5.01 5.01 0 0 0-.183 1.396c0 1.253.386 2.269.861 2.269.476 0 .862-1.016.862-2.269 0-.542-.072-1.04-.193-1.43a8.52 8.52 0 0 0 3.9-1.42c.121.4.352.865.675 1.327.719 1.026 1.617 1.637 2.007 1.364.39-.273.123-1.326-.596-2.353-.343-.49-.727-.885-1.077-1.135a8.69 8.69 0 0 0 1.202-1.36h-1.771a7.174 7.174 0 0 1-5.227 2.252 7.174 7.174 0 0 1-5.226-2.252z"/></symbol>
   <symbol id="i-litellm" viewBox="0 0 24 24"><path style="fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round" d="M3 5h6M3 12h6M3 19h6M9 5c4 0 4 7 8 7M9 19c4 0 4-7 8-7M17 12h4M21 12l-2.5-2.5M21 12l-2.5 2.5"/></symbol>
   <symbol id="i-llamaindex" viewBox="0 0 24 24"><path style="fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round" d="M5 8l7-4 7 4-7 4-7-4ZM5 12l7 4 7-4M5 16l7 4 7-4"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path style="fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round" d="M4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13A1.5 1.5 0 0 1 4.5 4ZM7 9l3 3-3 3M12.5 15H17"/></symbol>
+  <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></symbol>
   <symbol id="i-bifrost" viewBox="0 0 24 24"><path style="fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round" d="M2 17c2.5-6 6-9 10-9s7.5 3 10 9M2 17h20M7 17v-5.4M12 17v-9M17 17v-5.4"/></symbol>
 </svg>
 
@@ -351,8 +425,8 @@
       </svg>
     </a>
     <nav class="mono">
-      <a href="#quickstart">Quickstart</a>
-      <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/releases">Releases</a>
+      <a class="n-mid" href="#quickstart">Quickstart</a>
+      <a class="n-wide" target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/releases">Releases</a>
       <a target="_blank" rel="noopener noreferrer" class="gh" href="https://github.com/flightdeckhq/flightdeck"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-github"/></svg>GitHub<span class="stars"><span aria-hidden="true">&#9733;</span><span id="star-count"></span></span></a>
     </nav>
   </div>
@@ -363,15 +437,30 @@
   <div class="hero">
     <p class="eyebrow mono">Self-hosted <b>&middot;</b> Apache 2.0 <b>&middot;</b> Production and coding agents</p>
     <h1>Observability and control plane for AI agent fleets<span class="dot">.</span></h1>
-    <p class="sub">Every LLM call, MCP event, and tool call your agents make streams to the dashboard as it happens,
-    surfaced as a per-agent timeline and as a live fleet-wide feed.
-    Set <strong>token budgets, MCP allow/block rules, and live directives</strong> on your production agents.</p>
-    <div class="ctas">
-      <a target="_blank" rel="noopener noreferrer" class="btn btn-primary" href="https://github.com/flightdeckhq/flightdeck">View on GitHub</a>
-      <a class="btn btn-ghost" href="#quickstart">Quickstart</a>
+    <p class="sub">Every LLM call, tool call and MCP call your coding agents and production agents make streams to one dashboard as it happens,
+    and from that dashboard you <strong>set token budgets, allow or block MCP servers, and stop an agent</strong>.</p>
+    <div class="install" id="install">
+      <div class="install-bar" role="tablist" aria-label="Platform">
+        <button class="tab" type="button" role="tab" id="tab-unix" aria-controls="cmd-unix" aria-selected="true"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-terminal"/></svg>Linux and macOS</button>
+        <button class="tab" type="button" role="tab" id="tab-win" aria-controls="cmd-win" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-windows"/></svg>Windows <span>(PowerShell)</span></button>
+      </div>
+      <div class="cmd" role="tabpanel" id="cmd-unix" aria-labelledby="tab-unix">
+        <span class="cmd-os">Linux and macOS</span>
+        <pre id="code-install-unix" data-prompt="$">curl -fsSL https://flightdeck-hq.com/<wbr>install.sh | sh</pre>
+        <button class="copy mono" type="button" data-for="code-install-unix">Copy</button>
+      </div>
+      <div class="cmd" role="tabpanel" id="cmd-win" aria-labelledby="tab-win" hidden>
+        <span class="cmd-os">Windows (PowerShell)</span>
+        <pre id="code-install-win" data-prompt="PS>">irm https://flightdeck-hq.com/<wbr>install.ps1 | iex</pre>
+        <button class="copy mono" type="button" data-for="code-install-win">Copy</button>
+      </div>
+      <p class="install-then">Then start it with <code>flightdeck</code>. The dashboard is at <code>http://localhost:4000</code>.</p>
     </div>
-    <p class="meta-line"><svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-claude"/></svg>Coding agents attach via the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck">Claude Code plugin</a>.</p>
-    <p class="meta-line"><svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-python"/></svg>Production agents add the <code class="mono">flightdeck-sensor</code> Python package to their entrypoint: <code class="mono">init()</code> + <code class="mono">patch()</code>, no other code changes.</p>
+    <p class="meta-line">One binary, with the database and the message bus inside it by default: nothing else to install.</p>
+    <div class="ctas">
+      <a class="btn btn-primary" href="#connect">Connect your agents</a>
+      <a target="_blank" rel="noopener noreferrer" class="btn btn-ghost" href="https://github.com/flightdeckhq/flightdeck">View on GitHub</a>
+    </div>
   </div>
 
   <div class="strip" role="group" aria-label="Illustration of the fleet view: four agent rows drifting on a shared timeline with LLM calls, tool uses, MCP events, policy events, and a kill event, under an orange dashed now cursor. Hover any event for details; hovering pauses the stream.">
@@ -528,30 +617,50 @@
 
   <section id="quickstart">
     <p class="sec-label mono">Quickstart</p>
+    <h2 class="qs-step mono r"><b>1</b>Install and run Flightdeck</h2>
+    <div class="qs-rows r">
+      <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-terminal"/></svg>Linux and macOS</h3>
+      <div class="codebox one">
+<pre id="code-qs-unix">curl -fsSL https://flightdeck-hq.com/<wbr>install.sh | sh</pre>
+        <button class="copy mono" type="button" data-for="code-qs-unix">Copy</button>
+      </div>
+      <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-windows"/></svg>Windows <span>(PowerShell)</span></h3>
+      <div class="codebox one">
+<pre id="code-qs-win">irm https://flightdeck-hq.com/<wbr>install.ps1 | iex</pre>
+        <button class="copy mono" type="button" data-for="code-qs-win">Copy</button>
+      </div>
+    </div>
+    <p class="qs-note r">Then start it with <code>flightdeck</code>. The dashboard is at <code>http://localhost:4000</code>, and nothing needs configuring: agents on the same machine find it without a server address or a token. Homebrew, pip and Docker install the same binary; the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck#install">README</a> has them, and <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/blob/main/guides/windows.md">guides/windows.md</a> the rest for Windows.</p>
+
+    <h2 class="qs-step mono r" id="connect"><b>2</b>Connect your agents</h2>
     <div class="qs">
       <div class="qs-col r">
-        <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-claude"/></svg>Coding agents</h3>
-        <p class="hint">Inside Claude Code, install the plugin from the repo's marketplace:</p>
-        <div class="codebox">
+        <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-claude"/></svg>Claude Code</h3>
+        <p class="hint">In Claude Code, install the plugin:</p>
+        <div class="codebox multi">
 <pre id="code-plugin">/plugin marketplace add flightdeckhq/flightdeck
 /plugin install flightdeck@flightdeck-plugins
 /reload-plugins</pre>
-          <button class="copy mono" data-for="code-plugin">Copy</button>
+          <button class="copy mono" type="button" data-for="code-plugin">Copy</button>
         </div>
+        <p class="hint after">The session appears in the fleet view within seconds.</p>
       </div>
-      <div class="qs-col r">
-        <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-python"/></svg>Production agents</h3>
-        <p class="hint">Add the sensor to your entrypoint. Nothing else changes:</p>
-        <div class="codebox">
+      <div class="qs-col r" data-rd=".05s">
+        <h3><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-python"/></svg>Python agents</h3>
+        <p class="hint">Install the sensor, then add these lines at the top of your entrypoint:</p>
+        <div class="codebox multi">
 <pre id="code-sensor"><span class="c"># pip install flightdeck-sensor</span>
 import flightdeck_sensor
-flightdeck_sensor.init(server="...", token="...")
+
+flightdeck_sensor.init()
 flightdeck_sensor.patch()</pre>
-          <button class="copy mono" data-for="code-sensor">Copy</button>
+          <button class="copy mono" type="button" data-for="code-sensor">Copy</button>
         </div>
+        <p class="hint after">Nothing else in your code changes. Every call through the Anthropic or OpenAI SDK or litellm, directly or inside a framework, is reported, with prompt capture off until you turn it on.</p>
       </div>
     </div>
-    <p class="qs-foot r">Run Flightdeck itself with <code>curl -fsSL https://flightdeck-hq.com/install.sh | sh</code> (on Windows, in PowerShell: <code>irm https://flightdeck-hq.com/install.ps1 | iex</code>) and then <code>flightdeck</code>, dashboard on <code>localhost:4000</code>. <svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-docker"/></svg>Docker Compose and a <svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-helm"/></svg>Helm chart cover production. Full walkthrough in the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck#readme">README</a>.</p>
+    <p class="qs-note r">For a Flightdeck on another machine, set <code>FLIGHTDECK_SERVER</code> to its address and <code>FLIGHTDECK_TOKEN</code> to a token minted under <strong>Settings &rarr; Access tokens</strong>: the plugin and the sensor take the same two values.</p>
+    <p class="qs-foot r"><svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-docker"/></svg>Docker Compose and a <svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-helm"/></svg>Helm chart run the same binary in production; the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/blob/main/guides/self-hosting.md">self-hosting guide</a> has both. Full walkthrough in the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck#readme">README</a>.</p>
   </section>
 
 </main>
@@ -602,6 +711,31 @@ flightdeck_sensor.patch()</pre>
         });
       });
     });
+
+    // Install tabs: arrow keys, Home and End move between platforms; Windows visitors start on Windows.
+    var tabs = [].slice.call(document.querySelectorAll('.install [role="tab"]'));
+    function selectTab(t, focus){
+      tabs.forEach(function(x){
+        var on = x === t;
+        x.setAttribute('aria-selected', on ? 'true' : 'false');
+        x.tabIndex = on ? 0 : -1;
+        document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+      });
+      if (focus) t.focus();
+    }
+    tabs.forEach(function(t, i){
+      t.addEventListener('click', function(){ selectTab(t); });
+      t.addEventListener('keydown', function(e){
+        var n = null;
+        if (e.key === 'ArrowRight') n = tabs[(i + 1) % tabs.length];
+        else if (e.key === 'ArrowLeft') n = tabs[(i - 1 + tabs.length) % tabs.length];
+        else if (e.key === 'Home') n = tabs[0];
+        else if (e.key === 'End') n = tabs[tabs.length - 1];
+        if (n) { e.preventDefault(); selectTab(n, true); }
+      });
+    });
+    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    if (/^win/i.test(plat) || /Windows NT/.test(navigator.userAgent)) selectTab(document.getElementById('tab-win'));
 
     var lb = document.getElementById('lightbox');
     var lbV = document.getElementById('lb-video');

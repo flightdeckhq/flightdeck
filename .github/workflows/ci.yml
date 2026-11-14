@@ -1229,7 +1229,25 @@ jobs:
         with:
           version: v3.16.2
 
-      - name: helm lint, every supported shape and every refusal
+      # Validates every shape the chart test renders against the
+      # Kubernetes schemas (strict: an unknown field fails). Pinned by
+      # version, and the archive checked against the checksum the
+      # release publishes before anything in it runs.
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.8.0
+          KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: helm lint, every supported shape and every refusal, and their schemas
+        env:
+          REQUIRE_KUBECONFORM: "1"
         run: scripts/helm-chart-test.sh
 
   # Schema-validate the Claude Code plugin marketplace manifest. The

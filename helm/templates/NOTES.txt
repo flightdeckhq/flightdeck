@@ -1,5 +1,18 @@
 {{- $name := include "flightdeck.componentName" (dict "root" . "component" "flightdeck") -}}
+{{- if .Release.IsUpgrade }}
+Flightdeck is upgraded: the StatefulSet {{ $name }} in namespace {{ .Release.Namespace }}
+now runs on {{ include "flightdeck.databaseIdentity" . }}.
+
+The chart never moves data between databases. If this release ran on
+another database before this upgrade, its data is still there (a volume
+claim, or the other server) and the pods do not read it: they run on
+the database above, as it is. When the chart can read the running
+release it refuses such an upgrade unless allowDatabaseChange=true; a
+release installed by an earlier chart, or rendered without access to
+the cluster, is not checked.
+{{- else }}
 Flightdeck is starting as the StatefulSet {{ $name }} in namespace {{ .Release.Namespace }}.
+{{- end }}
 
   Database  {{ if eq (include "flightdeck.database" .) "sqlite" }}SQLite, on each pod's own volume{{ else if .Values.postgres.externalUrl }}Postgres (postgres.externalUrl){{ else }}Postgres (the chart's own StatefulSet){{ end }}
   Bus       {{ if .Values.nats.externalUrl }}NATS (nats.externalUrl){{ else if include "flightdeck.natsEnabled" . }}NATS (the chart's cluster of {{ .Values.nats.replicas }}){{ else }}embedded in the pod{{ end }}

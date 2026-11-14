@@ -10840,6 +10840,68 @@ to the stream in place, and a release that moves from SQLite to
 Postgres, or onto a shared NATS, never leaves a running pod on the old
 database beside new pods on the new one.
 
+Every secret the chart needs can come from a value or from a Secret
+the operator created (`postgres.externalUrlSecret`,
+`postgres.passwordSecret`, `nats.externalUrlSecret`,
+`nats.auth.tokenSecret`: a name and a key), never both, and the render
+refuses a Secret given for something the chart does not run. The
+chart's own Secret carries only what came from values. A URL from the
+operator's Secret is read into the pod's env as it is; a password or
+token from one is read into `FD_POSTGRES_PASSWORD` or `FD_NATS_TOKEN`,
+and the kubelet expands it into the URL the chart writes in the pod
+spec, so such a value must be URL-safe (the chart cannot encode what
+it does not see). The checksum annotations cover the chart's Secret,
+not the operator's, so a change to those needs a restart of the pods.
+`flightdeck.extraEnv` goes into the ConfigMap in plain text, so the
+render refuses a secret there (the database and NATS URLs, the
+dashboard token, any name ending in `_PASSWORD` or `_TOKEN`) and any
+key the chart sets itself; `flightdeck.extraEnvFrom` adds env sources
+after the chart's own.
+
+The StatefulSet carries the database the release runs on as the
+annotation `flightdeck/database` (`sqlite`, the chart's Postgres, an
+external one named by host, port and database, never its credentials,
+or the Secret its URL comes from). An upgrade reads it from the
+running StatefulSet with `lookup` and fails when the database would
+change, unless `allowDatabaseChange=true`: the chart does not move
+data, so such an upgrade starts the pods on the new database as it is.
+`lookup` answers nothing when the render cannot read the cluster
+(`helm template`, a client-side dry run, a GitOps tool that renders
+offline) and a StatefulSet of an earlier chart has no annotation, so
+neither is checked; the notes of every upgrade name the database. The
+chart does not generate the bundled Postgres's password: a generated
+value would change on every render that cannot read the cluster, and
+Postgres takes a password only when it creates its database.
+
+Every pod runs under the runtime's default seccomp profile, as a
+non-root user, with no capabilities, no privilege escalation and a
+read-only root filesystem: the flightdeck pod with an `emptyDir` at
+`/tmp`, the bundled Postgres with `emptyDir`s at `/var/run/postgresql`
+(its socket and lock) and `/tmp`, NATS writing only its store. The
+three StatefulSets set `fsGroupChangePolicy: OnRootMismatch` and, on
+Kubernetes 1.27 and later where the field exists,
+`persistentVolumeClaimRetentionPolicy` `Retain` on deletion and
+scale-in, the behaviour without it too. The claim templates cannot
+change once installed, so a new size or storage class fails the
+upgrade; the README gives the procedure to grow a claim.
+`image.digest`, `nats.image.digest` and `postgres.image.digest` pin an
+image by digest.
+
+The ConfigMap sets `FLIGHTDECK_ALLOWED_HOSTS` to the names the pods
+are reached by: the Service and the headless Service in their short
+and qualified forms (`<name>`, `.<namespace>`, `.svc`,
+`.svc.<clusterDomain>`), every pod through the headless Service (a
+leading dot admits the names under it), the Ingress host and TLS hosts
+when the Ingress is rendered (a wildcard `*.x` as `.x`), `localhost`
+for a port-forward, and `flightdeck.extraAllowedHosts`. A binary that
+checks the `Host` header answers IP addresses whatever the list, so
+the kubelet's probes, which connect to the pod IP and send it as the
+`Host`, need nothing. An entry the binary would refuse at start fails
+the render. `flightdeck.metrics.networkPolicy`, off by default, lets
+only the peers it names reach the metrics ports, and states the public
+port open to everyone, since a NetworkPolicy that selects a pod denies
+whatever it does not allow.
+
 **Contributor dev stack.** `make dev` (`scripts/dev-stack.sh`) builds
 the binary from the checkout, with the dashboard bundle embedded, and
 runs it in the background on `127.0.0.1:4000`, where the development

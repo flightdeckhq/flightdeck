@@ -5,7 +5,9 @@
 #
 # This file pins production-shaped defaults (three replicas behind an
 # HPA, the NATS cluster they share, resources, the Ingress) and leaves
-# the secrets and the external Postgres URL to the install command.
+# the secrets and the external Postgres URL to the install command, or
+# to Secrets you create: postgres.externalUrlSecret.name and
+# nats.auth.tokenSecret.name in place of the two --set lines above.
 # Several pods need a Postgres, so the render fails until
 # postgres.externalUrl is given (or postgres.enabled=true with
 # postgres.password, for the chart's own single-instance Postgres).

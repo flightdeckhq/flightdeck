@@ -13,6 +13,10 @@ data:
   {{- if .Values.flightdeck.corsOrigin }}
   FLIGHTDECK_CORS_ORIGIN: {{ .Values.flightdeck.corsOrigin | quote }}
   {{- end }}
+  # The host names the pods are reached by (flightdeck.allowedHosts).
+  # A binary that checks the Host header refuses any other name with
+  # 421; IP addresses and localhost are always answered.
+  FLIGHTDECK_ALLOWED_HOSTS: {{ include "flightdeck.allowedHosts" . | quote }}
   # The FLIGHTDECK stream's settings; the binary applies them at startup
   # to the embedded bus or to the shared NATS cluster.
   FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS: {{ include "flightdeck.natsStreamMaxAgeHours" . | quote }}

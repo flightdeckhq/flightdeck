@@ -12,9 +12,19 @@
 # The refusals: several pods on SQLite, several pods without a shared
 # bus, a bundled Postgres without a password or with too few
 # connections, a NATS cluster without a usable token, stream settings
-# the pods would refuse at start.
+# the pods would refuse at start, a secret given twice or where nothing
+# reads it, a secret in the plain-text ConfigMap, a host name the pods
+# could not answer for, a bad image digest, a negative replica count,
+# and an upgrade that would move the release to another database.
+#
+# Every successful render is also checked against the Kubernetes
+# schemas with kubeconform when it is installed (CI installs it and
+# sets REQUIRE_KUBECONFORM=1, which makes its absence a failure).
 #
 # Usage: scripts/helm-chart-test.sh [chart dir]   (default: helm/)
+# Environment:
+#   REQUIRE_KUBECONFORM   1: fail when kubeconform is not on PATH
+#   KUBECONFORM_CACHE     a directory for the downloaded schemas
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,12 +38,23 @@ fail() {
   exit 1
 }
 
+# The Kubernetes versions the renders are validated against: the one
+# helm template assumes without --kube-version, and the oldest the
+# chart's kubeVersion admits for the renders made with --kube-version.
+SCHEMA_VERSION_DEFAULT=1.31.0
+
 # render <name> [helm args...]: the chart rendered to $OUT/<name>.yaml.
+# A render made with --kube-version is validated against that version.
 render() {
-  local name="$1"
+  local name="$1" kube="$SCHEMA_VERSION_DEFAULT" arg prev=""
   shift
   helm template flightdeck "$CHART" "$@" >"$OUT/$name.yaml" 2>"$OUT/$name.err" ||
     { cat "$OUT/$name.err" >&2; fail "$name: the render failed for: $*"; }
+  for arg in "$@"; do
+    [ "$prev" != --kube-version ] || kube="${arg#v}"
+    prev="$arg"
+  done
+  echo "$name $kube" >>"$OUT/renders.list"
 }
 
 # has <name> <extended regex>: the rendered output has a matching line.
@@ -277,5 +298,226 @@ differs default one-external secret
 differs one-bundled three secret
 render sum-password --set postgres.enabled=true --set postgres.password=another-password
 differs one-bundled sum-password secret
+
+# --- Security contexts -------------------------------------------------------
+# Every pod runs under the runtime's default seccomp profile; the
+# bundled Postgres and NATS run read-only, Postgres with emptyDirs for
+# its socket directory and /tmp, and keep fsGroup off every file.
+count three '^          type: RuntimeDefault$' 3
+count three '^        fsGroupChangePolicy: OnRootMismatch$' 3
+count three '^            readOnlyRootFilesystem: true$' 3
+has three '^              mountPath: /var/run/postgresql$'
+count three '^              mountPath: /tmp$' 2
+
+# --- Claims ---------------------------------------------------------------------
+# Retain on delete and on scale-in, stated on every StatefulSet where
+# the field exists (Kubernetes 1.27 and later).
+count three '^  persistentVolumeClaimRetentionPolicy:$' 3
+count three '^    whenDeleted: Retain$' 3
+count three '^    whenScaled: Retain$' 3
+render kube-126 "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=3 --kube-version 1.26.0
+lacks kube-126 'persistentVolumeClaimRetentionPolicy'
+
+# --- Secrets from the operator's own Secrets --------------------------------
+# The bundled Postgres's password and the NATS token from Secrets: the
+# chart's Secret carries neither, nor a URL built from them; the pods
+# build the URLs from env entries read from those Secrets.
+render secret-refs --set postgres.enabled=true --set postgres.passwordSecret.name=pg-creds \
+  --set flightdeck.replicas=2 --set nats.auth.tokenSecret.name=nats-creds --set nats.auth.tokenSecret.key=tok
+lacks secret-refs '^  (POSTGRES_PASSWORD|FLIGHTDECK_DATABASE_URL|FLIGHTDECK_NATS_TOKEN|FLIGHTDECK_NATS_URL):'
+has secret-refs '^  POSTGRES_USER: "flightdeck"$'
+has secret-refs '^            - name: FD_POSTGRES_PASSWORD$'
+has secret-refs '^              value: "postgres://flightdeck:\$\(FD_POSTGRES_PASSWORD\)@flightdeck-postgres:5432/flightdeck\?sslmode=disable"$'
+has secret-refs '^            - name: FD_NATS_TOKEN$'
+has secret-refs '^              value: "nats://\$\(FD_NATS_TOKEN\)@flightdeck-nats-client:4222"$'
+# The Postgres and NATS pods read the same Secrets.
+count secret-refs '^                  name: pg-creds$' 2
+count secret-refs '^                  name: nats-creds$' 2
+has secret-refs '^                  key: tok$'
+lacks secret-refs 'key: (POSTGRES_PASSWORD|FLIGHTDECK_NATS_TOKEN)$'
+# The external URLs from Secrets, read as they are.
+render secret-urls --set postgres.externalUrlSecret.name=db --set flightdeck.replicas=2 \
+  --set nats.externalUrlSecret.name=bus --set nats.externalUrlSecret.key=nats-url
+lacks secret-urls '^  (FLIGHTDECK_DATABASE_URL|FLIGHTDECK_NATS_URL|POSTGRES_USER):'
+has secret-urls '^            - name: FLIGHTDECK_DATABASE_URL$'
+has secret-urls '^                  name: db$'
+has secret-urls '^                  key: url$'
+has secret-urls '^                  key: nats-url$'
+count secret-urls '^kind: StatefulSet$' 1
+has secret-urls '^    flightdeck/database: "postgres from Secret db, key url \(external\)"$'
+# With values only, the flightdeck container has no env entry: the
+# chart's Secret has all.
+render three-flightdeck "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=3 \
+  --show-only templates/flightdeck/statefulset.yaml
+lacks three-flightdeck '^          env:$'
+refuse "are both set: give the database URL once" "${EXTERNAL_PG[@]}" --set postgres.externalUrlSecret.name=db
+refuse "are both set: give the password once" "${PG[@]}" --set postgres.passwordSecret.name=pg-creds
+refuse "postgres.passwordSecret is set, but the chart runs no Postgres" --set postgres.passwordSecret.name=pg-creds
+refuse "postgres.passwordSecret is set, but the chart runs no Postgres" "${EXTERNAL_PG[@]}" \
+  --set postgres.enabled=true --set postgres.passwordSecret.name=pg-creds
+refuse "postgres.passwordSecret.key must name" --set postgres.enabled=true \
+  --set postgres.passwordSecret.name=pg-creds --set postgres.passwordSecret.key=
+refuse "or postgres.passwordSecret.name" --set postgres.enabled=true
+refuse "are both set: give the NATS URL once" "${EXTERNAL_PG[@]}" \
+  --set 'nats.externalUrl=nats://tok@nats.example.com:4222' --set nats.externalUrlSecret.name=bus
+refuse "are both set: give the token once" "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=2 \
+  --set nats.auth.tokenSecret.name=nats-creds
+refuse "nats.auth.tokenSecret is set, but the chart runs no NATS cluster" --set nats.auth.tokenSecret.name=nats-creds
+refuse "nats.enabled=true and nats.externalUrl (or nats.externalUrlSecret)" "${PG[@]}" \
+  --set nats.enabled=true --set nats.externalUrlSecret.name=bus
+
+# --- Secrets in the plain-text ConfigMap, and its own keys ---------------------
+for name in FLIGHTDECK_DATABASE_URL FLIGHTDECK_NATS_URL FLIGHTDECK_DASHBOARD_TOKEN PGPASSWORD_TOKEN \
+  SOME_PASSWORD flightdeck_nats_token; do
+  refuse "would put a secret in the ConfigMap" --set "flightdeck.extraEnv.$name=x"
+done
+refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_ALLOWED_HOSTS=x
+refuse "is set by the chart from its own value" --set flightdeck.extraEnv.FLIGHTDECK_WORKER_POOL_SIZE=4
+render extra-env --set flightdeck.extraEnv.FLIGHTDECK_LOG_LEVEL=debug \
+  --set 'flightdeck.extraEnvFrom[0].secretRef.name=flightdeck-extra'
+has extra-env '^  FLIGHTDECK_LOG_LEVEL: "debug"$'
+has extra-env '^                name: flightdeck-extra$'
+
+# --- FLIGHTDECK_ALLOWED_HOSTS ---------------------------------------------------
+# The Service (short and qualified), every pod through the headless
+# Service, localhost; in the release's namespace and cluster domain.
+hosts() { sed -n 's/^  FLIGHTDECK_ALLOWED_HOSTS: "\(.*\)"$/\1/p' "$OUT/$1.yaml" | tr ',' '\n'; }
+host() {
+  checks=$((checks + 1))
+  hosts "$1" | grep -qx -- "$2" || fail "$1: FLIGHTDECK_ALLOWED_HOSTS lacks $2 (has: $(hosts "$1" | tr '\n' ' '))"
+}
+no_host() {
+  checks=$((checks + 1))
+  if hosts "$1" | grep -qx -- "$2"; then fail "$1: FLIGHTDECK_ALLOWED_HOSTS has $2"; fi
+}
+for name in localhost flightdeck-flightdeck flightdeck-flightdeck.default flightdeck-flightdeck.default.svc \
+  flightdeck-flightdeck.default.svc.cluster.local .flightdeck-flightdeck-headless \
+  .flightdeck-flightdeck-headless.default .flightdeck-flightdeck-headless.default.svc \
+  .flightdeck-flightdeck-headless.default.svc.cluster.local; do
+  host default "$name"
+done
+# The Ingress names count only when the Ingress is rendered.
+no_host default flightdeck.local
+render hosts-ingress --namespace obs --set clusterDomain=k8s.example. --set ingress.enabled=true \
+  --set ingress.host=Fd.Example.com --set 'ingress.tls[0].hosts[0]=*.tls.example.com' \
+  --set 'ingress.tls[0].hosts[1]=fd.example.com' --set 'flightdeck.extraAllowedHosts[0]=fd.lb.example.net' \
+  --set 'flightdeck.extraAllowedHosts[1]=.corp.example'
+for name in fd.example.com .tls.example.com fd.lb.example.net .corp.example flightdeck-flightdeck.obs.svc.k8s.example \
+  .flightdeck-flightdeck-headless.obs.svc.k8s.example; do
+  host hosts-ingress "$name"
+done
+# One entry per name: fd.example.com is both the host and a TLS host.
+count hosts-ingress 'fd\.example\.com,.*fd\.example\.com(,|")' 0
+render hosts-any --set 'flightdeck.extraAllowedHosts[0]=*'
+host hosts-any '*'
+refuse "is not a host name the pods could answer for" --set 'flightdeck.extraAllowedHosts[0]=https://fd.example.com'
+refuse "is not a host name the pods could answer for" --set 'flightdeck.extraAllowedHosts[0]=fd.example.com:443'
+refuse "is not a host name the pods could answer for" --set ingress.enabled=true --set 'ingress.host=fd_example'
+
+# --- Image digests --------------------------------------------------------------
+DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+render digests "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=2 --set "image.digest=$DIGEST" \
+  --set "nats.image.digest=$DIGEST" --set "postgres.image.digest=$DIGEST"
+has digests "^          image: docker.io/flightdeckhq/flightdeck@$DIGEST\$"
+has digests "^          image: \"docker.io/nats@$DIGEST\"\$"
+has digests "^          image: \"docker.io/postgres@$DIGEST\"\$"
+lacks digests 'image: .*:v?[0-9][^@]*@'
+refuse "image.digest must be sha256:" --set image.digest=latest
+refuse "nats.image.digest must be sha256:" "${PG[@]}" "${NATS_TOKEN[@]}" --set flightdeck.replicas=2 \
+  --set nats.image.digest=sha256:abc
+refuse "postgres.image.digest must be sha256:" "${PG[@]}" --set "postgres.image.digest=${DIGEST^^}"
+
+# --- Replicas ---------------------------------------------------------------------
+refuse "flightdeck.replicas must be 0 or more" --set flightdeck.replicas=-1
+render zero --set flightdeck.replicas=0
+has zero '^  replicas: 0$'
+
+# --- The metrics NetworkPolicy -----------------------------------------------------
+render metrics-policy --set flightdeck.metrics.networkPolicy.enabled=true \
+  --set 'flightdeck.metrics.networkPolicy.from[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring'
+count metrics-policy '^kind: NetworkPolicy$' 1
+has metrics-policy '^              kubernetes.io/metadata.name: monitoring$'
+count metrics-policy '^          port: (9102|9103|9104)$' 3
+# The port of the dashboard and the APIs stays open to everyone.
+has metrics-policy '^    - ports:$'
+has metrics-policy '^          port: 4000$'
+refuse "needs flightdeck.metrics.networkPolicy.from" --set flightdeck.metrics.networkPolicy.enabled=true
+render metrics-policy-off --set flightdeck.metrics.enabled=false --set flightdeck.metrics.networkPolicy.enabled=true
+lacks metrics-policy-off '^kind: NetworkPolicy$'
+
+# --- The database a release runs on ------------------------------------------------
+has default '^    flightdeck/database: "sqlite \(each pod.s volume\)"$'
+has one-bundled '^    flightdeck/database: "postgres flightdeck-postgres \(the chart.s\)"$'
+# Host, port and database of an external Postgres; never its credentials.
+has one-external '^    flightdeck/database: "postgres db.example.com:5432/d \(external\)"$'
+lacks one-external 'flightdeck/database: .*u:p'
+# The upgrade check itself reads the running StatefulSet with lookup,
+# which has no cluster here. Its decision is a helper of its own; a
+# copy of the chart with one more template calls it with the identity
+# a running release would carry.
+WRAP="$OUT/wrap"
+cp -R "$CHART" "$WRAP"
+cat >"$WRAP/templates/zz-database-change.yaml" <<'TPL'
+{{- include "flightdeck.databaseChange" (dict "previous" .Values.testPrevious "current" (include "flightdeck.databaseIdentity" .) "allow" .Values.allowDatabaseChange) -}}
+TPL
+# helm template does not render NOTES.txt, and parses every file it
+# renders as YAML, so the copy carries the notes as a define, emitted
+# as one quoted value.
+{ echo '{{- define "zz.notes" -}}'; cat "$CHART/templates/NOTES.txt"; echo '{{- end -}}'; } >"$WRAP/templates/_zz_notes.tpl"
+cat >"$WRAP/templates/zz-notes.yaml" <<'TPL'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zz-notes
+data:
+  notes: {{ include "zz.notes" . | quote }}
+TPL
+wrapped() { helm template flightdeck "$WRAP" "$@"; }
+change_refused() {
+  checks=$((checks + 1))
+  if wrapped "$@" >"$OUT/wrap.yaml" 2>"$OUT/wrap.err"; then
+    fail "an upgrade that changes the database rendered, want a refusal, for: $*"
+  fi
+  grep -q "the chart does not move data" "$OUT/wrap.err" || { cat "$OUT/wrap.err" >&2; fail "the refusal does not say why"; }
+}
+change_allowed() {
+  checks=$((checks + 1))
+  wrapped "$@" >"$OUT/wrap.yaml" 2>"$OUT/wrap.err" || { cat "$OUT/wrap.err" >&2; fail "the render failed for: $*"; }
+}
+change_refused --set 'testPrevious=sqlite (each pod'"'"'s volume)' "${PG[@]}"
+change_refused --set 'testPrevious=postgres flightdeck-postgres (the chart'"'"'s)' "${EXTERNAL_PG[@]}"
+change_refused --set 'testPrevious=postgres db.example.com:5432/d (external)' \
+  --set 'postgres.externalUrl=postgres://u:p@other.example.com:5432/d'
+# The same database (another password included), the flag, and a
+# release that recorded nothing all go ahead.
+change_allowed --set 'testPrevious=postgres db.example.com:5432/d (external)' \
+  --set 'postgres.externalUrl=postgres://u:other@db.example.com:5432/d?sslmode=require'
+change_allowed --set 'testPrevious=sqlite (each pod'"'"'s volume)' "${PG[@]}" --set allowDatabaseChange=true
+change_allowed "${PG[@]}"
+# The notes of an upgrade name the database and say the data stays.
+wrapped --is-upgrade "${PG[@]}" --show-only templates/zz-notes.yaml >"$OUT/notes-upgrade.yaml"
+has notes-upgrade 'now runs on postgres flightdeck-postgres \(the chart.s\)\.'
+has notes-upgrade 'never moves data between databases'
+wrapped "${PG[@]}" --show-only templates/zz-notes.yaml >"$OUT/notes-install.yaml"
+lacks notes-install 'never moves data'
+has notes-install 'Flightdeck is starting as the StatefulSet flightdeck-flightdeck'
+
+# --- Schemas -----------------------------------------------------------------------
+# Every successful render against the Kubernetes schemas: strict (an
+# unknown field fails), at the version it was rendered for.
+if command -v kubeconform >/dev/null 2>&1; then
+  cache="${KUBECONFORM_CACHE:-$OUT/schemas}"
+  mkdir -p "$cache"
+  while read -r name version; do
+    checks=$((checks + 1))
+    kubeconform -strict -summary -cache "$cache" -kubernetes-version "$version" "$OUT/$name.yaml" \
+      >"$OUT/kubeconform.out" 2>&1 || { cat "$OUT/kubeconform.out" >&2; fail "$name: kubeconform (Kubernetes $version)"; }
+  done <"$OUT/renders.list"
+  echo "kubeconform: $(wc -l <"$OUT/renders.list") renders valid ($(kubeconform -v))"
+elif [ "${REQUIRE_KUBECONFORM:-0}" = 1 ]; then
+  fail "kubeconform is not on PATH, and REQUIRE_KUBECONFORM=1"
+else
+  echo "kubeconform not installed: the renders were not checked against the schemas"
+fi
 
 echo "helm chart: $checks checks passed"

@@ -17,16 +17,39 @@
 # cluster (nats.auth.token required) unless nats.externalUrl names one.
 # values.prod.yaml is that shape.
 #
+# Secrets. Every secret the chart needs (the database URL, the bundled
+# Postgres's password, the NATS token, an external NATS URL) can come
+# from a Secret you create instead of a value: the *Secret: {name, key}
+# entries below. Then nothing secret sits in a values file or in the
+# Helm release. Give one source for each, the value or the Secret; the
+# render refuses both.
+#
 # image.tag is pinned to the release this chart ships with
 # (scripts/version.py keeps it in step with the VERSION file).
 
 nameOverride: ""
 fullnameOverride: ""
 
+# The cluster's DNS domain, for the in-cluster names the pods answer
+# for (FLIGHTDECK_ALLOWED_HOSTS, below).
+clusterDomain: cluster.local
+
+# The chart refuses an upgrade that moves the release to another
+# database (SQLite to Postgres, the chart's Postgres to an external one,
+# one external Postgres to another) when it can see the change: the
+# data is not moved, and the pods would start on an empty database.
+# true lets such an upgrade go ahead. See "Changing the database" in
+# the README.
+allowDatabaseChange: false
+
 image:
   registry: docker.io
   repository: flightdeckhq/flightdeck
   tag: "v0.8.0"
+  # sha256:<64 hex digits> pins the image to that digest
+  # (<repository>@<digest>; the tag is then not used). The NATS and
+  # Postgres images take one too.
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -55,6 +78,19 @@ flightdeck:
   # never on the Service the Ingress routes to.
   metrics:
     enabled: true
+    # A NetworkPolicy on the flightdeck pods that lets the metrics ports
+    # be reached only from the peers in `from` (NetworkPolicy peers: a
+    # namespaceSelector, a podSelector, or both), and leaves the port
+    # of the dashboard and the APIs open to everyone. Off by default,
+    # since it needs a CNI that enforces NetworkPolicy and the peers of
+    # your scraper; on, `from` must name at least one. Example:
+    #   from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: monitoring
+    networkPolicy:
+      enabled: false
+      from: []
   # Access-Control-Allow-Origin of the query API. Empty keeps the
   # binary's default ("*"); the dashboard is served from the same
   # origin, so the API needs no cross-origin caller. Set it to the
@@ -69,16 +105,41 @@ flightdeck:
   workerPoolSize: 10
   shutdownTimeoutSecs: 30
   # Further FLIGHTDECK_* tunables (ARCHITECTURE.md, Deployment), as
-  # name: value.
+  # name: value. They land in the ConfigMap, in plain text, so the
+  # render refuses a secret there: FLIGHTDECK_DATABASE_URL,
+  # FLIGHTDECK_NATS_URL, FLIGHTDECK_DASHBOARD_TOKEN and any name ending
+  # in _PASSWORD or _TOKEN. Those come from the Secret values above, or
+  # from a Secret of yours through extraEnvFrom. It also refuses a name
+  # the chart sets itself, which would be a duplicate key.
   extraEnv: {}
+  # More env sources for the flightdeck container, as envFrom entries
+  # (secretRef or configMapRef); they come after the chart's own, so a
+  # key in them overrides the chart's. Example:
+  #   extraEnvFrom:
+  #     - secretRef:
+  #         name: flightdeck-extra
+  extraEnvFrom: []
+  # Host names the binary answers for, besides the ones the chart lists
+  # (FLIGHTDECK_ALLOWED_HOSTS): the Service and headless Service in
+  # their short and qualified forms, every pod's DNS name, the Ingress
+  # host and TLS hosts, and localhost. A request whose Host header names
+  # anything else is refused with 421 by binaries that check it; IP
+  # addresses, and so the kubelet's probes, are always answered. Add the
+  # names other clients use (another Ingress, a LoadBalancer's DNS
+  # name). A leading dot admits every name under one (.example.com);
+  # "*" turns the check off.
+  extraAllowedHosts: []
   # The volume of each pod, a PersistentVolumeClaim of its own, mounted
   # at /data; the binary's data dir is the directory `flightdeck` in it: the SQLite database when the database is SQLite, the embedded
   # NATS JetStream store when the pods share no bus, and secrets.json
   # (the dashboard token the pod minted). Sized for the embedded bus's
   # default 5 GiB stream limit beside a database of a few GiB; a pod on
   # Postgres and a shared NATS keeps only secrets.json here. The claim
-  # outlives `helm uninstall`, as every StatefulSet claim does: delete
-  # it to delete the data.
+  # outlives `helm uninstall` and scaling in (the StatefulSet's claim
+  # retention policy says Retain for both): delete it to delete the
+  # data. size and storageClassName are fixed once installed: a
+  # StatefulSet's claim template cannot change, so an upgrade that
+  # changes either fails. The README says how to grow the claims.
   data:
     size: "10Gi"
     storageClassName: ""
@@ -122,9 +183,14 @@ nats:
   # no NATS of its own and keeps the URL in the Secret. The stream
   # settings below still apply: the pods create or update the stream.
   externalUrl: ""
+  # The same URL from a Secret you created, instead of externalUrl.
+  externalUrlSecret:
+    name: ""
+    key: url
   image:
     repository: nats
     tag: "2.14.3-alpine"
+    digest: ""
   # With more than one replica the servers form a NATS cluster over
   # clusterPort (routes between the StatefulSet pods), so a message
   # published on any server reaches a consumer on any other and
@@ -141,6 +207,12 @@ nats:
     # . _ ~ - only, since it is placed in NATS URLs (openssl rand -hex 32).
     # With replicas > 1 the cluster routes authenticate with it as well.
     token: ""
+    # The token from a Secret you created, instead of token. The same
+    # characters only: the chart cannot check a Secret's value, and
+    # the pods place it in the NATS URL as it is.
+    tokenSecret:
+      name: ""
+      key: token
   jetstream:
     fileStore:
       size: "10Gi"
@@ -203,6 +275,10 @@ postgres:
   # connections, so the server needs max_connections of 80 per pod plus
   # what else connects, or a pooler in front; the chart cannot check it.
   externalUrl: ""
+  # The same URL from a Secret you created, instead of externalUrl.
+  externalUrlSecret:
+    name: ""
+    key: url
   # max_connections of the chart's own Postgres. Unset: 80 for every
   # flightdeck pod the chart may run (flightdeck.replicas, or the HPA's
   # maxReplicas) plus 20, which is 100 for one pod. A value below that
@@ -211,12 +287,34 @@ postgres:
   image:
     repository: postgres
     tag: "16.15-alpine"
+    digest: ""
   user: flightdeck
-  # Required with enabled: true (the bundled StatefulSet):
-  # --set postgres.password=<strong-password>, or a values file scoped
-  # to the install. The render fails without it rather than defaulting
-  # to a well-known password every install would share.
+  # Required with enabled: true (the bundled StatefulSet), here or in
+  # passwordSecret: --set postgres.password=<strong-password>, or a
+  # values file scoped to the install. The render fails without it
+  # rather than defaulting to a well-known password every install would
+  # share, and the chart does not generate one: a generated password
+  # would change on every render by a tool that cannot read the
+  # cluster (helm template, Argo CD), and roll the pods with a password
+  # the database never had.
+  #
+  # Postgres takes the password only when it creates its database, on
+  # the first start with an empty volume. Changing this value later
+  # changes what the pods send, not what the database expects, and the
+  # pods then fail to connect; the claim outlives an uninstall, so a
+  # reinstall keeps the old password too. To rotate it, change it in
+  # the database first, then here:
+  #   kubectl -n <ns> exec <release>-postgres-0 -- \
+  #     psql -U flightdeck -d flightdeck -c "ALTER USER flightdeck PASSWORD '<new>'"
+  #   helm upgrade ... --set postgres.password=<new>
   password: ""
+  # The password from a Secret you created, instead of password. Use
+  # letters, digits and - . _ ~ only (openssl rand -hex 24): the chart
+  # cannot percent-encode a value it does not see, and the pods place
+  # it in the database URL as it is.
+  passwordSecret:
+    name: ""
+    key: password
   database: flightdeck
   port: 5432
   sslmode: disable
@@ -261,13 +359,19 @@ serviceAccount:
 # binary refuses a secrets.json that is wider than 0600, so the pod
 # would not start a second time. With OnRootMismatch the kubelet
 # prepares the empty volume once and leaves what the binary writes
-# alone. The bundled NATS and Postgres pods set their own images' users.
+# alone. The runtime's default seccomp profile filters the system calls
+# the binary may make. The bundled NATS and Postgres pods set their own
+# images' users, with the same seccomp profile and fsGroup policy and a
+# read-only root filesystem (Postgres with emptyDirs for its socket
+# directory and /tmp).
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
   fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
 
 # The binary writes under /data/flightdeck, and SQLite's temporary
 # files under /tmp (an emptyDir), so the root filesystem is read-only.

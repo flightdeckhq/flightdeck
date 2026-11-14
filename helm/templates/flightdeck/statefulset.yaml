@@ -18,8 +18,14 @@ metadata:
   name: {{ include "flightdeck.componentName" (dict "root" . "component" $component) }}
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+  annotations:
+    # The database the release runs on. The next upgrade reads it back
+    # and refuses to move the release to another database unless
+    # allowDatabaseChange is true (flightdeck.checkDatabaseChange).
+    flightdeck/database: {{ include "flightdeck.databaseIdentity" . | quote }}
 spec:
   serviceName: {{ include "flightdeck.headlessServiceName" . }}
+  {{- include "flightdeck.pvcRetention" . | nindent 2 }}
   {{- if not .Values.flightdeck.hpa.enabled }}
   replicas: {{ .Values.flightdeck.replicas }}
   {{- end }}
@@ -99,6 +105,15 @@ spec:
                 name: {{ include "flightdeck.configMapName" . }}
             - secretRef:
                 name: {{ include "flightdeck.secretName" . }}
+            {{- with .Values.flightdeck.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with include "flightdeck.secretEnv" . | trim }}
+          # Secrets from the operator's own Secrets (the *Secret values):
+          # the chart's Secret cannot carry them.
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
           # A first start migrates the database and creates the JetStream
           # store before it serves; the startup probe gives that up to
           # five minutes before liveness takes over.

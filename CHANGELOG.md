@@ -925,7 +925,18 @@ All notable changes to Flightdeck are documented here.
   to stay on the chart's Postgres**: it was implied before, and without
   it the pods start on an empty SQLite database (the Postgres volume
   claim stays). `kubectl logs <release>-flightdeck-0` shows the token
-  of the first start, as the install notes say.
+  of the first start, as the install notes say. Every secret can come
+  from a Secret you created (`postgres.externalUrlSecret`,
+  `postgres.passwordSecret`, `nats.externalUrlSecret`,
+  `nats.auth.tokenSecret`) instead of a value. An upgrade that would
+  move the release to another database fails unless
+  `allowDatabaseChange=true`, since the chart does not move data. The
+  pods set `FLIGHTDECK_ALLOWED_HOSTS` to the Service, pod and Ingress
+  names (`flightdeck.extraAllowedHosts` adds more). Every pod runs under
+  the default seccomp profile, the bundled Postgres and NATS with a
+  read-only root filesystem; images can be pinned by digest;
+  `flightdeck.extraEnvFrom` and an optional NetworkPolicy for the
+  metrics ports are new, and `flightdeck.extraEnv` refuses secrets.
 - **`make dev` runs the binary from source.** The contributor dev
   stack is the `flightdeck` binary built from the checkout, with the
   dashboard embedded, on `127.0.0.1:4000` beside one Postgres

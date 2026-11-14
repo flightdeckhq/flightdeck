@@ -2466,6 +2466,46 @@ Consumed alongside `parent_session_id` by the dashboard's
 swimlane connectors and the SessionDrawer Sub-agents tab to render
 the parent's spawn event as the anchor for child rows.
 
+### Tool output
+
+With `capturePrompts` on, a `tool_call`'s content carries the tool's
+response as one `tool_result` block under `response`, whose `content` is
+a string of at most 2000 characters (`TOOL_OUTPUT_MAX_CHARS` in
+`tools.mjs`), marks and lists included. The bound keeps a preview: the
+head of a command's output or of a file read shows what the tool
+returned, while the whole response would be stored again on every tool
+call of a session. The bound counts characters (code points), so a cut
+never splits one.
+
+- A string response (plain text) is stored as that text; over the
+  bound it keeps its first 1999 characters followed by `…`.
+- Any other response (Bash's `{stdout, stderr, interrupted, isImage,
+  noOutputExpected}`, Read's `{type, file: {filePath, content, …}}`,
+  Grep's, Glob's, Edit's, an Agent's report, a list of content blocks)
+  is stored as its JSON text, and stays valid JSON over the bound:
+  every string and every list longer than one common length is cut to
+  it, the largest length at which the text fits, so short values (a
+  stderr line, a path, a status) stay whole and the long ones give up
+  the characters. A cut string ends with `…`; a list whose trailing
+  elements were dropped ends with a `"…"` element; the object that
+  holds a cut value lists it in `truncated`, in key order, the same
+  convention as a cut tool input:
+  `{"stdout": "=== RUN …", "stderr": "", "interrupted": false, …,
+  "truncated": ["stdout"]}`. A Read's list is on its `file` object, a
+  cut text block's on the block. The list replaces a `truncated` field
+  the tool set itself (Glob's flag) only when one of that object's
+  values was cut.
+- A response whose structure alone is over the bound (hundreds of
+  keys), or that nests deeper than 32 levels, is stored as
+  `{"text": "<the head of its JSON text>…", "truncated": ["text"]}`.
+
+A response at or under the bound is stored whole, with no `truncated`.
+A tool event rebuilt from the transcript (see Tool calls and failures)
+takes the response as the text of the transcript's `tool_result`, which
+is cut as a string. An `mcp_tool_call` stores its result in
+`tool_output` as the server returned it, within the event body limit
+(see Configuration).
+
 ### Tool calls and failures
 
 Every `PostToolUse` and every `PostToolUseFailure` hook first flushes
@@ -9663,7 +9703,10 @@ No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a
 whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
-is all-or-nothing per session.
+is all-or-nothing per session. The plugin keeps the head of each tool's
+output, at most 2000 characters cut inside its structure so it stays
+valid JSON (see Plugin > Tool output); that is a size bound, not a
+filter.
 
 The plugin and the sensor cut captured content that would take an
 event past the 768 KiB body limit, marking each cut string (see

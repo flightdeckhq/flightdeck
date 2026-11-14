@@ -2509,16 +2509,38 @@ message bodies, sub-agent contexts) is dropped. Returns `null` if no
 whitelisted field was present. Raw file bodies written by `Write` /
 `Edit` are never forwarded. The bounds count characters (code points),
 so a cut never splits one. A cut value keeps its first characters and
-ends with `…`, and the sanitized input lists every cut field, in the
-order `command`, `query`, `pattern`, `prompt`, as `truncated`
-(`{"command": "git log --oneline … | head…", "truncated":
-["command"]}`): a command cut mid-way does not read as the whole
-command, in the event's `tool_input` or in the Prompts tab, which shows
-the same object. A value at its bound is sent whole, with no `truncated`.
-The same input in a permission or notification `session_signal` is cut
+ends with `…`, so a command cut mid-way does not read as the whole
+command, in the event's `tool_input` or in the Prompts tab. A value at
+its bound is sent whole. The sanitized input holds the tool's own keys
+only: which values were cut travels beside it (see Cut values in tool
+content below), never inside it, where it would read as one of the
+tool's arguments and could collide with an argument of that name. The
+same input in a permission or notification `session_signal` is cut
 again to `signal_data`'s 256 bytes; a value that bound cuts ends with
-`…` too, and `signal_data.truncated` names the cut fields, comma-separated,
-since `signal_data` holds scalars only.
+`…` too, and `signal_data.truncated` names the cut fields,
+comma-separated, since `signal_data` is Flightdeck's own structure and
+holds scalars only.
+
+### Cut values in tool content
+
+A content block the plugin cut values of lists them in `truncated`,
+beside the block's data: an array of RFC 6901 JSON Pointers, each to a
+value that ends with `…` because the plugin cut it, in the order the
+plugin cut them. A `tool_use` block's pointers are relative to its
+`input`:
+
+```json
+{"type": "tool_use", "name": "Bash",
+ "input": {"command": "grep -rn tool_input dashboard/src | … | head…"},
+ "truncated": ["/command"]}
+```
+
+A block with nothing cut has no `truncated`. The event's `tool_input`
+string is the JSON of the same sanitized `input`, so it carries no
+`truncated` either; the content block is the one place the list is
+kept. The pointers name the tool's own keys as they are, so a tool
+argument named `truncated` stays an argument, and a key with `/` or
+`~` in it is escaped as RFC 6901 says (`~1`, `~0`).
 
 `is_subagent_call: toolName === "Task"` is emitted on the wire so the
 dashboard can distinguish sub-agent spawns from regular tool calls.
@@ -9699,8 +9721,9 @@ sanitiser is a strict whitelist implemented in
   onto one of these keys never reach the network.
 - String values cut: `prompt` at 100 characters, `command`, `query` and
   `pattern` at 200; `file_path` is sent whole. A cut value ends with `…`
-  and is listed in the input's `truncated` (see Plugin > Tool input
-  sanitisation). The cut happens before JSON serialisation.
+  and is listed in the `tool_use` content block's `truncated`, beside the
+  input (see Plugin > Cut values in tool content). The cut happens
+  before JSON serialisation.
 - Raw file bodies written by `Write` / `Edit` are never forwarded. Those
   tools carry their body as the `content` key, which is not on the
   whitelist.

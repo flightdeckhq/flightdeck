@@ -929,3 +929,21 @@ loopback, so no dev token); SQLite as the dev default (the E2E seeder
 writes Postgres SQL); a NATS container (one Go package needs a server,
 which `scripts/go-db-tests.sh` starts); a hook that pauses the
 in-process workers (test-only code in the product).
+
+## D272 -- A cut tool value is listed beside the content block's data, as JSON Pointers
+
+**Date:** 2026-11-14
+**Decision:** a `tool_use` content block whose input the plugin cut
+carries `truncated` next to `input`: an array of RFC 6901 JSON Pointers,
+relative to `input`, one per value that ends with `…` because it was
+cut (`{"type": "tool_use", "name": "Bash", "input": {...}, "truncated":
+["/command"]}`). The sanitized `input` and the event's `tool_input`
+string hold the tool's own keys only. A cut tool output on a
+`tool_result` block takes the same list. `signal_data.truncated` stays a
+comma-separated list: `signal_data` is Flightdeck's own structure.
+**Why:** the list describes the value, not the tool call. Inside the
+input it read as a tool argument in the dashboard's argument list and in
+`tool_input`, and a tool with an argument named `truncated` would lose
+it. Pointers name nested values and escape any key.
+**Rejected alternative:** a `truncated` key inside the tool's own input
+or output.

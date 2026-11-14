@@ -4,8 +4,11 @@
 -- receipt makes the attach idempotent per id. Attach records it in the
 -- same transaction as the attach, with the answer it gave; a copy whose
 -- id is here revives nothing, writes no session_attachments row and is
--- answered alike. RecordStart sets start_seq once, so a copy's later
--- stream sequence never replaces the first copy's. session_id has no
+-- answered alike. start_seq keeps the lowest stream sequence a copy of
+-- the start was published at (ingestion's RecordStart and the worker's
+-- session upsert both keep it), so a copy's later sequence never
+-- replaces the first copy's on the session row. A start reusing another
+-- session's id is not recorded. session_id has no
 -- foreign key: a session's first start is received before the worker
 -- creates its row. Attach deletes receipts older than 50 hours, past
 -- which no copy passes ingestion's clock-skew check.

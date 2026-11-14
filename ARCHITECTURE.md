@@ -3670,10 +3670,16 @@ control plane honours end-to-end:
    below the one recorded (in one transaction, the receipt locked on
    Postgres), stamps the row only then, and when a copy published later
    had stamped first, puts the lower sequence back on the row where the
-   copy's still stands, so a copy's later sequence never replaces the
-   first copy's. The copy is still published, since the
-   first copy's publish may have failed after the attach, and the worker
-   stores the event once (`(id, occurred_at)`). A receipt is kept 50
+   copy's still stands. The worker keeps the same rule: it drops a copy
+   whose id is already stored before any side effect, and when two
+   copies of one start are processed at once (neither stored yet), its
+   session upsert takes the lower sequence from the receipt, or records
+   its own there and puts the row back from the higher one
+   (`ClaimStartSeq`, `LowerStartSeq`), so a copy's later sequence never
+   replaces the first copy's at ingestion or at the worker. The copy is
+   still published, since the first copy's publish may have failed after
+   the attach, and the worker stores the event once (`(id,
+   occurred_at)`). A receipt is kept 50
    hours: ingestion refuses an event dated more than 48 hours back or 5
    minutes ahead, so a copy of a start first received earlier than that
    can no longer pass validation; `Attach` deletes older receipts. A
@@ -5031,7 +5037,10 @@ five focused functions:
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
    `closed_seq` is greater than this start's stream sequence, which stays
-   closed; records the start's sequence in `start_seq`. Refreshes
+   closed; records the start's sequence in `start_seq`, the greater of
+   the stored and this start's, except that the copies of one start
+   (one event id with a receipt) leave the lowest of their sequences
+   (`ClaimStartSeq` before the upsert, `LowerStartSeq` after). Refreshes
    identity columns from the event payload; COALESCE and CASE branches
    let a lazy-created row absorb the real session_start data when it
    arrives. Real values are write-once; only the `"unknown"` sentinel is
@@ -5688,8 +5697,10 @@ CREATE INDEX session_start_receipts_received_idx ON session_start_receipts (rece
 
 One row per `session_start` event id ingestion has attached (see
 Session attachment flow): the session it started, whether it attached
-to an existing row, and the lowest stream sequence a copy's
-re-attachment stamp recorded. A resent copy of the start (same session)
+to an existing row, and the lowest stream sequence a copy of the start
+was published at, recorded by ingestion's re-attachment stamp or by the
+worker's session upsert, whichever handled a copy first. A resent copy
+of the start (same session)
 finds its row and changes nothing. `session_id`
 carries no foreign key: a session's first start is received before the
 worker creates the session row. Rows older than 50 hours are deleted by

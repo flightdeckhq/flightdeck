@@ -4,7 +4,7 @@
     <img alt="Flightdeck" src="dashboard/public/assets/flightdeck-lockup-light.svg" width="280">
   </picture>
   <p><strong>See and control every AI agent you run, from one self-hosted binary.</strong></p>
-  <p>An observability and control plane for AI agents: every LLM, tool and MCP call on one live dashboard, with token budgets, MCP server policy and a kill switch.</p>
+  <p>An observability and control plane for AI agents: every LLM, tool and MCP call as it happens, with token budgets, MCP policy and a kill switch.</p>
   <p>
     <a href="#what-you-get">What it is</a> · <a href="#install">Quickstart</a> · <a href="#coverage">Coverage</a> · <a href="#self-hosting">Self-hosting</a> · <a href="https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap">Roadmap</a>
     &nbsp;

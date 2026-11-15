@@ -83,9 +83,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	s.log(argv)
 
 	steps := map[string]string{
-		"--version":                      "version",
-		"plugin list --json":             "list",
-		"plugin marketplace list --json": "marketplace-list",
+		"--version":                                             "version",
+		"plugin configure --help":                               "configure-help",
+		"plugin marketplace add --help":                         "marketplace-add-help",
+		"plugin list --json":                                    "list",
+		"plugin marketplace list --json":                        "marketplace-list",
 		"plugin marketplace add flightdeckhq/flightdeck --json": "marketplace-add",
 		"plugin install " + plugin + " --scope user --json":     "install",
 		"plugin enable " + plugin:                               "enable",
@@ -128,6 +130,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if listed(os.Getenv("FAKE_CLAUDE_FAIL"), step) {
 		return s.fail("simulated " + step + " failure")
 	}
+	s.old = os.Getenv("FAKE_CLAUDE_OLD_CLI") != ""
 	return s.run(stdin)
 }
 
@@ -135,6 +138,74 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 type stand struct {
 	state, step string
 	out, errw   io.Writer
+	// old is FAKE_CLAUDE_OLD_CLI: the stand-in answers as Claude Code
+	// 2.1.283, which has no `plugin configure` and no --json on `plugin
+	// marketplace add`.
+	old bool
+}
+
+// The help texts, as the shell stand-in prints them: Claude Code
+// 2.1.283's for `plugin configure --help` (the help of `claude plugin`,
+// since it has no configure command) and 2.1.325's, and `plugin
+// marketplace add --help` around the --json line 2.1.283 lacks.
+const (
+	oldConfigureHelp = `Usage: claude plugin|plugins [options] [command]
+
+Manage Claude Code plugins
+
+Options:
+  -h, --help                           Display help for command
+
+Commands:
+  disable [options] [plugin]           Disable an enabled plugin
+  enable [options] <plugin>            Enable a disabled plugin
+  install|i [options] <plugin>         Install a plugin from available
+                                       marketplaces (use plugin@marketplace for
+                                       specific marketplace)
+  list [options]                       List installed plugins
+  marketplace                          Manage Claude Code marketplaces
+  uninstall|remove [options] <plugin>  Uninstall an installed plugin
+  update [options] <plugin>            Update a plugin to the latest version
+                                       (restart required to apply)
+`
+	configureHelp = `Usage: claude plugin configure [options] <plugin>
+
+Show a plugin's options and which are unset, or save values from stdin with
+--values-stdin
+
+Options:
+  -h, --help      Display help for command
+  --json          Output as JSON
+  --values-stdin  Read option values from stdin as a JSON object of single-line
+                  strings; options left out keep their values
+`
+	marketplaceAddHelpHead = `Usage: claude plugin marketplace add [options] <source>
+
+Add a marketplace from a URL, path, or GitHub repo
+
+Options:
+  --claudeai           Add the marketplace of this name that claude.ai hosts for
+                       you, by its listed name or its local name (see: claude
+                       plugin marketplace list)
+  -h, --help           Display help for command
+`
+	marketplaceAddHelpJSON = `  --json               Print one machine-readable result line as the last line
+                       on stdout (same exit codes)
+`
+	marketplaceAddHelpTail = `  --scope <scope>      Where to declare the marketplace: user (default),
+                       project, or local
+  --sparse <paths...>  Limit checkout to specific directories via git
+                       sparse-checkout (for monorepos). Example: --sparse
+                       .claude-plugin plugins
+`
+)
+
+// refuse answers as Claude Code 2.1.283's argument parser refuses a
+// command or an option it does not know: a line on stderr, nothing on
+// stdout, exit status 1, before anything runs.
+func (s *stand) refuse(what string) int {
+	_, _ = fmt.Fprintf(s.errw, "error: unknown %s\n", what)
+	return 1
 }
 
 func listed(list, step string) bool {
@@ -201,10 +272,26 @@ func (s *stand) run(stdin io.Reader) int {
 	switch s.step {
 	case "version":
 		version := os.Getenv("FAKE_CLAUDE_VERSION")
-		if version == "" {
+		switch {
+		case version != "":
+		case s.old:
+			version = "2.1.283 (Claude Code)"
+		default:
 			version = "2.1.325 (Claude Code)"
 		}
 		s.printf("%s\n", version)
+	case "configure-help":
+		if s.old {
+			s.printf("%s", oldConfigureHelp)
+		} else {
+			s.printf("%s", configureHelp)
+		}
+	case "marketplace-add-help":
+		s.printf("%s", marketplaceAddHelpHead)
+		if !s.old {
+			s.printf("%s", marketplaceAddHelpJSON)
+		}
+		s.printf("%s", marketplaceAddHelpTail)
 	case "list":
 		other := `{"id":"other@elsewhere","version":"1.0.0","scope":"user","enabled":true,"projectEnabled":false,"hasUserConfig":false}`
 		if s.has("installed") {
@@ -224,6 +311,9 @@ func (s *stand) run(stdin io.Reader) int {
 		}
 		s.printf("[\n  {\"name\":\"flightdeck-plugins\",%s,\"installLocation\":%q}\n]\n", members, filepath.Join(s.state, "marketplace"))
 	case "marketplace-add":
+		if s.old {
+			return s.refuse("option '--json'")
+		}
 		s.write("marketplace", "")
 		s.printf(`{"command":"marketplace-add","outcome":"ok","marketplace":"flightdeck-plugins","message":"Cloning...\nSuccessfully added marketplace: flightdeck-plugins (declared in user settings)"}` + "\n")
 	case "install":
@@ -244,6 +334,9 @@ func (s *stand) run(stdin io.Reader) int {
 		s.remove("disabled")
 		s.printf("Successfully enabled plugin: flightdeck (scope: user)\n")
 	case "configure-read":
+		if s.old {
+			return s.refuse("command 'configure'")
+		}
 		if !s.has("installed") {
 			_, _ = fmt.Fprintf(s.errw, "No installed plugin has the id %q.\n", plugin)
 			return 1
@@ -261,6 +354,10 @@ func (s *stand) run(stdin io.Reader) int {
 		s.printf("{\n  \"pluginId\": %q,\n  \"inputs\": {\"server\": \"%s\", \"token\": \"\", \"enforcement\": \"false\"},\n  \"configured\": [%s]\n}\n",
 			plugin, server, strings.Join(configured, ","))
 	case "configure":
+		// Refused before stdin is read, as the parser refuses it.
+		if s.old {
+			return s.refuse("command 'configure'")
+		}
 		if !s.has("installed") {
 			_, _ = fmt.Fprintf(s.errw, "No installed plugin has the id %q.\n", plugin)
 			return 1

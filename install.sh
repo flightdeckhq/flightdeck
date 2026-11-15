@@ -49,7 +49,9 @@
 #                           script asks on the terminal for each agent it finds,
 #                           and prints the command to run instead when there is
 #                           no terminal. Connecting runs `flightdeck connect`; a
-#                           connect that fails never fails the install.
+#                           connect that fails never fails the install. An agent
+#                           too old to connect is never connected: the script
+#                           says to update it first.
 #   FLIGHTDECK_CONNECT_ASK_TIMEOUT  seconds the connect question waits for an
 #                           answer (default 60; no answer is a no). Only
 #                           scripts/test-install-sh.sh sets it, to shorten a
@@ -218,7 +220,11 @@ on_path() {
 # The binary knows which coding agents it can connect and how
 # (`flightdeck connect`); this script only asks. `flightdeck connect
 # --detected` prints one line per agent found on this machine: its id,
-# connected or not-connected, and its name, separated by tabs.
+# connected, not-connected or outdated (found, too old to connect), and
+# its name, separated by tabs. This script is fetched fresh for every
+# install, so it is never older than the binary it installs; a binary
+# older than it (pinned with VERSION) prints only connected and
+# not-connected, which it reads as before.
 
 TAB="$(printf '\t')"
 # The lines printed after the install's own next step.
@@ -262,6 +268,10 @@ esac
 # marketplace other than this repository's): the installer does not ask
 # then, since its connect passes --yes, which refuses such a plan.
 CONNECT_NEEDS_CONFIRMATION=4
+# `flightdeck connect <id>` exits with this status when the agent is too
+# old for it: running it again fails the same way until the agent is
+# updated, so the script says to update it, not to try again later.
+CONNECT_OUTDATED=5
 
 # ask_yes QUESTION: yes for an empty answer, y or yes; anything else, end
 # of input, or no answer within ASK_TIMEOUT_SECS, is no. POSIX read has
@@ -310,11 +320,24 @@ hint() {
 "
 }
 
+# outdated_hint NAME ID keeps that line for an agent too old to connect:
+# it is updated first. The binary's `flightdeck connect` says how.
+outdated_hint() {
+  CONNECT_HINTS="${CONNECT_HINTS}To connect $1: update it (this version is too old for flightdeck connect), then run flightdeck connect $2
+"
+}
+
 # connect_one BIN ID NAME runs the connect. Its stdin is /dev/null, so
 # nothing it starts can read the rest of a piped script, and its failure
 # is reported, never fatal: the binary is installed either way.
 connect_one() {
   if "$1" connect "$2" --yes </dev/null; then
+    return 0
+  else
+    connect_status=$?
+  fi
+  if [ "$connect_status" -eq "$CONNECT_OUTDATED" ]; then
+    info "Connecting $3 needs a newer $3 (see above): update it, then run flightdeck connect $2"
     return 0
   fi
   info "Connecting $3 did not finish (see above); run it again later: flightdeck connect $2"
@@ -329,6 +352,18 @@ name_of() {
 $detected
 DETECTED
   printf '%s' "$found_name"
+}
+
+# state_of ID prints the agent's state from the detected lines, "" when
+# it has none.
+state_of() {
+  found_state=""
+  while IFS="$TAB" read -r line_id line_state _; do
+    if [ "$line_id" = "$1" ]; then found_state="$line_state"; fi
+  done <<DETECTED
+$detected
+DETECTED
+  printf '%s' "$found_state"
 }
 
 # connect_agents BIN offers to connect each agent found, or connects
@@ -357,6 +392,11 @@ connect_agents() {
         IFS="$old_ifs"
         [ -n "$id" ] || continue
         CONNECT_FOUND=1
+        # Named or not, an agent too old to connect is not connected.
+        if agent_id "$id" && [ "$(state_of "$id")" = outdated ]; then
+          outdated_hint "$(name_of "$id")" "$id"
+          continue
+        fi
         info ""
         if ! agent_id "$id"; then
           info "FLIGHTDECK_CONNECT names something that is not an agent id (lower-case letters, digits and -); skipped it"
@@ -377,6 +417,11 @@ connect_agents() {
     if [ "$state" = connected ]; then
       info ""
       info "$name is already connected to Flightdeck."
+      continue
+    fi
+    # Too old to connect: nothing to plan or ask, whatever the choice.
+    if [ "$state" = outdated ]; then
+      outdated_hint "$name" "$id"
       continue
     fi
     case "$choice" in

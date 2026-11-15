@@ -48,7 +48,9 @@
 #                           script asks for each agent it finds when the session
 #                           is interactive, and prints the command to run
 #                           otherwise. Connecting runs `flightdeck connect`; a
-#                           connect that fails never fails the install.
+#                           connect that fails never fails the install. An agent
+#                           too old to connect is never connected: the script
+#                           says to update it first.
 #
 # winget and scoop manifests are not published yet; this script and the
 # .zip on the release page are the Windows channels.
@@ -67,8 +69,12 @@
     # connects the ones FLIGHTDECK_CONNECT names ($Choice). The binary
     # knows the agents and how to connect them (`flightdeck connect`);
     # `flightdeck connect --detected` prints one line per agent found on
-    # this machine: its id, connected or not-connected, and its name,
-    # separated by tabs. $Ask asks one question and returns $true for yes;
+    # this machine: its id, connected, not-connected or outdated (found,
+    # too old to connect), and its name, separated by tabs. This script is
+    # fetched fresh for every install, so it is never older than the
+    # binary it installs; a binary older than it (pinned with VERSION)
+    # prints only connected and not-connected, which it reads as before.
+    # $Ask asks one question and returns $true for yes;
     # it is $null when no person can answer. Returns what was found and
     # the lines to print after the install's next step. A connect that
     # fails is reported and never throws: the binary is installed either
@@ -98,24 +104,35 @@
             $fields = "$_" -split "`t"
             [pscustomobject]@{ Id = $fields[0]; State = $(if ($fields.Count -gt 1) { $fields[1] } else { '' }); Name = $(if ($fields.Count -gt 2) { $fields[2] } else { $fields[0] }) }
         } | Where-Object { $_.Id -cmatch $agentIdPattern })
+        # `flightdeck connect <id>` exits with this status when the agent
+        # is too old for it: running it again fails the same way until the
+        # agent is updated, so the script says to update it, not to try
+        # again later.
+        $outdated = 5
+        $outdatedHint = { param([string]$Id, [string]$Name) "To connect ${Name}: update it (this version is too old for flightdeck connect), then run flightdeck connect $Id" }
         $connectOne = {
             param([string]$Id, [string]$Name)
             Write-Host ''
             $savedPreference = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
+            $connectStatus = 1
             try {
                 & $Exe connect $Id --yes 2>&1 | ForEach-Object { Write-Host "$_" }
-                $connected = ($LASTEXITCODE -eq 0)
+                $connectStatus = $LASTEXITCODE
             } catch {
                 Write-Host $_.Exception.Message
-                $connected = $false
             } finally {
                 $ErrorActionPreference = $savedPreference
             }
-            if (-not $connected) { Write-Host "Connecting $Name did not finish (see above); run it again later: flightdeck connect $Id" }
+            if ($connectStatus -eq $outdated) {
+                Write-Host "Connecting $Name needs a newer $Name (see above): update it, then run flightdeck connect $Id"
+            } elseif ($connectStatus -ne 0) {
+                Write-Host "Connecting $Name did not finish (see above); run it again later: flightdeck connect $Id"
+            }
         }
         # The value's words, separated by commas or spaces.
         $words = @("$Choice" -split '[,\s]+' | Where-Object { $_ })
+        $hints = @()
         if ($words.Count -gt 0 -and -not ($words.Count -eq 1 -and ($words[0] -eq 'all' -or $words[0] -eq 'none'))) {
             foreach ($id in $words) {
                 $result.Found = $true
@@ -126,16 +143,26 @@
                 }
                 $match = @($agents | Where-Object { $_.Id -eq $id })
                 $name = if ($match.Count -gt 0) { $match[0].Name } else { $id }
+                # Named or not, an agent too old to connect is not connected.
+                if ($match.Count -gt 0 -and $match[0].State -eq 'outdated') {
+                    $hints += & $outdatedHint $id $name
+                    continue
+                }
                 & $connectOne $id $name
             }
+            $result.Hints = $hints
             return $result
         }
-        $hints = @()
         foreach ($agent in $agents) {
             $result.Found = $true
             if ($agent.State -eq 'connected') {
                 Write-Host ''
                 Write-Host "$($agent.Name) is already connected to Flightdeck."
+                continue
+            }
+            # Too old to connect: nothing to plan or ask, whatever the choice.
+            if ($agent.State -eq 'outdated') {
+                $hints += & $outdatedHint $agent.Id $agent.Name
                 continue
             }
             $mode = if ($words.Count -eq 1) { $words[0] } else { '' }

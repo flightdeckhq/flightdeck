@@ -19,8 +19,18 @@
 # Every call appends "argv: <arguments>" to $FAKE_CLAUDE_STATE/calls.log,
 # and a call that reads stdin appends "stdin: <what it read>".
 #
-# Faults, as comma-separated step names (version, list, marketplace-list,
-# marketplace-add, install, enable, configure-read, configure, uninstall):
+# FAKE_CLAUDE_OLD_CLI=1 answers as Claude Code 2.1.283 does, which has no
+# `plugin configure` and no --json on `plugin marketplace add`: --version
+# prints 2.1.283 (unless FAKE_CLAUDE_VERSION says otherwise), `plugin
+# configure --help` prints the help of `claude plugin` with exit status 0,
+# `plugin marketplace add --help` names no --json, and the commands it
+# lacks are refused as its argument parser refuses them, before anything
+# runs: "error: unknown command 'configure'" or "error: unknown option
+# '--json'" on stderr, nothing on stdout, exit status 1.
+#
+# Faults, as comma-separated step names (version, configure-help,
+# marketplace-add-help, list, marketplace-list, marketplace-add, install,
+# enable, configure-read, configure, uninstall):
 #   FAKE_CLAUDE_FAIL   those steps fail as Claude Code fails: a --json
 #                      result line with outcome "failed", a line on
 #                      stderr, exit status 1
@@ -44,6 +54,8 @@ log="$state/calls.log"
 plugin=flightdeck@flightdeck-plugins
 case "$*" in
   --version) step=version ;;
+  "plugin configure --help") step=configure-help ;;
+  "plugin marketplace add --help") step=marketplace-add-help ;;
   "plugin list --json") step=list ;;
   "plugin marketplace list --json") step=marketplace-list ;;
   "plugin marketplace add flightdeckhq/flightdeck --json") step=marketplace-add ;;
@@ -71,9 +83,86 @@ if listed "${FAKE_CLAUDE_FAIL:-}"; then fail "simulated $step failure"; fi
 
 json_value() { sed -n "s/.*\"$1\" *: *\"\\([^\"]*\\)\".*/\\1/p"; }
 
+# old: the stand-in answers as Claude Code 2.1.283. refuse WHAT: its
+# argument parser's refusal of an unknown command or option.
+old=""
+[ -z "${FAKE_CLAUDE_OLD_CLI:-}" ] || old=1
+refuse() {
+  printf 'error: unknown %s\n' "$1" >&2
+  exit 1
+}
+
 case "$step" in
   version)
-    echo "${FAKE_CLAUDE_VERSION:-2.1.325 (Claude Code)}"
+    if [ -n "$old" ]; then
+      echo "${FAKE_CLAUDE_VERSION:-2.1.283 (Claude Code)}"
+    else
+      echo "${FAKE_CLAUDE_VERSION:-2.1.325 (Claude Code)}"
+    fi
+    ;;
+  configure-help)
+    if [ -n "$old" ]; then
+      # No configure command: the help of `claude plugin`, exit status 0.
+      cat <<'HELP'
+Usage: claude plugin|plugins [options] [command]
+
+Manage Claude Code plugins
+
+Options:
+  -h, --help                           Display help for command
+
+Commands:
+  disable [options] [plugin]           Disable an enabled plugin
+  enable [options] <plugin>            Enable a disabled plugin
+  install|i [options] <plugin>         Install a plugin from available
+                                       marketplaces (use plugin@marketplace for
+                                       specific marketplace)
+  list [options]                       List installed plugins
+  marketplace                          Manage Claude Code marketplaces
+  uninstall|remove [options] <plugin>  Uninstall an installed plugin
+  update [options] <plugin>            Update a plugin to the latest version
+                                       (restart required to apply)
+HELP
+    else
+      cat <<'HELP'
+Usage: claude plugin configure [options] <plugin>
+
+Show a plugin's options and which are unset, or save values from stdin with
+--values-stdin
+
+Options:
+  -h, --help      Display help for command
+  --json          Output as JSON
+  --values-stdin  Read option values from stdin as a JSON object of single-line
+                  strings; options left out keep their values
+HELP
+    fi
+    ;;
+  marketplace-add-help)
+    cat <<'HELP'
+Usage: claude plugin marketplace add [options] <source>
+
+Add a marketplace from a URL, path, or GitHub repo
+
+Options:
+  --claudeai           Add the marketplace of this name that claude.ai hosts for
+                       you, by its listed name or its local name (see: claude
+                       plugin marketplace list)
+  -h, --help           Display help for command
+HELP
+    if [ -z "$old" ]; then
+      cat <<'HELP'
+  --json               Print one machine-readable result line as the last line
+                       on stdout (same exit codes)
+HELP
+    fi
+    cat <<'HELP'
+  --scope <scope>      Where to declare the marketplace: user (default),
+                       project, or local
+  --sparse <paths...>  Limit checkout to specific directories via git
+                       sparse-checkout (for monorepos). Example: --sparse
+                       .claude-plugin plugins
+HELP
     ;;
   list)
     other='{"id":"other@elsewhere","version":"1.0.0","scope":"user","enabled":true,"projectEnabled":false,"hasUserConfig":false}'
@@ -96,6 +185,7 @@ case "$step" in
     fi
     ;;
   marketplace-add)
+    [ -z "$old" ] || refuse "option '--json'"
     : >"$state/marketplace"
     printf '{"command":"marketplace-add","outcome":"ok","marketplace":"flightdeck-plugins","message":"Cloning...\\nSuccessfully added marketplace: flightdeck-plugins (declared in user settings)"}\n'
     ;;
@@ -113,6 +203,7 @@ case "$step" in
     echo "Successfully enabled plugin: flightdeck (scope: user)"
     ;;
   configure-read)
+    [ -z "$old" ] || refuse "command 'configure'"
     [ -e "$state/installed" ] || { echo "No installed plugin has the id \"$plugin\"." >&2; exit 1; }
     server=""
     [ ! -e "$state/server" ] || server="$(cat "$state/server")"
@@ -123,6 +214,8 @@ case "$step" in
       "$plugin" "$server" "$configured"
     ;;
   configure)
+    # Refused before stdin is read, as the parser refuses it.
+    [ -z "$old" ] || refuse "command 'configure'"
     [ -e "$state/installed" ] || { echo "No installed plugin has the id \"$plugin\"." >&2; exit 1; }
     body="$(cat)"
     printf 'stdin: %s\n' "$body" >>"$log"

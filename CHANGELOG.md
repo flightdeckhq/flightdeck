@@ -88,6 +88,21 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **`flightdeck connect claude-code` says what to do on an older Claude
+  Code.** On a Claude Code without `claude plugin configure` (2.1.283
+  among them) it failed with `unknown option '--json'`, and the
+  installers advised running it again later, which failed the same way.
+  It now checks, from Claude Code's own help, that the commands it runs
+  are there before it changes anything. On an older Claude Code
+  `flightdeck connect` lists it as `too old`, and a connect (with
+  `--dry-run` or `--yes` too) changes nothing, says to run `claude
+  update` or to install the plugin from inside Claude Code with the two
+  `/plugin` commands, and exits with the new status 5. `--detected`
+  reports such an agent as `outdated`, and the installers then ask
+  nothing and print one line: update it, then run `flightdeck connect
+  claude-code`. A step Claude Code refuses as an unknown command or
+  option says the same, with the version, and `--remove` works on an
+  older Claude Code as before (D279).
 - **LangGraph: a child session opened inside another nests under it.**
   Every LangGraph child named the sensor's session as its parent, also
   for the nodes of a graph invoked from inside a node; such a child now

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,11 +59,23 @@ func newFakeClaude(t *testing.T) *fakeClaude {
 	}
 	t.Setenv("PATH", f.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_STATE", f.state)
-	for _, v := range []string{"FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_HANG", "FAKE_CLAUDE_HANG_CHILD", "FAKE_CLAUDE_HANG_SECS", "FAKE_CLAUDE_VERSION"} {
+	for _, v := range []string{"FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_HANG", "FAKE_CLAUDE_HANG_CHILD", "FAKE_CLAUDE_HANG_SECS", "FAKE_CLAUDE_VERSION", "FAKE_CLAUDE_OLD_CLI"} {
 		t.Setenv(v, "")
 	}
 	return f
 }
+
+// newOldFakeClaude is newFakeClaude answering as Claude Code 2.1.283:
+// no `plugin configure`, no --json on `plugin marketplace add`.
+func newOldFakeClaude(t *testing.T) *fakeClaude {
+	t.Helper()
+	f := newFakeClaude(t)
+	t.Setenv("FAKE_CLAUDE_OLD_CLI", "1")
+	return f
+}
+
+// The commands the check runs before anything else: all read-only.
+var checkCalls = []string{"--version", "plugin configure --help", "plugin marketplace add --help"}
 
 // set creates state files: "marketplace", "installed", "disabled", or
 // "server=<value>" and "token=<value>".
@@ -107,7 +120,7 @@ func (f *fakeClaude) changes(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	for _, a := range f.calls(t) {
-		if a == "--version" || strings.HasSuffix(a, "list --json") || a == "plugin configure "+pluginID+" --json" {
+		if a == "--version" || strings.HasSuffix(a, " --help") || strings.HasSuffix(a, "list --json") || a == "plugin configure "+pluginID+" --json" {
 			continue
 		}
 		out = append(out, a)
@@ -144,8 +157,12 @@ func TestClaudeCode_Detect(t *testing.T) {
 	f := newFakeClaude(t)
 	c := newConnector()
 	det, err := c.Detect(context.Background())
-	if err != nil || !det.Found || det.Version != "2.1.325 (Claude Code)" || !strings.EqualFold(det.Path, f.exe) {
-		t.Fatalf("Detect = %+v, %v; want the stand-in and its version", det, err)
+	if err != nil || !det.Found || det.Version != "2.1.325 (Claude Code)" || !strings.EqualFold(det.Path, f.exe) || det.Outdated != "" {
+		t.Fatalf("Detect = %+v, %v; want the stand-in and its version, not outdated", det, err)
+	}
+	// The version and the check, nothing else.
+	if got := f.calls(t); !slices.Equal(got, checkCalls) {
+		t.Fatalf("Detect ran %q; want %q", got, checkCalls)
 	}
 
 	t.Run("not on PATH", func(t *testing.T) {
@@ -361,6 +378,10 @@ func TestClaudeCode_AFailedStep(t *testing.T) {
 	if !strings.Contains(msg, "`claude plugin install flightdeck@flightdeck-plugins --scope user --json` failed: simulated install failure") || strings.Contains(msg, "\n") {
 		t.Fatalf("err = %q; want one line naming the step and the CLI's reason", msg)
 	}
+	// A failure the CLI reports is not a CLI that is too old.
+	if errors.Is(err, ErrOutdated) || strings.Contains(msg, "claude update") {
+		t.Fatalf("err = %q; a failed step is not an outdated Claude Code", msg)
+	}
 	// The marketplace step before it ran; nothing after it did.
 	if got := f.changes(t); len(got) != 2 || !f.has("marketplace") || f.has("installed") {
 		t.Fatalf("changes = %q", got)
@@ -507,5 +528,235 @@ func TestClaudeCode_ASavedServerIsPrintedWithoutControlCharacters(t *testing.T) 
 	plan, err := newConnector().PlanConnect(context.Background(), Target{})
 	if err != nil || strings.ContainsAny(plan.Unchanged, "\a\x1b") || !strings.Contains(plan.Unchanged, "https://fd.example.com[2J") {
 		t.Fatalf("unchanged %q, %v; want the control characters dropped", plan.Unchanged, err)
+	}
+}
+
+// answer is what a command answers in place of the stand-in.
+type answer struct {
+	stdout, stderr string
+	// fail makes the command exit non-zero.
+	fail bool
+}
+
+// answering returns a runner that answers the commands in answers (keyed
+// by their arguments joined with spaces) itself and runs every other one
+// on the stand-in: a CLI the stand-in has no mode for.
+func answering(answers map[string]answer) RunFunc {
+	return func(ctx context.Context, timeout time.Duration, stdin []byte, path string, args ...string) ([]byte, []byte, error) {
+		if a, ok := answers[strings.Join(args, " ")]; ok {
+			var err error
+			if a.fail {
+				err = errors.New("exit status 1")
+			}
+			return []byte(a.stdout), []byte(a.stderr), err
+		}
+		return Exec(ctx, timeout, stdin, path, args...)
+	}
+}
+
+// currentHelps answers the check as a current Claude Code does, so the
+// outdated stand-in behind it passes the check and refuses a step: a
+// capability the check missed.
+var currentHelps = map[string]answer{
+	"plugin configure --help": {stdout: "Usage: claude plugin configure [options] <plugin>\n\nOptions:\n" +
+		"  --json          Output as JSON\n  --values-stdin  Read option values from stdin\n"},
+	"plugin marketplace add --help": {stdout: "Usage: claude plugin marketplace add [options] <source>\n\nOptions:\n" +
+		"  --json  Print one machine-readable result line\n"},
+}
+
+func TestClaudeCode_AnOutdatedClaudeCode(t *testing.T) {
+	f := newOldFakeClaude(t)
+	c := newConnector()
+	det, err := c.Detect(context.Background())
+	if err != nil || !det.Found || det.Version != "2.1.283 (Claude Code)" {
+		t.Fatalf("Detect = %+v, %v; want found, with its version", det, err)
+	}
+	for _, says := range []string{
+		"this version has no `claude plugin configure` and no --json on `claude plugin marketplace add`, which flightdeck connect needs: ",
+		"update it with `claude update`, then run flightdeck connect claude-code again",
+		"or install the plugin from inside Claude Code: /plugin marketplace add flightdeckhq/flightdeck, then /plugin install flightdeck@flightdeck-plugins",
+	} {
+		if !strings.Contains(det.Outdated, says) {
+			t.Errorf("Outdated = %q; want it to say %q", det.Outdated, says)
+		}
+	}
+	if got := f.calls(t); !slices.Equal(got, checkCalls) {
+		t.Fatalf("Detect ran %q; want only %q", got, checkCalls)
+	}
+
+	for _, target := range []Target{{}, {Server: "https://fd.example.com", Token: testToken}} {
+		f.resetLog(t)
+		_, err := c.PlanConnect(context.Background(), target)
+		if !errors.Is(err, ErrOutdated) || strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), testToken) ||
+			!strings.Contains(err.Error(), "Claude Code 2.1.283 is too old for flightdeck connect (it has no `claude plugin configure` and no --json on "+
+				"`claude plugin marketplace add`), so nothing changed: update it with `claude update`") {
+			t.Fatalf("PlanConnect(%+v) = %v; want ErrOutdated naming the version and what to do", target, err)
+		}
+		// Refused before the status read: the version and the check, and
+		// nothing given on stdin.
+		if got := f.calls(t); !slices.Equal(got, checkCalls) || strings.Contains(f.read(t, "calls.log"), "stdin:") {
+			t.Fatalf("PlanConnect(%+v) ran %q; want only %q", target, got, checkCalls)
+		}
+	}
+}
+
+func TestClaudeCode_OneMissingCommandMakesItOutdated(t *testing.T) {
+	newOldFakeClaude(t)
+	// configure, but no --json on marketplace add.
+	c := NewClaudeCode(exec.LookPath, answering(map[string]answer{"plugin configure --help": currentHelps["plugin configure --help"]}))
+	det, err := c.Detect(context.Background())
+	if err != nil || !strings.HasPrefix(det.Outdated, "this version has no --json on `claude plugin marketplace add`, which") {
+		t.Fatalf("Detect = %+v, %v; want outdated for the marketplace add alone", det, err)
+	}
+	// --json on marketplace add, but no configure.
+	c = NewClaudeCode(exec.LookPath, answering(map[string]answer{"plugin marketplace add --help": currentHelps["plugin marketplace add --help"]}))
+	if det, err = c.Detect(context.Background()); err != nil || !strings.HasPrefix(det.Outdated, "this version has no `claude plugin configure`, which") {
+		t.Fatalf("Detect = %+v, %v; want outdated for configure alone", det, err)
+	}
+	// A configure help without --values-stdin is not enough.
+	c = NewClaudeCode(exec.LookPath, answering(map[string]answer{
+		"plugin configure --help":       {stdout: "Usage: claude plugin configure [options] <plugin>\n\nOptions:\n  --json  Output as JSON\n"},
+		"plugin marketplace add --help": currentHelps["plugin marketplace add --help"],
+	}))
+	if det, err = c.Detect(context.Background()); err != nil || !strings.Contains(det.Outdated, "no `claude plugin configure`") {
+		t.Fatalf("Detect = %+v, %v; want outdated without --values-stdin", det, err)
+	}
+	// A configure the CLI refuses as unknown.
+	c = NewClaudeCode(exec.LookPath, answering(map[string]answer{
+		"plugin configure --help":       {stderr: "error: unknown command 'configure'\n", fail: true},
+		"plugin marketplace add --help": currentHelps["plugin marketplace add --help"],
+	}))
+	if det, err = c.Detect(context.Background()); err != nil || !strings.Contains(det.Outdated, "no `claude plugin configure`") {
+		t.Fatalf("Detect = %+v, %v; want outdated for a refused help", det, err)
+	}
+}
+
+func TestClaudeCode_TheCheckDoesNotGuess(t *testing.T) {
+	t.Run("a help command that fails", func(t *testing.T) {
+		f := newFakeClaude(t)
+		t.Setenv("FAKE_CLAUDE_FAIL", "configure-help")
+		c := newConnector()
+		det, err := c.Detect(context.Background())
+		if err == nil || errors.Is(err, ErrOutdated) || !det.Found || det.Outdated != "" ||
+			!strings.Contains(err.Error(), "`claude plugin configure --help` failed: simulated configure-help failure") {
+			t.Fatalf("Detect = %+v, %v; want an error naming the help command", det, err)
+		}
+		if _, err := c.PlanConnect(context.Background(), Target{}); err == nil || errors.Is(err, ErrOutdated) ||
+			!strings.Contains(err.Error(), "`claude plugin configure --help` failed") {
+			t.Fatalf("PlanConnect: %v; want the same error", err)
+		}
+		if got := f.changes(t); len(got) != 0 {
+			t.Fatalf("ran %q", got)
+		}
+	})
+	t.Run("a help command that hangs", func(t *testing.T) {
+		newFakeClaude(t)
+		t.Setenv("FAKE_CLAUDE_HANG", "marketplace-add-help")
+		t.Setenv("FAKE_CLAUDE_HANG_SECS", "30")
+		_, err := NewClaudeCode(exec.LookPath, shortTimeouts).Detect(context.Background())
+		if err == nil || errors.Is(err, ErrOutdated) || !strings.Contains(err.Error(), "`claude plugin marketplace add --help` did not finish within") {
+			t.Fatalf("Detect: %v; want the help command named as stopped", err)
+		}
+	})
+	t.Run("a help command that prints no help", func(t *testing.T) {
+		newFakeClaude(t)
+		c := NewClaudeCode(exec.LookPath, answering(map[string]answer{"plugin configure --help": {stdout: "something else entirely\n"}}))
+		if _, err := c.Detect(context.Background()); err == nil || errors.Is(err, ErrOutdated) ||
+			!strings.Contains(err.Error(), "`claude plugin configure --help` printed no help this command can read") {
+			t.Fatalf("Detect: %v; want an error, not a guess", err)
+		}
+	})
+}
+
+func TestClaudeCode_AStepRefusedAsUnknown(t *testing.T) {
+	t.Run("a change", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		_, err := applyConnect(t, NewClaudeCode(exec.LookPath, answering(currentHelps)), Target{})
+		if err == nil {
+			t.Fatal("a refused step connected")
+		}
+		msg := err.Error()
+		if !errors.Is(err, ErrOutdated) || strings.Contains(msg, "\n") ||
+			!strings.Contains(msg, "`claude plugin marketplace add flightdeckhq/flightdeck --json` failed: error: unknown option '--json', "+
+				"so Claude Code 2.1.283 is too old for flightdeck connect: update it with `claude update`, then run flightdeck connect claude-code again") {
+			t.Fatalf("err = %q; want one line with the step, the CLI's refusal, the version and what to do", msg)
+		}
+		// The refused step was the first change; nothing after it ran.
+		if got := f.changes(t); len(got) != 1 || f.has("installed") {
+			t.Fatalf("changes = %q", got)
+		}
+	})
+	t.Run("the status read", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		f.set(t, "marketplace", "installed")
+		_, err := NewClaudeCode(exec.LookPath, answering(currentHelps)).PlanConnect(context.Background(), Target{})
+		if !errors.Is(err, ErrOutdated) ||
+			!strings.Contains(err.Error(), "`claude plugin configure flightdeck@flightdeck-plugins --json` failed: error: unknown command 'configure', so Claude Code 2.1.283 is too old") {
+			t.Fatalf("PlanConnect: %v; want the refused read reported as outdated", err)
+		}
+	})
+}
+
+func TestClaudeCode_RemoveOnAnOutdatedClaudeCode(t *testing.T) {
+	f := newOldFakeClaude(t)
+	f.set(t, "marketplace", "installed", "server=https://fd.example.com", "token="+testToken)
+	c := newConnector()
+	plan, err := c.PlanDisconnect(context.Background())
+	if err != nil || len(plan.Steps) != 1 {
+		t.Fatalf("PlanDisconnect = %+v, %v; want the uninstall", plan, err)
+	}
+	if err := plan.Apply(context.Background(), func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.changes(t); len(got) != 1 || got[0] != "plugin uninstall "+pluginID+" --scope user --json" || f.has("installed") || f.has("token") {
+		t.Fatalf("changes = %q; want the uninstall alone, the plugin and its token gone", got)
+	}
+	// It reads no option: Claude Code 2.1.283 has no configure.
+	for _, call := range f.calls(t) {
+		if strings.HasPrefix(call, "plugin configure") {
+			t.Fatalf("a disconnect ran %q", call)
+		}
+	}
+	if plan, err = c.PlanDisconnect(context.Background()); err != nil || len(plan.Steps) != 0 {
+		t.Fatalf("PlanDisconnect again = %+v, %v; want no step", plan, err)
+	}
+}
+
+func TestTheCheckReadsTheHelp(t *testing.T) {
+	help := "Usage: claude x [options]\n\nOptions:\n  -h, --help      Display help\n  --json, -j      Output as JSON (with --values-stdin)\n"
+	for _, c := range []struct {
+		options []string
+		want    bool
+	}{
+		{[]string{"--json"}, true},
+		{[]string{"--json", "--values-stdin"}, true},
+		{[]string{"-h", "--help"}, true},
+		{[]string{"--js"}, false},
+		{[]string{"--json", "--value"}, false},
+	} {
+		if got := namesAll(help, c.options); got != c.want {
+			t.Errorf("namesAll(%q) = %v; want %v", c.options, got, c.want)
+		}
+	}
+	for text, want := range map[string]bool{
+		"Usage: claude plugin|plugins [options] [command]\n": true,
+		"\n  usage: claude x\n":                              true,
+		"Show a plugin's options\n":                          false,
+		"":                                                   false,
+	} {
+		if got := isHelp(text); got != want {
+			t.Errorf("isHelp(%q) = %v; want %v", text, got, want)
+		}
+	}
+	for stderr, want := range map[string]bool{
+		"error: unknown option '--json'\n":                                                 true,
+		"x Failed: something\nerror: unknown command 'configure' (Did you mean config?)\n": true,
+		"error: unknown option `sparse'\n":                                                 false, // git's, not Claude Code's
+		"x Failed: unknown option '--json' in the manifest\n":                              false,
+		"": false,
+	} {
+		if got := refused([]byte(stderr)); got != want {
+			t.Errorf("refused(%q) = %v; want %v", stderr, got, want)
+		}
 	}
 }

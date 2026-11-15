@@ -1105,3 +1105,19 @@ warning (the exposure still happens); a `--port` that changes the host
 (port and reach are separate choices); renaming `FLIGHTDECK_PORT`, which
 Kubernetes service links set to `tcp://…` (the services use the name
 already; such a value is no port and reads as unset).
+
+## D279 -- An agent too old for `flightdeck connect` is found but outdated: checked by its own help, exit status 5
+
+**Date:** 2026-11-15
+**Decision:** extends D275. Before planning, a connector checks that the
+agent's CLI has the commands and options it runs, from the CLI's own
+help (for Claude Code, `plugin configure` with `--values-stdin`, and
+`--json` on `plugin marketplace add`). One that lacks them is
+`outdated` in `--detected`, `too old` in the listing, and a connect
+changes nothing and exits 5 with what to do (`claude update`, or the
+`/plugin` commands); the installers print that hint and ask nothing. A
+step refused as an unknown command or option also exits 5.
+**Why:** Claude Code 2.1.283 failed with `unknown option '--json'`, and
+"run it again later" fails the same way until the agent is updated.
+**Rejected alternative:** a minimum version number (wrong for builds
+between releases and for every future agent); reusing exit 1 or 3.

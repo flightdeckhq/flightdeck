@@ -7,12 +7,31 @@ A Claude Code plugin that reports LLM call metadata, tool invocations, and token
 Prereq: a running Flightdeck. The fastest path is the `flightdeck` binary (README, Install): dashboard on `http://localhost:4000`, development token `tok_dev` while it listens on your own machine. Contributors run `make dev` in the Flightdeck repo instead, which serves the same address and token.
 
 ```bash
+flightdeck connect claude-code
+```
+
+That installs the plugin for your user from this repository's marketplace (the `flightdeck-plugins` marketplace, added if Claude Code does not have it) and leaves its options at the local defaults. The installers offer it when they find Claude Code. `flightdeck connect` shows whether Claude Code is connected, the plugin's version and the server it reports to; `flightdeck connect claude-code --remove` uninstalls the plugin, with its saved options, and keeps the marketplace. Inside Claude Code the same install is two commands:
+
+```text
+/plugin marketplace add flightdeckhq/flightdeck
+/plugin install flightdeck@flightdeck-plugins
+```
+
+To run the plugin from a checkout instead (a contributor's change), load it for one session:
+
+```bash
 claude --plugin-dir /path/to/flightdeck/plugin
 ```
 
 Start using Claude Code normally. Open the dashboard. Your session appears in the Fleet view within a few seconds, tagged `flavor=claude-code`, and events stream in as you work. No env vars required for the default dev stack.
 
-Hosted Flightdeck or a non-default port? Open `/plugin`, select **flightdeck** on the **Installed** tab, choose **Configure options**, and set the server and the token. Claude Code keeps the token in its credential store, not in `settings.json`. Or set two vars before invoking `claude`; they override the saved options:
+Hosted Flightdeck or a non-default port? Save the server and its token in the plugin's options:
+
+```bash
+flightdeck connect claude-code --server https://flightdeck.example.com --token-file ~/flightdeck-token
+```
+
+The token comes from the file (or from `FLIGHTDECK_TOKEN`), never from the command line, where every user of the machine could read it. Claude Code keeps the token in its credential store, not in `settings.json`. The same options are under `/plugin`: select **flightdeck** on the **Installed** tab and choose **Configure options**. Or set two vars before invoking `claude`; they override the saved options:
 
 ```bash
 export FLIGHTDECK_SERVER="https://flightdeck.example.com"
@@ -164,11 +183,14 @@ session; only the way it is loaded and pointed at your stack changes.
 **Scripts (`claude -p`).** Load the plugin once per machine, or per run:
 
 ```bash
+flightdeck connect claude-code   # where the binary is installed; or:
 claude plugin marketplace add flightdeckhq/flightdeck
 claude plugin install flightdeck@flightdeck-plugins
 # or, without installing:
 claude -p "..." --plugin-dir /path/to/flightdeck/plugin
 ```
+
+In a scripted machine setup, the installers connect it without asking when `FLIGHTDECK_CONNECT=claude-code` is set.
 
 Point it at your stack with `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN`
 in the environment, or in a settings `env` block, which Claude Code

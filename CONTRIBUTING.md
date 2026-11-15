@@ -545,21 +545,6 @@ describes the system as it is, CHANGELOG.md what changed per release, and
 DECISIONS.md the decisions a future contributor would otherwise relitigate
 (the Engineering principles below, L1 and L2).
 
-## Review pipeline (`.claude/`)
-
-`.claude/` ships with this repo. The review agents, guidelines, the
-`/audit-repo` slash command, and a Stop hook auto-load when you open
-the repo with [Claude Code](https://claude.ai/code), so every
-contributor inherits the same review pipeline with no setup.
-
-To extend the pipeline, edit the relevant file in
-`.claude/agents/` (agent specs) or `.claude/agents/guidelines/`
-(language and topic rules). The Stop hook routes by file type to
-the right reviewer; see [`.claude/agents/README.md`](.claude/agents/README.md)
-for the routing table and the "how to extend" walkthrough. To opt
-out of the pipeline for an emergency fix, pass `--no-hooks` to
-Claude Code, or override at the user level in `~/.claude/`.
-
 ## Engineering principles
 
 Standing rules every PR follows. The numbers are cited in code and tests
@@ -600,9 +585,9 @@ Python (sensor, playground, integration suites), Go (ingestion, workers,
 API, migrations), TypeScript and UI (dashboard, both themes, accessibility),
 architecture (doc alignment, contracts across components, L1 and L2), and
 QA (tests at every layer, E2E discipline, live verification, L3 to L8). This
-review before merge is what CLAUDE.md calls the phase audit or V-pass. The
-agents in `.claude/agents/` encode these passes; they report Critical (a P0
-or P1 here, Block) and Warnings (P2 or P3, Recommend or Defer).
+review before merge is what CLAUDE.md calls the phase audit or V-pass. A
+review groups its findings as Critical (a P0 or P1 here, Block) and
+Warnings (P2 or P3, Recommend or Defer).
 
 Findings are graded **P0** (breaks, crashes, or silently loses or corrupts
 data on a default install: a fail-open control, a silent zero-event path,

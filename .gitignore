@@ -9,6 +9,7 @@ build/
 .pytest_cache/
 *.egg
 .venv/
+tests/smoke/.venv-py312/
 
 # Go
 bin/
@@ -58,11 +59,8 @@ runtime-config.prod.json
 docker/dashboard/runtime-config.json
 docker/runtime-config.json
 
-# Claude — the .claude/ directory ships with the repo (review pipeline,
-# guidelines, audit-repo command, Stop hook). Personal permission
-# allowlists land in settings.local.json which stays gitignored.
-.claude/settings.local.json
-tests/smoke/.venv-py312/
+# Claude Code configuration is per-developer and is not part of the repository.
+.claude/
 
 # Local scratch space + agent indices. Both are working scratchpads
 # (probe screenshots, throwaway diffs, ChunkHound's local code-search
@@ -76,6 +74,3 @@ tests/smoke/.venv-py312/
 test-results/
 playwright-report/
 docker/test-results/
-
-# Agent worktrees are full repository copies, never part of the tree.
-.claude/worktrees/

@@ -46,6 +46,15 @@ All notable changes to Flightdeck are documented here.
   A connect that fails prints why and the command to run later, and the
   install still succeeds. The Homebrew formula's notes name the command.
 
+### Removed
+
+- **The Claude Code agent definitions and review hook are no longer
+  shipped in the repository.** `.claude/` (the reviewer agents and their
+  guidelines, the `/audit-repo` command and the Stop hook in
+  `.claude/settings.json`) is gone and gitignored: Claude Code
+  configuration is per-developer. The review rubric stays in
+  CONTRIBUTING.md.
+
 ## v0.9.0 — 2026-11-14
 
 Flightdeck is one binary. `flightdeck` runs the whole control plane,

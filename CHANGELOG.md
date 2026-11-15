@@ -14,7 +14,9 @@ All notable changes to Flightdeck are documented here.
   LangGraph gives it, its `get_name()`). The Runnable is wrapped in a
   delegating `RunnableCallable`, so stream output, `astream_events`,
   `Send` fan-out, `Command` returns, interrupts, the tool runtime a
-  `ToolNode` is given and sub-graph detection are unchanged. The nodes
+  `ToolNode` is given and sub-graph detection are unchanged (an LCEL
+  pipe node shows one more `RunnableSequence` run in traces and
+  `astream_events`, since LangGraph no longer flattens its steps). The nodes
   `create_agent` and `create_react_agent` register (the model call, the
   tool execution, middleware and model hooks) open none: they are the
   agent's own steps, not sub-agents, so a `create_react_agent`

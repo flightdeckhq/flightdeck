@@ -1744,11 +1744,16 @@ application builds by hand:
 - **How a node is wrapped.** A function is wrapped by one with its
   signature (see above). A Runnable is wrapped in a `RunnableCallable`
   named after the node, without tracing or recursion of its own, that
-  passes the node's input and config to the Runnable's `invoke` or
-  `ainvoke`: the Runnable still receives what LangGraph injects
-  (`ToolNode`'s tool runtime among it), and the run's stream output in
-  every stream mode, `astream_events`, `Send` fan-out, `Command` returns,
-  interrupts and sub-graph detection are those of the unwrapped node.
+  passes the node's input and config to the Runnable's `invoke`,
+  `ainvoke` or `astream` (which LangGraph calls under `astream_events`):
+  the Runnable still receives what LangGraph injects (`ToolNode`'s tool
+  runtime among it), and the run's stream output in every stream mode,
+  `astream_events`, `Send` fan-out, `Command` returns, interrupts and
+  sub-graph detection are those of the unwrapped node. One difference
+  remains for an LCEL pipe: LangGraph no longer flattens its steps into
+  the node's own run, so a trace or `astream_events` shows one more
+  `RunnableSequence` chain run inside the node's; the steps' events and
+  chunks are unchanged.
   The wrapper has an async function of its own only when LangGraph
   counts the Runnable as natively async, so LangGraph's node-timeout
   check sees the same node; otherwise an async run runs the wrapper in

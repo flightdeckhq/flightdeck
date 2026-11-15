@@ -79,7 +79,13 @@ if TYPE_CHECKING:
         patch_langgraph_classes as patch_langgraph_classes,
     )
     from flightdeck_sensor.interceptor.langgraph import (
+        patch_langgraph_runs as patch_langgraph_runs,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
         unpatch_langgraph_classes as unpatch_langgraph_classes,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
+        unpatch_langgraph_runs as unpatch_langgraph_runs,
     )
     from flightdeck_sensor.interceptor.litellm import SensorLitellm as SensorLitellm
     from flightdeck_sensor.interceptor.litellm import (
@@ -211,8 +217,12 @@ class _SDKTarget:
 # keyed on ``langgraph.graph``, the package StateGraph comes from:
 # ``langgraph`` itself is a namespace package shared with LangGraph's other
 # distributions, and a namespace package runs no code for the hook to see.
-# LlamaIndex is keyed on ``llama_index.core`` for the same reason
-# (``llama_index`` is a namespace package).
+# It has a second target, ``langgraph.pregel``, which patches the graph runs
+# alone: an application on LangGraph's functional API imports only that,
+# and the import of ``langgraph.graph`` imports it first, so its patch
+# imports nothing from ``langgraph.graph``. LlamaIndex is keyed on
+# ``llama_index.core`` for the same reason as LangGraph (``llama_index`` is
+# a namespace package).
 _SDK_TARGETS: tuple[_SDKTarget, ...] = (
     _SDKTarget(
         Provider.ANTHROPIC,
@@ -238,6 +248,13 @@ _SDK_TARGETS: tuple[_SDKTarget, ...] = (
         "crewai",
         "patch_crewai_classes",
         "unpatch_crewai_classes",
+    ),
+    _SDKTarget(
+        Provider.LANGGRAPH,
+        "langgraph.pregel",
+        "langgraph",
+        "patch_langgraph_runs",
+        "unpatch_langgraph_runs",
     ),
     _SDKTarget(
         Provider.LANGGRAPH,
@@ -969,8 +986,12 @@ def patch(
         callbacks: dict[str, Callable[[str], None]] = {}
         for t in selected:
             callbacks[t.module] = functools.partial(_patch_on_import, t, quiet)
-            callbacks[t.interceptor_module] = functools.partial(
-                _patch_on_interceptor_import, t, quiet
+            # Two targets can share an interceptor module (LangGraph's):
+            # its import then patches both.
+            on_interceptor = functools.partial(_patch_on_interceptor_import, t, quiet)
+            earlier = callbacks.get(t.interceptor_module)
+            callbacks[t.interceptor_module] = (
+                on_interceptor if earlier is None else _both(earlier, on_interceptor)
             )
         _import_hook.watch(callbacks)
         for target in selected:
@@ -1234,6 +1255,16 @@ def _patch_on_import(target: _SDKTarget, quiet: bool, _module: str) -> None:
     applies it only if the patch lock is free (see _patch_pending)."""
     _pending.append((target, quiet))
     _patch_pending()
+
+
+def _both(first: Callable[[str], None], second: Callable[[str], None]) -> Callable[[str], None]:
+    """An import-hook callback that runs ``first``, then ``second``."""
+
+    def both(module: str) -> None:
+        first(module)
+        second(module)
+
+    return both
 
 
 def _patch_on_interceptor_import(target: _SDKTarget, quiet: bool, _module: str) -> None:

@@ -44,6 +44,7 @@ PATCHABLE = (
     "litellm",
     "mcp",
     "crewai",
+    "langgraph.pregel",
     "langgraph.graph",
     "llama_index.core",
     "claude_agent_sdk",
@@ -134,6 +135,28 @@ def _use(sdk: str, server: str) -> bool:
         from mcp.client.session import ClientSession
 
         return getattr(ClientSession, "_flightdeck_patched", False) is True
+    if sdk == "langgraph.pregel":
+        # LangGraph's functional API alone: no StateGraph, so the graph
+        # runs are patched from langgraph.pregel. A run inside another is
+        # one child; an entrypoint's graph is unnamed, so the run is named
+        # through its config.
+        from langgraph.func import entrypoint
+        from langgraph.pregel import Pregel
+
+        @entrypoint()
+        def worker(count: int) -> int:
+            return count + 1
+
+        @entrypoint()
+        def outer(count: int) -> int:
+            result: int = worker.invoke(count, {"run_name": "worker"})
+            return result
+
+        outer.invoke(1)
+        return (
+            getattr(Pregel, "_flightdeck_runs_patched", False) is True
+            and "langgraph.graph" not in sys.modules
+        )
     if sdk == "langgraph.graph":
         from langgraph.graph import StateGraph
 

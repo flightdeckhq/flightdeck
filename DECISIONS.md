@@ -1105,3 +1105,20 @@ warning (the exposure still happens); a `--port` that changes the host
 (port and reach are separate choices); renaming `FLIGHTDECK_PORT`, which
 Kubernetes service links set to `tcp://…` (the services use the name
 already; such a value is no port and reads as unset).
+
+## D278 -- A LangGraph graph run started inside another opens one child, named for the run; a top-level run opens none
+
+**Date:** 2026-11-15
+**Decision:** `Pregel.stream` / `astream` are wrapped: a run whose own or
+inherited config carries another run's task id, or that starts in a
+child's scope, opens one child (role: `run_name`, the graph's name, the
+enclosing node unless an agent's own step, else `subgraph`), its input
+and final state the messages. Deep Agents `task` sub-agents, agents used
+as tools and compiled-graph nodes come from this; no Deep Agents import.
+A `RemoteGraph` opens none.
+**Why:** one seam, and the task id LangGraph sets on every task, cover
+every way a graph runs inside another.
+**Rejected alternative:** wrapping Deep Agents' `task` tool (private
+API; agents used as tools stay uncovered); `lc_agent_name` as the role
+(every run under an agent inherits it); a child for the top-level run
+too (a duplicate of the sensor's session).

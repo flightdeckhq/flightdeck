@@ -41,6 +41,7 @@ SDK_MODULES = (
     "litellm",
     "mcp",
     "crewai",
+    "langgraph.pregel",
     "langgraph.graph",
     "llama_index.core",
     "claude_agent_sdk",
@@ -105,14 +106,14 @@ def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> 
     elif sdk == "mcp":
         calls = [e for e in events if e["event_type"] == "mcp_tool_call"]
         assert [c["tool_name"] for c in calls] == ["echo"], events
-    elif sdk in ("langgraph.graph", "llama_index.core", "agents"):
+    elif sdk in ("langgraph.pregel", "langgraph.graph", "llama_index.core", "agents"):
         children = [
             e
             for e in events
             if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
         ]
         assert [c.get("agent_role") for c in children] == ["worker"], events
-        if sdk != "langgraph.graph":
+        if sdk not in ("langgraph.pregel", "langgraph.graph"):
             # The agent's model call stays on the sensor's session.
             calls = [e for e in events if e["event_type"] == "post_call"]
             assert [c["session_id"] for c in calls] == [session_id], events
@@ -515,9 +516,12 @@ def test_an_interceptor_module_imported_after_unpatch_patches_nothing(
 # ----------------------------------------------------------------------
 
 
-def test_every_provider_has_one_patch_target() -> None:
+def test_every_provider_has_a_patch_target_and_only_langgraph_two() -> None:
+    """LangGraph's graph runs are patched from ``langgraph.pregel`` too: an
+    application on its functional API never imports ``langgraph.graph``."""
     providers = [t.provider for t in flightdeck_sensor._SDK_TARGETS]
-    assert sorted(providers) == sorted(Provider)
+    assert sorted(set(providers)) == sorted(Provider)
+    assert [p for p in Provider if providers.count(p) > 1] == [Provider.LANGGRAPH]
     assert tuple(t.module for t in flightdeck_sensor._SDK_TARGETS) == SDK_MODULES
 
 

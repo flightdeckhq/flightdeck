@@ -1721,9 +1721,10 @@ application builds by hand:
   (`langchain.agents.factory`) and LangGraph's `create_react_agent`
   (`langgraph.prebuilt.chat_agent_executor`) register: the model call,
   the tool execution and the middleware or model hooks are one agent's
-  own steps, not sub-agents. The wrap tells them apart by the module that called
-  `StateGraph`, the first caller outside the sensor and `langgraph.graph`,
-  read when the node is added. A compiled graph used as a node opens no
+  own steps, not sub-agents. The wrap tells them apart by the module
+  that called `StateGraph`, the first caller outside the sensor and
+  `langgraph.graph`, read when the node is added. A compiled graph used
+  as a node opens no
   child (the nodes inside it open theirs, where that graph registered
   them). A generator or async-generator node function is registered
   untouched: LangGraph runs it as a stream (a `RunnableLambda`), which a

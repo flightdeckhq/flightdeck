@@ -169,7 +169,7 @@
     "info": {
         "description": "Receives sensor events and delivers directives to agents",
         "title": "Flightdeck Ingestion API",
-        "version": "0.10.0"
+        "version": "0.11.0"
     },
     "externalDocs": {
         "description": "",

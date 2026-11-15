@@ -377,7 +377,8 @@ func TestMain_ExitStatuses(t *testing.T) {
 		{"a flag and no agent", []string{"--server", "https://x.example.com"}, ExitUsage, "name the agent"},
 		{"a refused server", []string{"claude-code", "--server", "flightdeck.example.com"}, ExitUsage, "http:// or https://"},
 		{"help", []string{"--help"}, ExitOK, "Exit status: 0 connected"},
-		{"help names exit status 5", []string{"--help"}, ExitOK, "5 the agent is too old for this command"},
+		{"help names exit status 5", []string{"--help"}, ExitOK, "5 the agent is too old for what was asked"},
+		{"help names an outdated agent connected from inside it", []string{"--help"}, ExitOK, "--port, is already connected (exit 0)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

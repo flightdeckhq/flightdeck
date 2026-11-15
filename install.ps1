@@ -105,9 +105,10 @@
             [pscustomobject]@{ Id = $fields[0]; State = $(if ($fields.Count -gt 1) { $fields[1] } else { '' }); Name = $(if ($fields.Count -gt 2) { $fields[2] } else { $fields[0] }) }
         } | Where-Object { $_.Id -cmatch $agentIdPattern })
         # `flightdeck connect <id>` exits with this status when the agent
-        # is too old for it: running it again fails the same way until the
-        # agent is updated, so the script says to update it, not to try
-        # again later.
+        # is too old for it (one already connected from inside it exits 0
+        # instead: this script names no server): running it again fails
+        # the same way until the agent is updated, so the script says to
+        # update it, not to try again later.
         $outdated = 5
         $outdatedHint = { param([string]$Id, [string]$Name) "To connect ${Name}: update it (this version is too old for flightdeck connect), then run flightdeck connect $Id" }
         $connectOne = {

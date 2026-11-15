@@ -11433,9 +11433,9 @@ the name or the published port the machine is reached by.
 **Agents that report elsewhere.** An agent connected while the server
 was on one port keeps reporting there when the server is started on
 another (`flightdeck --port 4100` after the installer connected Claude
-Code to `http://localhost:4000`), and nothing a person looks at says
-why no session arrives. So a loopback instance asks, once its start-up
-block is printed, where the coding agents on this machine report: a
+Code to `http://localhost:4000`), so no session arrives. A loopback
+instance therefore says so at start. It asks, once its start-up block
+is printed, where the coding agents on this machine report: a
 goroutine started just before the listener serves asks each connector
 (see Connecting coding agents) whether its agent is found and
 connected and to which server, with the connectors' own commands and
@@ -11451,8 +11451,15 @@ The command takes `--port <port>` when the instance listens on
 `127.0.0.1`, and `--server http://<address>:<port>` for another
 loopback address. A saved server names this instance when, read by the
 one server address rule (Connecting coding agents), it is `http://`,
-has no path and has the instance's port, and its host is `localhost`
-or the listen address itself. Nothing is logged for an agent that is
+has no path and has the instance's port, and its host is the listen
+address itself, with `localhost` standing for `127.0.0.1` alone: a
+stock system resolves `localhost` to no other `127.x` address and
+often not to `::1`, so a plugin saved as `localhost` does not reach an
+instance listening there, and the line then names the instance by its
+address. The saved server is the plugin's option; a `FLIGHTDECK_SERVER`
+in Claude Code's own environment overrides it, and no other process's
+environment is read, so the check (and `flightdeck connect`) cannot see
+that override. Nothing is logged for an agent that is
 not found; for one found and not connected (the installers and
 `flightdeck connect` offer that, and a reminder on every start would be
 noise); for one connected to this instance; for one connected to a
@@ -11462,7 +11469,12 @@ fails, which is logged at debug level. The check never delays or fails
 the start: it runs beside serving, each command is bounded by its
 connector's timeout, and the stop cancels it at the first signal,
 ending a command still running, and waits for it before anything is
-closed. In `--public` and `--domain` mode it does not run and no
+closed. The agents' commands run in the environment the binary was
+started with, read before it sets its services' variables and without
+any `FLIGHTDECK_` variable: the JWT secret and the database URL (with
+its password) the binary sets, a supplied dashboard token and an agent
+token stay out of the agent's CLI and of whatever it starts. In
+`--public` and `--domain` mode it does not run and no
 agent's command is started: such an instance serves other machines.
 There is no switch to turn it off: where no agent is installed (a
 container, a CI runner) it costs one failed `PATH` lookup, and where
@@ -12355,15 +12367,38 @@ the default. It so finds the instance that the same user's
 `flightdeck` (or `flightdeck --port 4100`) runs; an instance on a data
 dir of its own is found with that `--data-dir`, and of two instances on
 two data dirs the one in the data dir connect reads is the one found.
-It never creates the data dir and never scans ports. The record counts
-only when every check holds: the file is a regular file (not a link) of
-at most 4 KiB and, on Unix, neither it nor the data dir can be written
-by other users; its `listen` is a loopback IP address with a port; the
-process is alive; and both health routes at that address answer as
-`flightdeck health` requires (`/api/health` with `"service": "api"`,
-`/ingest/health` with `"service": "ingestion"`). A file an instance
-killed with `kill -9` left, whose port something else holds now, does
-not count. The address saved for the instance is
+It never creates the data dir and never scans ports, and it reads the
+data dir only when the answer can matter: not for an agent whose
+server is kept as it is (below). The record counts only when every
+check holds:
+
+- the file opens as a regular file that is not a link, at most 4 KiB.
+  On Unix it is opened without following a link (`O_NOFOLLOW`) or
+  waiting on a pipe, and the checks run on the file opened: one link
+  (a hard link to a file elsewhere is someone else's file), owned by
+  this user, and neither it nor the data dir, also owned by this user,
+  writable by group or others. On Windows the file system keeps no mode
+  bits and the access lists are not read: the file must be a regular
+  file, not a symbolic link or junction, and the file opened must be
+  the file looked at; owner and link count are not compared. The
+  default data dir there, `%LOCALAPPDATA%\flightdeck`, is the user's
+  alone, while a `--data-dir` elsewhere (under `C:\`, which grants
+  Authenticated Users Modify on what is created in it) may be writable
+  by other users of the machine and is trusted as it is;
+- its `listen` is a loopback IP address with a port, and its `pid` is
+  from 1 to 2147483647 (a larger value would wrap in a 32-bit system
+  call to 0 or -1, which name process groups, or to another process);
+- the process runs as this user: on Unix a signal 0 to it succeeds (a
+  process that refuses this user's signal is not this user's), on
+  Windows it opens for a query and has not exited;
+- both health routes at that address answer as `flightdeck health`
+  requires (`/api/health` with `"service": "api"`, `/ingest/health`
+  with `"service": "ingestion"`).
+
+A file an instance killed with `kill -9` left, whose port something
+else holds now, does not count. The server writes the file through a
+temporary name it removes first and then creates anew (`O_EXCL`), so a
+link planted there is never written through. The address saved for the instance is
 `http://localhost:<port>` when it listens on `127.0.0.1`, the address
 the start-up block prints, and `http://<address>:<port>` otherwise;
 `http://localhost:4000`, the plugin's default, is saved as nothing.
@@ -12373,7 +12408,7 @@ Without `--server` or `--port`:
 | The agent | `flightdeck connect <agent>` connects it to |
 |---|---|
 | not connected yet (Claude Code: no plugin installed) | the running instance found, with a line naming it; none found, `http://localhost:4000` |
-| reports to an `http://` address on this machine where no Flightdeck answers, while an instance runs here at another | that instance: the plan saves its address, with a line saying why, and asks on a terminal like any plan |
+| reports to an `http://` address on this machine where no Flightdeck answers, while an instance runs here at another | that instance: the plan saves its address, with a line saying why, and asks on a terminal like any plan; the closing lines name the instance and its data dir, so a run under `--yes` (an installer's) says where the address came from |
 | reports to an `http://` address on this machine where a Flightdeck answers | the same server, kept (two instances on two data dirs, for one) |
 | reports to a server beyond this machine, or to an `https://` address | the same server, kept, and not probed |
 
@@ -12382,8 +12417,11 @@ read: the plan reads the status too and reports why, with its own exit
 status.
 
 The probe is the health check above, sent only to the loopback
-address (`localhost` is tried as `127.0.0.1`, then `::1`), with no
-token and no proxy; a server beyond this machine is never probed. When
+address (`localhost` is probed as `127.0.0.1`, the address it names
+here, as above), with no token and no proxy; a server beyond this
+machine is never probed. The plugin's saved server is what connect
+reads; a `FLIGHTDECK_SERVER` in Claude Code's environment overrides it
+and is not visible here. When
 the agent is to report to an `http://` address on this machine where
 no Flightdeck answers and none is found running, the connect goes
 ahead, since the installers run it before the server has ever started,
@@ -12400,10 +12438,11 @@ binary's own lines, so the note reaches them through the `--dry-run`
 and the connect they run.
 
 The file only ever leads to an address on this machine. A process that
-can write it, which with the data dir at 0700 is the user's own, can at
-most point the plan at another loopback port: the plan shows the
-address and why it was chosen before anything changes, and on a
-terminal it asks. The file holds no token; connecting an agent to its
+can write it, which on Unix is one of the user's own (the checks
+above), and on Windows also another user's when the data dir's access
+list lets them, can at most point the plan at another loopback port:
+the plan shows the address and why it was chosen before anything
+changes, and on a terminal it asks. The file holds no token; connecting an agent to its
 address saves no token other than the development token (which, by the
 rule above, replaces a token saved for another server), and the probe
 sends none.

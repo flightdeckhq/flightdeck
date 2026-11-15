@@ -72,6 +72,28 @@ func TestInstance_WriteReadRemove(t *testing.T) {
 	}
 }
 
+// A link planted at the temporary name is removed, never written
+// through: the file it points at is left as it was.
+func TestInstance_AWriteNeverFollowsALinkAtTheTemporaryName(t *testing.T) {
+	dir := privateDir(t)
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.WriteFile(outside, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, InstanceFile+".tmp")); err != nil {
+		t.Skipf("no symbolic link here: %v", err)
+	}
+	if err := WriteInstance(dir, Instance{Listen: "127.0.0.1:4100", PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(outside); string(data) != "untouched" {
+		t.Fatalf("the write went through the link: %q", data)
+	}
+	if got, err := ReadInstance(dir); err != nil || got.Listen != "127.0.0.1:4100" {
+		t.Fatalf("ReadInstance = %+v, %v", got, err)
+	}
+}
+
 func TestInstance_AWriteReplacesALeftoverTemporaryFile(t *testing.T) {
 	dir := privateDir(t)
 	tmp := filepath.Join(dir, InstanceFile+".tmp")
@@ -103,7 +125,13 @@ func TestReadInstance_RefusesWhatItCannotTrust(t *testing.T) {
 		"no address":    `{"pid":12}`,
 		"no process":    `{"listen":"127.0.0.1:4100"}`,
 		"a negative id": `{"listen":"127.0.0.1:4100","pid":-1}`,
-		"too large":     `{"listen":"127.0.0.1:4100","pid":1,"x":"` + strings.Repeat("a", maxInstanceBytes) + `"}`,
+		// Each wraps in a 32-bit system call: to 0 and -1, which name
+		// process groups, and to 1, the init process.
+		"a pid of 2^32":       `{"listen":"127.0.0.1:4100","pid":4294967296}`,
+		"a pid of 2^32-1":     `{"listen":"127.0.0.1:4100","pid":4294967295}`,
+		"a pid of 2^33+1":     `{"listen":"127.0.0.1:4100","pid":8589934593}`,
+		"a pid past MaxInt32": `{"listen":"127.0.0.1:4100","pid":2147483648}`,
+		"too large":           `{"listen":"127.0.0.1:4100","pid":1,"x":"` + strings.Repeat("a", maxInstanceBytes) + `"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := privateDir(t)
@@ -129,8 +157,15 @@ func TestReadInstance_RefusesWhatItCannotTrust(t *testing.T) {
 		if err := os.Symlink(target, filepath.Join(dir, InstanceFile)); err != nil {
 			t.Skipf("no symbolic link here: %v", err)
 		}
-		if _, err := ReadInstance(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		if _, err := ReadInstance(dir); err == nil || errors.Is(err, ErrNoInstance) {
 			t.Fatalf("ReadInstance through a link = %v; want it refused", err)
+		}
+	})
+	t.Run("the largest pid there is", func(t *testing.T) {
+		dir := privateDir(t)
+		write(t, dir, `{"listen":"127.0.0.1:4100","pid":2147483647}`)
+		if got, err := ReadInstance(dir); err != nil || got.PID != 2147483647 {
+			t.Fatalf("ReadInstance = %+v, %v", got, err)
 		}
 	})
 	if runtime.GOOS == "windows" {

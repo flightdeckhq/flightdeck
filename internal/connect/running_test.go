@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +47,13 @@ func testAnswers(defaultAnswers bool) AnswersFunc {
 // routes as a flightdeck does; it returns the address it listens on.
 func fakeFlightdeck(t *testing.T) string {
 	t.Helper()
+	srv := httptest.NewServer(fakeFlightdeckHandler())
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().String()
+}
+
+// fakeFlightdeckHandler answers the two health routes as a flightdeck.
+func fakeFlightdeckHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok","service":"api"}`))
@@ -52,9 +61,7 @@ func fakeFlightdeck(t *testing.T) string {
 	mux.HandleFunc("GET /ingest/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok","service":"ingestion"}`))
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv.Listener.Addr().String()
+	return mux
 }
 
 // somethingElse is an HTTP server on 127.0.0.1 that answers 200 to every
@@ -211,8 +218,14 @@ func TestReportsHere(t *testing.T) {
 		{"http://localhost:4100/ingest", "127.0.0.1:4100", true},
 		{"HTTP://LocalHost:4100", "127.0.0.1:4100", true},
 		{"http://127.0.0.1:4100", "127.0.0.1:4100", true},
-		{"http://localhost:4100", "[::1]:4100", true},
 		{"http://[::1]:4100", "[::1]:4100", true},
+		{"http://127.0.0.2:4100", "127.0.0.2:4100", true},
+		// localhost is 127.0.0.1 alone: a stock system resolves it to no
+		// other 127.x address, and often not to ::1, so a plugin saved as
+		// localhost does not reach a listener there.
+		{"http://localhost:4100", "[::1]:4100", false},
+		{"http://localhost:4100", "127.0.0.2:4100", false},
+		{"", "127.0.0.2:4000", false},
 		{"", "127.0.0.1:4100", false},
 		{"http://localhost:4000", "127.0.0.1:4100", false},
 		{"http://127.0.0.2:4100", "127.0.0.1:4100", false},
@@ -286,6 +299,11 @@ func TestConnect_ANewConnectionGoesToTheFlightdeckRunningHere(t *testing.T) {
 	r = runMain(t, env, "", false, "claude-code")
 	if r.code != ExitOK || f.read(t, "server") != server || !strings.Contains(r.stdout, "sessions started from now on report to "+server) {
 		t.Fatalf("connect: %+v, server saved %q", r, f.read(t, "server"))
+	}
+	// Without the plan shown (no terminal, --yes, an installer), the
+	// closing lines still say where the address came from.
+	if want := "sessions already open report once restarted.\n" + server + " is the Flightdeck running on this machine (data dir " + dir + ").\n"; !strings.HasSuffix(r.stdout, want) {
+		t.Fatalf("connect's closing lines:\n%s\nwant them to end with\n%s", r.stdout, want)
 	}
 	// The plugin's default needs no saving: an instance on port 4000.
 	t.Run("an instance on the default address", func(t *testing.T) {
@@ -415,7 +433,8 @@ func TestConnect_AConnectionWhereNothingAnswersIsPointedAtTheFlightdeckRunningHe
 				t.Fatalf("answered no: %+v", r)
 			}
 			r = runMain(t, env, "", false, "claude-code", "--yes")
-			if r.code != ExitOK || f.read(t, "server") != server || !strings.Contains(r.stdout, "Saved the server "+server) {
+			if r.code != ExitOK || f.read(t, "server") != server || !strings.Contains(r.stdout, "Saved the server "+server) ||
+				!strings.HasSuffix(r.stdout, server+" is the Flightdeck running on this machine (data dir "+dir+").\n") {
 				t.Fatalf("--yes: %+v, saved %q", r, f.read(t, "server"))
 			}
 			// Now it reports to the running one: nothing more to change.
@@ -436,6 +455,19 @@ func TestConnect_AConnectionWhereNothingAnswersIsPointedAtTheFlightdeckRunningHe
 
 func TestConnect_AConnectionThatIsADeliberateChoiceIsKept(t *testing.T) {
 	live := fakeFlightdeck(t)
+	t.Run("a kept server beyond this machine probes nothing", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace", "installed", "server=https://flightdeck.example.com", "token="+testToken)
+		var probed []string
+		record := func(ctx context.Context, server string) bool {
+			probed = append(probed, server)
+			return testAnswers(false)(ctx, server)
+		}
+		r := runMainIO(t, map[string]string{"FLIGHTDECK_DATA_DIR": dataDirWith(t, live, os.Getpid())}, record, "", false, "claude-code")
+		if r.code != ExitOK || !strings.Contains(r.stdout, "already connected") || len(probed) != 0 {
+			t.Fatalf("%+v; probed %q, want nothing: the data dir is not read for a server that is kept", r, probed)
+		}
+	})
 	t.Run("a server beyond this machine", func(t *testing.T) {
 		f := newFakeClaude(t)
 		f.set(t, "marketplace", "installed", "server=https://flightdeck.example.com", "token="+testToken)
@@ -472,6 +504,10 @@ func TestConnect_Port(t *testing.T) {
 	r := runMain(t, nil, "", false, "claude-code", "--port", port)
 	if r.code != ExitOK || f.read(t, "server") != "http://localhost:"+port || strings.Contains(r.stdout, "No Flightdeck answers") {
 		t.Fatalf("--port: %+v, saved %q", r, f.read(t, "server"))
+	}
+	// Surrounding white space is dropped, as the server's --port drops it.
+	if r = runMain(t, nil, "", false, "claude-code", "--port", " "+port+" "); r.code != ExitOK || !strings.Contains(r.stdout, "already connected") {
+		t.Fatalf("--port with spaces: %+v", r)
 	}
 	// The same server as --server http://localhost:<port>: nothing to do.
 	if r = runMain(t, nil, "", false, "claude-code", "--server", "http://localhost:"+port+"/"); r.code != ExitOK || !strings.Contains(r.stdout, "already connected") {
@@ -620,6 +656,13 @@ func TestCheckReporting_OneLineExactlyWhenTheAgentReportsElsewhereOnThisMachine(
 		{"serving on ::1", &stubConnector{det: found, st: connected("")}, "[::1]:4100",
 			"Stub Agent reports to http://localhost:4000, not to this server at http://[::1]:4100: its sessions are not recorded here. " +
 				"To report here, run: flightdeck connect stub-agent --server http://[::1]:4100", 0},
+		{"localhost on the port, serving on ::1", &stubConnector{det: found, st: connected("http://localhost:4100")}, "[::1]:4100",
+			"Stub Agent reports to http://localhost:4100, not to this server at http://[::1]:4100: its sessions are not recorded here. " +
+				"To report here, run: flightdeck connect stub-agent --server http://[::1]:4100", 0},
+		{"localhost on the port, serving on 127.0.0.2", &stubConnector{det: found, st: connected("http://localhost:4100")}, "127.0.0.2:4100",
+			"Stub Agent reports to http://localhost:4100, not to this server at http://127.0.0.2:4100: its sessions are not recorded here. " +
+				"To report here, run: flightdeck connect stub-agent --server http://127.0.0.2:4100", 0},
+		{"127.0.0.2 by name, serving there", &stubConnector{det: found, st: connected("http://127.0.0.2:4100")}, "127.0.0.2:4100", "", 0},
 		{"a listen address that is not loopback", &stubConnector{det: found, st: connected("")}, "0.0.0.0:4100", "", 0},
 	}
 	for _, c := range cases {
@@ -700,5 +743,93 @@ func TestConnect_AStatusThatCannotBeReadIsThePlansToReport(t *testing.T) {
 	}
 	if got := f.changes(t); len(got) != 0 {
 		t.Fatalf("ran %q", got)
+	}
+}
+
+// listenOn is an HTTP server answering as a flightdeck on addr, or ""
+// when this machine cannot listen there (no 127.0.0.2 on macOS, no IPv6
+// loopback in some containers).
+func listenOn(t *testing.T, addr string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return ""
+	}
+	srv := httptest.NewUnstartedServer(fakeFlightdeckHandler())
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return ln.Addr().String()
+}
+
+// localhost is 127.0.0.1 alone: a Flightdeck on another loopback address
+// at the same port is not one a plugin saved as localhost reaches, and
+// connect points the plugin at it by its address.
+func TestLocalhostIs127001Alone(t *testing.T) {
+	for _, host := range []string{"127.0.0.2", "[::1]"} {
+		t.Run(host, func(t *testing.T) {
+			addr := listenOn(t, host+":0")
+			if addr == "" {
+				t.Skipf("cannot listen on %s here", host)
+			}
+			port := portOf(t, addr)
+			if ln, err := net.Listen("tcp", "127.0.0.1:"+port); err != nil {
+				t.Skipf("127.0.0.1:%s is taken: %v", port, err)
+			} else {
+				_ = ln.Close()
+			}
+			if flightdeckAnswers(context.Background(), "http://localhost:"+port) {
+				t.Fatalf("localhost:%s answered: the probe left 127.0.0.1", port)
+			}
+			if !flightdeckAnswers(context.Background(), "http://"+addr) {
+				t.Fatalf("%s did not answer by its address", addr)
+			}
+			f := newFakeClaude(t)
+			f.set(t, "marketplace", "installed", "server=http://localhost:"+port)
+			dir := dataDirWith(t, addr, os.Getpid())
+			r := runMain(t, map[string]string{"FLIGHTDECK_DATA_DIR": dir}, "", false, "claude-code", "--yes")
+			if want := "http://" + addr; r.code != ExitOK || f.read(t, "server") != want {
+				t.Fatalf("%+v, saved %q; want %s", r, f.read(t, "server"), want)
+			}
+		})
+	}
+}
+
+func TestProcessAlive(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Fatal("this process is not alive")
+	}
+	// Out of range: 0 and negatives name process groups, and the larger
+	// values wrap in a 32-bit system call to 0, -1 or 1.
+	for _, pid := range []int{0, -1, noSuchPID, 4294967296, 4294967295, 8589934593, 2147483648} {
+		if processAlive(pid) {
+			t.Errorf("processAlive(%d) = true", pid)
+		}
+	}
+	// A process of another user is not this user's instance: init (pid
+	// 1) refuses this user's signal unless the tests run as root.
+	if runtime.GOOS != "windows" && os.Getuid() != 0 && processAlive(1) {
+		t.Error("processAlive(1) = true: a process this user may not signal counts as this user's")
+	}
+}
+
+// ExecIn runs the command with exactly the environment it is given.
+func TestExecIn_TheCommandGetsThatEnvironmentAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no env command; the binary test of the check covers the server's use")
+	}
+	envCmd, err := exec.LookPath("env")
+	if err != nil {
+		t.Skip("no env command on PATH")
+	}
+	t.Setenv("FLIGHTDECK_JWT_SECRET", "must-not-pass")
+	stdout, _, err := ExecIn([]string{"ONLY=this"})(context.Background(), claudeLocalTimeout, nil, envCmd)
+	if err != nil || strings.TrimSpace(string(stdout)) != "ONLY=this" {
+		t.Fatalf("env printed %q (%v); want ONLY=this alone", stdout, err)
+	}
+	// nil is this process's environment, as Exec runs a command.
+	stdout, _, err = ExecIn(nil)(context.Background(), claudeLocalTimeout, nil, envCmd)
+	if err != nil || !strings.Contains(string(stdout), "FLIGHTDECK_JWT_SECRET=must-not-pass") {
+		t.Fatalf("env printed %q (%v); want this process's environment", stdout, err)
 	}
 }

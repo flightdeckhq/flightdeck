@@ -3,7 +3,7 @@
 package connect
 
 import (
-	"errors"
+	"math"
 	"os/exec"
 	"syscall"
 )
@@ -20,13 +20,15 @@ func killTreeOnCancel(cmd *exec.Cmd) {
 	}
 }
 
-// processAlive reports whether a process with that pid still runs. A
-// process of another user, which this one may not signal, runs too. A
-// pid of 0 or below names a process group, not a process: never alive.
+// processAlive reports whether a process of this user with that pid
+// still runs: one this process may signal. A process of another user,
+// which refuses the signal (EPERM), is not one this user started, so it
+// is not alive here. A pid out of 1 to math.MaxInt32 is never alive:
+// 0 and below name process groups, and a larger value wraps in the
+// system call to one of them or to another process.
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid < 1 || pid > math.MaxInt32 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return syscall.Kill(pid, 0) == nil
 }

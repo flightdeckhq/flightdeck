@@ -3,15 +3,35 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/flightdeckhq/flightdeck/internal/connect"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
 )
 
 // agentRegistry is the connectors the start-up check of the agents
-// asks. The binary tests replace it with an empty registry unless a test
-// is about the check, so no other test's start runs an agent's command.
-var agentRegistry = connect.Default
+// asks, their commands run in env. The binary tests replace it with an
+// empty registry unless a test is about the check, so no other test's
+// start runs an agent's command.
+var agentRegistry = connect.DefaultIn
+
+// agentEnvironment is the environment the check runs the agents'
+// commands in: environ, the one the binary was started with, without
+// any FLIGHTDECK_ variable. The server's settings and secrets are no
+// business of an agent's CLI or of what that CLI starts: the database
+// URL with its password, a supplied dashboard token, an agent token,
+// and the variables the binary sets for its services (the JWT secret,
+// the database URL), which are set after environ is read in any case.
+// Names are compared without case, as Windows reads them.
+func agentEnvironment(environ []string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if !strings.HasPrefix(strings.ToUpper(kv), "FLIGHTDECK_") {
+			kept = append(kept, kv)
+		}
+	}
+	return kept
+}
 
 // startAgentCheck runs the start-up check of the coding agents
 // (connect.CheckReporting) for the instance listening on listen, in a

@@ -3,7 +3,7 @@
 package connect
 
 import (
-	"errors"
+	"math"
 	"os/exec"
 	"strconv"
 
@@ -31,17 +31,18 @@ func killTreeOnCancel(cmd *exec.Cmd) {
 const stillActive = 259
 
 // processAlive reports whether a process with that pid still runs: one
-// that can be opened and has not exited. A process that has exited but
-// whose handle another process still holds is not running.
+// this process may open and that has not exited. A process that has
+// exited but whose handle another process still holds is not running,
+// and one this user may not query (access denied) is not one this user
+// started, so it is not alive here either. A pid out of 1 to
+// math.MaxInt32 is never alive: it would be cut to 32 bits otherwise.
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid < 1 || pid > math.MaxInt32 {
 		return false
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		// Access denied means the process is there and belongs to
-		// someone this process may not query.
-		return errors.Is(err, windows.ERROR_ACCESS_DENIED)
+		return false
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	var code uint32

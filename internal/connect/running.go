@@ -89,20 +89,27 @@ var defaultPort = func() string {
 
 // probeTarget is where flightdeckAnswers sends the health check for
 // server: the loopback address itself, so the probe never leaves this
-// machine, with localhost tried as 127.0.0.1 and then ::1.
+// machine. localhost is probed as 127.0.0.1 (localHost), the address a
+// stock system resolves it to and the plugin reaches.
 func probeTarget(server string) (health.Target, bool) {
 	l, ok := parseLocal(server)
 	if !ok {
 		return health.Target{}, false
 	}
-	if l.host == "localhost" {
-		return health.Target{
-			Base:     "http://" + net.JoinHostPort("127.0.0.1", l.port) + l.path,
-			Fallback: "http://" + net.JoinHostPort("::1", l.port) + l.path,
-		}, true
+	host := l.host
+	if host == "localhost" {
+		host = localHost.String()
 	}
-	return health.Target{Base: "http://" + net.JoinHostPort(l.host, l.port) + l.path}, true
+	return health.Target{Base: "http://" + net.JoinHostPort(host, l.port) + l.path}, true
 }
+
+// localHost is the address localhost names in these rules: 127.0.0.1.
+// It is what a stock system resolves localhost to (on Linux, WSL and
+// macOS never to another 127.x address, and often not to ::1 either),
+// and the address `flightdeck --port` listens on, whose server is
+// therefore http://localhost:<port> (serverFor). A listen on ::1 or
+// another 127.x address is that address, not localhost.
+var localHost = netip.MustParseAddr("127.0.0.1")
 
 // serverFor returns the server value an agent is given for an instance
 // listening on listen, a loopback IP address and port: what its
@@ -114,7 +121,7 @@ func serverFor(listen string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if addr == netip.MustParseAddr("127.0.0.1") {
+	if addr == localHost {
 		return "http://localhost:" + port, true
 	}
 	return "http://" + net.JoinHostPort(addr.String(), port), true
@@ -140,8 +147,9 @@ func loopbackListen(listen string) (netip.Addr, string, bool) {
 
 // reportsHere reports whether server, an agent's saved server ("" is
 // DefaultServer), names the instance listening on listen: an http://
-// value with no path and the instance's port, whose host is localhost
-// or the listen address itself.
+// value with no path and the instance's port, whose host is the listen
+// address, localhost standing for 127.0.0.1 alone (localHost), the
+// inverse of serverFor.
 func reportsHere(server, listen string) bool {
 	l, ok := parseLocal(server)
 	if !ok || l.path != "" {
@@ -152,7 +160,7 @@ func reportsHere(server, listen string) bool {
 		return false
 	}
 	if l.host == "localhost" {
-		return true
+		return addr == localHost
 	}
 	saved, err := netip.ParseAddr(l.host)
 	return err == nil && saved.Unmap() == addr
@@ -236,6 +244,10 @@ type serverChoice struct {
 	// report to otherwise: the instance found running. It is shown with
 	// the plan.
 	why string
+	// found names that instance and the data dir it was found in. It
+	// follows the closing line, so a run without the plan shown (--yes,
+	// an installer) says where the address came from.
+	found string
 	// idle says that no Flightdeck answers at the server the agent is
 	// to report to, and how to start one (idleNote). It is shown with
 	// the plan and after it.
@@ -256,28 +268,29 @@ func chooseServer(ctx context.Context, c Connector, dataDir string, answers Answ
 	if err != nil {
 		return serverChoice{}
 	}
-	inst, found := findRunning(ctx, dataDir, answers)
-	if !st.Installed {
-		switch {
-		case found && sameServer(inst.Server, DefaultServer):
-			// The integration's default: nothing to save.
+	if st.Installed {
+		// A server kept as it is reads no data dir: one beyond this
+		// machine or https://, or one on it that answers.
+		if _, local := parseLocal(st.Server); !local || answers(ctx, st.Server) {
 			return serverChoice{}
-		case found:
-			return serverChoice{
-				target: Target{Server: inst.Server, Local: true},
-				why:    fmt.Sprintf("%s is the Flightdeck running on this machine (data dir %s).", inst.Server, inst.DataDir),
-			}
 		}
-		return idleChoice(ctx, Target{}, "", answers)
 	}
-	if _, local := parseLocal(st.Server); !local || answers(ctx, st.Server) {
+	inst, found := findRunning(ctx, dataDir, answers)
+	where := fmt.Sprintf("%s is the Flightdeck running on this machine (data dir %s).", inst.Server, inst.DataDir)
+	switch {
+	case !st.Installed && found && sameServer(inst.Server, DefaultServer):
+		// The integration's default: nothing to save.
 		return serverChoice{}
-	}
-	if found && !reportsHere(st.Server, inst.Listen) {
+	case !st.Installed && found:
+		return serverChoice{target: Target{Server: inst.Server, Local: true}, why: where, found: where}
+	case !st.Installed:
+		return idleChoice(ctx, Target{}, "", answers)
+	case found && !reportsHere(st.Server, inst.Listen):
 		return serverChoice{
 			target: Target{Server: inst.Server, Local: true},
-			why: fmt.Sprintf("%s reports to %s, where no Flightdeck answers; %s is the Flightdeck running on this machine (data dir %s).",
-				c.Name(), describeServer(st.Server), inst.Server, inst.DataDir),
+			why: fmt.Sprintf("%s reports to %s, where no Flightdeck answers; %s",
+				c.Name(), describeServer(st.Server), where),
+			found: where,
 		}
 	}
 	return serverChoice{idle: idleNote(st.Server)}
@@ -294,12 +307,13 @@ func idleChoice(ctx context.Context, target Target, server string, answers Answe
 }
 
 // annotate adds the choice's lines to the plan: why it reports where it
-// does before the plan's notice, and the idle note after the notice and
-// after the line that closes the run.
+// does before the plan's notice; the instance found after the line that
+// closes the run; the idle note after the notice and after the line
+// that closes the run.
 func (s serverChoice) annotate(p *Plan) {
 	p.Notice = joinLines(s.why, p.Notice, s.idle)
 	p.Unchanged = joinLines(p.Unchanged, s.idle)
-	p.Done = joinLines(p.Done, s.idle)
+	p.Done = joinLines(p.Done, s.found, s.idle)
 }
 
 // joinLines joins the lines that are not empty.

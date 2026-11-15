@@ -105,7 +105,7 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(runBinaryEnv) == "1" {
 		if os.Getenv(agentCheckEnv) != "1" {
-			agentRegistry = func() connect.Registry { return nil }
+			agentRegistry = func([]string) connect.Registry { return nil }
 		}
 		main() // exits the process
 		return

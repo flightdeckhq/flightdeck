@@ -155,8 +155,10 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		if given["server"] {
 			return fail("--port and --server were both given; --port <port> is short for --server http://localhost:<port>, so give one of them")
 		}
-		n, err := strconv.Atoi(*port)
-		if err != nil || strings.Trim(*port, "0123456789") != "" || n < 1 || n > 65535 {
+		// Surrounding white space goes, as the server's --port drops it.
+		p := strings.TrimSpace(*port)
+		n, err := strconv.Atoi(p)
+		if err != nil || strings.Trim(p, "0123456789") != "" || n < 1 || n > 65535 {
 			return fail("--port takes a port number from 1 to 65535, the one flightdeck serves on: for example --port 4100")
 		}
 		*server, given["server"] = "http://localhost:"+strconv.Itoa(n), true
@@ -363,9 +365,11 @@ machine, found through its data dir (--data-dir, else $FLIGHTDECK_DATA_DIR, else
 the server's default), or with none running to the local server (%s, with
 the development token). An existing one keeps its server, unless that is an address
 on this machine where nothing answers while a flightdeck runs here at another: the
-plan then points it there. --port N is short for --server http://localhost:N. With
---server, the token is read from --token-file, else from FLIGHTDECK_TOKEN; no flag
-takes the token itself, since a command line is visible to every user of the machine.
+plan then points it there. --port N is short for --server http://localhost:N. The
+server read is the one saved in the integration; a FLIGHTDECK_SERVER in the agent's
+own environment overrides it there and is not seen here. With --server, the token
+is read from --token-file, else from FLIGHTDECK_TOKEN; no flag takes the token
+itself, since a command line is visible to every user of the machine.
 
 On a terminal the command lists what it will change and asks first; --yes skips
 that. Without a terminal, connecting goes ahead (a script asked for it) and

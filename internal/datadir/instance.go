@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // InstanceFile is the name of the file in a data dir that says where the
@@ -20,7 +20,9 @@ import (
 //	{"listen": "127.0.0.1:4100", "pid": 12345}
 //
 // listen is the address the instance's listener bound, an IP address
-// and a port as net.JoinHostPort writes them; pid is its process id.
+// and a port as net.JoinHostPort writes them; pid is its process id,
+// from 1 to math.MaxInt32 (the range a pid has on every supported
+// system; a reader refuses any other).
 // Readers ignore members they do not know, so one may be added. The
 // file holds no token and nothing secret; it has the mode of the data
 // dir's other files, 0600.
@@ -53,11 +55,22 @@ func WriteInstance(dir string, inst Instance) error {
 	}
 	path := filepath.Join(dir, InstanceFile)
 	tmp := path + ".tmp"
-	// A temporary file an earlier run left goes first: WriteFile keeps
-	// the mode of a file that exists.
+	// Whatever an earlier run left at the temporary name goes first (a
+	// link is removed, never followed), and the file is then created
+	// new: O_EXCL refuses anything that took the name in between, a
+	// link included, so the write never lands outside the data dir.
 	_ = os.Remove(tmp)
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
 		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	_, werr := f.Write(append(data, '\n'))
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write %s: %w", tmp, werr)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
@@ -78,42 +91,19 @@ func RemoveInstance(dir string) error {
 }
 
 // ReadInstance returns what dir's instance file holds, ErrNoInstance
-// when there is none. It is read only when it is a regular file (not a
-// link) of at most maxInstanceBytes and, on Unix, neither the file nor
-// dir can be written by other users: another user who could write it
-// could point an agent at a server of their own on this machine. The
-// record says only what an instance wrote; whether that instance still
-// runs is the caller's to check.
+// when there is none. It is read only when openInstance trusts it (a
+// regular file that is not a link; on Unix also one link, owned with
+// the data dir by this user, and neither writable by other users),
+// since whoever could write it could point an agent at a server of
+// their own on this machine, and only when it is at most
+// maxInstanceBytes with a pid in range. The record says only what an
+// instance wrote; whether that instance still runs is the caller's to
+// check.
 func ReadInstance(dir string) (Instance, error) {
 	path := filepath.Join(dir, InstanceFile)
-	info, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return Instance{}, ErrNoInstance
-	case err != nil:
-		return Instance{}, fmt.Errorf("stat %s: %w", path, err)
-	case !info.Mode().IsRegular():
-		return Instance{}, fmt.Errorf("%s is not a regular file", path)
-	}
-	if runtime.GOOS != "windows" {
-		if info.Mode().Perm()&0o022 != 0 {
-			return Instance{}, fmt.Errorf("%s can be written by other users (mode %04o)", path, info.Mode().Perm())
-		}
-		dirInfo, err := os.Stat(dir)
-		if err != nil {
-			return Instance{}, fmt.Errorf("stat %s: %w", dir, err)
-		}
-		if dirInfo.Mode().Perm()&0o022 != 0 {
-			return Instance{}, fmt.Errorf("data dir %s can be written by other users (mode %04o)", dir, dirInfo.Mode().Perm())
-		}
-	}
-	f, err := os.Open(path)
+	f, err := openInstance(path, dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// Removed by a stop since the Lstat.
-			return Instance{}, ErrNoInstance
-		}
-		return Instance{}, fmt.Errorf("read %s: %w", path, err)
+		return Instance{}, err
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxInstanceBytes+1))
@@ -130,5 +120,23 @@ func ReadInstance(dir string) (Instance, error) {
 	if inst.Listen == "" || inst.PID <= 0 {
 		return Instance{}, fmt.Errorf("%s names no address and process", path)
 	}
+	if inst.PID > math.MaxInt32 {
+		// No process has it, and a larger value wraps to 0, -1 or a low
+		// pid in a 32-bit system call (0 and -1 name process groups).
+		return Instance{}, fmt.Errorf("%s names a process id out of range", path)
+	}
 	return inst, nil
+}
+
+// errNotRegular is part of the refusal of an instance file that is a
+// link, a directory, a device or a pipe.
+var errNotRegular = errors.New("not a regular file")
+
+// openNotExist turns the open error of an instance file that is not
+// there into ErrNoInstance.
+func openNotExist(path string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return ErrNoInstance
+	}
+	return fmt.Errorf("open %s: %w", path, err)
 }

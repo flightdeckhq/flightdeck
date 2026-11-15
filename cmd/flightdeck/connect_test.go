@@ -364,3 +364,109 @@ func TestStartAgentCheck_NeverBlocksTheStartAndEndsWhenCancelled(t *testing.T) {
 		t.Fatalf("a cancelled check logged:\n%s", logged.String())
 	}
 }
+
+func TestAgentEnvironment_DropsEveryFlightdeckVariable(t *testing.T) {
+	got := agentEnvironment([]string{
+		"PATH=/bin", "CLAUDE_CONFIG_DIR=/c", "FLIGHTDECK_JWT_SECRET=s", "FLIGHTDECK_POSTGRES_URL=postgres://u:p@h/d",
+		"FLIGHTDECK_DATABASE_URL=postgres://u:p@h/d", "FLIGHTDECK_DASHBOARD_TOKEN=t", "FLIGHTDECK_TOKEN=t", "flightdeck_token_file=/f",
+		"ENVIRONMENT=prod", "NOT_FLIGHTDECK_X=kept",
+	})
+	want := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/c", "ENVIRONMENT=prod", "NOT_FLIGHTDECK_X=kept"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("agentEnvironment = %q, want %q", got, want)
+	}
+}
+
+// recordingClaude replaces the stand-in on env's PATH with a wrapper that
+// writes the environment it was started with to env.<pid> in the
+// stand-in's state directory, then runs the stand-in.
+func recordingClaude(t *testing.T, env []string) {
+	t.Helper()
+	bin, _, _ := strings.Cut(strings.TrimPrefix(env[0], "PATH="), string(os.PathListSeparator))
+	standIn := filepath.Join(bin, "claude-stand-in")
+	if err := os.Rename(filepath.Join(bin, "claude"), standIn); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := "#!/bin/sh\nenv > \"$FAKE_CLAUDE_STATE/env.$$\"\nexec '" + standIn + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// recordedEnvironments returns every environment the wrapper recorded.
+func recordedEnvironments(t *testing.T, state string) []string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(state, "env.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envs []string
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		envs = append(envs, string(data))
+	}
+	return envs
+}
+
+// The server's secrets stay in the server: the claude the start-up check
+// runs gets the environment the binary was started with, without any
+// FLIGHTDECK_ variable, so neither the JWT secret and the database URL
+// the binary sets for its services nor a supplied token reaches it.
+// `flightdeck connect`, a process of its own, never holds the server's.
+func TestBinary_TheAgentsCommandsGetNoneOfTheServersSecrets(t *testing.T) {
+	skipWithoutSignals(t)
+	env, state := connectEnv(t)
+	recordingClaude(t, env)
+	setClaudeState(t, state, "marketplace", "installed", "server=http://localhost:"+freePort(t))
+	port := freePort(t)
+	secrets := []string{
+		"FLIGHTDECK_DASHBOARD_TOKEN=ftd_9f3a1c7e5b2d4086a1c3e5f7092b4d6e",
+		"FLIGHTDECK_TOKEN=ftd_0123456789abcdef0123456789abcdef",
+	}
+	c := startArgs(t, append(append(env, agentCheckEnv+"=1"), secrets...), port, "--port", port, "--data-dir", filepath.Join(tempDir(t), "data"))
+	waitFor(t, "the line that Claude Code reports elsewhere", logTimeout, func() bool { return strings.Contains(c.out.String(), "reports to ") })
+	if err := c.stop(t, os.Interrupt); err != nil {
+		t.Fatalf("the stop: %v\n%s", err, c.out.String())
+	}
+	envs := recordedEnvironments(t, state)
+	if len(envs) == 0 {
+		t.Fatal("the check ran no claude")
+	}
+	for _, e := range envs {
+		if !strings.Contains(e, "FAKE_CLAUDE_STATE=") {
+			t.Fatalf("the recorded environment is not the binary's:\n%s", e)
+		}
+		for _, line := range strings.Split(e, "\n") {
+			if strings.HasPrefix(strings.ToUpper(line), "FLIGHTDECK_") || line == "ENVIRONMENT=dev" {
+				t.Errorf("the check's claude got %s", strings.SplitN(line, "=", 2)[0])
+			}
+		}
+	}
+
+	// connect: the user's own variables, none of the server's.
+	for _, p := range mustGlob(t, filepath.Join(state, "env.*")) {
+		_ = os.Remove(p)
+	}
+	if code, out := runConnect(t, env, "claude-code", "--dry-run"); code != 0 {
+		t.Fatalf("connect --dry-run: exit %d:\n%s", code, out)
+	}
+	for _, e := range recordedEnvironments(t, state) {
+		for _, name := range []string{"FLIGHTDECK_JWT_SECRET=", "FLIGHTDECK_POSTGRES_URL=", "FLIGHTDECK_DASHBOARD_TOKEN=", "ENVIRONMENT=dev"} {
+			if strings.Contains(e, name) {
+				t.Errorf("connect's claude got %s", strings.TrimSuffix(name, "="))
+			}
+		}
+	}
+}
+
+func mustGlob(t *testing.T, pattern string) []string {
+	t.Helper()
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}

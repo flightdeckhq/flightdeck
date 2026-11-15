@@ -278,6 +278,9 @@ func bind(opts cli.Options) (*listeners, error) {
 
 func serveAll(opts cli.Options, stdout *os.File) error {
 	dev := bootstrap.DevMode(opts.Listen, opts.Domain)
+	// Read before setServiceEnv adds the services' variables: the check
+	// of the agents runs their commands in this, without the server's own.
+	agentEnv := agentEnvironment(os.Environ())
 	warnHostless(opts)
 	// Read before anything is bound or written: a token that is refused
 	// stops the start with nothing done.
@@ -554,7 +557,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		// waits for it before anything below is closed. In --public and
 		// --domain mode no agent's command is started.
 		checkCtx, cancelCheck := context.WithCancel(ctx)
-		wait := startAgentCheck(checkCtx, agentRegistry(), lns.plain.Addr().String(), slog.Default())
+		wait := startAgentCheck(checkCtx, agentRegistry(agentEnv), lns.plain.Addr().String(), slog.Default())
 		defer func() {
 			cancelCheck()
 			wait()

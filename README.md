@@ -4,8 +4,9 @@
     <img alt="Flightdeck" src="dashboard/public/assets/flightdeck-lockup-light.svg" width="280">
   </picture>
   <p><strong>See and control every AI agent you run, from one self-hosted binary.</strong></p>
+  <p>An observability and control plane for AI agents: every LLM, tool and MCP call as it happens, with token budgets, MCP policy and a kill switch.</p>
   <p>
-    <a href="#install">Quickstart</a> · <a href="#coverage">Coverage</a> · <a href="#self-hosting">Self-hosting</a> · <a href="https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap">Roadmap</a>
+    <a href="#what-you-get">What it is</a> · <a href="#install">Quickstart</a> · <a href="#coverage">Coverage</a> · <a href="#self-hosting">Self-hosting</a> · <a href="https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap">Roadmap</a>
     &nbsp;
     <a href="https://github.com/flightdeckhq/flightdeck/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/flightdeckhq/flightdeck"></a>
     <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>

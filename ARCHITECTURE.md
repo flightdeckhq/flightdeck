@@ -12595,7 +12595,8 @@ one behaves as the first does:
   them is found but **outdated**: the listing shows the version and
   what to do (update the agent, or install the integration from inside
   it), the installers' query reports it as `outdated` (`connected` once
-  its integration is installed from inside it), and a connect answers
+  its integration is installed and turned on from inside it), and a
+  connect answers
   or refuses before reading anything else (exit status 5 when it
   refuses; an agent connected from inside it with nothing asked is
   already connected, exit 0). A check

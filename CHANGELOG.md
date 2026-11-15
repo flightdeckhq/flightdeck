@@ -19,13 +19,15 @@ reports to another address here logs a line saying so, with the command
 that points it here; `flightdeck connect claude-code` reports to the
 Flightdeck it finds running; and when none runs yet, it says how to
 start one. A Claude Code too old to connect is told to run
-`claude update` instead of failing. In the sensor, LangGraph shows more
-of an application's structure as child sessions: the Runnable and
-`ToolNode` nodes of a graph you build, a graph run started inside
-another (a compiled graph used as a node, an agent invoked from a
-tool), and each Deep Agents `task` sub-agent. Plugin users update with
-`claude plugin update flightdeck@flightdeck-plugins`; marketplace
-installs do not update themselves.
+`claude update` instead of failing on an unknown option. In the sensor,
+LangGraph shows more of an application's structure as child sessions:
+the Runnable and `ToolNode` nodes of a graph you build, a graph run
+started inside another (a compiled graph used as a node, an agent
+invoked from a tool), and each Deep Agents `task` sub-agent. The
+plugin's code is unchanged; its marketplace entry moves to this
+release, so plugin users update with
+`claude plugin update flightdeck@flightdeck-plugins` (marketplace
+installs do not update themselves).
 
 **Upgrade notes**
 
@@ -34,18 +36,32 @@ installs do not update themselves.
   where they bound every interface, and a start with such an address
   logs a warning. A container started with
   `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
-  `--listen :<port>` as its command or arguments, is no longer
-  reachable from outside the container, while `flightdeck health`
-  inside it still reports healthy: write `0.0.0.0:<port>`, or use
-  `--public`. The published image and the Helm chart set `0.0.0.0`
-  themselves and serve as before.
-- **A reverse proxy on the same machine with a supplied token.** An
-  instance started with `:<port>` and a supplied dashboard token
+  `--listen :<port>` as its command or arguments (as v0.10.0's image
+  and chart did), is no longer reachable from outside the container,
+  while `flightdeck health` inside it still reports healthy (without a
+  supplied dashboard token; with one it does not start, below): write
+  `0.0.0.0:<port>`, or use `--public`. The published image and the
+  Helm chart now set `0.0.0.0` themselves and serve as before.
+- **`:<port>` with a supplied dashboard token stops the start.** A
+  host-less listen address beside a supplied dashboard token
   (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or `FLIGHTDECK_DASHBOARD_TOKEN`)
-  now refuses to start, naming the forms to write:
-  `--listen 127.0.0.1:<port>` keeps it on this machine with the
-  development token, and `--listen 0.0.0.0:<port>` or `--public`
-  serves the supplied one.
+  ends every start with exit status 2 and the forms to write. That is
+  a container or a manifest with a token secret (the chart's
+  `dashboardTokenSecret`, `-e FLIGHTDECK_DASHBOARD_TOKEN_FILE`) that
+  passes `--listen :<port>` or `FLIGHTDECK_LISTEN=:<port>`, which then
+  fails every start (a crash loop under Kubernetes), and an instance
+  behind a reverse proxy on the same machine started that way.
+  `--listen 0.0.0.0:<port>` or `--public` serves other machines with
+  the supplied token; `--listen 127.0.0.1:<port>` keeps it on this
+  machine, where a reverse proxy on the same machine then serves the
+  development token.
+- **`flightdeck` now reads `FLIGHTDECK_PORT` and `FLIGHTDECK_PUBLIC`.**
+  A `FLIGHTDECK_PORT` left over from the separate services (v0.8.0's
+  compose file set it to `8080` and `8081`), which v0.10.0's binary
+  ignored, moves the binary to `127.0.0.1:<that port>`, and next to
+  `FLIGHTDECK_LISTEN` (which the published image sets) it stops the
+  start with exit status 2, as `FLIGHTDECK_PUBLIC` does there: remove
+  it. A Kubernetes service link's value (`tcp://…`) is ignored.
 - A `--listen` host name that resolves to a loopback address
   (`ip6-localhost`, or a machine's own name that `/etc/hosts` maps to
   `127.0.1.1`) now stops the start: write `--port <port>` or
@@ -80,29 +96,32 @@ installs do not update themselves.
   server then refuses the development token and creates an access token
   on its first start, as `--listen 0.0.0.0:4000` does. `--listen` stays
   for one specific address and cannot be combined with either: given
-  together they stop the start with a usage error that names both, as
-  do `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
-  set together with no flag deciding. A port outside 1 to 65535 is
-  refused with what to pass. `flightdeck health` takes the same flags
-  and variables and finds the instance they describe (D277).
+  together they stop the start with a usage error that names both, as do
+  `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC` set
+  together with no flag deciding. A port outside 1 to 65535 is refused
+  with what to pass. A `FLIGHTDECK_PORT` that Kubernetes sets for a
+  Service named `flightdeck` (`tcp://…`) is read as unset, so such a
+  namespace's pods start as before. `flightdeck health` takes the same
+  flags and variables and finds the instance they describe (D277).
 - **LangGraph: Runnable and `ToolNode` nodes of a graph you build open
   child sessions.** A node whose action is a Runnable (`RunnableLambda`,
   `RunnableCallable`, an LCEL pipe, a `ToolNode` you add) now opens a
   child session each time it runs, as a function node does, with its
   role from the node name (an unnamed Runnable node takes the name
   LangGraph gives it, its `get_name()`). The Runnable is wrapped in a
-  delegating `RunnableCallable` that hands the node to the Runnable's own
-  `invoke`, `ainvoke` or `astream`, so each step keeps its own sync or
-  async dispatch (a chat model in a pipe still gets `ainvoke` on the
+  delegating `RunnableCallable` that hands the node to the Runnable's
+  own `invoke`, `ainvoke` or `astream`, so each step keeps its own sync
+  or async dispatch (a chat model in a pipe still gets `ainvoke` on the
   loop), and stream output, `Send` fan-out, `Command` returns,
   interrupts, the tool runtime a `ToolNode` is given, sub-graph
   detection and node-timeout checks are unchanged; `astream_events` is
   too, except that an LCEL pipe node shows one more `RunnableSequence`
-  run, since LangGraph no longer flattens its steps. The nodes
-  `create_agent` and `create_react_agent` register (the model call, the
-  tool execution, middleware and model hooks) open none: they are the
-  agent's own steps, not sub-agents, so a `create_react_agent`
-  `pre_model_hook` or `post_model_hook` no longer opens one either.
+  run, since the wrapper keeps LangGraph from flattening the pipe's
+  steps into the node's run. The nodes `create_agent` and
+  `create_react_agent` register (the model call, the tool execution,
+  middleware and model hooks) open none: they are the agent's own steps,
+  not sub-agents, so a `create_react_agent` `pre_model_hook` or
+  `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
 - **LangGraph and Deep Agents: a graph run started inside another opens
   a child session.** A run of a compiled graph that starts inside
@@ -165,21 +184,24 @@ installs do not update themselves.
   token and opened the server to the network. To serve other machines,
   say so: `--public` (with `--port` for another port) or `--listen
   0.0.0.0:4000`, or one interface's address (`--listen 10.0.0.5:4000`).
-  `FLIGHTDECK_LISTEN=:4000` changes the same way, and every start with
-  a host-less address now logs a warning that says so. A container
-  started with `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
+  `FLIGHTDECK_LISTEN=:4000` changes the same way, and every start with a
+  host-less address now logs a warning that says so. A container started
+  with `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
   `--listen :<port>` as its command or arguments, is no longer reachable
   from outside the container while `flightdeck health` inside it still
-  reports healthy: write `0.0.0.0:<port>`. The Docker image now sets
+  reports healthy (without a supplied dashboard token; with one it does
+  not start, below): write `0.0.0.0:<port>`. The Docker image now sets
   `FLIGHTDECK_LISTEN=0.0.0.0:4000` and the Helm chart passes `--listen
-  0.0.0.0:<port>`, so both serve as before. An instance behind a
-  reverse proxy on the same machine that was started with `:<port>` and
-  a supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
-  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at start, with the forms to
-  write, instead of falling back to the development token while the
-  proxy keeps forwarding: `--listen 127.0.0.1:<port>` keeps it on this
-  machine (and serves the development token), `--listen
-  0.0.0.0:<port>` or `--public` serves the supplied one.
+  0.0.0.0:<port>`, so both serve as before. A host-less address beside a
+  supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at every start with exit
+  status 2 and the forms to write, instead of falling back to the
+  development token: a container or a manifest with a token secret (the
+  chart's `dashboardTokenSecret`) that passes `:<port>`, and an instance
+  behind a reverse proxy on the same machine started that way. `--listen
+  0.0.0.0:<port>` or `--public` serves the supplied token; `--listen
+  127.0.0.1:<port>` keeps it on this machine, with the development
+  token.
 - **A `--listen` host name that resolves to loopback now stops the
   start.** A name that is not `localhost` and binds a loopback address
   (`ip6-localhost`, or a machine's own name where `/etc/hosts` maps it
@@ -198,10 +220,7 @@ installs do not update themselves.
   start-up block say that whoever can reach a `--public` server can read
   its dashboard token, so open it only on a network you trust, or put it
   behind a proxy that authenticates. A port already in use names the
-  flags for the next one, `--port 4001` on this machine. A
-  `FLIGHTDECK_PORT` that Kubernetes sets for a Service named
-  `flightdeck` (`tcp://…`) is read as unset, so such a namespace's pods
-  start as before (D277).
+  flags for the next one, `--port 4001` on this machine.
 
 ### Fixed
 

@@ -36,21 +36,37 @@ Then start it:
 flightdeck
 ```
 
-The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
+The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token; `flightdeck --help` lists the flags. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
 
-<details>
-<summary>Homebrew, pip, Docker and the release page</summary>
+### Other ways to install
+
+Every channel installs the same binary, built for Linux, macOS and Windows on amd64 and arm64.
+
+**Homebrew**
 
 ```bash
-brew install flightdeckhq/tap/flightdeck   # Homebrew
-pip install flightdeck-cli                 # PyPI: the same binary, as the flightdeck command
-uvx flightdeck-cli                         # or run it from PyPI without installing
+brew install flightdeckhq/tap/flightdeck
+```
+
+**PyPI**, as the `flightdeck` command:
+
+```bash
+pip install flightdeck-cli
+```
+
+Or run it from PyPI without installing:
+
+```bash
+uvx flightdeck-cli
+```
+
+**Docker**: the image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`.
+
+```bash
 docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 ```
 
-Every channel installs the same binary, for Linux, macOS and Windows on amd64 and arm64; the archives are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed). The Docker image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`. `flightdeck --help` lists the flags, and [guides/windows.md](guides/windows.md) has the detail for Windows.
-
-</details>
+**The release page** has the archives for every platform: [github.com/flightdeckhq/flightdeck/releases](https://github.com/flightdeckhq/flightdeck/releases). The installers above download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed).
 
 ## Connect your agents
 

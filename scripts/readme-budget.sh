@@ -8,7 +8,10 @@
 # What is counted: the commands inside fenced code blocks, attributed
 # to the `## ` section the block is in (a `###` subsection belongs to
 # its `## ` section; the text before the first `## ` heading is
-# "(preamble)"), so a section's count is what its reader types.
+# "(preamble)"), so a section's count is what its reader types. A
+# heading is an ATX heading (`## `, `### `) indented three columns at
+# most, outside fences and outside HTML comments: GitHub renders one in
+# a comment as nothing, so it opens no section.
 #
 # The install blocks. The README's promise is that installing is one
 # command on each platform, so the `## Install` section shows exactly
@@ -27,20 +30,36 @@
 # (`flightdeck --listen 127.0.0.1:4100`), whatever its fence is tagged.
 # The line is held to an allowlist (RUN_COMMAND_RE below), so nothing
 # else can ride on it: no pipe, redirection, separator, substitution,
-# variable, quote or comment.
-# Any other visible command in the section fails the run, labelled or
-# not. A second install command therefore fails wherever it is put: in
-# a platform's block, chained onto its line, in a second block under
-# the same label, in a block labelled with another platform, or in an
-# unlabelled block (`brew install ...` under a bash fence, a second
-# `irm ... | iex` under a powershell one).
+# variable, quote or comment. The install blocks and that command are
+# the section's first-run path.
+# Any other visible command in the section, outside the subsection
+# below, fails the run, labelled or not. A second install command
+# therefore fails wherever it is put: in a platform's block, chained
+# onto its line, in a second block under the same label, in a block
+# labelled with another platform, or in an unlabelled block (`brew
+# install ...` under a bash fence, a second `irm ... | iex` under a
+# powershell one).
+#
+# The other ways to install. After the install blocks, the section may
+# have a `### Other ways to install` subsection (ALTERNATIVES_HEADING
+# below, in any letter case): the other channels (Homebrew, PyPI,
+# Docker) in plain sight, after the one-command path. It runs to the
+# next `# `, `## ` or `### ` heading; a `#### ` heading inside it does
+# not end it. Its visible blocks are held to the shape
+# of an install block, exactly one command on one line with no prompt,
+# and to a budget of their own (ALTERNATIVES_MAX); the label before a
+# block is not read there, so the platform rules above do not apply
+# inside it. Every install block must come before the subsection: a
+# block after it fails, and so does a subsection that opens before the
+# blocks, where the blocks would read as alternatives. The heading
+# anywhere else fails too: as a `## ` section, as a `### ` of another
+# section, or at another level.
 #
 # Folded commands. A fence inside a collapsed `<details>` element is
 # counted like any other: it adds to its section's count and to the
-# total, so alternatives folded under one line still cost budget. It
-# does not add to the section's visible count, which is what the
-# install budget limits: the other install channels sit in a
-# `<details>` under the install blocks. What counts as folded is what
+# total, so commands folded under one line still cost budget. It does
+# not add to the first-run path or to the other ways to install, the
+# install section's two visible budgets. What counts as folded is what
 # GitHub renders folded:
 #   - `<details open>` is rendered unfolded, in any spelling of the
 #     attribute (`OPEN`, `open=""`, `open="open"`), so its fences are
@@ -140,11 +159,17 @@ INSTALL_BLOCK_COMMANDS=1
 # shell installer for Linux and macOS, the PowerShell one for Windows.
 # Separated by "|".
 PLATFORMS="Linux and macOS|Windows"
-# Install, visible: one install command per platform and `flightdeck`
-# to start it. The other channels (Homebrew, pip, Docker) are folded in
-# a `<details>` and count toward the total only. A fourth visible
-# command means a step crept back into the first-run path.
+# Install, first-run path: one install command per platform and
+# `flightdeck` to start it. A fourth command outside the other ways to
+# install (and outside a `<details>`) means a step crept back into the
+# first-run path.
 INSTALL_VISIBLE_MAX=3
+# Install, other ways to install: one command per channel, each in its
+# own block (INSTALL_BLOCK_COMMANDS each): Homebrew, PyPI's pip install
+# and its uvx run-without-installing, and Docker; the release page is a
+# link. Nothing is spare: a fifth command is a new channel, which is a
+# reviewed change to this number, or a step that crept in.
+ALTERNATIVES_MAX=4
 # Connect your agents: the plugin's three REPL lines (add the
 # marketplace, install, reload) and one pip install (the sensor's two
 # lines of Python are a python fence and not counted). A fifth command
@@ -155,8 +180,8 @@ CONNECT_MAX=4
 # and Compose and Helm read their files from a clone, which is the
 # sixth. Nothing is spare: a seventh command means a step crept in.
 SELF_HOSTING_MAX=6
-# Total: the three sections above plus the install channels folded
-# under the install block, with a few to spare. Twenty is roughly a
+# Total: the budgets above (3 + 4 + 4 + 6 = 17), with three to spare
+# for a section that has no budget of its own. Twenty is roughly a
 # third of what the README carried when the stack was seven containers
 # compiled from source.
 TOTAL_MAX=20
@@ -179,6 +204,10 @@ INSTALL_HEADING="Install"
 # backslash escapes, so the dot is written as a bracket expression and
 # \t is a tab by the time awk compiles it.
 RUN_COMMAND_RE='^flightdeck([.]exe)?([ \t]+--?[A-Za-z0-9][A-Za-z0-9-]*(=[A-Za-z0-9_:./,-]+)?([ \t]+[A-Za-z0-9_:./,][A-Za-z0-9_:./,-]*)?)*$'
+# The `### ` subsection of the install section that holds the other
+# ways to install, as it appears after `### ` (compared
+# case-insensitively).
+ALTERNATIVES_HEADING="Other ways to install"
 CONNECT_HEADING="Connect your agents"
 SELF_HOSTING_HEADING="Self-hosting"
 
@@ -275,12 +304,17 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # "B\t<platform>\t<commands>\t<lines>\t<prompts>\t<line>": its
 # commands, its lines of any kind, how many of them start with a prompt,
 # and the line it opens on; "D\t<platform>\t<line>" for a second block
-# under a platform's label; and, when the section shows a command
-# outside the install blocks that is not the run command,
-# "O\t<count>\t<line>\t<command>" for the first such command. It
-# exits 1 with a
-# message on a fence, a heredoc or a <details> that is never closed and
-# on a command in a sample fence. The rules are the ones in the header;
+# under a platform's label; when the section shows a command outside
+# the install blocks and the other ways to install that is not the run
+# command, "O\t<count>\t<line>\t<command>" for the first such command;
+# when it has the other ways to install, "A\t<line>\t<commands>" (the
+# line of its first heading and its visible commands) and for each of
+# its visible blocks "L\t<commands>\t<lines>\t<prompts>\t<line>"; and
+# "M\t<line>\t<level>" for the first heading that names the other ways
+# to install anywhere but as a `### ` of the install section. It exits
+# 1 with a message on a fence, a heredoc, a <details> or a comment that
+# is never closed and on a command in a sample fence. The rules are the
+# ones in the header;
 # the program keeps to POSIX awk (no gawk functions), and takes the
 # single quote as a variable because it sits inside a quoted shell
 # word.
@@ -289,6 +323,7 @@ counts() {
     -v cmds="$CMD_LANGUAGES" -v shells="$SHELL_WORDS" \
     -v commands="$COMMAND_WORDS" -v fence_min="$FENCE_MIN_LENGTH" \
     -v install="$(lower "$INSTALL_HEADING")" -v runre="$RUN_COMMAND_RE" \
+    -v alternatives="$(lower "$ALTERNATIVES_HEADING")" \
     -v platforms="$PLATFORMS" -v sq="'" '
     function fail(msg) {
       printf "readme-budget: %s\n", msg > "/dev/stderr"
@@ -412,6 +447,7 @@ counts() {
       total += segs
       if (fencefolded) { folded[section] += segs }
       if (inblock) { blockcommands[inblock] += segs }
+      if (altblock) { altcommands[altblock] += segs; altvisible += segs }
       # A visible command of the install section outside the install
       # block must be the run command, and nothing chained onto it.
       if (inrun) {
@@ -578,7 +614,7 @@ counts() {
       if (nhere > 0) {
         fail(sprintf("%s:%d: the heredoc <<%s opened on this line is not terminated before its code fence closes (line %d)", FILENAME, hereline, here[herenext], NR))
       }
-      infence = 0; counted = 0; inbody = 0; inblock = 0; fencefolded = 0; inrun = 0
+      infence = 0; counted = 0; inbody = 0; inblock = 0; fencefolded = 0; inrun = 0; altblock = 0
       # A fence ends the run of text before it: the next fence has no
       # label until a text line gives it one.
       lasttext = ""
@@ -599,6 +635,7 @@ counts() {
       nplatforms = split(platforms, platform, "|")
       inblock = 0; lasttext = ""; dups = 0
       incomment = 0; inrun = 0; others = 0
+      inalt = 0; altblock = 0; nalt = 0; altvisible = 0; altheadline = 0; misplaced = 0
     }
 
     {
@@ -610,9 +647,14 @@ counts() {
           if (run(body, fencechar) >= fencelen && substr(body, run(body, fencechar) + 1) ~ /^[ \t]*$/) {
             close_fence()
           } else if (counted) {
+            prompted = (body ~ /^[$>][ \t]/ || body ~ /^PS( [^>]*)?>[ \t]/)
             if (inblock) {
               blocklines[inblock]++
-              if (body ~ /^[$>][ \t]/ || body ~ /^PS( [^>]*)?>[ \t]/) { blockprompts[inblock]++ }
+              if (prompted) { blockprompts[inblock]++ }
+            }
+            if (altblock) {
+              altlines[altblock]++
+              if (prompted) { altprompts[altblock]++ }
             }
             feed(body)
           } else {
@@ -644,12 +686,17 @@ counts() {
           set_dialect(fencelang)
           fencefolded = (nfolded > 0)
           # An install block: a counted fence of the install section
-          # that is not folded, under the label of a platform. Every other
-          # counted fence of the section that is not folded may hold
-          # only the run command.
+          # that is not folded, under the label of a platform. A counted
+          # fence of the other ways to install that is not folded is one
+          # of its blocks, whatever its label. Every other counted fence
+          # of the section that is not folded may hold only the run
+          # command.
           if (counted && !fencefolded && tolower(section) == install) {
-            plat = platform_of(lasttext)
-            if (plat != "" && !(plat in blockline)) {
+            plat = inalt ? "" : platform_of(lasttext)
+            if (inalt) {
+              altblock = ++nalt; altline[nalt] = NR
+              altcommands[nalt] = 0; altlines[nalt] = 0; altprompts[nalt] = 0
+            } else if (plat != "" && !(plat in blockline)) {
               inblock = plat; blockline[plat] = NR
               blockcommands[plat] = 0; blocklines[plat] = 0; blockprompts[plat] = 0
             } else if (plat != "") {
@@ -665,20 +712,39 @@ counts() {
 
       # Comments are tracked on every line, so one that opens on an
       # indented line still closes; tags are not read on a line that
-      # is an indented code block.
+      # is an indented code block. A line that starts inside a comment
+      # is no heading.
+      wascomment = incomment
       plain = strip_comments($0)
       if ($0 !~ /^(    |\t)/) { scan_details(plain) }
 
       # The last text line before a fence is its label.
       if (plain !~ /^[ \t]*$/) { lasttext = plain }
 
-      if ($0 ~ /^ ? ? ?##[ \t]/) {
-        lasttext = ""
-        section = $0
-        sub(/^ *##[ \t]+/, "", section)
-        sub(/[ \t]+#+[ \t]*$/, "", section)
-        sub(/[ \t]+$/, "", section)
-        if (!(section in count)) { order[++n] = section; count[section] = 0; folded[section] = 0 }
+      if (!wascomment && $0 ~ /^ ? ? ?#+[ \t]/) {
+        heading = $0
+        sub(/^ */, "", heading)
+        level = run(heading, "#")
+        heading = substr(heading, level + 1)
+        sub(/^[ \t]+/, "", heading)
+        sub(/[ \t]+#+[ \t]*$/, "", heading)
+        sub(/[ \t]+$/, "", heading)
+        # A heading of level 3 or above ends the other ways to install;
+        # a `#### ` heading inside it does not.
+        if (level <= 3) { inalt = 0 }
+        if (level == 2) {
+          lasttext = ""
+          section = heading
+          if (!(section in count)) { order[++n] = section; count[section] = 0; folded[section] = 0 }
+        }
+        if (level <= 6 && tolower(heading) == alternatives) {
+          if (level == 3 && tolower(section) == install) {
+            inalt = 1
+            if (!altheadline) { altheadline = NR }
+          } else if (!misplaced) {
+            misplaced = NR; misplacedlevel = level
+          }
+        }
       }
     }
 
@@ -703,6 +769,11 @@ counts() {
       }
       if (dups > 0) { printf "D\t%s\t%d\n", dupplatform, dupline }
       if (others > 0) { printf "O\t%d\t%d\t%s\n", others, otherline, othercmd }
+      if (altheadline) { printf "A\t%d\t%d\n", altheadline, altvisible }
+      for (k = 1; k <= nalt; k++) {
+        printf "L\t%d\t%d\t%d\t%d\n", altcommands[k], altlines[k], altprompts[k], altline[k]
+      }
+      if (misplaced) { printf "M\t%d\t%d\n", misplaced, misplacedlevel }
     }
   ' "$readme"
 }
@@ -726,8 +797,21 @@ install=$(section_count "$INSTALL_HEADING" 2)
 install_folded=$(section_count "$INSTALL_HEADING" 3)
 connect=$(section_count "$CONNECT_HEADING" 2)
 self_hosting=$(section_count "$SELF_HOSTING_HEADING" 2)
+# The other ways to install: the line of their first heading and their
+# visible commands, empty when the section has none.
+alternatives=$(printf '%s\n' "$table" | awk -F'\t' '$1 == "A" { print $2 "\t" $3 }')
+alternatives_at=""
+alternatives_count=0
+if [ -n "$alternatives" ]; then
+  IFS=$'\t' read -r alternatives_at alternatives_count <<<"$alternatives"
+fi
+# The first-run path: what the section shows outside a <details> and
+# outside the other ways to install.
 install_visible=""
-[ -z "$install" ] || install_visible=$((install - install_folded))
+[ -z "$install" ] || install_visible=$((install - install_folded - alternatives_count))
+# A heading that names the other ways to install in the wrong place:
+# its line and level.
+misplaced=$(printf '%s\n' "$table" | awk -F'\t' '$1 == "M" { print $2 "\t" $3 }')
 # block_field <platform> <field>: a field of a platform's install block
 # row (3 commands, 4 lines, 5 prompts, 6 the line it opens on); empty
 # when the section shows no block for that platform.
@@ -757,8 +841,9 @@ IFS='|' read -r -a platform_list <<<"$PLATFORMS"
 for platform in "${platform_list[@]}"; do
   printf '  %-26s%s (exactly %d, on one line)\n' "Install, $platform" "$(block_field "$platform" 3 | grep . || echo none)" "$INSTALL_BLOCK_COMMANDS"
 done
-printf '  Install, visible          %s (budget %d)\n' "${install_visible:-no such section}" "$INSTALL_VISIBLE_MAX"
-printf '  Install, other            %d (exactly 0: beside the install blocks only "flightdeck" may show)\n' "$other_count"
+printf '  Install, first run        %s (budget %d)\n' "${install_visible:-no such section}" "$INSTALL_VISIBLE_MAX"
+printf '  Install, stray            %d (exactly 0: beside the install blocks only "flightdeck" may show)\n' "$other_count"
+printf '  Install, other ways       %d (budget %d, one command a block, under "### %s")\n' "$alternatives_count" "$ALTERNATIVES_MAX" "$ALTERNATIVES_HEADING"
 printf '  Connect your agents       %s (budget %d)\n' "${connect:-no such section}" "$CONNECT_MAX"
 printf '  Self-hosting              %s (budget %d)\n' "${self_hosting:-no such section}" "$SELF_HOSTING_MAX"
 printf '  Total                     %d (budget %d)\n' "$total" "$TOTAL_MAX"
@@ -773,11 +858,16 @@ if [ -n "$install" ]; then
   for platform in "${platform_list[@]}"; do
     block_at=$(block_field "$platform" 6)
     if [ -z "$block_at" ]; then
-      over "$INSTALL_HEADING has no install block for $platform: a visible code block right after a line that reads \"**$platform**\""
+      before=""
+      [ -z "$alternatives_at" ] || before=", before \"### $ALTERNATIVES_HEADING\" (line $alternatives_at)"
+      over "$INSTALL_HEADING has no install block for $platform: a visible code block right after a line that reads \"**$platform**\"$before"
       continue
     fi
+    if [ -n "$alternatives_at" ] && [ "$block_at" -gt "$alternatives_at" ]; then
+      over "the $platform install block (line $block_at) comes after \"### $ALTERNATIVES_HEADING\" (line $alternatives_at): the one-command install comes first"
+    fi
     block_commands=$(block_field "$platform" 3)
-    [ "$block_commands" -eq "$INSTALL_BLOCK_COMMANDS" ] || over "the $platform install block (line $block_at) has $block_commands commands, must be exactly $INSTALL_BLOCK_COMMANDS: the other install channels belong in the <details> under it"
+    [ "$block_commands" -eq "$INSTALL_BLOCK_COMMANDS" ] || over "the $platform install block (line $block_at) has $block_commands commands, must be exactly $INSTALL_BLOCK_COMMANDS: the other install channels belong under \"### $ALTERNATIVES_HEADING\" after it"
     [ "$(block_field "$platform" 4)" -eq 1 ] || over "the $platform install block (line $block_at) has $(block_field "$platform" 4) lines, must be exactly one: no comment, no blank line, no second command"
     [ "$(block_field "$platform" 5)" -eq 0 ] || over "the $platform install block (line $block_at) starts with a prompt; show the command alone"
   done
@@ -785,8 +875,23 @@ fi
 if [ -n "$dup" ]; then
   over "$INSTALL_HEADING shows a second $(printf '%s' "$dup" | cut -f1) install block (line $(printf '%s' "$dup" | cut -f2)): one install command per platform"
 fi
-[ "$other_count" -eq 0 ] || over "$INSTALL_HEADING shows a command that is neither an install command nor \"flightdeck\" (line $other_at: $other_command): another way to install belongs in the <details> under the install blocks"
-[ -z "$install_visible" ] || [ "$install_visible" -le "$INSTALL_VISIBLE_MAX" ] || over "$INSTALL_HEADING shows $install_visible commands outside <details>, budget $INSTALL_VISIBLE_MAX"
+[ "$other_count" -eq 0 ] || over "$INSTALL_HEADING shows a command that is neither an install command nor \"flightdeck\" (line $other_at: $other_command): another way to install belongs under \"### $ALTERNATIVES_HEADING\", after the install blocks"
+[ -z "$install_visible" ] || [ "$install_visible" -le "$INSTALL_VISIBLE_MAX" ] || over "$INSTALL_HEADING shows $install_visible commands on its first-run path (outside <details> and \"### $ALTERNATIVES_HEADING\"), budget $INSTALL_VISIBLE_MAX"
+# Each block of the other ways to install: one command on one line, as
+# an install block is.
+while IFS=$'\t' read -r kind alt_commands alt_lines alt_prompts alt_at; do
+  [ "$kind" = "L" ] || continue
+  [ "$alt_commands" -eq "$INSTALL_BLOCK_COMMANDS" ] || over "the block at line $alt_at of \"### $ALTERNATIVES_HEADING\" has $alt_commands commands, must be exactly $INSTALL_BLOCK_COMMANDS: one command per channel"
+  [ "$alt_lines" -eq 1 ] || over "the block at line $alt_at of \"### $ALTERNATIVES_HEADING\" has $alt_lines lines, must be exactly one: no comment, no blank line, no second command"
+  [ "$alt_prompts" -eq 0 ] || over "the block at line $alt_at of \"### $ALTERNATIVES_HEADING\" starts with a prompt; show the command alone"
+done <<<"$table"
+[ "$alternatives_count" -le "$ALTERNATIVES_MAX" ] || over "\"### $ALTERNATIVES_HEADING\" shows $alternatives_count commands, budget $ALTERNATIVES_MAX"
+if [ -n "$misplaced" ]; then
+  IFS=$'\t' read -r misplaced_at misplaced_level <<<"$misplaced"
+  where="a level-$misplaced_level heading"
+  [ "$misplaced_level" -ne 3 ] || where="a ### heading outside \"## $INSTALL_HEADING\""
+  over "line $misplaced_at: \"$ALTERNATIVES_HEADING\" is $where; the other ways to install are a \"### $ALTERNATIVES_HEADING\" subsection of \"## $INSTALL_HEADING\", after its install blocks"
+fi
 [ -z "$connect" ] || [ "$connect" -le "$CONNECT_MAX" ] || over "$CONNECT_HEADING has $connect commands, budget $CONNECT_MAX"
 [ -z "$self_hosting" ] || [ "$self_hosting" -le "$SELF_HOSTING_MAX" ] || over "$SELF_HOSTING_HEADING has $self_hosting commands, budget $SELF_HOSTING_MAX"
 [ "$total" -le "$TOTAL_MAX" ] || over "$total commands in total, budget $TOTAL_MAX"

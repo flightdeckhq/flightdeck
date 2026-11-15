@@ -12594,8 +12594,12 @@ one behaves as the first does:
   version number, and caches nothing between runs. An agent that lacks
   them is found but **outdated**: the listing shows the version and
   what to do (update the agent, or install the integration from inside
-  it), the installers' query reports it as `outdated`, and a connect
-  refuses before reading anything else, with exit status 5. A check
+  it), the installers' query reports it as `outdated` (`connected` once
+  its integration is installed and turned on from inside it), and a
+  connect answers
+  or refuses before reading anything else (exit status 5 when it
+  refuses; an agent connected from inside it with nothing asked is
+  already connected, exit 0). A check
   that cannot answer (the help command fails or prints no help) is an
   error naming that command, never a guess either way. Detect changes
   nothing and starts nothing else.

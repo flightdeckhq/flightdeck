@@ -4,6 +4,87 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.11.0 — 2026-11-15
+
+Choosing a port is one flag: `flightdeck --port 4100` serves on port
+4100 of this machine only, with the development token, as the default
+port does, and `flightdeck --public` lets other machines in on every
+network interface (`--public --port 4100` for another port). A
+`--public` server refuses the development token and creates an access
+token on its first start, and whoever can reach the server can read
+that token, so open it only on a network you trust, or put it behind a
+proxy that authenticates. Flightdeck and Claude Code find each other on
+any port: a server for this machine only that starts while Claude Code
+reports to another address here logs a line saying so, with the command
+that points it here; `flightdeck connect claude-code` reports to the
+Flightdeck it finds running; and when none runs yet, it says how to
+start one. A Claude Code too old to connect is told to run
+`claude update` instead of failing on an unknown option. In the sensor,
+LangGraph shows more of an application's structure as child sessions:
+the Runnable and `ToolNode` nodes of a graph you build, a graph run
+started inside another (a compiled graph used as a node, an agent
+invoked from a tool), and each Deep Agents `task` sub-agent. The
+plugin's code is unchanged; its marketplace entry moves to this
+release, so plugin users update with
+`claude plugin update flightdeck@flightdeck-plugins` (marketplace
+installs do not update themselves).
+
+**Upgrade notes**
+
+- **`--listen :<port>` now serves this machine only.** `--listen
+  :<port>` and `FLIGHTDECK_LISTEN=:<port>` bind `127.0.0.1:<port>`,
+  where they bound every interface, and a start with such an address
+  logs a warning. A container started with
+  `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
+  `--listen :<port>` as its command or arguments (as v0.10.0's image
+  and chart did), is no longer reachable from outside the container,
+  while `flightdeck health` inside it still reports healthy (without a
+  supplied dashboard token; with one it does not start, below): write
+  `0.0.0.0:<port>`, or use `--public`. The published image and the
+  Helm chart now set `0.0.0.0` themselves and serve as before.
+- **`:<port>` with a supplied dashboard token stops the start.** A
+  host-less listen address beside a supplied dashboard token
+  (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or `FLIGHTDECK_DASHBOARD_TOKEN`)
+  ends every start with exit status 2 and the forms to write. That is
+  a container or a manifest with a token secret (the chart's
+  `dashboardTokenSecret`, `-e FLIGHTDECK_DASHBOARD_TOKEN_FILE`) that
+  passes `--listen :<port>` or `FLIGHTDECK_LISTEN=:<port>`, which then
+  fails every start (a crash loop under Kubernetes), and an instance
+  behind a reverse proxy on the same machine started that way.
+  `--listen 0.0.0.0:<port>` or `--public` serves other machines with
+  the supplied token; `--listen 127.0.0.1:<port>` keeps it on this
+  machine, where a reverse proxy on the same machine then serves the
+  development token.
+- **`flightdeck` now reads `FLIGHTDECK_PORT` and `FLIGHTDECK_PUBLIC`.**
+  A `FLIGHTDECK_PORT` left over from the separate services (v0.8.0's
+  compose file set it to `8080` and `8081`), which v0.10.0's binary
+  ignored, moves the binary to `127.0.0.1:<that port>`, and next to
+  `FLIGHTDECK_LISTEN` (which the published image sets) it stops the
+  start with exit status 2, as `FLIGHTDECK_PUBLIC` does there: remove
+  it. A Kubernetes service link's value (`tcp://…`) is ignored.
+- A `--listen` host name that resolves to a loopback address
+  (`ip6-localhost`, or a machine's own name that `/etc/hosts` maps to
+  `127.0.1.1`) now stops the start: write `--port <port>` or
+  `--listen 127.0.0.1:<port>` for this machine only, or
+  `--public --port <port>` or the machine's address to serve other
+  machines.
+- `localhost.:<port>` and a zoned loopback address (`[::1%lo]:<port>`)
+  now run as this machine only: with the development token and the
+  Host check on, and a supplied dashboard token is ignored there.
+- `flightdeck connect` has a new exit status, 5: the agent is too old
+  for what was asked, so running the command again fails the same way
+  until the agent is updated. A script that retries a failed connect
+  should not retry on 5. An older Claude Code with the plugin installed
+  from inside it, asked to connect with no `--server` or `--port`, is
+  already connected and exits 0.
+- A LangGraph application shows more child sessions than before, and
+  its tree changes: the `pre_model_hook` and `post_model_hook` nodes of
+  a `create_react_agent` no longer open a child; a graph invoked inside
+  a node opens a child of its own under the node's, and the inner
+  graph's nodes nest under that child, where they had the sensor's
+  session as their parent; and a compiled graph used as a node opens
+  one child for its run, with its nodes under it.
+
 ### Added
 
 - **`--port` runs Flightdeck on another port, and `--public` lets other
@@ -15,29 +96,32 @@ All notable changes to Flightdeck are documented here.
   server then refuses the development token and creates an access token
   on its first start, as `--listen 0.0.0.0:4000` does. `--listen` stays
   for one specific address and cannot be combined with either: given
-  together they stop the start with a usage error that names both, as
-  do `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
-  set together with no flag deciding. A port outside 1 to 65535 is
-  refused with what to pass. `flightdeck health` takes the same flags
-  and variables and finds the instance they describe (D277).
+  together they stop the start with a usage error that names both, as do
+  `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC` set
+  together with no flag deciding. A port outside 1 to 65535 is refused
+  with what to pass. A `FLIGHTDECK_PORT` that Kubernetes sets for a
+  Service named `flightdeck` (`tcp://…`) is read as unset, so such a
+  namespace's pods start as before. `flightdeck health` takes the same
+  flags and variables and finds the instance they describe (D277).
 - **LangGraph: Runnable and `ToolNode` nodes of a graph you build open
   child sessions.** A node whose action is a Runnable (`RunnableLambda`,
   `RunnableCallable`, an LCEL pipe, a `ToolNode` you add) now opens a
   child session each time it runs, as a function node does, with its
   role from the node name (an unnamed Runnable node takes the name
   LangGraph gives it, its `get_name()`). The Runnable is wrapped in a
-  delegating `RunnableCallable` that hands the node to the Runnable's own
-  `invoke`, `ainvoke` or `astream`, so each step keeps its own sync or
-  async dispatch (a chat model in a pipe still gets `ainvoke` on the
+  delegating `RunnableCallable` that hands the node to the Runnable's
+  own `invoke`, `ainvoke` or `astream`, so each step keeps its own sync
+  or async dispatch (a chat model in a pipe still gets `ainvoke` on the
   loop), and stream output, `Send` fan-out, `Command` returns,
   interrupts, the tool runtime a `ToolNode` is given, sub-graph
   detection and node-timeout checks are unchanged; `astream_events` is
   too, except that an LCEL pipe node shows one more `RunnableSequence`
-  run, since LangGraph no longer flattens its steps. The nodes
-  `create_agent` and `create_react_agent` register (the model call, the
-  tool execution, middleware and model hooks) open none: they are the
-  agent's own steps, not sub-agents, so a `create_react_agent`
-  `pre_model_hook` or `post_model_hook` no longer opens one either.
+  run, since the wrapper keeps LangGraph from flattening the pipe's
+  steps into the node's run. The nodes `create_agent` and
+  `create_react_agent` register (the model call, the tool execution,
+  middleware and model hooks) open none: they are the agent's own steps,
+  not sub-agents, so a `create_react_agent` `pre_model_hook` or
+  `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
 - **LangGraph and Deep Agents: a graph run started inside another opens
   a child session.** A run of a compiled graph that starts inside
@@ -45,38 +129,42 @@ All notable changes to Flightdeck are documented here.
   bound or with graph fallbacks; a graph or an agent invoked from a node
   or a tool) opens one child, named after the run (`run_name`, else the
   graph's name, else the node it runs in unless that node is one of
-  `create_agent`'s own steps, else `subgraph`), with its input and its
-  final state as the messages under `capture_prompts`, nested under the
-  child it runs in; a top-level run opens none. An application on the
-  functional API (`@entrypoint`) is covered too. Deep Agents gets one
-  child per `task` sub-agent run, named after the sub-agent, parallel
-  calls and `CompiledSubAgent`s included, with no Deep Agents import. A
-  compiled graph used as a node gets that one child, and a graph invoked
-  from a hand-built node opens a child under the node's, where its nodes
-  nest. The child closes on an error, an interrupt (a resume opens a new
-  one), a cancellation and a stream closed before its end, the event
-  loop's own close at shutdown included. A `RemoteGraph` run opens none
-  (D278).
+  `create_agent`'s or `create_react_agent`'s own steps, else
+  `subgraph`), with its input and its final state as the messages under
+  `capture_prompts`, nested under the child it runs in; a top-level run
+  opens none. An application on the functional API (`@entrypoint`) is
+  covered too. Deep Agents gets one child per `task` sub-agent run,
+  named after the sub-agent, parallel calls and `CompiledSubAgent`s
+  included, with no Deep Agents import. A compiled graph used as a node
+  gets that one child, and a graph invoked from a hand-built node opens
+  a child under the node's, where its nodes nest. The child ends with
+  `state=error` when the run raises or is cancelled, and closes normally
+  on an interrupt (a resume opens a new one) and on a stream closed
+  before its end, the event loop's own close at shutdown included.
+  `langgraph_agent_node_pattern` narrows nodes, not graph runs. A
+  `RemoteGraph` run opens none (D278).
 - **The server and `flightdeck connect` find each other on another
   port.** Run `flightdeck --port 4100`, then `flightdeck connect
-  claude-code`, and the plugin reports to port 4100. A server on this
-  machine records the address it listens on in its data dir
-  (`instance.json`, no token in it, gone once it stops), and
-  `flightdeck connect` reads it from the same data dir (`--data-dir`,
-  `FLIGHTDECK_DATA_DIR`, else the default): a new connection reports to
-  the Flightdeck it finds running, and a connection to an address on
-  this machine where nothing answers is pointed at it, in a plan that
-  says why. The file counts only when its process runs and the address
-  answers as a Flightdeck; a server beyond this machine is never probed
-  and a connection to one is kept. `flightdeck connect claude-code
-  --port 4100` is short for `--server http://localhost:4100` (D280).
+  claude-code`, and the plugin reports to port 4100. A server for this
+  machine only (the default, or `--port`) records the address it listens
+  on in its data dir (`instance.json`, no token in it, gone once it
+  stops), and `flightdeck connect` reads it from the same data dir
+  (`--data-dir`, `FLIGHTDECK_DATA_DIR`, else the default): a new
+  connection reports to the Flightdeck it finds running, and a
+  connection to an address on this machine where nothing answers is
+  pointed at it, in a plan that says why. The file counts only when its
+  process runs and the address answers as a Flightdeck; a server beyond
+  this machine is never probed and a connection to one is kept.
+  `flightdeck connect claude-code --port 4100` is short for `--server
+  http://localhost:4100` (D280).
 - **The server says when Claude Code reports somewhere else.** On
   this machine only, a start on one port while the plugin reports to
   another logs one line with both addresses and the command:
   `Claude Code reports to http://localhost:4000, not to this server at
   http://localhost:4100: its sessions are not recorded here. To report
   here, run: flightdeck connect claude-code --port 4100`. The check
-  runs beside the start and never delays it; a `--public` or
+  runs beside the start and never delays it, the `claude` it runs gets
+  none of the server's `FLIGHTDECK_` variables, and a `--public` or
   `--domain` server does not run it.
 - **`flightdeck connect` says when nothing runs yet.** Connecting to an
   address on this machine where no Flightdeck answers still connects
@@ -96,21 +184,24 @@ All notable changes to Flightdeck are documented here.
   token and opened the server to the network. To serve other machines,
   say so: `--public` (with `--port` for another port) or `--listen
   0.0.0.0:4000`, or one interface's address (`--listen 10.0.0.5:4000`).
-  `FLIGHTDECK_LISTEN=:4000` changes the same way, and every start with
-  a host-less address now logs a warning that says so. A container
-  started with `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
+  `FLIGHTDECK_LISTEN=:4000` changes the same way, and every start with a
+  host-less address now logs a warning that says so. A container started
+  with `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
   `--listen :<port>` as its command or arguments, is no longer reachable
   from outside the container while `flightdeck health` inside it still
-  reports healthy: write `0.0.0.0:<port>`. The Docker image now sets
+  reports healthy (without a supplied dashboard token; with one it does
+  not start, below): write `0.0.0.0:<port>`. The Docker image now sets
   `FLIGHTDECK_LISTEN=0.0.0.0:4000` and the Helm chart passes `--listen
-  0.0.0.0:<port>`, so both serve as before. An instance behind a
-  reverse proxy on the same machine that was started with `:<port>` and
-  a supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
-  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at start, with the forms to
-  write, instead of falling back to the development token while the
-  proxy keeps forwarding: `--listen 127.0.0.1:<port>` keeps it on this
-  machine (and serves the development token), `--listen
-  0.0.0.0:<port>` or `--public` serves the supplied one.
+  0.0.0.0:<port>`, so both serve as before. A host-less address beside a
+  supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at every start with exit
+  status 2 and the forms to write, instead of falling back to the
+  development token: a container or a manifest with a token secret (the
+  chart's `dashboardTokenSecret`) that passes `:<port>`, and an instance
+  behind a reverse proxy on the same machine started that way. `--listen
+  0.0.0.0:<port>` or `--public` serves the supplied token; `--listen
+  127.0.0.1:<port>` keeps it on this machine, with the development
+  token.
 - **A `--listen` host name that resolves to loopback now stops the
   start.** A name that is not `localhost` and binds a loopback address
   (`ip6-localhost`, or a machine's own name where `/etc/hosts` maps it
@@ -129,10 +220,7 @@ All notable changes to Flightdeck are documented here.
   start-up block say that whoever can reach a `--public` server can read
   its dashboard token, so open it only on a network you trust, or put it
   behind a proxy that authenticates. A port already in use names the
-  flags for the next one, `--port 4001` on this machine. A
-  `FLIGHTDECK_PORT` that Kubernetes sets for a Service named
-  `flightdeck` (`tcp://…`) is read as unset, so such a namespace's pods
-  start as before (D277).
+  flags for the next one, `--port 4001` on this machine.
 
 ### Fixed
 

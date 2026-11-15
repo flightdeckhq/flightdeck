@@ -429,12 +429,14 @@ github.com/flightdeckhq/flightdeck is installed only after a yes on a terminal.
 --dry-run prints the changes and what the integration records, and changes nothing.
 
 An agent too old for this command is listed with what to do instead, and
-connecting it changes nothing; --remove works on it as on a current one.
+connecting it changes nothing and exits 5, except that one connected from inside
+it, with no --server or --port, is already connected (exit 0); --remove works on
+it as on a current one.
 
 Exit status: 0 connected, removed or nothing to do; 1 a step failed or the answer
 was no; 2 a usage error; 3 the agent is not on this machine; 4 the plan needs a yes
 on a terminal (--dry-run reports it, and a connect under --yes or without a
-terminal refuses with it); 5 the agent is too old for this command: update it,
+terminal refuses with it); 5 the agent is too old for what was asked: update it,
 then run the command again.
 
 Flags:

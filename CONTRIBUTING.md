@@ -493,16 +493,24 @@ header has the counting rules):
 | What | Budget |
 |---|---|
 | The install blocks under `## Install`: one right after a line that reads **Linux and macOS**, one right after **Windows** (emphasis, a colon and words in parentheses aside), both required | exactly one command each, on one line |
-| `## Install`, outside `<details>` | 3 commands (the two installs, then `flightdeck` to start it, with flags whose values are letters, digits and `_ : . / , -` only; nothing else) |
+| `## Install`, its first-run path (outside `<details>` and the subsection below) | 3 commands (the two installs, then `flightdeck` to start it, with flags whose values are letters, digits and `_ : . / , -` only; nothing else) |
+| `### Other ways to install`, a subsection of `## Install` after both install blocks, never folded in `<details>` | 4 commands, exactly one per block, on one line, each starting with `brew`, `pip`, `uvx` or `docker` |
 | `## Connect your agents` | 4 commands |
 | `## Self-hosting` | 6 commands |
-| The whole README, the channels folded in `<details>` included | 20 commands, 300 lines |
+| The whole README, anything folded in `<details>` included | 20 commands, 300 lines |
 
 So a second install command fails the build wherever it is put (in a
 platform's block, in a second block under the same label, under another
 label or under none), and so does a step that creeps back in. The other
-install channels sit in the `<details>` under the install blocks: they
-count toward the total, not toward what the section shows. A command block must not carry a
+install channels sit in plain sight under `### Other ways to install`,
+after the install blocks: the subsection placed before either block, or
+an install block placed after it, fails the build, and so does the
+heading as a `##` section, under another section, in a blockquote or
+folded in a `<details>`. A block there runs one of the listed channels
+and never a one-command installer (`curl ... | sh`, `irm ... | iex`);
+a new channel is a reviewed change to `ALTERNATIVE_COMMANDS` in the
+script. A heading inside an HTML comment opens no section, since
+GitHub does not render it. A command block must not carry a
 sample-language tag (`json`, `yaml`, `python` and the like), which the
 script does not count: tag it as the shell it is for (`bash`,
 `powershell`, `text`), or the script fails naming the line. A step a

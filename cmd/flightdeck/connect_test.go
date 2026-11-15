@@ -151,6 +151,40 @@ func TestBinary_ConnectCommand(t *testing.T) {
 	if code != 3 || strings.Count(out, "\n") != 1 || !strings.Contains(out, "Claude Code is not on this machine") {
 		t.Fatalf("without claude: exit %d, %q", code, out)
 	}
+
+	// A subtest, so the Windows job's -run pattern runs it as well.
+	t.Run("an outdated Claude Code", func(t *testing.T) {
+		env, state := connectEnv(t)
+		env = append(env, "FAKE_CLAUDE_OLD_CLI=1")
+		code, out := runConnect(t, env, "--detected")
+		if code != 0 || out != "claude-code\toutdated\tClaude Code\n" {
+			t.Fatalf("--detected: exit %d, %q", code, out)
+		}
+		code, out = runConnect(t, env)
+		if code != 0 || !strings.Contains(out, "2.1.283 (Claude Code) at ") || !strings.Contains(out, "too old        this version has no `claude plugin configure`") ||
+			!strings.Contains(out, "claude update") {
+			t.Fatalf("the listing: exit %d:\n%s", code, out)
+		}
+		for _, args := range [][]string{{"claude-code"}, {"claude-code", "--dry-run"}, {"claude-code", "--yes"}} {
+			code, out := runConnect(t, env, args...)
+			if code != 5 || strings.Count(out, "\n") != 1 || strings.Contains(out, "unknown option") ||
+				!strings.Contains(out, "flightdeck connect claude-code: Claude Code 2.1.283 is too old for flightdeck connect") ||
+				!strings.Contains(out, "update it with `claude update`, then run flightdeck connect claude-code again") {
+				t.Fatalf("flightdeck connect %v: exit %d, %q; want 5 and one line saying what to do", args, code, out)
+			}
+		}
+		// Every call was the version, a help or the plugin list: nothing
+		// changed.
+		calls, err := os.ReadFile(filepath.Join(state, "calls.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
+			if line != "argv: --version" && line != "argv: plugin list --json" && !strings.HasSuffix(line, " --help") {
+				t.Fatalf("an outdated Claude Code was asked %q", line)
+			}
+		}
+	})
 }
 
 func TestBinary_HelpNamesConnect(t *testing.T) {

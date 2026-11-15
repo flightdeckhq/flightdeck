@@ -31,15 +31,20 @@ type Connector interface {
 	ID() string
 	// Name is the agent's display name.
 	Name() string
-	// Detect finds the agent's command on this machine. A missing
-	// command is a Detection with Found false, not an error; an error
-	// means the command is there and did not answer.
+	// Detect finds the agent's command on this machine and checks that
+	// it has what connecting needs. A missing command is a Detection
+	// with Found false, and one too old to connect a Detection with
+	// Outdated set, not errors; an error means the command is there and
+	// did not answer.
 	Detect(ctx context.Context) (Detection, error)
 	// Status reads whether Flightdeck's integration is installed and
-	// where it reports. It is only called for a detected agent.
+	// where it reports. It is only called for a detected agent; for an
+	// outdated one it reads what that agent's CLI can show.
 	Status(ctx context.Context) (Status, error)
 	// PlanConnect returns the steps that connect the agent as target
-	// asks, reading only. No step means it is connected as asked.
+	// asks, reading only. No step means it is connected as asked. An
+	// agent too old to connect is an ErrOutdated, before anything else
+	// is read.
 	PlanConnect(ctx context.Context, target Target) (Plan, error)
 	// PlanDisconnect returns the steps that remove the integration,
 	// reading only. No step means it is not connected.
@@ -56,6 +61,10 @@ type Detection struct {
 	Version string
 	// Missing says why Found is false, for the listing.
 	Missing string
+	// Outdated, when set, says that the command found lacks what
+	// connecting needs and what to do instead: update it, or install
+	// the integration another way. Found is true.
+	Outdated string
 }
 
 // Status is what Status read.
@@ -72,6 +81,10 @@ type Status struct {
 	Server string
 	// TokenSaved is true when a token is saved. Its value is never read.
 	TokenSaved bool
+	// ServerUnknown is true when the agent's CLI cannot show the saved
+	// options (an outdated agent with the integration installed from
+	// inside it): Server and TokenSaved were not read.
+	ServerUnknown bool
 }
 
 // Connected reports whether the agent reports to Flightdeck.
@@ -161,6 +174,12 @@ var ErrNotFound = errors.New("agent not found on this machine")
 // ErrUsage marks a value the user gave that the command refuses: the
 // usage exit status, not a failure of the agent's CLI.
 var ErrUsage = errors.New("usage")
+
+// ErrOutdated marks an agent whose command is too old for what the
+// connector runs: found before planning, or a step its CLI refused as
+// an unknown command or option. Running the command again fails the
+// same way until the agent is updated, which the message says.
+var ErrOutdated = errors.New("agent too old to connect")
 
 // usageError is an ErrUsage with its own message.
 func usageError(format string, args ...any) error {

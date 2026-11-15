@@ -29,12 +29,26 @@ const (
 	// installers' signal not to ask), and a connect refuses with it under
 	// --yes or without a terminal.
 	ExitNeedsConfirmation = 4
+	// ExitOutdated: the agent is on this machine but too old for the
+	// command (ErrOutdated). Found before planning, nothing changed; a
+	// step its CLI refused as unknown exits with it too. Either way it
+	// fails the same until the agent is updated, so the installers tell
+	// the person to update it rather than to run the connect again.
+	ExitOutdated = 5
 )
 
-// The states `--detected` prints.
+// The states `--detected` prints, in its second field. An installer is
+// fetched fresh for every install (curl | sh, irm | iex), so it is never
+// older than this binary: it must read the lines of an older binary,
+// pinned with VERSION, which prints only connected and not-connected, and
+// it treats a state it does not know as not-connected. A new state is
+// added for the installers that know it, never in place of these.
 const (
 	stateConnected    = "connected"
 	stateNotConnected = "not-connected"
+	// stateOutdated: found, too old to connect (Detection.Outdated); the
+	// installers ask nothing and print the hint to update it.
+	stateOutdated = "outdated"
 )
 
 // IO is what one run of the command reads and writes.
@@ -68,7 +82,7 @@ func Main(ctx context.Context, args []string, rt IO) int {
 	var yes bool
 	fs.BoolVar(&yes, "yes", false, "do not ask before changing anything")
 	fs.BoolVar(&yes, "y", false, "shorthand for --yes")
-	detected := fs.Bool("detected", false, "print one line per agent found on this machine: id, connected or not-connected, name, separated by tabs (for scripts)")
+	detected := fs.Bool("detected", false, "print one line per agent found on this machine: id, connected, not-connected or outdated, name, separated by tabs (for scripts)")
 	dryRun := fs.Bool("dry-run", false, "print what connecting (or with --remove, disconnecting) would change and what the integration records, and change nothing")
 	fs.Usage = func() { usage(rt.Stderr, rt.Registry, fs) }
 
@@ -277,15 +291,31 @@ func report(rt IO, c Connector, err error) int {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s is not on this machine (%s); install it, then run flightdeck connect %s again\n",
-			c.ID(), c.Name(), strings.TrimPrefix(err.Error(), ErrNotFound.Error()+": "), c.ID())
+			c.ID(), c.Name(), errorText(err), c.ID())
 		return ExitNotFound
 	case errors.Is(err, ErrUsage):
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), strings.Replace(err.Error(), ErrUsage.Error()+": ", "", 1))
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
 		return ExitUsage
+	case errors.Is(err, ErrOutdated):
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
+		return ExitOutdated
 	default:
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %v\n", c.ID(), err)
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
 		return ExitFailed
 	}
+}
+
+// errorText is err's message without the text of the sentinel it wraps
+// ("usage: ", "agent too old to connect: "), which says nothing to a
+// person: the exit status carries it.
+func errorText(err error) string {
+	text := err.Error()
+	for _, sentinel := range []error{ErrNotFound, ErrUsage, ErrOutdated} {
+		if errors.Is(err, sentinel) {
+			text = strings.Replace(text, sentinel.Error()+": ", "", 1)
+		}
+	}
+	return text
 }
 
 // printDetected is the installers' query: one tab-separated line per
@@ -297,9 +327,13 @@ func printDetected(ctx context.Context, rt IO) {
 		if err != nil || !det.Found {
 			continue
 		}
+		// An outdated agent whose integration is installed and turned on
+		// (from inside it) is connected: there is nothing to do for it.
 		state := stateNotConnected
 		if st, err := c.Status(ctx); err == nil && st.Connected() {
 			state = stateConnected
+		} else if det.Outdated != "" {
+			state = stateOutdated
 		}
 		_, _ = fmt.Fprintf(rt.Stdout, "%s\t%s\t%s\n", c.ID(), state, c.Name())
 	}
@@ -328,8 +362,13 @@ func printList(ctx context.Context, rt IO, dataDir string, answers AnswersFunc) 
 		line("found", "%s at %s", det.Version, det.Path)
 		st, err := c.Status(ctx)
 		switch {
+		case err == nil && st.Connected() && st.ServerUnknown:
+			line("connected", "plugin %s; this version of %s cannot show the server it reports to: update %s to see or change it",
+				st.Version, c.Name(), c.Name())
+		case det.Outdated != "":
+			line("too old", "%s", det.Outdated)
 		case err != nil:
-			line("status unknown", "%v", err)
+			line("status unknown", "%s", errorText(err))
 		case st.Connected():
 			token := "no token saved"
 			if st.TokenSaved {
@@ -377,10 +416,14 @@ that. Without a terminal, connecting goes ahead (a script asked for it) and
 github.com/flightdeckhq/flightdeck is installed only after a yes on a terminal.
 --dry-run prints the changes and what the integration records, and changes nothing.
 
+An agent too old for this command is listed with what to do instead, and
+connecting it changes nothing; --remove works on it as on a current one.
+
 Exit status: 0 connected, removed or nothing to do; 1 a step failed or the answer
 was no; 2 a usage error; 3 the agent is not on this machine; 4 the plan needs a yes
 on a terminal (--dry-run reports it, and a connect under --yes or without a
-terminal refuses with it).
+terminal refuses with it); 5 the agent is too old for this command: update it,
+then run the command again.
 
 Flags:
 `, strings.Join(agents, ", "), DefaultServer)

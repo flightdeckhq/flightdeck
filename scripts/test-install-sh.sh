@@ -351,6 +351,31 @@ connect_run nothing
 must "$WORK/nothing.out" 'To connect a coding agent later: flightdeck connect (it lists the agents it can connect)' "no agent found"
 pass "with no agent found the closing lines name flightdeck connect"
 
+# An agent too old for flightdeck connect (--detected says outdated): it
+# is never planned or connected, and the closing lines say to update it.
+OUTDATED_LINE='claude-code\toutdated\tClaude Code\n'
+OUTDATED_HINT='To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code'
+connect_run outdated FAKE_FLIGHTDECK_DETECTED="$OUTDATED_LINE"
+must "$WORK/outdated.out" "$OUTDATED_HINT" "an outdated agent: the hint to update it"
+must_not "$WORK/outdated.out" 'To connect Claude Code: flightdeck connect claude-code' "an outdated agent: not the plain hint"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "an outdated agent: nothing planned or connected"
+connect_run outdated-named FAKE_FLIGHTDECK_DETECTED="$OUTDATED_LINE" FLIGHTDECK_CONNECT=claude-code
+must "$WORK/outdated-named.out" "$OUTDATED_HINT" "FLIGHTDECK_CONNECT naming an outdated agent: the hint"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "FLIGHTDECK_CONNECT naming an outdated agent: nothing connected"
+connect_run outdated-all FAKE_FLIGHTDECK_DETECTED='claude-code\toutdated\tClaude Code\nother-agent\tnot-connected\tOther Agent\n' FLIGHTDECK_CONNECT=all
+must "$WORK/outdated-all.out" "$OUTDATED_HINT" "FLIGHTDECK_CONNECT=all with an outdated agent: the hint"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "FLIGHTDECK_CONNECT=all leaves the outdated agent alone"
+must "$FAKE_FLIGHTDECK_LOG" 'connect other-agent --yes' "FLIGHTDECK_CONNECT=all still connects the others"
+pass "an outdated agent is not planned or connected, whatever FLIGHTDECK_CONNECT says, and the hint says to update it"
+
+# A connect that exits 5 (the agent turned out too old): update it, not
+# "run it again later".
+connect_run exit5 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" FLIGHTDECK_CONNECT=claude-code FAKE_FLIGHTDECK_CONNECT_EXIT=5
+must "$WORK/exit5.out" 'Connecting Claude Code needs a newer Claude Code (see above): update it, then run flightdeck connect claude-code' "a connect that exits 5 says to update"
+must_not "$WORK/exit5.out" 'run it again later' "a connect that exits 5 does not say to retry"
+must "$WORK/exit5.out" "run \`flightdeck\` and open the URL it prints" "the install carries on after it"
+pass "a connect that exits 5 says to update the agent, not to run it again later"
+
 connect_run older FAKE_FLIGHTDECK_NO_CONNECT=1 FLIGHTDECK_CONNECT=claude-code
 must_not "$WORK/older.out" 'connect' "an older binary: no connect line"
 must "$WORK/older.out" "run \`flightdeck\` and open the URL it prints" "an older binary installs as before"
@@ -403,6 +428,28 @@ must_not "$WORK/pty3.out" '[Y/n]' "a plan that needs confirmation: nothing asked
 must "$WORK/pty3.out" 'Connecting Claude Code needs your own yes (see the caution above): run flightdeck connect claude-code yourself' "a plan that needs confirmation: what to run"
 must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "a plan that needs confirmation: nothing connected"
 pass "when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect"
+
+# An outdated agent on a terminal: no plan, no question, the hint.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DETECTED="$OUTDATED_LINE" INSTALL_DIR="$WORK/inst-pty4" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/pty4.out" 2>&1 ||
+  { cat "$WORK/pty4.out"; echo "FAIL: the install with an outdated agent on a terminal"; exit 1; }
+must_not "$WORK/pty4.out" '[Y/n]' "an outdated agent on a terminal: nothing asked"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "an outdated agent on a terminal: no dry run, no connect"
+must "$WORK/pty4.out" "$OUTDATED_HINT" "an outdated agent on a terminal: the hint to update it"
+pass "on a terminal, an outdated agent is not asked about: the hint says to update it"
+
+# A dry run that exits 5 (--detected said not-connected, but planning met
+# a command the agent lacks): nothing is asked, and the hint says to update.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DRYRUN_EXIT=5 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-pty5" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/pty5.out" 2>&1 ||
+  { cat "$WORK/pty5.out"; echo "FAIL: the install with a dry run that exits 5"; exit 1; }
+must_not "$WORK/pty5.out" '[Y/n]' "a dry run that exits 5: nothing asked"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "a dry run that exits 5: nothing connected"
+must "$WORK/pty5.out" "$OUTDATED_HINT" "a dry run that exits 5: the hint to update it"
+must_not "$WORK/pty5.out" 'To connect Claude Code: flightdeck connect claude-code' "a dry run that exits 5: not the plain hint"
+pass "when the dry run exits 5, nothing is asked and the hint says to update the agent"
 
 # A ps that cannot say which group is in the foreground (BusyBox's has
 # no tpgid): the question is asked, and its bound still holds.

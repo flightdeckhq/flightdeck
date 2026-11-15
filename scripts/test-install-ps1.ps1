@@ -414,6 +414,9 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $script:fakeDryRunExit = 4
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Text -match 'Connecting Claude Code needs your own yes \(see the caution above\): run flightdeck connect claude-code yourself') { Write-Pass 'when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect' } else { Write-Failure 'a dry run that exits 4' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 5
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code' -and $d.Result.Hints -notcontains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the dry run exits 5 (too old after all), nothing is asked and the hint says to update' } else { Write-Failure 'a dry run that exits 5' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
     $script:fakeDryRunExit = 1
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the binary cannot plan the connect, nothing is asked' } else { Write-Failure 'a failed dry run' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ')" }
@@ -437,7 +440,22 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $script:fakeConnectExit = 1
     $d = Test-Decision 'claude-code' $askNever
     if (-not $d.Failure -and $d.Text -match 'Connecting Claude Code did not finish \(see above\); run it again later: flightdeck connect claude-code') { Write-Pass 'a connect that fails is reported and does not throw' } else { Write-Failure 'a connect that fails' "$($d.Failure) $($d.Text)" }
+    $script:fakeConnectExit = 5
+    $d = Test-Decision 'claude-code' $askNever
+    if (-not $d.Failure -and $d.Text -match 'Connecting Claude Code needs a newer Claude Code \(see above\): update it, then run flightdeck connect claude-code' -and $d.Text -notmatch 'run it again later') { Write-Pass 'a connect that exits 5 says to update the agent, not to run it again later' } else { Write-Failure 'a connect that exits 5' "$($d.Failure) $($d.Text)" }
     $script:fakeConnectExit = 0
+    # An agent too old for flightdeck connect (--detected says outdated):
+    # never planned, asked about or connected; the hint says to update it.
+    $claudeOutdatedHint = 'To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code'
+    $script:fakeDetected = @("claude-code`toutdated`tClaude Code")
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls.Count -eq 1 -and $d.Result.Hints -contains $claudeOutdatedHint -and $d.Result.Hints -notcontains $claudeHint) { Write-Pass 'an outdated agent is not planned or asked about, and the hint says to update it' } else { Write-Failure 'an outdated agent' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
+    $d = Test-Decision 'claude-code' $askNever
+    if (-not $d.Failure -and $d.Calls.Count -eq 1 -and $d.Result.Hints -contains $claudeOutdatedHint) { Write-Pass 'FLIGHTDECK_CONNECT naming an outdated agent connects nothing and keeps the hint' } else { Write-Failure 'FLIGHTDECK_CONNECT naming an outdated agent' "$($d.Failure) calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
+    $script:fakeDetected = @("claude-code`toutdated`tClaude Code", "other-agent`tnot-connected`tOther Agent")
+    $d = Test-Decision 'all' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect other-agent --yes' -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains $claudeOutdatedHint) { Write-Pass 'FLIGHTDECK_CONNECT=all leaves an outdated agent alone and connects the others' } else { Write-Failure 'FLIGHTDECK_CONNECT=all with an outdated agent' "$($d.Failure) calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
+    $script:fakeDetected = @("claude-code`tnot-connected`tClaude Code")
     $script:fakeDetectedExit = 2
     $d = Test-Decision 'claude-code' $askNever
     if (-not $d.Failure -and -not $d.Result.Known -and $d.Calls.Count -eq 1) { Write-Pass 'a binary that does not know connect (an older VERSION) skips the step' } else { Write-Failure 'an older binary' "$($d.Failure) calls: $($d.Calls -join '; ')" }
@@ -474,6 +492,8 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $failedDir = Join-Path $work 'inst-connect3'
     $failed = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = $claudeDetected; FLIGHTDECK_CONNECT = 'claude-code'; FAKE_FLIGHTDECK_CONNECT_EXIT = '1' } $failedDir
     if ($failed.Code -eq 0 -and $failed.Text -match 'Connecting Claude Code did not finish' -and $failed.Text -match 'Next: run `flightdeck`' -and (Test-Path (Join-Path $failedDir 'flightdeck.exe'))) { Write-Pass 'a connect that fails does not fail the install' } else { Write-Failure 'a connect that fails' "exit $($failed.Code) $($failed.Text)" }
+    $outdatedRun = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = 'claude-code\toutdated\tClaude Code\n'; FLIGHTDECK_CONNECT = 'claude-code' } (Join-Path $work 'inst-connect4')
+    if ($outdatedRun.Code -eq 0 -and $outdatedRun.Text -match [regex]::Escape('To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code') -and $outdatedRun.Log -notmatch 'connect claude-code') { Write-Pass 'through the installer, an outdated agent named by FLIGHTDECK_CONNECT gets the hint and no connect' } else { Write-Failure 'an outdated agent through the installer' "exit $($outdatedRun.Code) log: $($outdatedRun.Log) $($outdatedRun.Text)" }
     $script:fakeDetected = @()
 
     if ($UseRealRegistry) {

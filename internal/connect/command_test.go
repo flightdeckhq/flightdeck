@@ -26,11 +26,24 @@ type mainResult struct {
 // what a test sees.
 func runMain(t *testing.T, env map[string]string, answer string, interactive bool, args ...string) mainResult {
 	t.Helper()
-	return runMainIO(t, env, testAnswers(false), answer, interactive, args...)
+	return runMainFull(t, newConnector(), env, testAnswers(false), answer, interactive, args...)
+}
+
+// runMainWith is runMain with c as the one connector.
+func runMainWith(t *testing.T, c Connector, env map[string]string, answer string, interactive bool, args ...string) mainResult {
+	t.Helper()
+	return runMainFull(t, c, env, testAnswers(false), answer, interactive, args...)
 }
 
 // runMainIO is runMain with the probe of the servers on this machine.
 func runMainIO(t *testing.T, env map[string]string, answers AnswersFunc, answer string, interactive bool, args ...string) mainResult {
+	t.Helper()
+	return runMainFull(t, newConnector(), env, answers, answer, interactive, args...)
+}
+
+// runMainFull runs the command with c as the one connector and answers
+// as the probe, in a data dir of the test's own unless env names one.
+func runMainFull(t *testing.T, c Connector, env map[string]string, answers AnswersFunc, answer string, interactive bool, args ...string) mainResult {
 	t.Helper()
 	if _, ok := env["FLIGHTDECK_DATA_DIR"]; !ok {
 		withDir := map[string]string{"FLIGHTDECK_DATA_DIR": t.TempDir()}
@@ -41,7 +54,7 @@ func runMainIO(t *testing.T, env map[string]string, answers AnswersFunc, answer 
 	}
 	var stdout, stderr bytes.Buffer
 	code := Main(context.Background(), args, IO{
-		Registry:    Registry{newConnector()},
+		Registry:    Registry{c},
 		Getenv:      func(k string) string { return env[k] },
 		Stdin:       strings.NewReader(answer),
 		Stdout:      &stdout,
@@ -364,6 +377,7 @@ func TestMain_ExitStatuses(t *testing.T) {
 		{"a flag and no agent", []string{"--server", "https://x.example.com"}, ExitUsage, "name the agent"},
 		{"a refused server", []string{"claude-code", "--server", "flightdeck.example.com"}, ExitUsage, "http:// or https://"},
 		{"help", []string{"--help"}, ExitOK, "Exit status: 0 connected"},
+		{"help names exit status 5", []string{"--help"}, ExitOK, "5 the agent is too old for this command"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -393,11 +407,124 @@ func TestMain_ExitStatuses(t *testing.T) {
 	})
 }
 
-// The installers branch on --dry-run's exit statuses by number
-// (install.sh's CONNECT_NEEDS_CONFIRMATION, install.ps1's
-// $needsConfirmation): the values are a contract with them.
+// The installers branch on exit statuses by number (install.sh's
+// CONNECT_NEEDS_CONFIRMATION and CONNECT_OUTDATED, install.ps1's
+// $needsConfirmation and $outdated), and on --detected's states by name:
+// the values are a contract with them.
 func TestExitStatusesTheInstallersRead(t *testing.T) {
-	if ExitOK != 0 || ExitNeedsConfirmation != 4 {
-		t.Fatalf("ExitOK = %d, ExitNeedsConfirmation = %d; the installers read 0 and 4", ExitOK, ExitNeedsConfirmation)
+	if ExitOK != 0 || ExitNeedsConfirmation != 4 || ExitOutdated != 5 {
+		t.Fatalf("ExitOK = %d, ExitNeedsConfirmation = %d, ExitOutdated = %d; the installers read 0, 4 and 5", ExitOK, ExitNeedsConfirmation, ExitOutdated)
+	}
+	if stateConnected != "connected" || stateNotConnected != "not-connected" || stateOutdated != "outdated" {
+		t.Fatalf("the states are %q, %q and %q; the installers read connected, not-connected and outdated", stateConnected, stateNotConnected, stateOutdated)
+	}
+}
+
+func TestMain_AnOutdatedClaudeCode(t *testing.T) {
+	t.Run("the listing", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		r := runMain(t, nil, "", false)
+		if r.code != ExitOK || !strings.Contains(strings.ToLower(r.stdout), strings.ToLower("found          2.1.283 (Claude Code) at "+f.exe)) ||
+			!strings.Contains(r.stdout, "too old        this version has no `claude plugin configure` and no --json on `claude plugin marketplace add`") ||
+			!strings.Contains(r.stdout, "update it with `claude update`, then run flightdeck connect claude-code again") ||
+			!strings.Contains(r.stdout, "/plugin marketplace add flightdeckhq/flightdeck, then /plugin install flightdeck@flightdeck-plugins") ||
+			strings.Contains(r.stdout, "connect it with:") {
+			t.Fatalf("listing: %+v", r)
+		}
+		// The check and the plugin list, nothing else: nothing changed.
+		if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+			t.Fatalf("the listing ran %q; want only %q", got, outdatedCalls)
+		}
+	})
+	t.Run("--detected", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\toutdated\tClaude Code\n" {
+			t.Fatalf("--detected: %+v", r)
+		}
+		if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+			t.Fatalf("--detected ran %q; want only %q", got, outdatedCalls)
+		}
+		// Installed from inside Claude Code but turned off: still outdated.
+		f.set(t, "marketplace", "installed", "disabled")
+		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\toutdated\tClaude Code\n" {
+			t.Fatalf("--detected, installed and turned off: %+v", r)
+		}
+	})
+	// The plugin installed and turned on from inside Claude Code (the
+	// /plugin commands the advice names): connected, with nothing to do,
+	// although this version cannot show the server it reports to.
+	t.Run("connected from inside Claude Code", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		f.set(t, "marketplace", "installed")
+		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\tconnected\tClaude Code\n" {
+			t.Fatalf("--detected: %+v", r)
+		}
+		r := runMain(t, nil, "", false)
+		if r.code != ExitOK ||
+			!strings.Contains(r.stdout, "connected      plugin 0.9.0; this version of Claude Code cannot show the server it reports to: update Claude Code to see or change it") ||
+			strings.Contains(r.stdout, "too old") || strings.Contains(r.stdout, "/plugin install") {
+			t.Fatalf("listing: %+v", r)
+		}
+		if got := f.changes(t); len(got) != 0 {
+			t.Fatalf("ran %q", got)
+		}
+		// Connecting it still needs the commands it lacks.
+		if r := runMain(t, nil, "", false, "claude-code"); r.code != ExitOutdated || len(f.changes(t)) != 0 {
+			t.Fatalf("connect: %+v", r)
+		}
+	})
+	for _, args := range [][]string{
+		{"claude-code"},
+		{"claude-code", "--dry-run"},
+		{"claude-code", "--yes"},
+		{"claude-code", "--server", "https://fd.example.com", "--dry-run"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			f := newOldFakeClaude(t)
+			r := runMain(t, map[string]string{"FLIGHTDECK_TOKEN": testToken}, "y\n", true, args...)
+			if r.code != ExitOutdated || r.stdout != "" || strings.Count(r.stderr, "\n") != 1 ||
+				!strings.HasPrefix(r.stderr, "flightdeck connect claude-code: Claude Code 2.1.283 is too old for flightdeck connect") ||
+				!strings.Contains(r.stderr, "so nothing changed: update it with `claude update`, then run flightdeck connect claude-code again") ||
+				strings.Contains(r.stderr, "unknown option") || strings.Contains(r.stderr, testToken) {
+				t.Fatalf("exit %d, stdout %q, stderr %q; want exit 5 and one line saying what to do", r.code, r.stdout, r.stderr)
+			}
+			if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+				t.Fatalf("ran %q; want only %q", got, outdatedCalls)
+			}
+		})
+	}
+	t.Run("--remove", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		f.set(t, "marketplace", "installed")
+		if r := runMain(t, nil, "", false, "claude-code", "--remove", "--dry-run"); r.code != ExitOK || !strings.Contains(r.stdout, "uninstall the flightdeck plugin") {
+			t.Fatalf("--remove --dry-run: %+v", r)
+		}
+		if r := runMain(t, nil, "", false, "claude-code", "--remove", "--yes"); r.code != ExitOK || !strings.Contains(r.stdout, "Uninstalled the flightdeck plugin") || f.has("installed") {
+			t.Fatalf("--remove --yes: %+v", r)
+		}
+		if r := runMain(t, nil, "", false, "claude-code", "--remove"); r.code != ExitOK || !strings.Contains(r.stdout, "nothing changed") {
+			t.Fatalf("--remove again: %+v", r)
+		}
+	})
+	t.Run("a step refused as unknown", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		r := runMainWith(t, NewClaudeCode(exec.LookPath, answering(currentHelps)), nil, "", false, "claude-code")
+		if r.code != ExitOutdated || strings.Count(r.stderr, "\n") != 1 ||
+			!strings.Contains(r.stderr, "flightdeck connect claude-code: `claude plugin marketplace add flightdeckhq/flightdeck --json` failed: error: unknown option '--json', so Claude Code 2.1.283 is too old") ||
+			!strings.Contains(r.stderr, "claude update") || f.has("installed") {
+			t.Fatalf("%+v; want exit 5 and one line naming the version and what to do", r)
+		}
+	})
+}
+
+// A status the listing cannot read is printed without the sentinel's
+// text, as report prints an error.
+func TestMain_TheListingPrintsAStatusErrorAsReportDoes(t *testing.T) {
+	newFakeClaude(t)
+	c := NewClaudeCode(exec.LookPath, answering(map[string]answer{"plugin list --json": {stderr: "error: unknown option '--json'\n", fail: true}}))
+	r := runMainWith(t, c, nil, "", false)
+	if r.code != ExitOK || !strings.Contains(r.stdout, "status unknown `claude plugin list --json` failed: error: unknown option '--json', so Claude Code 2.1.325 is too old") ||
+		strings.Contains(r.stdout, ErrOutdated.Error()) {
+		t.Fatalf("listing: %+v", r)
 	}
 }

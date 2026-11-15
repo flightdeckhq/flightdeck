@@ -26,6 +26,7 @@ import asyncio
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from typing import Any
@@ -48,6 +49,11 @@ MAX_TOKENS = 200
 # sensor posts them synchronously, the worker writes them in batches.
 CHILDREN_DEADLINE_S = 25.0
 CHILDREN_POLL_S = 0.4
+# One sessions request never blocks longer than this, so the deadline
+# above stays the only bound on the wait; a healthy API answers in ms.
+SESSIONS_FETCH_TIMEOUT_S = 5.0
+# A page of child sessions: the largest run here opens six children.
+SESSIONS_PAGE_LIMIT = 50
 
 
 def _children(parent_id: str, want: int) -> list[dict[str, Any]]:
@@ -57,13 +63,15 @@ def _children(parent_id: str, want: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
         req = urllib.request.Request(
-            f"{API_URL}/v1/sessions?parent_session_id={parent_id}&limit=50",
+            f"{API_URL}/v1/sessions?parent_session_id={parent_id}&limit={SESSIONS_PAGE_LIMIT}",
             headers={"Authorization": f"Bearer {API_TOKEN}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with urllib.request.urlopen(req, timeout=SESSIONS_FETCH_TIMEOUT_S) as r:
                 rows = json.loads(r.read()).get("sessions", [])
-        except Exception:
+        except (urllib.error.URLError, OSError, ValueError):
+            # Not answering yet, or not JSON yet: poll again until the
+            # deadline, which reports what did land.
             rows = []
         if len(rows) >= want:
             return rows
@@ -236,10 +244,10 @@ def main() -> None:
     # The model calls above have landed, and a child's start is posted
     # before the run's queued events, so a child would have landed too.
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?parent_session_id={agent_root}&limit=50",
+        f"{API_URL}/v1/sessions?parent_session_id={agent_root}&limit={SESSIONS_PAGE_LIMIT}",
         headers={"Authorization": f"Bearer {API_TOKEN}"},
     )
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=SESSIONS_FETCH_TIMEOUT_S) as r:
         agent_children = json.loads(r.read()).get("sessions", [])
     _check(
         "create_agent's steps open no child sessions",

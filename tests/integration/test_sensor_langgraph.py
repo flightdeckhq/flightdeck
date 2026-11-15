@@ -252,26 +252,26 @@ def test_graph_invoked_inside_a_node_nests_under_its_child(
 ) -> None:
     root = str(uuid.uuid4())
     _init(root)
-    StateGraph, START, END = lang["StateGraph"], lang["START"], lang["END"]
+    state_graph, start, end = lang["StateGraph"], lang["START"], lang["END"]
     state = lang["MessagesState"]
 
     async def answer(s: dict[str, Any]) -> dict[str, Any]:
         return {"messages": [("assistant", "inner done")]}
 
-    inner_graph = StateGraph(state)
+    inner_graph = state_graph(state)
     inner_graph.add_node("inner", lang["RunnableLambda"](answer))
-    inner_graph.add_edge(START, "inner")
-    inner_graph.add_edge("inner", END)
+    inner_graph.add_edge(start, "inner")
+    inner_graph.add_edge("inner", end)
     inner = inner_graph.compile()
 
     async def delegate(s: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = await inner.ainvoke(s)
         return result
 
-    outer_graph = StateGraph(state)
+    outer_graph = state_graph(state)
     outer_graph.add_node("outer", delegate)
-    outer_graph.add_edge(START, "outer")
-    outer_graph.add_edge("outer", END)
+    outer_graph.add_edge(start, "outer")
+    outer_graph.add_edge("outer", end)
     result = asyncio.run(outer_graph.compile().ainvoke({"messages": [("user", "go")]}))
     assert result["messages"][-1].content == "inner done"
     flightdeck_sensor.teardown()

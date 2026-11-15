@@ -58,12 +58,13 @@ const (
 	// after it starts. Two minutes is the wait plus margin for a slow
 	// runner.
 	redeliveryTimeout = 120 * time.Second
-	// logTimeout bounds the wait for a line the binary logs while it
-	// handles a request to reach the test's copy of its output. The
-	// binary writes the line before it answers, but the output reaches
-	// the test through a pipe a goroutine copies, so a test that looks
-	// right after the answer can be ahead of the copy. The copy lands
-	// within milliseconds; ten seconds is margin for a loaded runner.
+	// logTimeout bounds the wait for a line the binary has written to
+	// reach the test's copy of its output: the start-up block, written
+	// before the binary serves, and a line logged while it handles a
+	// request, written before it answers. The output reaches the test
+	// through a pipe a goroutine copies, so a test that looks right
+	// after an answer can be ahead of the copy. The copy lands within
+	// milliseconds; ten seconds is margin for a loaded runner.
 	logTimeout = 10 * time.Second
 	// pollInterval is how often a condition is re-checked while waiting.
 	pollInterval = 50 * time.Millisecond
@@ -78,6 +79,12 @@ const (
 	// not the drain, ended the process.
 	forcedExitTimeout = 5 * time.Second
 )
+
+// startupBlockEnd is the last line of the start-up block. The binary
+// writes the block before it serves, and its stdout and stderr share one
+// pipe (the test hands both the same writer), so once this line has been
+// copied every line written before it has been too.
+const startupBlockEnd = "Press Ctrl+C to stop."
 
 func TestMain(m *testing.M) {
 	if os.Getenv(runBinaryEnv) == "1" {
@@ -161,7 +168,8 @@ func command(args ...string) (*exec.Cmd, *lockedBuffer) {
 }
 
 // start runs the binary on listen with dataDir and waits until it
-// serves. The child is killed when the test ends if it is still alive.
+// serves and its start-up block has reached c.out. The child is killed
+// when the test ends if it is still alive.
 func start(t *testing.T, listen, port, dataDir string, extra ...string) *child {
 	t.Helper()
 	return startWithEnv(t, nil, listen, port, dataDir, extra...)
@@ -198,6 +206,12 @@ func startWithEnv(t *testing.T, env []string, listen, port, dataDir string, extr
 		if resp, err := http.Get(c.base + "/api/health"); err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				// The block was written before the answer; wait for its
+				// copy, so a test reading c.out sees the whole block
+				// (logTimeout).
+				waitFor(t, "the start-up block", logTimeout, func() bool {
+					return strings.Contains(out.String(), startupBlockEnd)
+				})
 				return c
 			}
 		}

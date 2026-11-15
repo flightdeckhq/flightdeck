@@ -22,8 +22,8 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 
 | Framework | Sensor: LLM calls | Sensor: sub-agents | OpenTelemetry |
 |---|---|---|---|
-| LangChain | yes | no (`create_agent` builds Runnable and `ToolNode` nodes, which are not wrapped) | no |
-| LangGraph | yes | yes, for nodes whose action is a plain callable (not Runnable, `ToolNode` or compiled-subgraph nodes) | no |
+| LangChain | yes | no (`create_agent`'s model, tool and middleware nodes are the agent's own steps, not sub-agents) | no |
+| LangGraph | yes | yes: a child session per run of each node of a graph you build (functions, Runnables and your own `ToolNode`s), nested under the node it runs in; not for `create_agent`'s steps, generator nodes or compiled-subgraph nodes | no |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; not on its Gemini, Azure or Bedrock providers | yes | no |
 | Claude Agent SDK (Python) | yes | its own session per run | no |
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
@@ -78,7 +78,7 @@ Multi-agent frameworks render as a tree: a parent session for the orchestrator a
 |---|---|---|
 | Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute |
-| LangGraph agent-bearing node whose action is a plain callable | parent runner's session | node name |
+| LangGraph node of a graph you build | the sensor's session, or the child of the node it runs in | node name |
 
 Direct SDK calls outside a multi-agent framework emit root sessions; identity is unchanged. When `capture_prompts=True`, each child session carries the parent's input as `incoming_message` and the child's response back as `outgoing_message`, visible in the run drawer's Sub-agents tab.
 

@@ -108,13 +108,14 @@ def main() -> int:
         # genuinely stuck run loud and early. The GenAI scripts make
         # four model calls, then wait up to 90s for the receiver to
         # assemble the trace. 40_openai_agents runs four multi-agent
-        # runs, about ten model calls.
+        # runs, about ten model calls; 41_langgraph_runnable_nodes three
+        # graph runs, five or more.
         if (
             "subagents" in name
             or "_genai_" in name
             or "mcp_policy_langchain" in name
             or "mcp_policy_llamaindex" in name
-            or name == "40_openai_agents.py"
+            or name in ("40_openai_agents.py", "41_langgraph_runnable_nodes.py")
         ):
             timeout_s = 180
         else:

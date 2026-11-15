@@ -9,9 +9,10 @@ LangGraph wrap, three runs:
    node name, carrying only its start and end; the model calls and the
    ``multiply`` tool call stay on the sensor's session.
 2. **A graph invoked inside a node** (async): an async ``delegate`` node
-   awaits an inner graph whose ``inner_model`` node is a natively async
-   ``RunnableCallable``; the inner node's child nests under the
-   delegate's child.
+   awaits an inner graph, ``inner_graph``, whose ``inner_model`` node is
+   a natively async ``RunnableCallable``; the inner graph's run opens a
+   child under the delegate's child, and the inner node's child nests
+   under the run's.
 3. **``create_agent``** doing run 1's work, under a second sensor
    session: its model and tool nodes are the agent's own steps, so no
    child session lands.
@@ -169,7 +170,7 @@ def main() -> None:
     inner_graph.add_node("inner_model", RunnableCallable(None, ask))
     inner_graph.add_edge(START, "inner_model")
     inner_graph.add_edge("inner_model", END)
-    inner = inner_graph.compile()
+    inner = inner_graph.compile(name="inner_graph")
 
     async def delegate(state: dict[str, Any]) -> dict[str, Any]:
         nested: dict[str, Any] = await inner.ainvoke(state)
@@ -200,11 +201,18 @@ def main() -> None:
         _structure_only(child)
 
     (delegate_child,) = [c for c in children if c.get("agent_role") == "delegate"]
-    nested = _children(delegate_child["session_id"], 1)
+    runs = _children(delegate_child["session_id"], 1)
     _check(
-        "the inner graph's node nests under the delegate's child",
+        "the inner graph's run nests under the delegate's child",
+        [c.get("agent_role") for c in runs] == ["inner_graph"],
+        f"children of delegate={[c.get('agent_role') for c in runs]}",
+    )
+    _structure_only(runs[0])
+    nested = _children(runs[0]["session_id"], 1)
+    _check(
+        "the inner graph's node nests under its run's child",
         [c.get("agent_role") for c in nested] == ["inner_model"],
-        f"children of delegate={[c.get('agent_role') for c in nested]}",
+        f"children of inner_graph={[c.get('agent_role') for c in nested]}",
     )
     _structure_only(nested[0])
 

@@ -22,15 +22,15 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 
 | Framework | Sensor: LLM calls | Sensor: sub-agents | OpenTelemetry |
 |---|---|---|---|
-| LangChain | yes | no (`create_agent`'s model, tool and middleware nodes are the agent's own steps, not sub-agents) | no |
-| LangGraph | yes | yes: a child session per run of each node of a graph you build (functions, Runnables and your own `ToolNode`s), nested under the node it runs in; not for `create_agent`'s steps, generator nodes or compiled-subgraph nodes | no |
+| LangChain | yes | for an agent run inside another graph run (an agent used as a tool or as a node): one child session, named after the agent; `create_agent`'s model, tool and middleware nodes are the agent's own steps, not sub-agents | no |
+| LangGraph | yes | yes: a child session per run of each node of a graph you build (functions, Runnables and your own `ToolNode`s), and per graph run started inside another (a compiled graph used as a node, a graph invoked from a node or a tool), each nested under the child it runs in; not for `create_agent`'s steps, generator nodes or a top-level graph run | no |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; not on its Gemini, Azure or Bedrock providers | yes | no |
 | Claude Agent SDK (Python) | yes | its own session per run | no |
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
 | OpenAI Agents SDK 0.6+ | yes (not over its Responses WebSocket transport) | yes: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires (`pip install flightdeck-sensor[openai-agents]`) | yes |
 | Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
 | LlamaIndex | yes | yes on llama-index-core 0.14+: a child session per agent of an agent workflow run, with hand-offs (its calls stay on the sensor's session) | no |
-| Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |
+| Deep Agents | yes (LangChain) | yes: a child session per `task` sub-agent run, named after the sub-agent (parallel calls and `CompiledSubAgent`s included); the main agent is the sensor's session | no |
 | Pydantic AI | yes on Anthropic and OpenAI models; not on `GoogleModel` or `BedrockConverseModel` | no: use OpenTelemetry | yes |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM providers; not on Bedrock | no: use OpenTelemetry | yes |
 | Agno, Haystack, smolagents | yes on the Anthropic / OpenAI SDKs or litellm | on the [roadmap](https://github.com/flightdeckhq/flightdeck/issues/278) | no |
@@ -78,7 +78,8 @@ Multi-agent frameworks render as a tree: a parent session for the orchestrator a
 |---|---|---|
 | Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute |
-| LangGraph node of a graph you build | the sensor's session, or the child of the node it runs in | node name |
+| LangGraph node of a graph you build | the sensor's session, or the child it runs in | node name |
+| LangGraph graph run inside another (a Deep Agents `task` sub-agent, an agent used as a tool) | the child it runs in, or the sensor's session | the run's name (`create_agent(name=...)`, the sub-agent's name), else the node it runs in |
 
 Direct SDK calls outside a multi-agent framework emit root sessions; identity is unchanged. When `capture_prompts=True`, each child session carries the parent's input as `incoming_message` and the child's response back as `outgoing_message`, visible in the run drawer's Sub-agents tab.
 

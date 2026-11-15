@@ -517,6 +517,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bracex"
+version = "3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/37/adf8dd2cde958c2d086bdd87fc36b532fd824bf38f10be6348d65da0c8f9/bracex-3.2.tar.gz", hash = "sha256:0a3d40bfae4caae4d3bfd0ea715874799fab711c38fd4012cc35343e815405cd", size = 29771, upload-time = "2026-10-22T00:28:49.508Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/65/8030b03de8137d1aab7dd6ecfecdba2fc22fc849fa35959b024f62293a99/bracex-3.2-py3-none-any.whl", hash = "sha256:8f3e908a452f66707e1d6d91b3d7d7d4c649d248df18537c0dc710aeb9c30d87", size = 12019, upload-time = "2026-10-22T00:28:48.233Z" },
+]
+
+[[package]]
 name = "build"
 version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -771,7 +780,7 @@ dependencies = [
     { name = "pypika", marker = "python_full_version < '3.14'" },
     { name = "pyyaml", marker = "python_full_version < '3.14'" },
     { name = "rich", marker = "python_full_version < '3.14'" },
-    { name = "tenacity", marker = "python_full_version < '3.14'" },
+    { name = "tenacity", version = "9.1.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "tokenizers", marker = "python_full_version < '3.14'" },
     { name = "tqdm", marker = "python_full_version < '3.14'" },
     { name = "typer", marker = "python_full_version < '3.14'" },
@@ -1099,6 +1108,24 @@ wheels = [
 ]
 
 [[package]]
+name = "deepagents"
+version = "0.7.32"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-core" },
+    { name = "langchain-google-genai" },
+    { name = "langsmith" },
+    { name = "packaging" },
+    { name = "wcmatch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/89/5da9546d5e57a4f815d2cc919bd49ed2a62b25816ebd49ce6dca1919bdd8/deepagents-0.7.32.tar.gz", hash = "sha256:f4154281b04a499015e48c24edf11f59f833fbabd3d87e0898832e8db954aac4", size = 343996, upload-time = "2026-10-23T21:30:24.677Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/db/ca785ad20bf1c1255856575d9c31f201abd02bb4fd3a76a8b586d938d7e2/deepagents-0.7.32-py3-none-any.whl", hash = "sha256:366bd66c786a66c8d639e40f99614d9e5d37236adf4c5b158f0b2cb27956e28b", size = 374569, upload-time = "2026-10-23T21:30:23.235Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1334,6 +1361,7 @@ dev = [
     { name = "anthropic", version = "2.1.0", source = { registry = "https://pypi.org/simple" } },
     { name = "claude-agent-sdk" },
     { name = "crewai", marker = "python_full_version < '3.14'" },
+    { name = "deepagents" },
     { name = "httpx", version = "0.28.1", source = { registry = "https://pypi.org/simple" } },
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -1421,6 +1449,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.2.168,<0.3" },
     { name = "claude-agent-sdk", marker = "extra == 'dev'", specifier = ">=0.2.168,<0.3" },
     { name = "crewai", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=1.14" },
+    { name = "deepagents", marker = "extra == 'dev'", specifier = ">=0.7,<0.8" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25" },
     { name = "langchain", marker = "extra == 'dev'", specifier = ">=1,<2" },
     { name = "langchain-anthropic", marker = "extra == 'dev'", specifier = ">=1,<2" },
@@ -1613,6 +1642,28 @@ wheels = [
 [package.optional-dependencies]
 requests = [
     { name = "requests" },
+]
+
+[[package]]
+name = "google-genai"
+version = "2.34.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "google-auth", extra = ["requests"], marker = "extra == 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "httpx", version = "0.28.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "requests" },
+    { name = "sniffio" },
+    { name = "tenacity", version = "9.1.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/22/89/4621aee9cb183efa5b8a187f0e315c49fddcfb8cd7f238b4a3bf4946dcd0/google_genai-2.34.0.tar.gz", hash = "sha256:8e182cf3f73384167b96861cf0aef5102b5070f2db1ea11002879e913806ef37", size = 791853, upload-time = "2026-10-29T06:43:23.706Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/42/c24db865d9231b1c672ea26242a4dcf340e200bb1a9823dce4aa9c4c07a4/google_genai-2.34.0-py3-none-any.whl", hash = "sha256:a4cb02aebc4c357f863d2938132f0e3f7967fc5e00b8a4078673f68aad340665", size = 1258155, upload-time = "2026-10-29T06:43:21.121Z" },
 ]
 
 [[package]]
@@ -2222,7 +2273,7 @@ dependencies = [
     { name = "pydantic-core", version = "2.41.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "requests", marker = "python_full_version < '3.14'" },
     { name = "rich", marker = "python_full_version < '3.14'" },
-    { name = "tenacity", marker = "python_full_version < '3.14'" },
+    { name = "tenacity", version = "9.1.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "typer", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9f/24/f6b28e83b3194c6223ed7c6eed5724687f6ecd378ec2ff24044f0cbf1f09/instructor-1.15.4.tar.gz", hash = "sha256:ea2280c3678d0f6891c4d826104f95624b680e69877113a6345b1d7c9027ba0f", size = 70049678, upload-time = "2026-06-28T07:36:43.458Z" }
@@ -2654,13 +2705,29 @@ dependencies = [
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "pyyaml" },
-    { name = "tenacity" },
+    { name = "tenacity", version = "9.1.4", source = { registry = "https://pypi.org/simple" } },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/e0/c1b304897da6c3a8a6c977f10b339901cbd4d462274da7cbf940798de237/langchain_core-1.7.2.tar.gz", hash = "sha256:7810d029eaa4286838baad56752efb771868a5eebaf52aefe45764645dbea649", size = 1029042, upload-time = "2026-10-29T19:04:13.876Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/40/15be310450488b8b508836492203291642a17dbd6dd56a48232934aa3a44/langchain_core-1.7.2-py3-none-any.whl", hash = "sha256:61988091e36f074aaac595232180b5aa6e80cb63fb026b02b69843f07a57fdcf", size = 577056, upload-time = "2026-10-29T19:04:12.219Z" },
+]
+
+[[package]]
+name = "langchain-google-genai"
+version = "4.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filetype" },
+    { name = "google-genai" },
+    { name = "langchain-core" },
+    { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/c5/dce61b4fb570012c4a856d971626355bd29c9425af7195e2c242e77297f8/langchain_google_genai-4.4.2.tar.gz", hash = "sha256:0872df6de1ebf031c4dad59aead504f168ff31a4d73ea74e52bb1fcdb8f4ab91", size = 379336, upload-time = "2026-10-13T17:25:46.943Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/70/7a434c9b97ff360344c99009f960d45810c7e6bb572e5aadf114aa02eded/langchain_google_genai-4.4.2-py3-none-any.whl", hash = "sha256:db68bd24e5372b2688f6902e47521a6802bfecc36e2d5bbff14076f8cbb26c83", size = 81915, upload-time = "2026-10-13T17:25:45.539Z" },
 ]
 
 [[package]]
@@ -3006,7 +3073,7 @@ dependencies = [
     { name = "requests" },
     { name = "setuptools" },
     { name = "sqlalchemy", extra = ["asyncio"], marker = "extra == 'group-17-flightdeck-sensor-llama-index-floor' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "tenacity" },
+    { name = "tenacity", version = "9.2.1", source = { registry = "https://pypi.org/simple" } },
     { name = "tiktoken" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -3054,7 +3121,7 @@ dependencies = [
     { name = "requests" },
     { name = "setuptools" },
     { name = "sqlalchemy", extra = ["asyncio"], marker = "extra == 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-litellm' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-llama-index-floor') or (extra == 'extra-17-flightdeck-sensor-openai-agents' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-openai-floor') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-llama-index-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-floors') or (extra == 'group-17-flightdeck-sensor-openai-floor' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'group-17-flightdeck-sensor-sdk-floors' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "tenacity" },
+    { name = "tenacity", version = "9.1.4", source = { registry = "https://pypi.org/simple" } },
     { name = "tiktoken" },
     { name = "tinytag" },
     { name = "tqdm" },
@@ -6069,8 +6136,28 @@ wheels = [
 
 [[package]]
 name = "tenacity"
+version = "9.1.4"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version == '3.13.*'",
+    "python_full_version == '3.12.*'",
+    "python_full_version < '3.12'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
+]
+
+[[package]]
+name = "tenacity"
 version = "9.2.1"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version >= '3.12' and python_full_version < '3.14'",
+    "python_full_version < '3.12'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/82/9e/497c1c8ebe5a5b5d1d4a7511aea22c0bb1a97e3170d98abdef0e1b34265a/tenacity-9.2.1.tar.gz", hash = "sha256:a606b5c808d0cded4a359d5b9932d867ff2a6a6b64d37350260fd01bbdf83839", size = 58261, upload-time = "2026-10-07T12:13:01.633Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d6/26/1ff2b0721ac66a3ec5b1402b333110b352ab0a8724052ac279a7b82d40c4/tenacity-9.2.1-py3-none-any.whl", hash = "sha256:9e56f17539296baab7beabb08b92f6ee3d7be92d8be72d763360677c2ad6580e", size = 32310, upload-time = "2026-10-07T12:13:00.102Z" },
@@ -6519,6 +6606,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/92/cc/a3c3f557992a20a5bb24607f0da44d39cf6d6ba3f8f6ed7cb31f6c73371a/watchfiles-1.3.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:6398d250994baff581147ccba846223076fe6492ca93c0d1b3588fcf5355eb5c", size = 394852, upload-time = "2026-09-21T09:08:51.412Z" },
     { url = "https://files.pythonhosted.org/packages/55/65/d45763a5e1108a65af85a217af2930ebf1081c73fd8169d3f75e586992bb/watchfiles-1.3.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:591de392458bca26f6130fea4e667c06b657e873ad334ea06fad5a79f5086cef", size = 451789, upload-time = "2026-09-21T09:08:53.144Z" },
     { url = "https://files.pythonhosted.org/packages/02/96/165c6e540bf765ca1115062017adf861d0816525f02464ba71313fe7cf92/watchfiles-1.3.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5ec46a1ff4c1d81405a5fc645abdbff5e4e9388f7c9a6cdb392316a7c29b884f", size = 456919, upload-time = "2026-09-21T09:08:54.372Z" },
+]
+
+[[package]]
+name = "wcmatch"
+version = "11.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bracex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bd/07/b7a9162a804bc0f7d03fe84c93e374d3e1c4d828043d5f9b797f7d4e30e0/wcmatch-11.2.tar.gz", hash = "sha256:1605bde546fbde4c063628c7d89eda486909fd4337e51d73a873987fbcb2554c", size = 134939, upload-time = "2026-10-22T00:37:57.622Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/96/b6cebd4bd75320743a291fed494c79f07c01b58fa9b187d12aeb5110f002/wcmatch-11.2-py3-none-any.whl", hash = "sha256:952bab83c75c233836007a69550a3a8753cf06964c1eb3b84ff11ad5bff1c272", size = 44361, upload-time = "2026-10-22T00:37:56.293Z" },
 ]
 
 [[package]]

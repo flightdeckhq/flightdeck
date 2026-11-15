@@ -1,0 +1,961 @@
+"""Unit tests for the LangGraph wrap's graph runs: a run of a compiled
+graph started inside another graph run, or inside a child, opens a child
+session; a top-level run opens none.
+
+Covers the roles (the run's name, the graph's, the enclosing node's, the
+generic one), the parents, the three trees the wrap is built for (a
+compiled graph used as a node, an agent used as a tool, a Deep Agents
+``task`` call), Deep Agents sync, async, streamed, compiled and parallel
+sub-agents and a human-in-the-loop interrupt inside one, the ends (error,
+interrupt, cancellation, an abandoned stream), the run's messages and the
+capture gate, failing open, patching, posting off the event loop, and a
+``RemoteGraph``, which runs in its server. Fake chat models only.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import contextlib
+import threading
+import uuid
+import warnings
+from typing import Any, TypedDict
+from unittest.mock import MagicMock
+
+import pytest
+
+import flightdeck_sensor
+from flightdeck_sensor.core.session import Session
+from flightdeck_sensor.core.types import SensorConfig
+from flightdeck_sensor.interceptor import langgraph as _langgraph_mod
+from flightdeck_sensor.interceptor.langgraph import (
+    patch_langgraph_classes,
+    set_agent_node_pattern,
+    unpatch_langgraph_classes,
+)
+from flightdeck_sensor.transport.client import ControlPlaneClient
+
+# How long a test waits for child posts queued on a loop's executor, or
+# for a post it holds back to be released; each is a call on a mock
+# client, done in milliseconds once it may run.
+_POSTS_WAIT_SECS = 10.0
+
+
+class _TextState(TypedDict, total=False):
+    text: str
+
+
+def _build_session(*, capture_prompts: bool = True) -> tuple[Session, MagicMock]:
+    config = SensorConfig(
+        server="http://localhost:9999",
+        token="tok",
+        agent_id="33333333-3333-3333-3333-333333333333",
+        agent_name="parent-langgraph",
+        user_name="tester",
+        hostname="host1",
+        client_type="flightdeck_sensor",
+        agent_flavor="playground-test",
+        agent_type="production",
+        capture_prompts=capture_prompts,
+        quiet=True,
+    )
+    client = MagicMock(spec=ControlPlaneClient)
+    client.post_event.return_value = (None, False)
+    return Session(config=config, client=client), client
+
+
+@pytest.fixture()
+def patched() -> Any:
+    if not _langgraph_mod._ensure_imported():
+        pytest.skip("langgraph not installed")
+    session, client = _build_session()
+    prior = flightdeck_sensor._session
+    flightdeck_sensor._session = session
+    patch_langgraph_classes(quiet=True)
+    try:
+        yield session, client, _langgraph_mod._StateGraph
+    finally:
+        unpatch_langgraph_classes()
+        flightdeck_sensor._session = prior
+        set_agent_node_pattern(None)
+        with contextlib.suppress(Exception):
+            session.event_queue.close()
+
+
+def _posts(client: MagicMock) -> list[dict[str, Any]]:
+    return [call.args[0] for call in client.post_event.call_args_list]
+
+
+def _starts(client: MagicMock) -> list[dict[str, Any]]:
+    return [p for p in _posts(client) if p["event_type"] == "session_start"]
+
+
+def _ends(client: MagicMock) -> list[dict[str, Any]]:
+    return [p for p in _posts(client) if p["event_type"] == "session_end"]
+
+
+def _tree(session: Session, client: MagicMock) -> list[tuple[str, str]]:
+    """(role, parent role) per child in start order; the sensor's session
+    is ``root``. Every child that started also ended."""
+    starts = _starts(client)
+    assert {p["session_id"] for p in _ends(client)} == {p["session_id"] for p in starts}
+    roles = {session.config.session_id: "root"}
+    roles.update({p["session_id"]: p["agent_role"] for p in starts})
+    return [(p["agent_role"], roles[p["parent_session_id"]]) for p in starts]
+
+
+@contextlib.contextmanager
+def _unpatched() -> Any:
+    """Build a graph as LangGraph alone would, inside a patched test: its
+    nodes open no child, so only its runs are under test."""
+    unpatch_langgraph_classes()
+    try:
+        yield
+    finally:
+        patch_langgraph_classes(quiet=True)
+
+
+def _one_node_graph(StateGraph: Any, name: str, action: Any, schema: Any = None) -> Any:
+    from langgraph.graph import END, START
+
+    graph = StateGraph(schema or _TextState)
+    graph.add_node(name, action)
+    graph.add_edge(START, name)
+    graph.add_edge(name, END)
+    return graph
+
+
+def _two_node_graph(StateGraph: Any) -> Any:
+    from langgraph.graph import END, START
+
+    graph = StateGraph(_TextState)
+    graph.add_node("first", lambda state: {"text": state["text"] + "1"})
+    graph.add_node("second", lambda state: {"text": state["text"] + "2"})
+    graph.add_edge(START, "first")
+    graph.add_edge("first", "second")
+    graph.add_edge("second", END)
+    return graph
+
+
+def _fake_model(*replies: Any) -> Any:
+    """A chat model answering with ``replies`` in turn, accepting tools."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    class _FakeToolModel(GenericFakeChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+    return _FakeToolModel(messages=iter(replies))
+
+
+def _call(name: str, args: dict[str, Any], call_id: str = "call-1") -> Any:
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(content="", tool_calls=[{"id": call_id, "name": name, "args": args}])
+
+
+def _answer(text: str) -> Any:
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(content=text)
+
+
+def _lookup_tool() -> Any:
+    from langchain_core.tools import tool
+
+    @tool
+    def lookup(query: str) -> str:
+        """Look a query up."""
+        return f"found {query}"
+
+    return lookup
+
+
+def _deepagents() -> Any:
+    return pytest.importorskip("deepagents")
+
+
+def _task(subagent: str, description: str, call_id: str = "task-1") -> Any:
+    return _call("task", {"description": description, "subagent_type": subagent}, call_id)
+
+
+def _researcher(**extra: Any) -> dict[str, Any]:
+    return {
+        "name": "researcher",
+        "description": "Researches a question.",
+        "system_prompt": "Research the question.",
+        "tools": [_lookup_tool()],
+        **extra,
+    }
+
+
+_QUESTION = {"messages": [{"role": "user", "content": "research q"}]}
+
+
+# ----------------------------------------------------------------------
+# Top-level runs open nothing
+# ----------------------------------------------------------------------
+
+
+async def test_top_level_runs_open_no_child_in_any_entry_point(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    with _unpatched():
+        app = _two_node_graph(StateGraph).compile()
+    state = {"text": "in"}
+
+    assert app.invoke(state) == {"text": "in12"}
+    assert len(list(app.stream(state, stream_mode="updates"))) == 2
+    assert await app.ainvoke(state) == {"text": "in12"}
+    assert [c async for c in app.astream(state, stream_mode="values")][-1] == {"text": "in12"}
+    assert [e async for e in app.astream_events(state, version="v2")]
+    with warnings.catch_warnings():
+        # The v3 stream protocol is LangGraph's beta.
+        warnings.simplefilter("ignore")
+        assert list(app.stream_events(state, version="v3"))
+    assert client.post_event.call_count == 0
+
+
+def test_top_level_create_agent_opens_no_child(patched: Any) -> None:
+    _session, client, _StateGraph = patched
+    from langchain.agents import create_agent
+
+    agent = create_agent(_fake_model(_answer("done")), [], name="solo")
+
+    assert agent.invoke(_QUESTION)["messages"][-1].content == "done"
+    assert client.post_event.call_count == 0
+
+
+# ----------------------------------------------------------------------
+# Nested runs: roles and parents
+# ----------------------------------------------------------------------
+
+
+def test_named_graph_run_inside_a_node_is_named_after_the_graph(patched: Any) -> None:
+    session, client, StateGraph = patched
+    inner = _two_node_graph(StateGraph)
+    with _unpatched():
+        inner_app = inner.compile(name="researcher")
+        outer = _one_node_graph(StateGraph, "delegate", lambda s: inner_app.invoke(s)).compile()
+
+    assert outer.invoke({"text": "in"}) == {"text": "in12"}
+    # The inner graph's nodes were built patched: they nest under its run.
+    assert _tree(session, client) == [
+        ("researcher", "root"),
+        ("first", "researcher"),
+        ("second", "researcher"),
+    ]
+    (start,) = [p for p in _starts(client) if p["agent_role"] == "researcher"]
+    assert start["agent_name"] == "parent-langgraph/researcher"
+    assert start["agent_id"] == session.derive_subagent_id("researcher")
+
+
+def test_unnamed_graph_run_takes_the_enclosing_node_name(patched: Any) -> None:
+    session, client, StateGraph = patched
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile()
+        outer = _one_node_graph(StateGraph, "delegate", lambda s: inner.invoke(s)).compile()
+
+    outer.invoke({"text": "in"})
+    assert _tree(session, client) == [("delegate", "root")]
+
+
+def test_run_name_in_the_config_names_the_run(patched: Any) -> None:
+    session, client, StateGraph = patched
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="graph_name")
+        bound = _two_node_graph(StateGraph).compile().with_config(run_name="bound_name")
+
+        def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            inner.invoke(state, {"run_name": "call_name"})
+            result: dict[str, Any] = bound.invoke(state)
+            return result
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    outer.invoke({"text": "in"})
+    assert _tree(session, client) == [("call_name", "root"), ("bound_name", "root")]
+
+
+def test_run_inside_a_child_with_no_graph_task_gets_the_generic_role(patched: Any) -> None:
+    """A graph run started inside another framework's child (here, a scope
+    entered by hand) nests under it; unnamed and in no node, its role is
+    the generic one."""
+    session, client, StateGraph = patched
+    with _unpatched():
+        app = _two_node_graph(StateGraph).compile()
+    scope = session.new_subagent_scope(
+        child_session_id=str(uuid.uuid4()),
+        child_agent_id=session.derive_subagent_id("crew_agent"),
+        child_agent_name="parent-langgraph/crew_agent",
+        agent_role="crew_agent",
+    )
+    token = session.enter_subagent_scope(scope)
+    try:
+        assert app.invoke({"text": "in"}) == {"text": "in12"}
+    finally:
+        session.exit_subagent_scope(token)
+
+    (start,) = _starts(client)
+    assert start["agent_role"] == "subgraph"
+    assert start["parent_session_id"] == scope.child_session_id
+
+
+async def test_async_nested_runs_nest_and_post_off_the_loop(patched: Any) -> None:
+    session, client, StateGraph = patched
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def post(payload: dict[str, Any], **kwargs: Any) -> tuple[None, bool]:
+        threads.append(threading.get_ident())
+        return None, False
+
+    client.post_event.side_effect = post
+    leaf = _two_node_graph(StateGraph).compile(name="leaf")
+
+    async def call_leaf(state: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = await leaf.ainvoke(state)
+        return result
+
+    middle = _one_node_graph(StateGraph, "call_leaf", call_leaf).compile(name="middle")
+    with _unpatched():
+
+        async def call_middle(state: dict[str, Any]) -> dict[str, Any]:
+            chunks = [c async for c in middle.astream(state, stream_mode="values")]
+            result: dict[str, Any] = chunks[-1]
+            return result
+
+        outer = _one_node_graph(StateGraph, "call_middle", call_middle).compile()
+
+    assert await outer.ainvoke({"text": "in"}) == {"text": "in12"}
+    assert _tree(session, client) == [
+        ("middle", "root"),
+        ("call_leaf", "middle"),
+        ("leaf", "call_leaf"),
+        ("first", "leaf"),
+        ("second", "leaf"),
+    ]
+    assert threads and loop_thread not in threads
+
+
+# ----------------------------------------------------------------------
+# The three trees
+# ----------------------------------------------------------------------
+
+
+def _compiled_node_cases(StateGraph: Any) -> dict[str, tuple[Any, str]]:
+    """Node name -> (compiled graph, the role its run gets)."""
+    return {
+        "sub": (_two_node_graph(StateGraph).compile(), "sub"),
+        "named": (_two_node_graph(StateGraph).compile(name="researcher"), "researcher"),
+        "bound": (_two_node_graph(StateGraph).compile().with_retry(), "bound"),
+    }
+
+
+def test_compiled_graph_node_gets_one_child_named_unnamed_and_bound(patched: Any) -> None:
+    """root -> <the run> -> first, second: one child for the compiled
+    graph, whether named, unnamed or bound."""
+    session, client, StateGraph = patched
+    for node, (inner, role) in _compiled_node_cases(StateGraph).items():
+        graph = _one_node_graph(StateGraph, node, inner)
+        assert graph.nodes[node].runnable is inner, node
+        client.post_event.reset_mock()
+        assert graph.compile().invoke({"text": "in"}) == {"text": "in12"}
+        assert _tree(session, client) == [(role, "root"), ("first", role), ("second", role)]
+
+
+async def test_async_compiled_graph_node_gets_one_child(patched: Any) -> None:
+    session, client, StateGraph = patched
+    for node, (inner, role) in _compiled_node_cases(StateGraph).items():
+        client.post_event.reset_mock()
+        app = _one_node_graph(StateGraph, node, inner).compile()
+        assert await app.ainvoke({"text": "in"}) == {"text": "in12"}
+        assert _tree(session, client) == [(role, "root"), ("first", role), ("second", role)]
+
+
+def test_agent_used_as_a_tool_gets_one_child_under_the_tools_node(patched: Any) -> None:
+    """A create_agent graph invoked from a tool a hand-built ToolNode runs:
+
+    root
+    ├── model
+    ├── tools
+    │   └── expert   (the agent's run; its own steps open nothing)
+    └── model
+    """
+    session, client, StateGraph = patched
+    from langchain.agents import create_agent
+    from langchain_core.tools import tool
+    from langgraph.graph import START, MessagesState
+    from langgraph.prebuilt import ToolNode, tools_condition
+
+    expert = create_agent(_fake_model(_answer("expert answer")), [], name="expert")
+
+    @tool
+    def ask_expert(question: str) -> str:
+        """Ask the expert."""
+        reply = expert.invoke({"messages": [{"role": "user", "content": question}]})
+        return str(reply["messages"][-1].content)
+
+    model = _fake_model(_call("ask_expert", {"question": "q"}), _answer("done"))
+
+    def call_model(state: dict[str, Any]) -> dict[str, Any]:
+        return {"messages": [model.invoke(state["messages"])]}
+
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", call_model)
+    graph.add_node("tools", ToolNode([ask_expert]))
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", tools_condition)
+    graph.add_edge("tools", "model")
+
+    result = graph.compile().invoke(_QUESTION)
+
+    assert result["messages"][-1].content == "done"
+    assert result["messages"][-2].content == "expert answer"
+    assert _tree(session, client) == [
+        ("model", "root"),
+        ("tools", "root"),
+        ("expert", "tools"),
+        ("model", "root"),
+    ]
+
+
+def test_deep_agents_task_call_gets_one_child_named_after_the_sub_agent(patched: Any) -> None:
+    """root -> researcher, and nothing else: the task call runs inside
+    create_agent's tools node, which has no child of its own."""
+    session, client, _StateGraph = patched
+    deepagents = _deepagents()
+    model = _fake_model(
+        _task("researcher", "research q"),
+        _call("lookup", {"query": "q"}, "lookup-1"),
+        _answer("researched"),
+        _answer("all done"),
+    )
+    agent = deepagents.create_deep_agent(model=model, tools=[], subagents=[_researcher()])
+
+    result = agent.invoke(_QUESTION)
+
+    assert result["messages"][-1].content == "all done"
+    assert _tree(session, client) == [("researcher", "root")]
+    (start,) = _starts(client)
+    (end,) = _ends(client)
+    # The sub-agent's input state, with the task description as its message.
+    (incoming,) = start["incoming_message"]["body"]["messages"]
+    assert incoming["content"] == "research q"
+    # Its final state: the answer it hands back.
+    assert end["outgoing_message"]["body"]["messages"][-1]["content"] == "researched"
+    assert "state" not in end
+
+
+# ----------------------------------------------------------------------
+# Deep Agents
+# ----------------------------------------------------------------------
+
+
+async def test_deep_agents_async_and_streamed_runs(patched: Any) -> None:
+    session, client, _StateGraph = patched
+    deepagents = _deepagents()
+
+    def agent() -> Any:
+        model = _fake_model(
+            _task("researcher", "research q"),
+            _answer("researched"),
+            _answer("all done"),
+        )
+        return deepagents.create_deep_agent(model=model, tools=[], subagents=[_researcher()])
+
+    result = await agent().ainvoke(_QUESTION)
+    assert result["messages"][-1].content == "all done"
+    assert _tree(session, client) == [("researcher", "root")]
+
+    client.post_event.reset_mock()
+    updates = [c async for c in agent().astream(_QUESTION, stream_mode="updates")]
+    assert updates
+    assert _tree(session, client) == [("researcher", "root")]
+
+    client.post_event.reset_mock()
+    assert list(agent().stream(_QUESTION, stream_mode="values"))[-1]["messages"]
+    assert _tree(session, client) == [("researcher", "root")]
+
+
+def test_deep_agents_compiled_sub_agent_is_named_after_it(patched: Any) -> None:
+    """A CompiledSubAgent's graph is unnamed; Deep Agents gives its run
+    the sub-agent's name. Its hand-built node nests under it.
+
+    root
+    └── worker
+        └── work
+    """
+    session, client, StateGraph = patched
+    deepagents = _deepagents()
+    from langgraph.graph import MessagesState
+
+    worker = _one_node_graph(
+        StateGraph, "work", lambda s: {"messages": [_answer("worked")]}, MessagesState
+    ).compile()
+    model = _fake_model(_task("worker", "do the work"), _answer("all done"))
+    agent = deepagents.create_deep_agent(
+        model=model,
+        tools=[],
+        subagents=[{"name": "worker", "description": "Does work.", "runnable": worker}],
+    )
+
+    assert agent.invoke(_QUESTION)["messages"][-1].content == "all done"
+    assert _tree(session, client) == [("worker", "root"), ("work", "worker")]
+
+
+async def test_deep_agents_parallel_task_calls_get_one_child_each(patched: Any) -> None:
+    session, client, _StateGraph = patched
+    deepagents = _deepagents()
+    from langchain_core.messages import AIMessage
+
+    writer = {
+        "name": "writer",
+        "description": "Writes.",
+        "system_prompt": "Write.",
+        "tools": [],
+    }
+
+    def agent() -> Any:
+        both = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "task-r",
+                    "name": "task",
+                    "args": {"description": "research", "subagent_type": "researcher"},
+                },
+                {
+                    "id": "task-w",
+                    "name": "task",
+                    "args": {"description": "write", "subagent_type": "writer"},
+                },
+            ],
+        )
+        # Each sub-agent gets its own model, so the replies cannot cross.
+        main = _fake_model(both, _answer("all done"))
+        return deepagents.create_deep_agent(
+            model=main,
+            tools=[],
+            subagents=[
+                _researcher(model=_fake_model(_answer("researched"))),
+                {**writer, "model": _fake_model(_answer("written"))},
+            ],
+        )
+
+    assert agent().invoke(_QUESTION)["messages"][-1].content == "all done"
+    assert sorted(_tree(session, client)) == [("researcher", "root"), ("writer", "root")]
+    assert len({p["session_id"] for p in _starts(client)}) == 2
+
+    client.post_event.reset_mock()
+    result = await agent().ainvoke(_QUESTION)
+    assert result["messages"][-1].content == "all done"
+    assert sorted(_tree(session, client)) == [("researcher", "root"), ("writer", "root")]
+    outgoing = {
+        p["agent_role"]: p["outgoing_message"]["body"]["messages"][-1]["content"]
+        for p in _ends(client)
+    }
+    assert outgoing == {"researcher": "researched", "writer": "written"}
+
+
+def test_deep_agents_interrupt_inside_a_sub_agent_and_resume(patched: Any) -> None:
+    """A human-in-the-loop interrupt inside the sub-agent closes its child
+    normally; the resume runs the sub-agent again, under a new child."""
+    session, client, _StateGraph = patched
+    deepagents = _deepagents()
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    sub_model = _fake_model(_call("lookup", {"query": "q"}, "lookup-1"), _answer("researched"))
+    model = _fake_model(_task("researcher", "research q"), _answer("all done"))
+    agent = deepagents.create_deep_agent(
+        model=model,
+        tools=[],
+        subagents=[_researcher(model=sub_model, interrupt_on={"lookup": True})],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "thread-hitl"}}
+
+    first = agent.invoke(_QUESTION, config)
+    assert "__interrupt__" in first
+    (first_end,) = _ends(client)
+    assert "state" not in first_end and "error" not in first_end
+    assert "outgoing_message" not in first_end
+
+    resumed = agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+    assert resumed["messages"][-1].content == "all done"
+    assert _tree(session, client) == [("researcher", "root"), ("researcher", "root")]
+    starts = _starts(client)
+    assert starts[0]["session_id"] != starts[1]["session_id"]
+    last_end = _ends(client)[-1]
+    assert last_end["outgoing_message"]["body"]["messages"][-1]["content"] == "researched"
+
+
+# ----------------------------------------------------------------------
+# Ends
+# ----------------------------------------------------------------------
+
+
+def test_failed_nested_run_ends_in_error_and_keeps_its_exception(patched: Any) -> None:
+    session, client, StateGraph = patched
+
+    def fail(state: dict[str, Any]) -> dict[str, Any]:
+        raise ValueError("inner node failed")
+
+    with _unpatched():
+        inner = _one_node_graph(StateGraph, "fails", fail).compile(name="inner")
+        outer = _one_node_graph(StateGraph, "delegate", lambda s: inner.invoke(s)).compile()
+
+    with pytest.raises(ValueError, match="inner node failed"):
+        outer.invoke({"text": "in"})
+    (end,) = _ends(client)
+    assert end["agent_role"] == "inner"
+    assert end["state"] == "error"
+    assert end["error"] == {"type": "ValueError", "message": "inner node failed"}
+
+
+def test_interrupt_inside_a_nested_run_closes_its_child_normally(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import interrupt
+
+    def ask(state: dict[str, Any]) -> dict[str, Any]:
+        return {"text": interrupt("approve?")}
+
+    with _unpatched():
+        inner = _one_node_graph(StateGraph, "ask", ask).compile(name="inner")
+        outer = _one_node_graph(StateGraph, "delegate", lambda s: inner.invoke(s)).compile(
+            checkpointer=InMemorySaver()
+        )
+
+    first = outer.invoke({"text": "in"}, {"configurable": {"thread_id": "t-1"}})
+    assert "__interrupt__" in first
+    (end,) = _ends(client)
+    assert end["agent_role"] == "inner"
+    assert "state" not in end and "error" not in end
+
+
+def test_abandoned_sync_stream_closes_its_child(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+        def take_first(state: dict[str, Any]) -> dict[str, Any]:
+            stream = inner.stream(state, stream_mode="updates")
+            first: dict[str, Any] = next(stream)["first"]
+            stream.close()
+            return first
+
+        outer = _one_node_graph(StateGraph, "delegate", take_first).compile()
+
+    assert outer.invoke({"text": "in"}) == {"text": "in1"}
+    (start,) = _starts(client)
+    (end,) = _ends(client)
+    assert end["session_id"] == start["session_id"]
+    assert "state" not in end and "outgoing_message" not in end
+
+
+async def test_abandoned_async_stream_closes_its_child(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+        async def take_first(state: dict[str, Any]) -> dict[str, Any]:
+            stream = inner.astream(state, stream_mode="updates")
+            first: dict[str, Any] = (await stream.__anext__())["first"]
+            await stream.aclose()
+            return first
+
+        outer = _one_node_graph(StateGraph, "delegate", take_first).compile()
+
+    assert await outer.ainvoke({"text": "in"}) == {"text": "in1"}
+    session = flightdeck_sensor._session
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    (start,) = _starts(client)
+    (end,) = _ends(client)
+    assert end["session_id"] == start["session_id"]
+    assert "state" not in end and "outgoing_message" not in end
+
+
+async def test_cancelled_async_run_ends_its_child_in_error(patched: Any) -> None:
+    session, client, StateGraph = patched
+    entered = asyncio.Event()
+
+    async def wait_forever(state: dict[str, Any]) -> dict[str, Any]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {"text": "never"}
+
+    with _unpatched():
+        inner = _one_node_graph(StateGraph, "waits", wait_forever).compile(name="inner")
+    scope = session.new_subagent_scope(
+        child_session_id=str(uuid.uuid4()),
+        child_agent_id=session.derive_subagent_id("outer"),
+        child_agent_name="parent-langgraph/outer",
+        agent_role="outer",
+    )
+    token = session.enter_subagent_scope(scope)
+    try:
+        task = asyncio.ensure_future(inner.ainvoke({"text": "in"}))
+    finally:
+        session.exit_subagent_scope(token)
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    (end,) = _ends(client)
+    assert end["state"] == "error"
+    assert end["error"]["type"] == "CancelledError"
+
+
+# ----------------------------------------------------------------------
+# Messages and the capture gate
+# ----------------------------------------------------------------------
+
+
+def test_run_messages_are_its_input_and_its_final_state(patched: Any) -> None:
+    """invoke streams (mode, chunk) pairs; the outgoing message is the last
+    full state, not a pair. So it is for a v2 stream (its parts carry the
+    enclosing task's namespace) and for a run streaming its sub-graphs
+    too, whose deeper states are not its own; a run streaming updates only
+    hands back its last chunk."""
+    _session, client, StateGraph = patched
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+        wrapping = _one_node_graph(StateGraph, "nested", inner).compile(name="wrapping")
+
+        def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            inner.invoke(state)
+            list(inner.stream(state, stream_mode="updates"))
+            list(inner.stream(state, stream_mode="values", version="v2"))
+            list(wrapping.stream(state, stream_mode=["values", "updates"], subgraphs=True))
+            return {"text": "done"}
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    outer.invoke({"text": "in"})
+    ends = {p["agent_role"]: p for p in _ends(client)}
+    assert [p["agent_role"] for p in _starts(client)] == [
+        "inner",
+        "inner",
+        "inner",
+        "wrapping",
+        "inner",
+    ]
+    assert {p["incoming_message"]["body"]["text"] for p in _starts(client)} == {"in"}
+    outgoing = [p["outgoing_message"]["body"] for p in _ends(client)]
+    assert outgoing[:3] == [{"text": "in12"}, {"second": {"text": "in12"}}, {"text": "in12"}]
+    assert ends["wrapping"]["outgoing_message"]["body"] == {"text": "in12"}
+
+
+def test_capture_off_drops_the_run_messages_and_error_text(patched: Any) -> None:
+    session, client, StateGraph = patched
+    session.config.capture_prompts = False
+
+    def fail(state: dict[str, Any]) -> dict[str, Any]:
+        raise ValueError("the secret state")
+
+    with _unpatched():
+        ok = _two_node_graph(StateGraph).compile(name="ok")
+        failing = _one_node_graph(StateGraph, "fails", fail).compile(name="failing")
+
+        def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            ok.invoke(state)
+            with contextlib.suppress(ValueError):
+                failing.invoke(state)
+            return {"text": "done"}
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    outer.invoke({"text": "the secret input"})
+    posts = _posts(client)
+    assert len(posts) == 4
+    assert all("incoming_message" not in p and "outgoing_message" not in p for p in posts)
+    assert _ends(client)[1]["error"] == {"type": "ValueError"}
+    assert "secret" not in str(posts)
+
+
+# ----------------------------------------------------------------------
+# Failing open
+# ----------------------------------------------------------------------
+
+
+async def test_a_run_whose_child_cannot_be_opened_runs_unchanged(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _session, client, StateGraph = patched
+
+    def broken(graph: Any, config: Any) -> str:
+        raise RuntimeError("cannot name the run")
+
+    monkeypatch.setattr(_langgraph_mod, "_run_role", broken)
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile()
+
+        async def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            first: dict[str, Any] = inner.invoke(state)
+            second: dict[str, Any] = await inner.ainvoke(first)
+            return second
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    assert await outer.ainvoke({"text": "in"}) == {"text": "in1212"}
+    assert client.post_event.call_count == 0
+
+
+async def test_failed_posts_never_reach_a_run(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    client.post_event.side_effect = RuntimeError("control plane down")
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+        async def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            first: dict[str, Any] = await asyncio.to_thread(inner.invoke, state)
+            second: dict[str, Any] = await inner.ainvoke(first)
+            return second
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    assert await outer.ainvoke({"text": "in"}) == {"text": "in1212"}
+    assert client.post_event.call_count == 4
+
+
+# ----------------------------------------------------------------------
+# Patching
+# ----------------------------------------------------------------------
+
+
+def test_patch_is_idempotent_and_unpatch_restores_the_originals(patched: Any) -> None:
+    _session, client, StateGraph = patched
+    from langgraph.pregel import Pregel
+
+    patched_stream, patched_astream = Pregel.stream, Pregel.astream
+    patch_langgraph_classes(quiet=True)
+    assert (Pregel.stream, Pregel.astream) == (patched_stream, patched_astream)
+    original_stream = patched_stream.__wrapped__
+    original_astream = patched_astream.__wrapped__
+
+    unpatch_langgraph_classes()
+    unpatch_langgraph_classes()
+    try:
+        assert Pregel.stream is original_stream
+        assert Pregel.astream is original_astream
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+        outer = _one_node_graph(StateGraph, "delegate", lambda s: inner.invoke(s)).compile()
+        assert outer.invoke({"text": "in"}) == {"text": "in12"}
+        assert client.post_event.call_count == 0
+    finally:
+        patch_langgraph_classes(quiet=True)
+
+
+# ----------------------------------------------------------------------
+# Posting
+# ----------------------------------------------------------------------
+
+
+async def test_sync_run_on_the_loop_thread_posts_off_the_loop(patched: Any) -> None:
+    """A sync invoke inside a coroutine runs on the loop's thread; its
+    child's posts are queued, not made there."""
+    session, client, StateGraph = patched
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def post(payload: dict[str, Any], **kwargs: Any) -> tuple[None, bool]:
+        threads.append(threading.get_ident())
+        return None, False
+
+    client.post_event.side_effect = post
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+        async def delegate(state: dict[str, Any]) -> dict[str, Any]:
+            result: dict[str, Any] = inner.invoke(state)
+            return result
+
+        outer = _one_node_graph(StateGraph, "delegate", delegate).compile()
+
+    assert await outer.ainvoke({"text": "in"}) == {"text": "in12"}
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    assert [p["event_type"] for p in _posts(client)] == ["session_start", "session_end"]
+    assert len(threads) == 2 and loop_thread not in threads
+
+
+async def test_end_queued_during_its_start_post_holds_no_thread(patched: Any) -> None:
+    """A node cancelled while its start is still being posted queues its
+    end from the start post's completion: no executor thread waits for
+    the start, and the end still follows it."""
+    session, client, StateGraph = patched
+    loop = asyncio.get_running_loop()
+    # Two workers: the held start post takes one; an end waiting for it in
+    # the other would leave none for the probe below.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(executor)
+    release = threading.Event()
+    start_posting = threading.Event()
+    order: list[str] = []
+
+    def post(payload: dict[str, Any], **kwargs: Any) -> tuple[None, bool]:
+        if payload["event_type"] == "session_start":
+            start_posting.set()
+            release.wait(_POSTS_WAIT_SECS)
+        order.append(payload["event_type"])
+        return None, False
+
+    client.post_event.side_effect = post
+
+    async def node(state: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "out"}
+
+    graph = _one_node_graph(StateGraph, "node", node)
+    task = asyncio.ensure_future(graph.nodes["node"].runnable.afunc({"text": "in"}))
+    while not start_posting.is_set():
+        await asyncio.sleep(0)
+    task.cancel()
+    # The cancelled node queues its end (the session tracks the start and
+    # the end), then waits for it, shielded, so the task is not awaited
+    # until the start is released.
+    while len(session._pending_child_posts) < 2:
+        await asyncio.sleep(0)
+
+    probe = loop.run_in_executor(None, lambda: "a worker is free")
+    assert await asyncio.wait_for(probe, _POSTS_WAIT_SECS) == "a worker is free"
+    assert order == []
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    assert order == ["session_start", "session_end"]
+    (end,) = _ends(client)
+    assert end["error"]["type"] == "CancelledError"
+    executor.shutdown(wait=False)
+
+
+# ----------------------------------------------------------------------
+# RemoteGraph
+# ----------------------------------------------------------------------
+
+
+def test_remote_graph_run_opens_no_child(patched: Any) -> None:
+    """A RemoteGraph runs in its server: it is not a Pregel, so its run
+    never reaches the patched stream, and as a node it is left alone."""
+    _session, client, StateGraph = patched
+    from langgraph.pregel import Pregel
+    from langgraph.pregel.remote import RemoteGraph
+    from langgraph_sdk.schema import StreamPart
+
+    class _Runs:
+        def stream(self, *args: Any, **kwargs: Any) -> Any:
+            yield StreamPart(event="values", data={"text": "remote"})
+
+    class _Client:
+        runs = _Runs()
+
+    remote = RemoteGraph("agent", sync_client=_Client())  # type: ignore[arg-type]
+    graph = _one_node_graph(StateGraph, "remote", remote)
+
+    assert not isinstance(remote, Pregel)
+    assert graph.nodes["remote"].runnable is remote
+    assert graph.compile().invoke({"text": "in"}) == {"text": "remote"}
+    assert client.post_event.call_count == 0

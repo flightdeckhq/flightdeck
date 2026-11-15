@@ -271,6 +271,9 @@ func TestParse_UsageNamesTheHealthCommandAndNoSecret(t *testing.T) {
 	if !strings.Contains(usage, "flightdeck health [flags]") {
 		t.Errorf("the usage text does not name the health command:\n%s", usage)
 	}
+	if !strings.Contains(usage, "flightdeck connect [<agent>] [flags]") || !strings.Contains(usage, "flightdeck connect claude-code") {
+		t.Errorf("the usage text does not name the connect command:\n%s", usage)
+	}
 	for _, secret := range []string{"hunter2", "tokenvalue"} {
 		if strings.Contains(usage, secret) {
 			t.Errorf("the usage text carries %q from the environment", secret)

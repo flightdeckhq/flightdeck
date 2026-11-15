@@ -24,6 +24,7 @@ import (
 	ingestionapp "github.com/flightdeckhq/flightdeck/ingestion/app"
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
+	"github.com/flightdeckhq/flightdeck/internal/connect"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
 	"github.com/flightdeckhq/flightdeck/internal/health"
 	"github.com/flightdeckhq/flightdeck/internal/natsembed"
@@ -35,6 +36,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/webui"
 	workersapp "github.com/flightdeckhq/flightdeck/workers/app"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/term"
 )
 
 // version is set at build time from the VERSION file (make build-flightdeck).
@@ -102,6 +104,18 @@ func main() {
 }
 
 func run(args []string, stdout, stderr *os.File) int {
+	if len(args) > 0 && args[0] == cli.ConnectCommand {
+		return connect.Main(context.Background(), args[1:], connect.IO{
+			Registry: connect.Default(),
+			Getenv:   os.Getenv,
+			Stdin:    os.Stdin,
+			Stdout:   stdout,
+			Stderr:   stderr,
+			// The command asks before it changes anything only when a
+			// person can answer: stdin and stdout both a terminal.
+			Interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(stdout.Fd())),
+		})
+	}
 	opts, err := cli.Parse(args, os.Getenv, stderr)
 	if errors.Is(err, cli.ErrHelp) {
 		return 0

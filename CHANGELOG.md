@@ -4,6 +4,24 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.10.0 — 2026-11-15
+
+`flightdeck connect` connects a coding agent to Flightdeck in one
+command, starting with Claude Code: `flightdeck connect claude-code`
+adds the `flightdeck-plugins` marketplace when Claude Code lacks it and
+installs the plugin, `--server` and `--token-file` point it at another
+server, `--dry-run` shows what would change and what the plugin
+records, and `--remove` takes it out again. `install.sh` and
+`install.ps1` offer to connect each coding agent they find right after
+installing the binary, and `FLIGHTDECK_CONNECT` decides for scripted
+installs. CI runs the command's tests on Windows too, against a real
+`claude.cmd`. The release pipeline builds the tag that was pushed when
+a dry-run tag sits on the same commit, and the install gate waits out
+PyPI's index lag. The repository no longer ships Claude Code agent
+definitions or a review hook. Plugin users update with
+`claude plugin update flightdeck@flightdeck-plugins`; marketplace
+installs do not update themselves.
+
 ### Added
 
 - **`flightdeck connect` connects a coding agent in one command,
@@ -29,9 +47,12 @@ All notable changes to Flightdeck are documented here.
   done or nothing to do, 1 when a step fails, 2 for a usage error, 3
   when the agent is not on the machine, 4 when the plan needs a yes on
   a terminal. Every `claude` command it runs has a timeout that ends
-  its child processes too. Each agent is a connector of the same
-  command, so the agents still to come plug in without changing it or
-  the installers (D275).
+  its child processes too. On Windows it finds `claude.exe` or an npm
+  `claude.cmd` shim and ends the CLI's whole process tree on a timeout;
+  CI runs the connect tests there as well, against a stand-in
+  `claude.exe` and a real `claude.cmd`. Each agent is a connector of
+  the same command, so the agents still to come plug in without
+  changing it or the installers (D275).
 - **The installers offer to connect the coding agents they find.**
   After installing the binary, `install.sh` and `install.ps1` show what
   connecting would change and what the plugin records, then ask
@@ -45,6 +66,18 @@ All notable changes to Flightdeck are documented here.
   `all` or `none`) decides without asking, for CI and scripted installs.
   A connect that fails prints why and the command to run later, and the
   install still succeeds. The Homebrew formula's notes name the command.
+
+### Fixed
+
+- **The release pipeline builds the tag that was pushed.** A final tag
+  goes on the commit its dry run passed on, so that commit carries both
+  `vX.Y.Z` and `vX.Y.Z-rc.N`, and goreleaser took the higher-sorting
+  `-rc.N`: the first v0.9.0 release run built the dry run's version and
+  published nothing. The release workflow now names the pushed tag to
+  goreleaser. The install gate's `uvx` step retries with `--refresh`
+  for up to ten minutes while PyPI's index catches up with the upload,
+  as its `pip` step already did, and the gate pins the uv version CI
+  uses.
 
 ### Removed
 

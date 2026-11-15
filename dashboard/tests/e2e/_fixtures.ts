@@ -2,25 +2,6 @@ import { createHash } from "node:crypto";
 import type { Page, Locator } from "@playwright/test";
 import { API_URL } from "./_stack";
 
-// Poll for a locator to mount (count > 0) without using a fixed
-// waitForTimeout sleep (qa.md: "No waitForTimeout for
-// synchronization in any test at any level"). Caps polling at
-// ``timeoutMs`` so a row that never materialises returns false
-// quickly. Sample interval is 50 ms — short enough that a
-// commit-cycle race resolves within one or two samples.
-async function pollForMount(
-  locator: Locator,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  const intervalMs = 50;
-  while (Date.now() < deadline) {
-    if ((await locator.count()) > 0) return true;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  return (await locator.count()) > 0;
-}
-
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
 // dataset seeded by tests/e2e-fixtures/seed.py (via canonical.json).
 // Duplicated here rather than parsed at runtime so test authors see
@@ -433,6 +414,18 @@ export async function waitForFleetReady(page: Page): Promise<void> {
   await anySwimlaneRow.waitFor({ state: "visible", timeout: 15_000 });
 }
 
+// The most frames bringSwimlaneRowIntoView's walk waits after one
+// scroll step for the rows in view to mount. They mount one or two
+// frames after the scroll, on an idle machine and on a saturated one
+// alike; the cap only matters for a placeholder that never mounts,
+// and keeps the walk moving past it, as the half-second mount poll per
+// step used to. 30 frames is half a second at 60 fps, and longer under
+// load, where frames come slower.
+const SETTLE_FRAMES_MAX = 30;
+// The rootMargin of the IntersectionObserver that mounts swimlane rows
+// (dashboard/src/components/timeline/VirtualizedSwimLane.tsx).
+const SWIMLANE_ROW_ROOT_MARGIN_PX = 200;
+
 /**
  * Scroll the Fleet swimlane container until the row for ``agentName``
  * is mounted in the DOM, then return its locator. Companion to
@@ -445,8 +438,14 @@ export async function waitForFleetReady(page: Page): Promise<void> {
  * container forces the IntersectionObserver to mount additional
  * rows, eventually exposing the target.
  *
- * The function probes the DOM after each chunked scroll step (up to
- * ``maxSteps`` × ``stepPx``) and returns as soon as the row mounts.
+ * When the row is not mounted already, one browser evaluation walks
+ * the scroller from the top in ``stepPx`` steps (at most ``maxSteps``,
+ * and never past the bottom), waits for the rows to mount after each
+ * step, and stops as soon as the row is there; the helper then scrolls
+ * it into view. The walk is one page round trip however far down the
+ * row sits: a round trip costs up to a second or more under load with
+ * tracing on, so a walk of one round trip per step could spend a whole
+ * test's budget on a row a few screens down.
  * If the row never appears, the locator returned is the test
  * assertion's responsibility -- callers should follow up with
  * ``await expect(locator).toBeVisible()`` so a missing row produces
@@ -463,14 +462,11 @@ export async function bringSwimlaneRowIntoView(
   agentName: string,
   opts: { stepPx?: number; maxSteps?: number } = {},
 ): Promise<Locator> {
-  // Step ~3.3 rows at a time. 200px keeps the IntersectionObserver
-  // sampling window (rootMargin=200 around the visible band)
-  // overlapping between adjacent steps, so a row that materializes
-  // briefly between scrolls is always re-checked before it
-  // virtualizes again. A larger stepPx=600 routinely overshot the
-  // 5-7 row materialization band (rootMargin 200 + clientHeight 320
-  // ≈ 720px of materialized DOM at any one time) and the helper
-  // could miss a row that briefly mounted between samples.
+  // Step ~3.3 rows at a time. A step no taller than the scroller's
+  // visible box keeps every row in view for at least one step, and the
+  // walk waits for the rows in view to mount before the next step, so
+  // no row is scrolled past unseen. A larger stepPx=600 could overshoot
+  // the box (about 310px tall at the default viewport).
   const stepPx = opts.stepPx ?? 200;
   const maxSteps = opts.maxSteps ?? 240;
   const target = page.locator(
@@ -499,8 +495,8 @@ export async function bringSwimlaneRowIntoView(
   // incoming WebSocket events from other concurrent tests, throwing
   // a 2000ms timeout that would otherwise bubble all the way up and fail
   // the test outright. Falling through to the snap-to-top + scroll
-  // loop below recovers cleanly because those steps re-evaluate
-  // ``target.count()`` after each scroll.
+  // walk below recovers cleanly because the walk checks for the row
+  // again after every scroll.
   if ((await target.count()) > 0) {
     try {
       await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
@@ -509,93 +505,116 @@ export async function bringSwimlaneRowIntoView(
       /* fall through to the scroll loop below */
     }
   }
-  // Agents may live ABOVE the initial viewport (top
-  // of the activity bucket — fresh sub-agents that closed seconds
-  // ago land high in the swimlane sort but the initial scroll
-  // position is mid-list on a populated fleet). Try a snap to the
-  // top of the swimlane container so the bucket head materializes
-  // before the down-scroll loop kicks in.
-  await page.evaluate(() => {
-    const anyRow = document.querySelector(
-      '[data-testid^="swimlane-agent-row-"]',
-    ) as HTMLElement | null;
-    if (!anyRow) return;
-    let node: HTMLElement | null = anyRow;
-    while (node) {
-      const style = window.getComputedStyle(node);
-      if (style.overflowY === "auto" || style.overflowY === "scroll") {
-        node.scrollTop = 0;
-        return;
-      }
-      node = node.parentElement;
-    }
-  });
-  // Poll for the target to materialise after the snap-to-top.
-  // Replaces a ``waitForTimeout(150)`` fixed sleep that
-  // violated qa.md ("no waitForTimeout for synchronization") and
-  // was the mechanical root cause of T34's parallel-worker flake
-  // — under workers=4 contention the 150 ms pause was not long
-  // enough for the IntersectionObserver commit. Polling for
-  // count > 0 is deterministic regardless of contention. Cap at
-  // 1.5 s so the helper falls through to the scroll loop quickly
-  // when the target is genuinely off-screen.
-  if (await pollForMount(target, 1_500)) {
-    try {
-      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-      return target;
-    } catch {
-      /* fall through to the scroll loop below */
-    }
-  }
-  // Resolve the closest scrollable ancestor of any mounted swimlane
-  // row. Fleet's main view sits inside a ``flex-1`` div with
-  // ``overflowY: auto`` -- evaluating against a known mounted row
-  // is more robust than guessing the selector.
+  // Fallback: the row is not mounted. One browser evaluation does the
+  // whole hunt, so it costs one page round trip however far down the
+  // row sits. It snaps the scroller to the top first (agents may live
+  // above the initial viewport: fresh sub-agents that closed seconds
+  // ago land high in the swimlane sort while the initial scroll
+  // position is mid-list on a populated fleet), then walks it down in
+  // ``stepPx`` steps until the row mounts, the scroller reaches its
+  // bottom, or ``maxSteps`` steps have run.
+  //
+  // After each scroll the walk waits, frame by frame, for the rows now
+  // in view to mount. A row mounts when its IntersectionObserver
+  // callback, delivered after the frame that laid out the scroll, sets
+  // state and React commits it, which can be a frame or two after the
+  // scroll. A placeholder (``data-virtualized``) inside the scroller's
+  // visible box is a row still waiting for that, so the walk takes the
+  // next step only once no placeholder is left in view, or after
+  // SETTLE_FRAMES_MAX frames. The target is checked after every frame.
+  //
+  // Wait for a mounted row first: the walk finds the scroller from it.
   const anyRow = page
     .locator('[data-testid^="swimlane-agent-row-"]')
     .first();
   await anyRow.waitFor({ state: "visible", timeout: 10_000 });
-  for (let i = 0; i < maxSteps; i += 1) {
-    // Scroll the closest overflow:auto ancestor by `stepPx`. JSDom
-    // doesn't ship `closest()` finding overflow ancestors; walk up
-    // the tree and check computed style.
-    await anyRow.evaluate(
-      (el, step) => {
-        let node: HTMLElement | null = el as HTMLElement;
-        while (node) {
-          const style = window.getComputedStyle(node);
-          if (
-            style.overflowY === "auto" ||
-            style.overflowY === "scroll"
-          ) {
-            node.scrollBy(0, step);
-            return;
-          }
-          node = node.parentElement;
-        }
-        // Fallback: scroll the document.
-        window.scrollBy(0, step);
-      },
+  const mounted = await page.evaluate(
+    async ({
+      targetSelector,
       stepPx,
-    );
-    // Poll the target's mount state instead of sleeping. The
-    // IntersectionObserver fires synchronously on layout and
-    // React commits within a few ms; under parallel-worker load
-    // a fixed sleep (waitForTimeout(150)) was sometimes
-    // shorter than the commit cycle and the helper would skip
-    // past a briefly-materialised row. ``pollForMount`` caps at
-    // 500 ms — generous enough to absorb a slow commit, short
-    // enough to keep the scroll loop progressing.
-    if (await pollForMount(target, 500)) {
-      try {
-        await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-        return target;
-      } catch {
-        // Detach race — keep scrolling. The next iteration's count
-        // re-check + scrollBy gives virtualization another chance
-        // to settle. Without this catch the very last step that
-        // would have succeeded throws and surfaces as a test fail.
+      maxSteps,
+      settleFramesMax,
+      rootMarginPx,
+    }) => {
+      const nextFrame = () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const isMounted = () => document.querySelector(targetSelector) !== null;
+      if (isMounted()) return true;
+      // The closest overflow:auto/scroll ancestor of a mounted row;
+      // the document when there is none.
+      let scroller: HTMLElement | null = null;
+      for (
+        let node = document.querySelector<HTMLElement>(
+          '[data-testid^="swimlane-agent-row-"]',
+        );
+        node;
+        node = node.parentElement
+      ) {
+        const { overflowY } = window.getComputedStyle(node);
+        if (overflowY === "auto" || overflowY === "scroll") {
+          scroller = node;
+          break;
+        }
       }
+      const scrolling = scroller ?? document.documentElement;
+      const scrollTop = () =>
+        scroller ? scroller.scrollTop : window.scrollY;
+      const scrollDown = () =>
+        (scroller ?? window).scrollBy({ top: stepPx, behavior: "instant" });
+      // True when no placeholder sits in the box the rows' observer
+      // mounts (the scroller's visible box, within the viewport and
+      // its root margin), i.e. every row in view is mounted.
+      const rowsInViewMounted = () => {
+        const top = -rootMarginPx;
+        const bottom = window.innerHeight + rootMarginPx;
+        const clip = scroller?.getBoundingClientRect();
+        const boxTop = clip ? Math.max(clip.top, top) : top;
+        const boxBottom = clip ? Math.min(clip.bottom, bottom) : bottom;
+        for (const el of scrolling.querySelectorAll(
+          '[data-virtualized="true"]',
+        )) {
+          const r = el.getBoundingClientRect();
+          if (r.height > 0 && r.bottom > boxTop && r.top < boxBottom) {
+            return false;
+          }
+        }
+        return true;
+      };
+      // Wait for the rows in view to mount; true once the target has.
+      const settle = async () => {
+        for (let frame = 0; frame < settleFramesMax; frame += 1) {
+          await nextFrame();
+          if (isMounted()) return true;
+          if (rowsInViewMounted()) return false;
+        }
+        return isMounted();
+      };
+      if (scroller) scroller.scrollTop = 0;
+      if (await settle()) return true;
+      for (let step = 0; step < maxSteps; step += 1) {
+        const before = scrollTop();
+        scrollDown();
+        const moved = scrollTop() !== before;
+        if (await settle()) return true;
+        // The scroller is at its bottom: every row has been in view.
+        if (!moved) return false;
+      }
+      return false;
+    },
+    {
+      targetSelector: `[data-testid="swimlane-agent-row-${agentName}"]`,
+      stepPx,
+      maxSteps,
+      settleFramesMax: SETTLE_FRAMES_MAX,
+      rootMarginPx: SWIMLANE_ROW_ROOT_MARGIN_PX,
+    },
+  );
+  if (mounted) {
+    try {
+      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
+    } catch {
+      // The row detached between the walk and the scroll; the
+      // caller's assertion on the returned locator reports it.
     }
   }
   // Return the locator anyway so the caller's expect.toBeVisible()

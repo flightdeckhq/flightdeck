@@ -105,7 +105,12 @@ func main() {
 
 func run(args []string, stdout, stderr *os.File) int {
 	if len(args) > 0 && args[0] == cli.ConnectCommand {
-		return connect.Main(context.Background(), args[1:], connect.IO{
+		// Ctrl+C or SIGTERM cancels the command, which ends the agent CLI
+		// it runs: that CLI is in a process group of its own, which the
+		// terminal's Ctrl+C does not reach.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return connect.Main(ctx, args[1:], connect.IO{
 			Registry: connect.Default(),
 			Getenv:   os.Getenv,
 			Stdin:    os.Stdin,

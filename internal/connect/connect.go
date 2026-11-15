@@ -14,9 +14,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 )
 
 // Connector is one coding agent Flightdeck can connect. Every
@@ -99,10 +101,37 @@ type Step struct {
 type Plan struct {
 	// Steps run in order; the first failure stops the rest.
 	Steps []Step
+	// Notice says what the user agrees to by connecting: what the
+	// integration records and where it sends it. It is shown with the
+	// steps, before the question and by --dry-run.
+	Notice string
+	// Caution, when set, is a step the user must confirm on a terminal:
+	// --yes does not accept it and a run without a terminal refuses the
+	// plan, naming what to do instead.
+	Caution string
 	// Unchanged is the line printed when there is no step.
 	Unchanged string
 	// Done is the line printed once every step ran.
 	Done string
+}
+
+// Describe writes what the plan would change, for the confirmation and
+// for --dry-run: the title, a line per step, the caution and the notice.
+func (p Plan) Describe(w io.Writer, title string) {
+	if len(p.Steps) == 0 {
+		_, _ = fmt.Fprintln(w, p.Unchanged)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "%s:\n", title)
+	for _, step := range p.Steps {
+		_, _ = fmt.Fprintf(w, "  - %s\n", step.Summary)
+	}
+	if p.Caution != "" {
+		_, _ = fmt.Fprintf(w, "Caution: %s\n", p.Caution)
+	}
+	if p.Notice != "" {
+		_, _ = fmt.Fprintln(w, p.Notice)
+	}
 }
 
 // Apply runs the plan's steps, reporting each one's line. A failed step
@@ -168,10 +197,10 @@ func Default() Registry {
 // ---- external commands -------------------------------------------------
 
 // processWaitDelay is how long a command killed at its timeout gets to
-// close its output: the agent's CLI may have started children (a git
-// clone) that hold the pipes open after it is gone. Five seconds covers
-// a child that exits on its parent's death; one that does not is left
-// and the step fails all the same.
+// close its output. The kill ends the CLI's whole process group, so its
+// children (a git clone) close the pipes with it; five seconds is the
+// bound for one that escaped the group, after which the step fails all
+// the same.
 const processWaitDelay = 5 * time.Second
 
 // maxOutputBytes bounds what one command's stdout or stderr is kept to.
@@ -202,6 +231,10 @@ func Exec(ctx context.Context, timeout time.Duration, stdin []byte, path string,
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	cmd.WaitDelay = processWaitDelay
+	// The CLI runs in a process group of its own, and the timeout ends
+	// the whole group (on Windows the process tree), so a child it
+	// started (a git clone) does not outlive the step.
+	killTreeOnCancel(cmd)
 	err := cmd.Run()
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%w: %s", ErrTimeout, timeout)
@@ -315,9 +348,60 @@ func ReadTokenFile(path string) (string, error) {
 	if len(data) > maxTokenFileBytes {
 		return "", usageError("--token-file: %s is larger than a token file (%d bytes at most)", path, maxTokenFileBytes)
 	}
-	token := strings.TrimSpace(string(data))
+	token := strings.TrimSpace(decodeText(data))
 	if token == "" {
 		return "", usageError("--token-file: %s is empty", path)
 	}
 	return token, nil
+}
+
+// decodeText reads a token file's bytes as text: UTF-8, with or without
+// a byte-order mark, or UTF-16 with its mark, which Windows PowerShell
+// 5.1 writes for `"ftd_..." > token.txt`.
+func decodeText(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}):
+		return string(data[3:])
+	case bytes.HasPrefix(data, []byte{0xFF, 0xFE}), bytes.HasPrefix(data, []byte{0xFE, 0xFF}):
+		little := data[0] == 0xFF
+		body := data[2:]
+		units := make([]uint16, 0, len(body)/2)
+		for i := 0; i+1 < len(body); i += 2 {
+			if little {
+				units = append(units, uint16(body[i])|uint16(body[i+1])<<8)
+			} else {
+				units = append(units, uint16(body[i])<<8|uint16(body[i+1]))
+			}
+		}
+		return string(utf16.Decode(units))
+	}
+	return string(data)
+}
+
+// TokenFileWarning returns a warning when other users of the machine
+// can read the token file (a group or world permission bit), "" when
+// not or where the file system keeps no such bits (Windows). The file
+// is read all the same: a mounted secret is often 0644 in a container
+// that has no other user.
+func TokenFileWarning(path string) string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm()&0o077 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("warning: %s can be read by other users (mode %04o); chmod 600 it", path, info.Mode().Perm())
+}
+
+// printable drops control characters from a value read from an agent's
+// configuration before it is printed, so a saved value cannot move the
+// cursor, ring the bell or split a line of --detected.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }

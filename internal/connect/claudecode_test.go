@@ -418,3 +418,84 @@ func TestResultLine(t *testing.T) {
 		t.Fatal("found a result line in plain text")
 	}
 }
+
+func TestClaudeCode_AMarketplaceFromElsewhere(t *testing.T) {
+	trusted := []string{
+		``, // the stand-in's default: github + flightdeckhq/flightdeck
+		`"source":"github","repo":"FlightdeckHQ/Flightdeck"`,
+		`"source":"git","url":"https://github.com/flightdeckhq/flightdeck.git"`,
+		`"source":"git","url":"git@github.com:flightdeckhq/flightdeck.git"`,
+	}
+	for _, src := range trusted {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+src)
+		plan, err := newConnector().PlanConnect(context.Background(), Target{})
+		if err != nil || plan.Caution != "" || !strings.Contains(plan.Steps[0].Summary, "from github.com/flightdeckhq/flightdeck") {
+			t.Errorf("marketplace %s: plan %+v, %v; want this repository trusted", src, plan, err)
+		}
+	}
+	foreign := map[string]string{
+		`"source":"directory","path":"/src/my-flightdeck"`:          "the local directory /src/my-flightdeck",
+		`"source":"github","repo":"someone/flightdeck"`:             "the GitHub repository someone/flightdeck",
+		`"source":"git","url":"https://example.com/flightdeck.git"`: "the git repository https://example.com/flightdeck.git",
+		`"source":"url","url":"https://example.com/m.json"`:         "a url https://example.com/m.json source",
+	}
+	for src, says := range foreign {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+src)
+		plan, err := newConnector().PlanConnect(context.Background(), Target{})
+		if err != nil || len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Summary, says) || !strings.Contains(plan.Caution, says) ||
+			!strings.Contains(plan.Caution, "claude plugin install flightdeck@flightdeck-plugins --scope user") {
+			t.Errorf("marketplace %s: plan %+v, %v; want the install step and a caution naming %q and the manual command", src, plan, err, says)
+		}
+	}
+}
+
+func TestClaudeCode_TheSameServerSpelledAnotherWay(t *testing.T) {
+	t.Run("a loopback server with a trailing slash keeps the saved token", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace", "installed", "server=http://localhost:4000", "token="+testToken)
+		lines, err := applyConnect(t, newConnector(), Target{Server: "http://localhost:4000/", Local: true})
+		if err != nil || len(f.changes(t)) != 0 || f.read(t, "token") != testToken || !strings.Contains(lines[0], "already connected") {
+			t.Fatalf("lines %q, err %v, changes %q, token %q; want nothing changed", lines, err, f.changes(t), f.read(t, "token"))
+		}
+	})
+	t.Run("the default server named explicitly is the default", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace", "installed", "token="+testToken)
+		if _, err := applyConnect(t, newConnector(), Target{Server: "http://localhost:4000/ingest", Local: true}); err != nil || len(f.changes(t)) != 0 {
+			t.Fatalf("err %v, changes %q; want nothing changed", err, f.changes(t))
+		}
+	})
+	t.Run("the ingestion URL of the saved remote server keeps its token", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace", "installed", "server=https://fd.example.com", "token="+testToken)
+		if _, err := applyConnect(t, newConnector(), Target{Server: "HTTPS://FD.example.com:443/ingest/"}); err != nil || len(f.changes(t)) != 0 {
+			t.Fatalf("err %v, changes %q; want nothing changed and no token needed", err, f.changes(t))
+		}
+	})
+}
+
+func TestClaudeCode_TheNoticeAndTheUnchangedLine(t *testing.T) {
+	f := newFakeClaude(t)
+	plan, err := newConnector().PlanConnect(context.Background(), Target{Server: "https://fd.example.com", Token: testToken})
+	if err != nil || !strings.Contains(plan.Notice, "prompts, responses, tool results and sanitised tool inputs") ||
+		!strings.Contains(plan.Notice, "https://fd.example.com") {
+		t.Fatalf("notice %q, %v; want what the plugin records and where", plan.Notice, err)
+	}
+	f.set(t, "marketplace", "installed")
+	plan, err = newConnector().PlanConnect(context.Background(), Target{})
+	if err != nil || !strings.Contains(plan.Unchanged, "nothing changed. Pass --server to change the server.") {
+		t.Fatalf("unchanged %q, %v", plan.Unchanged, err)
+	}
+}
+
+func TestClaudeCode_ASavedServerIsPrintedWithoutControlCharacters(t *testing.T) {
+	f := newFakeClaude(t)
+	// As Claude Code prints it: JSON with the control characters escaped.
+	f.set(t, "marketplace", "installed", `server=https://fd.example.com\u0007\u001b[2J`)
+	plan, err := newConnector().PlanConnect(context.Background(), Target{})
+	if err != nil || strings.ContainsAny(plan.Unchanged, "\a\x1b") || !strings.Contains(plan.Unchanged, "https://fd.example.com[2J") {
+		t.Fatalf("unchanged %q, %v; want the control characters dropped", plan.Unchanged, err)
+	}
+}

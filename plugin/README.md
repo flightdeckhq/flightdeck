@@ -10,7 +10,7 @@ Prereq: a running Flightdeck. The fastest path is the `flightdeck` binary (READM
 flightdeck connect claude-code
 ```
 
-That installs the plugin for your user from this repository's marketplace (the `flightdeck-plugins` marketplace, added if Claude Code does not have it) and leaves its options at the local defaults. The installers offer it when they find Claude Code. `flightdeck connect` shows whether Claude Code is connected, the plugin's version and the server it reports to; `flightdeck connect claude-code --remove` uninstalls the plugin, with its saved options, and keeps the marketplace. Inside Claude Code the same install is two commands:
+That installs the plugin for your user from this repository's marketplace (the `flightdeck-plugins` marketplace, added if Claude Code does not have it) and leaves its options at the local defaults. The installers offer it when they find Claude Code. `flightdeck connect claude-code --dry-run` shows what it would change and what the plugin records, without changing anything. `flightdeck connect` shows whether Claude Code is connected, the plugin's version and the server it reports to; `flightdeck connect claude-code --remove --yes` uninstalls the plugin, with its saved options, and keeps the marketplace (on a terminal it asks instead of needing `--yes`). Inside Claude Code the same install is two commands:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck

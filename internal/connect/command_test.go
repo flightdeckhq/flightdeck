@@ -154,13 +154,114 @@ func TestMain_ServerAndToken(t *testing.T) {
 func TestMain_Remove(t *testing.T) {
 	f := newFakeClaude(t)
 	f.set(t, "marketplace", "installed")
+	// Without a terminal, --remove needs --yes.
 	r := runMain(t, nil, "", false, "claude-code", "--remove")
-	if r.code != ExitOK || f.has("installed") || !strings.Contains(r.stdout, "Uninstalled") {
-		t.Fatalf("--remove: %+v", r)
+	if r.code != ExitUsage || !f.has("installed") || !strings.Contains(r.stderr, "--remove needs --yes; nothing changed") {
+		t.Fatalf("--remove without a terminal and without --yes: %+v", r)
 	}
+	r = runMain(t, nil, "", false, "claude-code", "--remove", "--yes")
+	if r.code != ExitOK || f.has("installed") || !strings.Contains(r.stdout, "Uninstalled") {
+		t.Fatalf("--remove --yes: %+v", r)
+	}
+	// Nothing to remove needs no --yes.
 	r = runMain(t, nil, "", false, "claude-code", "--remove")
 	if r.code != ExitOK || !strings.Contains(r.stdout, "nothing changed") {
 		t.Fatalf("--remove again: %+v", r)
+	}
+}
+
+func TestMain_DryRun(t *testing.T) {
+	f := newFakeClaude(t)
+	r := runMain(t, nil, "", false, "claude-code", "--dry-run")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Connect Claude Code to Flightdeck:\n  - add the flightdeck-plugins marketplace") ||
+		!strings.Contains(r.stdout, "install the flightdeck plugin for your user from github.com/flightdeckhq/flightdeck") ||
+		!strings.Contains(r.stdout, "The plugin records your Claude Code sessions, including prompts, responses, tool results and sanitised tool inputs") {
+		t.Fatalf("--dry-run: %+v", r)
+	}
+	if got := f.changes(t); len(got) != 0 {
+		t.Fatalf("--dry-run ran %q", got)
+	}
+	f.set(t, "marketplace", "installed")
+	if r = runMain(t, nil, "", false, "claude-code", "--remove", "--dry-run"); r.code != ExitOK || !strings.Contains(r.stdout, "uninstall the flightdeck plugin") || !f.has("installed") {
+		t.Fatalf("--remove --dry-run: %+v", r)
+	}
+}
+
+func TestMain_AMarketplaceFromElsewhereNeedsAPerson(t *testing.T) {
+	foreign := `"source":"directory","path":"/src/my-flightdeck"`
+	t.Run("without a terminal", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+foreign)
+		r := runMain(t, nil, "", false, "claude-code")
+		if r.code != ExitFailed || f.has("installed") || !strings.Contains(r.stderr, "comes from the local directory /src/my-flightdeck") ||
+			!strings.Contains(r.stderr, "claude plugin install flightdeck@flightdeck-plugins --scope user") {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("--yes on a terminal", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+foreign)
+		if r := runMain(t, nil, "y\n", true, "claude-code", "--yes"); r.code != ExitFailed || f.has("installed") {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("an empty answer is no", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+foreign)
+		r := runMain(t, nil, "\n", true, "claude-code")
+		if r.code != ExitFailed || f.has("installed") || !strings.Contains(r.stdout, "Caution: ") || !strings.Contains(r.stdout, "Continue? [y/N] ") {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("yes on a terminal installs", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+foreign)
+		if r := runMain(t, nil, "yes\n", true, "claude-code"); r.code != ExitOK || !f.has("installed") {
+			t.Fatalf("%+v", r)
+		}
+	})
+}
+
+func TestMain_Warnings(t *testing.T) {
+	f := newFakeClaude(t)
+	dir := t.TempDir()
+	open := filepath.Join(dir, "token")
+	if err := os.WriteFile(open, []byte(testToken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runMain(t, nil, "", false, "claude-code", "--server", "http://10.0.0.5:4000", "--token-file", open)
+	if r.code != ExitOK || f.read(t, "token") != testToken {
+		t.Fatalf("%+v", r)
+	}
+	if !strings.Contains(r.stderr, "warning: http://10.0.0.5:4000 is plain http:// and not this machine") {
+		t.Errorf("no warning for plain http:// to another machine: %q", r.stderr)
+	}
+	if !strings.Contains(r.stderr, "can be read by other users (mode 0644); chmod 600 it") {
+		t.Errorf("no warning for a token file others can read: %q", r.stderr)
+	}
+	// Neither for a loopback server, nor for a file only its owner reads.
+	private := filepath.Join(dir, "private")
+	if err := os.WriteFile(private, []byte(testToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = runMain(t, nil, "", false, "claude-code", "--server", "http://127.0.0.1:4100", "--token-file", private)
+	if r.code != ExitOK || strings.Contains(r.stderr, "warning") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestMain_ATokenFileWrittenByPowerShell(t *testing.T) {
+	f := newFakeClaude(t)
+	data := []byte{0xFF, 0xFE}
+	for _, r := range testToken + "\r\n" {
+		data = append(data, byte(r), 0)
+	}
+	path := filepath.Join(t.TempDir(), "token.txt")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := runMain(t, nil, "", false, "claude-code", "--server", "https://fd.example.com", "--token-file", path); r.code != ExitOK || f.read(t, "token") != testToken {
+		t.Fatalf("a UTF-16 token file: %+v, saved %q", r, f.read(t, "token"))
 	}
 }
 

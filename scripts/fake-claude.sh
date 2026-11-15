@@ -8,7 +8,10 @@
 # output shapes Claude Code 2.1.325 prints, and nothing else (any other
 # command exits 64). It keeps the plugin's state as files in
 # $FAKE_CLAUDE_STATE, which a test may also create beforehand:
-#   marketplace   the flightdeck-plugins marketplace is declared
+#   marketplace   the flightdeck-plugins marketplace is declared; the file
+#                 may hold its source as JSON members, for example
+#                 "source":"directory","path":"/src/flightdeck" (empty:
+#                 "source":"github","repo":"flightdeckhq/flightdeck")
 #   installed     the flightdeck plugin is installed (user scope)
 #   disabled      ... and turned off
 #   server        the saved server option
@@ -25,7 +28,8 @@
 #                      FAKE_CLAUDE_HANG_SECS, default 600)
 #   FAKE_CLAUDE_HANG_CHILD  those steps start a child that keeps the
 #                      output open and then wait for it, as a CLI whose
-#                      git clone hangs does
+#                      git clone hangs does; the child's pid goes to
+#                      $FAKE_CLAUDE_STATE/child.pid
 set -eu
 
 state="${FAKE_CLAUDE_STATE:?FAKE_CLAUDE_STATE must name the stand-in state directory}"
@@ -55,6 +59,7 @@ listed() { case ",$1," in *",$step,"*) return 0 ;; *) return 1 ;; esac; }
 if listed "${FAKE_CLAUDE_HANG:-}"; then exec sleep "${FAKE_CLAUDE_HANG_SECS:-600}"; fi
 if listed "${FAKE_CLAUDE_HANG_CHILD:-}"; then
   sleep "${FAKE_CLAUDE_HANG_SECS:-600}" &
+  echo "$!" >"$state/child.pid"
   wait
 fi
 fail() {
@@ -83,7 +88,9 @@ case "$step" in
     ;;
   marketplace-list)
     if [ -e "$state/marketplace" ]; then
-      printf '[\n  {"name":"flightdeck-plugins","source":"github","repo":"flightdeckhq/flightdeck","installLocation":"%s/marketplace"}\n]\n' "$state"
+      source_members="$(cat "$state/marketplace")"
+      [ -n "$source_members" ] || source_members='"source":"github","repo":"flightdeckhq/flightdeck"'
+      printf '[\n  {"name":"flightdeck-plugins",%s,"installLocation":"%s/marketplace"}\n]\n' "$source_members" "$state"
     else
       printf '[]\n'
     fi

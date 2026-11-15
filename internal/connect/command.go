@@ -55,6 +55,7 @@ func Main(ctx context.Context, args []string, rt IO) int {
 	fs.BoolVar(&yes, "yes", false, "do not ask before changing anything")
 	fs.BoolVar(&yes, "y", false, "shorthand for --yes")
 	detected := fs.Bool("detected", false, "print one line per agent found on this machine: id, connected or not-connected, name, separated by tabs (for scripts)")
+	dryRun := fs.Bool("dry-run", false, "print what connecting (or with --remove, disconnecting) would change and what the integration records, and change nothing")
 	fs.Usage = func() { usage(rt.Stderr, rt.Registry, fs) }
 
 	// Flags may come before or after the agent's id.
@@ -109,7 +110,18 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		if err != nil {
 			return report(rt, c, err)
 		}
-		return run(ctx, rt, c, plan, yes, "Disconnect "+c.Name()+" from Flightdeck", false)
+		title := "Disconnect " + c.Name() + " from Flightdeck"
+		if *dryRun {
+			plan.Describe(rt.Stdout, title)
+			return ExitOK
+		}
+		if len(plan.Steps) > 0 && !rt.Interactive && !yes {
+			// Removing is not what a script that installs runs by
+			// accident: without a person to ask, it must say --yes.
+			_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s --remove: there is no terminal to confirm on, so --remove needs --yes; nothing changed\n", c.ID())
+			return ExitUsage
+		}
+		return run(ctx, rt, c, plan, yes, title, false)
 	}
 
 	var target Target
@@ -119,11 +131,17 @@ func Main(ctx context.Context, args []string, rt IO) int {
 			return report(rt, c, err)
 		}
 		target.Server, target.Local = s, local
+		if !local && strings.HasPrefix(strings.ToLower(s), "http://") {
+			_, _ = fmt.Fprintf(rt.Stderr, "warning: %s is plain http:// and not this machine: the token and the sessions travel unencrypted; use https:// across a network\n", s)
+		}
 		token, source := "", "FLIGHTDECK_TOKEN"
 		if given["token-file"] {
 			source = "--token-file"
 			if token, err = ReadTokenFile(*tokenFile); err != nil {
 				return report(rt, c, err)
+			}
+			if warning := TokenFileWarning(*tokenFile); warning != "" {
+				_, _ = fmt.Fprintln(rt.Stderr, warning)
 			}
 		} else if rt.Getenv != nil {
 			token = strings.TrimSpace(rt.Getenv("FLIGHTDECK_TOKEN"))
@@ -145,17 +163,26 @@ func Main(ctx context.Context, args []string, rt IO) int {
 	if err != nil {
 		return report(rt, c, err)
 	}
-	return run(ctx, rt, c, plan, yes, "Connect "+c.Name()+" to Flightdeck", true)
+	title := "Connect " + c.Name() + " to Flightdeck"
+	if *dryRun {
+		plan.Describe(rt.Stdout, title)
+		return ExitOK
+	}
+	return run(ctx, rt, c, plan, yes, title, true)
 }
 
-// run asks, when it may, then applies the plan.
+// run asks, when it may, then applies the plan. A plan with a caution
+// is applied only after a yes on a terminal: --yes does not count, and
+// without a terminal the plan is refused.
 func run(ctx context.Context, rt IO, c Connector, plan Plan, yes bool, title string, defaultYes bool) int {
+	if len(plan.Steps) > 0 && plan.Caution != "" && (!rt.Interactive || yes) {
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s; nothing changed\n", c.ID(), plan.Caution)
+		return ExitFailed
+	}
 	if len(plan.Steps) > 0 && rt.Interactive && !yes {
-		_, _ = fmt.Fprintf(rt.Stdout, "%s:\n", title)
-		for _, step := range plan.Steps {
-			_, _ = fmt.Fprintf(rt.Stdout, "  - %s\n", step.Summary)
-		}
-		if !ask(rt, defaultYes) {
+		plan.Describe(rt.Stdout, title)
+		// A caution is answered no unless the person says yes.
+		if !ask(rt, defaultYes && plan.Caution == "") {
 			_, _ = fmt.Fprintln(rt.Stdout, "Nothing changed.")
 			return ExitFailed
 		}
@@ -277,13 +304,18 @@ Agents: %s
 Without --server, a new connection reports to the local server (%s,
 with the development token) and an existing one keeps its server. With --server,
 the token is read from --token-file, else from FLIGHTDECK_TOKEN; no flag takes the
-token itself, since a command line is visible to every user of the machine. On a
-terminal the command lists what it will change and asks first; --yes skips that.
+token itself, since a command line is visible to every user of the machine.
+
+On a terminal the command lists what it will change and asks first; --yes skips
+that. Without a terminal, connecting goes ahead (a script asked for it) and
+--remove needs --yes. A plugin from a marketplace other than
+github.com/flightdeckhq/flightdeck is installed only after a yes on a terminal.
+--dry-run prints the changes and what the integration records, and changes nothing.
 
 Exit status: 0 connected, removed or nothing to do; 1 a step failed or the answer
 was no; 2 a usage error; 3 the agent is not on this machine.
 
 Flags:
-`, strings.Join(agents, ", "), defaultServer)
+`, strings.Join(agents, ", "), DefaultServer)
 	fs.PrintDefaults()
 }

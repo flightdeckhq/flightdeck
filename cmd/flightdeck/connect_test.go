@@ -111,7 +111,8 @@ func TestBinary_ConnectCommand(t *testing.T) {
 		args []string
 		code int
 	}{
-		{[]string{"claude-code", "--remove"}, 0},
+		{[]string{"claude-code", "--remove"}, 2}, // no terminal: --remove needs --yes
+		{[]string{"claude-code", "--remove", "--yes"}, 0},
 		{[]string{"no-such-agent"}, 2},
 		{[]string{"claude-code", "--server", "https://other.example.com"}, 2},
 	} {

@@ -2279,7 +2279,9 @@ two endpoints by the same rule (see Sensor, Public API).
 `plugin/tests/server_url.test.mjs` runs them through the plugin, and
 `sensor/tests/unit/test_init_defaults.py` through the sensor and
 through the playground's copy (`playground/_helpers.py`, loaded by
-path), so both CI suites check all three.
+path), so both CI suites check all three. `flightdeck connect` compares
+server values by the same rule, and `internal/connect/server_url_test.go`
+runs the cases through it too.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
 environment variables (see Content Capture). A repository's project
 settings (`.claude/settings.json`, `.claude/settings.local.json`) can
@@ -12022,15 +12024,24 @@ output format changes.
 | `flightdeck connect` | Lists every connector: whether its agent is found on this machine (where, which version), whether it is connected (the integration's version, the server it reports to, whether a token is saved) and the command that connects it. Changes nothing. |
 | `flightdeck connect <agent>` | Connects the agent. Without `--server`, a new connection reports to the local server (`http://localhost:4000` with the development token, the plugin's own defaults, so nothing is saved) and an existing one keeps the server it has. |
 | `flightdeck connect <agent> --server <url>` | Connects it to that server. The token is read from `--token-file <path>`, else from `FLIGHTDECK_TOKEN`; there is no flag that takes the token itself, since a command line is visible to every user of the machine (`ps`, `/proc/<pid>/cmdline`). A server whose host is not this machine's loopback (`localhost`, `127.0.0.0/8`, `::1`) needs a token, as the development token is refused there; one already saved for the same server is kept. |
-| `flightdeck connect <agent> --remove` | Disconnects it. |
+| `flightdeck connect <agent> --remove` | Disconnects it. Without a terminal it needs `--yes`, and refuses otherwise with a line saying so: removing is not something a script should do by default. |
+| `flightdeck connect <agent> --dry-run` | Prints what connecting (or with `--remove`, disconnecting) would change and what the integration records and where it sends it, and changes nothing. The installers print it before their question. |
 | `flightdeck connect --detected` | The installers' query (below). |
 
 `--yes` (`-y`) skips the confirmation. When stdin and stdout are both a
 terminal and `--yes` is not given, connecting and removing first list
-the changes the command is about to make and ask (`[Y/n]` to connect,
-`[y/N]` to remove); without a terminal they go ahead, since whatever ran
-the command asked for it. An agent that is already connected as asked
-is reported so, with nothing changed and no question. Exit status: 0
+the changes the command is about to make, with what the integration
+records and where it sends it, and ask (`[Y/n]` to connect, `[y/N]` to
+remove). Without a terminal, connecting goes ahead, since whatever ran
+the command asked for it (the installers' scripted path), and removing
+needs `--yes`. A step marked as a caution (a plugin from a marketplace
+other than this repository, below) is applied only after a yes on a
+terminal: `--yes` does not accept it, the question defaults to no, and
+without a terminal the command refuses with a line that names the
+source and the command to run by hand. An agent that is already
+connected as asked is reported so, with nothing changed and no question;
+the line says that `--server` changes the server.
+Ctrl+C or SIGTERM cancels the command and ends the agent's CLI with it. Exit status: 0
 when the agent is connected (or removed, or was neither), and for the
 list; 1 when a step failed or timed out, or the question was answered
 no; 2 for a usage error (an unknown agent or flag, a server or token
@@ -12042,14 +12053,34 @@ host. Credentials in it (`https://user:secret@host`) are refused rather
 than stripped, since the value is saved in a plain settings file; a
 value that looks like an access token (`ftd_` or `tok_`, a token given
 to the wrong flag) and one with a backslash or inner white space are
-refused too. Neither message repeats the value. Either form of the one
+refused too. Neither message repeats the value. A plain `http://` server
+that is not this machine draws a warning: the token and the sessions
+cross the network unencrypted. Either form of the one
 server address works (the base URL or the ingestion URL the start-up
 block prints, see Plugin (Claude Code) > Configuration), since the
 plugin resolves both; the value is saved as given. A token must have the
 form of a minted one (`ftd_` and 32 lower-case hex digits) or be
 `tok_dev`, and `tok_dev` goes only with a server on this machine (any
 other refuses it); a token is never printed, logged or put in an error. A token file
-is read once, at most 4 KiB, with its surrounding white space dropped.
+is read once, at most 4 KiB, with its surrounding white space dropped;
+it may be UTF-8, with or without a byte-order mark, or UTF-16 with its
+mark (what `"ftd_…" > token.txt` writes in Windows PowerShell 5.1). A
+token file that other users can read (a group or world permission bit,
+on Unix) draws a warning naming the `chmod`, and is used all the same,
+as a mounted secret often is 0644.
+
+The saved server and the one asked for are compared as the one server
+address rule reads them (see Plugin (Claude Code) > Configuration): the
+scheme and host lower-cased, credentials, query, fragment, trailing
+slashes and the default port dropped, and a final `/ingest` segment
+dropped, so `http://localhost:4000/`, `http://localhost:4000` and
+`http://localhost:4000/ingest` are one server, and no server saved is
+`http://localhost:4000`. `internal/connect/server_url_test.go` runs
+every case of `contracts/server_urls.json` through that comparison. A
+server asked for that is the saved one changes nothing; in particular a
+saved token is never replaced by the development token for it.
+Values read back from the agent's configuration (the saved server, a
+marketplace's source) are printed without their control characters.
 
 **The connector contract.** What every connector guarantees, so a new
 one behaves as the first does:
@@ -12073,9 +12104,11 @@ one behaves as the first does:
 - **No secret on a command line.** A token reaches the agent's CLI on
   stdin (or in a file only the user can read), never as an argument.
 - **Bounded.** Every external command runs under a timeout named for
-  its step, and is killed when it passes it; the command then waits at
-  most five seconds for the CLI's own children (a `git` clone) to close
-  their output. A failed or timed-out step is one line on stderr that
+  its step. It runs in a process group of its own (on Windows, its
+  process tree), and the timeout, or Ctrl+C on the command, kills the
+  whole group, so a child it started (a `git` clone) does not outlive
+  the step; the command then waits at most five seconds for anything
+  still holding the output. A failed or timed-out step is one line on stderr that
   names the step and carries the CLI's own message, and the exit status
   is 1; the steps after it do not run.
 - **Nothing is accepted on the user's behalf.** The agent's CLI gets no
@@ -12096,7 +12129,7 @@ changes, as it does for Claude Code itself.
 |---|---|---|
 | Detect | `claude --version` | 10 s: it answers in well under a second; ten covers a cold start on a slow disk |
 | Status | `claude plugin list --json`: connected when `flightdeck@flightdeck-plugins` is installed in user scope and enabled; then `claude plugin configure flightdeck@flightdeck-plugins --json` for the saved server (`inputs.server`) and whether `token` is among the `configured` options | 30 s each: local files, after the CLI may first refresh the account's managed settings over the network |
-| Connect | `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared (one of that name that is, such as a contributor's local checkout, is used as it is); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
+| Connect | `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared. One of that name that is declared is trusted when its source is this repository (`"source": "github"` with `"repo": "flightdeckhq/flightdeck"`, or `"source": "git"` with its HTTPS or SSH URL); any other source (`"directory"` with a `path`, such as a contributor's checkout, another repository, a URL) makes the install step a caution that names the source (above); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
 | Disconnect | `claude plugin uninstall flightdeck@flightdeck-plugins --scope user --json`; Claude Code drops the plugin's saved options and token with it, and the marketplace entry stays | 30 s |
 
 Claude Code keeps the server in the user's `settings.json` and the
@@ -12107,7 +12140,11 @@ is saved for another server saves the development token over it, and a
 token meant for a remote server is never sent to whatever listens on
 this machine. Claude Code loads plugins when a session starts: sessions
 started after the connect report, and sessions already open report
-once restarted. The command's lines say so.
+once restarted. The command's lines say so. The plan's notice states
+what the plugin records by default, prompts, responses, tool results
+and sanitised tool inputs (see Content Capture), the server it sends
+them to, and that `FLIGHTDECK_CAPTURE_PROMPTS=false` keeps the content
+back.
 
 **The installers' query.** `flightdeck connect --detected` prints one
 line per connector whose agent is found: `<id>`, a tab, `connected` or
@@ -12123,12 +12160,24 @@ not answer it (a release older than the command, pinned with `VERSION`)
 skips the step. `FLIGHTDECK_CONNECT` decides without asking: a
 comma-separated list of connector ids, `all` (every found agent not
 connected yet) or `none`; it is the switch for CI and scripted installs.
-Unset, the installer asks once per found agent that is not connected:
-`Connect Claude Code to Flightdeck? [Y/n]`. `install.sh` asks on
-`/dev/tty`, since under `curl | sh` its stdin is the script itself, and
-counts as interactive only when `/dev/tty` opens; `install.ps1` asks
-with `Read-Host` when the session is interactive and its input is not
-redirected. A yes runs `<binary> connect <id> --yes` (with its stdin
+Unset, the installer asks once per found agent that is not connected,
+after printing `<binary> connect <id> --dry-run` (what connecting
+changes, what the integration records and where it sends it, in the
+binary's words, so the installers hold no agent's wording; when the dry
+run fails nothing is asked): `Connect Claude Code to Flightdeck? [Y/n]`.
+`install.sh` asks on `/dev/tty`, since under `curl | sh` its stdin is
+the script itself, and counts as interactive only when `/dev/tty` opens
+and its process group is the terminal's foreground group (an install
+sent to the background would be stopped at the read; where `ps` cannot
+tell, it asks). The answer is read by a background reader that is
+killed after 60 seconds (`ASK_TIMEOUT_SECS`), since POSIX `read` has no
+timeout: no answer is a no. `install.ps1` asks with `Read-Host` when the
+session is interactive and its input is not redirected. Both pass on
+only words of lower-case letters, digits and `-` as agent ids, from
+`FLIGHTDECK_CONNECT` and from the query alike, and `install.sh` splits
+the variable with pathname expansion off. `install.ps1` leaves the
+session's `$LASTEXITCODE` at 0 after a successful install, whatever the
+connect step's commands exited with. A yes runs `<binary> connect <id> --yes` (with its stdin
 from `/dev/null` in `install.sh`, so nothing it starts reads input meant
 for the installer's shell, text typed ahead or a pipe). A no, `none`, or no terminal prints the command
 instead: `To connect Claude Code: flightdeck connect claude-code`. A

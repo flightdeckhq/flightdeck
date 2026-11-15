@@ -14,20 +14,30 @@ All notable changes to Flightdeck are documented here.
   `--token-file` or `FLIGHTDECK_TOKEN` (no flag takes the token itself,
   so it never shows in the process list) and kept in Claude Code's
   credential store. Connecting an agent that is already connected
-  changes nothing and says so; `--remove` uninstalls the plugin and its
-  saved options. `flightdeck connect` alone lists the agents the binary
-  can connect, whether each is found and connected, and to which server.
-  On a terminal the command lists what it will change and asks first
-  (`--yes` skips that). Exit status 0 when done or nothing to do, 1 when
+  changes nothing and says so (the server is compared as the sensor and
+  the plugin read it, so `http://localhost:4000/` and its `/ingest` form
+  are the same server); `--remove` uninstalls the plugin and its saved
+  options, and needs `--yes` without a terminal. `flightdeck connect`
+  alone lists the agents the binary can connect, whether each is found
+  and connected, and to which server; `--dry-run` prints what connecting
+  would change and what the plugin records (prompts, responses, tool
+  results and sanitised tool inputs) and where it sends it. On a
+  terminal the command shows the same and asks first (`--yes` skips
+  that). A `flightdeck-plugins` marketplace Claude Code already has from
+  another source (a local checkout, a fork) is named, and the plugin is
+  installed from it only after a yes on a terminal. Exit status 0 when done or nothing to do, 1 when
   a step fails, 2 for a usage error, 3 when the agent is not on the
-  machine. Every `claude` command it runs has a timeout. Each agent is
+  machine. Every `claude` command it runs has a timeout that ends its
+  child processes too. Each agent is
   a connector of the same command, so the agents still to come plug in
   without changing it or the installers (D275).
 - **The installers offer to connect the coding agents they find.**
-  After installing the binary, `install.sh` and `install.ps1` ask
+  After installing the binary, `install.sh` and `install.ps1` show what
+  connecting would change and what the plugin records, then ask
   `Connect Claude Code to Flightdeck? [Y/n]` for each agent found that
   is not connected yet (`install.sh` asks on the terminal even under
-  `curl | sh`); without a terminal they print the command instead.
+  `curl | sh`, and takes no answer within 60 seconds as no); without a
+  terminal, or in the background, they print the command instead.
   `FLIGHTDECK_CONNECT=claude-code` (agent ids separated by commas,
   `all` or `none`) decides without asking, for CI and scripted installs.
   A connect that fails prints why and the command to run later, and the

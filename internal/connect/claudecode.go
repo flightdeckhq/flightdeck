@@ -30,8 +30,6 @@ const (
 	// pluginScope is where the plugin is installed: for the user, so
 	// every project's sessions report.
 	pluginScope = "user"
-	// defaultServer is where the plugin reports with no server saved.
-	defaultServer = "http://localhost:4000"
 )
 
 // The bounds of the `claude` commands.
@@ -159,17 +157,29 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 	if err != nil {
 		return Plan{}, err
 	}
-	keepsToken := st.TokenSaved && st.Server == target.Server
+	sameAsSaved := target.Server == "" || sameServer(target.Server, st.Server)
+	keepsToken := st.TokenSaved && sameAsSaved
 	if target.Server != "" && !target.Local && target.Token == "" && !keepsToken {
 		return Plan{}, usageError("%s is not on this machine, so it needs an access token (the dashboard's Settings > Access tokens, "+
 			"or the one the server printed at its first start): give it with --token-file PATH or FLIGHTDECK_TOKEN", target.Server)
 	}
 
 	var steps []Step
+	caution := ""
+	installFrom := "github.com/" + marketplaceSource
 	if !st.Installed {
-		declared, err := c.marketplaceDeclared(ctx, path)
+		declared, source, err := c.marketplaceDeclared(ctx, path)
 		if err != nil {
 			return Plan{}, err
+		}
+		if declared && source != "" {
+			// A marketplace of that name from somewhere else (a local
+			// checkout, a fork) would supply the plugin: the user decides,
+			// on a terminal, and no --yes or script decides for them.
+			installFrom = fmt.Sprintf("the %s marketplace Claude Code already has, which comes from %s", marketplaceName, source)
+			caution = fmt.Sprintf("Claude Code's %s marketplace comes from %s, not github.com/%s, and the plugin would be installed from it. "+
+				"Confirm it on a terminal without --yes, or install it yourself: claude plugin install %s --scope %s",
+				marketplaceName, source, marketplaceSource, pluginID, pluginScope)
 		}
 		if !declared {
 			steps = append(steps, Step{
@@ -183,7 +193,7 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 			})
 		}
 		steps = append(steps, Step{
-			Summary: fmt.Sprintf("install the %s plugin for your user", pluginName),
+			Summary: fmt.Sprintf("install the %s plugin for your user from %s", pluginName, installFrom),
 			Run: func(ctx context.Context) (string, error) {
 				if err := c.change(ctx, claudeCloneTimeout, nil, "", path, "plugin", "install", pluginID, "--scope", pluginScope, "--json"); err != nil {
 					return "", err
@@ -205,14 +215,14 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 
 	values := map[string]string{}
 	server := st.Server
-	if target.Server != "" && target.Server != st.Server {
+	if !sameAsSaved {
 		values["server"] = target.Server
 		server = target.Server
 	}
 	switch {
 	case target.Token != "":
 		values["token"] = target.Token
-	case target.Local && st.TokenSaved && target.Server != st.Server:
+	case target.Local && st.TokenSaved && !sameAsSaved:
 		// Claude Code cannot remove a saved token, and the one saved is
 		// another server's: the development token takes its place, so it
 		// is never sent to whatever listens on this machine.
@@ -237,8 +247,15 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		version = " " + st.Version
 	}
 	return Plan{
-		Steps:     steps,
-		Unchanged: fmt.Sprintf("Claude Code is already connected to Flightdeck (plugin %s%s, reporting to %s); nothing changed.", pluginName, version, where),
+		Steps:   steps,
+		Caution: caution,
+		// What the plugin records by default (plugin/README.md, Privacy):
+		// prompt and response content and tool results (capturePrompts)
+		// and the sanitised tool inputs (captureToolInputs).
+		Notice: fmt.Sprintf("The plugin records your Claude Code sessions, including prompts, responses, tool results and sanitised tool inputs, "+
+			"and sends them to %s (FLIGHTDECK_CAPTURE_PROMPTS=false keeps the content back).", where),
+		Unchanged: fmt.Sprintf("Claude Code is already connected to Flightdeck (plugin %s%s, reporting to %s); nothing changed. "+
+			"Pass --server to change the server.", pluginName, version, where),
 		Done: fmt.Sprintf("Claude Code is connected: sessions started from now on report to %s; sessions already open report once restarted.",
 			where),
 	}, nil
@@ -274,23 +291,74 @@ func (c *ClaudeCode) PlanDisconnect(ctx context.Context) (Plan, error) {
 }
 
 // marketplaceDeclared reports whether Claude Code has a marketplace
-// named flightdeck-plugins, whatever its source: a contributor's local
-// checkout declared under that name is used as it is.
-func (c *ClaudeCode) marketplaceDeclared(ctx context.Context, path string) (bool, error) {
+// named flightdeck-plugins and, when it comes from anywhere but this
+// repository, describes where from ("" for this repository).
+func (c *ClaudeCode) marketplaceDeclared(ctx context.Context, path string) (bool, string, error) {
 	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, nil, path, "plugin", "marketplace", "list", "--json")
 	if err != nil {
-		return false, stepError("claude plugin marketplace list --json", claudeLocalTimeout, stdout, stderr, err, "")
+		return false, "", stepError("claude plugin marketplace list --json", claudeLocalTimeout, stdout, stderr, err, "")
 	}
 	var markets []declaredMarketplace
 	if err := json.Unmarshal(stdout, &markets); err != nil {
-		return false, fmt.Errorf("`claude plugin marketplace list --json` printed no marketplace list this command can read: %v", err)
+		return false, "", fmt.Errorf("`claude plugin marketplace list --json` printed no marketplace list this command can read: %v", err)
 	}
-	return slices.ContainsFunc(markets, func(m declaredMarketplace) bool { return m.Name == marketplaceName }), nil
+	i := slices.IndexFunc(markets, func(m declaredMarketplace) bool { return m.Name == marketplaceName })
+	if i < 0 {
+		return false, "", nil
+	}
+	return true, markets[i].foreignSource(), nil
 }
 
-// declaredMarketplace is one entry of `claude plugin marketplace list --json`.
+// declaredMarketplace is one entry of `claude plugin marketplace list
+// --json`: its name and where it comes from, in the shape Claude Code
+// prints for each kind (github + repo, git + url, directory + path).
 type declaredMarketplace struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	Repo   string `json:"repo"`
+	URL    string `json:"url"`
+	Path   string `json:"path"`
+}
+
+// foreignSource returns "" when the marketplace is this repository on
+// GitHub (as a GitHub source, or its git URL over HTTPS or SSH), and
+// otherwise a description of where it comes from.
+func (m declaredMarketplace) foreignSource() string {
+	ours := func(location string) bool {
+		l := strings.ToLower(strings.TrimSpace(location))
+		l = strings.TrimSuffix(strings.TrimSuffix(l, "/"), ".git")
+		for _, prefix := range []string{"https://github.com/", "ssh://git@github.com/", "git@github.com:", ""} {
+			if rest, ok := strings.CutPrefix(l, prefix); ok && rest == marketplaceSource {
+				return true
+			}
+		}
+		return false
+	}
+	switch m.Source {
+	case "github":
+		if ours(m.Repo) {
+			return ""
+		}
+		return "the GitHub repository " + printable(m.Repo)
+	case "git":
+		if ours(m.URL) {
+			return ""
+		}
+		return "the git repository " + printable(m.URL)
+	case "directory":
+		return "the local directory " + printable(m.Path)
+	}
+	where := printable(m.Source)
+	for _, location := range []string{m.Repo, m.URL, m.Path} {
+		if location != "" {
+			where += " " + printable(location)
+			break
+		}
+	}
+	if where == "" {
+		where = "an unnamed source"
+	}
+	return "a " + where + " source"
 }
 
 // change runs a `claude plugin` command that changes something and
@@ -360,9 +428,9 @@ func saveWording(values map[string]string) (summary, done string) {
 // describeServer names the server the plugin reports to.
 func describeServer(server string) string {
 	if server == "" {
-		return "the local server at " + defaultServer
+		return "the local server at " + DefaultServer
 	}
-	return server
+	return printable(server)
 }
 
 // resultLine returns the last line of stdout that is a JSON object: the

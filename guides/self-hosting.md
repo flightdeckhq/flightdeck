@@ -1,6 +1,6 @@
 # Self-hosting: Compose, Helm and backups
 
-The [README](../README.md#self-hosting) has the one-line form of every way to run Flightdeck for a team: the binary with `--domain` or `--database-url`, the Docker image, Compose and Helm. This page is the detail for Compose and Helm (what each starts, where the token is, the event stream's retention, the chart's values, the upgrade notes) and for backups. [ARCHITECTURE.md](../ARCHITECTURE.md) ("Deployment") lists every flag and variable of the binary.
+The [README](../README.md#self-hosting) has the one-line form of every way to run Flightdeck for a team: the binary with `--public`, `--domain` or `--database-url`, the Docker image, Compose and Helm. This page is the detail for Compose and Helm (what each starts, where the token is, the event stream's retention, the chart's values, the upgrade notes) and for backups. [ARCHITECTURE.md](../ARCHITECTURE.md) ("Deployment") lists every flag and variable of the binary.
 
 Flightdeck is self-hosted. Two deployment targets are supported, both running the one `flightdeckhq/flightdeck` image: Docker Compose (single host) and a Helm chart for Kubernetes.
 

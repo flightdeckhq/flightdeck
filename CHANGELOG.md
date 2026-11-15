@@ -6,6 +6,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **`--port` runs Flightdeck on another port, and `--public` lets other
+  machines in.** `flightdeck --port 4100` (or `-p 4100`, or
+  `FLIGHTDECK_PORT=4100`) serves on `127.0.0.1:4100`: this machine only,
+  with the development token, as the default port is. `flightdeck
+  --public` (`FLIGHTDECK_PUBLIC=true`) serves every network interface,
+  `0.0.0.0:4000`, and `--public --port 4100` does so on port 4100; the
+  server then refuses the development token and creates an access token
+  on its first start, as `--listen 0.0.0.0:4000` does. `--listen` stays
+  for one specific address and cannot be combined with either: given
+  together they stop the start with a usage error that names both, as
+  do `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
+  set together with no flag deciding. A port outside 1 to 65535 is
+  refused with what to pass. `flightdeck health` takes the same flags
+  and variables and finds the instance they describe (D277).
 - **LangGraph: Runnable and `ToolNode` nodes of a graph you build open
   child sessions.** A node whose action is a Runnable (`RunnableLambda`,
   `RunnableCallable`, an LCEL pipe, a `ToolNode` you add) now opens a
@@ -25,6 +39,52 @@ All notable changes to Flightdeck are documented here.
   agent's own steps, not sub-agents, so a `create_react_agent`
   `pre_model_hook` or `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
+
+### Changed
+
+- **`--listen :4000`, a port with no address, now serves this machine
+  only.** It binds `127.0.0.1:4000`, as `--port 4000` does, where it
+  used to bind every interface and so silently refused the development
+  token and opened the server to the network. To serve other machines,
+  say so: `--public` (with `--port` for another port) or `--listen
+  0.0.0.0:4000`, or one interface's address (`--listen 10.0.0.5:4000`).
+  `FLIGHTDECK_LISTEN=:4000` changes the same way, and every start with
+  a host-less address now logs a warning that says so. A container
+  started with `-e FLIGHTDECK_LISTEN=:<port>`, or a manifest that passes
+  `--listen :<port>` as its command or arguments, is no longer reachable
+  from outside the container while `flightdeck health` inside it still
+  reports healthy: write `0.0.0.0:<port>`. The Docker image now sets
+  `FLIGHTDECK_LISTEN=0.0.0.0:4000` and the Helm chart passes `--listen
+  0.0.0.0:<port>`, so both serve as before. An instance behind a
+  reverse proxy on the same machine that was started with `:<port>` and
+  a supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at start, with the forms to
+  write, instead of falling back to the development token while the
+  proxy keeps forwarding: `--listen 127.0.0.1:<port>` keeps it on this
+  machine (and serves the development token), `--listen
+  0.0.0.0:<port>` or `--public` serves the supplied one.
+- **A `--listen` host name that resolves to loopback now stops the
+  start.** A name that is not `localhost` and binds a loopback address
+  (`ip6-localhost`, or a machine's own name where `/etc/hosts` maps it
+  to `127.0.1.1`, as Debian and Ubuntu do) used to run in the mode of
+  an address beyond this machine, with the Host check off, on a socket
+  only this machine reaches. The start is now refused with what to
+  write: `--port <port>` or `--listen 127.0.0.1:<port>` for this
+  machine only, `--public --port <port>` or `--listen <this machine's
+  address>:<port>` to serve other machines.
+- **`localhost.:<port>` and a zoned loopback address (`[::1%lo]:<port>`)
+  now run as this machine only**, as `localhost` and `[::1]` do: with
+  the development token and the Host check on, where they ran with a
+  minted token and the Host check off. A supplied dashboard token is
+  ignored there, with the warning it already got on a loopback address.
+- **The start-up messages say how to choose.** The help text and the
+  start-up block say that whoever can reach a `--public` server can read
+  its dashboard token, so open it only on a network you trust, or put it
+  behind a proxy that authenticates. A port already in use names the
+  flags for the next one, `--port 4001` on this machine. A
+  `FLIGHTDECK_PORT` that Kubernetes sets for a Service named
+  `flightdeck` (`tcp://…`) is read as unset, so such a namespace's pods
+  start as before (D277).
 
 ### Fixed
 

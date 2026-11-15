@@ -80,7 +80,8 @@ spec:
           command: ["/usr/local/bin/flightdeck"]
           args:
             - "--listen"
-            - ":{{ .Values.flightdeck.port }}"
+            # Every interface of the pod: a port alone would be its loopback.
+            - "0.0.0.0:{{ .Values.flightdeck.port }}"
             - "--data-dir"
             - "/data/flightdeck"
             {{- if .Values.flightdeck.metrics.enabled }}

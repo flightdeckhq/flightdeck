@@ -263,7 +263,7 @@ to the fixtures:
 make build-flightdeck
 mkdir -p /tmp/fd-it
 FLIGHTDECK_RATE_LIMIT_PER_MINUTE=1000000 FLIGHTDECK_RECONCILER_INTERVAL_SECS=5 \
-  bin/flightdeck --listen 127.0.0.1:4100 --data-dir /tmp/fd-it/data > /tmp/fd-it/flightdeck.log 2>&1 &
+  bin/flightdeck --port 4100 --data-dir /tmp/fd-it/data > /tmp/fd-it/flightdeck.log 2>&1 &
 
 export FLIGHTDECK_TEST_BASE_URL=http://localhost:4100
 export FLIGHTDECK_TEST_WORKER_LOG=/tmp/fd-it/flightdeck.log     # where the tests read the worker's log lines

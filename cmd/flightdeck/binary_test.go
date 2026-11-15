@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -197,7 +198,14 @@ func start(t *testing.T, listen, port, dataDir string, extra ...string) *child {
 // startWithEnv is start with extra environment variables for the child.
 func startWithEnv(t *testing.T, env []string, listen, port, dataDir string, extra ...string) *child {
 	t.Helper()
-	args := append([]string{"--listen", listen, "--data-dir", dataDir}, extra...)
+	return startArgs(t, env, port, append([]string{"--listen", listen, "--data-dir", dataDir}, extra...)...)
+}
+
+// startArgs runs the binary with exactly args (the caller names the
+// listen flags and the data dir) and env, and waits as start does for it
+// to serve on 127.0.0.1:port.
+func startArgs(t *testing.T, env []string, port string, args ...string) *child {
+	t.Helper()
 	cmd, out := command(args...)
 	cmd.Env = append(cmd.Env, env...)
 	if err := cmd.Start(); err != nil {
@@ -434,7 +442,7 @@ func TestBinary_SQLiteKeepsEverythingAcrossAStopAndARestart(t *testing.T) {
 	const sessions, callsPerSession = 5, 20
 	const events = sessions * (1 + callsPerSession)
 
-	first := start(t, ":"+port, port, dataDir)
+	first := start(t, "0.0.0.0:"+port, port, dataDir)
 	token := first.dashboardToken(t)
 	if !strings.HasPrefix(token, "ftd_") {
 		t.Fatalf("dashboard token %q: a non-loopback start mints an ftd_ token", token)
@@ -495,7 +503,7 @@ func TestBinary_SQLiteKeepsEverythingAcrossAStopAndARestart(t *testing.T) {
 		t.Fatalf("the database file is missing or empty after the stop: %v", files)
 	}
 
-	second := start(t, ":"+port, port, dataDir)
+	second := start(t, "0.0.0.0:"+port, port, dataDir)
 	if got := second.dashboardToken(t); got != token {
 		t.Fatalf("the restart serves dashboard token %q, want the first start's %q", got, token)
 	}
@@ -609,9 +617,12 @@ func TestBinary_ASecondInstanceIsRefused(t *testing.T) {
 	first := start(t, "127.0.0.1:"+port, port, dataDir)
 	holder := fmt.Sprintf("pid %d", first.cmd.Process.Pid)
 
-	// Same port: the listener refuses, before the data dir is touched.
-	out := refused(t, "--listen", "127.0.0.1:"+port, "--data-dir", dataDir)
-	if !strings.Contains(out, "already in use") || !strings.Contains(out, "--listen") {
+	// Same port: the listener refuses, before the data dir is touched,
+	// and names the flag for the next port (a free port is never 65535
+	// on the Unix systems this test runs on, so the next one exists).
+	out := refused(t, "--port", port, "--data-dir", dataDir)
+	if n, err := strconv.Atoi(port); err != nil || !strings.Contains(out, "already in use") ||
+		!strings.Contains(out, "--port "+strconv.Itoa(n+1)) {
 		t.Errorf("same port: %q", out)
 	}
 

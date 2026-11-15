@@ -108,7 +108,8 @@ has default '^  name: flightdeck-flightdeck$'
 has default '^  replicas: 1$'
 has default '^          image: docker.io/flightdeckhq/flightdeck:v'
 has default '^          command: \["/usr/local/bin/flightdeck"\]$'
-has default '^            - ":4000"$'
+# Every interface of the pod: a port alone is the pod's loopback.
+has default '^            - "0.0.0.0:4000"$'
 # The data dir is a directory inside the volume, which the binary
 # creates 0700 whatever mode the storage class gives the volume's root.
 has default '^            - "/data/flightdeck"$'

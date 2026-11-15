@@ -63,7 +63,7 @@ build-webui: ## Build the dashboard and copy its bundle (without source maps) in
 build-flightdeck: build-webui ## Build bin/flightdeck with the VERSION file's version
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$$(cat VERSION)" -o bin/flightdeck ./cmd/flightdeck
 
-run-flightdeck: ## Run the binary from source; pass flags with ARGS="--listen 127.0.0.1:4100"
+run-flightdeck: ## Run the binary from source; pass flags with ARGS="--port 4100"
 	go run ./cmd/flightdeck $(ARGS)
 
 test-flightdeck: ## Tests of the root module: the binary's packages, and the real binary on SQLite (stop, restart, second instance)

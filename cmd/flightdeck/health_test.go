@@ -25,7 +25,16 @@ const healthCommandTimeout = 30 * time.Second
 // a scrubbed environment, and returns its exit status and its output.
 func runHealthCommand(t *testing.T, env []string, args ...string) (int, string) {
 	t.Helper()
-	cmd, out := command(append([]string{"health"}, args...)...)
+	return runToExit(t, env, append([]string{"health"}, args...)...)
+}
+
+// runToExit runs the binary with args and env added to a scrubbed
+// environment, waits for it to exit (healthCommandTimeout: every caller
+// expects an answer or a refusal, not a server), and returns its exit
+// status and its output.
+func runToExit(t *testing.T, env []string, args ...string) (int, string) {
+	t.Helper()
+	cmd, out := command(args...)
 	cmd.Env = append(cmd.Env, env...)
 	ctx, cancel := context.WithTimeout(context.Background(), healthCommandTimeout)
 	defer cancel()
@@ -43,12 +52,12 @@ func runHealthCommand(t *testing.T, env []string, args ...string) (int, string) 
 		case errors.As(err, &exit):
 			return exit.ExitCode(), out.String()
 		default:
-			t.Fatalf("flightdeck health %v: %v\n%s", args, err, out.String())
+			t.Fatalf("flightdeck %v: %v\n%s", args, err, out.String())
 		}
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		<-done
-		t.Fatalf("flightdeck health %v did not exit within %s:\n%s", args, healthCommandTimeout, out.String())
+		t.Fatalf("flightdeck %v did not exit within %s:\n%s", args, healthCommandTimeout, out.String())
 	}
 	return -1, ""
 }
@@ -74,7 +83,7 @@ func TestBinary_HealthCommand(t *testing.T) {
 		// the environment the server was configured through. The data
 		// dir named there must not be touched.
 		untouched := filepath.Join(tempDir(t), "not-created")
-		code, out := runHealthCommand(t, []string{"FLIGHTDECK_LISTEN=:" + port, "FLIGHTDECK_DATA_DIR=" + untouched})
+		code, out := runHealthCommand(t, []string{"FLIGHTDECK_LISTEN=0.0.0.0:" + port, "FLIGHTDECK_DATA_DIR=" + untouched})
 		if code != 0 || out != healthy {
 			t.Fatalf("exit %d, output %q; want 0 and %q", code, out, healthy)
 		}
@@ -89,7 +98,7 @@ func TestBinary_HealthCommand(t *testing.T) {
 		}
 	})
 	t.Run("it neither needs nor prints the token", func(t *testing.T) {
-		_, out := runHealthCommand(t, nil, "--listen", ":"+port)
+		_, out := runHealthCommand(t, nil, "--listen", "0.0.0.0:"+port)
 		if strings.Contains(out, token) || strings.Contains(out, "ftd_") {
 			t.Fatalf("the health command printed a token: %q", out)
 		}

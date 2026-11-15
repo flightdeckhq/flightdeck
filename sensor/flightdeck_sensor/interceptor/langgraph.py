@@ -83,10 +83,13 @@ with ``state=error`` when the node or the run raises or, async, is
 cancelled. LangGraph's control-flow exceptions (``GraphBubbleUp``: an
 interrupt, a ``Command`` for the parent graph, a drain) close it
 normally; a resumed node or run runs again and opens a new child. A run
-whose stream is closed before its end (abandoned) closes normally. When
-the event loop closes an async stream itself (one collected unclosed,
-or every one still open as the loop shuts down), it closes the stream
-this wrapper wraps too, so the wrapper leaves that one to the loop.
+whose stream is closed before its end (abandoned) closes normally.
+Closing an async run's stream closes LangGraph's own stream at once,
+however the close is awaited, unless the event loop has taken that
+stream's close over (collected unclosed, or swept when the loop shuts
+down), which asyncio's loop shows by its set of live generators; a loop
+that keeps that set out of reach (uvloop) is taken to close it when the
+close runs as a task of its own.
 
 Posting. The child's start and end are posted synchronously, as every
 wrap's are, except on a thread that runs an event loop. An async node or
@@ -191,9 +194,14 @@ _ASTREAM_METHOD = "astream"
 # Set on a StateGraph whose nodes create_agent or create_react_agent
 # registered: a run started inside one of them is not named after it.
 _AGENT_STEPS_ATTR = "_flightdeck_agent_steps"
+# The attribute under which asyncio's event loop keeps the async
+# generators it will close itself; read where present (see
+# _live_async_generators).
+_LIVE_ASYNCGENS_ATTR = "_asyncgens"
 # The type of the coroutine of a task asyncio runs to close an async
 # generator itself (one collected unclosed, or one still open when the
-# loop shuts down): the generator's own aclose().
+# loop shuts down): the generator's own aclose(). The test used where the
+# loop does not expose its live generators.
 _LOOP_CLOSE_CORO_TYPE = "async_generator_athrow"
 
 # The packages whose StateGraph nodes are one agent's own steps rather
@@ -1020,26 +1028,51 @@ def _stream_wrapper(original: Callable[..., Iterator[Any]]) -> Callable[..., Ite
     return stream
 
 
+def _live_async_generators() -> Any:
+    """The running loop's set of the async generators it will close
+    itself, or None where the loop does not expose it. asyncio's loop
+    keeps it as ``_asyncgens``: a generator is added when first iterated,
+    and leaves it when the loop takes its close over (collected unclosed,
+    or swept when the loop shuts down). uvloop keeps it out of reach."""
+    try:
+        live = getattr(asyncio.get_running_loop(), _LIVE_ASYNCGENS_ATTR, None)
+    except RuntimeError:
+        return None
+    return live if hasattr(live, "discard") else None
+
+
 def _closed_by_the_loop() -> bool:
-    """Whether the stream being closed is closed by the event loop itself:
-    a stream collected unclosed, or every stream still open when the loop
-    shuts down. asyncio runs each such close as a task of its own, whose
-    coroutine is the generator's ``aclose()``; a close the application
-    asks for runs in the application's coroutine."""
+    """Whether this close is a task of its own whose coroutine is the
+    generator's ``aclose()``: how a loop closes an async generator itself,
+    and so how a loop that keeps its live generators out of reach is
+    taken to close this one. An application can close a stream that way
+    too (``asyncio.gather(stream.aclose())``), and is then taken for the
+    loop."""
     task = asyncio.current_task()
     return task is not None and type(task.get_coro()).__name__ == _LOOP_CLOSE_CORO_TYPE
 
 
 async def _aclose(inner: Any) -> None:
-    """Close an async run's stream, unless it has finished, another close
-    has it (it is running), or the loop is closing this wrapper: the loop
-    then closes the stream itself, as it closes every async generator it
-    tracks, and a second close would raise ``aclose(): asynchronous
-    generator is already running`` in one of the two."""
+    """Close an async run's stream at once, as the stream unpatched would
+    be closed, unless it has finished, another close has it (it is
+    running), or the loop has taken its close over: then the loop closes
+    it, and a second close would raise ``aclose(): asynchronous generator
+    is already running`` in one of the two. A stream this close takes
+    over leaves the loop's set first, as the loop's own close takes it
+    out, so a shutdown sweep that starts meanwhile does not close it too."""
     if getattr(inner, "ag_frame", None) is None or getattr(inner, "ag_running", False):
         return
-    if _closed_by_the_loop():
-        return
+    live = _live_async_generators()
+    try:
+        if live is None:
+            if _closed_by_the_loop():
+                return
+        elif inner not in live:
+            return
+        else:
+            live.discard(inner)
+    except Exception:  # noqa: BLE001 - fail open: close it as unpatched code would
+        _log.debug("LangGraph stream close not checked against the loop", exc_info=True)
     await inner.aclose()
 
 

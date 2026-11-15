@@ -1027,12 +1027,40 @@ def test_streams_left_open_at_loop_shutdown_close_quietly(patched: Any) -> None:
     assert "state" not in end and "outgoing_message" not in end
 
 
-async def test_an_explicit_close_runs_the_runs_clean_up_before_it_returns(patched: Any) -> None:
-    """A stream the application closes is closed through to LangGraph's own
-    stream at once, top-level and nested, as unpatched: the run's error
-    callback has fired when aclose() returns."""
-    _session, client, StateGraph = patched
+# The ways an application closes a stream: awaited in its own coroutine,
+# or run as a task of its own by asyncio's helpers.
+_CLOSES: dict[str, Any] = {
+    "await": lambda close: close,
+    "gather": asyncio.gather,
+    "create_task": asyncio.ensure_future,
+    "shield": asyncio.shield,
+    "wait_for": lambda close: asyncio.wait_for(close, _POSTS_WAIT_SECS),
+}
+
+
+async def test_an_application_close_runs_the_runs_clean_up_before_it_returns(
+    patched: Any,
+) -> None:
+    """On asyncio's loop, a close the application makes closes LangGraph's
+    own stream before it returns, however it is awaited (in its own
+    coroutine, or as a task of its own through gather, create_task, shield
+    or wait_for), top-level and nested, exactly as unpatched: the run's
+    error callback has fired and its in-flight node is cancelled."""
+    session, client, StateGraph = patched
     from langchain_core.callbacks import AsyncCallbackHandler
+    from langgraph.config import get_stream_writer
+
+    node: dict[str, bool] = {}
+
+    async def slow(state: dict[str, Any]) -> dict[str, Any]:
+        node["started"] = True
+        get_stream_writer()({"started": True})
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            node["cancelled"] = True
+            raise
+        return {"text": "never"}
 
     class _Ends(AsyncCallbackHandler):
         def __init__(self) -> None:
@@ -1043,36 +1071,85 @@ async def test_an_explicit_close_runs_the_runs_clean_up_before_it_returns(patche
                 self.errors.append(type(error).__name__)
 
     with _unpatched():
-        inner = _two_node_graph(StateGraph).compile(name="inner")
+        app = _one_node_graph(StateGraph, "slow", slow).compile(name="slow_graph")
 
-    async def close_early(app: Any) -> list[str]:
+    async def close_early(how: str) -> tuple[list[str], bool]:
+        node.clear()
         ends = _Ends()
-        stream = app.astream({"text": "in"}, {"callbacks": [ends]}, stream_mode="updates")
+        stream = app.astream({"text": "in"}, {"callbacks": [ends]}, stream_mode="custom")
         await stream.__anext__()
-        await stream.aclose()
-        return ends.errors
+        await _until(lambda: node.get("started", False), "the node running")
+        await _CLOSES[how](stream.aclose())
+        return list(ends.errors), node.get("cancelled", False)
 
-    top_level = await close_early(inner)
+    scopes: list[str] = []
+    for how in _CLOSES:
+        with _unpatched():
+            plain = await close_early(how)
+        assert plain == (["GeneratorExit"], True), how
+        assert await close_early(how) == plain, f"top-level, {how}"
+
+        scope = session.new_subagent_scope(
+            child_session_id=str(uuid.uuid4()),
+            child_agent_id=session.derive_subagent_id("outer"),
+            child_agent_name="parent-langgraph/outer",
+            agent_role="outer",
+        )
+        scopes.append(scope.child_session_id)
+        token = session.enter_subagent_scope(scope)
+        try:
+            assert await close_early(how) == plain, f"nested, {how}"
+        finally:
+            session.exit_subagent_scope(token)
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    # One child per nested run, under its scope, each closed.
+    starts = _starts(client)
+    assert [(p["agent_role"], p["parent_session_id"]) for p in starts] == [
+        ("slow_graph", parent) for parent in scopes
+    ]
+    assert {p["session_id"] for p in _ends(client)} == {p["session_id"] for p in starts}
+
+
+def test_a_collected_stream_mid_close_is_not_swept_again(patched: Any) -> None:
+    """A stream collected unclosed is closed by the loop (its finalizer),
+    and the wrapper then closes LangGraph's stream: a shutdown sweep that
+    starts while that close is still under way does not close it again,
+    and nothing reaches the loop's exception handler."""
+    _session, _client, StateGraph = patched
+    import gc
+
+    from langchain_core.callbacks import AsyncCallbackHandler
+
+    errors: list[dict[str, Any]] = []
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    class _HoldTheClose(AsyncCallbackHandler):
+        async def on_chain_error(self, error: BaseException, **kwargs: Any) -> None:
+            if kwargs.get("parent_run_id") is None:
+                closing.set()
+                await release.wait()
+
     with _unpatched():
-        plain = await close_early(inner)
-    assert top_level == plain == ["GeneratorExit"]
-    assert client.post_event.call_count == 0
+        app = _two_node_graph(StateGraph).compile(name="top")
 
-    scope_session = flightdeck_sensor._session
-    assert scope_session is not None
-    scope = scope_session.new_subagent_scope(
-        child_session_id=str(uuid.uuid4()),
-        child_agent_id=scope_session.derive_subagent_id("outer"),
-        child_agent_name="parent-langgraph/outer",
-        agent_role="outer",
-    )
-    token = scope_session.enter_subagent_scope(scope)
-    try:
-        assert await close_early(inner) == ["GeneratorExit"]
-    finally:
-        scope_session.exit_subagent_scope(token)
-    assert await asyncio.to_thread(scope_session.wait_child_posts, _POSTS_WAIT_SECS)
-    assert [p["event_type"] for p in _posts(client)] == ["session_start", "session_end"]
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda loop, ctx: errors.append(ctx))
+        stream = app.astream(
+            {"text": "in"}, {"callbacks": [_HoldTheClose()]}, stream_mode="updates"
+        )
+        await stream.__anext__()
+        del stream
+        gc.collect()
+        await _until(closing.is_set, "LangGraph's stream mid-close")
+        await loop.shutdown_asyncgens()
+        release.set()
+        others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.wait_for(asyncio.gather(*others, return_exceptions=True), _POSTS_WAIT_SECS)
+
+    asyncio.run(main())
+    assert errors == []
 
 
 def test_unnamed_run_inside_an_agents_own_step_gets_the_generic_role(patched: Any) -> None:

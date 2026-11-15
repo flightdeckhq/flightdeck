@@ -18,6 +18,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import threading
+import time
 import uuid
 import warnings
 from typing import Any, TypedDict
@@ -40,6 +41,18 @@ from flightdeck_sensor.transport.client import ControlPlaneClient
 # for a post it holds back to be released; each is a call on a mock
 # client, done in milliseconds once it may run.
 _POSTS_WAIT_SECS = 10.0
+# How long a test polls for a state another thread or task reaches (a post
+# under way, a post queued): each is reached in milliseconds.
+_STATE_DEADLINE_SECS = 10.0
+
+
+async def _until(reached: Any, what: str) -> None:
+    """Yield to the loop until ``reached()`` is true, failing after the
+    deadline instead of hanging."""
+    deadline = time.monotonic() + _STATE_DEADLINE_SECS
+    while not reached():
+        assert time.monotonic() < deadline, f"not reached: {what}"
+        await asyncio.sleep(0)
 
 
 class _TextState(TypedDict, total=False):
@@ -909,27 +922,28 @@ async def test_end_queued_during_its_start_post_holds_no_thread(patched: Any) ->
         return {"text": "out"}
 
     graph = _one_node_graph(StateGraph, "node", node)
-    task = asyncio.ensure_future(graph.nodes["node"].runnable.afunc({"text": "in"}))
-    while not start_posting.is_set():
-        await asyncio.sleep(0)
-    task.cancel()
-    # The cancelled node queues its end (the session tracks the start and
-    # the end), then waits for it, shielded, so the task is not awaited
-    # until the start is released.
-    while len(session._pending_child_posts) < 2:
-        await asyncio.sleep(0)
+    try:
+        task = asyncio.ensure_future(graph.nodes["node"].runnable.afunc({"text": "in"}))
+        await _until(start_posting.is_set, "the start post under way")
+        task.cancel()
+        # The cancelled node queues its end (the session tracks the start
+        # and the end), then waits for it, shielded, so the task is not
+        # awaited until the start is released.
+        await _until(lambda: len(session._pending_child_posts) == 2, "the end queued")
 
-    probe = loop.run_in_executor(None, lambda: "a worker is free")
-    assert await asyncio.wait_for(probe, _POSTS_WAIT_SECS) == "a worker is free"
-    assert order == []
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
-    assert order == ["session_start", "session_end"]
-    (end,) = _ends(client)
-    assert end["error"]["type"] == "CancelledError"
-    executor.shutdown(wait=False)
+        probe = loop.run_in_executor(None, lambda: "a worker is free")
+        assert await asyncio.wait_for(probe, _POSTS_WAIT_SECS) == "a worker is free"
+        assert order == []
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+        assert order == ["session_start", "session_end"]
+        (end,) = _ends(client)
+        assert end["error"]["type"] == "CancelledError"
+    finally:
+        release.set()
+        executor.shutdown(wait=False)
 
 
 # ----------------------------------------------------------------------
@@ -959,3 +973,185 @@ def test_remote_graph_run_opens_no_child(patched: Any) -> None:
     assert graph.nodes["remote"].runnable is remote
     assert graph.compile().invoke({"text": "in"}) == {"text": "remote"}
     assert client.post_event.call_count == 0
+
+
+# ----------------------------------------------------------------------
+# Review fixes
+# ----------------------------------------------------------------------
+
+
+def test_streams_left_open_at_loop_shutdown_close_quietly(patched: Any) -> None:
+    """asyncio closes every async generator still open when its loop shuts
+    down, all at once: a top-level and a nested stream left open then
+    close without an error reaching the loop, and the nested run's child
+    still ends."""
+    session, client, StateGraph = patched
+    held: list[Any] = []
+    with _unpatched():
+        top = _two_node_graph(StateGraph).compile(name="top")
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+        async def hold(state: dict[str, Any]) -> dict[str, Any]:
+            stream = inner.astream(state, stream_mode="updates")
+            await stream.__anext__()
+            held.append(stream)
+            return {}
+
+        outer = _one_node_graph(StateGraph, "outer", hold).compile()
+    errors: list[dict[str, Any]] = []
+
+    consuming = asyncio.Event()
+
+    async def consume() -> None:
+        # Left streaming: asyncio.run cancels it, and its stream is
+        # collected unclosed.
+        async for _ in top.astream({"text": "in"}, stream_mode="updates"):
+            consuming.set()
+            await asyncio.Event().wait()
+
+    async def main() -> None:
+        asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: errors.append(ctx))
+        stream = top.astream({"text": "in"}, stream_mode="updates")
+        await stream.__anext__()
+        held.append(stream)
+        await outer.ainvoke({"text": "in"})
+        held.append(asyncio.ensure_future(consume()))
+        await consuming.wait()
+
+    asyncio.run(main())
+
+    assert errors == []
+    assert session.wait_child_posts(_POSTS_WAIT_SECS)
+    assert _tree(session, client) == [("inner", "root")]
+    (end,) = _ends(client)
+    assert "state" not in end and "outgoing_message" not in end
+
+
+async def test_an_explicit_close_runs_the_runs_clean_up_before_it_returns(patched: Any) -> None:
+    """A stream the application closes is closed through to LangGraph's own
+    stream at once, top-level and nested, as unpatched: the run's error
+    callback has fired when aclose() returns."""
+    _session, client, StateGraph = patched
+    from langchain_core.callbacks import AsyncCallbackHandler
+
+    class _Ends(AsyncCallbackHandler):
+        def __init__(self) -> None:
+            self.errors: list[str] = []
+
+        async def on_chain_error(self, error: BaseException, **kwargs: Any) -> None:
+            if kwargs.get("parent_run_id") is None:
+                self.errors.append(type(error).__name__)
+
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile(name="inner")
+
+    async def close_early(app: Any) -> list[str]:
+        ends = _Ends()
+        stream = app.astream({"text": "in"}, {"callbacks": [ends]}, stream_mode="updates")
+        await stream.__anext__()
+        await stream.aclose()
+        return ends.errors
+
+    top_level = await close_early(inner)
+    with _unpatched():
+        plain = await close_early(inner)
+    assert top_level == plain == ["GeneratorExit"]
+    assert client.post_event.call_count == 0
+
+    scope_session = flightdeck_sensor._session
+    assert scope_session is not None
+    scope = scope_session.new_subagent_scope(
+        child_session_id=str(uuid.uuid4()),
+        child_agent_id=scope_session.derive_subagent_id("outer"),
+        child_agent_name="parent-langgraph/outer",
+        agent_role="outer",
+    )
+    token = scope_session.enter_subagent_scope(scope)
+    try:
+        assert await close_early(inner) == ["GeneratorExit"]
+    finally:
+        scope_session.exit_subagent_scope(token)
+    assert await asyncio.to_thread(scope_session.wait_child_posts, _POSTS_WAIT_SECS)
+    assert [p["event_type"] for p in _posts(client)] == ["session_start", "session_end"]
+
+
+def test_unnamed_run_inside_an_agents_own_step_gets_the_generic_role(patched: Any) -> None:
+    """create_agent's tools node is the agent's own step, not a sub-agent:
+    an unnamed graph run from a tool it runs is not named after it."""
+    session, client, StateGraph = patched
+    from langchain.agents import create_agent
+    from langchain_core.tools import tool
+
+    with _unpatched():
+        inner = _two_node_graph(StateGraph).compile()
+
+    @tool
+    def run_inner(text: str) -> str:
+        """Run the inner graph."""
+        return str(inner.invoke({"text": text})["text"])
+
+    agent = create_agent(
+        _fake_model(_call("run_inner", {"text": "in"}), _answer("done")), [run_inner]
+    )
+
+    assert agent.invoke(_QUESTION)["messages"][-1].content == "done"
+    assert _tree(session, client) == [("subgraph", "root")]
+
+
+def test_graph_with_graph_fallbacks_used_as_a_node_gets_one_child(patched: Any) -> None:
+    """A compiled graph with fallbacks that are all graphs is left alone
+    as a node: whichever runs opens the one child. A fallback that is not
+    a graph makes it a hand-built node."""
+    session, client, StateGraph = patched
+    from langchain_core.runnables import RunnableLambda
+
+    primary = _two_node_graph(StateGraph).compile(name="primary")
+    graphs = primary.with_fallbacks([_two_node_graph(StateGraph).compile(name="backup")])
+    mixed = primary.with_fallbacks([RunnableLambda(lambda state: {"text": "plain"})])
+
+    graph = _one_node_graph(StateGraph, "research", graphs)
+    assert graph.nodes["research"].runnable is graphs
+    assert graph.compile().invoke({"text": "in"}) == {"text": "in12"}
+    assert _tree(session, client) == [
+        ("primary", "root"),
+        ("first", "primary"),
+        ("second", "primary"),
+    ]
+    assert _one_node_graph(StateGraph, "research", mixed).nodes["research"].runnable is not mixed
+
+
+def test_patch_langgraph_runs_patches_the_runs_alone(patched: Any) -> None:
+    """The patch an import of langgraph.pregel applies (a functional-API
+    application) wraps the runs and leaves StateGraph alone."""
+    session, client, StateGraph = patched
+    from langgraph.func import entrypoint
+    from langgraph.pregel import Pregel
+
+    unpatch_langgraph_classes()
+    original_stream = Pregel.stream
+    try:
+        _langgraph_mod.patch_langgraph_runs(quiet=True)
+        _langgraph_mod.patch_langgraph_runs(quiet=True)
+        assert Pregel.stream is not original_stream
+        assert Pregel.stream.__wrapped__ is original_stream
+        assert not getattr(StateGraph, "_flightdeck_subagent_patched", False)
+
+        @entrypoint()
+        def worker(count: int) -> int:
+            return count + 1
+
+        @entrypoint()
+        def outer(count: int) -> int:
+            result: int = worker.invoke(count)
+            return result
+
+        assert outer.invoke(1) == 2
+        # The entrypoint's graph is unnamed: its run takes the outer
+        # entrypoint's node name.
+        assert _tree(session, client) == [("outer", "root")]
+
+        _langgraph_mod.unpatch_langgraph_runs()
+        _langgraph_mod.unpatch_langgraph_runs()
+        assert Pregel.stream is original_stream
+    finally:
+        patch_langgraph_classes(quiet=True)

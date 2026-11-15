@@ -7,6 +7,9 @@ registered as given, and nothing is added to its run path.
 ``langgraph.pregel.Pregel.stream`` and ``astream`` are patched too: every
 run of a compiled graph goes through one of them (``invoke`` and
 ``ainvoke`` call them, so do ``stream_events`` and ``astream_events``).
+They are patched once ``langgraph.pregel`` is imported, without
+importing ``langgraph.graph``: an application on LangGraph's functional
+API (``@entrypoint``) never imports it.
 
 What becomes a child session. A child session is a sub-agent. In a
 LangGraph application that is a node of a graph the application builds
@@ -44,21 +47,26 @@ Left alone, so no child:
   ``langgraph.graph``, read when the node is added: any module of
   ``langchain.agents`` or ``langgraph.prebuilt``;
 * a compiled graph used as a node, bound or not (``with_config``,
-  ``with_retry``): its run opens the child (see Graph runs), and the
-  nodes inside it open theirs under that child;
+  ``with_retry``), or with fallbacks that are all graphs: its run opens
+  the child (see Graph runs), and the nodes inside it open theirs under
+  that child;
 * a generator or async-generator node function, which LangGraph runs as
   a stream (a ``RunnableLambda``) and a wrapper function would hide;
 * a node whose name ``init(langgraph_agent_node_pattern=...)`` does not
   match, when that is set.
 
 Graph runs. A run of a compiled graph opens a child when it starts inside
-another graph run (LangGraph runs it as, or inside, one of that run's
-tasks: its config carries the task's id) or inside a child of the
-sensor's; a top-level run opens none, its session is the sensor's. The
-role is the run's name as LangGraph names it (``run_name`` in its
-config, else the graph's name: ``create_agent(name=...)``, and so the
-name Deep Agents gives each sub-agent); an unnamed graph (``LangGraph``)
-takes the name of the node it runs in, else ``subgraph``. The run's
+another graph run (as, or inside, one of that run's tasks: its own
+config or the one it inherits carries the task's id) or inside a child
+of the sensor's; a top-level run opens none, its session is the
+sensor's. The role is the run's name as LangGraph names it (``run_name``
+in its config, else the graph's name: ``create_agent(name=...)``, and so
+the name Deep Agents gives each sub-agent); an unnamed graph
+(``LangGraph``) takes the name of the node it runs in, unless that node
+is one of ``create_agent``'s or ``create_react_agent``'s own steps, else
+``subgraph``. Each run records its graph as the one whose step runs,
+around its steps, so a run started inside a node knows whose node it
+is. The run's
 input is the incoming message and its last full state (what ``invoke``
 returns) the outgoing one. ``langgraph_agent_node_pattern`` names nodes
 and does not narrow graph runs. A ``RemoteGraph`` is not a ``Pregel``:
@@ -75,7 +83,10 @@ with ``state=error`` when the node or the run raises or, async, is
 cancelled. LangGraph's control-flow exceptions (``GraphBubbleUp``: an
 interrupt, a ``Command`` for the parent graph, a drain) close it
 normally; a resumed node or run runs again and opens a new child. A run
-whose stream is closed before its end (abandoned) closes normally.
+whose stream is closed before its end (abandoned) closes normally. When
+the event loop closes an async stream itself (one collected unclosed,
+or every one still open as the loop shuts down), it closes the stream
+this wrapper wraps too, so the wrapper leaves that one to the loop.
 
 Posting. The child's start and end are posted synchronously, as every
 wrap's are, except on a thread that runs an event loop. An async node or
@@ -107,6 +118,7 @@ import re
 import threading
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -121,6 +133,7 @@ from flightdeck_sensor.core.types import SubagentMessage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+    from contextvars import Token
 
     from langchain_core.runnables import RunnableConfig
 
@@ -148,6 +161,40 @@ _NODE_METADATA_KEY = "langgraph_node"
 # whose config carries it runs as, or inside, another run's task. Read
 # from LangGraph when it can be imported.
 _TASK_ID_KEY_DEFAULT = "__pregel_task_id"
+# A RunnableConfig's sections the wrap reads: the per-run settings (the
+# task id among them), the metadata (the node name among them), and the
+# run's own name.
+_CONFIGURABLE_KEY = "configurable"
+_METADATA_KEY = "metadata"
+_RUN_NAME_KEY = "run_name"
+# The Pregel.stream arguments that shape its chunks.
+_STREAM_MODE_ARG = "stream_mode"
+_VERSION_ARG = "version"
+_SUBGRAPHS_ARG = "subgraphs"
+# The stream version whose chunks are stream parts, dicts of the three
+# keys below: the chunk's mode, its namespace and its data.
+_STREAM_PARTS_VERSION = "v2"
+_PART_TYPE_KEY = "type"
+_PART_NS_KEY = "ns"
+_PART_DATA_KEY = "data"
+# The stream mode whose chunks are the run's full state.
+_VALUES_MODE = "values"
+# The tuple chunks of a run streaming several modes or its sub-graphs:
+# (namespace, data) for one mode with sub-graphs, (mode, data) for
+# several modes, (namespace, mode, data) for several with sub-graphs.
+_NAMESPACED_CHUNK_LEN = 2
+_MODE_CHUNK_LEN = 2
+_NAMESPACED_MODE_CHUNK_LEN = 3
+# The Pregel methods the run patch replaces.
+_STREAM_METHOD = "stream"
+_ASTREAM_METHOD = "astream"
+# Set on a StateGraph whose nodes create_agent or create_react_agent
+# registered: a run started inside one of them is not named after it.
+_AGENT_STEPS_ATTR = "_flightdeck_agent_steps"
+# The type of the coroutine of a task asyncio runs to close an async
+# generator itself (one collected unclosed, or one still open when the
+# loop shuts down): the generator's own aclose().
+_LOOP_CLOSE_CORO_TYPE = "async_generator_athrow"
 
 # The packages whose StateGraph nodes are one agent's own steps rather
 # than sub-agents: LangChain's agents (create_agent, in
@@ -185,17 +232,21 @@ _Runnable: Any = None
 _RunnableCallable: Any = None
 _PregelProtocol: Any = None
 _run_in_executor: Any = None
-_GraphBubbleUp: Any = None
 _native_async_check: Any = None
-# What a graph run's child needs: the class whose stream and astream are
-# patched, the context variable LangChain keeps a running Runnable's
-# config in (a run started inside a node or a tool reads its enclosing
-# task from it), the task-id key, and the binding class a compiled graph
-# used as a node may be wrapped in.
+# The binding classes a compiled graph used as a node may be wrapped in.
+_RunnableBinding: Any = None
+_RunnableWithFallbacks: Any = None
+# What a graph run's child needs, resolved from langgraph.pregel alone (an
+# application on LangGraph's functional API never imports langgraph.graph):
+# the class whose stream and astream are patched, the context variable
+# LangChain keeps a running Runnable's config in (a run started inside a
+# node or a tool reads its enclosing task from it), the task-id key, and
+# LangGraph's control-flow exception class.
+_RUNS_AVAILABLE: bool | None = None  # tri-state
 _Pregel: Any = None
 _var_child_runnable_config: Any = None
 _task_id_key: str = _TASK_ID_KEY_DEFAULT
-_RunnableBinding: Any = None
+_GraphBubbleUp: Any = None
 
 
 def _optional(module: str, name: str) -> Any:
@@ -206,10 +257,34 @@ def _optional(module: str, name: str) -> Any:
         return None
 
 
+def _ensure_runs_imported() -> bool:
+    """Resolve what the run patch needs from ``langgraph.pregel``, never
+    importing ``langgraph.graph``: the run patch is applied as soon as
+    ``langgraph.pregel`` is imported, which may be midway through the
+    import of ``langgraph.graph``."""
+    global _RUNS_AVAILABLE, _Pregel, _var_child_runnable_config, _task_id_key
+    global _GraphBubbleUp
+    if _RUNS_AVAILABLE is not None:
+        return _RUNS_AVAILABLE
+    _Pregel = _optional("langgraph.pregel", "Pregel")
+    if _Pregel is None:
+        _RUNS_AVAILABLE = False
+        return False
+    # Loaded with langgraph.pregel already, so these import nothing new.
+    _var_child_runnable_config = _optional(
+        "langchain_core.runnables.config", "var_child_runnable_config"
+    )
+    task_id_key = _optional("langgraph._internal._constants", "CONFIG_KEY_TASK_ID")
+    _task_id_key = task_id_key if isinstance(task_id_key, str) else _TASK_ID_KEY_DEFAULT
+    _GraphBubbleUp = _optional("langgraph.errors", _CONTROL_FLOW_BASE)
+    _RUNS_AVAILABLE = True
+    return True
+
+
 def _ensure_imported() -> bool:
     global _StateGraph, _LANGGRAPH_AVAILABLE, _Runnable, _RunnableCallable
-    global _PregelProtocol, _run_in_executor, _GraphBubbleUp, _native_async_check
-    global _Pregel, _var_child_runnable_config, _task_id_key, _RunnableBinding
+    global _PregelProtocol, _run_in_executor, _native_async_check
+    global _RunnableBinding, _RunnableWithFallbacks
     if _LANGGRAPH_AVAILABLE is not None:
         return _LANGGRAPH_AVAILABLE
     try:
@@ -219,6 +294,7 @@ def _ensure_imported() -> bool:
         _LANGGRAPH_AVAILABLE = False
         return False
     _StateGraph = StateGraph
+    _ensure_runs_imported()
     # Loaded with langgraph.graph already, so these import nothing new.
     _Runnable = _optional("langchain_core.runnables", "Runnable")
     _run_in_executor = _optional("langchain_core.runnables.config", "run_in_executor")
@@ -226,17 +302,11 @@ def _ensure_imported() -> bool:
     _RunnableCallable = _optional("langgraph._internal._runnable", "RunnableCallable") or (
         _optional("langgraph.utils.runnable", "RunnableCallable")
     )
-    _GraphBubbleUp = _optional("langgraph.errors", _CONTROL_FLOW_BASE)
     # LangGraph's own test of whether a Runnable has async code of its own
     # (its node-timeout check); absent before LangGraph had node timeouts.
     _native_async_check = _optional("langgraph.pregel._utils", "_runnable_has_native_async")
-    _Pregel = _optional("langgraph.pregel", "Pregel")
-    _var_child_runnable_config = _optional(
-        "langchain_core.runnables.config", "var_child_runnable_config"
-    )
-    task_id_key = _optional("langgraph._internal._constants", "CONFIG_KEY_TASK_ID")
-    _task_id_key = task_id_key if isinstance(task_id_key, str) else _TASK_ID_KEY_DEFAULT
     _RunnableBinding = _optional("langchain_core.runnables.base", "RunnableBindingBase")
+    _RunnableWithFallbacks = _optional("langchain_core.runnables", "RunnableWithFallbacks")
     _LANGGRAPH_AVAILABLE = True
     return True
 
@@ -337,21 +407,36 @@ def _default_node_name(action: Any) -> Any:
 
 
 def _is_compiled_graph(action: Any) -> bool:
-    """Whether a node action is a compiled graph, or a binding of one
-    (``with_retry``, ``bind``): its run, not the node, opens the child."""
+    """Whether a node action is a compiled graph, a binding of one
+    (``with_retry``, ``bind``), or graphs with fallbacks that are all
+    graphs (``with_fallbacks``): whichever runs, its run, not the node,
+    opens the child."""
     if _PregelProtocol is None:
         return False
     while _RunnableBinding is not None and isinstance(action, _RunnableBinding):
         action = action.bound
+    if _RunnableWithFallbacks is not None and isinstance(action, _RunnableWithFallbacks):
+        return all(_is_compiled_graph(r) for r in (action.runnable, *action.fallbacks))
     return isinstance(action, _PregelProtocol)
 
 
-def _wrap_node(node_name: Any, action: Any) -> Any | None:
+def _mark_agent_steps(graph: Any) -> None:
+    """Record that ``graph``'s nodes are an agent's own steps."""
+    try:
+        setattr(graph, _AGENT_STEPS_ATTR, True)
+    except Exception:  # noqa: BLE001 - fail open: such a run keeps the node's name
+        _log.debug("LangGraph agent graph left unmarked", exc_info=True)
+
+
+def _wrap_node(graph: Any, node_name: Any, action: Any) -> Any | None:
     """The action to register for the node instead of ``action``, or None
     to register ``action`` as given."""
-    if action is None or not isinstance(node_name, str) or not _is_agent_bearing(node_name):
+    if action is None or not isinstance(node_name, str):
         return None
     if _in_package(_registering_module(), _AGENT_BUILDER_PACKAGES):
+        _mark_agent_steps(graph)
+        return None
+    if not _is_agent_bearing(node_name):
         return None
     if _Runnable is not None and isinstance(action, _Runnable):
         if _RunnableCallable is None or _run_in_executor is None:
@@ -717,6 +802,12 @@ def _wrap_runnable(node_name: str, original: Any) -> Any:
 # ----------------------------------------------------------------------
 
 
+# The graph whose step runs in this context: set by each run around its
+# steps, so a run started inside one of its nodes can tell whose node it
+# is (see _run_role).
+_RUNNING_GRAPH: ContextVar[Any] = ContextVar("flightdeck_langgraph_running_graph", default=None)
+
+
 def _section(config: Any, key: str) -> Mapping[str, Any]:
     """``config[key]`` when both are mappings, else an empty mapping."""
     value = config.get(key) if isinstance(config, Mapping) else None
@@ -733,30 +824,38 @@ def _ambient_config() -> Any:
 
 def _in_graph_task(config: Any) -> bool:
     """Whether a run with ``config`` runs as, or inside, a task of another
-    graph run: LangGraph's own test, made on the run's config and on the
-    one it inherits."""
-    return any(_task_id_key in _section(c, "configurable") for c in (config, _ambient_config()))
+    graph run: the task's id is in the run's own config or in the one it
+    inherits. LangGraph looks only at the two merged, where an explicit
+    ``configurable`` replaces the inherited one; this looks at both."""
+    return any(_task_id_key in _section(c, _CONFIGURABLE_KEY) for c in (config, _ambient_config()))
 
 
 def _named(name: Any) -> bool:
     return isinstance(name, str) and bool(name) and name != _DEFAULT_GRAPH_NAME
 
 
+def _is_agent_graph(graph: Any) -> bool:
+    """Whether ``graph`` (a compiled graph) was built by create_agent or
+    create_react_agent, whose nodes are the agent's own steps."""
+    builder = getattr(graph, "builder", None)
+    return bool(getattr(builder, _AGENT_STEPS_ATTR, False))
+
+
 def _run_role(graph: Any, config: Any) -> str:
     """A graph run's role: its name as LangGraph names the run (the config's
-    ``run_name``, else the graph's name), else the node it runs in, else
-    the generic role."""
+    ``run_name``, else the graph's name), else the node it runs in, unless
+    that node is an agent's own step, else the generic role."""
     for source in (config, getattr(graph, "config", None)):
-        name = source.get("run_name") if isinstance(source, Mapping) else None
+        name = source.get(_RUN_NAME_KEY) if isinstance(source, Mapping) else None
         if _named(name):
             return str(name)
     name = getattr(graph, "name", None)
     if _named(name):
         return str(name)
     for source in (config, _ambient_config()):
-        node = _section(source, "metadata").get(_NODE_METADATA_KEY)
+        node = _section(source, _METADATA_KEY).get(_NODE_METADATA_KEY)
         if isinstance(node, str) and node:
-            return node
+            return _GENERIC_RUN_ROLE if _is_agent_graph(_RUNNING_GRAPH.get()) else node
     return _GENERIC_RUN_ROLE
 
 
@@ -786,14 +885,14 @@ class _RunOutput:
     extend it."""
 
     def __init__(self, graph: Any, config: Any, kwargs: Mapping[str, Any]) -> None:
-        mode = kwargs.get("stream_mode")
+        mode = kwargs.get(_STREAM_MODE_ARG)
         if mode is None:
             # LangGraph's default: state values for a run given a task's
             # config (a graph run as a node), else the graph's own mode.
-            in_task = _task_id_key in _section(config, "configurable")
-            mode = "values" if in_task else getattr(graph, "stream_mode", "values")
-        self._parts = kwargs.get("version") == "v2"
-        self._subgraphs = bool(kwargs.get("subgraphs"))
+            in_task = _task_id_key in _section(config, _CONFIGURABLE_KEY)
+            mode = _VALUES_MODE if in_task else getattr(graph, _STREAM_MODE_ARG, _VALUES_MODE)
+        self._parts = kwargs.get(_VERSION_ARG) == _STREAM_PARTS_VERSION
+        self._subgraphs = bool(kwargs.get(_SUBGRAPHS_ARG))
         self._single = mode if isinstance(mode, str) else None
         self._state: Any = _NO_RESULT
         self._state_depth: int | None = None
@@ -819,36 +918,59 @@ class _RunOutput:
     def _values_in(self, chunk: Any) -> tuple[Any, Any] | None:
         """(namespace or None, state) when ``chunk`` is a values chunk."""
         if self._parts:
-            # A stream part: {"type": mode, "ns": namespace, "data": ...}.
-            if isinstance(chunk, Mapping) and chunk.get("type") == "values":
-                return chunk.get("ns") or (), chunk.get("data")
+            if isinstance(chunk, Mapping) and chunk.get(_PART_TYPE_KEY) == _VALUES_MODE:
+                return chunk.get(_PART_NS_KEY) or (), chunk.get(_PART_DATA_KEY)
             return None
         if self._single is not None:
-            if self._single != "values":
+            if self._single != _VALUES_MODE:
                 return None
             if not self._subgraphs:
                 return None, chunk
-            # (namespace, state)
-            if isinstance(chunk, tuple) and len(chunk) == 2:
+            if isinstance(chunk, tuple) and len(chunk) == _NAMESPACED_CHUNK_LEN:
                 return chunk[0], chunk[1]
             return None
-        # Several modes: (mode, data), or (namespace, mode, data).
         if not isinstance(chunk, tuple):
             return None
-        if not self._subgraphs and len(chunk) == 2 and chunk[0] == "values":
+        if not self._subgraphs and len(chunk) == _MODE_CHUNK_LEN and chunk[0] == _VALUES_MODE:
             return None, chunk[1]
-        if self._subgraphs and len(chunk) == 3 and chunk[1] == "values":
+        if (
+            self._subgraphs
+            and len(chunk) == _NAMESPACED_MODE_CHUNK_LEN
+            and chunk[1] == _VALUES_MODE
+        ):
             return chunk[0], chunk[2]
         return None
 
 
-def _close_inner(child: _Child, inner: Any) -> None:
-    """Close a sync run's stream in its child's scope."""
-    token = child.session.enter_subagent_scope(child.scope)
+def _enter_step(child: _Child, graph: Any) -> tuple[Any, Token[Any]]:
+    """Enter a nested run's step: its child's scope, and its graph as the
+    graph whose step runs."""
+    return child.session.enter_subagent_scope(child.scope), _RUNNING_GRAPH.set(graph)
+
+
+def _exit_step(child: _Child, tokens: tuple[Any, Token[Any]]) -> None:
+    scope_token, graph_token = tokens
+    _reset_running_graph(graph_token)
+    child.session.exit_subagent_scope(scope_token)
+
+
+def _reset_running_graph(token: Token[Any]) -> None:
+    """Restore the graph whose step ran before; a token from another
+    context (a stream finished elsewhere than it started) is ignored:
+    that context's value ends with it."""
+    try:
+        _RUNNING_GRAPH.reset(token)
+    except (ValueError, RuntimeError):
+        _log.debug("LangGraph run ended in another context", exc_info=True)
+
+
+def _close_inner(child: _Child, graph: Any, inner: Any) -> None:
+    """Close a sync run's stream as one of its steps."""
+    tokens = _enter_step(child, graph)
     try:
         inner.close()
     finally:
-        child.session.exit_subagent_scope(token)
+        _exit_step(child, tokens)
 
 
 def _stream_wrapper(original: Callable[..., Iterator[Any]]) -> Callable[..., Iterator[Any]]:
@@ -859,33 +981,37 @@ def _stream_wrapper(original: Callable[..., Iterator[Any]]) -> Callable[..., Ite
     def stream(self: Any, input: Any, config: Any = None, **kwargs: Any) -> Iterator[Any]:
         child = _open_run(self, config)
         if child is None:
-            yield from original(self, input, config, **kwargs)
+            # A top-level run: its stream is the original's, delegated to.
+            token = _RUNNING_GRAPH.set(self)
+            try:
+                yield from original(self, input, config, **kwargs)
+            finally:
+                _reset_running_graph(token)
             return
-        session = child.session
         output = _RunOutput(self, config, kwargs)
         _start_from_sync(child, input)
         inner = original(self, input, config, **kwargs)
         try:
             while True:
-                token = session.enter_subagent_scope(child.scope)
+                tokens = _enter_step(child, self)
                 try:
                     chunk = next(inner)
                 except StopIteration:
                     break
                 finally:
-                    session.exit_subagent_scope(token)
+                    _exit_step(child, tokens)
                 output.add(chunk)
                 yield chunk
         except GeneratorExit:
             # The consumer closed the stream before its end.
             try:
-                _close_inner(child, inner)
+                _close_inner(child, self, inner)
             finally:
                 _end_from_sync(child, _NO_RESULT, None)
             raise
         except BaseException as exc:
             try:
-                _close_inner(child, inner)
+                _close_inner(child, self, inner)
             finally:
                 _end_from_sync(child, _NO_RESULT, exc)
             raise
@@ -894,13 +1020,36 @@ def _stream_wrapper(original: Callable[..., Iterator[Any]]) -> Callable[..., Ite
     return stream
 
 
-async def _aclose_inner(child: _Child, inner: Any) -> None:
-    """Close an async run's stream in its child's scope."""
-    token = child.session.enter_subagent_scope(child.scope)
+def _closed_by_the_loop() -> bool:
+    """Whether the stream being closed is closed by the event loop itself:
+    a stream collected unclosed, or every stream still open when the loop
+    shuts down. asyncio runs each such close as a task of its own, whose
+    coroutine is the generator's ``aclose()``; a close the application
+    asks for runs in the application's coroutine."""
+    task = asyncio.current_task()
+    return task is not None and type(task.get_coro()).__name__ == _LOOP_CLOSE_CORO_TYPE
+
+
+async def _aclose(inner: Any) -> None:
+    """Close an async run's stream, unless it has finished, another close
+    has it (it is running), or the loop is closing this wrapper: the loop
+    then closes the stream itself, as it closes every async generator it
+    tracks, and a second close would raise ``aclose(): asynchronous
+    generator is already running`` in one of the two."""
+    if getattr(inner, "ag_frame", None) is None or getattr(inner, "ag_running", False):
+        return
+    if _closed_by_the_loop():
+        return
+    await inner.aclose()
+
+
+async def _aclose_inner(child: _Child, graph: Any, inner: Any) -> None:
+    """Close an async run's stream as one of its steps."""
+    tokens = _enter_step(child, graph)
     try:
-        await inner.aclose()
+        await _aclose(inner)
     finally:
-        child.session.exit_subagent_scope(token)
+        _exit_step(child, tokens)
 
 
 def _astream_wrapper(
@@ -916,40 +1065,41 @@ def _astream_wrapper(
         child = _open_run(self, config)
         if child is None:
             unwatched = original(self, input, config, **kwargs)
+            token = _RUNNING_GRAPH.set(self)
             try:
                 async for chunk in unwatched:
                     yield chunk
             finally:
+                _reset_running_graph(token)
                 # Closed here, as the consumer closes this stream, so the
                 # run's own clean-up runs then and not at collection.
-                await unwatched.aclose()  # type: ignore[attr-defined]
+                await _aclose(unwatched)
             return
-        session = child.session
         output = _RunOutput(self, config, kwargs)
         child.start_post = _queue(child, _start, child, input)
         inner = original(self, input, config, **kwargs)
         try:
             await _wait(child.start_post)
             while True:
-                token = session.enter_subagent_scope(child.scope)
+                tokens = _enter_step(child, self)
                 try:
                     chunk = await inner.__anext__()
                 except StopAsyncIteration:
                     break
                 finally:
-                    session.exit_subagent_scope(token)
+                    _exit_step(child, tokens)
                 output.add(chunk)
                 yield chunk
         except GeneratorExit:
             # Queued, not awaited: a generator being closed must not wait.
             try:
-                await _aclose_inner(child, inner)
+                await _aclose_inner(child, self, inner)
             finally:
                 _queue(child, _end, child, _NO_RESULT, None)
             raise
         except BaseException as exc:
             try:
-                await _aclose_inner(child, inner)
+                await _aclose_inner(child, self, inner)
             finally:
                 await _wait(_queue(child, _end, child, _NO_RESULT, exc))
             raise
@@ -962,9 +1112,10 @@ def _patch_runs() -> None:
     """Patch ``Pregel.stream`` and ``astream``. Idempotent."""
     if _Pregel is None or getattr(_Pregel, _RUNS_PATCHED_SENTINEL, False):
         return
-    original_stream, original_astream = _Pregel.stream, _Pregel.astream
-    _Pregel.stream = _stream_wrapper(original_stream)
-    _Pregel.astream = _astream_wrapper(original_astream)
+    original_stream = getattr(_Pregel, _STREAM_METHOD)
+    original_astream = getattr(_Pregel, _ASTREAM_METHOD)
+    setattr(_Pregel, _STREAM_METHOD, _stream_wrapper(original_stream))
+    setattr(_Pregel, _ASTREAM_METHOD, _astream_wrapper(original_astream))
     setattr(_Pregel, _ORIG_STREAM_ATTR, original_stream)
     setattr(_Pregel, _ORIG_ASTREAM_ATTR, original_astream)
     setattr(_Pregel, _RUNS_PATCHED_SENTINEL, True)
@@ -974,12 +1125,34 @@ def _unpatch_runs() -> None:
     """Restore ``Pregel.stream`` and ``astream``. Idempotent."""
     if _Pregel is None or not getattr(_Pregel, _RUNS_PATCHED_SENTINEL, False):
         return
-    for name, attr in (("stream", _ORIG_STREAM_ATTR), ("astream", _ORIG_ASTREAM_ATTR)):
+    for name, attr in ((_STREAM_METHOD, _ORIG_STREAM_ATTR), (_ASTREAM_METHOD, _ORIG_ASTREAM_ATTR)):
         original = getattr(_Pregel, attr, None)
         if original is not None:
             setattr(_Pregel, name, original)
             delattr(_Pregel, attr)
     delattr(_Pregel, _RUNS_PATCHED_SENTINEL)
+
+
+def patch_langgraph_runs(*, quiet: bool = False) -> None:
+    """Install the graph-run interceptor on ``langgraph.pregel.Pregel.stream``
+    / ``astream`` alone, importing nothing from ``langgraph.graph``: an
+    application on LangGraph's functional API imports only
+    ``langgraph.pregel``, and the import of ``langgraph.graph`` imports it
+    first. Idempotent. Silent no-op when ``langgraph`` is missing."""
+    if not _ensure_runs_imported():
+        if not quiet:
+            _log.debug("langgraph not installed; graph-run patch skipped.")
+        return
+    try:
+        _patch_runs()
+    except Exception:  # noqa: BLE001 - fail open: runs go on unwatched
+        _log.debug("LangGraph graph runs left unpatched", exc_info=True)
+
+
+def unpatch_langgraph_runs() -> None:
+    """Restore ``Pregel.stream`` and ``astream``. Idempotent."""
+    if _ensure_runs_imported():
+        _unpatch_runs()
 
 
 # ----------------------------------------------------------------------
@@ -1024,7 +1197,7 @@ def patch_langgraph_classes(*, quiet: bool = False) -> None:
                 node_name, node_action = node, action
             else:
                 node_name, node_action = _default_node_name(node), node
-            wrapped = _wrap_node(node_name, node_action)
+            wrapped = _wrap_node(self, node_name, node_action)
         except Exception:  # noqa: BLE001 - fail open: register the node as given
             _log.debug("LangGraph node left unwrapped", exc_info=True)
             wrapped = None

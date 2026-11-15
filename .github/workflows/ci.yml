@@ -1338,7 +1338,7 @@ jobs:
           shellcheck --version | head -2
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \
-            scripts/check-script-modes.sh scripts/test-check-script-modes.sh
+            scripts/check-script-modes.sh scripts/test-check-script-modes.sh scripts/fake-claude.sh
           shellcheck scripts/check-installer-copies.sh scripts/test-check-installer-copies.sh
 
       # A script the Makefile or a workflow runs by its path must be
@@ -1384,8 +1384,11 @@ jobs:
 
       # install.sh end to end against a local server with the release
       # layout (a fake archive): latest, a pinned VERSION, the fallback
-      # install dir, and the refusals (bad checksum, missing checksum
-      # entry, unsupported CPU, unknown version, plain-HTTP host).
+      # install dir, the refusals (bad checksum, missing checksum
+      # entry, unsupported CPU, unknown version, plain-HTTP host), and
+      # the offer to connect coding agents (the question answered on a
+      # pseudo-terminal, no terminal, each FLIGHTDECK_CONNECT value, a
+      # connect that fails, an older binary).
       - name: install.sh against a local release server
         run: scripts/test-install-sh.sh
 

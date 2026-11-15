@@ -41,6 +41,14 @@
 #                           must name a key under Software\flightdeck-test\;
 #                           any other value stops the script before it
 #                           downloads or changes anything.
+#   FLIGHTDECK_CONNECT      which coding agents to connect to Flightdeck once the
+#                           binary is installed, without asking: agent ids
+#                           separated by commas (claude-code), all (every agent
+#                           found that is not connected yet) or none. Unset, the
+#                           script asks for each agent it finds when the session
+#                           is interactive, and prints the command to run
+#                           otherwise. Connecting runs `flightdeck connect`; a
+#                           connect that fails never fails the install.
 #
 # winget and scoop manifests are not published yet; this script and the
 # .zip on the release page are the Windows channels.
@@ -54,6 +62,91 @@
 & {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
+
+    # Offers to connect the coding agents the installed binary finds, or
+    # connects the ones FLIGHTDECK_CONNECT names ($Choice). The binary
+    # knows the agents and how to connect them (`flightdeck connect`);
+    # `flightdeck connect --detected` prints one line per agent found on
+    # this machine: its id, connected or not-connected, and its name,
+    # separated by tabs. $Ask asks one question and returns $true for yes;
+    # it is $null when no person can answer. Returns what was found and
+    # the lines to print after the install's next step. A connect that
+    # fails is reported and never throws: the binary is installed either
+    # way.
+    function Invoke-FlightdeckConnect {
+        param([string]$Exe, [string]$Choice, [scriptblock]$Ask)
+        $result = [pscustomobject]@{ Known = $false; Found = $false; Hints = @() }
+        # A native command's stderr is a terminating error under
+        # ErrorActionPreference=Stop in Windows PowerShell 5.1, so the
+        # preference is relaxed around each call and its exit code decides.
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $detected = @(& $Exe connect --detected 2>$null)
+            $result.Known = ($LASTEXITCODE -eq 0)
+        } catch {
+            $detected = @()
+        } finally {
+            $ErrorActionPreference = $savedPreference
+        }
+        # An older release, pinned with VERSION, does not know the command.
+        if (-not $result.Known) { return $result }
+        $agents = @($detected | Where-Object { $_ } | ForEach-Object {
+            $fields = "$_" -split "`t"
+            [pscustomobject]@{ Id = $fields[0]; State = $(if ($fields.Count -gt 1) { $fields[1] } else { '' }); Name = $(if ($fields.Count -gt 2) { $fields[2] } else { $fields[0] }) }
+        })
+        $connectOne = {
+            param([string]$Id, [string]$Name)
+            Write-Host ''
+            $savedPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & $Exe connect $Id --yes 2>&1 | ForEach-Object { Write-Host "$_" }
+                $connected = ($LASTEXITCODE -eq 0)
+            } catch {
+                Write-Host $_.Exception.Message
+                $connected = $false
+            } finally {
+                $ErrorActionPreference = $savedPreference
+            }
+            if (-not $connected) { Write-Host "Connecting $Name did not finish (see above); run it again later: flightdeck connect $Id" }
+        }
+        # The value's words, separated by commas or spaces.
+        $words = @("$Choice" -split '[,\s]+' | Where-Object { $_ })
+        if ($words.Count -gt 0 -and -not ($words.Count -eq 1 -and ($words[0] -eq 'all' -or $words[0] -eq 'none'))) {
+            foreach ($id in $words) {
+                $result.Found = $true
+                $match = @($agents | Where-Object { $_.Id -eq $id })
+                $name = if ($match.Count -gt 0) { $match[0].Name } else { $id }
+                & $connectOne $id $name
+            }
+            return $result
+        }
+        $hints = @()
+        foreach ($agent in $agents) {
+            $result.Found = $true
+            if ($agent.State -eq 'connected') {
+                Write-Host ''
+                Write-Host "$($agent.Name) is already connected to Flightdeck."
+                continue
+            }
+            $mode = if ($words.Count -eq 1) { $words[0] } else { '' }
+            if ($mode -eq 'all') {
+                & $connectOne $agent.Id $agent.Name
+                continue
+            }
+            if ($mode -ne 'none' -and $Ask) {
+                Write-Host ''
+                if (& $Ask "Connect $($agent.Name) to Flightdeck?") {
+                    & $connectOne $agent.Id $agent.Name
+                    continue
+                }
+            }
+            $hints += "To connect $($agent.Name): flightdeck connect $($agent.Id)"
+        }
+        $result.Hints = $hints
+        return $result
+    }
 
     # TLS 1.2 at least (Windows PowerShell 5.1 may still default to older
     # protocols); TLS 1.3 where the .NET runtime knows it.
@@ -233,6 +326,28 @@
     } finally {
         $envKey.Close()
     }
+    # A person can answer when the session is interactive and its input
+    # is the console: not a CI job, not -NonInteractive, not a pipe.
+    $nonInteractiveArg = @([Environment]::GetCommandLineArgs() | Where-Object { $_ -match '^-noni' })
+    $ask = $null
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and $nonInteractiveArg.Count -eq 0) {
+        $ask = {
+            param([string]$Question)
+            try {
+                $answer = Read-Host "$Question [Y/n]"
+            } catch {
+                # A host that cannot read (a non-interactive host) is a no.
+                return $false
+            }
+            return ($answer -match '^\s*(y|yes)?\s*$')
+        }
+    }
+    $connect = Invoke-FlightdeckConnect -Exe $exe -Choice $env:FLIGHTDECK_CONNECT -Ask $ask
+
     Write-Host ''
     Write-Host 'Next: run `flightdeck` and open the URL it prints.'
+    foreach ($hint in $connect.Hints) { Write-Host $hint }
+    if ($connect.Known -and -not $connect.Found) {
+        Write-Host 'To connect a coding agent later: flightdeck connect (it lists the agents it can connect)'
+    }
 }

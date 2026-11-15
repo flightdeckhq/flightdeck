@@ -162,6 +162,9 @@ brews:
       Run `flightdeck` and open http://localhost:4000. Nothing else is
       needed: it keeps its data in a SQLite database in ~/.flightdeck.
 
+      To connect Claude Code to it: `flightdeck connect claude-code`.
+      `flightdeck connect` lists the coding agents it can connect.
+
       To keep it running in the background, `brew services start flightdeck`
       (without sudo). The service uses the same ~/.flightdeck, so it shows
       what a `flightdeck` run by hand stored, and the other way round. Stop

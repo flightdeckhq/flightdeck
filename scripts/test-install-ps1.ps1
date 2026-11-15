@@ -225,6 +225,7 @@ class FakeFlightdeck {
     }
     $callerErrorAction = $ErrorActionPreference
     $callerProgress = $ProgressPreference
+    $callerExitCode = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     if ($out -match 'Checksum verified') { Write-Pass 'the checksum is verified' } else { Write-Failure 'the checksum is verified' $out }
@@ -238,6 +239,10 @@ class FakeFlightdeck {
     if ($userPath.Raw -ceq "$fixturePath;$dir1") { Write-Pass 'the user PATH gains the directory and keeps %USERPROFILE% unexpanded' } else { Write-Failure 'the user PATH' $userPath.Raw }
     if ($userPath.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) { Write-Pass 'the user PATH stays REG_EXPAND_SZ' } else { Write-Failure 'the user PATH stays REG_EXPAND_SZ' "$($userPath.Kind)" }
     if ($callerErrorAction -eq 'Continue' -and $callerProgress -eq 'Continue') { Write-Pass 'the caller''s preferences are untouched' } else { Write-Failure 'the caller''s preferences are untouched' "ErrorActionPreference=$callerErrorAction ProgressPreference=$callerProgress" }
+    # The stand-in here (curl.exe) refuses `connect --detected`, as an
+    # older release does; a successful install still leaves the session
+    # $LASTEXITCODE 0, which a CI shell exits with.
+    if ($callerExitCode -eq 0) { Write-Pass 'a successful install leaves $LASTEXITCODE 0' } else { Write-Failure 'a successful install leaves $LASTEXITCODE 0' "LASTEXITCODE=$callerExitCode" }
     $leaked = @('asset', 'installDir', 'tmp', 'repoUrl', 'envKey', 'envKeyName', 'requestedKey', 'newPath', 'newLength') | Where-Object { Get-Variable -Name $_ -Scope Script -ErrorAction SilentlyContinue }
     if (-not $leaked) { Write-Pass 'no variable of the installer is left in the session' } else { Write-Failure 'no variable of the installer is left in the session' ($leaked -join ', ') }
 

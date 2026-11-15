@@ -343,6 +343,12 @@
         }
     }
     $connect = Invoke-FlightdeckConnect -Exe $exe -Choice $env:FLIGHTDECK_CONNECT -Ask $ask
+    # $LASTEXITCODE is the session's, and now holds the last native exit
+    # status of the connect step: an older binary's refusal of --detected,
+    # or a connect that failed. Neither is the install's status, which
+    # succeeded, so the session that ran the installer sees 0, as it did
+    # before the step (a CI shell exits with $LASTEXITCODE).
+    $global:LASTEXITCODE = 0
 
     Write-Host ''
     Write-Host 'Next: run `flightdeck` and open the URL it prints.'

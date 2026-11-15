@@ -1835,22 +1835,27 @@ inside another graph run:
   again, which opens a new child. A run whose stream its consumer closes
   before the end (`close()`, `aclose()`, or the stream collected
   unfinished) closes its child normally, with no outgoing message. On
-  asyncio's event loop, a close the application makes closes
-  LangGraph's own stream before it returns, however it is awaited (in
-  the application's coroutine, or as a task of its own through
-  `asyncio.gather`, `create_task`, `shield` or `wait_for`), exactly as
-  unpatched: the run's error callback has fired and its in-flight nodes
-  are cancelled. Once the loop has taken LangGraph's stream over (a
-  stream collected unclosed, or every async stream still open when the
-  loop shuts down: the end of `asyncio.run` with a stream open, an
-  interrupted server), the loop closes it and the wrapper does not: two
-  closes would make one of them fail. The wrapper tells the two apart by
-  the loop's set of the async generators it will close itself
-  (`_asyncgens`, read where present), and takes a stream it closes out
-  of that set, as the loop's own close does, so a shutdown sweep that
-  starts meanwhile leaves it to the wrapper. A loop that keeps that set
-  out of reach (uvloop) is taken to close the stream itself whenever the
-  close runs as a task of its own: there, a close through `gather`,
+  asyncio's event loop, which tracks every async generator it runs, a
+  close the application makes closes LangGraph's own stream before it
+  returns, however it is awaited (in the application's coroutine, or as
+  a task of its own through `asyncio.gather`, `create_task`, `shield` or
+  `wait_for`), exactly as unpatched: the run's error callback has fired
+  and its in-flight nodes are cancelled. Once that loop has taken
+  LangGraph's stream over (a stream collected unclosed, or every async
+  stream still open when the loop shuts down: the end of `asyncio.run`
+  with a stream open, an interrupted server), the loop closes it and the
+  wrapper does not: two closes would make one of them fail. The wrapper
+  notes, after the stream's first step, whether the loop's set of the
+  async generators it will close itself (`_asyncgens`, read where
+  present) holds the stream, and later reads a stream that left that
+  set as taken over; a stream the wrapper closes leaves the set first,
+  as the loop's own close takes it out, so a shutdown sweep that starts
+  meanwhile leaves it to the wrapper. A stream no loop tracked (run
+  under `nest_asyncio`, or while another library's async-generator hooks
+  replace the loop's) and one closed under another loop than the one
+  that tracked it are closed at once. A loop that keeps that set out of
+  reach (uvloop) is taken to close the stream itself whenever the close
+  runs as a task of its own: there, a close through `gather`,
   `create_task` or `shield` leaves LangGraph's clean-up to its
   finalizer, a few loop steps after the close returns.
 - **How a node is wrapped.** A function is wrapped by one with its

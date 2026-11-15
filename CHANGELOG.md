@@ -4,6 +4,47 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **LangGraph: Runnable and `ToolNode` nodes of a graph you build open
+  child sessions.** A node whose action is a Runnable (`RunnableLambda`,
+  `RunnableCallable`, an LCEL pipe, a `ToolNode` you add) now opens a
+  child session each time it runs, as a function node does, with its
+  role from the node name (an unnamed Runnable node takes the name
+  LangGraph gives it, its `get_name()`). The Runnable is wrapped in a
+  delegating `RunnableCallable`, so stream output, `astream_events`,
+  `Send` fan-out, `Command` returns, interrupts, the tool runtime a
+  `ToolNode` is given and sub-graph detection are unchanged. The nodes
+  `create_agent` and `create_react_agent` register (the model call, the
+  tool execution, middleware and model hooks) open none: they are the
+  agent's own steps, not sub-agents, so a `create_react_agent`
+  `pre_model_hook` or `post_model_hook` no longer opens one either.
+  `langgraph_agent_node_pattern` narrows every node shape (D276).
+
+### Fixed
+
+- **LangGraph: a child session opened inside another nests under it.**
+  Every LangGraph child named the sensor's session as its parent, also
+  for the nodes of a graph invoked from inside a node; such a child now
+  has the enclosing node's child as `parent_session_id`. Each node runs
+  in its child's sub-agent scope.
+- **LangGraph: generator node functions work under the sensor.** A node
+  function that yields (a sync or async generator) failed with
+  `InvalidUpdateError` once patched, because the wrapper hid from
+  LangGraph that it streams; such nodes are now registered untouched and
+  open no child session.
+- **LangGraph: an interrupted node's child session closes normally.**
+  `interrupt()`, a `Command` sent to the parent graph and LangGraph's
+  other control-flow exceptions ended the node's child with
+  `state=error`; they now close it, and resuming the run opens a new
+  child for the node it runs again. An async node whose task is
+  cancelled (a node timeout, a failed parallel node) ends its child with
+  `state=error` instead of leaving it open.
+- **LangGraph: async nodes post their child session's start and end off
+  the event loop.** The two synchronous posts ran on the loop and held
+  every other task of the run for their round trip; they now run in a
+  worker thread, as the OpenAI Agents SDK wrap's do.
+
 ## v0.10.0 — 2026-11-15
 
 `flightdeck connect` connects a coding agent to Flightdeck in one

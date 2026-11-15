@@ -39,6 +39,36 @@ All notable changes to Flightdeck are documented here.
   agent's own steps, not sub-agents, so a `create_react_agent`
   `pre_model_hook` or `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
+- **The server and `flightdeck connect` find each other on another
+  port.** Run `flightdeck --port 4100`, then `flightdeck connect
+  claude-code`, and the plugin reports to port 4100. A server on this
+  machine records the address it listens on in its data dir
+  (`instance.json`, no token in it, gone once it stops), and
+  `flightdeck connect` reads it from the same data dir (`--data-dir`,
+  `FLIGHTDECK_DATA_DIR`, else the default): a new connection reports to
+  the Flightdeck it finds running, and a connection to an address on
+  this machine where nothing answers is pointed at it, in a plan that
+  says why. The file counts only when its process runs and the address
+  answers as a Flightdeck; a server beyond this machine is never probed
+  and a connection to one is kept. `flightdeck connect claude-code
+  --port 4100` is short for `--server http://localhost:4100` (D280).
+- **The server says when Claude Code reports somewhere else.** On
+  this machine only, a start on one port while the plugin reports to
+  another logs one line with both addresses and the command:
+  `Claude Code reports to http://localhost:4000, not to this server at
+  http://localhost:4100: its sessions are not recorded here. To report
+  here, run: flightdeck connect claude-code --port 4100`. The check
+  runs beside the start and never delays it; a `--public` or
+  `--domain` server does not run it.
+- **`flightdeck connect` says when nothing runs yet.** Connecting to an
+  address on this machine where no Flightdeck answers still connects
+  (the installers do it before the first start), and the plan and the
+  closing lines add one line: no Flightdeck answers at
+  `http://localhost:4000` yet, `flightdeck` starts it (`flightdeck
+  --port 4100` for another port), and sessions are recorded from then
+  on. `flightdeck connect` says the same of a connected agent, or names
+  the Flightdeck running here and the command that points the agent at
+  it.
 
 ### Changed
 

@@ -33,7 +33,7 @@ If PowerShell says `flightdeck` is not recognised, open a new PowerShell window,
 `flightdeck --help` lists the flags. Three that matter on Windows:
 
 - `--data-dir` moves the data (below).
-- `--port 4100` runs Flightdeck on another port, still on your own machine only, with the development token.
+- `--port 4100` runs Flightdeck on another port, still on your own machine only, with the development token. `flightdeck connect claude-code` then points the plugin there, and a start on another port than the plugin's logs a line with the command to run.
 - `--public` makes Flightdeck reachable from other machines: it listens on every network interface (`--public --port 4100` on another port; `--listen <address>:<port>` picks one address instead). It then refuses the development token and creates an access token on its first start, printed once in the start-up block. Windows Defender Firewall asks whether to allow `flightdeck.exe` the first time it listens on an address other than `127.0.0.1`; on your own machine only (the default, or `--port`) it does not ask. Whoever can reach the address can read the dashboard's token, so open it only on a network you trust, or put Flightdeck behind a proxy that authenticates.
 
 ## The data
@@ -74,7 +74,7 @@ Remove-Item -Recurse "$env:LOCALAPPDATA\flightdeck"
 
 On the machine that runs Flightdeck, the Claude Code plugin and the Python sensor find it at `http://localhost:4000` with the development token: install them as the [README](../README.md#connect-your-agents) shows and set nothing.
 
-- **Claude Code:** `flightdeck connect claude-code` installs the plugin (the PowerShell installer offers to when it finds Claude Code, and `$env:FLIGHTDECK_CONNECT = "claude-code"` before it connects without asking). The plugin's hooks run `node`, so Node.js 22 or later must be on your `PATH`.
+- **Claude Code:** `flightdeck connect claude-code` installs the plugin (the PowerShell installer offers to when it finds Claude Code, and `$env:FLIGHTDECK_CONNECT = "claude-code"` before it connects without asking) and points it at the Flightdeck running on this machine, on whichever port; when none runs yet, it says to start it. The plugin's hooks run `node`, so Node.js 22 or later must be on your `PATH`.
 - **Python agents:** the sensor supports Python 3.11 to 3.14. With the Python launcher: `py -m pip install flightdeck-sensor`.
 
 For a Flightdeck on another machine, give the agent its address and a token minted under **Settings → Access tokens**. The plugin and the sensor take the same two values: the server's address (`https://flightdeck.example.com`; the ingestion URL its start-up block prints, ending in `/ingest`, works too) and the token. In PowerShell, for the current window:

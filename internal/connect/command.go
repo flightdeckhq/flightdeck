@@ -7,7 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+
+	"github.com/flightdeckhq/flightdeck/internal/datadir"
 )
 
 // The exit statuses of `flightdeck connect`.
@@ -46,6 +49,9 @@ type IO struct {
 	// Interactive is true when stdin and stdout are a terminal: the
 	// command then asks before it changes anything, unless --yes.
 	Interactive bool
+	// Answers reports whether a Flightdeck answers at a server on this
+	// machine; nil is the health check of the binary (flightdeckAnswers).
+	Answers AnswersFunc
 }
 
 // Main runs `flightdeck connect` with args (the words after "connect")
@@ -55,6 +61,9 @@ func Main(ctx context.Context, args []string, rt IO) int {
 	fs.SetOutput(rt.Stderr)
 	server := fs.String("server", "", "the Flightdeck server to report to: its URL (https://flightdeck.example.com) or the ingestion URL its start-up block prints")
 	tokenFile := fs.String("token-file", "", "a file holding the server's access token (default: $FLIGHTDECK_TOKEN); used with --server")
+	port := fs.String("port", "", "short for --server http://localhost:<`port`>: the flightdeck that flightdeck --port <port> runs on this machine")
+	dataDir := fs.String("data-dir", "", "the data `dir` of the flightdeck running on this machine, looked in when neither --server nor --port is given "+
+		"(default: $FLIGHTDECK_DATA_DIR, else "+datadir.Default()+", as the server uses)")
 	remove := fs.Bool("remove", false, "disconnect the agent: remove what connecting it installed")
 	var yes bool
 	fs.BoolVar(&yes, "yes", false, "do not ask before changing anything")
@@ -96,11 +105,24 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		printDetected(ctx, rt)
 		return ExitOK
 	}
+	answers := rt.Answers
+	if answers == nil {
+		answers = flightdeckAnswers
+	}
+	dir := *dataDir
+	switch {
+	case given["data-dir"] && strings.TrimSpace(dir) == "":
+		return fail("--data-dir is empty; give the data dir the server runs with, or leave it out for the default")
+	case !given["data-dir"] && rt.Getenv != nil && rt.Getenv("FLIGHTDECK_DATA_DIR") != "":
+		dir = rt.Getenv("FLIGHTDECK_DATA_DIR")
+	case !given["data-dir"]:
+		dir = datadir.Default()
+	}
 	if len(positional) == 0 {
-		if len(given) > 0 {
+		if len(given) > 0 && (len(given) > 1 || !given["data-dir"]) {
 			return fail("name the agent: flightdeck connect <agent> [flags]; the agents are %s", strings.Join(rt.Registry.IDs(), ", "))
 		}
-		printList(ctx, rt)
+		printList(ctx, rt, dir, answers)
 		return ExitOK
 	}
 	c, ok := rt.Registry.Lookup(positional[0])
@@ -108,8 +130,8 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		return fail("no agent named %q; the agents are %s (flightdeck connect lists them)", positional[0], strings.Join(rt.Registry.IDs(), ", "))
 	}
 	if *remove {
-		if given["server"] || given["token-file"] {
-			return fail("--remove takes no --server and no --token-file")
+		if given["server"] || given["port"] || given["token-file"] {
+			return fail("--remove takes no --server, --port or --token-file")
 		}
 		plan, err := c.PlanDisconnect(ctx)
 		if err != nil {
@@ -129,7 +151,18 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		return run(ctx, rt, c, plan, yes, title, false)
 	}
 
+	if given["port"] {
+		if given["server"] {
+			return fail("--port and --server were both given; --port <port> is short for --server http://localhost:<port>, so give one of them")
+		}
+		n, err := strconv.Atoi(*port)
+		if err != nil || strings.Trim(*port, "0123456789") != "" || n < 1 || n > 65535 {
+			return fail("--port takes a port number from 1 to 65535, the one flightdeck serves on: for example --port 4100")
+		}
+		*server, given["server"] = "http://localhost:"+strconv.Itoa(n), true
+	}
 	var target Target
+	var choice serverChoice
 	if given["server"] {
 		s, local, err := CheckServer(*server)
 		if err != nil {
@@ -161,13 +194,19 @@ func Main(ctx context.Context, args []string, rt IO) int {
 			}
 			target.Token = token
 		}
+		choice = idleChoice(ctx, target, target.Server, answers)
 	} else if given["token-file"] {
 		return fail("--token-file goes with --server: the token belongs to the server it was minted on")
+	} else {
+		// No server named: the flightdeck running on this machine.
+		choice = chooseServer(ctx, c, dir, answers)
+		target = choice.target
 	}
 	plan, err := c.PlanConnect(ctx, target)
 	if err != nil {
 		return report(rt, c, err)
 	}
+	choice.annotate(&plan)
 	title := "Connect " + c.Name() + " to Flightdeck"
 	if *dryRun {
 		plan.Describe(rt.Stdout, title)
@@ -265,8 +304,9 @@ func printDetected(ctx context.Context, rt IO) {
 }
 
 // printList is `flightdeck connect` with no agent: every connector, what
-// was found and whether it is connected.
-func printList(ctx context.Context, rt IO) {
+// was found and whether it is connected, and for one connected to a
+// server on this machine where nothing answers, what to do about it.
+func printList(ctx context.Context, rt IO, dataDir string, answers AnswersFunc) {
 	w := rt.Stdout
 	_, _ = fmt.Fprintln(w, "Coding agents flightdeck connect can connect:")
 	for _, c := range rt.Registry {
@@ -294,6 +334,9 @@ func printList(ctx context.Context, rt IO) {
 				token = "a token saved"
 			}
 			line("connected", "plugin %s, reporting to %s, %s", st.Version, describeServer(st.Server), token)
+			if note := unansweredNote(ctx, c, st, dataDir, answers); note != "" {
+				line("no answer", "%s", note)
+			}
 		case st.Installed:
 			line("turned off", "the plugin is installed but disabled; flightdeck connect %s turns it on", c.ID())
 		default:
@@ -315,10 +358,14 @@ func usage(w io.Writer, reg Registry, fs *flag.FlagSet) {
 
 Agents: %s
 
-Without --server, a new connection reports to the local server (%s,
-with the development token) and an existing one keeps its server. With --server,
-the token is read from --token-file, else from FLIGHTDECK_TOKEN; no flag takes the
-token itself, since a command line is visible to every user of the machine.
+Without --server, a new connection reports to the flightdeck running on this
+machine, found through its data dir (--data-dir, else $FLIGHTDECK_DATA_DIR, else
+the server's default), or with none running to the local server (%s, with
+the development token). An existing one keeps its server, unless that is an address
+on this machine where nothing answers while a flightdeck runs here at another: the
+plan then points it there. --port N is short for --server http://localhost:N. With
+--server, the token is read from --token-file, else from FLIGHTDECK_TOKEN; no flag
+takes the token itself, since a command line is visible to every user of the machine.
 
 On a terminal the command lists what it will change and asks first; --yes skips
 that. Without a terminal, connecting goes ahead (a script asked for it) and

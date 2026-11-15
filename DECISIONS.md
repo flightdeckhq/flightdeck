@@ -1105,3 +1105,19 @@ warning (the exposure still happens); a `--port` that changes the host
 (port and reach are separate choices); renaming `FLIGHTDECK_PORT`, which
 Kubernetes service links set to `tcp://…` (the services use the name
 already; such a value is no port and reads as unset).
+
+## D280 -- A loopback instance records its address in `<data dir>/instance.json`, which `flightdeck connect` reads
+
+**Date:** 2026-11-15
+**Decision:** a loopback instance writes `{"listen", "pid"}` (0600, no
+token) while it runs; `--public` and `--domain` write none. `connect`
+with no `--server` reads it from the server's data dir, counting it only
+for a loopback address whose process lives and whose health routes
+answer: a new connection goes there, a loopback one where nothing
+answers is re-pointed there. At start a loopback instance logs a line
+per agent reporting to another loopback address.
+**Why:** an agent connected to port 4000 kept posting there after the
+server moved to 4100, and nothing said why no session arrived.
+**Rejected alternative:** scanning loopback ports (slow, finds foreign
+services); the address in `flightdeck.lock`, which outlives every stop
+by design; offering a public instance (it refuses the development token).

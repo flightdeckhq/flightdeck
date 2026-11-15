@@ -3,6 +3,7 @@
 package connect
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -17,4 +18,15 @@ func killTreeOnCancel(cmd *exec.Cmd) {
 		// The group's id is the CLI's pid, as Setpgid made it the leader.
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// processAlive reports whether a process with that pid still runs. A
+// process of another user, which this one may not signal, runs too. A
+// pid of 0 or below names a process group, not a process: never alive.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

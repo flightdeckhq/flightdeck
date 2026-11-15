@@ -833,3 +833,48 @@ func TestExecIn_TheCommandGetsThatEnvironmentAlone(t *testing.T) {
 		t.Fatalf("env printed %q (%v); want this process's environment", stdout, err)
 	}
 }
+
+// An agent too old to show its integration's options: the start-up
+// check asks nothing more and says nothing, whatever it reports to.
+func TestCheckReporting_AnOutdatedAgentIsNotAsked(t *testing.T) {
+	c := &stubConnector{det: Detection{Found: true, Outdated: "too old"}, st: Status{Installed: true, Enabled: true}}
+	if lines, errs := CheckReporting(context.Background(), Registry{c}, "127.0.0.1:4100"); len(lines)+len(errs) != 0 || c.statusRan.Load() != 0 {
+		t.Fatalf("lines %q, errors %v, status read %d times; want nothing", lines, errs, c.statusRan.Load())
+	}
+	// The real connector against the stand-in of Claude Code 2.1.283,
+	// connected from inside it: the check runs, and nothing but it.
+	f := newOldFakeClaude(t)
+	f.set(t, "marketplace", "installed")
+	if lines, errs := CheckReporting(context.Background(), Registry{newConnector()}, "127.0.0.1:4100"); len(lines)+len(errs) != 0 {
+		t.Fatalf("lines %q, errors %v", lines, errs)
+	}
+	for _, call := range f.calls(t) {
+		if strings.HasPrefix(call, "plugin configure "+pluginID) || strings.HasPrefix(call, "plugin list") {
+			t.Fatalf("the check ran %q on an outdated Claude Code", call)
+		}
+	}
+}
+
+// A connect that names no server chooses one from the status the plan
+// read, once: the status is not read a second time.
+func TestConnect_TheServerIsChosenFromThePlansStatus(t *testing.T) {
+	f := newFakeClaude(t)
+	f.set(t, "marketplace", "installed")
+	live := fakeFlightdeck(t)
+	r := runMain(t, map[string]string{"FLIGHTDECK_DATA_DIR": dataDirWith(t, live, os.Getpid())}, "", false, "claude-code", "--dry-run")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "save the server http://localhost:"+portOf(t, live)) {
+		t.Fatalf("%+v", r)
+	}
+	lists, configures := 0, 0
+	for _, call := range f.calls(t) {
+		switch call {
+		case "plugin list --json":
+			lists++
+		case "plugin configure " + pluginID + " --json":
+			configures++
+		}
+	}
+	if lists != 1 || configures != 1 {
+		t.Fatalf("the plugin list ran %d times and its options were read %d times; want once each:\n%q", lists, configures, f.calls(t))
+	}
+}

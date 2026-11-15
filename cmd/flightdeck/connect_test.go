@@ -412,8 +412,9 @@ func TestAgentEnvironment_DropsEveryFlightdeckVariable(t *testing.T) {
 }
 
 // recordingClaude replaces the stand-in on env's PATH with a wrapper that
-// writes the environment it was started with to env.<pid> in the
-// stand-in's state directory, then runs the stand-in.
+// writes its arguments ("argv: ...", the first line) and the environment
+// it was started with to env.<pid> in the stand-in's state directory,
+// then runs the stand-in.
 func recordingClaude(t *testing.T, env []string) {
 	t.Helper()
 	bin, _, _ := strings.Cut(strings.TrimPrefix(env[0], "PATH="), string(os.PathListSeparator))
@@ -421,7 +422,7 @@ func recordingClaude(t *testing.T, env []string) {
 	if err := os.Rename(filepath.Join(bin, "claude"), standIn); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := "#!/bin/sh\nenv > \"$FAKE_CLAUDE_STATE/env.$$\"\nexec '" + standIn + "' \"$@\"\n"
+	wrapper := "#!/bin/sh\n{ echo \"argv: $*\"; env; } > \"$FAKE_CLAUDE_STATE/env.$$\"\nexec '" + standIn + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -466,8 +467,18 @@ func TestBinary_TheAgentsCommandsGetNoneOfTheServersSecrets(t *testing.T) {
 		t.Fatalf("the stop: %v\n%s", err, c.out.String())
 	}
 	envs := recordedEnvironments(t, state)
-	if len(envs) == 0 {
-		t.Fatal("the check ran no claude")
+	// Every command the check runs, the two help commands it runs side by
+	// side included, got the environment checked below.
+	ran := map[string]bool{}
+	for _, e := range envs {
+		argv, _, _ := strings.Cut(e, "\n")
+		ran[strings.TrimPrefix(argv, "argv: ")] = true
+	}
+	for _, want := range []string{"--version", "plugin configure --help", "plugin marketplace add --help", "plugin list --json",
+		"plugin configure flightdeck@flightdeck-plugins --json"} {
+		if !ran[want] {
+			t.Errorf("the check's `claude %s` was not recorded; recorded %v", want, ran)
+		}
 	}
 	for _, e := range envs {
 		if !strings.Contains(e, "FAKE_CLAUDE_STATE=") {

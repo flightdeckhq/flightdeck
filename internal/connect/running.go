@@ -260,14 +260,11 @@ type serverChoice struct {
 // one keeps its server, unless that is an http:// server on this
 // machine where nothing answers while an instance runs here at another
 // address. A server beyond this machine, or an https:// one, is kept
-// and not probed. A status that cannot be read chooses nothing and
-// reads no data dir: the connector's PlanConnect reads it as well and
-// reports why it cannot, in its own words and exit status.
-func chooseServer(ctx context.Context, c Connector, dataDir string, answers AnswersFunc) serverChoice {
-	st, err := c.Status(ctx)
-	if err != nil {
-		return serverChoice{}
-	}
+// and not probed. st is the status the connector's PlanConnect read
+// (Target.Choose): an agent it cannot connect, or whose status it
+// cannot read, is refused before, so nothing is chosen or probed for
+// one.
+func chooseServer(ctx context.Context, c Connector, st Status, dataDir string, answers AnswersFunc) serverChoice {
 	if st.Installed {
 		// A server kept as it is reads no data dir: one beyond this
 		// machine or https://, or one on it that answers.
@@ -349,7 +346,10 @@ func CheckReporting(ctx context.Context, reg Registry, listen string) (lines []s
 			errs = append(errs, fmt.Errorf("%s: %w", c.ID(), err))
 			continue
 		}
-		if !det.Found {
+		if !det.Found || det.Outdated != "" {
+			// An agent too old to show its integration's options is not
+			// asked them: where it reports cannot be known, and a line on
+			// every start that might be wrong would be noise.
 			continue
 		}
 		st, err := c.Status(ctx)

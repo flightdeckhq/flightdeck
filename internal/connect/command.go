@@ -210,17 +210,24 @@ func Main(ctx context.Context, args []string, rt IO) int {
 			}
 			target.Token = token
 		}
-		choice = idleChoice(ctx, target, target.Server, answers)
 	} else if given["token-file"] {
 		return fail("--token-file goes with --server: the token belongs to the server it was minted on")
 	} else {
-		// No server named: the flightdeck running on this machine.
-		choice = chooseServer(ctx, c, dir, answers)
-		target = choice.target
+		// No server named: the flightdeck running on this machine, chosen
+		// from the status the plan reads, and only for an agent the
+		// connector can connect.
+		target.Choose = func(ctx context.Context, st Status) Target {
+			choice = chooseServer(ctx, c, st, dir, answers)
+			return choice.target
+		}
 	}
 	plan, err := c.PlanConnect(ctx, target)
 	if err != nil {
 		return report(rt, c, err)
+	}
+	if given["server"] {
+		// The server named is probed only once the agent can be connected.
+		choice = idleChoice(ctx, target, target.Server, answers)
 	}
 	choice.annotate(&plan)
 	title := "Connect " + c.Name() + " to Flightdeck"
@@ -365,6 +372,11 @@ func printList(ctx context.Context, rt IO, dataDir string, answers AnswersFunc) 
 		case err == nil && st.Connected() && st.ServerUnknown:
 			line("connected", "plugin %s; this version of %s cannot show the server it reports to: update %s to see or change it",
 				st.Version, c.Name(), c.Name())
+		case det.Outdated != "" && err == nil && st.Installed:
+			// Installed from inside it and turned off: turning it on there
+			// needs nothing this version lacks.
+			line("turned off", "the plugin is installed but turned off, and this version of %s is too old for flightdeck connect: "+
+				"turn the plugin on from inside %s (/plugin), or update %s and run flightdeck connect %s", c.Name(), c.Name(), c.Name(), c.ID())
 		case det.Outdated != "":
 			line("too old", "%s", det.Outdated)
 		case err != nil:

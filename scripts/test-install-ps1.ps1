@@ -148,8 +148,9 @@ try {
     # A release, v0.0.1-connect, whose flightdeck.exe also answers
     # `flightdeck connect`: `connect --detected` prints
     # FAKE_FLIGHTDECK_DETECTED (\t and \n for tabs and line ends), every
-    # connect call is appended to FAKE_FLIGHTDECK_LOG, and
-    # FAKE_FLIGHTDECK_CONNECT_EXIT is a connect's exit status.
+    # connect call is appended to FAKE_FLIGHTDECK_LOG,
+    # FAKE_FLIGHTDECK_CONNECT_EXIT is a connect's exit status, and
+    # FAKE_FLIGHTDECK_CONNECT_SAYS, when set, is the line it prints.
     $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     $stubSource = Join-Path $work 'FakeFlightdeck.cs'
     Set-Content -Path $stubSource -Encoding Ascii -Value @'
@@ -170,7 +171,8 @@ class FakeFlightdeck {
                 Console.Write(detected.Replace("\\t", "\t").Replace("\\n", "\n"));
                 return 0;
             }
-            Console.WriteLine("fake flightdeck: connect " + rest);
+            string says = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_CONNECT_SAYS");
+            Console.WriteLine(string.IsNullOrEmpty(says) ? "fake flightdeck: connect " + rest : says);
             string code = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_CONNECT_EXIT");
             return string.IsNullOrEmpty(code) ? 0 : int.Parse(code);
         }
@@ -473,7 +475,7 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
         $env:FLIGHTDECK_RELEASE_URL = $ReleaseUrl
         $env:FAKE_FLIGHTDECK_LOG = $connectLog
         Remove-Item $connectLog -ErrorAction SilentlyContinue
-        $names = @('FLIGHTDECK_CONNECT', 'FAKE_FLIGHTDECK_DETECTED', 'FAKE_FLIGHTDECK_CONNECT_EXIT')
+        $names = @('FLIGHTDECK_CONNECT', 'FAKE_FLIGHTDECK_DETECTED', 'FAKE_FLIGHTDECK_CONNECT_EXIT', 'FAKE_FLIGHTDECK_CONNECT_SAYS')
         foreach ($name in $names) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
         foreach ($name in $Vars.Keys) { Set-Item "Env:$name" $Vars[$name] }
         $ErrorActionPreference = 'Continue'
@@ -494,6 +496,12 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     if ($failed.Code -eq 0 -and $failed.Text -match 'Connecting Claude Code did not finish' -and $failed.Text -match 'Next: run `flightdeck`' -and (Test-Path (Join-Path $failedDir 'flightdeck.exe'))) { Write-Pass 'a connect that fails does not fail the install' } else { Write-Failure 'a connect that fails' "exit $($failed.Code) $($failed.Text)" }
     $outdatedRun = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = 'claude-code\toutdated\tClaude Code\n'; FLIGHTDECK_CONNECT = 'claude-code' } (Join-Path $work 'inst-connect4')
     if ($outdatedRun.Code -eq 0 -and $outdatedRun.Text -match [regex]::Escape('To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code') -and $outdatedRun.Log -notmatch 'connect claude-code') { Write-Pass 'through the installer, an outdated agent named by FLIGHTDECK_CONNECT gets the hint and no connect' } else { Write-Failure 'an outdated agent through the installer' "exit $($outdatedRun.Code) log: $($outdatedRun.Log) $($outdatedRun.Text)" }
+    # An outdated agent connected from inside it: the query says connected,
+    # and the connect FLIGHTDECK_CONNECT names exits 0 with the binary's
+    # line that it is already connected, which the installer prints.
+    $alreadySays = 'Claude Code 2.1.283 is already connected to Flightdeck: the flightdeck plugin 0.9.0 is installed and turned on from inside Claude Code; nothing changed. This version cannot show or change the server the plugin reports to: update it with `claude update` to see or change it.'
+    $connectedOld = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = 'claude-code\tconnected\tClaude Code\n'; FLIGHTDECK_CONNECT = 'claude-code'; FAKE_FLIGHTDECK_CONNECT_SAYS = $alreadySays } (Join-Path $work 'inst-connect5')
+    if ($connectedOld.Code -eq 0 -and $connectedOld.Log -match 'connect claude-code --yes' -and $connectedOld.Text -match [regex]::Escape('Claude Code 2.1.283 is already connected to Flightdeck') -and $connectedOld.Text -notmatch 'needs a newer' -and $connectedOld.Text -notmatch 'did not finish') { Write-Pass 'FLIGHTDECK_CONNECT naming an outdated agent connected from inside it: the installer says it is already connected' } else { Write-Failure 'an outdated agent connected from inside it' "exit $($connectedOld.Code) log: $($connectedOld.Log) $($connectedOld.Text)" }
     $script:fakeDetected = @()
 
     if ($UseRealRegistry) {

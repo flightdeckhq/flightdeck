@@ -154,6 +154,12 @@ var outdatedAdvice = fmt.Sprintf("update it with `claude update`, then run fligh
 	"or install the plugin from inside Claude Code: /plugin marketplace add %s, then /plugin install %s",
 	claudeCodeID, marketplaceSource, pluginID)
 
+// turnOnAdvice is what to do with a Claude Code too old to connect whose
+// plugin is installed (from inside it) and turned off: turn it on there,
+// which needs no command it lacks, or update it.
+var turnOnAdvice = fmt.Sprintf("turn the plugin on from inside Claude Code with /plugin; "+
+	"or update it with `claude update`, then run flightdeck connect %s again", claudeCodeID)
+
 // removeAdvice is what to do when a disconnect meets a Claude Code too
 // old for the commands it runs: update it, or uninstall the plugin from
 // inside it.
@@ -271,10 +277,10 @@ func refused(stderr []byte) bool {
 }
 
 // outdatedError is the refusal to plan a connect on a Claude Code that
-// lacks what connecting needs.
-func outdatedError(version string, lacks []string) error {
+// lacks what connecting needs, with what to do (advice).
+func outdatedError(version string, lacks []string, advice string) error {
 	return fmt.Errorf("%w: %s is too old for flightdeck connect (it has no %s), so nothing changed: %s",
-		ErrOutdated, namedVersion(version), strings.Join(lacks, " and no "), outdatedAdvice)
+		ErrOutdated, namedVersion(version), strings.Join(lacks, " and no "), advice)
 }
 
 // namedVersion names the Claude Code a message is about: "Claude Code
@@ -405,7 +411,22 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		// The version only names it in the message; one that cannot be
 		// read is "this Claude Code".
 		version, _ := c.version(ctx, path)
-		return Plan{}, outdatedError(version, lacks)
+		connected := listErr == nil && found && plugin.Enabled
+		switch {
+		case connected && target.Server == "":
+			// Installed and turned on from inside Claude Code, and nothing
+			// asked that needs what it lacks: connected, nothing to do.
+			return Plan{Unchanged: fmt.Sprintf("%s is already connected to Flightdeck: the %s plugin %s is installed and turned on "+
+				"from inside Claude Code; nothing changed. This version cannot show or change the server the plugin reports to: "+
+				"update it with `claude update` to see or change it.", namedVersion(version), pluginName, printable(plugin.Version))}, nil
+		case connected:
+			return Plan{}, fmt.Errorf("%w: %s is connected from inside it, but too old to change the server the plugin reports to "+
+				"(it has no %s), so nothing changed: update it with `claude update`, then run this command again",
+				ErrOutdated, namedVersion(version), strings.Join(lacks, " and no "))
+		case listErr == nil && found:
+			return Plan{}, outdatedError(version, lacks, turnOnAdvice)
+		}
+		return Plan{}, outdatedError(version, lacks, outdatedAdvice)
 	}
 	if listErr != nil {
 		return Plan{}, listErr
@@ -415,6 +436,9 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		if st, err = c.options(ctx, path, plugin, false); err != nil {
 			return Plan{}, err
 		}
+	}
+	if target.Server == "" && target.Choose != nil {
+		target = target.Choose(ctx, st)
 	}
 	sameAsSaved := target.Server == "" || sameServer(target.Server, st.Server)
 	keepsToken := st.TokenSaved && sameAsSaved

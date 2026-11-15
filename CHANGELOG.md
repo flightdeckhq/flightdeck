@@ -149,7 +149,11 @@ All notable changes to Flightdeck are documented here.
   reports such an agent as `outdated`, and the installers then ask
   nothing and print one line: update it, then run `flightdeck connect
   claude-code`. An older Claude Code with the plugin already installed
-  from inside it (the two `/plugin` commands) counts as connected. A
+  from inside it (the two `/plugin` commands) counts as connected:
+  `flightdeck connect claude-code` then says it is already connected,
+  changes nothing and exits 0 (with `--server` or `--port`, which need
+  `claude update`, it exits 5), and one whose plugin is installed but
+  turned off is told to turn it on with `/plugin`. A
   step Claude Code refuses as an unknown command or option says the
   same, with the version. `--remove` now works on an older Claude Code
   too: it no longer reads the plugin's options, which such a version

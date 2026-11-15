@@ -100,6 +100,13 @@ type Target struct {
 	// Token is the token to save with Server; "" saves none. It is set
 	// only together with Server.
 	Token string
+	// Choose, when set with Server "", is called by PlanConnect with the
+	// status it read, once the agent is known to be one it can connect,
+	// and returns the target to plan for: how a connect that names no
+	// server picks one without the status read twice. An agent the
+	// connector cannot plan for (too old) is refused or answered before
+	// its options are read, so Choose is never called for one.
+	Choose func(ctx context.Context, st Status) Target
 }
 
 // Step is one change a plan makes.

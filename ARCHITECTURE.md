@@ -11570,11 +11570,15 @@ The command takes `--port <port>` when the instance listens on
 loopback address. A saved server names this instance when, read by the
 one server address rule (Connecting coding agents), it is `http://`,
 has no path and has the instance's port, and its host is the listen
-address itself, with `localhost` standing for `127.0.0.1` alone: a
-stock system resolves `localhost` to no other `127.x` address and
-often not to `::1`, so a plugin saved as `localhost` does not reach an
-instance listening there, and the line then names the instance by its
-address. The saved server is the plugin's option; a `FLIGHTDECK_SERVER`
+address itself, with `localhost` standing for `127.0.0.1` alone: no
+system resolves `localhost` to another `127.x` address, and a stock
+Linux (WSL included) resolves it to `127.0.0.1` only, so a plugin saved
+as `localhost` may not reach an instance listening on `::1`, and the
+line then names the instance by its address. On macOS and Windows
+`localhost` resolves to `::1` as well and Node, which runs the plugin's
+hooks, tries both, so there such a plugin does reach it: the line and
+connect's re-pointing to `http://[::1]:<port>` are then redundant, and
+harmless. The saved server is the plugin's option; a `FLIGHTDECK_SERVER`
 in Claude Code's own environment overrides it, and no other process's
 environment is read, so the check (and `flightdeck connect`) cannot see
 that override. Nothing is logged for an agent that is
@@ -11582,8 +11586,11 @@ not found; for one found and not connected (the installers and
 `flightdeck connect` offer that, and a reminder on every start would be
 noise); for one connected to this instance; for one connected to a
 server beyond this machine or to an `https://` address on it (a
-deliberate choice: a remote server, a TLS proxy); or when a command
-fails, which is logged at debug level. The check never delays or fails
+deliberate choice: a remote server, a TLS proxy); for one too old to
+show its integration's options (an outdated agent, Connecting coding
+agents), whose options are not asked for: where it reports cannot be
+known, and a line on every start that might be wrong would be noise;
+or when a command fails, which is logged at debug level. The check never delays or fails
 the start: it runs beside serving, each command is bounded by its
 connector's timeout, and the stop cancels it at the first signal,
 ending a command still running, and waits for it before anything is
@@ -12431,7 +12438,9 @@ ask), and a connect under `--yes` or without a terminal refuses it
 with 4; 5 when the agent is found but too old for the command (an
 outdated agent, below): a connect, with or without `--dry-run` or
 `--yes`, changes nothing and prints one line saying to update the
-agent and the other way to install its integration, and a step that
+agent and the other way to install its integration (one already
+connected from inside the agent, with no `--server` or `--port`, has
+nothing to do and exits 0, below), and a step that
 the agent's CLI refuses as an unknown command or option says so too,
 with 5 rather than 1, since running it again fails the same way until
 the agent is updated. The installers read 0, 4 and 5 by number, and a
@@ -12514,7 +12523,10 @@ check holds:
   call to 0 or -1, which name process groups, or to another process);
 - the process runs as this user: on Unix a signal 0 to it succeeds (a
   process that refuses this user's signal is not this user's), on
-  Windows it opens for a query and has not exited;
+  Windows it opens for a query and has not exited. `flightdeck connect`
+  is meant to run as the user whose agent it connects, not under
+  `sudo`: a privileged caller may signal or open any process, so for
+  it this test accepts any live pid;
 - both health routes at that address answer as `flightdeck health`
   requires (`/api/health` with `"service": "api"`, `/ingest/health`
   with `"service": "ingestion"`).
@@ -12536,9 +12548,11 @@ Without `--server` or `--port`:
 | reports to an `http://` address on this machine where a Flightdeck answers | the same server, kept (two instances on two data dirs, for one) |
 | reports to a server beyond this machine, or to an `https://` address | the same server, kept, and not probed |
 
-An agent whose status cannot be read gets no choice and no data dir is
-read: the plan reads the status too and reports why, with its own exit
-status.
+The choice is made from the status the plan reads (`Target.Choose`):
+an agent whose status cannot be read, or that is too old to connect,
+gets no choice and no data dir is read; the plan reports why, with its
+own exit status, or (an outdated agent connected from inside it, with
+nothing asked) says it is already connected.
 
 The probe is the health check above, sent only to the loopback
 address (`localhost` is probed as `127.0.0.1`, the address it names
@@ -12597,7 +12611,12 @@ one behaves as the first does:
   connected as asked plans no step, so it changes nothing and says so.
   The plan never touches the agent's other settings and never installs
   the agent itself. A token given again is saved again, since the saved
-  one cannot be read back to compare.
+  one cannot be read back to compare. A connect that names no server
+  passes a chooser with the target (`Target.Choose`): the connector
+  calls it with the status it read, once the agent is one it can
+  connect, and plans for the server it returns (Finding the running
+  server), so the status is read once and nothing is chosen or probed
+  for an agent it refuses.
 - **Disconnect** is planned the same way. It removes what Connect
   installed and leaves what other integrations may share (Claude Code's
   marketplace entry); an agent that is not connected plans no step.
@@ -12680,6 +12699,21 @@ flightdeck@flightdeck-plugins`. An outdated Claude Code with the plugin
 installed and enabled that way is connected: the listing shows
 `connected` with the plugin's version and that this version cannot
 show the server it reports to, and `--detected` prints `connected`.
+`flightdeck connect claude-code` with nothing asked of it (no
+`--server`, no `--port`) then has nothing to do: a plan with no step,
+exit status 0, whose line says it is already connected from inside
+Claude Code and that seeing or changing its server needs `claude
+update` (so an installer told `FLIGHTDECK_CONNECT=claude-code` prints
+that it is already connected); with `--server` or `--port` it is
+refused with exit status 5 and that line, since changing the server
+needs the command it lacks. One with the plugin installed that way and
+turned off is listed as `turned off`, with turning it on from inside
+Claude Code (`/plugin`) or updating it, and a connect refuses with exit
+status 5 and the same advice, not the advice to install what is
+installed. Neither the server choice below nor the start-up check of
+the agents reads an outdated agent's options: the plan answers or
+refuses before them, and the start-up check says nothing of an agent
+whose server it cannot know.
 `--remove` needs neither command and
 runs on an outdated Claude Code as on a current one, so a plugin
 installed from inside it can be removed. A step that fails with one of
@@ -12757,7 +12791,10 @@ connected agent is reported as connected. An outdated agent is not
 asked about, not planned and not connected, whatever
 `FLIGHTDECK_CONNECT` says: the closing lines say `To connect Claude
 Code: update it (this version is too old for flightdeck connect), then
-run flightdeck connect claude-code`. A failed connect prints the
+run flightdeck connect claude-code`. An outdated agent connected from
+inside it is `connected` in the query: with `FLIGHTDECK_CONNECT` naming
+it, its connect exits 0 and the installer prints its line, that it is
+already connected. A failed connect prints the
 command's own line and the command to run later, and the installer
 exits 0; a connect that exits 5 prints that it needs the agent updated
 first, not to run it again later. When no agent is found, the closing lines say that

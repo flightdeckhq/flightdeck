@@ -251,7 +251,7 @@ is imported) only if your application imports it. `unpatch()` (and
 | litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.text_completion`, `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses` (each with `stream=True`), `litellm.embedding`, `litellm.aembedding` |
 | MCP (official Python `mcp` SDK, reached transitively by `langchain-mcp-adapters`, `llama-index-tools-mcp` and `mcpadapt`) | `patch_mcp_classes` | `mcp.client.session.ClientSession.initialize` on mcp 1.x / `.adopt` on mcp 2.x (server fingerprint capture, every 2.x handshake path), `.list_tools`, `.call_tool`, `.list_resources`, `.read_resource`, `.list_prompts`, `.get_prompt` (one `mcp_*` event type each), plus the stdio / SSE / streamable-HTTP / websocket transport client factories and mcp 2.x's `Client._build_session` for transport attribution. `call_tool` also enforces the MCP Protection Policy. Supported SDK range: `mcp>=1.28,<3`. |
 | CrewAI (sub-agent sessions) | `patch_crewai_classes` | `crewai.Agent.execute_task` / `.aexecute_task` — each Crew member's turn lands as a child session (`session_start` / `session_end`) with `parent_session_id`, `agent_role` taken from `Agent.role`, and incoming / outgoing message capture gated on `capture_prompts` |
-| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — each node of a graph you build, a function or a Runnable (`RunnableLambda`, `RunnableCallable`, an LCEL pipe, your own `ToolNode`), lands as a child session per run with `agent_role` taken from the node name, nested under the node whose work it runs in (a graph invoked from inside a node); every such node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)`. The nodes `create_agent` and `create_react_agent` register (model, tools, middleware and model hooks), generator nodes and compiled-subgraph nodes are not wrapped. An interrupt closes the child normally; an async node posts its child's start and end off the event loop |
+| LangGraph and Deep Agents (sub-agent sessions) | `patch_langgraph_classes` (`patch_langgraph_runs` patches the graph runs alone; `patch()` applies it on the import of `langgraph.pregel`, so a functional-API application is covered) | `langgraph.graph.StateGraph.add_node` — each node of a graph you build, a function or a Runnable (`RunnableLambda`, `RunnableCallable`, an LCEL pipe, your own `ToolNode`), lands as a child session per run with `agent_role` taken from the node name; every such node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)`. The nodes `create_agent` and `create_react_agent` register (model, tools, middleware and model hooks) and generator nodes are not wrapped. `langgraph.pregel.Pregel.stream` / `astream` — a graph run started inside another graph run or a child (a compiled graph used as a node, a graph or an agent invoked from a node or a tool, each Deep Agents `task` sub-agent) lands as one child session, `agent_role` the run's name (`create_agent(name=...)`, the Deep Agents sub-agent's name), else the node it runs in (unless that node is one of `create_agent`'s own steps), else `subgraph`; a top-level run opens none. Each child nests under the child it runs in. An interrupt closes the child normally; async runs post their child's start and end off the event loop |
 | LlamaIndex agent workflows (sub-agent sessions, `llama-index-core>=0.14`) | `patch_llama_index` | A span handler on LlamaIndex's root instrumentation dispatcher (no LlamaIndex method is replaced): each agent of a `FunctionAgent`, `ReActAgent`, `CodeActAgent` or `AgentWorkflow` run lands as a child session with `agent_role` the agent's name (the agent's model, tool and MCP calls stay on the sensor's session, as for CrewAI and LangGraph); an `AgentWorkflow` hand-off ends one child, records an `agent_handoff` signal on it and opens the next; a tool call the model wrote as text (ReAct, CodeAct) is reported once as a `tool_call`, its arguments and output under `capture_prompts` |
 | Claude Agent SDK (`claude-agent-sdk>=0.2.168,<0.3`) | `patch_claude_agent_sdk` | `query()` (however it was imported) and `ClaudeSDKClient` — each run lands as its own `claude_agent_sdk` session keyed by the Claude Code session id, with a `post_call` per assistant message (tokens, cache split, billing mode) and a `tool_call` per tool use, read from the SDK's message stream; a Claude Code plugin loaded into the run stays silent. `PreToolUse` and `UserPromptSubmit` callbacks added after the caller's hooks apply the run's directives (a stop denies the next tool call and blocks prompts; budget warnings reach the run) and the MCP Protection Policy. Install with `pip install flightdeck-sensor[claude-agent-sdk]`. |
 | OpenAI Agents SDK (`openai-agents>=0.6`, sub-agent sessions) | `patch_openai_agents` | `AgentRunner.run` / `.run_streamed` (so `Runner.run`, `run_sync` and `run_streamed`) and the `run` of the four guardrail classes — each agent that runs lands as a child session with `agent_role` taken from `Agent.name`, an agent used as a tool nests under the agent that called it, a hand-off posts `agent_handoff` on the agent handing off, a guardrail that fires posts `guardrail_tripwire` (names only), and the run's conversation id lands in the child's context as `gen_ai_conversation_id`. Model, tool and MCP calls stay on the sensor's session (the OpenAI and MCP interceptors meter them); a shutdown also stops the run when the next agent starts or hands off. Patched only when `agents` comes from the `openai-agents` distribution. Install with `pip install flightdeck-sensor[openai-agents]`. |
@@ -260,7 +260,7 @@ is imported) only if your application imports it. `unpatch()` (and
 
 Any framework that calls a model through the Anthropic or OpenAI SDK or
 litellm is metered and enforced through the interceptors above, with no
-wrap of its own: Deep Agents, Microsoft Agent Framework,
+wrap of its own: Microsoft Agent Framework,
 Google ADK (on `LiteLlm`, Anthropic or OpenAI models), Pydantic AI and
 Strands Agents (on their Anthropic, OpenAI and LiteLLM models), Agno,
 Haystack, smolagents, Semantic Kernel, AutoGen, AG2 and DSPy on its
@@ -269,17 +269,17 @@ litellm engine. Each event names the framework in
 
 - **Sub-agent sessions planned**
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): Google
-  ADK, Microsoft Agent Framework and Deep Agents (each agent and each
-  `task` sub-agent).
+  ADK and Microsoft Agent Framework.
 - **LLM calls planned**
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)): a DSPy
   callback adapter for its default engine, which has its own HTTP
   transport and bypasses the SDKs and litellm.
-- **No sub-agent sessions from `create_agent`**: its model, tool and
-  middleware nodes are the agent's own steps, not sub-agents, so the
-  LangGraph interceptor leaves them alone. A `create_agent` run, and a
-  Deep Agents run built on it, is one session (its LLM calls are still
-  metered).
+- **No sub-agent sessions from `create_agent`'s steps**: its model, tool
+  and middleware nodes are the agent's own steps, not sub-agents, so the
+  LangGraph interceptor leaves them alone. A top-level `create_agent`
+  run is one session (its LLM calls are still metered); a Deep Agents
+  run adds one child per `task` sub-agent run, and an agent run inside
+  another graph run is a child of its own.
 - **Structure through OpenTelemetry instead**: Pydantic AI and Strands
   Agents export GenAI spans that Flightdeck's OTLP receiver maps into
   observe-only child sessions. The sensor does not wrap them. Report a

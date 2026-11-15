@@ -150,6 +150,14 @@ dev = [
     # the newest release.
     "openai-agents>=0.20,<0.21",
     "langgraph>=1,<2",
+    # Drives the Deep Agents tests (a sub-agent per ``task`` call, through
+    # the LangGraph wrap; the sensor never imports it) and playground 42.
+    # 0.x: a minor release may rename what the tests build, so the lane
+    # stays on 0.7 until one is tested.
+    "deepagents>=0.7,<0.8",
+    # Drives the LangGraph stream-close test under nest_asyncio, whose
+    # loop tracks no async generator (llama-index-core pulls it in too).
+    "nest-asyncio>=1.6",
     "llama-index-tools-mcp>=0.1",
     "mcpadapt>=0.0.6",
     # CrewAI 1.14+ ships native provider classes that use the official

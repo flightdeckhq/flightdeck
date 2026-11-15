@@ -39,6 +39,24 @@ All notable changes to Flightdeck are documented here.
   agent's own steps, not sub-agents, so a `create_react_agent`
   `pre_model_hook` or `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
+- **LangGraph and Deep Agents: a graph run started inside another opens
+  a child session.** A run of a compiled graph that starts inside
+  another graph run or inside a child (a compiled graph used as a node,
+  bound or with graph fallbacks; a graph or an agent invoked from a node
+  or a tool) opens one child, named after the run (`run_name`, else the
+  graph's name, else the node it runs in unless that node is one of
+  `create_agent`'s own steps, else `subgraph`), with its input and its
+  final state as the messages under `capture_prompts`, nested under the
+  child it runs in; a top-level run opens none. An application on the
+  functional API (`@entrypoint`) is covered too. Deep Agents gets one
+  child per `task` sub-agent run, named after the sub-agent, parallel
+  calls and `CompiledSubAgent`s included, with no Deep Agents import. A
+  compiled graph used as a node gets that one child, and a graph invoked
+  from a hand-built node opens a child under the node's, where its nodes
+  nest. The child closes on an error, an interrupt (a resume opens a new
+  one), a cancellation and a stream closed before its end, the event
+  loop's own close at shutdown included. A `RemoteGraph` run opens none
+  (D278).
 - **The server and `flightdeck connect` find each other on another
   port.** Run `flightdeck --port 4100`, then `flightdeck connect
   claude-code`, and the plugin reports to port 4100. A server on this
@@ -120,9 +138,10 @@ All notable changes to Flightdeck are documented here.
 
 - **LangGraph: a child session opened inside another nests under it.**
   Every LangGraph child named the sensor's session as its parent, also
-  for the nodes of a graph invoked from inside a node; such a child now
-  has the enclosing node's child as `parent_session_id`. Each node runs
-  in its child's sub-agent scope.
+  for the nodes of a graph invoked from inside a node; a child now has
+  the child whose work it runs in as `parent_session_id` (for those
+  nodes, the child of the inner graph's run, itself under the node's).
+  Each node runs in its child's sub-agent scope.
 - **LangGraph: generator node functions work under the sensor.** A node
   function that yields (a sync or async generator) failed with
   `InvalidUpdateError` once patched, because the wrapper hid from
@@ -141,7 +160,10 @@ All notable changes to Flightdeck are documented here.
   the event loop.** The two synchronous posts ran on the loop and held
   every other task of the run for their round trip; they now run on the
   loop's executor, queued apart from the node's task so a cancellation
-  cannot drop them, and the session's end waits for them.
+  cannot drop them, and the session's end waits for them. Sync LangGraph
+  code run on an event loop's thread (a sync `invoke` inside a
+  coroutine) queues its children's posts the same way instead of making
+  them there.
 
 ## v0.10.0 — 2026-11-15
 

@@ -5,7 +5,8 @@ child session emission flow with the same shape as the other
 sub-agent interceptors, for every node shape a hand-built graph uses
 (functions, RunnableCallable, ToolNode, RunnableLambda, LCEL pipes),
 and none for create_agent's steps, generator nodes or compiled-graph
-nodes. Also covers the agent-bearing predicate (without a regex
+nodes (whose run opens the child: test_interceptor_langgraph_runs.py
+covers graph runs and Deep Agents). Also covers the agent-bearing predicate (without a regex
 override every node gets wrapped; with one only matching node names
 get child sessions), nesting, interrupts, cancellation, posting off
 the event loop, failing open, and that a wrapped Runnable node streams,
@@ -792,7 +793,7 @@ def test_parent_command_closes_the_child_normally(patched_langgraph: Any) -> Non
     def hand_back(state: dict[str, Any]) -> Any:
         return Command(graph=Command.PARENT, goto="finish", update={"text": "handed back"})
 
-    inner = _one_node_graph(StateGraph, "hand_back", hand_back).compile()
+    inner = _one_node_graph(StateGraph, "hand_back", hand_back).compile(name="hand_back_graph")
 
     graph = StateGraph(_TextState)
     graph.add_node("delegate", lambda state: inner.invoke(state), destinations=("finish",))
@@ -801,16 +802,29 @@ def test_parent_command_closes_the_child_normally(patched_langgraph: Any) -> Non
     graph.add_edge("finish", END)
 
     assert graph.compile().invoke({"text": "in"}) == {"text": "handed back!"}
-    assert [p["agent_role"] for p in _starts(client)] == ["delegate", "hand_back", "finish"]
-    delegate_end = next(p for p in _ends(client) if p["agent_role"] == "delegate")
-    assert "state" not in delegate_end
-    assert "error" not in delegate_end
-    assert "outgoing_message" not in delegate_end
+    assert [p["agent_role"] for p in _starts(client)] == [
+        "delegate",
+        "hand_back_graph",
+        "hand_back",
+        "finish",
+    ]
+    # The Command leaves the inner graph's run and the delegate node alike.
+    for role in ("delegate", "hand_back_graph"):
+        end = next(p for p in _ends(client) if p["agent_role"] == role)
+        assert "state" not in end, role
+        assert "error" not in end, role
+        assert "outgoing_message" not in end, role
 
 
-def test_compiled_graph_node_is_registered_untouched(patched_langgraph: Any) -> None:
-    """A compiled graph used as a node opens no child; the nodes inside it
-    open theirs, under the sensor's session."""
+def test_compiled_graph_node_opens_one_child_for_its_run(patched_langgraph: Any) -> None:
+    """A compiled graph used as a node is registered untouched: its run
+    opens the one child (named after the node, the graph being unnamed),
+    and the nodes inside it nest under that child.
+
+    root
+    └── sub        (the inner graph's run)
+        └── inner  (its node)
+    """
     session, client, StateGraph = patched_langgraph
 
     inner = _one_node_graph(StateGraph, "inner", lambda state: {"text": "inner"}).compile()
@@ -818,9 +832,11 @@ def test_compiled_graph_node_is_registered_untouched(patched_langgraph: Any) -> 
 
     assert graph.nodes["sub"].runnable is inner
     assert graph.compile().invoke({"text": "in"}) == {"text": "inner"}
-    (start,) = _starts(client)
-    assert start["agent_role"] == "inner"
-    assert start["parent_session_id"] == session.config.session_id
+    sub, node = _starts(client)
+    assert (sub["agent_role"], node["agent_role"]) == ("sub", "inner")
+    assert sub["parent_session_id"] == session.config.session_id
+    assert node["parent_session_id"] == sub["session_id"]
+    assert len(_ends(client)) == 2
 
 
 # ----------------------------------------------------------------------
@@ -829,20 +845,32 @@ def test_compiled_graph_node_is_registered_untouched(patched_langgraph: Any) -> 
 
 
 def test_child_opened_inside_a_node_nests_under_its_child(patched_langgraph: Any) -> None:
+    """A graph invoked from a node is a graph run inside another: its run
+    opens a child under the node's, and its node nests under the run's.
+
+    root
+    └── outer            (the node)
+        └── inner_graph  (the run it starts)
+            └── inner    (that graph's node)
+    """
     session, client, StateGraph = patched_langgraph
 
     inner = _one_node_graph(
         StateGraph, "inner", lambda state: {"text": state["text"] + "+inner"}
-    ).compile()
+    ).compile(name="inner_graph")
     outer = _one_node_graph(StateGraph, "outer", lambda state: inner.invoke(state)).compile()
 
     assert outer.invoke({"text": "in"}) == {"text": "in+inner"}
     starts = {p["agent_role"]: p for p in _starts(client)}
     ends = {p["agent_role"]: p for p in _ends(client)}
+    assert set(starts) == {"outer", "inner_graph", "inner"}
     outer_id = starts["outer"]["session_id"]
+    run_id = starts["inner_graph"]["session_id"]
     assert starts["outer"]["parent_session_id"] == session.config.session_id
-    assert starts["inner"]["parent_session_id"] == outer_id
-    assert ends["inner"]["parent_session_id"] == outer_id
+    assert starts["inner_graph"]["parent_session_id"] == outer_id
+    assert starts["inner"]["parent_session_id"] == run_id
+    assert ends["inner"]["parent_session_id"] == run_id
+    assert ends["inner_graph"]["parent_session_id"] == outer_id
     assert ends["outer"]["parent_session_id"] == session.config.session_id
 
 
@@ -855,7 +883,7 @@ async def test_async_child_opened_inside_a_node_nests_under_its_child(
     async def grow(state: dict[str, Any]) -> dict[str, Any]:
         return {"text": state["text"] + "+inner"}
 
-    inner = _one_node_graph(StateGraph, "inner", RunnableLambda(grow)).compile()
+    inner = _one_node_graph(StateGraph, "inner", RunnableLambda(grow)).compile(name="inner_graph")
 
     async def delegate(state: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = await inner.ainvoke(state)
@@ -866,7 +894,8 @@ async def test_async_child_opened_inside_a_node_nests_under_its_child(
     assert await outer.ainvoke({"text": "in"}) == {"text": "in+inner"}
     starts = {p["agent_role"]: p for p in _starts(client)}
     assert starts["outer"]["parent_session_id"] == session.config.session_id
-    assert starts["inner"]["parent_session_id"] == starts["outer"]["session_id"]
+    assert starts["inner_graph"]["parent_session_id"] == starts["outer"]["session_id"]
+    assert starts["inner"]["parent_session_id"] == starts["inner_graph"]["session_id"]
 
 
 def test_node_runs_inside_its_child_scope(patched_langgraph: Any) -> None:

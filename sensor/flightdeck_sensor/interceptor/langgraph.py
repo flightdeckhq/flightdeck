@@ -85,11 +85,12 @@ interrupt, a ``Command`` for the parent graph, a drain) close it
 normally; a resumed node or run runs again and opens a new child. A run
 whose stream is closed before its end (abandoned) closes normally.
 Closing an async run's stream closes LangGraph's own stream at once,
-however the close is awaited, unless the event loop has taken that
-stream's close over (collected unclosed, or swept when the loop shuts
-down), which asyncio's loop shows by its set of live generators; a loop
-that keeps that set out of reach (uvloop) is taken to close it when the
-close runs as a task of its own.
+however the close is awaited, unless the loop that tracked it has taken
+its close over (collected unclosed, or swept when the loop shuts down),
+which asyncio's loop shows by its set of live generators: a stream it
+tracked and that has left the set. A stream no loop tracked is closed at
+once. A loop that keeps that set out of reach (uvloop) is taken to close
+the stream when the close runs as a task of its own.
 
 Posting. The child's start and end are posted synchronously, as every
 wrap's are, except on a thread that runs an event loop. An async node or
@@ -1052,22 +1053,54 @@ def _closed_by_the_loop() -> bool:
     return task is not None and type(task.get_coro()).__name__ == _LOOP_CLOSE_CORO_TYPE
 
 
-async def _aclose(inner: Any) -> None:
+class _LoopTracking:
+    """Which loop's set of live async generators, if any, tracked a run's
+    stream, noted once, after the stream's first step (when a loop adds a
+    generator). A stream no loop tracked (one iterated where no loop's
+    hooks are installed: under nest_asyncio, or while another library's
+    hooks replace the loop's) is the wrapper's alone to close, and so is
+    one closed under another loop than the one that tracked it."""
+
+    __slots__ = ("_live", "_noted")
+
+    def __init__(self) -> None:
+        self._live: Any = None
+        self._noted = False
+
+    def note(self, inner: Any) -> None:
+        if self._noted:
+            return
+        self._noted = True
+        try:
+            live = _live_async_generators()
+            if live is not None and inner in live:
+                self._live = live
+        except Exception:  # noqa: BLE001 - fail open: the stream counts as untracked
+            _log.debug("LangGraph stream's loop tracking not read", exc_info=True)
+
+    def taken_over(self, inner: Any, live: Any) -> bool:
+        """Whether the loop that tracked ``inner`` has since taken its close
+        over: it is that loop's set ``inner`` has left."""
+        return self._live is not None and live is self._live and inner not in live
+
+
+async def _aclose(inner: Any, tracking: _LoopTracking) -> None:
     """Close an async run's stream at once, as the stream unpatched would
     be closed, unless it has finished, another close has it (it is
-    running), or the loop has taken its close over: then the loop closes
-    it, and a second close would raise ``aclose(): asynchronous generator
-    is already running`` in one of the two. A stream this close takes
-    over leaves the loop's set first, as the loop's own close takes it
-    out, so a shutdown sweep that starts meanwhile does not close it too."""
+    running), or the loop that tracked it has taken its close over: then
+    the loop closes it, and a second close would raise ``aclose():
+    asynchronous generator is already running`` in one of the two. A
+    stream this close takes over leaves the loop's set first, as the
+    loop's own close takes it out, so a shutdown sweep that starts
+    meanwhile does not close it too."""
     if getattr(inner, "ag_frame", None) is None or getattr(inner, "ag_running", False):
         return
-    live = _live_async_generators()
     try:
+        live = _live_async_generators()
         if live is None:
             if _closed_by_the_loop():
                 return
-        elif inner not in live:
+        elif tracking.taken_over(inner, live):
             return
         else:
             live.discard(inner)
@@ -1076,11 +1109,11 @@ async def _aclose(inner: Any) -> None:
     await inner.aclose()
 
 
-async def _aclose_inner(child: _Child, graph: Any, inner: Any) -> None:
+async def _aclose_inner(child: _Child, graph: Any, inner: Any, tracking: _LoopTracking) -> None:
     """Close an async run's stream as one of its steps."""
     tokens = _enter_step(child, graph)
     try:
-        await _aclose(inner)
+        await _aclose(inner, tracking)
     finally:
         _exit_step(child, tokens)
 
@@ -1098,19 +1131,22 @@ def _astream_wrapper(
         child = _open_run(self, config)
         if child is None:
             unwatched = original(self, input, config, **kwargs)
+            unwatched_tracking = _LoopTracking()
             token = _RUNNING_GRAPH.set(self)
             try:
                 async for chunk in unwatched:
+                    unwatched_tracking.note(unwatched)
                     yield chunk
             finally:
                 _reset_running_graph(token)
                 # Closed here, as the consumer closes this stream, so the
                 # run's own clean-up runs then and not at collection.
-                await _aclose(unwatched)
+                await _aclose(unwatched, unwatched_tracking)
             return
         output = _RunOutput(self, config, kwargs)
         child.start_post = _queue(child, _start, child, input)
         inner = original(self, input, config, **kwargs)
+        tracking = _LoopTracking()
         try:
             await _wait(child.start_post)
             while True:
@@ -1121,18 +1157,19 @@ def _astream_wrapper(
                     break
                 finally:
                     _exit_step(child, tokens)
+                tracking.note(inner)
                 output.add(chunk)
                 yield chunk
         except GeneratorExit:
             # Queued, not awaited: a generator being closed must not wait.
             try:
-                await _aclose_inner(child, self, inner)
+                await _aclose_inner(child, self, inner, tracking)
             finally:
                 _queue(child, _end, child, _NO_RESULT, None)
             raise
         except BaseException as exc:
             try:
-                await _aclose_inner(child, self, inner)
+                await _aclose_inner(child, self, inner, tracking)
             finally:
                 await _wait(_queue(child, _end, child, _NO_RESULT, exc))
             raise

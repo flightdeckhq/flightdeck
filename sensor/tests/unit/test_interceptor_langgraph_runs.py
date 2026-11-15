@@ -17,10 +17,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import json
+import os
+import sys
 import threading
 import time
 import uuid
 import warnings
+from pathlib import Path
 from typing import Any, TypedDict
 from unittest.mock import MagicMock
 
@@ -1038,15 +1042,12 @@ _CLOSES: dict[str, Any] = {
 }
 
 
-async def test_an_application_close_runs_the_runs_clean_up_before_it_returns(
-    patched: Any,
-) -> None:
-    """On asyncio's loop, a close the application makes closes LangGraph's
-    own stream before it returns, however it is awaited (in its own
-    coroutine, or as a task of its own through gather, create_task, shield
-    or wait_for), top-level and nested, exactly as unpatched: the run's
-    error callback has fired and its in-flight node is cancelled."""
-    session, client, StateGraph = patched
+def _slow_graph_closer(StateGraph: Any) -> Any:
+    """A graph whose node waits until cancelled, and a coroutine function
+    that streams it, closes the stream once the node runs (``how``: a key
+    of _CLOSES) and returns what LangGraph's clean-up had done when the
+    close returned: the run's error callbacks and whether the node was
+    cancelled. Built unpatched, so only the run is under test."""
     from langchain_core.callbacks import AsyncCallbackHandler
     from langgraph.config import get_stream_writer
 
@@ -1082,32 +1083,178 @@ async def test_an_application_close_runs_the_runs_clean_up_before_it_returns(
         await _CLOSES[how](stream.aclose())
         return list(ends.errors), node.get("cancelled", False)
 
+    return close_early
+
+
+@contextlib.contextmanager
+def _in_a_child(session: Session, scopes: list[str]) -> Any:
+    """Run the block in a child's scope (a run started there is nested),
+    recording the child's id in ``scopes``."""
+    scope = session.new_subagent_scope(
+        child_session_id=str(uuid.uuid4()),
+        child_agent_id=session.derive_subagent_id("outer"),
+        child_agent_name="parent-langgraph/outer",
+        agent_role="outer",
+    )
+    scopes.append(scope.child_session_id)
+    token = session.enter_subagent_scope(scope)
+    try:
+        yield
+    finally:
+        session.exit_subagent_scope(token)
+
+
+async def _assert_closes_as_unpatched(session: Session, close_early: Any, hows: Any) -> list[str]:
+    """Each close in ``hows``, top-level and nested, leaves LangGraph's
+    clean-up exactly where the unpatched close leaves it: done. Returns
+    the scopes the nested runs started in."""
     scopes: list[str] = []
-    for how in _CLOSES:
+    for how in hows:
         with _unpatched():
             plain = await close_early(how)
         assert plain == (["GeneratorExit"], True), how
         assert await close_early(how) == plain, f"top-level, {how}"
-
-        scope = session.new_subagent_scope(
-            child_session_id=str(uuid.uuid4()),
-            child_agent_id=session.derive_subagent_id("outer"),
-            child_agent_name="parent-langgraph/outer",
-            agent_role="outer",
-        )
-        scopes.append(scope.child_session_id)
-        token = session.enter_subagent_scope(scope)
-        try:
+        with _in_a_child(session, scopes):
             assert await close_early(how) == plain, f"nested, {how}"
-        finally:
-            session.exit_subagent_scope(token)
-    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
-    # One child per nested run, under its scope, each closed.
+    return scopes
+
+
+def _assert_one_closed_child_per_scope(client: MagicMock, scopes: list[str]) -> None:
     starts = _starts(client)
     assert [(p["agent_role"], p["parent_session_id"]) for p in starts] == [
         ("slow_graph", parent) for parent in scopes
     ]
     assert {p["session_id"] for p in _ends(client)} == {p["session_id"] for p in starts}
+
+
+async def test_an_application_close_runs_the_runs_clean_up_before_it_returns(
+    patched: Any,
+) -> None:
+    """On asyncio's loop, which tracks the stream, a close the application
+    makes closes LangGraph's own stream before it returns, however it is
+    awaited (in its own coroutine, or as a task of its own through gather,
+    create_task, shield or wait_for), top-level and nested, exactly as
+    unpatched: the run's error callback has fired and its in-flight node
+    is cancelled."""
+    session, client, StateGraph = patched
+    scopes = await _assert_closes_as_unpatched(session, _slow_graph_closer(StateGraph), _CLOSES)
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    _assert_one_closed_child_per_scope(client, scopes)
+
+
+async def test_a_stream_no_loop_tracks_is_closed_at_once(patched: Any) -> None:
+    """With the loop's async-generator hooks replaced (another library's,
+    here none), the loop tracks no stream: a close closes LangGraph's
+    stream at once, however it is awaited, top-level and nested, exactly
+    as unpatched."""
+    session, client, StateGraph = patched
+    close_early = _slow_graph_closer(StateGraph)
+    hooks = sys.get_asyncgen_hooks()
+    sys.set_asyncgen_hooks(firstiter=None, finalizer=None)
+    try:
+        scopes = await _assert_closes_as_unpatched(session, close_early, _CLOSES)
+    finally:
+        sys.set_asyncgen_hooks(*hooks)
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    _assert_one_closed_child_per_scope(client, scopes)
+
+
+# A nest_asyncio run in a process of its own: nest_asyncio.apply() patches
+# asyncio for the whole process. The child prints, per close and per
+# patched / unpatched / nested run, what LangGraph's clean-up had done when
+# the close returned.
+_NEST_ASYNCIO_CHILD = """
+import asyncio, json, sys
+sys.path.insert(0, sys.argv[1])
+import nest_asyncio
+import flightdeck_sensor
+import test_interceptor_langgraph_runs as t
+from flightdeck_sensor.interceptor import langgraph as lg
+
+nest_asyncio.apply()
+lg._ensure_imported()
+session, client = t._build_session()
+flightdeck_sensor._session = session
+lg.patch_langgraph_classes(quiet=True)
+close_early = t._slow_graph_closer(lg._StateGraph)
+results = {}
+
+async def main():
+    for how in ("await", "gather"):
+        lg.unpatch_langgraph_classes()
+        results[how + ":plain"] = await close_early(how)
+        lg.patch_langgraph_classes(quiet=True)
+        results[how + ":top"] = await close_early(how)
+        with t._in_a_child(session, []):
+            results[how + ":nested"] = await close_early(how)
+
+async def outer():
+    asyncio.run(main())  # re-entrant, as in a notebook
+
+asyncio.run(outer())
+session.wait_child_posts(t._POSTS_WAIT_SECS)
+print(json.dumps(results))
+"""
+# How long the nest_asyncio child may run: it builds one graph and runs
+# six short streams; a healthy run takes about a second.
+_CHILD_TIMEOUT_SECS = 120.0
+
+
+def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
+    """nest_asyncio's re-entrant loop tracks no async generator: an
+    application's close closes LangGraph's stream at once, top-level and
+    nested, exactly as unpatched, and no stream is later collected with
+    "async generator ignored GeneratorExit"."""
+    import subprocess
+
+    pytest.importorskip("nest_asyncio")
+    if not _langgraph_mod._ensure_imported():
+        pytest.skip("langgraph not installed")
+    here = str(Path(__file__).parent)
+    done = subprocess.run(
+        [sys.executable, "-c", _NEST_ASYNCIO_CHILD, here],
+        capture_output=True,
+        text=True,
+        timeout=_CHILD_TIMEOUT_SECS,
+        env={k: v for k, v in os.environ.items() if not k.startswith("FLIGHTDECK_")},
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "ignored GeneratorExit" not in done.stderr, done.stderr
+    results = json.loads(done.stdout.strip().splitlines()[-1])
+    # Two closes, each unpatched, top-level and nested; JSON lists.
+    assert len(results) == 6, results
+    assert all(value == [["GeneratorExit"], True] for value in results.values()), results
+
+
+def test_a_stream_closed_under_another_loop_is_closed_at_once() -> None:
+    """A stream first stepped under one loop (whose set tracks it) and
+    closed under another is not the second loop's to close: it is closed
+    at once."""
+    cleaned: list[str] = []
+
+    async def stream() -> Any:
+        try:
+            yield 1
+            yield 2
+        finally:
+            cleaned.append("closed")
+
+    inner = stream()
+    tracking = _langgraph_mod._LoopTracking()
+    first, second = asyncio.new_event_loop(), asyncio.new_event_loop()
+    try:
+
+        async def first_step() -> None:
+            await inner.__anext__()
+            tracking.note(inner)
+
+        first.run_until_complete(first_step())
+        second.run_until_complete(_langgraph_mod._aclose(inner, tracking))
+    finally:
+        first.close()
+        second.close()
+    assert cleaned == ["closed"]
 
 
 def test_a_collected_stream_mid_close_is_not_swept_again(patched: Any) -> None:

@@ -45,6 +45,10 @@ MODEL = "claude-haiku-4-5-20251001"
 # Short answers keep the run cheap; a tool call needs a few tokens.
 MAX_TOKENS = 300
 SUB_AGENT = "researcher"
+# The capital the sub-agent's tool knows, for the one country it is asked
+# about; every answer of the run must name it.
+COUNTRY = "france"
+CAPITAL = "Paris"
 QUESTION = (
     "What is the capital of France? Delegate this to the researcher sub-agent"
     " with the task tool, then reply with its answer in one sentence."
@@ -127,7 +131,7 @@ def _assert_one_researcher(root: str, label: str) -> None:
     outgoing = end_payload.get("outgoing_message")
     _check(
         f"{label}: the child carries the sub-agent's input and its answer",
-        bool(incoming) and bool(outgoing) and "Paris" in json.dumps(outgoing),
+        bool(incoming) and bool(outgoing) and CAPITAL in json.dumps(outgoing),
         f"incoming={'yes' if incoming else 'no'} outgoing={json.dumps(outgoing)[:200]}",
     )
 
@@ -159,7 +163,7 @@ def main() -> None:
     @tool
     def lookup_capital(country: str) -> str:
         """Look up the capital city of a country."""
-        return {"france": "Paris"}.get(country.strip().lower(), "unknown")
+        return {COUNTRY: CAPITAL}.get(country.strip().lower(), "unknown")
 
     def agent() -> Any:
         # Built under the session that runs it: a model's client belongs
@@ -195,7 +199,7 @@ def main() -> None:
     result = agent().invoke(request)
     print_result("Deep Agent run (invoke)", True, int((time.monotonic() - t0) * 1000))
     answer = str(result["messages"][-1].content)
-    _check("the run answered Paris", "Paris" in answer, f"answer={answer!r}")
+    _check(f"the run answered {CAPITAL}", CAPITAL in answer, f"answer={answer!r}")
     flightdeck_sensor.teardown()
     _assert_one_researcher(root, "invoke")
 
@@ -215,7 +219,7 @@ def main() -> None:
     final = asyncio.run(streamed())
     print_result("Deep Agent run (astream)", True, int((time.monotonic() - t0) * 1000))
     streamed_answer = str(final["messages"][-1].content)
-    _check("the streamed run answered Paris", "Paris" in streamed_answer, streamed_answer)
+    _check(f"the streamed run answered {CAPITAL}", CAPITAL in streamed_answer, streamed_answer)
     flightdeck_sensor.teardown()
     _assert_one_researcher(async_root, "astream")
 

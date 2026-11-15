@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -76,6 +77,11 @@ type Options struct {
 	// runs with these settings whether it serves, and exit. Only Listen
 	// and Domain matter to it.
 	Health bool
+	// HostlessListen is set when the listen address was a port with no
+	// host (":4141"), which Listen holds with LoopbackHost: the address
+	// as it was given, "--listen :4141" or "FLIGHTDECK_LISTEN=:4141", for
+	// the binary's warning and refusal. Empty for any other address.
+	HostlessListen string
 }
 
 // The variables of the three flags that choose the listen address.
@@ -84,6 +90,13 @@ const (
 	portEnv   = "FLIGHTDECK_PORT"
 	publicEnv = "FLIGHTDECK_PUBLIC"
 )
+
+// serviceLinkSchemes begin the value Kubernetes gives FLIGHTDECK_PORT
+// in every pod of a namespace that has a Service named flightdeck: its
+// service links (enableServiceLinks, on by default) set <SERVICE>_PORT
+// to the Service's address, tcp://10.96.0.5:4000, in the protocol the
+// Service's first port uses.
+var serviceLinkSchemes = []string{"tcp://", "udp://", "sctp://"}
 
 // HealthCommand is a subcommand, given as the first argument:
 // `flightdeck health`. It takes the server's flags and reads the
@@ -107,6 +120,7 @@ var ErrHelp = flag.ErrHelp
 func Parse(args []string, env func(string) string, out io.Writer) (Options, error) {
 	fs := flag.NewFlagSet("flightdeck", flag.ContinueOnError)
 	fs.SetOutput(out)
+	env = withoutServiceLinks(env)
 
 	var o Options
 	if len(args) > 0 && args[0] == HealthCommand {
@@ -121,14 +135,15 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		": on " + LoopbackHost + ", this machine only, with the development token, unless --public is given (env " + portEnv + ")"
 	fs.StringVar(&port, "port", envOr(env, portEnv, DefaultPort), portUsage)
 	fs.StringVar(&port, "p", envOr(env, portEnv, DefaultPort), "short for --port")
-	publicDefault, err := envBool(env, publicEnv)
-	if err != nil {
-		return Options{}, err
-	}
+	// A bad FLIGHTDECK_PUBLIC is reported after parsing, and only when
+	// --public does not override it: --public=false, --version and
+	// --help work whatever the variable holds.
+	publicDefault, publicErr := envBool(env, publicEnv)
 	var public bool
 	fs.BoolVar(&public, "public", publicDefault,
 		"serve every network interface ("+PublicHost+"), so other machines reach this server: it then refuses the development token "+
-			"and uses an access token, created on its first start (env "+publicEnv+")")
+			"and uses an access token, created on its first start. Whoever can reach the server can read that token, so open it "+
+			"only on a network you trust, or put it behind a proxy that authenticates (env "+publicEnv+")")
 	fs.StringVar(&o.Listen, "listen", env(listenEnv),
 		"one address to serve on, host:port, for example 10.0.0.5:4000; 0.0.0.0:4000 is every interface, a loopback host "+
 			"enables the development token, and a port with no host (:4000) is "+LoopbackHost+". It names the whole address, so it "+
@@ -202,7 +217,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	if o.Version {
 		return o, nil
 	}
-	if o.Listen, err = resolveListen(given, o.Listen, port, public, env); err != nil {
+	if publicErr != nil && !given["public"] {
+		return Options{}, publicErr
+	}
+	if o.Listen, o.HostlessListen, err = resolveListen(given, o.Listen, port, public, env); err != nil {
 		return Options{}, err
 	}
 	if o.AllowedHosts, err = parseAllowedHosts(*allowedHosts); err != nil {
@@ -227,8 +245,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 // address, so it combines with neither of the others. A flag beats its
 // variable, and a flag of either side overrides the other side's
 // variables; the two sides given together, as flags or, with no flag
-// deciding, as variables, are a usage error that names both.
-func resolveListen(given map[string]bool, listen, port string, public bool, env func(string) string) (string, error) {
+// deciding, as variables, are a usage error that names both. The second
+// result is the listen address as it was given when it had no host
+// (Options.HostlessListen).
+func resolveListen(given map[string]bool, listen, port string, public bool, env func(string) string) (addr, hostless string, err error) {
 	portFlag := ""
 	switch {
 	case given["port"]:
@@ -238,48 +258,93 @@ func resolveListen(given map[string]bool, listen, port string, public bool, env 
 	}
 	switch {
 	case given["listen"] && portFlag != "":
-		return "", bothFlags(portFlag)
+		return "", "", bothFlags(portFlag)
 	case given["listen"] && given["public"]:
-		return "", bothFlags("--public")
+		return "", "", bothFlags("--public")
 	case given["listen"]:
-		return listenAddress(listen)
+		return listenAddress(listen, "--listen ")
 	case portFlag != "" || given["public"]:
 		// FLIGHTDECK_LISTEN is overridden by a flag of the other side.
 	case env(listenEnv) != "":
 		switch {
 		case env(portEnv) != "":
-			return "", bothVariables(portEnv)
+			return "", "", bothVariables(portEnv)
 		case env(publicEnv) != "":
-			return "", bothVariables(publicEnv)
+			return "", "", bothVariables(publicEnv)
 		}
-		return listenAddress(listen)
+		return listenAddress(listen, listenEnv+"=")
 	}
-	return portAddress(port, public)
+	addr, err = portAddress(port, public)
+	return addr, "", err
 }
 
 // listenAddress checks a --listen value and gives a port with no host
 // (":4100", "[]:4100") the loopback host: an address that serves other
 // machines is written out (0.0.0.0:4100, [::]:4100, one interface's
-// address) or spelled --public. A number alone is refused with the
-// --port form; any other value the bind reports, as it always has.
-func listenAddress(raw string) (string, error) {
-	addr := strings.TrimSpace(raw)
+// address) or spelled --public. A host-less value comes back as given,
+// prefixed with how it was given (source), as the second result. A
+// number alone and an IPv6 address without brackets are refused with
+// the form to write; any other value the bind reports, as it always has.
+func listenAddress(raw, source string) (addr, hostless string, err error) {
+	addr = strings.TrimSpace(raw)
 	if addr == "" {
-		return "", errors.New("--listen (" + listenEnv + ") must not be empty: give host:port, for example 10.0.0.5:4000, " +
+		return "", "", errors.New("--listen (" + listenEnv + ") must not be empty: give host:port, for example 10.0.0.5:4000, " +
 			"or leave it out to serve on " + DefaultListen)
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		if decimal(addr) {
-			return "", fmt.Errorf("--listen (%s) got %s, a port with no address; for that port on this machine give --port %s "+
+		switch {
+		case decimal(addr):
+			return "", "", fmt.Errorf("--listen (%s) got %s, a port with no address; for that port on this machine give --port %s "+
 				"(%s=%s), and for another address --listen <address>:%s", listenEnv, addr, addr, portEnv, addr, addr)
+		case strings.Count(addr, ":") > 1 && !strings.ContainsAny(addr, "[]"):
+			return "", "", unbracketed(addr)
 		}
-		return addr, nil
+		return addr, "", nil
 	}
 	if host == "" {
-		return net.JoinHostPort(LoopbackHost, port), nil
+		return net.JoinHostPort(LoopbackHost, port), source + addr, nil
 	}
-	return addr, nil
+	return addr, "", nil
+}
+
+// unbracketed is the refusal of an IPv6 address written without the
+// brackets that set it off from its port: in ::1:4000 no colon says
+// where the address ends, and ::1 alone has no port. The hint brackets
+// the address the value most likely means.
+func unbracketed(addr string) error {
+	hint := "[" + addr + "]:<port>"
+	if i := strings.LastIndex(addr, ":"); i > 0 && decimal(addr[i+1:]) {
+		if _, err := netip.ParseAddr(addr[:i]); err == nil {
+			hint = "[" + addr[:i] + "]:" + addr[i+1:]
+		}
+	}
+	return fmt.Errorf("--listen (%s) got %s, an IPv6 address without brackets; an IPv6 address goes in brackets "+
+		"before its port, for example %s", listenEnv, addr, hint)
+}
+
+// withoutServiceLinks is env with a Kubernetes service link's value of
+// FLIGHTDECK_PORT (serviceLinkSchemes) read as unset, for the port and
+// for the conflict with FLIGHTDECK_LISTEN alike: nobody set it, and it
+// is no port.
+func withoutServiceLinks(env func(string) string) func(string) string {
+	return func(key string) string {
+		v := env(key)
+		if key == portEnv && serviceLink(v) {
+			return ""
+		}
+		return v
+	}
+}
+
+func serviceLink(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	for _, scheme := range serviceLinkSchemes {
+		if strings.HasPrefix(v, scheme) {
+			return true
+		}
+	}
+	return false
 }
 
 // portAddress is the address of --port and --public: the port on the

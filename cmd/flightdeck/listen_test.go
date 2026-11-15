@@ -79,7 +79,9 @@ func requireThisMachineOnly(t *testing.T, c *child, port string) {
 	}
 	for _, want := range []string{
 		"  Dashboard   http://localhost:" + port + "\n",
-		"  Token       tok_dev   (development token: the server listens on this machine only; --public lets other machines in)\n",
+		"  Token       tok_dev   (development token: the server listens on this machine only)\n" +
+			"              --public lets other machines in; whoever can reach the server can then read the dashboard token, " +
+			"so open it only on a network you trust, or put it behind a proxy that authenticates\n",
 		"  Hosts       localhost, IP addresses   (a request for any other host name is refused",
 	} {
 		if !strings.Contains(c.out.String(), want) {
@@ -93,10 +95,17 @@ func requireThisMachineOnly(t *testing.T, c *child, port string) {
 	}
 }
 
+// hostlessWarning begins the line the binary logs at start-up when the
+// listen address was a port with no host.
+const hostlessWarning = "the listen address has no host, so the server listens on this machine only"
+
 func TestBinary_PortServesThisMachineOnly(t *testing.T) {
 	port := freePort(t)
 	c := startArgs(t, nil, port, "--port", port, "--data-dir", filepath.Join(tempDir(t), "data"))
 	requireThisMachineOnly(t, c, port)
+	if strings.Contains(c.out.String(), hostlessWarning) {
+		t.Errorf("--port logged the warning of a host-less listen address:\n%s", c.out.String())
+	}
 
 	healthy := "healthy: http://127.0.0.1:" + port + " answers /api/health and /ingest/health\n"
 	for _, h := range []struct {
@@ -124,6 +133,17 @@ func TestBinary_ListenPortWithoutHostIsLoopback(t *testing.T) {
 	port := freePort(t)
 	c := start(t, ":"+port, port, filepath.Join(tempDir(t), "data"))
 	requireThisMachineOnly(t, c, port)
+	// One warning at start-up, naming the address as it was given and
+	// the forms that say what was meant.
+	out := c.out.String()
+	if n := strings.Count(out, hostlessWarning); n != 1 {
+		t.Errorf("%d host-less warnings, want 1:\n%s", n, out)
+	}
+	for _, want := range []string{"--listen 0.0.0.0:" + port, "--public --port " + port, "--port " + port, `given="--listen :` + port + `"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the warning lacks %q:\n%s", want, out)
+		}
+	}
 
 	healthy := "healthy: http://127.0.0.1:" + port + " answers /api/health and /ingest/health\n"
 	for _, h := range [][]string{{"FLIGHTDECK_LISTEN=:" + port}, {"FLIGHTDECK_PORT=" + port}} {
@@ -218,5 +238,69 @@ func TestBinary_ListenFlagsThatDoNotCombineAreAUsageError(t *testing.T) {
 		if code != 1 || strings.Count(out, "\n") != 1 || !strings.Contains(out, c.want) {
 			t.Errorf("flightdeck health %v (env %v): exit %d, output %q; want 1 and one line with %q", c.args, c.env, code, out, c.want)
 		}
+	}
+}
+
+// A port with no host and a supplied dashboard token stop the start
+// before anything is bound or written: the token says the instance
+// serves beyond loopback (a reverse proxy on this machine forwarding to
+// it), which ":N" no longer does.
+func TestBinary_HostlessListenWithASuppliedTokenIsRefused(t *testing.T) {
+	port := freePort(t)
+	tokenFile := filepath.Join(tempDir(t), "token")
+	if err := os.WriteFile(tokenFile, []byte(suppliedTokenA+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		env   []string
+		args  []string
+		given string
+	}{
+		{[]string{"FLIGHTDECK_LISTEN=:" + port, "FLIGHTDECK_DASHBOARD_TOKEN=" + suppliedTokenA, "FLIGHTDECK_ALLOWED_HOSTS=fd.example.com"}, nil,
+			"FLIGHTDECK_LISTEN=:" + port},
+		{[]string{"FLIGHTDECK_DASHBOARD_TOKEN_FILE=" + tokenFile}, []string{"--listen", ":" + port}, "--listen :" + port},
+	} {
+		dataDir := filepath.Join(tempDir(t), "data")
+		code, out := runToExit(t, c.env, append(c.args, "--data-dir", dataDir)...)
+		if code != 2 || !strings.Contains(out, c.given+" has no host, which means this machine only") ||
+			!strings.Contains(out, "--listen 0.0.0.0:"+port) || !strings.Contains(out, "--listen 127.0.0.1:"+port) {
+			t.Errorf("env %v, args %v: exit %d, output %q; want 2 and the forms to write", c.env, c.args, code, out)
+		}
+		if strings.Contains(out, suppliedTokenA) {
+			t.Errorf("the refusal repeats the supplied token: %q", out)
+		}
+		if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("env %v, args %v: the refused start created its data dir (stat: %v)", c.env, c.args, err)
+		}
+		if accepts("127.0.0.1:" + port) {
+			t.Fatalf("env %v, args %v: the refused start left a listener", c.env, c.args)
+		}
+	}
+	// Written out, the same start goes ahead (here on every interface,
+	// with the supplied token).
+	c := startArgs(t, []string{"FLIGHTDECK_LISTEN=0.0.0.0:" + port, "FLIGHTDECK_DASHBOARD_TOKEN=" + suppliedTokenA}, port,
+		"--data-dir", filepath.Join(tempDir(t), "data"))
+	if token := c.dashboardToken(t); token != suppliedTokenA {
+		t.Errorf("the written-out start serves token %q, want the supplied one", token)
+	}
+}
+
+// Kubernetes sets FLIGHTDECK_PORT to tcp://<ClusterIP>:<port> in every
+// pod of a namespace with a Service named flightdeck. Beside the image's
+// FLIGHTDECK_LISTEN it is read as unset: the server starts where the
+// image says and the health check finds it.
+func TestBinary_KubernetesServiceLinkPortIsIgnored(t *testing.T) {
+	port := freePort(t)
+	env := []string{"FLIGHTDECK_LISTEN=0.0.0.0:" + port, "FLIGHTDECK_ALLOWED_HOSTS=localhost", "FLIGHTDECK_PORT=tcp://10.96.0.5:4000"}
+	c := startArgs(t, env, port, "--data-dir", filepath.Join(tempDir(t), "data"))
+	if token := c.dashboardToken(t); !strings.HasPrefix(token, "ftd_") {
+		t.Errorf("the image's environment serves token %q, want a minted ftd_ token", token)
+	}
+	if want := "  Dashboard   http://<this-host>:" + port + "   (every interface"; !strings.Contains(c.out.String(), want) {
+		t.Errorf("the start-up block lacks %q:\n%s", want, c.out.String())
+	}
+	healthy := "healthy: http://127.0.0.1:" + port + " answers /api/health and /ingest/health\n"
+	if code, out := runHealthCommand(t, env); code != 0 || out != healthy {
+		t.Errorf("flightdeck health in the image's environment: exit %d, output %q; want 0 and %q", code, out, healthy)
 	}
 }

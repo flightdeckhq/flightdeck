@@ -1091,17 +1091,18 @@ Agent, none named after the sub-agent, two extra posts per child).
 ## D277 -- `--port` picks the port on loopback, `--public` opens every interface, and a `--listen` port with no host is loopback
 
 **Date:** 2026-11-15
-**Decision:** `--port N` (`-p`, `FLIGHTDECK_PORT`; 1 to 65535) serves
-`127.0.0.1:N`; `--public` (`FLIGHTDECK_PUBLIC`) serves `0.0.0.0`, the
-mode `--listen 0.0.0.0:N` is (no development token), and combines with
-`--port`. `--listen :N` (and `FLIGHTDECK_LISTEN=:N`) now means
-`127.0.0.1:N`; serving other machines is spelled `--public` or a written
-address. `--listen` with `--port` or `--public` is a usage error, as is
-the same pair of variables when no flag decides; a flag overrides the
-other side's variables. `flightdeck health` resolves alike.
+**Decision:** `--port N` (`-p`, `FLIGHTDECK_PORT`, 1 to 65535) serves
+`127.0.0.1:N`; `--public` (`FLIGHTDECK_PUBLIC`) serves `0.0.0.0`, in
+its mode, and combines with `--port`. `--listen :N` means `127.0.0.1:N`,
+warned at start, refused beside a supplied token. `--listen` with
+either, as flags or as variables, is a usage error; a flag overrides
+the other side's variables. A bound socket that disagrees with the mode
+stops the start.
 **Why:** `:N` bound every interface, which silently left local mode
 (development token refused, reachable from the network) for someone
 who only wanted another port.
 **Rejected alternative:** keeping `:N` on every interface with a
-warning (the exposure still happens); a `--port` that also changes the
-host (the port and the reach are separate choices).
+warning (the exposure still happens); a `--port` that changes the host
+(port and reach are separate choices); renaming `FLIGHTDECK_PORT`, which
+Kubernetes service links set to `tcp://…` (the services use the name
+already; such a value is no port and reads as unset).

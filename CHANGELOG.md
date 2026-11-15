@@ -54,7 +54,24 @@ All notable changes to Flightdeck are documented here.
   now sets `FLIGHTDECK_LISTEN=0.0.0.0:4000` and the Helm chart passes
   `--listen 0.0.0.0:<port>`, so both serve as before. A port already
   in use names the flags for the next one, `--port 4001` on this
-  machine (D277).
+  machine. Every start with a host-less address now logs a warning
+  that says so. A container started with `-e FLIGHTDECK_LISTEN=:<port>`,
+  or a manifest that passes `--listen :<port>` as its command or
+  arguments, is no longer reachable from outside the container while
+  `flightdeck health` inside it still reports healthy: write
+  `0.0.0.0:<port>`. An instance behind a reverse proxy on the same
+  machine that was started with `:<port>` and a supplied dashboard
+  token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+  `FLIGHTDECK_DASHBOARD_TOKEN`) is refused at start, with the forms to
+  write, instead of falling back to the development token while the
+  proxy keeps forwarding: `--listen 127.0.0.1:<port>` keeps it on this
+  machine (and serves the development token), `--listen 0.0.0.0:<port>`
+  or `--public` serves the supplied one. `--public` lets whoever can
+  reach the server read its dashboard token, so open it only on a
+  network you trust, or put it behind a proxy that authenticates; the
+  help text and the start-up block say so. A `FLIGHTDECK_PORT` that
+  Kubernetes sets for a Service named `flightdeck` (`tcp://…`) is read
+  as unset, so such a namespace's pods start as before (D277).
 
 ### Fixed
 

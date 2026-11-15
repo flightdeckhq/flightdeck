@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -98,8 +99,11 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 	for _, want := range []string{
 		"  Dashboard   http://localhost:4000\n",
 		"  Ingestion   http://localhost:4000/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n",
-		// The loopback block says how to let other machines in.
-		"  Token       tok_dev   (development token: the server listens on this machine only; --public lets other machines in)\n",
+		// The loopback block says how to let other machines in, and what
+		// that exposes.
+		"  Token       tok_dev   (development token: the server listens on this machine only)\n" +
+			"              --public lets other machines in; whoever can reach the server can then read the dashboard token, " +
+			"so open it only on a network you trust, or put it behind a proxy that authenticates\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("loopback: the block lacks %q:\n%s", want, out)
@@ -551,5 +555,76 @@ func TestInUseMessagesNameTheHolderAndTheRemedy(t *testing.T) {
 	other := errors.New("open lock file: permission denied")
 	if dataDirInUse(other, "/d") != other || databaseInUse(other, "/d/x.db") != other {
 		t.Error("an error that is not InUseError must be returned unchanged")
+	}
+}
+
+// The mode is decided from the address as written; a socket that the
+// system bound elsewhere stops the start, in either direction.
+func TestCheckBound_RefusesASocketThatDisagreesWithTheMode(t *testing.T) {
+	tcp := func(ip string) net.Addr { return &net.TCPAddr{IP: net.ParseIP(ip), Port: 4100} }
+	for _, c := range []struct {
+		name   string
+		dev    bool
+		bound  net.Addr
+		refuse string
+	}{
+		{"loopback, bound loopback", true, tcp("127.0.0.1"), ""},
+		{"IPv6 loopback, bound there", true, tcp("::1"), ""},
+		{"every interface, bound there", false, tcp("::"), ""},
+		{"one LAN address, bound there", false, tcp("10.0.0.5"), ""},
+		{"a name that resolved to loopback", false, tcp("127.0.1.1"), "a loopback address, but does not read as one"},
+		{"localhost that resolved beyond loopback", true, tcp("10.0.0.5"), "the development token would be served beyond this machine"},
+		{"not a TCP address", true, &net.UnixAddr{Name: "/tmp/x", Net: "unix"}, ""},
+	} {
+		err := checkBound(c.dev, "fd.internal:4100", c.bound)
+		switch {
+		case c.refuse == "" && err != nil:
+			t.Errorf("%s: refused: %v", c.name, err)
+		case c.refuse != "" && (err == nil || !strings.Contains(err.Error(), c.refuse) || !strings.Contains(err.Error(), "--port 4100")):
+			t.Errorf("%s: err = %v, want a refusal with %q and --port 4100", c.name, err, c.refuse)
+		}
+	}
+}
+
+// A port with no host and a supplied dashboard token stop the start: the
+// token says the instance serves beyond loopback, which ":N" no longer
+// does. Without a token, with --domain or with a host, nothing is refused.
+func TestHostlessWithSuppliedToken(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	hostless := cli.Options{Listen: "127.0.0.1:4141", HostlessListen: "FLIGHTDECK_LISTEN=:4141"}
+	for _, c := range []struct {
+		name string
+		opts cli.Options
+		env  map[string]string
+		want string
+	}{
+		{"the token file", hostless, map[string]string{bootstrap.TokenFileEnv: "/run/secrets/token"}, bootstrap.TokenFileEnv},
+		{"the token variable", hostless, map[string]string{bootstrap.TokenEnv: "ftd_x"}, bootstrap.TokenEnv},
+		{"both: the file is named", hostless, map[string]string{bootstrap.TokenFileEnv: "/t", bootstrap.TokenEnv: "ftd_x"}, bootstrap.TokenFileEnv},
+		{"no token", hostless, nil, ""},
+		{"a written-out loopback address", cli.Options{Listen: "127.0.0.1:4141"}, map[string]string{bootstrap.TokenEnv: "ftd_x"}, ""},
+		{"--domain", cli.Options{Listen: "127.0.0.1:4141", HostlessListen: "--listen :4141", Domain: "fd.example.com"},
+			map[string]string{bootstrap.TokenEnv: "ftd_x"}, ""},
+	} {
+		err := hostlessWithSuppliedToken(c.opts, env(c.env))
+		if c.want == "" {
+			if err != nil {
+				t.Errorf("%s: refused: %v", c.name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: not refused", c.name)
+			continue
+		}
+		for _, want := range []string{c.opts.HostlessListen, "this machine only (127.0.0.1:4141)", c.want,
+			"--listen 0.0.0.0:4141", "--public --port 4141", "--listen 127.0.0.1:4141", "--port 4141", "development token"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: error %q lacks %q", c.name, err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "ftd_x") {
+			t.Errorf("%s: the error repeats the token: %q", c.name, err)
+		}
 	}
 }

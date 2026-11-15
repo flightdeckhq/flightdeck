@@ -162,7 +162,7 @@ The sensor meters every LLM call a framework makes through the Anthropic or Open
 
 ## Self-hosting
 
-The same binary serves a team. Started with `--public` (every network interface, so other machines reach it), with `--domain`, or with `--listen <address>:<port>` on an address beyond your own machine, it refuses the development token, creates an access token on its first start and prints it once; make more under **Settings → Access tokens** and give them to your agents ([Connect your agents](#connect-your-agents)).
+The same binary serves a team. Started with `--public` (every network interface, so other machines reach it), with `--domain`, or with `--listen <address>:<port>` on an address beyond your own machine, it refuses the development token, creates an access token on its first start and prints it once; make more under **Settings → Access tokens** and give them to your agents ([Connect your agents](#connect-your-agents)). Whoever can reach the server can read that token, so open it only on a network you trust, or put it behind a proxy that authenticates.
 
 ```bash
 flightdeck --domain flightdeck.example.com

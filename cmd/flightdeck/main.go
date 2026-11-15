@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -142,11 +143,81 @@ func run(args []string, stdout, stderr *os.File) int {
 	if opts.Health {
 		return runHealth(opts, stdout, stderr)
 	}
+	if err := hostlessWithSuppliedToken(opts, os.Getenv); err != nil {
+		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
+		return 2
+	}
 	if err := serveAll(opts, stdout); err != nil {
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
 		return 1
 	}
 	return 0
+}
+
+// hostlessWithSuppliedToken refuses the one start that a listen port
+// with no host (":4141") would silently turn into another mode. A
+// supplied dashboard token says the instance runs beyond loopback (a
+// reverse proxy on this machine forwarding to it, say), which is what
+// ":4141" used to bind; it now binds this machine only, where the
+// supplied token is ignored and the development token is used. So the
+// operator writes the address out, either way. --domain binds its own
+// ports, so a host-less listen address changes nothing there.
+func hostlessWithSuppliedToken(opts cli.Options, getenv func(string) string) error {
+	if opts.HostlessListen == "" || opts.Domain != "" {
+		return nil
+	}
+	variable := bootstrap.TokenFileEnv
+	if getenv(variable) == "" {
+		if variable = bootstrap.TokenEnv; getenv(variable) == "" {
+			return nil
+		}
+	}
+	_, port, _ := net.SplitHostPort(opts.Listen)
+	return fmt.Errorf("%s has no host, which means this machine only (%s), where the development token is used and the "+
+		"supplied dashboard token (%s) would be ignored; write the address out: --listen 0.0.0.0:%s or --public --port %s to "+
+		"serve other machines with the supplied token, or --listen %s or --port %s for this machine only (a reverse proxy on "+
+		"this machine then serves the development token)", opts.HostlessListen, opts.Listen, variable, port, port, opts.Listen, port)
+}
+
+// warnHostless logs, once at start-up, that a listen port with no host
+// now means this machine only, for the operator who wrote ":4141" to
+// serve other machines.
+func warnHostless(opts cli.Options) {
+	if opts.HostlessListen == "" || opts.Domain != "" {
+		return
+	}
+	_, port, _ := net.SplitHostPort(opts.Listen)
+	slog.Warn(fmt.Sprintf("the listen address has no host, so the server listens on this machine only, where the development "+
+		"token is used; write --listen 0.0.0.0:%s or --public --port %s to serve other machines, or --listen %s or --port %s "+
+		"to keep this without the warning", port, port, opts.Listen, port), "given", opts.HostlessListen, "listen", opts.Listen)
+}
+
+// checkBound refuses a listener whose socket disagrees with the mode its
+// address was read as. The development token and the Host check are
+// decided from the address as written, before it is bound, and a name
+// the system resolves at bind time can bind loopback while it reads as
+// an address beyond (a hosts-file entry for 127.0.1.1, 127.1 through
+// the C resolver) or the other way round. Either way the mode would be
+// wrong for the socket: the development token served beyond this
+// machine, or a loopback-only instance with the Host check off, which a
+// DNS-rebinding page can read the token from.
+func checkBound(dev bool, listen string, bound net.Addr) error {
+	tcp, ok := bound.(*net.TCPAddr)
+	if !ok {
+		return nil
+	}
+	port := strconv.Itoa(tcp.Port)
+	switch loopback := tcp.IP.IsLoopback(); {
+	case dev && !loopback:
+		return fmt.Errorf("--listen %s reads as this machine only but bound %s, which is not a loopback address, so the "+
+			"development token would be served beyond this machine; write the address out: --port %s for this machine only, "+
+			"or --listen <address>:%s (--public --port %s for every interface)", listen, bound, port, port, port)
+	case !dev && loopback:
+		return fmt.Errorf("--listen %s bound %s, a loopback address, but does not read as one, so the server would run "+
+			"in the mode of an address beyond this machine with the Host check off; write --port %s or --listen 127.0.0.1:%s "+
+			"for this machine only", listen, bound, port, port)
+	}
+	return nil
 }
 
 // runHealth is `flightdeck health`: it asks the instance that runs with
@@ -206,6 +277,7 @@ func bind(opts cli.Options) (*listeners, error) {
 
 func serveAll(opts cli.Options, stdout *os.File) error {
 	dev := bootstrap.DevMode(opts.Listen, opts.Domain)
+	warnHostless(opts)
 	// Read before anything is bound or written: a token that is refused
 	// stops the start with nothing done.
 	supplied, err := bootstrap.LoadSupplied(os.Getenv)
@@ -228,6 +300,11 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return err
 	}
 	defer lns.closeAll()
+	if lns.plain != nil {
+		if err := checkBound(dev, opts.Listen, lns.plain.Addr()); err != nil {
+			return err
+		}
+	}
 
 	layout, err := datadir.Ensure(opts.DataDir)
 	if err != nil {
@@ -699,7 +776,8 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	p("  Ingestion   %s/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n", base)
 	switch {
 	case dev:
-		p("  Token       %s   (development token: the server listens on this machine only; --public lets other machines in)\n", token.Token)
+		p("  Token       %s   (development token: the server listens on this machine only)\n", token.Token)
+		p("              %s\n", publicHint)
 	case token.Source != "":
 		p("  Token       supplied by %s   (named %q in Settings)\n", token.Source, bootstrap.SuppliedTokenNameFor(token.Token))
 	case token.Minted:
@@ -725,6 +803,11 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	}
 	p("\nPress Ctrl+C to stop.\n\n")
 }
+
+// publicHint is the line under the development token in the start-up
+// block: how to let other machines in, and what that exposes.
+const publicHint = "--public lets other machines in; whoever can reach the server can then read the dashboard token, " +
+	"so open it only on a network you trust, or put it behind a proxy that authenticates"
 
 // thisHost stands for the machine's own name or address in the start-up
 // block when the binary listens on every interface. The operating

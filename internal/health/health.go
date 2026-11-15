@@ -66,10 +66,12 @@ type Target struct {
 // TargetFor returns the target of an instance started with the given
 // --listen and --domain, the two settings that decide where it serves.
 // With a domain the instance serves TLS on :443 and ignores --listen.
-// A listen address on every interface (":4000", "0.0.0.0:4000",
-// "[::]:4000") is reached on loopback, 127.0.0.1 and then ::1; one that
-// names an interface or a host is reached there, since nothing listens
-// on loopback then.
+// A listen address on every interface ("0.0.0.0:4000", "[::]:4000",
+// and ":4000", which binds every interface when passed here directly;
+// the binary's command line never produces it, since cli.Parse gives a
+// port alone the loopback host) is reached on loopback, 127.0.0.1 and
+// then ::1; one that names an interface or a host is reached there,
+// since nothing listens on loopback then.
 func TargetFor(listen, domain string) (Target, error) {
 	if domain != "" {
 		port := strings.TrimPrefix(serve.HTTPSPort, ":")
@@ -88,7 +90,8 @@ func TargetFor(listen, domain string) (Target, error) {
 			Fallback: "http://" + net.JoinHostPort(loopbackV6, port),
 		}, nil
 	}
-	return Target{Base: "http://" + net.JoinHostPort(host, port)}, nil
+	// A zone (an IPv6 loopback listen, [::1%lo]) is "%25" in a URL.
+	return Target{Base: "http://" + net.JoinHostPort(strings.Replace(host, "%", "%25", 1), port)}, nil
 }
 
 // Check probes both health routes of t and returns the base URL that

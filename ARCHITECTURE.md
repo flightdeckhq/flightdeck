@@ -11018,14 +11018,57 @@ this machine only, `127.0.0.1`, as `--port` is: an address that serves
 other machines is written out, `0.0.0.0:4100` or one interface's
 address, or spelled `--public`. `[::]:4100` and `0.0.0.0:4100` are
 every interface, `[::1]:4100` is loopback; a number alone (`--listen
-4100`) is refused with the `--port` form to use instead. `--public` is
+4100`) is refused with the `--port` form to use instead, and an IPv6
+address without brackets (`::1:4100`, `::1`) with the bracketed form,
+`[::1]:4100`, since no colon in it says where the address ends.
+`--public` is
 the listener `--listen 0.0.0.0:<port>` opens, and nothing more: Go
 opens a listener on a wildcard address as one dual-stack socket where
 the system supports one, taking IPv4 and IPv6 connections alike, so it
 reaches what `[::]:<port>` reaches. It is the mode of a listen beyond
 loopback in every respect: the development token is refused, the token
 is minted or supplied, and the Host check is off unless a list is set
-(Auth bootstrap and Host check, below).
+(Auth bootstrap and Host check, below). Whoever can reach the server can
+then read the dashboard token, so `--help`, the start-up block's loopback
+hint and the docs that offer `--public` all add: open it only on a
+network you trust, or put it behind a proxy that authenticates.
+
+A port with no host changes what an existing configuration binds, so
+it is announced. Every start with one logs a warning that names the
+address as it was given and the forms that say what was meant
+(`--listen 0.0.0.0:<port>` or `--public --port <port>` for other
+machines, `--listen 127.0.0.1:<port>` or `--port <port>` for this one).
+Beside a supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+`FLIGHTDECK_DASHBOARD_TOKEN`) the start is refused instead, with a usage
+error (exit status 2) and the same forms: a supplied token says the
+instance runs beyond loopback, a reverse proxy on the same machine
+forwarding to it for one, and on loopback the binary would ignore that
+token and serve the development token while the proxy kept forwarding.
+A proxy on the same machine keeps a loopback address written out
+(`--listen 127.0.0.1:<port>`), and the development token is then what
+it serves. `--domain` binds its own ports, so neither applies there,
+and `flightdeck health` reads the address without either.
+
+The mode is decided from the address as written: a loopback literal
+(`127.0.0.0/8`, `::1`, an IPv4-mapped `::ffff:127.x.y.z`, with or without
+an interface zone, `[::1%lo]`) or `localhost` (any case, with or without
+the trailing dot of a fully qualified name, `localhost.`) is loopback,
+and so is the default; anything else is not, a host name the system
+resolves (a hosts-file entry for `127.0.1.1`, `127.1` through the C
+resolver) included. Once the socket is bound, the binary compares its
+address with that decision and refuses to start when they differ, with
+the address to write instead: a mismatch would serve the development
+token beyond this machine, or run a loopback-only instance with the Host
+check off, from which a DNS-rebinding page could read the token.
+
+`FLIGHTDECK_PORT` is also the variable Kubernetes sets in every pod of
+a namespace that has a Service named `flightdeck`: its service links
+(`enableServiceLinks`, on by default) set `<SERVICE>_PORT` to the
+Service's address, `tcp://10.96.0.5:4000`. A value that begins with
+`tcp://`, `udp://` or `sctp://` is therefore read as unset, for the port
+and for the conflict with `FLIGHTDECK_LISTEN` alike, in the server and
+in `flightdeck health`; with the image's `FLIGHTDECK_LISTEN` the pod
+starts and is found healthy as it would without the link.
 
 `--port` and `--public` combine; `--listen` names the whole address and
 combines with neither. A flag wins over its variable, and a flag of
@@ -11037,8 +11080,10 @@ is a usage error (exit status 2) that names both flags; so is
 `FLIGHTDECK_LISTEN` set beside `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
 when no flag decides, naming both variables. A flag counts once it is on
 the command line, with any value (`--public=false` included); a
-variable counts when it is not empty. With `--domain` the three are
-read and checked but bind nothing (TLS, below).
+variable counts when it is not empty. A `FLIGHTDECK_PUBLIC` that is
+neither true nor false is a usage error when it applies, that is unless
+`--public` is given; it never stops `--version` or `--help`. With
+`--domain` the three are read and checked but bind nothing (TLS, below).
 
 **Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
@@ -11374,7 +11419,10 @@ interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for
 a listen on every interface (`--public`, `0.0.0.0:4000`, `[::]:4000`),
 with a note to put the machine's name or address in place of
 `<this-host>`. On loopback the token line adds that the server listens
-on this machine only and that `--public` lets other machines in. The operating system's host name is not printed there:
+on this machine only, and the line under it that `--public` lets other
+machines in and that whoever can reach the server can then read the
+dashboard token, so to open it only on a network you trust, or to put it
+behind a proxy that authenticates. The operating system's host name is not printed there:
 inside a container it is the container's id (the pod's name under
 Kubernetes), which nothing outside resolves, and the binary cannot know
 the name or the published port the machine is reached by.
@@ -11813,8 +11861,8 @@ over the defaults. `--listen` combines with neither `--port` nor
 
 | Flag | Variable | Purpose |
 |---|---|---|
-| `--port`, `-p` | `FLIGHTDECK_PORT` | Port of the one listener, 1 to 65535 (default 4000), on `127.0.0.1` unless `--public` is given |
-| `--public` | `FLIGHTDECK_PUBLIC` | `true` listens on every interface (`0.0.0.0`), so other machines reach the server; the development token is then refused and an access token is minted or supplied |
+| `--port`, `-p` | `FLIGHTDECK_PORT` | Port of the one listener, 1 to 65535 (default 4000), on `127.0.0.1` unless `--public` is given; a Kubernetes service link's value (`tcp://…`, `udp://…`, `sctp://…`) reads as unset |
+| `--public` | `FLIGHTDECK_PUBLIC` | `true` listens on every interface (`0.0.0.0`), so other machines reach the server; the development token is then refused and an access token is minted or supplied, which whoever reaches the server can read: open it only on a network you trust, or put it behind a proxy that authenticates |
 | `--listen` | `FLIGHTDECK_LISTEN` | One address for the listener, `host:port` (`10.0.0.5:4000`, `0.0.0.0:4000`); a loopback host enables the development token, and a port with no host (`:4000`) is `127.0.0.1` |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
 | `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -646,4 +648,214 @@ func TestParse_UsageDescribesThePortFlags(t *testing.T) {
 	if port < 0 || public < port || listen < public {
 		t.Errorf("the usage does not describe --port, then --public, then --listen:\n%s", header)
 	}
+}
+
+// Kubernetes gives FLIGHTDECK_PORT the address of a Service named
+// flightdeck in every pod of its namespace (tcp://10.96.0.5:4000). That
+// value reads as unset: for the port, and for the conflict with
+// FLIGHTDECK_LISTEN, in the server and in the health command alike.
+func TestParse_KubernetesServiceLinkIsNotAPort(t *testing.T) {
+	for _, link := range []string{"tcp://10.96.0.5:4000", "udp://10.96.0.5:4000", "sctp://10.96.0.5:4000", "TCP://10.96.0.5:4000", " tcp://[fd00::5]:4000"} {
+		for _, c := range []struct {
+			args []string
+			env  map[string]string
+			want string
+		}{
+			{nil, map[string]string{"FLIGHTDECK_PORT": link}, "127.0.0.1:4000"},
+			{nil, map[string]string{"FLIGHTDECK_PORT": link, "FLIGHTDECK_PUBLIC": "true"}, "0.0.0.0:4000"},
+			// The image's environment: no conflict.
+			{nil, map[string]string{"FLIGHTDECK_PORT": link, "FLIGHTDECK_LISTEN": "0.0.0.0:4000", "FLIGHTDECK_ALLOWED_HOSTS": "localhost"}, "0.0.0.0:4000"},
+			{[]string{"health"}, map[string]string{"FLIGHTDECK_PORT": link, "FLIGHTDECK_LISTEN": "0.0.0.0:4000"}, "0.0.0.0:4000"},
+			{[]string{"--public"}, map[string]string{"FLIGHTDECK_PORT": link}, "0.0.0.0:4000"},
+			{[]string{"--port", "4100"}, map[string]string{"FLIGHTDECK_PORT": link}, "127.0.0.1:4100"},
+		} {
+			if got := parseListen(t, c.args, c.env); got != c.want {
+				t.Errorf("Parse(%q) with %v: Listen = %q, want %q", c.args, c.env, got, c.want)
+			}
+		}
+	}
+	// Any other URL is no port either, and is refused as one.
+	if _, err := Parse(nil, envOf(map[string]string{"FLIGHTDECK_PORT": "http://10.96.0.5:4000"}), &bytes.Buffer{}); err == nil ||
+		!strings.Contains(err.Error(), "from 1 to 65535") {
+		t.Errorf("FLIGHTDECK_PORT=http://…: err = %v, want the port refused", err)
+	}
+	// A --port flag with a link's value is a mistyped flag, not a link.
+	if _, err := Parse([]string{"--port", "tcp://10.96.0.5:4000"}, envOf(nil), &bytes.Buffer{}); err == nil {
+		t.Error("--port tcp://… accepted")
+	}
+}
+
+// Parse says how a host-less listen address was given, for the binary's
+// warning and its refusal beside a supplied token.
+func TestParse_HostlessListenIsReportedAsGiven(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{[]string{"--listen", ":4100"}, nil, "--listen :4100"},
+		{[]string{"--listen", "[]:4100"}, nil, "--listen []:4100"},
+		{[]string{"health", "--listen", ":4100"}, nil, "--listen :4100"},
+		{nil, map[string]string{"FLIGHTDECK_LISTEN": ":4100"}, "FLIGHTDECK_LISTEN=:4100"},
+		{nil, map[string]string{"FLIGHTDECK_LISTEN": " :4100\n"}, "FLIGHTDECK_LISTEN=:4100"},
+		{[]string{"--listen", "127.0.0.1:4100"}, nil, ""},
+		{[]string{"--listen", "0.0.0.0:4100"}, nil, ""},
+		{[]string{"--port", "4100"}, nil, ""},
+		{[]string{"--public"}, nil, ""},
+		{nil, nil, ""},
+		// A flag of the port side overrides a host-less variable.
+		{[]string{"--port", "4100"}, map[string]string{"FLIGHTDECK_LISTEN": ":4200"}, ""},
+	} {
+		o, err := Parse(c.args, envOf(c.env), &bytes.Buffer{})
+		if err != nil || o.HostlessListen != c.want {
+			t.Errorf("Parse(%q) with %v: HostlessListen = %q (err %v), want %q", c.args, c.env, o.HostlessListen, err, c.want)
+		}
+	}
+}
+
+// A bad FLIGHTDECK_PUBLIC is reported only when --public does not
+// override it, and never in the way of --version or --help.
+func TestParse_BadPublicVariableIsReportedOnlyWhenItApplies(t *testing.T) {
+	env := map[string]string{"FLIGHTDECK_PUBLIC": "yes please"}
+	if got := parseListen(t, []string{"--public=false"}, env); got != "127.0.0.1:4000" {
+		t.Errorf("--public=false: Listen = %q", got)
+	}
+	if got := parseListen(t, []string{"--public", "--port", "4100"}, env); got != "0.0.0.0:4100" {
+		t.Errorf("--public: Listen = %q", got)
+	}
+	if o, err := Parse([]string{"--version"}, envOf(env), &bytes.Buffer{}); err != nil || !o.Version {
+		t.Errorf("--version: o=%+v err=%v", o, err)
+	}
+	var out bytes.Buffer
+	if _, err := Parse([]string{"--help"}, envOf(env), &out); !errors.Is(err, ErrHelp) || !strings.Contains(out.String(), "-public") {
+		t.Errorf("--help: err %v, output %q", err, out.String())
+	}
+	for _, args := range [][]string{nil, {"--port", "4100"}, {"health"}, {"--listen", "127.0.0.1:4100"}} {
+		_, err := Parse(args, envOf(env), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "FLIGHTDECK_PUBLIC must be true or false") || !strings.Contains(err.Error(), "yes please") {
+			t.Errorf("Parse(%q): err = %v, want the variable refused", args, err)
+		}
+	}
+	// --public takes its value with "=", as every boolean flag does: a
+	// separate "false" is an argument, and refused.
+	if _, err := Parse([]string{"--public", "false"}, envOf(nil), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), `unexpected argument "false"`) {
+		t.Errorf("--public false: err = %v, want an unexpected-argument error", err)
+	}
+}
+
+// An IPv6 address without brackets never reaches the bind: the refusal
+// shows it bracketed.
+func TestParse_UnbracketedIPv6IsAUsageError(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		env  map[string]string
+		hint string
+	}{
+		{[]string{"--listen", "::1"}, nil, "[::1]:<port>"},
+		{[]string{"--listen", "::1:4000"}, nil, "[::1]:4000"},
+		{[]string{"--listen", ":::4000"}, nil, "[::]:4000"},
+		{[]string{"--listen", "fd00::5:4000"}, nil, "[fd00::5]:4000"},
+		{[]string{"--listen", "fe80::1%eth0:4000"}, nil, "[fe80::1%eth0]:4000"},
+		{nil, map[string]string{"FLIGHTDECK_LISTEN": "::1:4000"}, "[::1]:4000"},
+		{[]string{"health", "--listen", "::1:4000"}, nil, "[::1]:4000"},
+	} {
+		_, err := Parse(c.args, envOf(c.env), &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "an IPv6 address without brackets") || !strings.Contains(err.Error(), c.hint) {
+			t.Errorf("Parse(%q) with %v: err = %v, want the refusal with %s", c.args, c.env, err, c.hint)
+		}
+	}
+	// Bracketed, it is an address like any other.
+	if got := parseListen(t, []string{"--listen", "[::1]:4000"}, nil); got != "[::1]:4000" {
+		t.Errorf("Listen = %q", got)
+	}
+}
+
+// The mode of the spellings a person or a tool may use for loopback.
+// Those Go reads as a loopback literal run in the development mode; the
+// others are left to the bind, where the binary refuses a socket that
+// disagrees with the mode.
+func TestParse_ModeOfLoopbackSpellings(t *testing.T) {
+	for _, c := range []struct {
+		listen string
+		dev    bool
+	}{
+		{"LOCALHOST:4100", true},
+		{"localhost.:4100", true},
+		{"[::1%lo]:4100", true},
+		{"[::ffff:127.0.0.1]:4100", true},
+		{"127.0.0.53:4100", true},
+		{"0:4100", false},
+		{"127.1:4100", false},
+		{"localhost.localdomain:4100", false},
+	} {
+		got := parseListen(t, []string{"--listen", c.listen}, nil)
+		if got != c.listen {
+			t.Errorf("--listen %s: Listen = %q, want it unchanged", c.listen, got)
+		}
+		if dev := bootstrap.DevMode(got, ""); dev != c.dev {
+			t.Errorf("--listen %s: development mode %v, want %v", c.listen, dev, c.dev)
+		}
+	}
+}
+
+// literalLoopback is the test's statement of the development mode's
+// rule: the host is localhost (in any case, with or without the
+// trailing dot of a fully qualified name) or an IP literal on loopback,
+// an interface zone aside.
+func literalLoopback(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip, _, _ := strings.Cut(host, "%")
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
+}
+
+// Whatever the arguments and the three variables hold, an address Parse
+// accepts has a host, and the binary is in the development mode exactly
+// when that host is a loopback literal or localhost. The seeds run with
+// every `go test`; `go test -fuzz FuzzParse_ListenAddress` searches on.
+func FuzzParse_ListenAddress(f *testing.F) {
+	for _, seed := range [][4]string{
+		{"", "", "", ""},
+		{"--port 4100", "", "", ""},
+		{"-p 4100 --public", "", "", ""},
+		{"--listen :4100", "", "", ""},
+		{"--listen []:4100", "", "", ""},
+		{"", ":4100", "", ""},
+		{"", ":4100", "tcp://10.96.0.5:4000", ""},
+		{"", "0.0.0.0:4000", "tcp://10.96.0.5:4000", "true"},
+		{"--listen localhost.:4100", "", "", ""},
+		{"--listen LOCALHOST:4100", "", "", ""},
+		{"--listen [::1%lo]:4100", "", "", ""},
+		{"--listen [::ffff:127.0.0.1]:4100", "", "", ""},
+		{"--listen 127.1:4100", "", "", ""},
+		{"--listen 0:4100", "", "", ""},
+		{"--listen ::1:4100", "", "", ""},
+		{"--listen nonsense", "", "", ""},
+		{"--public=false", ":4100", "", "true"},
+		{"health --port 4100", "", "4200", "1"},
+		{"--port 4100", "10.0.0.5:4000", "", "yes"},
+	} {
+		f.Add(seed[0], seed[1], seed[2], seed[3])
+	}
+	f.Fuzz(func(t *testing.T, args, listen, port, public string) {
+		var argv []string
+		if args != "" {
+			argv = strings.Split(args, " ")
+		}
+		env := envOf(map[string]string{"FLIGHTDECK_LISTEN": listen, "FLIGHTDECK_PORT": port, "FLIGHTDECK_PUBLIC": public})
+		o, err := Parse(argv, env, io.Discard)
+		if err != nil || o.Version {
+			return
+		}
+		host, _, splitErr := net.SplitHostPort(o.Listen)
+		if splitErr == nil && host == "" {
+			t.Fatalf("Parse(%q) with %q, %q, %q returned the host-less address %q", argv, listen, port, public, o.Listen)
+		}
+		want := splitErr == nil && literalLoopback(host)
+		if got := bootstrap.DevMode(o.Listen, ""); got != want {
+			t.Fatalf("Parse(%q) with %q, %q, %q returned %q: development mode %v, want %v", argv, listen, port, public, o.Listen, got, want)
+		}
+	})
 }

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -28,10 +29,11 @@ func TestTargetFor(t *testing.T) {
 		want                 Target
 	}{
 		{"the default listen address", "127.0.0.1:4000", "", Target{Base: "http://127.0.0.1:4000"}},
-		{"a port alone, the image's listen address", ":4000", "", Target{Base: "http://127.0.0.1:4000", Fallback: "http://[::1]:4000"}},
+		{"a port alone, every interface when passed here (the command line never produces it)", ":4000", "", Target{Base: "http://127.0.0.1:4000", Fallback: "http://[::1]:4000"}},
 		{"every IPv4 interface, a custom port", "0.0.0.0:5000", "", Target{Base: "http://127.0.0.1:5000", Fallback: "http://[::1]:5000"}},
 		{"every IPv6 interface: IPv4 loopback first", "[::]:4000", "", Target{Base: "http://127.0.0.1:4000", Fallback: "http://[::1]:4000"}},
 		{"IPv6 loopback", "[::1]:4000", "", Target{Base: "http://[::1]:4000"}},
+		{"IPv6 loopback with a zone, escaped for the URL", "[::1%lo]:4000", "", Target{Base: "http://[::1%25lo]:4000"}},
 		{"one LAN address: nothing listens on loopback", "10.0.0.5:4000", "", Target{Base: "http://10.0.0.5:4000"}},
 		{"localhost", "localhost:4100", "", Target{Base: "http://localhost:4100"}},
 		{"a host name", "fd.internal:4000", "", Target{Base: "http://fd.internal:4000"}},
@@ -46,6 +48,16 @@ func TestTargetFor(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s: TargetFor(%q, %q) = %+v, want %+v", c.name, c.listen, c.domain, got, c.want)
+		}
+	}
+	// Every base parses as the URL the probe requests.
+	for _, listen := range []string{"[::1%lo]:4000", "[fe80::1%eth0]:4000", "127.0.0.1:4000"} {
+		got, err := TargetFor(listen, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := url.Parse(got.Base + "/api/health"); err != nil {
+			t.Errorf("TargetFor(%q).Base %q is no URL: %v", listen, got.Base, err)
 		}
 	}
 	for _, listen := range []string{"nonsense", "127.0.0.1", "127.0.0.1:", ""} {

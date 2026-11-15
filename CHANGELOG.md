@@ -12,11 +12,14 @@ All notable changes to Flightdeck are documented here.
   child session each time it runs, as a function node does, with its
   role from the node name (an unnamed Runnable node takes the name
   LangGraph gives it, its `get_name()`). The Runnable is wrapped in a
-  delegating `RunnableCallable`, so stream output, `astream_events`,
-  `Send` fan-out, `Command` returns, interrupts, the tool runtime a
-  `ToolNode` is given and sub-graph detection are unchanged (an LCEL
-  pipe node shows one more `RunnableSequence` run in traces and
-  `astream_events`, since LangGraph no longer flattens its steps). The nodes
+  delegating `RunnableCallable` that hands the node to the Runnable's own
+  `invoke`, `ainvoke` or `astream`, so each step keeps its own sync or
+  async dispatch (a chat model in a pipe still gets `ainvoke` on the
+  loop), and stream output, `Send` fan-out, `Command` returns,
+  interrupts, the tool runtime a `ToolNode` is given, sub-graph
+  detection and node-timeout checks are unchanged; `astream_events` is
+  too, except that an LCEL pipe node shows one more `RunnableSequence`
+  run, since LangGraph no longer flattens its steps. The nodes
   `create_agent` and `create_react_agent` register (the model call, the
   tool execution, middleware and model hooks) open none: they are the
   agent's own steps, not sub-agents, so a `create_react_agent`
@@ -40,12 +43,15 @@ All notable changes to Flightdeck are documented here.
   other control-flow exceptions ended the node's child with
   `state=error`; they now close it, and resuming the run opens a new
   child for the node it runs again. An async node whose task is
-  cancelled (a node timeout, a failed parallel node) ends its child with
-  `state=error` instead of leaving it open.
+  cancelled (a node timeout, a failed parallel node, which LangGraph
+  cancels twice) ends its child with `state=error` instead of leaving it
+  open. A node exception whose text cannot be rendered ends the child
+  with its type alone and still propagates.
 - **LangGraph: async nodes post their child session's start and end off
   the event loop.** The two synchronous posts ran on the loop and held
-  every other task of the run for their round trip; they now run in a
-  worker thread, as the OpenAI Agents SDK wrap's do.
+  every other task of the run for their round trip; they now run on the
+  loop's executor, queued apart from the node's task so a cancellation
+  cannot drop them, and the session's end waits for them.
 
 ## v0.10.0 — 2026-11-15
 

@@ -1723,12 +1723,14 @@ application builds by hand:
   the tool execution and the middleware or model hooks are one agent's
   own steps, not sub-agents. The wrap tells them apart by the module
   that called `StateGraph`, the first caller outside the sensor and
-  `langgraph.graph`, read when the node is added. A compiled graph used
-  as a node opens no
-  child (the nodes inside it open theirs, where that graph registered
-  them). A generator or async-generator node function is registered
-  untouched: LangGraph runs it as a stream (a `RunnableLambda`), which a
-  wrapper function would hide, so it opens no child.
+  `langgraph.graph`, read when the node is added: any module of the
+  `langchain.agents` or `langgraph.prebuilt` package, so a release that
+  moves those calls within the package changes nothing. A compiled graph
+  used as a node opens no child (the nodes inside it open theirs, where
+  that graph registered them). A generator or async-generator node
+  function is registered untouched: LangGraph runs it as a stream (a
+  `RunnableLambda`), which a wrapper function would hide, so it opens no
+  child.
 - **Nesting.** A node's work runs inside its child's scope
   (`Session.enter_subagent_scope`). A child opened while another child's
   scope is active, such as a node of a graph invoked from inside a node,
@@ -1737,7 +1739,10 @@ application builds by hand:
 - **Ends.** A child closes when its node returns. It ends with
   `state=error` and the exception's type (and message, with capture on)
   when the node raises, or, for an async node, when its task is
-  cancelled (a node timeout, a failed parallel node). LangGraph's
+  cancelled (a node timeout, a failed parallel node: LangGraph cancels
+  the other nodes of a failed run twice, and the end is still posted).
+  An exception whose text cannot be rendered ends the child with its
+  type alone and still propagates. LangGraph's
   control-flow exceptions (`GraphBubbleUp`: an `interrupt()`, a `Command`
   sent to the parent graph, a drain) close it normally, with no outgoing
   message; resuming an interrupted run runs the node again, which opens
@@ -1745,25 +1750,33 @@ application builds by hand:
 - **How a node is wrapped.** A function is wrapped by one with its
   signature (see above). A Runnable is wrapped in a `RunnableCallable`
   named after the node, without tracing or recursion of its own, that
-  passes the node's input and config to the Runnable's `invoke`,
-  `ainvoke` or `astream` (which LangGraph calls under `astream_events`):
-  the Runnable still receives what LangGraph injects (`ToolNode`'s tool
+  passes the node's input and config to the Runnable's own `invoke`,
+  `ainvoke` or `astream` (which LangGraph calls under `astream_events`).
+  An async run therefore dispatches each step of a pipe as the unwrapped
+  node does: a step with async code of its own (a chat model) gets its
+  `ainvoke` on the event loop, a sync step runs where LangGraph runs it.
+  The Runnable still receives what LangGraph injects (`ToolNode`'s tool
   runtime among it), and the run's stream output in every stream mode,
-  `astream_events`, `Send` fan-out, `Command` returns, interrupts and
-  sub-graph detection are those of the unwrapped node. One difference
-  remains for an LCEL pipe: LangGraph no longer flattens its steps into
-  the node's own run, so a trace or `astream_events` shows one more
+  `Send` fan-out, `Command` returns, interrupts and sub-graph detection
+  are those of the unwrapped node; so are `astream_events` for a
+  `RunnableCallable`, a `ToolNode` and a `RunnableLambda`. An LCEL pipe
+  differs in one way: LangGraph no longer flattens its steps into the
+  node's own run, so a trace or `astream_events` shows one more
   `RunnableSequence` chain run inside the node's; the steps' events and
-  chunks are unchanged.
-  The wrapper has an async function of its own only when LangGraph
-  counts the Runnable as natively async, so LangGraph's node-timeout
-  check sees the same node; otherwise an async run runs the wrapper in
-  the event loop's executor, as LangGraph runs a sync node function.
+  chunks are unchanged. LangGraph's node-timeout check reads whether a
+  node has async code of its own from the wrapper, which reports the
+  Runnable's answer, so a timeout (on the node or a graph default from
+  `set_node_defaults`, before or after the node is added) is accepted or
+  refused as for the unwrapped node.
 - **Posting.** The child's `session_start` and `session_end` are posted
-  synchronously, as every wrap's are; an async node posts them in a
-  worker thread (`asyncio.to_thread`), so the event loop is not held.
-  The node's model, tool and MCP calls stay on the sensor's session
-  (see Which session a sub-agent's calls land on above).
+  synchronously, as every wrap's are. An async node queues them on the
+  event loop's executor, apart from its own task, and waits for them
+  shielded: the loop is not held, a cancellation propagates without
+  dropping a post, and the session's `end()` waits for posts still
+  running (up to 2 seconds). An end posted while its start is still
+  under way waits for the start, so the two arrive in order. The node's
+  model, tool and MCP calls stay on the sensor's session (see Which
+  session a sub-agent's calls land on above).
 
 A graph run that is not a node of the graph it runs in (a compiled
 sub-graph node, a Deep Agents `task` sub-agent, an agent used as a tool)

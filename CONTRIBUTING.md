@@ -585,9 +585,7 @@ Python (sensor, playground, integration suites), Go (ingestion, workers,
 API, migrations), TypeScript and UI (dashboard, both themes, accessibility),
 architecture (doc alignment, contracts across components, L1 and L2), and
 QA (tests at every layer, E2E discipline, live verification, L3 to L8). This
-review before merge is what CLAUDE.md calls the phase audit or V-pass. A
-review groups its findings as Critical (a P0 or P1 here, Block) and
-Warnings (P2 or P3, Recommend or Defer).
+review before merge is what CLAUDE.md calls the phase audit or V-pass.
 
 Findings are graded **P0** (breaks, crashes, or silently loses or corrupts
 data on a default install: a fail-open control, a silent zero-event path,
@@ -601,6 +599,10 @@ evidence supports a P0. Each finding is **Block** (fix before merge),
 A deferred finding gets its own `roadmap` issue that states the gap and
 where it lives in the code; set a milestone only when the work is planned
 for a release.
+
+A review groups its findings as Critical (P0 or P1, Block) and Warnings
+(P2 or P3, Recommend or Defer). The review covers the head that merges: a
+commit pushed after the verdict is reviewed again before merge.
 
 ## Releasing
 

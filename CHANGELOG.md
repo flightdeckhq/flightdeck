@@ -14,9 +14,9 @@ server, `--dry-run` shows what would change and what the plugin
 records, and `--remove` takes it out again. `install.sh` and
 `install.ps1` offer to connect each coding agent they find right after
 installing the binary, and `FLIGHTDECK_CONNECT` decides for scripted
-installs. CI runs the command's tests on Windows too, against a real
-`claude.cmd`. The release pipeline builds the tag that was pushed when
-a dry-run tag sits on the same commit, and the install gate waits out
+installs. It works on Windows with `claude.exe` or npm's `claude.cmd`
+shim. The release pipeline builds the tag that was pushed when a
+dry-run tag sits on the same commit, and the install gate waits out
 PyPI's index lag. The repository no longer ships Claude Code agent
 definitions or a review hook. Plugin users update with
 `claude plugin update flightdeck@flightdeck-plugins`; marketplace
@@ -49,10 +49,10 @@ installs do not update themselves.
   a terminal. Every `claude` command it runs has a timeout that ends
   its child processes too. On Windows it finds `claude.exe` or an npm
   `claude.cmd` shim and ends the CLI's whole process tree on a timeout;
-  CI runs the connect tests there as well, against a stand-in
-  `claude.exe` and a real `claude.cmd`. Each agent is a connector of
-  the same command, so the agents still to come plug in without
-  changing it or the installers (D275).
+  CI runs the connect tests there as well, through a `claude.cmd`
+  batch shim, as npm installs it, that starts a stand-in `claude.exe`.
+  Each agent is a connector of the same command, so the agents still
+  to come plug in without changing it or the installers (D275).
 - **The installers offer to connect the coding agents they find.**
   After installing the binary, `install.sh` and `install.ps1` show what
   connecting would change and what the plugin records, then ask

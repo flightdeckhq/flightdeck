@@ -1117,8 +1117,9 @@ its input and final state as messages. Deep Agents' `task` sub-agents,
 agents used as tools and compiled-graph nodes come from this, with no
 Deep Agents import; a graph invoked from a hand-built node nests under
 the node's child. A `RemoteGraph` opens none.
-**Why:** one seam LangGraph itself uses to tell a nested run, covering
-every way a graph runs inside another.
+**Why:** one seam, and the task id LangGraph sets on every task (it tests
+the same key on the merged config), cover every way a graph runs inside
+another.
 **Rejected alternative:** wrapping Deep Agents' `task` tool or
 middleware (private API, and agents used as tools stay uncovered); the
 `lc_agent_name` metadata as role (inherited by every run under an

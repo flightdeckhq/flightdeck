@@ -1182,7 +1182,11 @@ exist before), and the interceptor names `flightdeck_sensor` re-exports
 first access. LangGraph is watched as `langgraph.graph`, where
 `StateGraph` lives: `langgraph` itself is a namespace package shared with
 LangGraph's other distributions, and a namespace package runs no code to
-hook.
+hook. It is watched as `langgraph.pregel` too, whose import patches the
+graph runs alone (`Pregel.stream` / `astream`) and imports nothing from
+`langgraph.graph`: an application on LangGraph's functional API
+(`@entrypoint`) imports only `langgraph.pregel`, and the import of
+`langgraph.graph` imports `langgraph.pregel` before it has finished.
 
 A reload of a patched SDK runs through the finder again and is patched
 again. The litellm patch checks each entry point for its own wrapper
@@ -1705,7 +1709,8 @@ node is decided once, when the graph is built, and a node the wrap
 leaves alone runs exactly as registered. It also wraps `Pregel.stream`
 and `Pregel.astream`, which every run of a compiled graph goes through
 (`invoke` and `ainvoke` call them, and so do `stream_events` and
-`astream_events`, LangGraph's v3 stream protocol included). A child
+`astream_events`, LangGraph's v3 stream protocol included), for a graph
+built with `StateGraph` and one built with the functional API alike. A child
 session is a sub-agent, and in a LangGraph application a sub-agent is a
 node of a graph the application builds by hand, or a graph run started
 inside another graph run:
@@ -1731,27 +1736,50 @@ inside another graph run:
   `langgraph.graph`, read when the node is added: any module of the
   `langchain.agents` or `langgraph.prebuilt` package, so a release that
   moves those calls within the package changes nothing. A compiled graph
-  used as a node, bound (`with_config`, `with_retry`) or not, is
-  registered untouched: its run opens the one child (see Graph runs),
-  and the nodes inside it nest under that child. A generator or async-generator node
+  used as a node, bound (`with_config`, `with_retry`) or not, or with
+  fallbacks that are all compiled graphs (`with_fallbacks`), is
+  registered untouched: the run of whichever graph runs opens the one
+  child (see Graph runs), and the nodes inside it nest under that child.
+  A Runnable that runs a graph among other work (an LCEL pipe with a
+  graph as one step, fallbacks that are not all graphs) is a hand-built
+  node: it opens its child, and the graph's run nests under it, so with
+  an unnamed graph both are named after the node. A generator or async-generator node
   function is registered untouched: LangGraph runs it as a stream (a
   `RunnableLambda`), which a wrapper function would hide, so it opens no
   child.
 - **Graph runs.** A run of a compiled graph opens a child when it
   starts inside another graph run or inside a child. Inside another run
-  means LangGraph runs it as one of that run's tasks (a compiled graph
-  used as a node) or inside one (a graph or an agent invoked from a node
-  or a tool, a Deep Agents `task` call): its config, or the config it
-  inherits from the node or tool it runs in, carries the task's id, the
-  test LangGraph makes itself. Inside a child means a child's scope is
-  active, such as another framework's sub-agent. A top-level run opens
-  none: its session is the sensor's, so a `create_agent` or Deep Agents
-  run started by the application opens nothing for itself. The role is
-  the run's name as LangGraph names it: the config's `run_name` (also
-  one bound with `with_config`), else the graph's name
-  (`compile(name=...)`, `create_agent(name=...)`); an unnamed graph
-  (`LangGraph`) takes the name of the node it runs in (LangGraph's
-  `langgraph_node` metadata), else `subgraph`. The `lc_agent_name`
+  means it runs as one of that run's tasks (a compiled graph used as a
+  node) or inside one (a graph or an agent invoked from a node or a
+  tool, a Deep Agents `task` call): the config it is given, or the
+  config it inherits from the node or tool it runs in, carries the
+  task's id. That is the sensor's rule, close to LangGraph's own test
+  for a run "called as a node in another graph" but not the same:
+  LangGraph tests the two configs merged, where a `configurable` given
+  to the run replaces the inherited one, so `inner.invoke(state,
+  {"configurable": {"thread_id": "t"}})` inside a node is a fresh
+  top-level run to LangGraph (its own thread and checkpoints) and still
+  a child to the sensor, which reads both. A run started where the
+  context is not carried over (a `threading.Thread`, a
+  `ThreadPoolExecutor.submit`, a `loop.run_in_executor`) inherits no
+  config and opens no child unless the node's config is passed to it,
+  as LangGraph also treats it as top-level; `asyncio.to_thread` and
+  `asyncio.create_task` carry the context and are detected. Inside a
+  child means a child's scope is active, such as another framework's
+  sub-agent. A top-level run opens none: its session is the sensor's,
+  so a `create_agent` or Deep Agents run started by the application
+  opens nothing for itself. The role is the run's name as LangGraph
+  names it: the config's `run_name` (also one bound with
+  `with_config`), else the graph's name (`compile(name=...)`,
+  `create_agent(name=...)`); an unnamed graph (`LangGraph`, as every
+  functional-API `@entrypoint` is) takes the name of the node it runs in
+  (LangGraph's `langgraph_node` metadata), unless that node is one of
+  `create_agent`'s or `create_react_agent`'s own steps (their `tools`
+  node, say), which are not sub-agents; else `subgraph`. Each run
+  records its graph, around its steps, as the graph whose step is
+  running, which is how a run started inside a node tells whose node it
+  is; `add_node` marks a graph whose nodes those agent builders
+  register. The `lc_agent_name`
   metadata `create_agent` sets is not read: every run under an agent
   inherits it, so an unnamed graph inside a named agent would take the
   agent's name. `langgraph_agent_node_pattern` names nodes and does not
@@ -1806,7 +1834,13 @@ inside another graph run:
   outgoing message; resuming an interrupted run runs the node or the run
   again, which opens a new child. A run whose stream its consumer closes
   before the end (`close()`, `aclose()`, or the stream collected
-  unfinished) closes its child normally, with no outgoing message.
+  unfinished) closes its child normally, with no outgoing message. A
+  close the application asks for closes LangGraph's own stream at once,
+  as unpatched. A close the event loop makes itself (a stream collected
+  unclosed, or every async stream still open when the loop shuts down:
+  the end of `asyncio.run` with a stream open, an interrupted server)
+  leaves LangGraph's stream to the loop, which closes it in the same
+  sweep; closing it twice would make one of the two closes fail.
 - **How a node is wrapped.** A function is wrapped by one with its
   signature (see above). A Runnable is wrapped in a `RunnableCallable`
   named after the node, without tracing or recursion of its own, that
@@ -1836,9 +1870,12 @@ inside another graph run:
   and the session's `end()` waits for posts still running (up to 2
   seconds). Sync LangGraph code running on a loop's thread (a sync
   `invoke` inside a coroutine) queues them the same way and does not
-  wait for them. An end queued while its start is still being posted is
-  queued from the start post's completion, in the thread that finishes
-  it, so the two arrive in order and no thread waits for the start. The
+  wait for them; a nested child's start can then reach the worker
+  before its parent's, which the worker's parent-stub path takes in
+  (see Three revival scenarios). An end queued while its start is still
+  being posted is queued from the start post's completion, in the
+  thread that finishes it, so the two arrive in order and no thread
+  waits for the start. The
   model, tool and MCP calls of a node or a run stay on the sensor's
   session (see Which session a sub-agent's calls land on above).
 

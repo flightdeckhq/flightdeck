@@ -46,6 +46,23 @@ import { waitForFleetReady } from "./_fixtures";
 // just the visible-by-default subset.
 test.use({ viewport: { width: 1280, height: 2200 } });
 
+// A swimlane row's testid is this prefix and the agent name; the
+// canonical seeded rows are the agents named ``e2e-test-*``.
+const ROW_TESTID_PREFIX = "swimlane-agent-row-";
+const CANONICAL_ROW_TESTID_PREFIX = `${ROW_TESTID_PREFIX}e2e-test-`;
+const SESSION_CIRCLE_SELECTOR = '[data-testid^="session-circle-"]';
+// What the scan reports when no canonical child row has mounted.
+const NO_CANONICAL_CHILD_ROW = "(no canonical sub-agent row mounted)";
+
+// How long the scan waits for every canonical child row to hold a
+// session circle once the window is 1h. On CI under load the rows
+// have their circles 0.1-2 s after the widening, and the steps before
+// the scan (navigate, widen, scroll pass) take up to about 11 s of the
+// 30 s test budget. 15 s is several times the settle time and still
+// ends inside the budget, so a row that never gets its circle fails
+// this assertion, by name, rather than the test timeout.
+const CIRCLES_SETTLE_TIMEOUT_MS = 15_000;
+
 // Resolve the seed helper relative to this spec so the worker
 // invocation works regardless of where `npm run test:e2e` is
 // launched from. ``dashboard/package.json`` is ``type: module``
@@ -142,14 +159,6 @@ test.describe("T56 — Every sub-agent row renders circles", () => {
       scroller.scrollTop = 0;
     });
 
-    // Wait for at least one child row before scanning — the seed
-    // declares several sub-agent fixtures and the keep-alive cycle
-    // keeps them in the swimlane window.
-    const childRows = page.locator('[data-topology="child"]');
-    await expect
-      .poll(async () => childRows.count(), { timeout: 10_000 })
-      .toBeGreaterThanOrEqual(1);
-
     // Restrict the assertion target to canonical seeded
     // sub-agent fixtures (data-testid prefixed with
     // ``swimlane-agent-row-e2e-test-``). Real-world sub-agent
@@ -160,57 +169,47 @@ test.describe("T56 — Every sub-agent row renders circles", () => {
     // The recent_sessions rollup is still verified for them
     // via the integration test ``test_fleet_recent_sessions.py``.
     const canonicalChildRows = page.locator(
-      '[data-topology="child"][data-testid^="swimlane-agent-row-e2e-test-"]',
+      `[data-topology="child"][data-testid^="${CANONICAL_ROW_TESTID_PREFIX}"]`,
     );
+
+    // Wait until every canonical child row holds a session circle.
+    // The whole scan is one browser evaluation per poll: the rows,
+    // and whether each holds a circle, are read in a single round
+    // trip however many sub-agent rows the seed declares, and the
+    // poll retries until the parallel /v1/sessions/:id event fetches
+    // have settled. The rows that still lack a circle come back by
+    // agent name, so a failure names them. No canonical row at all
+    // returns NO_CANONICAL_CHILD_ROW, which fails the same assertion:
+    // the test needs at least one such row to say anything.
     await expect
-      .poll(async () => canonicalChildRows.count(), { timeout: 10_000 })
-      .toBeGreaterThanOrEqual(1);
-
-    // Wait for every canonical child row to attach its first
-    // session circle. One shared 25 s deadline rather than
-    // per-row waits (17 × 8 s would exceed the 30 s test
-    // timeout). The bulk-scroll pass above primed the
-    // IntersectionObserver; this gate waits for the parallel
-    // /v1/sessions/:id event fetches to settle.
-    await page
-      .waitForFunction(
-        () => {
-          const rows = document.querySelectorAll(
-            '[data-topology="child"][data-testid^="swimlane-agent-row-e2e-test-"]',
-          );
-          if (rows.length === 0) return false;
-          for (const row of rows) {
-            const circle = row.querySelector(
-              '[data-testid^="session-circle-"]',
-            );
-            if (!circle) return false;
-          }
-          return true;
+      .poll(
+        () =>
+          canonicalChildRows.evaluateAll(
+            (rows, { circleSelector, prefix, none }) => {
+              if (rows.length === 0) return [none];
+              return rows
+                .filter((row) => row.querySelector(circleSelector) === null)
+                .map((row) => {
+                  const testId = row.getAttribute("data-testid") ?? "";
+                  const agentId = row.getAttribute("data-agent-id") ?? "?";
+                  return `${testId.slice(prefix.length)} (agent ${agentId})`;
+                });
+            },
+            {
+              circleSelector: SESSION_CIRCLE_SELECTOR,
+              prefix: ROW_TESTID_PREFIX,
+              none: NO_CANONICAL_CHILD_ROW,
+            },
+          ),
+        {
+          message:
+            "every canonical sub-agent row holds a session circle (received: " +
+            "the rows that hold none). The recent_sessions rollup must surface " +
+            "event circles for every seeded sub-agent row regardless of where " +
+            "its sessions fall in the global /v1/sessions page.",
+          timeout: CIRCLES_SETTLE_TIMEOUT_MS,
         },
-        undefined,
-        { timeout: 25_000 },
       )
-      .catch(() => {
-        // Settle window expired; the next loop records empties.
-      });
-
-    const canonicalCount = await canonicalChildRows.count();
-    const empties: string[] = [];
-    for (let i = 0; i < canonicalCount; i++) {
-      const row = canonicalChildRows.nth(i);
-      const agentId =
-        (await row.getAttribute("data-agent-id")) ?? `index-${i}`;
-      const circleCount = await row
-        .locator('[data-testid^="session-circle-"]')
-        .count();
-      if (circleCount === 0) empties.push(agentId);
-    }
-    expect(
-      empties,
-      `canonical sub-agent rows rendered with zero session circles: ` +
-        `${empties.join(", ")}. The recent_sessions rollup must surface ` +
-        `event circles for every seeded sub-agent row regardless of where ` +
-        `its sessions fall in the global /v1/sessions page.`,
-    ).toEqual([]);
+      .toEqual([]);
   });
 });

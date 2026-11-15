@@ -12,8 +12,9 @@ rows:
   tool calls on the sensor's session;
 * a top-level ``create_agent`` doing the same work: no child sessions,
   its calls on the sensor's session;
-* a graph invoked from inside a node (async): its node's child nests
-  under the enclosing node's child;
+* a graph invoked from inside a node (async): its run opens a child
+  under the enclosing node's child, and its node's child nests under
+  the run's;
 * an interrupted node: its child closes normally, and the resumed run
   opens a second child.
 """
@@ -262,7 +263,7 @@ def test_graph_invoked_inside_a_node_nests_under_its_child(
     inner_graph.add_node("inner", lang["RunnableLambda"](answer))
     inner_graph.add_edge(start, "inner")
     inner_graph.add_edge("inner", end)
-    inner = inner_graph.compile()
+    inner = inner_graph.compile(name="inner_graph")
 
     async def delegate(s: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = await inner.ainvoke(s)
@@ -276,11 +277,13 @@ def test_graph_invoked_inside_a_node_nests_under_its_child(
     assert result["messages"][-1].content == "inner done"
     flightdeck_sensor.teardown()
 
-    rows = _ended(flavor, 3)
+    # root -> outer (the node) -> inner_graph (the run) -> inner (its node)
+    rows = _ended(flavor, 4)
     by_role = {r["agent_role"]: r for r in rows if r["agent_role"]}
-    assert set(by_role) == {"outer", "inner"}
+    assert set(by_role) == {"outer", "inner_graph", "inner"}
     assert by_role["outer"]["parent_session_id"] == root
-    assert by_role["inner"]["parent_session_id"] == by_role["outer"]["session_id"]
+    assert by_role["inner_graph"]["parent_session_id"] == by_role["outer"]["session_id"]
+    assert by_role["inner"]["parent_session_id"] == by_role["inner_graph"]["session_id"]
     assert {r["state"] for r in by_role.values()} == {"closed"}
 
 

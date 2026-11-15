@@ -1091,13 +1091,12 @@ Agent, none named after the sub-agent, two extra posts per child).
 ## D277 -- `--port` picks the port on loopback, `--public` opens every interface, and a `--listen` port with no host is loopback
 
 **Date:** 2026-11-15
-**Decision:** `--port N` (`-p`, `FLIGHTDECK_PORT`, 1 to 65535) serves
-`127.0.0.1:N`; `--public` (`FLIGHTDECK_PUBLIC`) serves `0.0.0.0`, in
-its mode, and combines with `--port`. `--listen :N` means `127.0.0.1:N`,
-warned at start, refused beside a supplied token. `--listen` with
-either, as flags or as variables, is a usage error; a flag overrides
-the other side's variables. A bound socket that disagrees with the mode
-stops the start.
+**Decision:** `--port N` (`-p`, `FLIGHTDECK_PORT`, 1-65535) serves
+`127.0.0.1:N`; `--public` (`FLIGHTDECK_PUBLIC`) serves `0.0.0.0` in its
+mode and combines with `--port`; `--listen` with either is a usage error,
+a flag overriding the other side's variables. `--listen :N` is
+`127.0.0.1:N`, warned, and refused beside a supplied token. A bound
+socket that disagrees with the mode stops the start.
 **Why:** `:N` bound every interface, which silently left local mode
 (development token refused, reachable from the network) for someone
 who only wanted another port.

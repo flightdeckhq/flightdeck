@@ -215,7 +215,8 @@ func checkBound(dev bool, listen string, bound net.Addr) error {
 	case !dev && loopback:
 		return fmt.Errorf("--listen %s bound %s, a loopback address, but does not read as one, so the server would run "+
 			"in the mode of an address beyond this machine with the Host check off; write --port %s or --listen 127.0.0.1:%s "+
-			"for this machine only", listen, bound, port, port)
+			"for this machine only, or --public --port %s or --listen <this machine's address>:%s to serve other machines",
+			listen, bound, port, port, port, port)
 	}
 	return nil
 }

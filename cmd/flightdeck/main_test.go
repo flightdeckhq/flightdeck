@@ -573,6 +573,8 @@ func TestCheckBound_RefusesASocketThatDisagreesWithTheMode(t *testing.T) {
 		{"every interface, bound there", false, tcp("::"), ""},
 		{"one LAN address, bound there", false, tcp("10.0.0.5"), ""},
 		{"a name that resolved to loopback", false, tcp("127.0.1.1"), "a loopback address, but does not read as one"},
+		{"a name that resolved to loopback: the forms that serve other machines", false, tcp("127.0.1.1"),
+			"or --public --port 4100 or --listen <this machine's address>:4100 to serve other machines"},
 		{"localhost that resolved beyond loopback", true, tcp("10.0.0.5"), "the development token would be served beyond this machine"},
 		{"not a TCP address", true, &net.UnixAddr{Name: "/tmp/x", Net: "unix"}, ""},
 	} {

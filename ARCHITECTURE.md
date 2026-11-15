@@ -1834,13 +1834,25 @@ inside another graph run:
   outgoing message; resuming an interrupted run runs the node or the run
   again, which opens a new child. A run whose stream its consumer closes
   before the end (`close()`, `aclose()`, or the stream collected
-  unfinished) closes its child normally, with no outgoing message. A
-  close the application asks for closes LangGraph's own stream at once,
-  as unpatched. A close the event loop makes itself (a stream collected
-  unclosed, or every async stream still open when the loop shuts down:
-  the end of `asyncio.run` with a stream open, an interrupted server)
-  leaves LangGraph's stream to the loop, which closes it in the same
-  sweep; closing it twice would make one of the two closes fail.
+  unfinished) closes its child normally, with no outgoing message. On
+  asyncio's event loop, a close the application makes closes
+  LangGraph's own stream before it returns, however it is awaited (in
+  the application's coroutine, or as a task of its own through
+  `asyncio.gather`, `create_task`, `shield` or `wait_for`), exactly as
+  unpatched: the run's error callback has fired and its in-flight nodes
+  are cancelled. Once the loop has taken LangGraph's stream over (a
+  stream collected unclosed, or every async stream still open when the
+  loop shuts down: the end of `asyncio.run` with a stream open, an
+  interrupted server), the loop closes it and the wrapper does not: two
+  closes would make one of them fail. The wrapper tells the two apart by
+  the loop's set of the async generators it will close itself
+  (`_asyncgens`, read where present), and takes a stream it closes out
+  of that set, as the loop's own close does, so a shutdown sweep that
+  starts meanwhile leaves it to the wrapper. A loop that keeps that set
+  out of reach (uvloop) is taken to close the stream itself whenever the
+  close runs as a task of its own: there, a close through `gather`,
+  `create_task` or `shield` leaves LangGraph's clean-up to its
+  finalizer, a few loop steps after the close returns.
 - **How a node is wrapped.** A function is wrapped by one with its
   signature (see above). A Runnable is wrapped in a `RunnableCallable`
   named after the node, without tracing or recursion of its own, that

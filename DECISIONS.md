@@ -1109,19 +1109,16 @@ already; such a value is no port and reads as unset).
 ## D278 -- A LangGraph graph run started inside another opens one child, named for the run; a top-level run opens none
 
 **Date:** 2026-11-15
-**Decision:** `Pregel.stream` / `astream` are wrapped: a graph run whose
-config, or the config it inherits, carries another run's task id, or
-that starts in an active child scope, opens one child (role: `run_name`,
-else the graph's name, else the enclosing node, else `subgraph`), with
-its input and final state as messages. Deep Agents' `task` sub-agents,
-agents used as tools and compiled-graph nodes come from this, with no
-Deep Agents import; a graph invoked from a hand-built node nests under
-the node's child. A `RemoteGraph` opens none.
-**Why:** one seam, and the task id LangGraph sets on every task (it tests
-the same key on the merged config), cover every way a graph runs inside
-another.
-**Rejected alternative:** wrapping Deep Agents' `task` tool or
-middleware (private API, and agents used as tools stay uncovered); the
-`lc_agent_name` metadata as role (inherited by every run under an
-agent); a child for every run, the top-level one too (a duplicate of
-the sensor's session).
+**Decision:** `Pregel.stream` / `astream` are wrapped: a run whose own or
+inherited config carries another run's task id, or that starts in a
+child's scope, opens one child (role: `run_name`, the graph's name, the
+enclosing node unless an agent's own step, else `subgraph`), its input
+and final state the messages. Deep Agents `task` sub-agents, agents used
+as tools and compiled-graph nodes come from this; no Deep Agents import.
+A `RemoteGraph` opens none.
+**Why:** one seam, and the task id LangGraph sets on every task, cover
+every way a graph runs inside another.
+**Rejected alternative:** wrapping Deep Agents' `task` tool (private
+API; agents used as tools stay uncovered); `lc_agent_name` as the role
+(every run under an agent inherits it); a child for the top-level run
+too (a duplicate of the sensor's session).

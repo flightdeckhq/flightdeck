@@ -1851,10 +1851,11 @@ inside another graph run:
   set as taken over; a stream the wrapper closes leaves the set first,
   as the loop's own close takes it out, so a shutdown sweep that starts
   meanwhile leaves it to the wrapper. A stream no loop tracked (run
-  under `nest_asyncio`, where it can run LangGraph's async streams at
-  all, which on Python 3.14 it cannot; or while another library's
-  async-generator hooks replace the loop's) and one closed under another
-  loop than the one that tracked it are closed at once. A loop that keeps that set out of
+  under `nest_asyncio`, though on Python 3.14, LangGraph's async streams
+  fail under nest_asyncio once a step waits on a running node; or while
+  another library's async-generator hooks replace the loop's) and one
+  closed under another loop than the one that tracked it are closed at
+  once. A loop that keeps that set out of
   reach (uvloop) is taken to close the stream itself whenever the close
   runs as a task of its own: there, a close through `gather`,
   `create_task` or `shield` leaves LangGraph's clean-up to its

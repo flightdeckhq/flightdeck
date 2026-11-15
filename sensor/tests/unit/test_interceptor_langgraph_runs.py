@@ -1188,7 +1188,7 @@ async def compare(report):
     try:
         await close_early("await")
     except Exception as exc:
-        report["unsupported"] = f"{type(exc).__name__}: {exc}"
+        report["unsupported"] = [type(exc).__name__, str(exc)]
         return
     results = report["results"] = {}
     for how in ("await", "gather"):
@@ -1214,14 +1214,20 @@ print(json.dumps({"python": sys.version.split()[0], "reports": reports}))
 # How long the nest_asyncio child may run: it builds one graph and runs
 # up to fourteen short streams; a healthy run takes about a second.
 _CHILD_TIMEOUT_SECS = 120.0
+# The one known way LangGraph's own stream fails under nest_asyncio (Python
+# 3.14: asyncio.wait_for in a step waiting on a running node, which
+# nest_asyncio's loop runs with no current task); the test skips on that
+# RuntimeError alone and fails on any other.
+_NEST_ASYNCIO_KNOWN_FAILURE = "Timeout should be used inside a task"
 
 
 def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
     """nest_asyncio's loop tracks no async generator: an application's
     close closes LangGraph's stream at once, top-level and nested, exactly
     as unpatched, and no stream is later collected with "async generator
-    ignored GeneratorExit". Skips on an interpreter where LangGraph itself
-    cannot stream under nest_asyncio (the unpatched baseline raises)."""
+    ignored GeneratorExit". Skips on an interpreter where LangGraph's own
+    stream fails under nest_asyncio in the one known way (Python 3.14); any
+    other failure of the unpatched baseline fails the test."""
     import subprocess
 
     pytest.importorskip("nest_asyncio")
@@ -1241,10 +1247,15 @@ def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
     child = json.loads(done.stdout.strip().splitlines()[-1])
     used = [r for r in child["reports"].values() if "results" in r]
     if not used:
-        errors = sorted({r["unsupported"].split(":")[0] for r in child["reports"].values()})
+        failures = [r["unsupported"] for r in child["reports"].values()]
+        known = all(
+            kind == "RuntimeError" and _NEST_ASYNCIO_KNOWN_FAILURE in message
+            for kind, message in failures
+        )
+        assert known, f"the unpatched baseline failed unexpectedly: {failures}\n{done.stderr}"
         pytest.skip(
-            f"LangGraph cannot stream under nest_asyncio on Python {child['python']}"
-            f" (unpatched, {', '.join(errors)})"
+            f"LangGraph's stream fails under nest_asyncio on Python {child['python']},"
+            f" unpatched: RuntimeError: {_NEST_ASYNCIO_KNOWN_FAILURE}"
         )
     (report,) = used
     # The case under test: the loop installed no async-generator hooks.

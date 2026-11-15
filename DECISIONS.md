@@ -1070,6 +1070,24 @@ tool's configuration is the user's call.
 when `claude` is found; agent logic in install.sh and install.ps1 (two
 copies per agent, none for brew or pip); a `--token` flag (seen in `ps`).
 
+## D276 -- A LangGraph child session is a real sub-agent: a node of a hand-built graph, never an agent's own steps
+
+**Date:** 2026-11-15
+**Decision:** refines D126's LangGraph predicate. Each run of a node the
+application registers on a graph it builds opens a child, whatever the
+node's shape (a function, a Runnable, its own `ToolNode`), nested under
+the child whose work it runs in. The nodes `create_agent` and
+`create_react_agent` register (model, tools, middleware and model hooks)
+open none, decided at `add_node` from the calling module; so do
+compiled-graph and generator nodes. A graph run inside another and a Deep
+Agents `task` call are real sub-agents too, to get a child from the graph
+run itself (#185).
+**Why:** the maintainer's rule, "real sub-agents only": an agent's model
+and tool steps are that agent, not agents of their own.
+**Rejected alternative:** one child per node everywhere (seven children
+per three-step `create_agent` loop, nine flat ones for a one-task Deep
+Agent, none named after the sub-agent, two extra posts per child).
+
 ## D277 -- `--port` picks the port on loopback, `--public` opens every interface, and a `--listen` port with no host is loopback
 
 **Date:** 2026-11-15

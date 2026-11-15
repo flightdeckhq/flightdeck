@@ -12310,7 +12310,9 @@ one behaves as the first does:
 - **Status** reads the agent's configuration and never writes it. An
   agent is connected only when Flightdeck's integration is installed
   for the user and enabled; a saved token is reported as present, and
-  its value is never read back.
+  its value is never read back. For an outdated agent it reads what
+  that agent's CLI can show: an integration installed and enabled from
+  inside the agent is connected, with its server reported as unknown.
 - **Connect** is planned before it runs: the connector returns the
   steps still missing (reading only), the command shows them, asks when
   it may, and runs them in order. Connecting an agent that is
@@ -12372,10 +12374,10 @@ changes, as it does for Claude Code itself.
 
 | Operation | `claude` commands | Timeout |
 |---|---|---|
-| Detect | `claude --version`; then `claude plugin configure --help`, which must name `--values-stdin` and `--json`, and `claude plugin marketplace add --help`, which must name `--json` (the check below) | 10 s for the version: it answers in well under a second; ten covers a cold start on a slow disk; 30 s for each help |
-| Status | `claude plugin list --json`: connected when `flightdeck@flightdeck-plugins` is installed in user scope and enabled; then `claude plugin configure flightdeck@flightdeck-plugins --json` for the saved server (`inputs.server`) and whether `token` is among the `configured` options | 30 s each: local files, after the CLI may first refresh the account's managed settings over the network |
-| Connect | `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared. One of that name that is declared is trusted when its source is this repository (`"source": "github"` with `"repo": "flightdeckhq/flightdeck"`, or `"source": "git"` with its HTTPS or SSH URL); any other source (`"directory"` with a `path`, such as a contributor's checkout, another repository, a URL) makes the install step a caution that names the source (above); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
-| Disconnect | `claude --version`, `claude plugin list --json`, and `claude plugin uninstall flightdeck@flightdeck-plugins --scope user --json` when the plugin is installed; Claude Code drops the plugin's saved options and token with it, and the marketplace entry stays | 30 s |
+| Detect | `claude --version`, and beside it the check (below): `claude plugin configure --help`, which must name `--values-stdin` and `--json`, and `claude plugin marketplace add --help`, which must name `--json`. The three run side by side, since each starts the CLI | 10 s for the version: it answers in well under a second; ten covers a cold start on a slow disk. 30 s for the whole check, its two help commands together, so a CLI that hangs costs one timeout |
+| Status | `claude plugin list --json`: connected when `flightdeck@flightdeck-plugins` is installed in user scope and enabled; then `claude plugin configure flightdeck@flightdeck-plugins --json` for the saved server (`inputs.server`) and whether `token` is among the `configured` options. An outdated Claude Code refuses that command: the plugin list alone decides, and the server is unknown | 30 s each: local files, after the CLI may first refresh the account's managed settings over the network |
+| Connect | The check, with `claude plugin list --json` beside it (the help commands write nothing, so no two commands that may write Claude Code's files run together); `claude --version` only to name an outdated one; then `claude plugin configure flightdeck@flightdeck-plugins --json` for an installed plugin, else `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared. One of that name that is declared is trusted when its source is this repository (`"source": "github"` with `"repo": "flightdeckhq/flightdeck"`, or `"source": "git"` with its HTTPS or SSH URL); any other source (`"directory"` with a `path`, such as a contributor's checkout, another repository, a URL) makes the install step a caution that names the source (above); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | The check and `--version` as for Detect; 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
+| Disconnect | `claude plugin list --json`, and `claude plugin uninstall flightdeck@flightdeck-plugins --scope user --json` when the plugin is installed (no check, and the options are not read: an outdated Claude Code has both commands); Claude Code drops the plugin's saved options and token with it, and the marketplace entry stays. `claude --version` only to name the version in a refusal | 30 s each; 10 s for the version |
 
 **An outdated Claude Code.** The connector reads and saves the plugin's
 options with `claude plugin configure` and adds the marketplace with
@@ -12390,17 +12392,25 @@ line: an old CLI answers `plugin configure --help` with the help of
 command that exits non-zero (other than with Claude Code's own
 `error: unknown command '…'` or `error: unknown option '…'`), times out
 or prints no help is an error naming it. The help commands carry no
-value and change nothing. For an outdated Claude Code the listing
+value and change nothing. The check strips colour sequences from what
+it reads. For an outdated Claude Code the listing
 shows `too old` with the version, and every outdated line says to run
 `claude update` and then `flightdeck connect claude-code` again, or to
 install the plugin from inside Claude Code with `/plugin marketplace
 add flightdeckhq/flightdeck` and `/plugin install
-flightdeck@flightdeck-plugins`. `--remove` needs neither command and
+flightdeck@flightdeck-plugins`. An outdated Claude Code with the plugin
+installed and enabled that way is connected: the listing shows
+`connected` with the plugin's version and that this version cannot
+show the server it reports to, and `--detected` prints `connected`.
+`--remove` needs neither command and
 runs on an outdated Claude Code as on a current one, so a plugin
 installed from inside it can be removed. A step that fails with one of
 those two errors (a version the check passed that still lacks an
-option) reports the step, Claude Code's message, the version and the
-same `claude update`, with exit status 5.
+option) reports the step, Claude Code's message, the version (read
+then, for the message) and the same `claude update` (for `--remove`,
+`flightdeck connect claude-code --remove` again, or `/plugin` inside
+Claude Code), with exit status 5. The version and Claude Code's own
+messages are printed without their control characters.
 
 Claude Code keeps the server in the user's `settings.json` and the
 token in its credential store (see Plugin (Claude Code) >
@@ -12424,7 +12434,8 @@ Code`). Nothing is printed when no agent is found, and the exit status is 0.
 Fields may be added at the end of a line, never reordered, so an
 installer reads the first three. An agent whose status cannot be read
 counts as `not-connected`, and the connect that follows reports why;
-an outdated agent's status is not read. An installer is fetched fresh
+an outdated agent is `connected` when its status (what its CLI can
+show) says so, and `outdated` otherwise. An installer is fetched fresh
 for every install, so it is never older than the states it can meet:
 it reads an older binary's lines (pinned with `VERSION`, which prints
 only `connected` and `not-connected`) as before, and treats any state
@@ -12443,7 +12454,8 @@ binary's words, so the installers hold no agent's wording; when the dry
 run fails nothing is asked, and when it exits 4, a plan that needs the
 person's own yes, nothing is asked either, since the installer's connect
 passes `--yes`: the installer says to run `flightdeck connect <id>`,
-which shows the caution and asks): `Connect Claude Code to Flightdeck? [Y/n]`.
+which shows the caution and asks; when it exits 5, the agent turned out
+too old, nothing is asked and the outdated hint below is printed): `Connect Claude Code to Flightdeck? [Y/n]`.
 `install.sh` asks on `/dev/tty`, since under `curl | sh` its stdin is
 the script itself, and counts as interactive only when `/dev/tty` opens
 and its process group is the terminal's foreground group (an install

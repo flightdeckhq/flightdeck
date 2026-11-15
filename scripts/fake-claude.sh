@@ -45,11 +45,11 @@ set -eu
 state="${FAKE_CLAUDE_STATE:?FAKE_CLAUDE_STATE must name the stand-in state directory}"
 mkdir -p "$state"
 log="$state/calls.log"
-{
-  printf 'argv:'
-  for arg in "$@"; do printf ' %s' "$arg"; done
-  printf '\n'
-} >>"$log"
+# One write per line: the connector runs some commands side by side, and
+# appends of separate writes from two of them could interleave.
+line='argv:'
+for arg in "$@"; do line="$line $arg"; done
+printf '%s\n' "$line" >>"$log"
 
 plugin=flightdeck@flightdeck-plugins
 case "$*" in

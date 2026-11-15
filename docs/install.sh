@@ -448,6 +448,11 @@ connect_agents() {
             info "Connecting $name needs your own yes (see the caution above): run flightdeck connect $id yourself, which shows it and asks."
             continue
           fi
+          # Too old after all (planning met a command it lacks).
+          if [ "$plan_status" -eq "$CONNECT_OUTDATED" ]; then
+            outdated_hint "$name" "$id"
+            continue
+          fi
           if [ "$plan_status" -eq 0 ] && ask_yes "Connect $name to Flightdeck?"; then
             connect_one "$1" "$id" "$name"
             continue

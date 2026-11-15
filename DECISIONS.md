@@ -1113,10 +1113,11 @@ already; such a value is no port and reads as unset).
 agent's CLI has the commands and options it runs, from the CLI's own
 help (for Claude Code, `plugin configure` with `--values-stdin`, and
 `--json` on `plugin marketplace add`). One that lacks them is
-`outdated` in `--detected`, `too old` in the listing, and a connect
-changes nothing and exits 5 with what to do (`claude update`, or the
-`/plugin` commands); the installers print that hint and ask nothing. A
-step refused as an unknown command or option also exits 5.
+`outdated` in `--detected` (`connected` if its plugin list shows the
+integration on), `too old` in the listing, and a connect changes
+nothing and exits 5 with what to do (`claude update`, or the `/plugin`
+commands); the installers print that hint and ask nothing. A step
+refused as an unknown command or option also exits 5.
 **Why:** Claude Code 2.1.283 failed with `unknown option '--json'`, and
 "run it again later" fails the same way until the agent is updated.
 **Rejected alternative:** a minimum version number (wrong for builds

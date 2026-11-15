@@ -414,6 +414,9 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $script:fakeDryRunExit = 4
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Text -match 'Connecting Claude Code needs your own yes \(see the caution above\): run flightdeck connect claude-code yourself') { Write-Pass 'when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect' } else { Write-Failure 'a dry run that exits 4' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 5
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code' -and $d.Result.Hints -notcontains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the dry run exits 5 (too old after all), nothing is asked and the hint says to update' } else { Write-Failure 'a dry run that exits 5' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
     $script:fakeDryRunExit = 1
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the binary cannot plan the connect, nothing is asked' } else { Write-Failure 'a failed dry run' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ')" }

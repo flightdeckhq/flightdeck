@@ -196,6 +196,11 @@
                     Write-Host "Connecting $($agent.Name) needs your own yes (see the caution above): run flightdeck connect $($agent.Id) yourself, which shows it and asks."
                     continue
                 }
+                # Too old after all (planning met a command it lacks).
+                if ($planStatus -eq $outdated) {
+                    $hints += & $outdatedHint $agent.Id $agent.Name
+                    continue
+                }
                 if ($planStatus -eq 0 -and (& $Ask "Connect $($agent.Name) to Flightdeck?")) {
                     & $connectOne $agent.Id $agent.Name
                     continue

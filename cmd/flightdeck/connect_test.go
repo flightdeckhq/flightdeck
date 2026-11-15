@@ -165,13 +165,14 @@ func TestBinary_ConnectCommand(t *testing.T) {
 				t.Fatalf("flightdeck connect %v: exit %d, %q; want 5 and one line saying what to do", args, code, out)
 			}
 		}
-		// Every call was the version or a help: nothing changed.
+		// Every call was the version, a help or the plugin list: nothing
+		// changed.
 		calls, err := os.ReadFile(filepath.Join(state, "calls.log"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, line := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
-			if line != "argv: --version" && !strings.HasSuffix(line, " --help") {
+			if line != "argv: --version" && line != "argv: plugin list --json" && !strings.HasSuffix(line, " --help") {
 				t.Fatalf("an outdated Claude Code was asked %q", line)
 			}
 		}

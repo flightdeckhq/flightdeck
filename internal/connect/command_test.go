@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -407,21 +406,46 @@ func TestMain_AnOutdatedClaudeCode(t *testing.T) {
 			strings.Contains(r.stdout, "connect it with:") {
 			t.Fatalf("listing: %+v", r)
 		}
-		// The check alone: no status read, nothing changed.
-		if got := f.calls(t); !slices.Equal(got, checkCalls) {
-			t.Fatalf("the listing ran %q; want only %q", got, checkCalls)
+		// The check and the plugin list, nothing else: nothing changed.
+		if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+			t.Fatalf("the listing ran %q; want only %q", got, outdatedCalls)
 		}
 	})
 	t.Run("--detected", func(t *testing.T) {
 		f := newOldFakeClaude(t)
-		// Installed from inside Claude Code: still outdated, since its
-		// server cannot be read or changed by the command.
-		f.set(t, "marketplace", "installed")
 		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\toutdated\tClaude Code\n" {
 			t.Fatalf("--detected: %+v", r)
 		}
-		if got := f.calls(t); !slices.Equal(got, checkCalls) {
-			t.Fatalf("--detected ran %q; want only %q", got, checkCalls)
+		if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+			t.Fatalf("--detected ran %q; want only %q", got, outdatedCalls)
+		}
+		// Installed from inside Claude Code but turned off: still outdated.
+		f.set(t, "marketplace", "installed", "disabled")
+		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\toutdated\tClaude Code\n" {
+			t.Fatalf("--detected, installed and turned off: %+v", r)
+		}
+	})
+	// The plugin installed and turned on from inside Claude Code (the
+	// /plugin commands the advice names): connected, with nothing to do,
+	// although this version cannot show the server it reports to.
+	t.Run("connected from inside Claude Code", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		f.set(t, "marketplace", "installed")
+		if r := runMain(t, nil, "", false, "--detected"); r.code != ExitOK || r.stdout != "claude-code\tconnected\tClaude Code\n" {
+			t.Fatalf("--detected: %+v", r)
+		}
+		r := runMain(t, nil, "", false)
+		if r.code != ExitOK ||
+			!strings.Contains(r.stdout, "connected      plugin 0.9.0; this version of Claude Code cannot show the server it reports to: update Claude Code to see or change it") ||
+			strings.Contains(r.stdout, "too old") || strings.Contains(r.stdout, "/plugin install") {
+			t.Fatalf("listing: %+v", r)
+		}
+		if got := f.changes(t); len(got) != 0 {
+			t.Fatalf("ran %q", got)
+		}
+		// Connecting it still needs the commands it lacks.
+		if r := runMain(t, nil, "", false, "claude-code"); r.code != ExitOutdated || len(f.changes(t)) != 0 {
+			t.Fatalf("connect: %+v", r)
 		}
 	})
 	for _, args := range [][]string{
@@ -439,8 +463,8 @@ func TestMain_AnOutdatedClaudeCode(t *testing.T) {
 				strings.Contains(r.stderr, "unknown option") || strings.Contains(r.stderr, testToken) {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want exit 5 and one line saying what to do", r.code, r.stdout, r.stderr)
 			}
-			if got := f.calls(t); !slices.Equal(got, checkCalls) {
-				t.Fatalf("ran %q; want only %q", got, checkCalls)
+			if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+				t.Fatalf("ran %q; want only %q", got, outdatedCalls)
 			}
 		})
 	}
@@ -466,4 +490,16 @@ func TestMain_AnOutdatedClaudeCode(t *testing.T) {
 			t.Fatalf("%+v; want exit 5 and one line naming the version and what to do", r)
 		}
 	})
+}
+
+// A status the listing cannot read is printed without the sentinel's
+// text, as report prints an error.
+func TestMain_TheListingPrintsAStatusErrorAsReportDoes(t *testing.T) {
+	newFakeClaude(t)
+	c := NewClaudeCode(exec.LookPath, answering(map[string]answer{"plugin list --json": {stderr: "error: unknown option '--json'\n", fail: true}}))
+	r := runMainWith(t, c, nil, "", false)
+	if r.code != ExitOK || !strings.Contains(r.stdout, "status unknown `claude plugin list --json` failed: error: unknown option '--json', so Claude Code 2.1.325 is too old") ||
+		strings.Contains(r.stdout, ErrOutdated.Error()) {
+		t.Fatalf("listing: %+v", r)
+	}
 }

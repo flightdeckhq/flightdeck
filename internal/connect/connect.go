@@ -38,7 +38,8 @@ type Connector interface {
 	// did not answer.
 	Detect(ctx context.Context) (Detection, error)
 	// Status reads whether Flightdeck's integration is installed and
-	// where it reports. It is only called for a detected agent.
+	// where it reports. It is only called for a detected agent; for an
+	// outdated one it reads what that agent's CLI can show.
 	Status(ctx context.Context) (Status, error)
 	// PlanConnect returns the steps that connect the agent as target
 	// asks, reading only. No step means it is connected as asked. An
@@ -80,6 +81,10 @@ type Status struct {
 	Server string
 	// TokenSaved is true when a token is saved. Its value is never read.
 	TokenSaved bool
+	// ServerUnknown is true when the agent's CLI cannot show the saved
+	// options (an outdated agent with the integration installed from
+	// inside it): Server and TokenSaved were not read.
+	ServerUnknown bool
 }
 
 // Connected reports whether the agent reports to Flightdeck.

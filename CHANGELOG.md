@@ -100,9 +100,12 @@ All notable changes to Flightdeck are documented here.
   `/plugin` commands, and exits with the new status 5. `--detected`
   reports such an agent as `outdated`, and the installers then ask
   nothing and print one line: update it, then run `flightdeck connect
-  claude-code`. A step Claude Code refuses as an unknown command or
-  option says the same, with the version, and `--remove` works on an
-  older Claude Code as before (D279).
+  claude-code`. An older Claude Code with the plugin already installed
+  from inside it (the two `/plugin` commands) counts as connected. A
+  step Claude Code refuses as an unknown command or option says the
+  same, with the version. `--remove` now works on an older Claude Code
+  too: it no longer reads the plugin's options, which such a version
+  refused, so removing an installed plugin failed (D279).
 - **LangGraph: a child session opened inside another nests under it.**
   Every LangGraph child named the sensor's session as its parent, also
   for the nodes of a graph invoked from inside a node; such a child now

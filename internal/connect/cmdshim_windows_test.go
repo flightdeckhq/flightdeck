@@ -76,12 +76,11 @@ func testClaudeCmdShim(t *testing.T, exe, shimDir string) {
 		t.Setenv("FAKE_CLAUDE_STATE", state)
 		t.Setenv("FAKE_CLAUDE_HANG_CHILD", "marketplace-add")
 		t.Setenv("FAKE_CLAUDE_HANG_SECS", "60")
-		start := time.Now()
-		_, err := applyConnect(t, NewClaudeCode(exec.LookPath, shortTimeouts), Target{})
+		elapsed, err := planThenTimeApply(t, NewClaudeCode(exec.LookPath, shortTimeouts), Target{})
 		if err == nil || !strings.Contains(err.Error(), "did not finish within") {
 			t.Fatalf("err = %v; want the step stopped", err)
 		}
-		if elapsed := time.Since(start); elapsed > testStepTimeout+processWaitDelay/2 {
+		if elapsed > testStepTimeout+processWaitDelay/2 {
 			t.Errorf("the step took %s: something kept the output open", elapsed)
 		}
 		raw, _ := os.ReadFile(filepath.Join(state, "child.pid"))

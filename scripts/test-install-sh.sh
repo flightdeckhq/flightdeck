@@ -439,6 +439,18 @@ must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "an outdated agent on a te
 must "$WORK/pty4.out" "$OUTDATED_HINT" "an outdated agent on a terminal: the hint to update it"
 pass "on a terminal, an outdated agent is not asked about: the hint says to update it"
 
+# A dry run that exits 5 (--detected said not-connected, but planning met
+# a command the agent lacks): nothing is asked, and the hint says to update.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DRYRUN_EXIT=5 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-pty5" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/pty5.out" 2>&1 ||
+  { cat "$WORK/pty5.out"; echo "FAIL: the install with a dry run that exits 5"; exit 1; }
+must_not "$WORK/pty5.out" '[Y/n]' "a dry run that exits 5: nothing asked"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "a dry run that exits 5: nothing connected"
+must "$WORK/pty5.out" "$OUTDATED_HINT" "a dry run that exits 5: the hint to update it"
+must_not "$WORK/pty5.out" 'To connect Claude Code: flightdeck connect claude-code' "a dry run that exits 5: not the plain hint"
+pass "when the dry run exits 5, nothing is asked and the hint says to update the agent"
+
 # A ps that cannot say which group is in the foreground (BusyBox's has
 # no tpgid): the question is asked, and its bound still holds.
 mkdir -p "$WORK/fakeps"

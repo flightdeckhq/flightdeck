@@ -250,18 +250,31 @@ func report(rt IO, c Connector, err error) int {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s is not on this machine (%s); install it, then run flightdeck connect %s again\n",
-			c.ID(), c.Name(), strings.TrimPrefix(err.Error(), ErrNotFound.Error()+": "), c.ID())
+			c.ID(), c.Name(), errorText(err), c.ID())
 		return ExitNotFound
 	case errors.Is(err, ErrUsage):
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), strings.Replace(err.Error(), ErrUsage.Error()+": ", "", 1))
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
 		return ExitUsage
 	case errors.Is(err, ErrOutdated):
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), strings.Replace(err.Error(), ErrOutdated.Error()+": ", "", 1))
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
 		return ExitOutdated
 	default:
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %v\n", c.ID(), err)
+		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s\n", c.ID(), errorText(err))
 		return ExitFailed
 	}
+}
+
+// errorText is err's message without the text of the sentinel it wraps
+// ("usage: ", "agent too old to connect: "), which says nothing to a
+// person: the exit status carries it.
+func errorText(err error) string {
+	text := err.Error()
+	for _, sentinel := range []error{ErrNotFound, ErrUsage, ErrOutdated} {
+		if errors.Is(err, sentinel) {
+			text = strings.Replace(text, sentinel.Error()+": ", "", 1)
+		}
+	}
+	return text
 }
 
 // printDetected is the installers' query: one tab-separated line per
@@ -273,11 +286,13 @@ func printDetected(ctx context.Context, rt IO) {
 		if err != nil || !det.Found {
 			continue
 		}
+		// An outdated agent whose integration is installed and turned on
+		// (from inside it) is connected: there is nothing to do for it.
 		state := stateNotConnected
-		if det.Outdated != "" {
-			state = stateOutdated
-		} else if st, err := c.Status(ctx); err == nil && st.Connected() {
+		if st, err := c.Status(ctx); err == nil && st.Connected() {
 			state = stateConnected
+		} else if det.Outdated != "" {
+			state = stateOutdated
 		}
 		_, _ = fmt.Fprintf(rt.Stdout, "%s\t%s\t%s\n", c.ID(), state, c.Name())
 	}
@@ -303,14 +318,15 @@ func printList(ctx context.Context, rt IO) {
 			continue
 		}
 		line("found", "%s at %s", det.Version, det.Path)
-		if det.Outdated != "" {
-			line("too old", "%s", det.Outdated)
-			continue
-		}
 		st, err := c.Status(ctx)
 		switch {
+		case err == nil && st.Connected() && st.ServerUnknown:
+			line("connected", "plugin %s; this version of %s cannot show the server it reports to: update %s to see or change it",
+				st.Version, c.Name(), c.Name())
+		case det.Outdated != "":
+			line("too old", "%s", det.Outdated)
 		case err != nil:
-			line("status unknown", "%v", err)
+			line("status unknown", "%s", errorText(err))
 		case st.Connected():
 			token := "no token saved"
 			if st.TokenSaved {

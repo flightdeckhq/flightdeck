@@ -25,8 +25,30 @@ All notable changes to Flightdeck are documented here.
   agent's own steps, not sub-agents, so a `create_react_agent`
   `pre_model_hook` or `post_model_hook` no longer opens one either.
   `langgraph_agent_node_pattern` narrows every node shape (D276).
+- **LangGraph and Deep Agents: a graph run started inside another opens
+  a child session.** A run of a compiled graph that starts inside
+  another graph run or inside a child (a compiled graph used as a node,
+  a graph or an agent invoked from a node or a tool) opens one child,
+  named after the run (`run_name`, else the graph's name, else the node
+  it runs in), with its input and its final state as the messages under
+  `capture_prompts`, nested under the child it runs in; a top-level run
+  opens none. Deep Agents gets one child per `task` sub-agent run, named
+  after the sub-agent, parallel calls and `CompiledSubAgent`s included,
+  with no Deep Agents import. A compiled graph used as a node now gets
+  that one child, and a graph invoked from a hand-built node opens a
+  child under the node's, where its nodes nest. The child closes on an
+  error, an interrupt (a resume opens a new one), a cancellation and a
+  stream closed before its end. A `RemoteGraph` run opens none (D278).
 
 ### Fixed
+
+- **LangGraph: an async child's end no longer holds a thread while its
+  start is posted.** A node cancelled while its child's start was still
+  being posted queued an end that waited up to 25 seconds in an executor
+  thread for the start; the end is now queued from the start post's
+  completion, still after it. Sync LangGraph code run on an event loop's
+  thread (a sync `invoke` inside a coroutine) queues its child's posts
+  instead of making them on the loop's thread.
 
 - **LangGraph: a child session opened inside another nests under it.**
   Every LangGraph child named the sensor's session as its parent, also

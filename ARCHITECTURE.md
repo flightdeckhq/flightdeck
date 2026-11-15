@@ -292,7 +292,7 @@ flightdeck/
 │   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
 │   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
-│   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per run of a hand-built graph's node
+│   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node and Pregel.stream/astream patches → one child session per run of a hand-built graph's node and per graph run started inside another
 │   │   │   ├── llama_index.py  # LlamaIndex instrumentation span handler → one child session per agent of an agent workflow run
 │   │   │   └── claude_agent_sdk.py # Claude Agent SDK query() / ClaudeSDKClient patch → one session per run
 │   │   ├── providers/
@@ -1416,15 +1416,15 @@ both (see Sub-agent framework coverage).
 
 | Framework | Native: LLM calls | Native: structure | OTLP GenAI | What each path gives |
 |---|---|---|---|---|
-| LangChain | yes | no | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph but opens no child sessions: its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone (see LangGraph graphs) |
-| LangGraph | yes | yes, for the nodes of a graph built by hand | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, nested under the node it runs in; `create_agent`'s steps, generator nodes and compiled-subgraph nodes open none (see LangGraph graphs) |
+| LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
+| LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
 | Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per session; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
 | OpenAI Agents SDK 0.6+ | yes (Responses tool items become `tool_call` events); not over the Responses WebSocket transport | yes | yes, through `opentelemetry-instrumentation-openai-agents-v2` | Native: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires, enforced per session (see Sub-agent framework coverage). OTLP: agents, hand-offs, model and tool calls, observe only |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
 | LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
-| Deep Agents | yes through LangChain | planned | no | Native: none (it is built on `create_agent`, whose steps the LangGraph wrap leaves alone). Planned: a child session per agent and per sub-agent its `task` tool starts |
+| Deep Agents | yes through LangChain | yes | no | Native: a child session per sub-agent run its `task` tool starts (a declared sub-agent, a `CompiledSubAgent`, parallel calls included), named after the sub-agent, through the LangGraph wrap; the main agent is the sensor's session, as for any top-level `create_agent` run (see LangGraph graphs) |
 | Pydantic AI | yes on Anthropic and OpenAI models; no on `GoogleModel` or `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; no on its default Bedrock model or on Gemini | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
 | Agno, Haystack, smolagents | yes when they call a model through the Anthropic or OpenAI SDK or litellm | no ([#278](https://github.com/flightdeckhq/flightdeck/issues/278)) | no | Native: the framework label and metering and enforcement of those calls; a multi-agent run is one session |
@@ -1561,13 +1561,14 @@ The sensor opens a child session for every framework-recognised
 sub-agent execution. Each child session carries
 `parent_session_id` pointing back to the outer session and
 `agent_role` set to the framework-supplied role label
-(see Identity model above). Four mechanisms are covered:
+(see Identity model above). These mechanisms are covered:
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
 | Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
-| LangGraph node execution | the sensor's session; for a node that runs inside another node's work (a graph invoked from a node), that node's child session | node name | `sensor/.../interceptor/langgraph.py` (`StateGraph.add_node`: every node of a graph built by hand, a function or a Runnable, unless `init(langgraph_agent_node_pattern=...)` narrows it to matching node names; the nodes `create_agent` and `create_react_agent` register, and with them Deep Agents, generator nodes and compiled-subgraph nodes open no child sessions; see LangGraph graphs) |
+| LangGraph node execution | the sensor's session; for a node that runs inside another child's work (a node of a graph run started inside another), that child | node name | `sensor/.../interceptor/langgraph.py` (`StateGraph.add_node`: every node of a graph built by hand, a function or a Runnable, unless `init(langgraph_agent_node_pattern=...)` narrows it to matching node names; the nodes `create_agent` and `create_react_agent` register, generator nodes and compiled-graph nodes open no child sessions of their own; see LangGraph graphs) |
+| LangGraph graph run inside another (a compiled graph used as a node, a graph or an agent invoked from a node or a tool, each Deep Agents `task` sub-agent) | the child it runs in, else the sensor's session | the run's name: `run_name`, else the graph's name (`create_agent(name=...)`, the Deep Agents sub-agent's name), else the node it runs in, else `subgraph` | `sensor/.../interceptor/langgraph.py` (`Pregel.stream` / `astream`, which `invoke` and `ainvoke` call; a top-level run opens none; see LangGraph graphs) |
 | LlamaIndex agent workflow run | the sensor's session | the agent's `name` | `sensor/.../interceptor/llama_index.py` (a span handler on LlamaIndex's root instrumentation dispatcher; see LlamaIndex agent workflows) |
 | OpenAI Agents SDK agent run | the sensor's session; for an agent used as a tool, the child session of the agent that called the tool | `Agent.name` | `sensor/.../interceptor/openai_agents.py` (`AgentRunner.run` / `run_streamed`, run hooks, and the four guardrail classes' `run`) |
 
@@ -1701,9 +1702,13 @@ to nest a child opened inside another child's work.
 
 `patch()` (`Provider.LANGGRAPH`) wraps `StateGraph.add_node`, so each
 node is decided once, when the graph is built, and a node the wrap
-leaves alone runs exactly as registered. A child session is a sub-agent,
-and in a LangGraph application a sub-agent is a node of a graph the
-application builds by hand:
+leaves alone runs exactly as registered. It also wraps `Pregel.stream`
+and `Pregel.astream`, which every run of a compiled graph goes through
+(`invoke` and `ainvoke` call them, and so do `stream_events` and
+`astream_events`, LangGraph's v3 stream protocol included). A child
+session is a sub-agent, and in a LangGraph application a sub-agent is a
+node of a graph the application builds by hand, or a graph run started
+inside another graph run:
 
 - **Nodes that open a child.** Every node the application registers,
   whether its action is a function, a method or a callable instance
@@ -1726,27 +1731,82 @@ application builds by hand:
   `langgraph.graph`, read when the node is added: any module of the
   `langchain.agents` or `langgraph.prebuilt` package, so a release that
   moves those calls within the package changes nothing. A compiled graph
-  used as a node opens no child (the nodes inside it open theirs, where
-  that graph registered them). A generator or async-generator node
+  used as a node, bound (`with_config`, `with_retry`) or not, is
+  registered untouched: its run opens the one child (see Graph runs),
+  and the nodes inside it nest under that child. A generator or async-generator node
   function is registered untouched: LangGraph runs it as a stream (a
   `RunnableLambda`), which a wrapper function would hide, so it opens no
   child.
-- **Nesting.** A node's work runs inside its child's scope
-  (`Session.enter_subagent_scope`). A child opened while another child's
-  scope is active, such as a node of a graph invoked from inside a node,
-  has that child as its `parent_session_id`; otherwise the parent is the
-  sensor's session.
-- **Ends.** A child closes when its node returns. It ends with
-  `state=error` and the exception's type (and message, with capture on)
-  when the node raises, or, for an async node, when its task is
-  cancelled (a node timeout, a failed parallel node: LangGraph cancels
-  the other nodes of a failed run twice, and the end is still posted).
-  An exception whose text cannot be rendered ends the child with its
-  type alone and still propagates. LangGraph's
-  control-flow exceptions (`GraphBubbleUp`: an `interrupt()`, a `Command`
-  sent to the parent graph, a drain) close it normally, with no outgoing
-  message; resuming an interrupted run runs the node again, which opens
-  a new child.
+- **Graph runs.** A run of a compiled graph opens a child when it
+  starts inside another graph run or inside a child. Inside another run
+  means LangGraph runs it as one of that run's tasks (a compiled graph
+  used as a node) or inside one (a graph or an agent invoked from a node
+  or a tool, a Deep Agents `task` call): its config, or the config it
+  inherits from the node or tool it runs in, carries the task's id, the
+  test LangGraph makes itself. Inside a child means a child's scope is
+  active, such as another framework's sub-agent. A top-level run opens
+  none: its session is the sensor's, so a `create_agent` or Deep Agents
+  run started by the application opens nothing for itself. The role is
+  the run's name as LangGraph names it: the config's `run_name` (also
+  one bound with `with_config`), else the graph's name
+  (`compile(name=...)`, `create_agent(name=...)`); an unnamed graph
+  (`LangGraph`) takes the name of the node it runs in (LangGraph's
+  `langgraph_node` metadata), else `subgraph`. The `lc_agent_name`
+  metadata `create_agent` sets is not read: every run under an agent
+  inherits it, so an unnamed graph inside a named agent would take the
+  agent's name. `langgraph_agent_node_pattern` names nodes and does not
+  narrow graph runs. With capture on, the run's input (the input state,
+  or the `Command` that resumes it) is the child's `incoming_message`,
+  and its last full state at its own level, what `invoke` returns, its
+  `outgoing_message`; a run that streams no state (`stream_mode=
+  "updates"` alone, say) hands back its last chunk instead. A run's
+  chunks are read at its own level when they carry a namespace (a run
+  streaming its sub-graphs, a v2 stream part): its own carry the
+  shortest one.
+- **Deep Agents, an agent used as a tool.** Deep Agents is built on
+  `create_agent`, and its `task` tool invokes the chosen sub-agent's
+  graph from the main agent's tools node, so each `task` call is a graph
+  run inside the main agent's run: one child per call, named after the
+  sub-agent (a declared sub-agent is a `create_agent` graph with its
+  name; a `CompiledSubAgent` is bound to a `run_name` of its name, its
+  graph's own name aside), under the sensor's session, since the tools
+  node is the main agent's own step. Parallel `task` calls open one child
+  each, under the same parent; `ainvoke` and `astream` behave as
+  `invoke`. A human-in-the-loop interrupt inside a sub-agent closes its
+  child normally, and the resume runs the `task` call and the sub-agent
+  again under a new child. The nodes of a `CompiledSubAgent` graph built
+  by hand nest under its child. No Deep Agents module is imported or
+  wrapped. An agent used as a tool (a tool function that invokes a
+  `create_agent` graph) is one child too: under the child of the
+  hand-built `ToolNode` that runs the tool, or under the sensor's
+  session when `create_agent`'s own tools node runs it.
+- **`RemoteGraph`.** A `RemoteGraph` is not a `Pregel`: its run happens
+  in its LangGraph server, and the local process only reads its stream.
+  It opens no child, as a node (registered untouched, as a compiled
+  graph is) or invoked from one; a sensor in the server's process
+  reports the run there.
+- **Nesting.** A node's work, and a graph run's, runs inside its child's
+  scope (`Session.enter_subagent_scope`). A child opened while another
+  child's scope is active has that child as its `parent_session_id`;
+  otherwise the parent is the sensor's session. So a graph invoked from
+  a hand-built node opens a child under the node's, and its nodes nest
+  under the run's. A run's scope is entered around each step of its
+  stream and left before each chunk reaches the code consuming it, so
+  that code's own work is not attributed to the run.
+- **Ends.** A child closes when its node returns or its run's stream
+  ends. It ends with `state=error` and the exception's type (and
+  message, with capture on) when the node or the run raises, or, async,
+  when its task is cancelled (a node timeout, a failed parallel node:
+  LangGraph cancels the other nodes of a failed run twice, and the end
+  is still posted); the exception propagates unchanged. An exception
+  whose text cannot be rendered ends the child with its type alone and
+  still propagates. LangGraph's control-flow exceptions (`GraphBubbleUp`:
+  an `interrupt()`, which leaves a nested run as an exception, a
+  `Command` sent to the parent graph, a drain) close it normally, with no
+  outgoing message; resuming an interrupted run runs the node or the run
+  again, which opens a new child. A run whose stream its consumer closes
+  before the end (`close()`, `aclose()`, or the stream collected
+  unfinished) closes its child normally, with no outgoing message.
 - **How a node is wrapped.** A function is wrapped by one with its
   signature (see above). A Runnable is wrapped in a `RunnableCallable`
   named after the node, without tracing or recursion of its own, that
@@ -1769,21 +1829,23 @@ application builds by hand:
   `set_node_defaults`, before or after the node is added) is accepted or
   refused as for the unwrapped node.
 - **Posting.** The child's `session_start` and `session_end` are posted
-  synchronously, as every wrap's are. An async node queues them on the
-  event loop's executor, apart from its own task, and waits for them
-  shielded: the loop is not held, a cancellation propagates without
-  dropping a post, and the session's `end()` waits for posts still
-  running (up to 2 seconds). An end posted while its start is still
-  under way waits for the start, so the two arrive in order. The node's
-  model, tool and MCP calls stay on the sensor's session (see Which
-  session a sub-agent's calls land on above).
+  synchronously, as every wrap's are, except on a thread that runs an
+  event loop. An async node or run queues them on the event loop's
+  executor, apart from its own task, and waits for them shielded: the
+  loop is not held, a cancellation propagates without dropping a post,
+  and the session's `end()` waits for posts still running (up to 2
+  seconds). Sync LangGraph code running on a loop's thread (a sync
+  `invoke` inside a coroutine) queues them the same way and does not
+  wait for them. An end queued while its start is still being posted is
+  queued from the start post's completion, in the thread that finishes
+  it, so the two arrive in order and no thread waits for the start. The
+  model, tool and MCP calls of a node or a run stay on the sensor's
+  session (see Which session a sub-agent's calls land on above).
 
-A graph run that is not a node of the graph it runs in (a compiled
-sub-graph node, a Deep Agents `task` sub-agent, an agent used as a tool)
-opens no child of its own yet; that is planned
-([#185](https://github.com/flightdeckhq/flightdeck/issues/185)). The wrap
-fails open: when a node cannot be wrapped it is registered as given, and
-a failed post leaves the node running.
+The wrap fails open: when a node cannot be wrapped it is registered as
+given, a run whose child cannot be opened runs as it would unpatched,
+and a failed post, or a chunk the wrap cannot read, leaves the node or
+the run running, its output and its exceptions unchanged.
 
 #### LlamaIndex agent workflows
 
@@ -3159,7 +3221,7 @@ sessions extend the derivation with a conditional 6th input,
 | `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
 | `agent_name` | string | Sensor `init` kwarg, else `FLIGHTDECK_AGENT_NAME`, else `AGENT_FLAVOR` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
-| `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
+| `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name, or for a graph run inside another the run's name (Deep Agents: the sub-agent's name). Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
 Plus `hostname`, the fifth input of the derivation: the machine's
 host name, which `FLIGHTDECK_HOSTNAME` overrides in both the sensor
@@ -3410,8 +3472,8 @@ connectors). The contract is pinned by
 ### Sub-agent sessions
 
 Sub-agent sessions (Claude Code Task subagents, CrewAI agent turns,
-LangGraph agent-bearing nodes, the agents of a LlamaIndex agent workflow
-run) carry two paired columns on
+LangGraph agent-bearing nodes and nested graph runs, the agents of a
+LlamaIndex agent workflow run) carry two paired columns on
 `sessions`:
 
 - `parent_session_id uuid` — references `sessions(session_id)`, set to
@@ -5914,7 +5976,7 @@ session with a framework (an OpenTelemetry Claude Code session carries
 `parent_session_id` and `agent_role` are paired sub-agent columns.
 Both nullable, both populated only on sub-agent sessions
 (Claude Code Task, CrewAI agent turn, LangGraph agent-bearing
-node). The FK on `parent_session_id`
+node or nested graph run). The FK on `parent_session_id`
 references `sessions(session_id)` and is enforced at write time;
 forward references where the child's `session_start` arrives before
 the parent's are handled by the worker's parent-stub lazy-create
@@ -12627,6 +12689,7 @@ on any box.
 | `make playground-langgraph` | `playground/04_langgraph.py` |
 | `make playground-llamaindex` | `playground/05_llamaindex.py` |
 | `make playground-llamaindex-agents` | `playground/39_llamaindex_agents.py` |
+| `make playground-deepagents` | `playground/42_deepagents.py` |
 | `make playground-crewai` | `playground/06_crewai.py` |
 | `make playground-litellm` | `playground/12_litellm.py` |
 | `make playground-mcp` | `playground/13_mcp.py` |

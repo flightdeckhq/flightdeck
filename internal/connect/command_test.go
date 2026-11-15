@@ -193,7 +193,7 @@ func TestMain_AMarketplaceFromElsewhereNeedsAPerson(t *testing.T) {
 		f := newFakeClaude(t)
 		f.set(t, "marketplace="+foreign)
 		r := runMain(t, nil, "", false, "claude-code")
-		if r.code != ExitFailed || f.has("installed") || !strings.Contains(r.stderr, "comes from the local directory /src/my-flightdeck") ||
+		if r.code != ExitNeedsConfirmation || f.has("installed") || !strings.Contains(r.stderr, "comes from the local directory /src/my-flightdeck") ||
 			!strings.Contains(r.stderr, "claude plugin install flightdeck@flightdeck-plugins --scope user") {
 			t.Fatalf("%+v", r)
 		}
@@ -201,7 +201,7 @@ func TestMain_AMarketplaceFromElsewhereNeedsAPerson(t *testing.T) {
 	t.Run("--yes on a terminal", func(t *testing.T) {
 		f := newFakeClaude(t)
 		f.set(t, "marketplace="+foreign)
-		if r := runMain(t, nil, "y\n", true, "claude-code", "--yes"); r.code != ExitFailed || f.has("installed") {
+		if r := runMain(t, nil, "y\n", true, "claude-code", "--yes"); r.code != ExitNeedsConfirmation || f.has("installed") {
 			t.Fatalf("%+v", r)
 		}
 	})
@@ -210,6 +210,19 @@ func TestMain_AMarketplaceFromElsewhereNeedsAPerson(t *testing.T) {
 		f.set(t, "marketplace="+foreign)
 		r := runMain(t, nil, "\n", true, "claude-code")
 		if r.code != ExitFailed || f.has("installed") || !strings.Contains(r.stdout, "Caution: ") || !strings.Contains(r.stdout, "Continue? [y/N] ") {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("--dry-run reports it with exit status 4, the installers' signal", func(t *testing.T) {
+		f := newFakeClaude(t)
+		f.set(t, "marketplace="+foreign)
+		r := runMain(t, nil, "", false, "claude-code", "--dry-run")
+		if r.code != ExitNeedsConfirmation || !strings.Contains(r.stdout, "Caution: ") || f.has("installed") {
+			t.Fatalf("%+v", r)
+		}
+		// This repository's marketplace: exit status 0.
+		f.set(t, "marketplace=")
+		if r := runMain(t, nil, "", false, "claude-code", "--dry-run"); r.code != ExitOK {
 			t.Fatalf("%+v", r)
 		}
 	})
@@ -358,4 +371,13 @@ func TestMain_ExitStatuses(t *testing.T) {
 			t.Fatalf("%+v; want exit 1 and one line naming the step", r)
 		}
 	})
+}
+
+// The installers branch on --dry-run's exit statuses by number
+// (install.sh's CONNECT_NEEDS_CONFIRMATION, install.ps1's
+// $needsConfirmation): the values are a contract with them.
+func TestExitStatusesTheInstallersRead(t *testing.T) {
+	if ExitOK != 0 || ExitNeedsConfirmation != 4 {
+		t.Fatalf("ExitOK = %d, ExitNeedsConfirmation = %d; the installers read 0 and 4", ExitOK, ExitNeedsConfirmation)
+	}
 }

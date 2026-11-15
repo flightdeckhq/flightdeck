@@ -150,16 +150,26 @@
                 # when the binary cannot say (it printed why), nothing is asked.
                 $savedPreference = $ErrorActionPreference
                 $ErrorActionPreference = 'Continue'
+                # `connect --dry-run` exits 4 when the plan needs a person's
+                # yes on a terminal (a caution, such as a plugin from a
+                # marketplace other than this repository's): the installer
+                # does not ask then, since its connect passes --yes, which
+                # refuses such a plan.
+                $needsConfirmation = 4
+                $planStatus = 1
                 try {
                     & $Exe connect $agent.Id --dry-run 2>&1 | ForEach-Object { Write-Host "$_" }
-                    $planned = ($LASTEXITCODE -eq 0)
+                    $planStatus = $LASTEXITCODE
                 } catch {
                     Write-Host $_.Exception.Message
-                    $planned = $false
                 } finally {
                     $ErrorActionPreference = $savedPreference
                 }
-                if ($planned -and (& $Ask "Connect $($agent.Name) to Flightdeck?")) {
+                if ($planStatus -eq $needsConfirmation) {
+                    Write-Host "Connecting $($agent.Name) needs your own yes (see the caution above): run flightdeck connect $($agent.Id) yourself, which shows it and asks."
+                    continue
+                }
+                if ($planStatus -eq 0 -and (& $Ask "Connect $($agent.Name) to Flightdeck?")) {
                     & $connectOne $agent.Id $agent.Name
                     continue
                 }

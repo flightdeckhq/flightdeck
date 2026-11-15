@@ -12045,7 +12045,12 @@ Ctrl+C or SIGTERM cancels the command and ends the agent's CLI with it. Exit sta
 when the agent is connected (or removed, or was neither), and for the
 list; 1 when a step failed or timed out, or the question was answered
 no; 2 for a usage error (an unknown agent or flag, a server or token
-value refused); 3 when the agent is not found on this machine.
+value refused); 3 when the agent is not found on this machine; 4 when
+the plan carries a caution that only a yes on a terminal accepts:
+`--dry-run` reports such a plan with 4 (the installers' signal not to
+ask), and a connect under `--yes` or without a terminal refuses it
+with 4. The installers read 0 and 4 by number, and a Go test pins
+them.
 
 The server value is checked before anything changes: surrounding white
 space is dropped, and it must be an `http://` or `https://` URL with a
@@ -12164,14 +12169,20 @@ Unset, the installer asks once per found agent that is not connected,
 after printing `<binary> connect <id> --dry-run` (what connecting
 changes, what the integration records and where it sends it, in the
 binary's words, so the installers hold no agent's wording; when the dry
-run fails nothing is asked): `Connect Claude Code to Flightdeck? [Y/n]`.
+run fails nothing is asked, and when it exits 4, a plan that needs the
+person's own yes, nothing is asked either, since the installer's connect
+passes `--yes`: the installer says to run `flightdeck connect <id>`,
+which shows the caution and asks): `Connect Claude Code to Flightdeck? [Y/n]`.
 `install.sh` asks on `/dev/tty`, since under `curl | sh` its stdin is
 the script itself, and counts as interactive only when `/dev/tty` opens
 and its process group is the terminal's foreground group (an install
 sent to the background would be stopped at the read; where `ps` cannot
 tell, it asks). The answer is read by a background reader that is
 killed after 60 seconds (`ASK_TIMEOUT_SECS`), since POSIX `read` has no
-timeout: no answer is a no. `install.ps1` asks with `Read-Host` when the
+timeout: no answer is a no. Its test shortens the bound with
+`FLIGHTDECK_CONNECT_ASK_TIMEOUT` (digits only), and runs the question
+with a `ps` that has no `tpgid`, as BusyBox's has none: it is asked and
+the bound holds. `install.ps1` asks with `Read-Host` when the
 session is interactive and its input is not redirected. Both pass on
 only words of lower-case letters, digits and `-` as agent ids, from
 `FLIGHTDECK_CONNECT` and from the query alike, and `install.sh` splits

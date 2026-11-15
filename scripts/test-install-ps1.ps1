@@ -411,6 +411,9 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked -contains 'Connect Claude Code to Flightdeck?' -and $d.Calls -contains 'connect claude-code --yes' -and $d.Result.Hints.Count -eq 0) { Write-Pass 'a yes connects the agent' } else { Write-Failure 'a yes connects the agent' "$($d.Failure) calls: $($d.Calls -join '; ') asked: $($script:asked -join '; ') $($d.Text)" }
     if ($d.Calls -contains 'connect claude-code --dry-run' -and $d.Text -match 'The fake plugin records what a fake records\.' -and [array]::IndexOf($d.Calls, 'connect claude-code --dry-run') -lt [array]::IndexOf($d.Calls, 'connect claude-code --yes')) { Write-Pass 'the plan and what it records are shown before the question' } else { Write-Failure 'the plan before the question' "calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 4
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Text -match 'Connecting Claude Code needs your own yes \(see the caution above\): run flightdeck connect claude-code yourself') { Write-Pass 'when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect' } else { Write-Failure 'a dry run that exits 4' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') $($d.Text)" }
     $script:fakeDryRunExit = 1
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the binary cannot plan the connect, nothing is asked' } else { Write-Failure 'a failed dry run' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ')" }

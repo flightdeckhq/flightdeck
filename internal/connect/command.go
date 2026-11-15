@@ -21,6 +21,11 @@ const (
 	ExitUsage = 2
 	// ExitNotFound: the agent is not on this machine.
 	ExitNotFound = 3
+	// ExitNeedsConfirmation: the plan carries a caution that only a yes
+	// on a terminal accepts. --dry-run reports it with this status (the
+	// installers' signal not to ask), and a connect refuses with it under
+	// --yes or without a terminal.
+	ExitNeedsConfirmation = 4
 )
 
 // The states `--detected` prints.
@@ -113,7 +118,7 @@ func Main(ctx context.Context, args []string, rt IO) int {
 		title := "Disconnect " + c.Name() + " from Flightdeck"
 		if *dryRun {
 			plan.Describe(rt.Stdout, title)
-			return ExitOK
+			return dryRunStatus(plan)
 		}
 		if len(plan.Steps) > 0 && !rt.Interactive && !yes {
 			// Removing is not what a script that installs runs by
@@ -166,9 +171,18 @@ func Main(ctx context.Context, args []string, rt IO) int {
 	title := "Connect " + c.Name() + " to Flightdeck"
 	if *dryRun {
 		plan.Describe(rt.Stdout, title)
-		return ExitOK
+		return dryRunStatus(plan)
 	}
 	return run(ctx, rt, c, plan, yes, title, true)
+}
+
+// dryRunStatus is --dry-run's exit status: ExitNeedsConfirmation when
+// applying the plan needs a person's yes on a terminal, ExitOK otherwise.
+func dryRunStatus(plan Plan) int {
+	if len(plan.Steps) > 0 && plan.Caution != "" {
+		return ExitNeedsConfirmation
+	}
+	return ExitOK
 }
 
 // run asks, when it may, then applies the plan. A plan with a caution
@@ -177,7 +191,7 @@ func Main(ctx context.Context, args []string, rt IO) int {
 func run(ctx context.Context, rt IO, c Connector, plan Plan, yes bool, title string, defaultYes bool) int {
 	if len(plan.Steps) > 0 && plan.Caution != "" && (!rt.Interactive || yes) {
 		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck connect %s: %s; nothing changed\n", c.ID(), plan.Caution)
-		return ExitFailed
+		return ExitNeedsConfirmation
 	}
 	if len(plan.Steps) > 0 && rt.Interactive && !yes {
 		plan.Describe(rt.Stdout, title)
@@ -313,7 +327,9 @@ github.com/flightdeckhq/flightdeck is installed only after a yes on a terminal.
 --dry-run prints the changes and what the integration records, and changes nothing.
 
 Exit status: 0 connected, removed or nothing to do; 1 a step failed or the answer
-was no; 2 a usage error; 3 the agent is not on this machine.
+was no; 2 a usage error; 3 the agent is not on this machine; 4 the plan needs a yes
+on a terminal (--dry-run reports it, and a connect under --yes or without a
+terminal refuses with it).
 
 Flags:
 `, strings.Join(agents, ", "), DefaultServer)

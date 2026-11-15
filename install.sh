@@ -50,6 +50,10 @@
 #                           and prints the command to run instead when there is
 #                           no terminal. Connecting runs `flightdeck connect`; a
 #                           connect that fails never fails the install.
+#   FLIGHTDECK_CONNECT_ASK_TIMEOUT  seconds the connect question waits for an
+#                           answer (default 60; no answer is a no). Only
+#                           scripts/test-install-sh.sh sets it, to shorten a
+#                           run that leaves the question unanswered.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
@@ -246,8 +250,18 @@ in_foreground() {
 
 # How long the question waits for an answer. A person at the terminal
 # answers in seconds; an install left running in a window nobody watches
-# is not held for ever, and no answer is a no.
+# is not held for ever, and no answer is a no. The test shortens it with
+# FLIGHTDECK_CONNECT_ASK_TIMEOUT (digits only; anything else is ignored).
 ASK_TIMEOUT_SECS=60
+case "${FLIGHTDECK_CONNECT_ASK_TIMEOUT:-}" in
+  '' | *[!0-9]*) ;;
+  *) ASK_TIMEOUT_SECS="$FLIGHTDECK_CONNECT_ASK_TIMEOUT" ;;
+esac
+# `flightdeck connect <id> --dry-run` exits with this status when the plan
+# needs a person's yes on a terminal (a caution, such as a plugin from a
+# marketplace other than this repository's): the installer does not ask
+# then, since its connect passes --yes, which refuses such a plan.
+CONNECT_NEEDS_CONFIRMATION=4
 
 # ask_yes QUESTION: yes for an empty answer, y or yes; anything else, end
 # of input, or no answer within ASK_TIMEOUT_SECS, is no. POSIX read has
@@ -380,7 +394,16 @@ connect_agents() {
           # What connecting changes and what the agent's integration then
           # records, in the binary's words, before the question; when the
           # binary cannot say (it printed why), nothing is asked.
-          if "$1" connect "$id" --dry-run </dev/null && ask_yes "Connect $name to Flightdeck?"; then
+          if "$1" connect "$id" --dry-run </dev/null; then
+            plan_status=0
+          else
+            plan_status=$?
+          fi
+          if [ "$plan_status" -eq "$CONNECT_NEEDS_CONFIRMATION" ]; then
+            info "Connecting $name needs your own yes (see the caution above): run flightdeck connect $id yourself, which shows it and asks."
+            continue
+          fi
+          if [ "$plan_status" -eq 0 ] && ask_yes "Connect $name to Flightdeck?"; then
             connect_one "$1" "$id" "$name"
             continue
           fi

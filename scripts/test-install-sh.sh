@@ -392,6 +392,42 @@ must_not "$WORK/pty2.out" '[Y/n]' "a failed dry run: nothing asked"
 must "$WORK/pty2.out" 'To connect Claude Code: flightdeck connect claude-code' "a failed dry run: the command is printed"
 pass "when the binary cannot plan the connect, nothing is asked and the command is printed"
 
+# A plan that needs the person's own yes (--dry-run exits 4: a caution,
+# such as a marketplace from another source): nothing is asked, since the
+# installer's connect passes --yes, and the person is told what to run.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DRYRUN_EXIT=4 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-pty3" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/pty3.out" 2>&1 ||
+  { cat "$WORK/pty3.out"; echo "FAIL: the install with a plan that needs confirmation"; exit 1; }
+must_not "$WORK/pty3.out" '[Y/n]' "a plan that needs confirmation: nothing asked"
+must "$WORK/pty3.out" 'Connecting Claude Code needs your own yes (see the caution above): run flightdeck connect claude-code yourself' "a plan that needs confirmation: what to run"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "a plan that needs confirmation: nothing connected"
+pass "when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect"
+
+# A ps that cannot say which group is in the foreground (BusyBox's has
+# no tpgid): the question is asked, and its bound still holds.
+mkdir -p "$WORK/fakeps"
+printf '#!/bin/sh\necho "ps: bad -o argument" >&2\nexit 1\n' >"$WORK/fakeps/ps"
+chmod 0755 "$WORK/fakeps/ps"
+: >"$FAKE_FLIGHTDECK_LOG"
+started=$(date +%s)
+PATH="$WORK/fakeps:$PATH" FLIGHTDECK_CONNECT_ASK_TIMEOUT=2 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-ps" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" __no_answer__ "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/ps.out" 2>&1 ||
+  { cat "$WORK/ps.out"; echo "FAIL: the install with a ps that has no tpgid"; exit 1; }
+elapsed=$(( $(date +%s) - started ))
+must "$WORK/ps.out" 'Connect Claude Code to Flightdeck? [Y/n]' "without tpgid the question is asked"
+must "$WORK/ps.out" 'No answer in 2 seconds: not connecting.' "and times out at its bound"
+must "$WORK/ps.out" 'To connect Claude Code: flightdeck connect claude-code' "and prints the command"
+# The bound plus the install itself (a second against the local server)
+# and the reader's one-second polls; far below the run's own timeout.
+if [ "$elapsed" -gt 20 ]; then echo "FAIL: the unanswered question took ${elapsed}s with a 2-second bound"; exit 1; fi
+: >"$FAKE_FLIGHTDECK_LOG"
+PATH="$WORK/fakeps:$PATH" FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-ps2" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/ps2.out" 2>&1 ||
+  { cat "$WORK/ps2.out"; echo "FAIL: the install with a ps that has no tpgid, answered"; exit 1; }
+must "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "without tpgid a yes still connects"
+pass "a ps without tpgid (BusyBox): the question is asked, bounded (${elapsed}s with a 2-second bound), and a yes connects"
+
 # In the background, the installer asks nothing: the terminal would stop
 # it at the read. The pseudo-terminal's foreground group is the driver's
 # shell; the install runs in a group of its own behind it.

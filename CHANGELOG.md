@@ -25,19 +25,22 @@ All notable changes to Flightdeck are documented here.
   terminal the command shows the same and asks first (`--yes` skips
   that). A `flightdeck-plugins` marketplace Claude Code already has from
   another source (a local checkout, a fork) is named, and the plugin is
-  installed from it only after a yes on a terminal. Exit status 0 when done or nothing to do, 1 when
-  a step fails, 2 for a usage error, 3 when the agent is not on the
-  machine. Every `claude` command it runs has a timeout that ends its
-  child processes too. Each agent is
-  a connector of the same command, so the agents still to come plug in
-  without changing it or the installers (D275).
+  installed from it only after a yes on a terminal. Exit status 0 when
+  done or nothing to do, 1 when a step fails, 2 for a usage error, 3
+  when the agent is not on the machine, 4 when the plan needs a yes on
+  a terminal. Every `claude` command it runs has a timeout that ends
+  its child processes too. Each agent is a connector of the same
+  command, so the agents still to come plug in without changing it or
+  the installers (D275).
 - **The installers offer to connect the coding agents they find.**
   After installing the binary, `install.sh` and `install.ps1` show what
   connecting would change and what the plugin records, then ask
   `Connect Claude Code to Flightdeck? [Y/n]` for each agent found that
   is not connected yet (`install.sh` asks on the terminal even under
   `curl | sh`, and takes no answer within 60 seconds as no); without a
-  terminal, or in the background, they print the command instead.
+  terminal, or in the background, they print the command instead, and
+  a plan that needs the person's own yes (a plugin from another
+  marketplace) is not asked about: they say to run the command.
   `FLIGHTDECK_CONNECT=claude-code` (agent ids separated by commas,
   `all` or `none`) decides without asking, for CI and scripted installs.
   A connect that fails prints why and the command to run later, and the

@@ -58,6 +58,13 @@ const (
 	// after it starts. Two minutes is the wait plus margin for a slow
 	// runner.
 	redeliveryTimeout = 120 * time.Second
+	// logTimeout bounds the wait for a line the binary logs while it
+	// handles a request to reach the test's copy of its output. The
+	// binary writes the line before it answers, but the output reaches
+	// the test through a pipe a goroutine copies, so a test that looks
+	// right after the answer can be ahead of the copy. The copy lands
+	// within milliseconds; ten seconds is margin for a loaded runner.
+	logTimeout = 10 * time.Second
 	// pollInterval is how often a condition is re-checked while waiting.
 	pollInterval = 50 * time.Millisecond
 	// refusalTimeout bounds how long a second instance may take to

@@ -81,17 +81,25 @@ func TestBinary_ALoopbackListenAnswersOnlyForItsOwnNames(t *testing.T) {
 	if code != http.StatusMisdirectedRequest || !strings.Contains(body, wantBody) {
 		t.Errorf("Host Proxy.Example: answered %d %q, want 421 naming the host and the setting", code, body)
 	}
-	out := c.out.String()
-	for _, want := range []string{
+	wants := []string{
 		"a request was refused (421)",
 		"host=evil.example",
 		"host=proxy.example",
 		"  Hosts       localhost, IP addresses   (a request for any other host name is refused; add names with FLIGHTDECK_ALLOWED_HOSTS)",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the output lacks %q:\n%s", want, out)
-		}
 	}
+	// The refusal lines are logged before each answer but reach c.out
+	// through the copy of the binary's output, which can trail the
+	// answer (logTimeout).
+	waitFor(t, "the refusal log lines", logTimeout, func() bool {
+		out := c.out.String()
+		for _, want := range wants {
+			if !strings.Contains(out, want) {
+				return false
+			}
+		}
+		return true
+	})
+	out := c.out.String()
 	// One line per name: evil.example was refused on five paths, with
 	// and without its port.
 	if n := strings.Count(out, "host=evil.example\n"); n != 1 {

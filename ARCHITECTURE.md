@@ -11015,8 +11015,10 @@ everything in a SQLite file under the data dir and depends on nothing
 outside the process. `--database-url postgres://…` puts the data in a
 Postgres database instead (see Database below).
 
-**Ports and routes.** One listener, `--listen`, default `127.0.0.1:4000`.
-The router serves `/` and every path with no other owner from the
+**Ports and routes.** One listener, on `127.0.0.1:4000` by default:
+this machine only. `--port` moves it to another port of `127.0.0.1`,
+`--public` opens it to other machines, and `--listen` names one address
+(see Listen address below). The router serves `/` and every path with no other owner from the
 embedded dashboard bundle (`webui/dist`, filled by `make build-webui`
 from `dashboard/dist` without the source maps), falling back to
 `index.html` for the SPA's client-side routes (an `/assets/*` path that
@@ -11044,13 +11046,106 @@ API's read timeout (15 seconds) on `/api` except the WebSocket, so a
 client that stalls mid-body holds a connection no longer than it
 could with the standalone services. The query API's own 30-second
 REST timeout and the ingestion body limits still apply inside their
-handlers. A port already in use stops the start with the error and a
-`--listen` hint; a privileged port the process may not bind (`:80`
-and `:443` of `--domain`) with the remedy (root, `CAP_NET_BIND_SERVICE`
-or a higher `--listen` port). The sockets are bound before anything
+handlers. A port already in use stops the start with the error and
+the flags that serve the next port on the same interfaces (`--port
+4001` on `127.0.0.1`, `--public --port 4001` on every interface,
+`--listen <address>:4001` on another address; none with `--domain`,
+whose ports are fixed); a privileged port the process may not bind
+(below 1024, and `:80` and `:443` of `--domain`) with the remedy (root,
+`CAP_NET_BIND_SERVICE` or a port above 1023). The sockets are bound before anything
 else, so either message arrives before any side effect. The three services' metrics listeners
 (ports 9102, 9103 and 9104, see Metrics) are off unless `--metrics` is
 given; the public port never serves `/metrics`.
+
+**Listen address.** Three flags choose it, each with a variable:
+`--port` (`-p`, `FLIGHTDECK_PORT`), `--public` (`FLIGHTDECK_PUBLIC`,
+`true` or `false` as `FLIGHTDECK_METRICS` is read) and `--listen`
+(`FLIGHTDECK_LISTEN`).
+
+| Given | Listens on | Mode |
+|---|---|---|
+| nothing | `127.0.0.1:4000` | loopback |
+| `--port 4100` | `127.0.0.1:4100` | loopback |
+| `--public` | `0.0.0.0:4000`, every interface | beyond loopback |
+| `--public --port 4100` | `0.0.0.0:4100`, every interface | beyond loopback |
+| `--listen <host>:<port>` | that address | loopback for a loopback host (`127.0.0.0/8`, `::1`, `localhost`), beyond loopback for any other |
+| `--listen :4100` | `127.0.0.1:4100` | loopback |
+
+`--port` is a port number from 1 to 65535; anything else, `0`
+included, stops the start with a usage error that says what to pass,
+since the start-up block, the sensor's `FLIGHTDECK_SERVER` and
+`flightdeck health` all need the port before the system could pick
+one. `--listen` takes `host:port`. A port with no host (`:4100`) is
+this machine only, `127.0.0.1`, as `--port` is: an address that serves
+other machines is written out, `0.0.0.0:4100` or one interface's
+address, or spelled `--public`. `[::]:4100` and `0.0.0.0:4100` are
+every interface, `[::1]:4100` is loopback; a number alone (`--listen
+4100`) is refused with the `--port` form to use instead, and an IPv6
+address without brackets (`::1:4100`, `::1`) with the bracketed form,
+`[::1]:4100`, since no colon in it says where the address ends.
+`--public` is
+the listener `--listen 0.0.0.0:<port>` opens, and nothing more: Go
+opens a listener on a wildcard address as one dual-stack socket where
+the system supports one, taking IPv4 and IPv6 connections alike, so it
+reaches what `[::]:<port>` reaches. It is the mode of a listen beyond
+loopback in every respect: the development token is refused, the token
+is minted or supplied, and the Host check is off unless a list is set
+(Auth bootstrap and Host check, below). Whoever can reach the server can
+then read the dashboard token, so `--help`, the start-up block's loopback
+hint and the docs that offer `--public` all add: open it only on a
+network you trust, or put it behind a proxy that authenticates.
+
+A port with no host changes what an existing configuration binds, so
+it is announced. Every start with one logs a warning that names the
+address as it was given and the forms that say what was meant
+(`--listen 0.0.0.0:<port>` or `--public --port <port>` for other
+machines, `--listen 127.0.0.1:<port>` or `--port <port>` for this one).
+Beside a supplied dashboard token (`FLIGHTDECK_DASHBOARD_TOKEN_FILE` or
+`FLIGHTDECK_DASHBOARD_TOKEN`) the start is refused instead, with a usage
+error (exit status 2) and the same forms: a supplied token says the
+instance runs beyond loopback, a reverse proxy on the same machine
+forwarding to it for one, and on loopback the binary would ignore that
+token and serve the development token while the proxy kept forwarding.
+A proxy on the same machine keeps a loopback address written out
+(`--listen 127.0.0.1:<port>`), and the development token is then what
+it serves. `--domain` binds its own ports, so neither applies there,
+and `flightdeck health` reads the address without either.
+
+The mode is decided from the address as written: a loopback literal
+(`127.0.0.0/8`, `::1`, an IPv4-mapped `::ffff:127.x.y.z`, with or without
+an interface zone, `[::1%lo]`) or `localhost` (any case, with or without
+the trailing dot of a fully qualified name, `localhost.`) is loopback,
+and so is the default; anything else is not, a host name the system
+resolves (a hosts-file entry for `127.0.1.1`, `127.1` through the C
+resolver) included. Once the socket is bound, the binary compares its
+address with that decision and refuses to start when they differ, with
+the address to write instead: a mismatch would serve the development
+token beyond this machine, or run a loopback-only instance with the Host
+check off, from which a DNS-rebinding page could read the token.
+
+`FLIGHTDECK_PORT` is also the variable Kubernetes sets in every pod of
+a namespace that has a Service named `flightdeck`: its service links
+(`enableServiceLinks`, on by default) set `<SERVICE>_PORT` to the
+Service's address, `tcp://10.96.0.5:4000`. A value that begins with
+`tcp://`, `udp://` or `sctp://` is therefore read as unset, for the port
+and for the conflict with `FLIGHTDECK_LISTEN` alike, in the server and
+in `flightdeck health`; with the image's `FLIGHTDECK_LISTEN` the pod
+starts and is found healthy as it would without the link.
+
+`--port` and `--public` combine; `--listen` names the whole address and
+combines with neither. A flag wins over its variable, and a flag of
+either side overrides the other side's variables: `--port 4100` with
+`FLIGHTDECK_LISTEN` set listens on `127.0.0.1:4100`, and `--listen
+10.0.0.5:4000` with `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC` set listens
+on `10.0.0.5:4000`. `--listen` given with `--port`, `-p` or `--public`
+is a usage error (exit status 2) that names both flags; so is
+`FLIGHTDECK_LISTEN` set beside `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
+when no flag decides, naming both variables. A flag counts once it is on
+the command line, with any value (`--public=false` included); a
+variable counts when it is not empty. A `FLIGHTDECK_PUBLIC` that is
+neither true nor false is a usage error when it applies, that is unless
+`--public` is given; it never stops `--version` or `--help`. With
+`--domain` the three are read and checked but bind nothing (TLS, below).
 
 **Data dir.** `--data-dir` (`FLIGHTDECK_DATA_DIR`), default
 `~/.flightdeck` (`%LOCALAPPDATA%\flightdeck` on Windows), created with
@@ -11211,13 +11306,14 @@ instances sharing a database (Helm) point at one external NATS, since
 each embedded server is a bus of its own.
 
 **Auth bootstrap.** The listen address decides the mode. Bound to a
-loopback address (`127.0.0.1`, `localhost`, `::1`), the binary runs the
+loopback address (`127.0.0.1`, `localhost`, `::1`: the default, `--port`
+and a `--listen` port with no host all are), the binary runs the
 services with the development semantics (`ENVIRONMENT=dev`, set in
 process): the seeded `tok_dev` is accepted,
 `/runtime-config.json` returns it, the dev-only `DELETE
 /v1/directives/custom` route is mounted, and the start-up block prints
-the token. Bound to any other address, or started with `--domain`, the
-dev token is refused with the usual 401; on the first start the binary
+the token. Bound to any other address (`--public` among them), or
+started with `--domain`, the dev token is refused with the usual 401; on the first start the binary
 mints an `ftd_` access token named `Bootstrap token` through the
 query API's token store (stored salted and hashed in `access_tokens`
 like any other), prints it once in the start-up block, and keeps the
@@ -11298,8 +11394,8 @@ case or a trailing dot). The port is not compared: a forwarded or
 published port changes it, and a rebinding page cannot choose it. The
 check is on when the binary listens on loopback only, where the
 browser is the one way in; with `--domain`; and whenever a list is
-set. A listen address beyond loopback with no list answers every
-`Host`: the names such an instance is reached by (a LAN name, a
+set. A listen address beyond loopback (`--public` included) with no
+list answers every `Host`: the names such an instance is reached by (a LAN name, a
 reverse proxy's) are not known to the binary, and the operator who
 bound it there decided who reaches it. `--allowed-hosts '*'` turns the
 check off in any mode. The Docker image sets
@@ -11356,7 +11452,8 @@ the binary with certificates from Let's Encrypt (`acme/autocert`,
 HTTP-01, cache in `<data>/acme`): it listens on `:443` for the domain
 and on `:80` to answer the ACME challenge and redirect every other GET
 or HEAD to `https://<domain>` with the same path and query, whatever
-`Host` the request carried; `--listen` is ignored in this mode. Without `--domain`
+`Host` the request carried; `--listen`, `--port` and `--public` are
+ignored in this mode. Without `--domain`
 the binary serves plain HTTP.
 
 **Time zone.** The binary's local zone is UTC: the query API
@@ -11381,9 +11478,13 @@ engine's name), the host names answered (see Host check) and the bus
 `https://<domain>` with `--domain`; `http://localhost:<port>` for a
 loopback listen; the listen address as given when it names one
 interface (`http://10.0.0.5:4000`); and `http://<this-host>:<port>` for
-a listen on every interface (`:4000`, `0.0.0.0:4000`, `[::]:4000`),
+a listen on every interface (`--public`, `0.0.0.0:4000`, `[::]:4000`),
 with a note to put the machine's name or address in place of
-`<this-host>`. The operating system's host name is not printed there:
+`<this-host>`. On loopback the token line adds that the server listens
+on this machine only, and the line under it that `--public` lets other
+machines in and that whoever can reach the server can then read the
+dashboard token, so to open it only on a network you trust, or to put it
+behind a proxy that authenticates. The operating system's host name is not printed there:
 inside a container it is the container's id (the pod's name under
 Kubernetes), which nothing outside resolves, and the binary cannot know
 the name or the published port the machine is reached by.
@@ -11458,14 +11559,14 @@ split test stack (Contributor dev stack, below) runs them from source.
 **Docker Compose.** `docker/docker-compose.yml` runs the all-in-one
 image as one service, `flightdeck`, in a compose project of the same
 name: the image's own entrypoint (`flightdeck --data-dir /data --listen
-:4000`, as its non-root user), `/data` on the named volume
+0.0.0.0:4000`, as its non-root user), `/data` on the named volume
 `flightdeck_data`, and the container's port 4000 published on
 `127.0.0.1:4000`. With nothing else set the database is the SQLite file
 in that volume. `FLIGHTDECK_PUBLISH_HOST` and `FLIGHTDECK_PUBLISH_PORT`
 move the published address; the default is loopback because the origin
 serves the dashboard token, so publishing it wider is the operator's
-decision. `:4000` inside the container is not a loopback address, so
-the first start mints the token; the start-up block in `docker compose
+decision. `0.0.0.0:4000` inside the container is not a loopback
+address, so the first start mints the token; the start-up block in `docker compose
 logs flightdeck` carries it on that start only, and
 `/runtime-config.json` on the published port returns it on every
 start. `FLIGHTDECK_DATABASE_URL`, `FLIGHTDECK_DOMAIN` and the stream's
@@ -11502,7 +11603,7 @@ nothing.
 
 **Helm chart (Kubernetes).** The chart at `helm/` runs the all-in-one
 image as one StatefulSet, `<release>-flightdeck`. Each pod is a whole
-control plane (the binary with `--listen :4000 --data-dir
+control plane (the binary with `--listen 0.0.0.0:4000 --data-dir
 /data/flightdeck`) behind one ClusterIP Service, and the Ingress, when enabled, routes
 every path to it. It is a StatefulSet because the binary keeps state
 per process in its data dir (the SQLite file and its lock, the embedded
@@ -11816,11 +11917,15 @@ in both or in neither (Key Constraint #4).
 ### Environment variables
 
 **`flightdeck` binary:** flags win over environment variables, which win
-over the defaults.
+over the defaults. `--listen` combines with neither `--port` nor
+`--public`, and a flag of one side overrides the other side's variables
+(see Deployment > Listen address).
 
 | Flag | Variable | Purpose |
 |---|---|---|
-| `--listen` | `FLIGHTDECK_LISTEN` | Address of the one listener (default `127.0.0.1:4000`); a loopback address enables the development token |
+| `--port`, `-p` | `FLIGHTDECK_PORT` | Port of the one listener, 1 to 65535 (default 4000), on `127.0.0.1` unless `--public` is given; a Kubernetes service link's value (`tcp://…`, `udp://…`, `sctp://…`) reads as unset |
+| `--public` | `FLIGHTDECK_PUBLIC` | `true` listens on every interface (`0.0.0.0`), so other machines reach the server; the development token is then refused and an access token is minted or supplied, which whoever reaches the server can read: open it only on a network you trust, or put it behind a proxy that authenticates |
+| `--listen` | `FLIGHTDECK_LISTEN` | One address for the listener, `host:port` (`10.0.0.5:4000`, `0.0.0.0:4000`); a loopback host enables the development token, and a port with no host (`:4000`) is `127.0.0.1` |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
 | `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
@@ -11842,8 +11947,8 @@ holding the dashboard token the operator supplies, and
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
 `flightdeck health` (see Health checks) takes the same flags and
-variables and uses the listen address and the domain to find the
-running instance.
+variables, under the same rules, and uses the listen address and the
+domain to find the running instance.
 
 The three tables below list what each of the three services reads.
 The `flightdeck` binary runs them in one process: the tuning variables
@@ -11854,8 +11959,10 @@ It sets `FLIGHTDECK_POSTGRES_URL` (to the URL of whichever database its
 flags select, the default SQLite file included) and
 `FLIGHTDECK_JWT_SECRET`, sets `ENVIRONMENT` to `dev` when it serves on
 loopback with the development token and clears it otherwise, and serves
-the services' handlers on its own listener, so `FLIGHTDECK_PORT` is not
-used; a value of any of these in the environment has no effect on it.
+the services' handlers on its own listener, so no service opens a
+listener of its own: `FLIGHTDECK_PORT` is the binary's port (`--port`),
+never a service's, and a value of any of the others in the environment
+has no effect on it.
 Those variables matter only to a service binary run on its own
 (`ingestion/cmd`, `workers/cmd`, `api/cmd`), which needs its database
 URL, hence "required" below. No release artifact, compose file or chart
@@ -11934,7 +12041,7 @@ from one release tag (RELEASING.md has the sequence):
 | PowerShell installer | `irm https://flightdeck-hq.com/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
 | Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
-| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
+| Docker | `docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=0.0.0.0:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `0.0.0.0:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
 Once the binary is installed, both installers offer to connect the
 coding agents they find, through the binary's `flightdeck connect`
@@ -12087,12 +12194,15 @@ ask; they run in the same process, and the binary exits when one of its
 services fails, so a listener that answers means they run.
 
 The command takes the server's flags and reads the server's
-environment (`--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
-`FLIGHTDECK_DOMAIN`; the other flags are accepted and ignored), so with
-no arguments it finds an instance that was configured through the
-environment, as the image is, and the default one on `127.0.0.1:4000`.
-A listen address on every interface (`:4000`, `0.0.0.0:4000`,
-`[::]:4000`) is probed on `127.0.0.1`, and on `::1` when nothing can be
+environment (`--port` / `FLIGHTDECK_PORT`, `--public` /
+`FLIGHTDECK_PUBLIC`, `--listen` / `FLIGHTDECK_LISTEN`, `--domain` /
+`FLIGHTDECK_DOMAIN`; the other flags are accepted and ignored), and
+resolves the address under the server's rules (Deployment > Listen
+address): `flightdeck health --port 4100` finds the instance started
+with `--port 4100`, and with no arguments it finds an instance that was
+configured through the environment, as the image is, and the default
+one on `127.0.0.1:4000`. A listen address on every interface
+(`--public`, `0.0.0.0:4000`, `[::]:4000`) is probed on `127.0.0.1`, and on `::1` when nothing can be
 connected to there (a listener on IPv6 only), within the same three
 seconds: a container may have no IPv6 on its loopback, and `::1` first
 would fail on an instance that serves. An answer that is wrong at the

@@ -12,11 +12,24 @@ import (
 
 func TestLoopback(t *testing.T) {
 	cases := map[string]bool{
-		"127.0.0.1:4000":   true,
-		"127.0.0.2:4000":   true,
-		"localhost:4000":   true,
-		"LOCALHOST:4100":   true,
-		"[::1]:4000":       true,
+		"127.0.0.1:4000": true,
+		"127.0.0.2:4000": true,
+		"localhost:4000": true,
+		"LOCALHOST:4100": true,
+		"[::1]:4000":     true,
+		// The spellings that bind loopback all read as loopback: a fully
+		// qualified localhost, an interface zone, an IPv4-mapped address.
+		"localhost.:4000":           true,
+		"LocalHost.:4000":           true,
+		"[::1%lo]:4000":             true,
+		"[::ffff:127.0.0.1]:4000":   true,
+		"[fe80::1%eth0]:4000":       false,
+		"localhost.example.com:400": false,
+		"localhost..:4000":          false,
+		// Not an IP literal Go parses; the bind resolves it, and the
+		// binary refuses a bound socket that disagrees.
+		"127.1:4000":       false,
+		"0:4000":           false,
 		":4000":            false,
 		"0.0.0.0:4000":     false,
 		"[::]:4000":        false,

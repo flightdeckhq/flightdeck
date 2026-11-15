@@ -22,10 +22,15 @@ const DevToken = "tok_dev"
 const TokenName = "Bootstrap token"
 
 // Loopback reports whether listen is an address only this machine can
-// reach: a loopback IP, "localhost", or an IP-less port on a loopback
-// host. An empty host (":4000") binds every interface and is not
-// loopback; a host name other than localhost is resolved by the
-// operating system at bind time and is not assumed to be.
+// reach: a loopback IP (127.0.0.0/8, ::1, an IPv4-mapped 127 address),
+// with or without an interface zone (::1%lo), or "localhost", with or
+// without the trailing dot of a fully qualified name. An empty host
+// (":4000") is not loopback, since that is the address net.Listen binds
+// on every interface; the binary's command line never produces one
+// (cli.Parse gives a port alone the loopback host). A host name other
+// than localhost is resolved by the operating system at bind time and is
+// not assumed to be loopback; the binary compares the bound socket with
+// this answer and refuses to start when they differ.
 func Loopback(listen string) bool {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -35,8 +40,12 @@ func Loopback(listen string) bool {
 	if host == "" {
 		return false
 	}
-	if strings.EqualFold(host, "localhost") {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
 		return true
+	}
+	// A zone names the interface the address is on, not the address.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()

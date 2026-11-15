@@ -30,10 +30,11 @@ The dashboard is at http://localhost:4000. Flightdeck runs in that window and pr
 
 If PowerShell says `flightdeck` is not recognised, open a new PowerShell window, or run it by its full path: `& "$env:LOCALAPPDATA\Programs\flightdeck\flightdeck.exe"`.
 
-`flightdeck --help` lists the flags. Two that matter on Windows:
+`flightdeck --help` lists the flags. Three that matter on Windows:
 
 - `--data-dir` moves the data (below).
-- `--listen 0.0.0.0:4000` makes Flightdeck reachable from other machines. It then refuses the development token and creates an access token on its first start, printed once in the start-up block. Windows Defender Firewall asks whether to allow `flightdeck.exe` the first time it listens on an address other than `127.0.0.1`; on the default address it does not ask. Whoever can reach the address can read the dashboard's token, so open it only on a network you trust, or put Flightdeck behind a proxy that authenticates.
+- `--port 4100` runs Flightdeck on another port, still on your own machine only, with the development token.
+- `--public` makes Flightdeck reachable from other machines: it listens on every network interface (`--public --port 4100` on another port; `--listen <address>:<port>` picks one address instead). It then refuses the development token and creates an access token on its first start, printed once in the start-up block. Windows Defender Firewall asks whether to allow `flightdeck.exe` the first time it listens on an address other than `127.0.0.1`; on your own machine only (the default, or `--port`) it does not ask. Whoever can reach the address can read the dashboard's token, so open it only on a network you trust, or put Flightdeck behind a proxy that authenticates.
 
 ## The data
 

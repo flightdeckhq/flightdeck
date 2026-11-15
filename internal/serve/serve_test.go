@@ -26,7 +26,7 @@ func TestListen_BusyPortNamesTheNextOne(t *testing.T) {
 		t.Fatal("want an error on a busy port")
 	}
 	msg := err.Error()
-	for _, want := range []string{addr, "already in use", "--listen 127.0.0.1:" + nextPort(port)} {
+	for _, want := range []string{addr, "already in use", "pick another port with --port " + nextPort(port)} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("%q lacks %q", msg, want)
 		}
@@ -54,6 +54,44 @@ func TestAddrInUse_MatchesTheErrnoAndTheWindowsText(t *testing.T) {
 		if got := addrInUse(err); got != want {
 			t.Errorf("addrInUse(%v) = %v, want %v", err, got, want)
 		}
+	}
+}
+
+// The hint names the flags that serve the next port on the same
+// interfaces: --port alone moves the loopback listener --port opens,
+// --public --port the one on every interface, --listen any other
+// address. The fixed ports of --domain have no flag to move them.
+func TestPortFlags(t *testing.T) {
+	for _, c := range []struct{ host, want string }{
+		{"127.0.0.1", "--port 4001"},
+		{"0.0.0.0", "--public --port 4001"},
+		{"::", "--public --port 4001"},
+		{"10.0.0.5", "--listen 10.0.0.5:4001"},
+		{"::1", "--listen [::1]:4001"},
+		{"localhost", "--listen localhost:4001"},
+		{"", ""},
+	} {
+		if got := portFlags(c.host, "4001"); got != c.want {
+			t.Errorf("portFlags(%q) = %q, want %q", c.host, got, c.want)
+		}
+	}
+}
+
+// A busy fixed port of --domain says to stop what holds it, and names no
+// flag: none moves it.
+func TestListen_BusyDomainPortNamesNoFlag(t *testing.T) {
+	first, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	_, port, _ := net.SplitHostPort(first.Addr().String())
+	_, err = Listen(":" + port)
+	if err == nil {
+		t.Fatal("want an error on a busy port")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "already in use") || !strings.HasSuffix(msg, "stop it") || strings.Contains(msg, "--") {
+		t.Errorf("%q: want the busy port and no flag", msg)
 	}
 }
 
@@ -129,7 +167,7 @@ func TestListen_PrivilegedPortNamesTheRemedy(t *testing.T) {
 	if !errors.Is(err, syscall.EACCES) && !strings.Contains(err.Error(), "privileged") {
 		t.Skipf("the bind failed for another reason: %v", err)
 	}
-	for _, want := range []string{"privileged", "CAP_NET_BIND_SERVICE", "--listen"} {
+	for _, want := range []string{"privileged", "CAP_NET_BIND_SERVICE", "a port above 1023: --port <port>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q lacks %q", err.Error(), want)
 		}

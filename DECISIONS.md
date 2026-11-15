@@ -1088,6 +1088,24 @@ and tool steps are that agent, not agents of their own.
 per three-step `create_agent` loop, nine flat ones for a one-task Deep
 Agent, none named after the sub-agent, two extra posts per child).
 
+## D277 -- `--port` picks the port on loopback, `--public` opens every interface, and a `--listen` port with no host is loopback
+
+**Date:** 2026-11-15
+**Decision:** `--port N` (`-p`, `FLIGHTDECK_PORT`, 1-65535) serves
+`127.0.0.1:N`; `--public` (`FLIGHTDECK_PUBLIC`) serves `0.0.0.0` in its
+mode and combines with `--port`; `--listen` with either is a usage error,
+a flag overriding the other side's variables. `--listen :N` is
+`127.0.0.1:N`, warned, and refused beside a supplied token. A bound
+socket that disagrees with the mode stops the start.
+**Why:** `:N` bound every interface, which silently left local mode
+(development token refused, reachable from the network) for someone
+who only wanted another port.
+**Rejected alternative:** keeping `:N` on every interface with a
+warning (the exposure still happens); a `--port` that changes the host
+(port and reach are separate choices); renaming `FLIGHTDECK_PORT`, which
+Kubernetes service links set to `tcp://…` (the services use the name
+already; such a value is no port and reads as unset).
+
 ## D278 -- A LangGraph graph run started inside another opens one child, named for the run; a top-level run opens none
 
 **Date:** 2026-11-15

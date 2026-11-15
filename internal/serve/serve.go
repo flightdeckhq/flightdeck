@@ -39,6 +39,10 @@ const (
 	HTTPPort  = ":80"
 )
 
+// portFlagHost is the host the binary's --port serves on (cli.LoopbackHost):
+// a busy port there is moved with --port alone.
+const portFlagHost = "127.0.0.1"
+
 // Server returns an HTTP server for h with the binary's timeouts.
 func Server(h http.Handler) *http.Server {
 	return &http.Server{
@@ -50,23 +54,49 @@ func Server(h http.Handler) *http.Server {
 
 // Listen binds addr, turning the common failures into the message a
 // first-time user needs: the port is taken (another Flightdeck, or the
-// compose stack on :4000) and --listen picks another; or the port is
-// privileged (:80 and :443 of --domain) and the process may not bind it.
+// compose stack on :4000) and the flags that pick another are named; or
+// the port is privileged (below 1024, as :80 and :443 of --domain are)
+// and the process may not bind it.
 func Listen(addr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		_, port, _ := net.SplitHostPort(addr)
+		host, port, _ := net.SplitHostPort(addr)
 		switch {
 		case addrInUse(err):
-			return nil, fmt.Errorf("%s is already in use (another flightdeck, or the compose stack, may be listening on port %s); "+
-				"stop it or pick another port with --listen, for example --listen 127.0.0.1:%s", addr, port, nextPort(port))
+			msg := fmt.Sprintf("%s is already in use (another flightdeck, or the compose stack, may be listening on port %s); stop it", addr, port)
+			if flags := portFlags(host, nextPort(port)); flags != "" {
+				msg += " or pick another port with " + flags
+			}
+			return nil, errors.New(msg)
 		case errors.Is(err, syscall.EACCES):
-			return nil, fmt.Errorf("no permission to bind %s: port %s is privileged; run as root, grant the binary "+
-				"CAP_NET_BIND_SERVICE (setcap 'cap_net_bind_service=+ep' flightdeck), or use --listen with a port above 1023", addr, port)
+			msg := fmt.Sprintf("no permission to bind %s: port %s is privileged; run as root or grant the binary "+
+				"CAP_NET_BIND_SERVICE (setcap 'cap_net_bind_service=+ep' flightdeck)", addr, port)
+			if flags := portFlags(host, "<port>"); flags != "" {
+				msg += ", or use a port above 1023: " + flags
+			}
+			return nil, errors.New(msg)
 		}
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	return ln, nil
+}
+
+// portFlags spells the flags that serve port on the interfaces host
+// names: --port for the loopback address it uses, --public --port for
+// every interface, --listen for any other address. A host-less address
+// is one of the fixed ports of --domain (HTTPSPort, HTTPPort), which no
+// flag moves, so it has none.
+func portFlags(host, port string) string {
+	ip := net.ParseIP(host)
+	switch {
+	case host == "":
+		return ""
+	case host == portFlagHost:
+		return "--port " + port
+	case ip != nil && ip.IsUnspecified():
+		return "--public --port " + port
+	}
+	return "--listen " + net.JoinHostPort(host, port)
 }
 
 // addrInUse reports whether a listen error means the port is taken. The

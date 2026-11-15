@@ -12133,12 +12133,16 @@ install gate uses as well; on Windows, where a shell script cannot run,
 the test binary copied as `claude.exe`, whose `TestMain` runs it as the
 Go stand-in `internal/connect/fakeclaude` (the executable's name decides,
 since the binary tests' `flightdeck` child passes its environment on to
-the CLI it starts). The Windows run also drives a real `claude.cmd`, as
-npm installs Claude Code: found through `PATHEXT`, the token given on
-stdin through `cmd.exe`, and a timeout that ends `cmd.exe`, the CLI and
-the CLI's child together. CI runs them on Windows in the
-`connect-windows` job: `internal/connect` under the race detector, the
-command-line tests of `cmd/flightdeck` without it.
+the CLI it starts). On Unix a parity test runs both stand-ins through
+one sequence of the connector's commands and faults and requires the
+same output, exit status, log and state files from each, so neither
+drifts from the other. The Windows run also drives a real `claude.cmd`,
+as npm installs Claude Code, from a directory with and without a space
+in its path (a user profile's often has one): found through `PATHEXT`,
+the token given on stdin through `cmd.exe`, and a timeout that ends
+`cmd.exe`, the CLI and the CLI's child together. CI runs them on
+Windows in the `connect-windows` job: `internal/connect` under the race
+detector, the command-line tests of `cmd/flightdeck` without it.
 
 **Claude Code.** The connector drives the `claude` CLI (`claude.exe` or
 `claude.cmd` on Windows, found through `PATHEXT`) in the environment the

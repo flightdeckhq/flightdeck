@@ -17,10 +17,26 @@ import (
 // that cmd.exe runs and that starts the CLI. The connector must find it
 // through PATHEXT, give it values on stdin through cmd.exe, and on a
 // timeout end cmd.exe, the CLI and the CLI's own children together: here
-// the CLI is the Go stand-in, started by a real claude.cmd.
+// the CLI is the Go stand-in, started by a real claude.cmd. npm puts the
+// shim in the user's profile, and a profile's path often has a space in
+// it (C:\Users\Jane Doe\AppData\Roaming\npm\claude.cmd), which the path
+// cmd.exe is given must survive.
 func TestClaudeCode_AClaudeCmdShim(t *testing.T) {
 	exe := goFakeClaude(t)
-	shimDir := t.TempDir()
+	for _, tc := range []struct{ name, dir string }{
+		{"a shim directory without a space", t.TempDir()},
+		{"a shim directory with a space", filepath.Join(t.TempDir(), "Jane Doe", "npm")},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testClaudeCmdShim(t, exe, tc.dir) })
+	}
+}
+
+// testClaudeCmdShim writes claude.cmd into shimDir, starting exe, and
+// drives the connector through it.
+func testClaudeCmdShim(t *testing.T, exe, shimDir string) {
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	shim := filepath.Join(shimDir, "claude.cmd")
 	if err := os.WriteFile(shim, []byte("@echo off\r\n\""+exe+"\" %*\r\n"), 0o755); err != nil {
 		t.Fatal(err)

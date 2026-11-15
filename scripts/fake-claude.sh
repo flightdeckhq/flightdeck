@@ -127,7 +127,11 @@ case "$step" in
     body="$(cat)"
     printf 'stdin: %s\n' "$body" >>"$log"
     saved=""
-    if printf '%s' "$body" | grep -q '"server"'; then
+    # The server option is saved when the object has a server member, as
+    # json_value's pattern reads one (an empty value is saved empty):
+    # Claude Code parses the object and saves the options it names, so
+    # the word "server" as another member's value is not that option.
+    if printf '%s' "$body" | grep -q '"server" *: *"'; then
       printf '%s' "$body" | json_value server >"$state/server"
       saved='"server"'
     fi

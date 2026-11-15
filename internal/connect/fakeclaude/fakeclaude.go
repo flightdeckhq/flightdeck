@@ -1,12 +1,15 @@
 // Package fakeclaude is a stand-in for Claude Code's `claude` CLI that the
 // connect tests run on Windows, where scripts/fake-claude.sh (the POSIX
-// stand-in the Unix tests and the install gate run) cannot. A test copies its own test binary into a directory on PATH as
-// claude.exe; the binary's TestMain sees that name (Is) and runs Main
-// instead of the tests. It answers the commands the Claude Code connector
-// runs with the same output, state files, log and faults as the shell
-// stand-in, whose header documents them; the two are held to the same
-// assertions, the shell one by the Unix runs and this one by the Windows
-// run.
+// stand-in the Unix tests and the install gate run) cannot. A test copies
+// its own test binary into a directory on PATH as claude.exe; the binary's
+// TestMain sees that name (Is) and runs Main instead of the tests. It
+// answers the commands the Claude Code connector runs with the same
+// output, state files, log and faults as the shell stand-in, whose header
+// documents them. The two are held to the same assertions, the shell one
+// by the Unix runs and this one by the Windows run, and on Unix
+// internal/connect's TestFakeClaude_TheTwoStandInsAgree runs both through
+// one command sequence and compares what they print, exit with, log and
+// keep.
 package fakeclaude
 
 import (
@@ -51,7 +54,13 @@ func Is() bool {
 // and returns its exit status.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 2 && args[0] == sleepArg {
-		secs, _ := strconv.Atoi(args[1])
+		secs, err := strconv.Atoi(args[1])
+		if err != nil {
+			// The stand-in itself starts this child with a number; anything
+			// else is a mistake in the test, not a hang to simulate.
+			_, _ = fmt.Fprintln(stderr, "fake claude: the sleeper takes a number of seconds:", err)
+			return 2
+		}
 		time.Sleep(time.Duration(secs) * time.Second)
 		return 0
 	}
@@ -65,7 +74,13 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	s := &stand{state: state, out: stdout, errw: stderr}
-	s.log("argv: " + strings.Join(args, " "))
+	// "argv:" and a space before each argument, as the shell stand-in
+	// writes it: a call with no arguments logs "argv:" alone.
+	argv := "argv:"
+	for _, arg := range args {
+		argv += " " + arg
+	}
+	s.log(argv)
 
 	steps := map[string]string{
 		"--version":                      "version",
@@ -169,13 +184,17 @@ func (s *stand) fail(message string) int {
 }
 
 // jsonValue reads a string member from the one-line JSON object the
-// connector sends, as the shell stand-in's sed does.
-func jsonValue(body, key string) (string, bool) {
-	m := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" *: *"([^"]*)"`).FindStringSubmatch(body)
-	if m == nil {
+// connector sends, as the shell stand-in's sed does: the pattern's last
+// match, as sed's greedy prefix finds it (and as a JSON parser keeps the
+// last of a repeated member). ok reports whether the object has such a
+// member, an empty value included.
+func jsonValue(body, key string) (value string, ok bool) {
+	pattern := regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `" *: *"([^"]*)"`)
+	all := pattern.FindAllStringSubmatch(body, -1)
+	if len(all) == 0 {
 		return "", false
 	}
-	return m[1], true
+	return all[len(all)-1][1], true
 }
 
 func (s *stand) run(stdin io.Reader) int {
@@ -250,6 +269,11 @@ func (s *stand) run(stdin io.Reader) int {
 		body := strings.TrimRight(string(data), "\r\n")
 		s.log("stdin: " + body)
 		var saved []string
+		// The server option is saved when the object has a server member
+		// (an empty value is saved empty): Claude Code parses the object
+		// and saves the options it names, so the word "server" as another
+		// member's value is not that option. The shell stand-in decides
+		// it with the same pattern.
 		if server, ok := jsonValue(body, "server"); ok {
 			s.write("server", server)
 			saved = append(saved, `"server"`)

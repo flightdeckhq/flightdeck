@@ -1160,9 +1160,14 @@ async def test_a_stream_no_loop_tracks_is_closed_at_once(patched: Any) -> None:
 
 
 # A nest_asyncio run in a process of its own: nest_asyncio.apply() patches
-# asyncio for the whole process. The child prints, per close and per
-# patched / unpatched / nested run, what LangGraph's clean-up had done when
-# the close returned.
+# asyncio for the whole process. The child tries nest_asyncio's re-entrant
+# form (asyncio.run inside a running loop, as in a notebook), then a single
+# asyncio.run. In each it first streams the graph unpatched: when that
+# baseline raises, LangGraph itself cannot stream under nest_asyncio on
+# this interpreter, and the child reports the error instead. Otherwise it
+# prints, per close and per patched / unpatched / nested run, what
+# LangGraph's clean-up had done when the close returned, and whether the
+# loop installed async-generator hooks (nest_asyncio's does not).
 _NEST_ASYNCIO_CHILD = """
 import asyncio, json, sys
 sys.path.insert(0, sys.argv[1])
@@ -1175,11 +1180,17 @@ nest_asyncio.apply()
 lg._ensure_imported()
 session, client = t._build_session()
 flightdeck_sensor._session = session
-lg.patch_langgraph_classes(quiet=True)
 close_early = t._slow_graph_closer(lg._StateGraph)
-results = {}
 
-async def main():
+async def compare(report):
+    report["untracked"] = sys.get_asyncgen_hooks().firstiter is None
+    lg.unpatch_langgraph_classes()
+    try:
+        await close_early("await")
+    except Exception as exc:
+        report["unsupported"] = f"{type(exc).__name__}: {exc}"
+        return
+    results = report["results"] = {}
     for how in ("await", "gather"):
         lg.unpatch_langgraph_classes()
         results[how + ":plain"] = await close_early(how)
@@ -1188,23 +1199,29 @@ async def main():
         with t._in_a_child(session, []):
             results[how + ":nested"] = await close_early(how)
 
-async def outer():
-    asyncio.run(main())  # re-entrant, as in a notebook
+async def reentrant(report):
+    asyncio.run(compare(report))
 
-asyncio.run(outer())
+reports = {}
+for form in ("reentrant", "single"):
+    report = reports[form] = {}
+    asyncio.run(reentrant(report) if form == "reentrant" else compare(report))
+    if "results" in report:
+        break
 session.wait_child_posts(t._POSTS_WAIT_SECS)
-print(json.dumps(results))
+print(json.dumps({"python": sys.version.split()[0], "reports": reports}))
 """
 # How long the nest_asyncio child may run: it builds one graph and runs
-# six short streams; a healthy run takes about a second.
+# up to fourteen short streams; a healthy run takes about a second.
 _CHILD_TIMEOUT_SECS = 120.0
 
 
 def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
-    """nest_asyncio's re-entrant loop tracks no async generator: an
-    application's close closes LangGraph's stream at once, top-level and
-    nested, exactly as unpatched, and no stream is later collected with
-    "async generator ignored GeneratorExit"."""
+    """nest_asyncio's loop tracks no async generator: an application's
+    close closes LangGraph's stream at once, top-level and nested, exactly
+    as unpatched, and no stream is later collected with "async generator
+    ignored GeneratorExit". Skips on an interpreter where LangGraph itself
+    cannot stream under nest_asyncio (the unpatched baseline raises)."""
     import subprocess
 
     pytest.importorskip("nest_asyncio")
@@ -1221,7 +1238,18 @@ def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
     )
     assert done.returncode == 0, done.stderr
     assert "ignored GeneratorExit" not in done.stderr, done.stderr
-    results = json.loads(done.stdout.strip().splitlines()[-1])
+    child = json.loads(done.stdout.strip().splitlines()[-1])
+    used = [r for r in child["reports"].values() if "results" in r]
+    if not used:
+        errors = sorted({r["unsupported"].split(":")[0] for r in child["reports"].values()})
+        pytest.skip(
+            f"LangGraph cannot stream under nest_asyncio on Python {child['python']}"
+            f" (unpatched, {', '.join(errors)})"
+        )
+    (report,) = used
+    # The case under test: the loop installed no async-generator hooks.
+    assert report["untracked"] is True, child
+    results = report["results"]
     # Two closes, each unpatched, top-level and nested; JSON lists.
     assert len(results) == 6, results
     assert all(value == [["GeneratorExit"], True] for value in results.values()), results

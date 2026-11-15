@@ -17,14 +17,15 @@ outgoing messages under ``capture_prompts``), whatever its action is:
   LangGraph reads which of ``config`` / ``runtime`` / ``store`` /
   ``writer`` to inject;
 * a Runnable (``RunnableCallable``, ``ToolNode``, ``RunnableLambda``, an
-  LCEL pipe): wrapped in a ``RunnableCallable`` named after the node, with
-  no tracing or recursion of its own, that passes the node's input and
-  config to the Runnable's ``invoke``, ``ainvoke`` or ``astream`` (the
-  last is what LangGraph calls under ``astream_events``). It has an async
-  function only when LangGraph counts the Runnable as natively async, so
-  LangGraph's node-timeout check sees the same node; otherwise an async
-  run runs the wrapper in the event loop's executor, as LangGraph runs a
-  sync node function.
+  LCEL pipe): wrapped in a ``RunnableCallable`` subclass named after the
+  node, with no tracing or recursion of its own, that passes the node's
+  input and config to the Runnable's own ``invoke``, ``ainvoke`` or
+  ``astream`` (the last is what LangGraph calls under ``astream_events``),
+  so each step of a pipe keeps its own sync or async dispatch. The
+  wrapper's ``afunc`` is never called; it is what LangGraph's node-timeout
+  check reads, so it is the executor-backed form LangGraph gives a sync
+  function when the Runnable has no async code of its own, and a timeout
+  is accepted or refused as for the unwrapped node.
 
 Left alone, so no child:
 
@@ -32,7 +33,8 @@ Left alone, so no child:
   model call, the tool execution, middleware and model hooks): one
   agent's own steps, not sub-agents. They are told apart by the module
   that called ``StateGraph``, the first frame outside the sensor and
-  ``langgraph.graph``, read when the node is added;
+  ``langgraph.graph``, read when the node is added: any module of
+  ``langchain.agents`` or ``langgraph.prebuilt``;
 * a compiled graph used as a node (the nodes inside it open their own,
   where that graph registered them);
 * a generator or async-generator node function, which LangGraph runs as
@@ -52,17 +54,23 @@ for the parent graph, a drain) close it normally; a resumed node runs
 again and opens a new child.
 
 Posting. The child's start and end are posted synchronously, as every
-wrap's are; an async node posts them in a worker thread
-(``asyncio.to_thread``) so the event loop is not held. The node's model,
-tool and MCP calls stay on the sensor's session.
+wrap's are. An async node queues them on the event loop's executor,
+apart from its own task, and waits for them shielded: the loop is not
+held, a cancellation of the node (LangGraph cancels a failed run's other
+nodes twice) propagates without dropping a post, and the session's
+``end()`` waits for posts still running. An end posted while its start
+is still under way waits for the start, so the two arrive in order. The
+node's model, tool and MCP calls stay on the sensor's session.
 
 Fail open (Rule 28): a node that cannot be wrapped is registered as
-given, and a failed post never reaches the node.
+given, and a failed post, or an exception that cannot be rendered, never
+reaches the node.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import importlib
 import inspect
@@ -74,6 +82,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.session import (
+    SUBAGENT_ERROR_TYPE_KEY,
     SUBAGENT_STATE_CLOSED,
     SUBAGENT_STATE_ERROR,
     subagent_error,
@@ -92,11 +101,13 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.langgraph")
 
 _PATCHED_SENTINEL = "_flightdeck_subagent_patched"
 
-# The modules whose StateGraph nodes are one agent's own steps rather than
-# sub-agents: LangChain's create_agent and LangGraph's create_react_agent.
-_AGENT_BUILDER_MODULES = frozenset(
-    {"langchain.agents.factory", "langgraph.prebuilt.chat_agent_executor"}
-)
+# The packages whose StateGraph nodes are one agent's own steps rather
+# than sub-agents: LangChain's agents (create_agent, in
+# langchain.agents.factory) and LangGraph's prebuilt agents
+# (create_react_agent, in langgraph.prebuilt.chat_agent_executor).
+# Matched as packages, so a release that moves the add_node calls to
+# another module of the package keeps them excluded.
+_AGENT_BUILDER_PACKAGES = ("langchain.agents", "langgraph.prebuilt")
 # The frames passed over to find the module that registered a node: the
 # sensor's own, and StateGraph's methods that call add_node themselves
 # (add_sequence).
@@ -107,6 +118,12 @@ _PASSED_OVER_MODULE_PREFIXES = ("flightdeck_sensor.", "langgraph.graph.")
 _CONTROL_FLOW_BASE = "GraphBubbleUp"
 # The attribute a Runnable node's wrapper keeps the Runnable in.
 _ORIGINAL_ATTR = "_flightdeck_original"
+# How long, in seconds, a child's end waits for its start when the start
+# is still being posted (a cancellation reached an async node while it
+# waited for its start): the transport bounds one post at two attempts
+# of 10 s plus the back-off between them, and 25 s covers that, so the
+# end follows the start unless the start is lost anyway.
+_START_POST_WAIT_SECS = 25.0
 
 
 # ----------------------------------------------------------------------
@@ -236,6 +253,13 @@ def _registering_module() -> str | None:
         del frame
 
 
+def _in_package(module: str | None, packages: tuple[str, ...]) -> bool:
+    """Whether ``module`` is one of ``packages`` or a module inside one."""
+    if module is None:
+        return False
+    return any(module == p or module.startswith(f"{p}.") for p in packages)
+
+
 def _is_generator(action: Any) -> bool:
     """Whether a node action is a generator or async-generator function
     (or an instance whose ``__call__`` is one), which LangGraph runs as a
@@ -258,7 +282,7 @@ def _wrap_node(node_name: Any, action: Any) -> Any | None:
     to register ``action`` as given."""
     if action is None or not isinstance(node_name, str) or not _is_agent_bearing(node_name):
         return None
-    if _registering_module() in _AGENT_BUILDER_MODULES:
+    if _in_package(_registering_module(), _AGENT_BUILDER_PACKAGES):
         return None
     if _Runnable is not None and isinstance(action, _Runnable):
         if _RunnableCallable is None or _run_in_executor is None:
@@ -288,6 +312,9 @@ class _Child:
     scope: SubagentScope
     # The child session this one nests under; None for the sensor's own.
     parent_session_id: str | None
+    # An async node's start post, queued on the loop's executor; an end
+    # waits for it (see _end).
+    start_post: concurrent.futures.Future[None] | None = None
 
     def identity(self) -> dict[str, Any]:
         return {
@@ -328,6 +355,15 @@ def _is_control_flow(exc: BaseException) -> bool:
     return any(cls.__name__ == _CONTROL_FLOW_BASE for cls in type(exc).__mro__)
 
 
+def _error_block(error: BaseException) -> dict[str, str]:
+    """The child's error block; the type alone when the exception's text
+    cannot be rendered (its ``__str__`` raises)."""
+    try:
+        return subagent_error(error)
+    except Exception:  # noqa: BLE001 - fail open: the node's exception still propagates
+        return {SUBAGENT_ERROR_TYPE_KEY: type(error).__name__}
+
+
 def _start(child: _Child, body: Any) -> None:
     try:
         child.session.emit_subagent_session_start(
@@ -338,12 +374,18 @@ def _start(child: _Child, body: Any) -> None:
 
 
 def _end(child: _Child, result: Any = _NO_RESULT, error: BaseException | None = None) -> None:
-    state = SUBAGENT_STATE_CLOSED
-    error_block: dict[str, str] | None = None
-    if error is not None and not _is_control_flow(error):
-        state, error_block = SUBAGENT_STATE_ERROR, subagent_error(error)
-    outgoing = _capture_message(result) if result is not _NO_RESULT else None
+    started = child.start_post
+    if started is not None and not started.done():
+        try:
+            started.result(timeout=_START_POST_WAIT_SECS)
+        except Exception:  # noqa: BLE001 - post the end anyway
+            _log.debug("LangGraph child start post did not finish", exc_info=True)
     try:
+        state = SUBAGENT_STATE_CLOSED
+        error_block: dict[str, str] | None = None
+        if error is not None and not _is_control_flow(error):
+            state, error_block = SUBAGENT_STATE_ERROR, _error_block(error)
+        outgoing = _capture_message(result) if result is not _NO_RESULT else None
         child.session.emit_subagent_session_end(
             state=state, error=error_block, outgoing_message=outgoing, **child.identity()
         )
@@ -351,26 +393,33 @@ def _end(child: _Child, result: Any = _NO_RESULT, error: BaseException | None = 
         _log.debug("LangGraph child session_end failed", exc_info=True)
 
 
-async def _off_loop(post: Callable[..., None], *args: Any) -> None:
-    """Run a child post in a worker thread; in place when the loop's
-    executor no longer takes work (the loop is shutting down). The posts
-    never raise."""
+def _queue(child: _Child, post: Callable[..., None], *args: Any) -> concurrent.futures.Future[None]:
+    """Queue a child post on the running loop's executor, apart from any
+    task, so cancelling the task that waits for it cannot drop it; the
+    session's ``end()`` waits for it. Posted in place when there is no
+    loop or its executor no longer takes work (the loop is shutting
+    down). The posts never raise."""
+    done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+    def run() -> None:
+        try:
+            post(*args)
+        finally:
+            done.set_result(None)
+
     try:
-        await asyncio.to_thread(post, *args)
+        asyncio.get_running_loop().run_in_executor(None, run)
     except RuntimeError:
-        post(*args)
+        run()
+        return done
+    child.session.track_child_post(done)
+    return done
 
 
-async def _end_after_start(
-    started: asyncio.Future[None], child: _Child, error: BaseException | None
-) -> None:
-    """Close ``child``, with no outgoing message, after its start post
-    finished, so the two reach the control plane in order."""
-    try:
-        await started
-        await _off_loop(_end, child, _NO_RESULT, error)
-    except BaseException:  # noqa: BLE001 - a second cancellation must not mask the node's outcome
-        _log.debug("closing a LangGraph child session failed", exc_info=True)
+async def _wait(post: concurrent.futures.Future[None]) -> None:
+    """Wait for a queued post. A cancellation of the waiter propagates
+    and leaves the post running."""
+    await asyncio.shield(asyncio.wrap_future(post))
 
 
 def _run_sync(node_name: str, body: Any, call: Callable[[], Any]) -> Any:
@@ -394,17 +443,17 @@ async def _run_async(node_name: str, body: Any, call: Callable[[], Awaitable[Any
     child = _open(node_name)
     if child is None:
         return await call()
-    started = asyncio.ensure_future(_off_loop(_start, child, body))
+    child.start_post = _queue(child, _start, child, body)
     token = child.session.enter_subagent_scope(child.scope)
     try:
-        await asyncio.shield(started)
+        await _wait(child.start_post)
         result = await call()
     except (Exception, asyncio.CancelledError) as exc:
-        await _end_after_start(started, child, exc)
+        await _wait(_queue(child, _end, child, _NO_RESULT, exc))
         raise
     finally:
         child.session.exit_subagent_scope(token)
-    await _off_loop(_end, child, result)
+    await _wait(_queue(child, _end, child, result))
     return result
 
 
@@ -419,23 +468,24 @@ async def _stream_child(
         async for chunk in stream():
             yield chunk
         return
-    started = asyncio.ensure_future(_off_loop(_start, child, body))
+    child.start_post = _queue(child, _start, child, body)
     token = child.session.enter_subagent_scope(child.scope)
     last = _NO_RESULT
     try:
-        await asyncio.shield(started)
+        await _wait(child.start_post)
         async for chunk in stream():
             last = chunk
             yield chunk
     except GeneratorExit:
-        await _end_after_start(started, child, None)
+        # Queued, not awaited: a generator being closed must not wait.
+        _queue(child, _end, child, _NO_RESULT, None)
         raise
     except (Exception, asyncio.CancelledError) as exc:
-        await _end_after_start(started, child, exc)
+        await _wait(_queue(child, _end, child, _NO_RESULT, exc))
         raise
     finally:
         child.session.exit_subagent_scope(token)
-    await _off_loop(_end, child, last)
+    await _wait(_queue(child, _end, child, last))
 
 
 # ----------------------------------------------------------------------
@@ -486,27 +536,34 @@ def _has_native_async(runnable: Any) -> bool:
     return True
 
 
-_node_class: type[Any] | None = None
-
-
+@functools.cache
 def _node_wrapper_class() -> type[Any]:
-    """The RunnableCallable subclass a Runnable node is wrapped in: it
-    also delegates ``astream``, which LangGraph calls on a node under
-    ``astream_events``, so the Runnable's own stream events are kept."""
-    global _node_class
-    if _node_class is None:
+    """The RunnableCallable subclass a Runnable node is wrapped in. Its
+    ``ainvoke`` and ``astream`` hand the node to the Runnable's own
+    (LangGraph calls ``astream`` on a node under ``astream_events``), so
+    each step keeps its own dispatch and its own stream events; the sync
+    path is RunnableCallable's, which calls the wrapper's function."""
 
-        async def astream(
-            self: Any, input: Any, config: RunnableConfig | None = None, **kwargs: Any
-        ) -> AsyncIterator[Any]:
-            original = getattr(self, _ORIGINAL_ATTR)
-            async for chunk in _stream_child(
-                self.name, input, lambda: original.astream(input, config, **kwargs)
-            ):
-                yield chunk
+    async def ainvoke(
+        self: Any, input: Any, config: RunnableConfig | None = None, **kwargs: Any
+    ) -> Any:
+        original = getattr(self, _ORIGINAL_ATTR)
+        return await _run_async(self.name, input, lambda: original.ainvoke(input, config, **kwargs))
 
-        _node_class = type("FlightdeckLangGraphNode", (_RunnableCallable,), {"astream": astream})
-    return _node_class
+    async def astream(
+        self: Any, input: Any, config: RunnableConfig | None = None, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        original = getattr(self, _ORIGINAL_ATTR)
+        async for chunk in _stream_child(
+            self.name, input, lambda: original.astream(input, config, **kwargs)
+        ):
+            yield chunk
+
+    return type(
+        "FlightdeckLangGraphNode",
+        (_RunnableCallable,),
+        {"ainvoke": ainvoke, "astream": astream},
+    )
 
 
 def _wrap_runnable(node_name: str, original: Any) -> Any:
@@ -521,10 +578,11 @@ def _wrap_runnable(node_name: str, original: Any) -> Any:
     async def ainvoke(input: Any, config: RunnableConfig) -> Any:
         return await _run_async(node_name, input, lambda: original.ainvoke(input, config))
 
-    # Without async code of its own, an async run runs the sync path in
-    # the loop's executor, as LangGraph runs a sync node function; the
-    # executor-backed form is also what LangGraph's timeout check reads
-    # as a sync node.
+    # The wrapper's ainvoke never calls afunc: LangGraph's node-timeout
+    # check reads it to tell a node with async code of its own from a sync
+    # one, so a Runnable without any gets the executor-backed form
+    # LangGraph gives a sync function, and a timeout is refused for it as
+    # for the unwrapped node.
     afunc: Any = (
         ainvoke
         if _has_native_async(original)

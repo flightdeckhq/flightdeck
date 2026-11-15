@@ -402,6 +402,9 @@ class _TextState(TypedDict, total=False):
 # A node timeout LangGraph only validates here: the tests compile the
 # graph and never run a node long enough to reach it.
 _NODE_TIMEOUT_SECS = 60.0
+# How long a test waits for the child posts an async run queued on the
+# loop's executor; each is a call on a mock client, done in milliseconds.
+_POSTS_WAIT_SECS = 10.0
 
 
 def _one_node_graph(StateGraph: Any, name: str, action: Any, schema: Any = None) -> Any:
@@ -1196,3 +1199,206 @@ async def test_lcel_pipe_node_keeps_its_steps_events(patched_langgraph: Any) -> 
         "on_chain_stream",
     ]
     assert ("on_parser_stream", "StrOutputParser") in patched
+
+
+# ----------------------------------------------------------------------
+# Review fixes
+# ----------------------------------------------------------------------
+
+
+async def test_each_step_keeps_its_own_dispatch_under_ainvoke(patched_langgraph: Any) -> None:
+    """Under ainvoke a wrapped node hands the run to the Runnable's own
+    ainvoke, so each step of a pipe is dispatched as it is unwrapped: a
+    model with async code gets ainvoke on the loop, not invoke in a worker
+    thread (which would bypass an async-only client and outlive a
+    cancellation). Covers a mixed pipe, a pure sync Runnable and a pure
+    async one."""
+    _session, _client, StateGraph = patched_langgraph
+    from langchain_core.runnables import Runnable, RunnableLambda
+    from langgraph._internal._runnable import RunnableCallable
+
+    loop_thread = threading.get_ident()
+    calls: list[tuple[str, bool]] = []
+
+    class _Model(Runnable):
+        """Stands for a chat model: a native ainvoke and a separate invoke."""
+
+        def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+            calls.append(("invoke", threading.get_ident() == loop_thread))
+            return {"text": f"{input}!"}
+
+        async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+            calls.append(("ainvoke", threading.get_ident() == loop_thread))
+            return {"text": f"{input}!"}
+
+    class _SyncOnly(Runnable):
+        def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+            calls.append(("invoke", threading.get_ident() == loop_thread))
+            return {"text": "sync"}
+
+    async def native(state: dict[str, Any]) -> dict[str, Any]:
+        calls.append(("afunc", threading.get_ident() == loop_thread))
+        return {"text": "async"}
+
+    shapes = {
+        "mixed pipe": lambda: RunnableLambda(lambda state: state["text"]) | _Model(),
+        "pure sync": _SyncOnly,
+        "pure async": lambda: RunnableCallable(None, native),
+    }
+    for label, make in shapes.items():
+        calls.clear()
+        await _one_node_graph(StateGraph, "node", make()).compile().ainvoke({"text": "in"})
+        patched = list(calls)
+        calls.clear()
+        with _unpatched():
+            plain = _one_node_graph(StateGraph, "node", make()).compile()
+        await plain.ainvoke({"text": "in"})
+        assert patched == calls, label
+
+
+def test_node_defaults_timeout_compiles_as_unwrapped(patched_langgraph: Any) -> None:
+    """A graph-wide timeout (set_node_defaults, applied at compile, before
+    or after add_node) is refused for a node with no async code of its
+    own and accepted for a natively async one, wrapped or not."""
+    import inspect
+
+    _session, _client, StateGraph = patched_langgraph
+    if (
+        not hasattr(StateGraph, "set_node_defaults")
+        or "timeout" not in inspect.signature(StateGraph.set_node_defaults).parameters
+    ):
+        pytest.skip("this LangGraph has no node-default timeouts")
+    from langchain_core.runnables import RunnableLambda
+    from langgraph._internal._runnable import RunnableCallable
+
+    async def grow(state: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "out"}
+
+    def outcome(node: Any, *, defaults_first: bool) -> type[BaseException] | None:
+        graph = StateGraph(_TextState)
+        if defaults_first:
+            graph.set_node_defaults(timeout=_NODE_TIMEOUT_SECS)
+        graph.add_node("node", node)
+        if not defaults_first:
+            graph.set_node_defaults(timeout=_NODE_TIMEOUT_SECS)
+        graph.set_entry_point("node")
+        try:
+            graph.compile()
+        except Exception as exc:  # noqa: BLE001 - the outcome is compared
+            return type(exc)
+        return None
+
+    makers = (
+        lambda: RunnableLambda(lambda state: {"text": "out"}),
+        lambda: RunnableCallable(None, grow),
+    )
+    for make in makers:
+        for defaults_first in (True, False):
+            patched = outcome(make(), defaults_first=defaults_first)
+            with _unpatched():
+                plain = outcome(make(), defaults_first=defaults_first)
+            assert patched is plain
+    with _unpatched():
+        assert outcome(makers[0](), defaults_first=False) is not None
+        assert outcome(makers[1](), defaults_first=False) is None
+
+
+async def test_sibling_cancelled_by_a_failed_parallel_node_ends_its_child(
+    patched_langgraph: Any,
+) -> None:
+    """LangGraph cancels a failed run's other nodes twice; the second
+    cancellation must not drop the waiting sibling's session_end."""
+    session, client, StateGraph = patched_langgraph
+    from langgraph.graph import END, START
+
+    sibling_waiting = asyncio.Event()
+
+    async def fails(state: dict[str, Any]) -> dict[str, Any]:
+        await sibling_waiting.wait()
+        raise ValueError("parallel node failed")
+
+    async def waits(state: dict[str, Any]) -> dict[str, Any]:
+        sibling_waiting.set()
+        await asyncio.Event().wait()
+        return {}
+
+    graph = StateGraph(_TextState)
+    graph.add_node("fails", fails)
+    graph.add_node("waits", waits)
+    graph.add_edge(START, "fails")
+    graph.add_edge(START, "waits")
+    graph.add_edge("fails", END)
+    graph.add_edge("waits", END)
+
+    with pytest.raises(ValueError, match="parallel node failed"):
+        await graph.compile().ainvoke({"text": "in"})
+    # The end is queued apart from the cancelled task and tracked by the
+    # session, which waits for it.
+    assert await asyncio.to_thread(session.wait_child_posts, _POSTS_WAIT_SECS)
+    ends = {p["agent_role"]: p for p in _ends(client)}
+    assert set(ends) == {"fails", "waits"}
+    assert ends["waits"]["state"] == "error"
+    assert ends["waits"]["error"]["type"] == "CancelledError"
+    assert ends["fails"]["error"]["type"] == "ValueError"
+
+
+class _Unprintable(Exception):
+    """An exception whose text cannot be rendered."""
+
+    def __str__(self) -> str:
+        raise TypeError("cannot render this exception")
+
+
+def test_unprintable_exception_from_a_sync_node_still_propagates(
+    patched_langgraph: Any,
+) -> None:
+    _session, client, StateGraph = patched_langgraph
+
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        raise _Unprintable()
+
+    with pytest.raises(_Unprintable):
+        _one_node_graph(StateGraph, "odd", node).compile().invoke({"text": "in"})
+    (end,) = _ends(client)
+    assert end["state"] == "error"
+    assert end["error"] == {"type": "_Unprintable"}
+
+
+async def test_unprintable_exception_from_an_async_node_still_propagates(
+    patched_langgraph: Any,
+) -> None:
+    _session, client, StateGraph = patched_langgraph
+
+    async def node(state: dict[str, Any]) -> dict[str, Any]:
+        raise _Unprintable()
+
+    with pytest.raises(_Unprintable):
+        await _one_node_graph(StateGraph, "odd", node).compile().ainvoke({"text": "in"})
+    (end,) = _ends(client)
+    assert end["error"] == {"type": "_Unprintable"}
+
+
+def _add_node_from(module: str, graph: Any, name: str, action: Any) -> None:
+    """Call add_node from a frame whose module is ``module``."""
+    namespace: dict[str, Any] = {"__name__": module}
+    exec("def register(graph, name, action):\n    graph.add_node(name, action)\n", namespace)
+    namespace["register"](graph, name, action)
+
+
+def test_agent_builder_packages_are_matched_as_packages(patched_langgraph: Any) -> None:
+    """Any module of langchain.agents or langgraph.prebuilt registers an
+    agent's own steps (a release may move the add_node calls); a module
+    that only contains those words elsewhere in its name is the
+    application's."""
+    _session, _client, StateGraph = patched_langgraph
+    excluded = ("langchain.agents.experimental", "langgraph.prebuilt.new_agent")
+    wrapped = ("myapp.langchain.agents.graph", "langchain_agents_ext", "langgraph.prebuiltish")
+
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "out"}
+
+    for module in excluded + wrapped:
+        graph = StateGraph(_TextState)
+        _add_node_from(module, graph, "node", node)
+        registered = graph.nodes["node"].runnable.func
+        assert (registered is node) == (module in excluded), module

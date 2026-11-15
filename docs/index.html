@@ -31,6 +31,7 @@
 <link rel="preload" href="assets/fonts/b612-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/b612-700.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/b612-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/jetbrains-mono-400.woff2" as="font" type="font/woff2" crossorigin>
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -54,20 +55,30 @@
 }
 </script>
 <style>
-  /* B612 and B612 Mono (SIL OFL 1.1, assets/fonts/OFL.txt), served from this site: no
-     render-blocking third-party stylesheet. Until a face arrives, a local fallback scaled to
-     B612's metrics (Arial / Liberation Sans, Courier New / Liberation Mono) holds the same
-     line breaks and line heights (B612's OS/2 win metrics, which Chrome on Windows and Linux
-     lays out with), so the swap moves nothing. */
+  /* B612 and B612 Mono for the text and the interface, JetBrains Mono for every command and
+     code sample (its punctuation sits centred in the cell, so a URL reads without gaps). All
+     three are SIL OFL 1.1 (assets/fonts/OFL-B612.txt, assets/fonts/OFL-JetBrainsMono.txt),
+     served from this site: no render-blocking third-party stylesheet. Until a face arrives, a
+     local fallback scaled to its metrics (Arial / Liberation Sans, Courier New / Liberation
+     Mono) holds the same line breaks and line heights (the OS/2 win metrics, which Chrome on
+     Windows and Linux lays out with), so the swap moves nothing. The woff2 files are Google
+     Fonts' latin subsets (U+0000-00FF and common punctuation), fetched from
+     fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono&family=JetBrains+Mono:wght@400
+     with a current Chrome user agent: B612 and B612 Mono 1.008, JetBrains Mono 2.211 (static 400).
+     All three are preloaded: B612 Mono sets the eyebrow, the nav and the install tabs above the
+     fold, JetBrains Mono the hero command. */
   @font-face{font-family:"B612";font-weight:400;font-display:swap;src:url(assets/fonts/b612-400.woff2) format("woff2")}
   @font-face{font-family:"B612";font-weight:700;font-display:swap;src:url(assets/fonts/b612-700.woff2) format("woff2")}
   @font-face{font-family:"B612 Mono";font-weight:400;font-display:swap;src:url(assets/fonts/b612-mono-400.woff2) format("woff2")}
+  @font-face{font-family:"JetBrains Mono";font-weight:400;font-display:swap;src:url(assets/fonts/jetbrains-mono-400.woff2) format("woff2")}
   @font-face{font-family:"B612 fallback";font-weight:400;src:local("Arial"),local("ArialMT"),local("Liberation Sans"),local("Helvetica");size-adjust:109.3%;ascent-override:88.5%;descent-override:32.6%;line-gap-override:0%}
   @font-face{font-family:"B612 fallback";font-weight:700;src:local("Arial Bold"),local("Arial-BoldMT"),local("Liberation Sans Bold"),local("Helvetica Bold");size-adjust:101.6%;ascent-override:95.2%;descent-override:35%;line-gap-override:0%}
   @font-face{font-family:"B612 Mono fallback";src:local("Courier New"),local("CourierNewPSMT"),local("Liberation Mono");size-adjust:108.3%;ascent-override:90.8%;descent-override:32.9%;line-gap-override:0%}
+  @font-face{font-family:"JetBrains Mono fallback";src:local("Courier New"),local("CourierNewPSMT"),local("Liberation Mono");size-adjust:100%;ascent-override:102%;descent-override:30%;line-gap-override:0%}
   :root{
     --sans:"B612","B612 fallback",system-ui,-apple-system,sans-serif;
     --monof:"B612 Mono","B612 Mono fallback",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --code:"JetBrains Mono","JetBrains Mono fallback",ui-monospace,SFMono-Regular,Menlo,monospace;
     --term:#07080d;
     --bg:#0b0d13;
     --tile:#0e1018;
@@ -100,6 +111,9 @@
   a:hover{text-decoration:underline}
   :focus-visible{outline:2px solid var(--orange);outline-offset:3px;border-radius:2px}
   .mono{font-family:var(--monof)}
+  code,code.mono{font-family:var(--code)}
+  /* commands show every character as typed: no "//" or "->" ligatures */
+  pre,code{font-variant-ligatures:none;font-feature-settings:"calt" 0,"liga" 0}
   .wrap{max-width:960px;margin:0 auto;padding:0 24px}
   .dot{color:var(--orange)}
 
@@ -185,7 +199,7 @@
     display:flex;flex-wrap:wrap;gap:4px 18px;justify-content:space-between;
     border-top:1px solid rgba(147,160,180,.12);padding:11px 24px 12px;font-size:13px;color:var(--dim);
   }
-  .install-then code,.qs-note code,.more code{font-family:var(--monof);font-size:12px;color:var(--ink)}
+  .install-then code,.qs-note code,.more code{font-family:var(--code);font-size:12px;color:var(--ink)}
   .install-then .arr{color:var(--orange)}
 
   /* other ways to install: a native disclosure under the card (works without JavaScript) */
@@ -300,7 +314,7 @@
   .cap:hover{transform:translateY(-2px);border-color:#2c3546;box-shadow:0 12px 32px rgba(0,0,0,.35)}
   .cap h3{font-size:16px;font-weight:700;display:flex;align-items:center;gap:10px}
   .cap p{color:var(--dim);font-size:14px;margin-top:8px}
-  .cap p code{font-family:var(--monof);font-size:12.5px;color:var(--ink)}
+  .cap p code{font-family:var(--code);font-size:12.5px;color:var(--ink)}
 
   .callout{
     margin-top:22px;border:1px solid var(--line);border-left:3px solid var(--orange);
@@ -346,7 +360,7 @@
   pre{
     background:var(--tile);border:1px solid var(--line);border-radius:8px;
     padding:15px 16px;overflow-x:auto;
-    font-family:var(--monof);font-size:12.5px;line-height:1.75;color:var(--ink);
+    font-family:var(--code);font-size:12.5px;line-height:1.75;color:var(--ink);
   }
   pre .c{color:var(--dim)}
   .copy{
@@ -357,7 +371,7 @@
   .copy:hover{color:var(--orange);border-color:var(--orange)}
   .copy.done{color:var(--cyan);border-color:var(--cyan)}
   .qs-foot{margin-top:24px;font-size:14px;color:var(--dim)}
-  .qs-foot code{font-family:var(--monof);font-size:12.5px;color:var(--ink)}
+  .qs-foot code{font-family:var(--code);font-size:12.5px;color:var(--ink)}
   .qs-step{
     display:flex;align-items:center;gap:12px;margin-bottom:18px;scroll-margin-top:96px;
     font-size:13px;font-weight:400;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);
@@ -377,7 +391,7 @@
   }
   .qs-or::after{content:"";flex:1;height:1px;background:var(--line)}
   .qs-rows .qs-alt-note{grid-column:2;margin-top:-6px;font-size:13px;color:var(--dim)}
-  .qs-rows .qs-alt-note code{font-family:var(--monof);font-size:12px;color:var(--ink)}
+  .qs-rows .qs-alt-note code{font-family:var(--code);font-size:12px;color:var(--ink)}
   .codebox.one pre{padding-right:78px;white-space:pre-wrap;overflow-wrap:anywhere}
   .codebox.one .copy{top:50%;transform:translateY(-50%)}
   .codebox.multi .copy{top:auto;bottom:8px}

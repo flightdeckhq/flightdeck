@@ -14,11 +14,11 @@ server, `--dry-run` shows what would change and what the plugin
 records, and `--remove` takes it out again. `install.sh` and
 `install.ps1` offer to connect each coding agent they find right after
 installing the binary, and `FLIGHTDECK_CONNECT` decides for scripted
-installs. It works on Windows with `claude.exe` or npm's `claude.cmd`
-shim. The release pipeline builds the tag that was pushed when a
-dry-run tag sits on the same commit, and the install gate waits out
-PyPI's index lag. The repository no longer ships Claude Code agent
-definitions or a review hook. Plugin users update with
+installs. `flightdeck connect` works on Windows with `claude.exe` or
+npm's `claude.cmd` shim. The release pipeline builds the tag that was
+pushed when a dry-run tag sits on the same commit, and the install gate
+waits out PyPI's index lag. The repository no longer ships Claude Code
+agent definitions or a review hook. Plugin users update with
 `claude plugin update flightdeck@flightdeck-plugins`; marketplace
 installs do not update themselves.
 

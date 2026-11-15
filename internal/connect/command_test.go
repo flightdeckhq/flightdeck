@@ -19,15 +19,39 @@ type mainResult struct {
 
 // runMain runs `flightdeck connect args...` against the stand-in claude
 // (newFakeClaude must have run), with env as its variables, answer on
-// stdin and interactive as whether a person is at the terminal.
+// stdin and interactive as whether a person is at the terminal. The data
+// dir is an empty one of the test's unless env names one, and nothing
+// answers at the default server (testAnswers), so neither the
+// developer's own data dir nor a flightdeck running on port 4000 changes
+// what a test sees.
 func runMain(t *testing.T, env map[string]string, answer string, interactive bool, args ...string) mainResult {
 	t.Helper()
-	return runMainWith(t, newConnector(), env, answer, interactive, args...)
+	return runMainFull(t, newConnector(), env, testAnswers(false), answer, interactive, args...)
 }
 
 // runMainWith is runMain with c as the one connector.
 func runMainWith(t *testing.T, c Connector, env map[string]string, answer string, interactive bool, args ...string) mainResult {
 	t.Helper()
+	return runMainFull(t, c, env, testAnswers(false), answer, interactive, args...)
+}
+
+// runMainIO is runMain with the probe of the servers on this machine.
+func runMainIO(t *testing.T, env map[string]string, answers AnswersFunc, answer string, interactive bool, args ...string) mainResult {
+	t.Helper()
+	return runMainFull(t, newConnector(), env, answers, answer, interactive, args...)
+}
+
+// runMainFull runs the command with c as the one connector and answers
+// as the probe, in a data dir of the test's own unless env names one.
+func runMainFull(t *testing.T, c Connector, env map[string]string, answers AnswersFunc, answer string, interactive bool, args ...string) mainResult {
+	t.Helper()
+	if _, ok := env["FLIGHTDECK_DATA_DIR"]; !ok {
+		withDir := map[string]string{"FLIGHTDECK_DATA_DIR": t.TempDir()}
+		for k, v := range env {
+			withDir[k] = v
+		}
+		env = withDir
+	}
 	var stdout, stderr bytes.Buffer
 	code := Main(context.Background(), args, IO{
 		Registry:    Registry{c},
@@ -36,6 +60,7 @@ func runMainWith(t *testing.T, c Connector, env map[string]string, answer string
 		Stdout:      &stdout,
 		Stderr:      &stderr,
 		Interactive: interactive,
+		Answers:     answers,
 	})
 	return mainResult{code, stdout.String(), stderr.String()}
 }
@@ -443,8 +468,47 @@ func TestMain_AnOutdatedClaudeCode(t *testing.T) {
 		if got := f.changes(t); len(got) != 0 {
 			t.Fatalf("ran %q", got)
 		}
-		// Connecting it still needs the commands it lacks.
-		if r := runMain(t, nil, "", false, "claude-code"); r.code != ExitOutdated || len(f.changes(t)) != 0 {
+		// Nothing asked that needs what it lacks: connected, nothing to
+		// do, exit 0, and no word of installing what it has. The server is
+		// neither read nor chosen: only the check and the plugin list ran.
+		for _, args := range [][]string{{"claude-code"}, {"claude-code", "--dry-run"}, {"claude-code", "--yes"}} {
+			f.resetLog(t)
+			r := runMain(t, nil, "", false, args...)
+			if r.code != ExitOK || r.stderr != "" ||
+				r.stdout != "Claude Code 2.1.283 is already connected to Flightdeck: the flightdeck plugin 0.9.0 is installed and turned on "+
+					"from inside Claude Code; nothing changed. This version cannot show or change the server the plugin reports to: "+
+					"update it with `claude update` to see or change it.\n" ||
+				strings.Contains(r.stdout, "/plugin install") {
+				t.Fatalf("%v: %+v", args, r)
+			}
+			if got := f.calls(t); !sameCalls(got, outdatedCalls) {
+				t.Fatalf("%v ran %q; want only %q", args, got, outdatedCalls)
+			}
+		}
+		// A server asked for needs what it lacks: exit 5, update it.
+		for _, args := range [][]string{{"claude-code", "--port", "4100"}, {"claude-code", "--server", "http://localhost:4100", "--dry-run"}} {
+			r := runMain(t, nil, "", false, args...)
+			if r.code != ExitOutdated || len(f.changes(t)) != 0 || strings.Count(r.stderr, "\n") != 1 ||
+				!strings.Contains(r.stderr, "Claude Code 2.1.283 is connected from inside it, but too old to change the server the plugin reports to") ||
+				!strings.Contains(r.stderr, "update it with `claude update`, then run this command again") || strings.Contains(r.stderr, "/plugin install") {
+				t.Fatalf("%v: %+v", args, r)
+			}
+		}
+	})
+	t.Run("installed from inside Claude Code and turned off", func(t *testing.T) {
+		f := newOldFakeClaude(t)
+		f.set(t, "marketplace", "installed", "disabled")
+		r := runMain(t, nil, "", false)
+		if r.code != ExitOK ||
+			!strings.Contains(r.stdout, "turned off     the plugin is installed but turned off, and this version of Claude Code is too old for flightdeck connect: "+
+				"turn the plugin on from inside Claude Code (/plugin), or update Claude Code and run flightdeck connect claude-code") ||
+			strings.Contains(r.stdout, "/plugin install") || strings.Contains(r.stdout, "too old        ") {
+			t.Fatalf("listing: %+v", r)
+		}
+		r = runMain(t, nil, "", false, "claude-code")
+		if r.code != ExitOutdated || len(f.changes(t)) != 0 ||
+			!strings.Contains(r.stderr, "so nothing changed: turn the plugin on from inside Claude Code with /plugin; or update it with `claude update`") ||
+			strings.Contains(r.stderr, "/plugin install") {
 			t.Fatalf("connect: %+v", r)
 		}
 	})

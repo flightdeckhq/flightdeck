@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/internal/connect"
 	"github.com/flightdeckhq/flightdeck/internal/connect/fakeclaude"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
 	"github.com/gorilla/websocket"
@@ -36,6 +37,12 @@ import (
 // runBinaryEnv, set to "1" in a child's environment, makes the test
 // executable behave as the flightdeck binary.
 const runBinaryEnv = "FLIGHTDECK_TEST_RUN_BINARY"
+
+// agentCheckEnv, set to "1" beside runBinaryEnv, keeps the start-up
+// check of the coding agents in the child. Without it the child's check
+// asks no agent: every other test's start would run whatever claude the
+// machine has, the developer's own included.
+const agentCheckEnv = "FLIGHTDECK_TEST_AGENT_CHECK"
 
 const (
 	// startTimeout bounds the wait for a child to answer /api/health.
@@ -97,6 +104,9 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeclaude.Main(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	if os.Getenv(runBinaryEnv) == "1" {
+		if os.Getenv(agentCheckEnv) != "1" {
+			agentRegistry = func([]string) connect.Registry { return nil }
+		}
 		main() // exits the process
 		return
 	}

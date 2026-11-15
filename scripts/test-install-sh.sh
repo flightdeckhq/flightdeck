@@ -56,7 +56,7 @@ if [ "\${1:-}" = connect ]; then
     echo "The fake plugin records what a fake records, and sends it to the fake server."
     exit "\${FAKE_FLIGHTDECK_DRYRUN_EXIT:-0}"
   fi
-  echo "fake flightdeck: connect \$*"
+  if [ -n "\${FAKE_FLIGHTDECK_CONNECT_SAYS:-}" ]; then echo "\$FAKE_FLIGHTDECK_CONNECT_SAYS"; else echo "fake flightdeck: connect \$*"; fi
   exit "\${FAKE_FLIGHTDECK_CONNECT_EXIT:-0}"
 fi
 echo "flightdeck $TAG ($target)"
@@ -354,6 +354,7 @@ pass "with no agent found the closing lines name flightdeck connect"
 # An agent too old for flightdeck connect (--detected says outdated): it
 # is never planned or connected, and the closing lines say to update it.
 OUTDATED_LINE='claude-code\toutdated\tClaude Code\n'
+CLAUDE_LINE_CONNECTED='claude-code\tconnected\tClaude Code\n'
 OUTDATED_HINT='To connect Claude Code: update it (this version is too old for flightdeck connect), then run flightdeck connect claude-code'
 connect_run outdated FAKE_FLIGHTDECK_DETECTED="$OUTDATED_LINE"
 must "$WORK/outdated.out" "$OUTDATED_HINT" "an outdated agent: the hint to update it"
@@ -367,6 +368,19 @@ must "$WORK/outdated-all.out" "$OUTDATED_HINT" "FLIGHTDECK_CONNECT=all with an o
 must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "FLIGHTDECK_CONNECT=all leaves the outdated agent alone"
 must "$FAKE_FLIGHTDECK_LOG" 'connect other-agent --yes' "FLIGHTDECK_CONNECT=all still connects the others"
 pass "an outdated agent is not planned or connected, whatever FLIGHTDECK_CONNECT says, and the hint says to update it"
+
+# An outdated agent connected from inside it: --detected says connected,
+# and the connect FLIGHTDECK_CONNECT names exits 0 with the binary's line
+# that it is already connected, which the installer prints as it is.
+# shellcheck disable=SC2016 # the backquotes are the binary's own words, not a command
+ALREADY_CONNECTED_SAYS='Claude Code 2.1.283 is already connected to Flightdeck: the flightdeck plugin 0.9.0 is installed and turned on from inside Claude Code; nothing changed. This version cannot show or change the server the plugin reports to: update it with `claude update` to see or change it.'
+connect_run outdated-connected FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE_CONNECTED" FLIGHTDECK_CONNECT=claude-code FAKE_FLIGHTDECK_CONNECT_SAYS="$ALREADY_CONNECTED_SAYS"
+must "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "an outdated agent connected from inside it: its connect runs"
+must "$WORK/outdated-connected.out" 'Claude Code 2.1.283 is already connected to Flightdeck' "an outdated agent connected from inside it: already connected"
+must_not "$WORK/outdated-connected.out" 'needs a newer' "an outdated agent connected from inside it: not told to update before connecting"
+must_not "$WORK/outdated-connected.out" 'did not finish' "an outdated agent connected from inside it: not a failure"
+must_not "$WORK/outdated-connected.out" 'To connect Claude Code' "an outdated agent connected from inside it: no hint"
+pass "FLIGHTDECK_CONNECT naming an outdated agent connected from inside it: the installer says it is already connected"
 
 # A connect that exits 5 (the agent turned out too old): update it, not
 # "run it again later".

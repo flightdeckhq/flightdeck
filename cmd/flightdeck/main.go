@@ -278,6 +278,9 @@ func bind(opts cli.Options) (*listeners, error) {
 
 func serveAll(opts cli.Options, stdout *os.File) error {
 	dev := bootstrap.DevMode(opts.Listen, opts.Domain)
+	// Read before setServiceEnv adds the services' variables: the check
+	// of the agents runs their commands in this, without the server's own.
+	agentEnv := agentEnvironment(os.Environ())
 	warnHostless(opts)
 	// Read before anything is bound or written: a token that is refused
 	// stops the start with nothing done.
@@ -334,6 +337,12 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	}
 	if tmpWarning != "" {
 		slog.Warn(tmpWarning)
+	}
+	// The instance file belongs to the lock's holder: one there now was
+	// left by an instance that was killed. Removed in every mode, so a
+	// start on --public leaves none to follow.
+	if err := datadir.RemoveInstance(layout.Root); err != nil {
+		slog.Warn("the data dir names an earlier instance that cannot be removed; flightdeck connect ignores it once it does not answer", "err", err)
 	}
 	secrets, err := datadir.LoadSecrets(layout.Secrets)
 	if err != nil {
@@ -536,7 +545,24 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		serveFns = append(serveFns, func() error { return serveErr("http", srv.Serve(lns.plain)) })
 	}
 
+	if dev {
+		// On loopback: the address flightdeck connect finds this instance
+		// by, written before the start-up block says it serves.
+		defer recordInstance(layout.Root, lns.plain.Addr().String(), os.Getpid())()
+	}
 	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil)
+	if dev {
+		// Where the coding agents on this machine report, beside serving
+		// and never in its way; the first signal cancels it, and the stop
+		// waits for it before anything below is closed. In --public and
+		// --domain mode no agent's command is started.
+		checkCtx, cancelCheck := context.WithCancel(ctx)
+		wait := startAgentCheck(checkCtx, agentRegistry(agentEnv), lns.plain.Addr().String(), slog.Default())
+		defer func() {
+			cancelCheck()
+			wait()
+		}()
+	}
 	return supervise(ctx, services, serveFns, func(c context.Context) error {
 		var firstErr error
 		for _, s := range srvs {

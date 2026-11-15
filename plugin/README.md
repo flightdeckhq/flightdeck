@@ -10,7 +10,7 @@ Prereq: a running Flightdeck. The fastest path is the `flightdeck` binary (READM
 flightdeck connect claude-code
 ```
 
-That installs the plugin for your user from this repository's marketplace (the `flightdeck-plugins` marketplace, added if Claude Code does not have it) and leaves its options at the local defaults. The installers offer it when they find Claude Code. `flightdeck connect claude-code --dry-run` shows what it would change and what the plugin records, without changing anything. `flightdeck connect` shows whether Claude Code is connected, the plugin's version and the server it reports to; `flightdeck connect claude-code --remove --yes` uninstalls the plugin, with its saved options, and keeps the marketplace (on a terminal it asks instead of needing `--yes`). It needs a Claude Code recent enough to have `claude plugin configure`: on an older one it changes nothing, exits with status 5 and says to run `claude update`, or to use the two commands below. Inside Claude Code the same install is two commands:
+That installs the plugin for your user from this repository's marketplace (the `flightdeck-plugins` marketplace, added if Claude Code does not have it) and points it at the `flightdeck` running on this machine, on whichever port it was started (`flightdeck --port 4100`; the server's data dir says where, so give `--data-dir` when the server has one of its own). When none runs yet, it says to start it. The server, in turn, logs a line at start when Claude Code reports to another port, with the command to run. The installers offer it when they find Claude Code. `flightdeck connect claude-code --dry-run` shows what it would change and what the plugin records, without changing anything. `flightdeck connect` shows whether Claude Code is connected, the plugin's version and the server it reports to; `flightdeck connect claude-code --remove --yes` uninstalls the plugin, with its saved options, and keeps the marketplace (on a terminal it asks instead of needing `--yes`). It needs a Claude Code recent enough to have `claude plugin configure`: on an older one it changes nothing, exits with status 5 and says to run `claude update`, or to use the two commands below. Inside Claude Code the same install is two commands:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck
@@ -25,7 +25,7 @@ claude --plugin-dir /path/to/flightdeck/plugin
 
 Start using Claude Code normally. Open the dashboard. Your session appears in the Fleet view within a few seconds, tagged `flavor=claude-code`, and events stream in as you work. No env vars required for the default dev stack.
 
-Hosted Flightdeck or a non-default port? Save the server and its token in the plugin's options:
+A Flightdeck on another port of this machine needs nothing more (`flightdeck connect claude-code --port 4100` names it outright). A hosted Flightdeck? Save the server and its token in the plugin's options:
 
 ```bash
 flightdeck connect claude-code --server https://flightdeck.example.com --token-file ~/flightdeck-token

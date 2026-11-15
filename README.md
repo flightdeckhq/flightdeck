@@ -79,7 +79,7 @@ The installer offers this when it finds Claude Code; otherwise:
 flightdeck connect claude-code
 ```
 
-It installs the Flightdeck plugin for your user, and the sessions you start from then on appear in the fleet view within seconds. `flightdeck connect` shows whether Claude Code is connected and to which server. It needs a recent Claude Code: with an older one it changes nothing and says to run `claude update`. Or install the plugin from inside Claude Code:
+It installs the Flightdeck plugin for your user, and the sessions you start from then on appear in the fleet view within seconds. It points the plugin at the Flightdeck running on this machine, on whichever port it was started (`flightdeck --port 4100`), and if none runs yet it says to start it. `flightdeck connect` shows whether Claude Code is connected and to which server. It needs a recent Claude Code: with an older one it changes nothing and says to run `claude update`. Or install the plugin from inside Claude Code:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck

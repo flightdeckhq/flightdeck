@@ -100,6 +100,13 @@ type Target struct {
 	// Token is the token to save with Server; "" saves none. It is set
 	// only together with Server.
 	Token string
+	// Choose, when set with Server "", is called by PlanConnect with the
+	// status it read, once the agent is known to be one it can connect,
+	// and returns the target to plan for: how a connect that names no
+	// server picks one without the status read twice. An agent the
+	// connector cannot plan for (too old) is refused or answered before
+	// its options are read, so Choose is never called for one.
+	Choose func(ctx context.Context, st Status) Target
 }
 
 // Step is one change a plan makes.
@@ -209,8 +216,12 @@ func (r Registry) IDs() []string {
 }
 
 // Default is the registry of the binary: every agent it can connect.
-func Default() Registry {
-	return Registry{NewClaudeCode(exec.LookPath, Exec)}
+func Default() Registry { return DefaultIn(nil) }
+
+// DefaultIn is Default with every agent command run in env, its whole
+// environment; nil is this process's environment, as Exec runs it.
+func DefaultIn(env []string) Registry {
+	return Registry{NewClaudeCode(exec.LookPath, ExecIn(env))}
 }
 
 // ---- external commands -------------------------------------------------
@@ -239,9 +250,23 @@ var ErrTimeout = errors.New("did not finish in time")
 // Exec is the RunFunc of the binary: the command in this process's
 // environment, so the agent's own variables (CLAUDE_CONFIG_DIR) apply.
 func Exec(ctx context.Context, timeout time.Duration, stdin []byte, path string, args ...string) ([]byte, []byte, error) {
+	return execIn(ctx, nil, timeout, stdin, path, args...)
+}
+
+// ExecIn is the RunFunc that runs each command with env as its whole
+// environment, nil being this process's own (Exec): the server runs the
+// agents' commands without the settings and secrets it holds.
+func ExecIn(env []string) RunFunc {
+	return func(ctx context.Context, timeout time.Duration, stdin []byte, path string, args ...string) ([]byte, []byte, error) {
+		return execIn(ctx, env, timeout, stdin, path, args...)
+	}
+}
+
+func execIn(ctx context.Context, env []string, timeout time.Duration, stdin []byte, path string, args ...string) ([]byte, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = env
 	var stdout, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	// No stdin at all unless the step carries values: a CLI that would

@@ -11219,7 +11219,10 @@ another database; `nats/`, the embedded JetStream store; `secrets.json`
 (mode 0600) with the JWT secret, generated once, and the dashboard
 token of the non-loopback mode below; `acme/`, the TLS certificate
 cache; `tmp/` (mode 0700), SQLite's temporary files (below); the lock
-files below; and, in SQLite mode, `flightdeck.db.migrate.lock`, which
+files below; `instance.json` (mode 0600) while an instance runs on
+loopback, the address it listens on, which `flightdeck connect` reads
+(see Connecting coding agents > Finding the running server); and, in
+SQLite mode, `flightdeck.db.migrate.lock`, which
 an instance holds while it applies the migrations (see Storage >
 Migrations). With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
@@ -11545,6 +11548,63 @@ inside a container it is the container's id (the pod's name under
 Kubernetes), which nothing outside resolves, and the binary cannot know
 the name or the published port the machine is reached by.
 
+**Agents that report elsewhere.** An agent connected while the server
+was on one port keeps reporting there when the server is started on
+another (`flightdeck --port 4100` after the installer connected Claude
+Code to `http://localhost:4000`), so no session arrives. A loopback
+instance therefore says so at start. It asks, once its start-up block
+is printed, where the coding agents on this machine report: a
+goroutine started just before the listener serves asks each connector
+(see Connecting coding agents) whether its agent is found and
+connected and to which server, with the connectors' own commands and
+timeouts, and logs one warning per agent whose integration reports to
+an `http://` address on this machine (`localhost`, `127.0.0.0/8`,
+`::1`) that is not this instance's:
+
+```
+WARN Claude Code reports to http://localhost:4000, not to this server at http://localhost:4100: its sessions are not recorded here. To report here, run: flightdeck connect claude-code --port 4100
+```
+
+The command takes `--port <port>` when the instance listens on
+`127.0.0.1`, and `--server http://<address>:<port>` for another
+loopback address. A saved server names this instance when, read by the
+one server address rule (Connecting coding agents), it is `http://`,
+has no path and has the instance's port, and its host is the listen
+address itself, with `localhost` standing for `127.0.0.1` alone: no
+system resolves `localhost` to another `127.x` address, and a stock
+Linux (WSL included) resolves it to `127.0.0.1` only, so a plugin saved
+as `localhost` may not reach an instance listening on `::1`, and the
+line then names the instance by its address. On macOS and Windows
+`localhost` resolves to `::1` as well and Node, which runs the plugin's
+hooks, tries both, so there such a plugin does reach it: the line and
+connect's re-pointing to `http://[::1]:<port>` are then redundant, and
+harmless. The saved server is the plugin's option; a `FLIGHTDECK_SERVER`
+in Claude Code's own environment overrides it, and no other process's
+environment is read, so the check (and `flightdeck connect`) cannot see
+that override. Nothing is logged for an agent that is
+not found; for one found and not connected (the installers and
+`flightdeck connect` offer that, and a reminder on every start would be
+noise); for one connected to this instance; for one connected to a
+server beyond this machine or to an `https://` address on it (a
+deliberate choice: a remote server, a TLS proxy); for one too old to
+show its integration's options (an outdated agent, Connecting coding
+agents), whose options are not asked for: where it reports cannot be
+known, and a line on every start that might be wrong would be noise;
+or when a command fails, which is logged at debug level. The check never delays or fails
+the start: it runs beside serving, each command is bounded by its
+connector's timeout, and the stop cancels it at the first signal,
+ending a command still running, and waits for it before anything is
+closed. The agents' commands run in the environment the binary was
+started with, read before it sets its services' variables and without
+any `FLIGHTDECK_` variable: the JWT secret and the database URL (with
+its password) the binary sets, a supplied dashboard token and an agent
+token stay out of the agent's CLI and of whatever it starts. In
+`--public` and `--domain` mode it does not run and no
+agent's command is started: such an instance serves other machines.
+There is no switch to turn it off: where no agent is installed (a
+container, a CI runner) it costs one failed `PATH` lookup, and where
+one is, it logs at most one line per agent and start.
+
 **Tuning.** The services' tuning variables keep their names and
 defaults under the binary (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`,
 `FLIGHTDECK_WORKER_POOL_SIZE`, `FLIGHTDECK_RECONCILER_INTERVAL_SECS`,
@@ -11560,7 +11620,10 @@ the data dir, takes its lock and reads the secrets, takes the SQLite
 file's lock (creating the file, mode 0600, when it is new), starts
 the embedded NATS server, opens the database (waiting for one that is
 not up yet), applies the embedded migrations, creates the storage
-bus, checks or mints the dashboard token,
+bus, checks or mints the dashboard token, on loopback writes
+`instance.json` (a start in any mode first removes one a killed
+instance left), prints the start-up block, starts the check of the
+agents above on loopback,
 then starts the three services together and serves. On SIGINT or
 SIGTERM, or when a service or a listener fails, it stops in order:
 the HTTP server stops accepting and drains the requests in flight
@@ -11568,6 +11631,8 @@ the HTTP server stops accepting and drains the requests in flight
 are cancelled and waited for (each joins its own loops: the ingestion
 assembler and the worker lanes finish their current message within
 `SHUTDOWN_TIMEOUT_SECS`), each step bounded by 30 seconds; then the
+check of the agents is waited for (cancelled by the signal already)
+and `instance.json` removed; then the
 storage bus closes (its subscriptions end and, on Postgres, its
 `LISTEN` connections close), then the database, then the NATS
 connections and the embedded NATS server, and last the lock files are
@@ -11983,15 +12048,17 @@ over the defaults. `--listen` combines with neither `--port` nor
 | `--public` | `FLIGHTDECK_PUBLIC` | `true` listens on every interface (`0.0.0.0`), so other machines reach the server; the development token is then refused and an access token is minted or supplied, which whoever reaches the server can read: open it only on a network you trust, or put it behind a proxy that authenticates |
 | `--listen` | `FLIGHTDECK_LISTEN` | One address for the listener, `host:port` (`10.0.0.5:4000`, `0.0.0.0:4000`); a loopback host enables the development token, and a port with no host (`:4000`) is `127.0.0.1` |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
-| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/` |
+| `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/`, and `instance.json` while a loopback instance runs |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
 | `--allowed-hosts` | `FLIGHTDECK_ALLOWED_HOSTS` | Host names the binary answers for besides `localhost`, IP addresses and `--domain`, separated by commas (`fd.internal,.example.com`; `*` answers any). Unset, a loopback listen and `--domain` answer only for those and a listen address beyond loopback answers any name; see Host check. The Docker image sets `localhost` |
 | `--metrics` | `FLIGHTDECK_METRICS` | `true` starts the three services' metrics listeners on their default ports (9102, 9103, 9104) |
 
 `flightdeck connect` (see Connecting coding agents) takes its own flags
-and reads one variable, `FLIGHTDECK_TOKEN`, the token to save with
-`--server` when no `--token-file` is given. The installers read
+and reads two variables: `FLIGHTDECK_TOKEN`, the token to save with
+`--server` when no `--token-file` is given, and `FLIGHTDECK_DATA_DIR`,
+the data dir it looks in for the running server when `--data-dir` is
+not given, as the server reads it. The installers read
 `FLIGHTDECK_CONNECT`: connector ids separated by commas, `all` or
 `none`, connecting agents without asking.
 
@@ -12339,9 +12406,10 @@ output format changes.
 
 | Command | What it does |
 |---|---|
-| `flightdeck connect` | Lists every connector: whether its agent is found on this machine (where, which version), whether it is connected (the integration's version, the server it reports to, whether a token is saved) and the command that connects it, or, for an agent too old to connect (below), what to do instead. Changes nothing. |
-| `flightdeck connect <agent>` | Connects the agent. Without `--server`, a new connection reports to the local server (`http://localhost:4000` with the development token, the plugin's own defaults, so nothing is saved) and an existing one keeps the server it has. |
+| `flightdeck connect` | Lists every connector: whether its agent is found on this machine (where, which version), whether it is connected (the integration's version, the server it reports to, whether a token is saved) and the command that connects it, or, for an agent too old to connect (below), what to do instead. For a connected agent that reports to an address on this machine where no Flightdeck answers, a line says so, with the command that points it at the Flightdeck running on this machine when one is found, or the command that starts one there. Changes nothing. |
+| `flightdeck connect <agent>` | Connects the agent. Without `--server` or `--port` it reports to the Flightdeck running on this machine (Finding the running server, below): a new connection to the one found, else to the local server (`http://localhost:4000` with the development token, the plugin's own defaults, so nothing is saved); an existing one keeps the server it has, unless that is an address on this machine where nothing answers while a Flightdeck runs here at another, which the plan then saves instead. |
 | `flightdeck connect <agent> --server <url>` | Connects it to that server. The token is read from `--token-file <path>`, else from `FLIGHTDECK_TOKEN`; there is no flag that takes the token itself, since a command line is visible to every user of the machine (`ps`, `/proc/<pid>/cmdline`). A server whose host is not this machine's loopback (`localhost`, `127.0.0.0/8`, `::1`) needs a token, as the development token is refused there; one already saved for the same server is kept. |
+| `flightdeck connect <agent> --port <N>` | Short for `--server http://localhost:<N>`, with the same token rules: the Flightdeck `flightdeck --port <N>` runs. Given with `--server` it is a usage error. |
 | `flightdeck connect <agent> --remove` | Disconnects it. Without a terminal it needs `--yes`, and refuses otherwise with a line saying so: removing is not something a script should do by default. |
 | `flightdeck connect <agent> --dry-run` | Prints what connecting (or with `--remove`, disconnecting) would change and what the integration records and where it sends it, and changes nothing. The installers print it before their question. |
 | `flightdeck connect --detected` | The installers' query (below). |
@@ -12370,7 +12438,9 @@ ask), and a connect under `--yes` or without a terminal refuses it
 with 4; 5 when the agent is found but too old for the command (an
 outdated agent, below): a connect, with or without `--dry-run` or
 `--yes`, changes nothing and prints one line saying to update the
-agent and the other way to install its integration, and a step that
+agent and the other way to install its integration (one already
+connected from inside the agent, with no `--server` or `--port`, has
+nothing to do and exits 0, below), and a step that
 the agent's CLI refuses as an unknown command or option says so too,
 with 5 rather than 1, since running it again fails the same way until
 the agent is updated. The installers read 0, 4 and 5 by number, and a
@@ -12411,6 +12481,110 @@ saved token is never replaced by the development token for it.
 Values read back from the agent's configuration (the saved server, a
 marketplace's source) are printed without their control characters.
 
+**Finding the running server.** A loopback instance records where it
+listens in its data dir: `<data dir>/instance.json`, written (mode
+0600, through a temporary file and a rename) while it holds the data
+dir's lock and before it serves, and removed when it stops. A start in
+any mode first removes a file left by an instance that was killed: the
+lock it now holds says that instance is gone. The file is one JSON
+object, `{"listen": "127.0.0.1:4100", "pid": 12345}`: the address the
+listener bound and the process id, and nothing secret. An instance in
+`--public` or `--domain` mode writes none. It refuses the development
+token, so an agent pointed at it without a token is refused, and an
+address that other machines reach is saved in an agent only when the
+user names it with `--server`.
+
+`flightdeck connect` reads the file of one data dir, resolved as the
+server resolves its own: `--data-dir`, else `FLIGHTDECK_DATA_DIR`, else
+the default. It so finds the instance that the same user's
+`flightdeck` (or `flightdeck --port 4100`) runs; an instance on a data
+dir of its own is found with that `--data-dir`, and of two instances on
+two data dirs the one in the data dir connect reads is the one found.
+It never creates the data dir and never scans ports, and it reads the
+data dir only when the answer can matter: not for an agent whose
+server is kept as it is (below). The record counts only when every
+check holds:
+
+- the file opens as a regular file that is not a link, at most 4 KiB.
+  On Unix it is opened without following a link (`O_NOFOLLOW`) or
+  waiting on a pipe, and the checks run on the file opened: one link
+  (a hard link to a file elsewhere is someone else's file), owned by
+  this user, and neither it nor the data dir, also owned by this user,
+  writable by group or others. On Windows the file system keeps no mode
+  bits and the access lists are not read: the file must be a regular
+  file, not a symbolic link or junction, and the file opened must be
+  the file looked at; owner and link count are not compared. The
+  default data dir there, `%LOCALAPPDATA%\flightdeck`, is the user's
+  alone, while a `--data-dir` elsewhere (under `C:\`, which grants
+  Authenticated Users Modify on what is created in it) may be writable
+  by other users of the machine and is trusted as it is;
+- its `listen` is a loopback IP address with a port, and its `pid` is
+  from 1 to 2147483647 (a larger value would wrap in a 32-bit system
+  call to 0 or -1, which name process groups, or to another process);
+- the process runs as this user: on Unix a signal 0 to it succeeds (a
+  process that refuses this user's signal is not this user's), on
+  Windows it opens for a query and has not exited. `flightdeck connect`
+  is meant to run as the user whose agent it connects, not under
+  `sudo`: a privileged caller may signal or open any process, so for
+  it this test accepts any live pid;
+- both health routes at that address answer as `flightdeck health`
+  requires (`/api/health` with `"service": "api"`, `/ingest/health`
+  with `"service": "ingestion"`).
+
+A file an instance killed with `kill -9` left, whose port something
+else holds now, does not count. The server writes the file through a
+temporary name it removes first and then creates anew (`O_EXCL`), so a
+link planted there is never written through. The address saved for the instance is
+`http://localhost:<port>` when it listens on `127.0.0.1`, the address
+the start-up block prints, and `http://<address>:<port>` otherwise;
+`http://localhost:4000`, the plugin's default, is saved as nothing.
+
+Without `--server` or `--port`:
+
+| The agent | `flightdeck connect <agent>` connects it to |
+|---|---|
+| not connected yet (Claude Code: no plugin installed) | the running instance found, with a line naming it; none found, `http://localhost:4000` |
+| reports to an `http://` address on this machine where no Flightdeck answers, while an instance runs here at another | that instance: the plan saves its address, with a line saying why, and asks on a terminal like any plan; the closing lines name the instance and its data dir, so a run under `--yes` (an installer's) says where the address came from |
+| reports to an `http://` address on this machine where a Flightdeck answers | the same server, kept (two instances on two data dirs, for one) |
+| reports to a server beyond this machine, or to an `https://` address | the same server, kept, and not probed |
+
+The choice is made from the status the plan reads (`Target.Choose`):
+an agent whose status cannot be read, or that is too old to connect,
+gets no choice and no data dir is read; the plan reports why, with its
+own exit status, or (an outdated agent connected from inside it, with
+nothing asked) says it is already connected.
+
+The probe is the health check above, sent only to the loopback
+address (`localhost` is probed as `127.0.0.1`, the address it names
+here, as above), with no token and no proxy; a server beyond this
+machine is never probed. The plugin's saved server is what connect
+reads; a `FLIGHTDECK_SERVER` in Claude Code's environment overrides it
+and is not visible here. When
+the agent is to report to an `http://` address on this machine where
+no Flightdeck answers and none is found running, the connect goes
+ahead, since the installers run it before the server has ever started,
+and the plan, `--dry-run` and the closing lines carry one more line:
+``No Flightdeck answers at http://localhost:4000 yet: start it with
+`flightdeck`, and sessions are recorded from then on.`` (`flightdeck
+--port 4100` for another port, `flightdeck --listen <address>:<port>`
+for another loopback address). The listing says the same of a connected
+agent, and of one whose address does not answer while an instance runs
+here at another it names that instance and the command that points the
+agent at it (`flightdeck connect claude-code --port 4100`). The
+installers' query, `--detected`, is unchanged: the installers print the
+binary's own lines, so the note reaches them through the `--dry-run`
+and the connect they run.
+
+The file only ever leads to an address on this machine. A process that
+can write it, which on Unix is one of the user's own (the checks
+above), and on Windows also another user's when the data dir's access
+list lets them, can at most point the plan at another loopback port:
+the plan shows the address and why it was chosen before anything
+changes, and on a terminal it asks. The file holds no token; connecting an agent to its
+address saves no token other than the development token (which, by the
+rule above, replaces a token saved for another server), and the probe
+sends none.
+
 **The connector contract.** What every connector guarantees, so a new
 one behaves as the first does:
 
@@ -12437,7 +12611,12 @@ one behaves as the first does:
   connected as asked plans no step, so it changes nothing and says so.
   The plan never touches the agent's other settings and never installs
   the agent itself. A token given again is saved again, since the saved
-  one cannot be read back to compare.
+  one cannot be read back to compare. A connect that names no server
+  passes a chooser with the target (`Target.Choose`): the connector
+  calls it with the status it read, once the agent is one it can
+  connect, and plans for the server it returns (Finding the running
+  server), so the status is read once and nothing is chosen or probed
+  for an agent it refuses.
 - **Disconnect** is planned the same way. It removes what Connect
   installed and leaves what other integrations may share (Claude Code's
   marketplace entry); an agent that is not connected plans no step.
@@ -12520,6 +12699,21 @@ flightdeck@flightdeck-plugins`. An outdated Claude Code with the plugin
 installed and enabled that way is connected: the listing shows
 `connected` with the plugin's version and that this version cannot
 show the server it reports to, and `--detected` prints `connected`.
+`flightdeck connect claude-code` with nothing asked of it (no
+`--server`, no `--port`) then has nothing to do: a plan with no step,
+exit status 0, whose line says it is already connected from inside
+Claude Code and that seeing or changing its server needs `claude
+update` (so an installer told `FLIGHTDECK_CONNECT=claude-code` prints
+that it is already connected); with `--server` or `--port` it is
+refused with exit status 5 and that line, since changing the server
+needs the command it lacks. One with the plugin installed that way and
+turned off is listed as `turned off`, with turning it on from inside
+Claude Code (`/plugin`) or updating it, and a connect refuses with exit
+status 5 and the same advice, not the advice to install what is
+installed. Neither the server choice below nor the start-up check of
+the agents reads an outdated agent's options: the plan answers or
+refuses before them, and the start-up check says nothing of an agent
+whose server it cannot know.
 `--remove` needs neither command and
 runs on an outdated Claude Code as on a current one, so a plugin
 installed from inside it can be removed. A step that fails with one of
@@ -12597,7 +12791,10 @@ connected agent is reported as connected. An outdated agent is not
 asked about, not planned and not connected, whatever
 `FLIGHTDECK_CONNECT` says: the closing lines say `To connect Claude
 Code: update it (this version is too old for flightdeck connect), then
-run flightdeck connect claude-code`. A failed connect prints the
+run flightdeck connect claude-code`. An outdated agent connected from
+inside it is `connected` in the query: with `FLIGHTDECK_CONNECT` naming
+it, its connect exits 0 and the installer prints its line, that it is
+already connected. A failed connect prints the
 command's own line and the command to run later, and the installer
 exits 0; a connect that exits 5 prints that it needs the agent updated
 first, not to run it again later. When no agent is found, the closing lines say that

@@ -1,6 +1,7 @@
 // Package datadir manages the flightdeck binary's data directory: its
 // default location, its creation, the lock that keeps a second process
-// out of it, and the secrets file it holds.
+// out of it, the secrets file it holds, and the instance file that says
+// where the instance holding the lock listens.
 package datadir
 
 import (

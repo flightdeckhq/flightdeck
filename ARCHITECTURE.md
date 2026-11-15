@@ -223,7 +223,6 @@ flightdeck/
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
-├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
 ├── assets/readme/              # The README's images: the fleet view and three tiles, light and dark, and one GIF; invented agents only
 ├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
 ├── scripts/dev-stack.sh        # The contributor dev stack: `make dev`, `make dev-restart`, `make down`, `make logs`, `make dev-reset`

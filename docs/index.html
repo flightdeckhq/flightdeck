@@ -396,6 +396,7 @@
   .codebox.one .copy{top:50%;transform:translateY(-50%)}
   .codebox.multi .copy{top:auto;bottom:8px}
   .qs-col .after{margin:10px 0 0}
+  .qs-col .hint.between{margin:12px 0}
   .qs-note{margin-top:18px;font-size:14px;color:var(--dim)}
   .qs-note strong{color:var(--ink);font-weight:400}
 
@@ -811,14 +812,18 @@
     <div class="qs">
       <div class="qs-col r">
         <h4><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-claude"/></svg>Claude Code</h4>
-        <p class="hint">In Claude Code, install the plugin:</p>
+        <p class="hint">The installer offers this when it finds Claude Code; otherwise:</p>
+        <div class="codebox one">
+<pre id="code-connect">flightdeck connect claude-code</pre>
+          <button class="copy mono" type="button" data-for="code-connect"><span class="copy-label">Copy</span><span class="vh"> the command that connects Claude Code</span></button>
+        </div>
+        <p class="hint between">Sessions you start from then on appear in the fleet view within seconds. Or install the plugin from inside Claude Code:</p>
         <div class="codebox multi">
 <pre id="code-plugin">/plugin marketplace add flightdeckhq/flightdeck
 /plugin install flightdeck@flightdeck-plugins
 /reload-plugins</pre>
           <button class="copy mono" type="button" data-for="code-plugin"><span class="copy-label">Copy</span><span class="vh"> the Claude Code plugin commands</span></button>
         </div>
-        <p class="hint after">The session appears in the fleet view within seconds.</p>
       </div>
       <div class="qs-col r" data-rd=".05s">
         <h4><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-python"/></svg>Python agents</h4>
@@ -834,7 +839,7 @@ flightdeck_sensor.patch()</pre>
         <p class="hint after">Nothing else in your code changes. Every call through the Anthropic or OpenAI SDK or litellm, directly or inside a framework, is reported, with prompt capture off until you turn it on.</p>
       </div>
     </div>
-    <p class="qs-note r">For a Flightdeck on another machine, set <code>FLIGHTDECK_SERVER</code> to its address and <code>FLIGHTDECK_TOKEN</code> to a token minted under <strong>Settings &rarr; Access tokens</strong>: the plugin and the sensor take the same two values.</p>
+    <p class="qs-note r">For a Flightdeck on another machine, set <code>FLIGHTDECK_SERVER</code> to its address and <code>FLIGHTDECK_TOKEN</code> to a token minted under <strong>Settings &rarr; Access tokens</strong>: the plugin and the sensor take the same two values. For Claude Code, <code>flightdeck connect claude-code --server &lt;address&gt; --token-file &lt;file&gt;</code> saves both in the plugin&rsquo;s options instead.</p>
     <p class="qs-foot r"><svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-docker"/></svg>Docker Compose and a <svg class="ic attach-ic" aria-hidden="true" focusable="false"><use href="#i-helm"/></svg>Helm chart run the same binary in production; the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/blob/main/guides/self-hosting.md">self-hosting guide</a> has both. Full walkthrough in the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck#readme">README</a>.</p>
   </section>
 

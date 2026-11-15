@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func TestMain_List(t *testing.T) {
 	f := newFakeClaude(t)
 	r := runMain(t, nil, "", false)
 	if r.code != ExitOK || !strings.Contains(r.stdout, "Claude Code (claude-code)") ||
-		!strings.Contains(r.stdout, "2.1.325 (Claude Code) at "+filepath.Join(f.bin, "claude")) ||
+		!strings.Contains(strings.ToLower(r.stdout), strings.ToLower("2.1.325 (Claude Code) at "+f.exe)) ||
 		!strings.Contains(r.stdout, "connect it with: flightdeck connect claude-code") {
 		t.Fatalf("listing, not connected: %+v", r)
 	}
@@ -249,7 +250,8 @@ func TestMain_Warnings(t *testing.T) {
 	if !strings.Contains(r.stderr, "warning: http://10.0.0.5:4000 is plain http:// and not this machine") {
 		t.Errorf("no warning for plain http:// to another machine: %q", r.stderr)
 	}
-	if !strings.Contains(r.stderr, "can be read by other users (mode 0644); chmod 600 it") {
+	// Windows keeps no Unix permission bits: there is no such warning.
+	if runtime.GOOS != "windows" && !strings.Contains(r.stderr, "can be read by other users (mode 0644); chmod 600 it") {
 		t.Errorf("no warning for a token file others can read: %q", r.stderr)
 	}
 	// Neither for a loopback server, nor for a file only its owner reads.

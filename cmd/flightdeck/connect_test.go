@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flightdeckhq/flightdeck/internal/connect/fakeclaude"
 )
 
 // `flightdeck connect` through the real binary's command line, against
@@ -23,19 +25,34 @@ import (
 const connectCommandTimeout = 60 * time.Second
 
 // connectEnv puts the stand-in claude first on PATH with a fresh state
-// directory and returns the environment entries and that directory.
+// directory and returns the environment entries and that directory: on
+// Unix scripts/fake-claude.sh, on Windows, where that script cannot run,
+// the Go stand-in (internal/connect/fakeclaude).
 func connectEnv(t *testing.T) ([]string, string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the stand-in claude is a POSIX shell script")
-	}
-	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fake-claude.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	bin, state := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"), script, 0o755); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		// The Go stand-in: this test binary as claude.exe, which TestMain
+		// runs as internal/connect/fakeclaude, since the script cannot run.
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(self)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, fakeclaude.Name+".exe"), data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fake-claude.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "claude"), script, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "FAKE_CLAUDE_STATE=" + state}, state
 }

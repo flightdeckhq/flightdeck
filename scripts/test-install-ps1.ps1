@@ -161,6 +161,10 @@ class FakeFlightdeck {
             string rest = string.Join(" ", args, 1, args.Length - 1);
             string log = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_LOG");
             if (!string.IsNullOrEmpty(log)) { File.AppendAllText(log, "connect " + rest + "\n"); }
+            if (args.Length > 2 && args[2] == "--dry-run") {
+                Console.WriteLine("Connect " + args[1] + " to Flightdeck:");
+                return 0;
+            }
             if (args.Length > 1 && args[1] == "--detected") {
                 string detected = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_DETECTED") ?? "";
                 Console.Write(detected.Replace("\\t", "\t").Replace("\\n", "\n"));
@@ -369,11 +373,18 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     $script:fakeDetected = @()
     $script:fakeDetectedExit = 0
     $script:fakeConnectExit = 0
+    $script:fakeDryRunExit = 0
     function Invoke-FakeFlightdeck {
         $script:fakeCalls += ($args -join ' ')
         if ($args[1] -eq '--detected') {
             $global:LASTEXITCODE = $script:fakeDetectedExit
             return $script:fakeDetected
+        }
+        if ($args[2] -eq '--dry-run') {
+            "Connect $($args[1]) to Flightdeck:"
+            'The fake plugin records what a fake records.'
+            $global:LASTEXITCODE = $script:fakeDryRunExit
+            return
         }
         "fake flightdeck: $($args -join ' ')"
         $global:LASTEXITCODE = $script:fakeConnectExit
@@ -399,6 +410,11 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
 
     $d = Test-Decision '' $askYes
     if (-not $d.Failure -and $script:asked -contains 'Connect Claude Code to Flightdeck?' -and $d.Calls -contains 'connect claude-code --yes' -and $d.Result.Hints.Count -eq 0) { Write-Pass 'a yes connects the agent' } else { Write-Failure 'a yes connects the agent' "$($d.Failure) calls: $($d.Calls -join '; ') asked: $($script:asked -join '; ') $($d.Text)" }
+    if ($d.Calls -contains 'connect claude-code --dry-run' -and $d.Text -match 'The fake plugin records what a fake records\.' -and [array]::IndexOf($d.Calls, 'connect claude-code --dry-run') -lt [array]::IndexOf($d.Calls, 'connect claude-code --yes')) { Write-Pass 'the plan and what it records are shown before the question' } else { Write-Failure 'the plan before the question' "calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 1
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the binary cannot plan the connect, nothing is asked' } else { Write-Failure 'a failed dry run' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ')" }
+    $script:fakeDryRunExit = 0
     $d = Test-Decision '' $askNo
     if (-not $d.Failure -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains $claudeHint) { Write-Pass 'a no connects nothing and keeps the command to print' } else { Write-Failure 'a no connects nothing' "$($d.Failure) calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
     $d = Test-Decision '' $null
@@ -407,6 +423,8 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and $d.Text -match 'fake flightdeck: connect claude-code --yes') { Write-Pass 'FLIGHTDECK_CONNECT=claude-code connects without asking and shows the output' } else { Write-Failure 'FLIGHTDECK_CONNECT=claude-code' "$($d.Failure) calls: $($d.Calls -join '; ') $($d.Text)" }
     $d = Test-Decision ' claude-code , other-agent ' $askNever
     if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and $d.Calls -contains 'connect other-agent --yes') { Write-Pass 'a list with spaces connects every id in it' } else { Write-Failure 'a list with spaces' "$($d.Failure) calls: $($d.Calls -join '; ')" }
+    $d = Test-Decision 'claude-code,Bad;x,*' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and @($d.Calls | Where-Object { $_ -ne 'connect claude-code --yes' -and $_ -ne 'connect --detected' }).Count -eq 0 -and $d.Text -match 'not an agent id') { Write-Pass 'ids that are not lower-case letters, digits and - are skipped' } else { Write-Failure 'invalid ids' "$($d.Failure) calls: $($d.Calls -join '; ') $($d.Text)" }
     $d = Test-Decision 'none' $askNever
     if (-not $d.Failure -and $d.Calls.Count -eq 1 -and $d.Result.Hints -contains $claudeHint) { Write-Pass 'FLIGHTDECK_CONNECT=none connects nothing and keeps the command to print' } else { Write-Failure 'FLIGHTDECK_CONNECT=none' "$($d.Failure) calls: $($d.Calls -join '; ')" }
     $script:fakeDetected = @("claude-code`tconnected`tClaude Code", "other-agent`tnot-connected`tOther Agent`ta later field")

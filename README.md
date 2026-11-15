@@ -87,7 +87,7 @@ It installs the Flightdeck plugin for your user, and the sessions you start from
 /reload-plugins
 ```
 
- The plugin captures prompts and sanitised tool inputs by default, since you are watching your own session. [plugin/README.md](plugin/README.md) covers its options, `claude -p` and CI runs, enforcement and privacy.
+The plugin captures prompts and sanitised tool inputs by default, since you are watching your own session. [plugin/README.md](plugin/README.md) covers its options, `claude -p` and CI runs, enforcement and privacy.
 
 ### Python agents
 

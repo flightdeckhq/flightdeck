@@ -228,21 +228,65 @@ CONNECT_FOUND=""
 # the script itself, so the question and the answer go through the
 # terminal, and with no terminal (CI, a pipe from cron) nothing is asked.
 can_ask() {
-  (: </dev/tty >/dev/tty) 2>/dev/null
+  (: </dev/tty >/dev/tty) 2>/dev/null && in_foreground
 }
 
-# ask_yes QUESTION: yes for an empty answer, y or yes; anything else, or
-# no answer at all (end of input), is no.
+# in_foreground: this shell's process group is the terminal's foreground
+# group. An install sent to the background (`curl ... | sh &`) would be
+# stopped by the terminal as soon as it read from it, so it asks nothing.
+# Where ps cannot tell (BusyBox's has no tpgid), the question is asked
+# and its timeout bounds it.
+in_foreground() {
+  pgid="$(ps -o pgid= -p "$$" 2>/dev/null)" || return 0
+  tpgid="$(ps -o tpgid= -p "$$" 2>/dev/null)" || return 0
+  pgid="${pgid##* }"
+  tpgid="${tpgid##* }"
+  [ -z "$pgid" ] || [ -z "$tpgid" ] || [ "$pgid" = "$tpgid" ]
+}
+
+# How long the question waits for an answer. A person at the terminal
+# answers in seconds; an install left running in a window nobody watches
+# is not held for ever, and no answer is a no.
+ASK_TIMEOUT_SECS=60
+
+# ask_yes QUESTION: yes for an empty answer, y or yes; anything else, end
+# of input, or no answer within ASK_TIMEOUT_SECS, is no. POSIX read has
+# no timeout, so the answer is read by a background reader that is
+# killed when the time is up.
 ask_yes() {
   printf '%s [Y/n] ' "$1" >/dev/tty
-  answer=""
-  if ! IFS= read -r answer </dev/tty; then
+  answer_file="${tmp}/connect-answer"
+  rm -f "$answer_file"
+  (IFS= read -r line </dev/tty && printf '%s' "$line" >"$answer_file") &
+  reader=$!
+  waited=0
+  while kill -0 "$reader" 2>/dev/null; do
+    if [ "$waited" -ge "$ASK_TIMEOUT_SECS" ]; then
+      kill -KILL "$reader" 2>/dev/null || true
+      printf '\nNo answer in %s seconds: not connecting.\n' "$ASK_TIMEOUT_SECS" >/dev/tty
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$reader" 2>/dev/null || true
+  if [ ! -f "$answer_file" ]; then
     printf '\n' >/dev/tty
-    [ -n "$answer" ] || return 1
+    return 1
   fi
+  answer="$(cat "$answer_file")"
   case "$answer" in
     '' | [Yy] | [Yy][Ee][Ss]) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# agent_id WORD: WORD has the form of an agent id (lower-case letters,
+# digits and -), the only form that is passed on to the binary.
+agent_id() {
+  case "$1" in
+    '' | *[!a-z0-9-]*) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -294,13 +338,19 @@ connect_agents() {
     *)
       old_ifs="$IFS"
       IFS=,
+      set -f
       for id in $choice; do
         IFS="$old_ifs"
         [ -n "$id" ] || continue
         CONNECT_FOUND=1
         info ""
+        if ! agent_id "$id"; then
+          info "FLIGHTDECK_CONNECT names something that is not an agent id (lower-case letters, digits and -); skipped it"
+          continue
+        fi
         connect_one "$1" "$id" "$(name_of "$id")"
       done
+      set +f
       IFS="$old_ifs"
       return 0
       ;;
@@ -308,7 +358,7 @@ connect_agents() {
   [ -n "$detected" ] || return 0
   asked=""
   while IFS="$TAB" read -r id state name _; do
-    [ -n "$id" ] || continue
+    agent_id "$id" || continue
     CONNECT_FOUND=1
     if [ "$state" = connected ]; then
       info ""
@@ -327,7 +377,10 @@ connect_agents() {
         fi
         if [ "$asked" = yes ]; then
           info ""
-          if ask_yes "Connect $name to Flightdeck?"; then
+          # What connecting changes and what the agent's integration then
+          # records, in the binary's words, before the question; when the
+          # binary cannot say (it printed why), nothing is asked.
+          if "$1" connect "$id" --dry-run </dev/null && ask_yes "Connect $name to Flightdeck?"; then
             connect_one "$1" "$id" "$name"
             continue
           fi

@@ -10,11 +10,12 @@
 #
 # The fake binary also answers `flightdeck connect`, the command the
 # installer offers once it has installed the binary: `connect --detected`
-# prints $FAKE_FLIGHTDECK_DETECTED (with \t for tabs) and every connect
-# call is appended to $FAKE_FLIGHTDECK_LOG with the number of bytes it
-# could read on stdin; FAKE_FLIGHTDECK_CONNECT_EXIT is the exit status of
-# a connect, and FAKE_FLIGHTDECK_NO_CONNECT makes it an older release
-# that does not know the command.
+# prints $FAKE_FLIGHTDECK_DETECTED (with \t for tabs), `connect <id>
+# --dry-run` prints a plan (exit status FAKE_FLIGHTDECK_DRYRUN_EXIT) and
+# every connect call is appended to $FAKE_FLIGHTDECK_LOG with the number
+# of bytes it could read on stdin; FAKE_FLIGHTDECK_CONNECT_EXIT is the
+# exit status of a connect, and FAKE_FLIGHTDECK_NO_CONNECT makes it an
+# older release that does not know the command.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,6 +50,12 @@ if [ "\${1:-}" = connect ]; then
   if [ -n "\${FAKE_FLIGHTDECK_NO_CONNECT:-}" ]; then echo "flag provided but not defined" >&2; exit 2; fi
   [ -z "\${FAKE_FLIGHTDECK_LOG:-}" ] || printf 'connect %s (stdin %s bytes)\n' "\$*" "\$(wc -c | tr -d ' ')" >>"\$FAKE_FLIGHTDECK_LOG"
   if [ "\${1:-}" = --detected ]; then printf '%b' "\${FAKE_FLIGHTDECK_DETECTED:-}"; exit 0; fi
+  if [ "\${2:-}" = --dry-run ]; then
+    echo "Connect \$1 to Flightdeck:"
+    echo "  - install the fake plugin from the fake marketplace"
+    echo "The fake plugin records what a fake records, and sends it to the fake server."
+    exit "\${FAKE_FLIGHTDECK_DRYRUN_EXIT:-0}"
+  fi
   echo "fake flightdeck: connect \$*"
   exit "\${FAKE_FLIGHTDECK_CONNECT_EXIT:-0}"
 fi
@@ -234,8 +241,9 @@ echo "-- connecting coding agents"
 # holds, with the script piped into sh as users run it, so stdin is the
 # pipe and only /dev/tty is the terminal.
 # How long one run on the pseudo-terminal may take: an install from the
-# local server takes a second; past this the run has hung on a question.
-PTY_TIMEOUT_SECS=60
+# local server takes a second, and the unanswered question waits out the
+# installer's 60 seconds (ASK_TIMEOUT_SECS); past this the run has hung.
+PTY_TIMEOUT_SECS=120
 cat >"$WORK/pty_answer.py" <<'PY'
 # pty_answer.py ANSWER TIMEOUT COMMAND...: runs COMMAND with a new
 # pseudo-terminal as its controlling terminal, types ANSWER and Enter at
@@ -264,7 +272,8 @@ while True:
         break
     out += data
     if not answered and b"[Y/n]" in out:
-        os.write(fd, answer.encode() + b"\n")
+        if answer != "__no_answer__":
+            os.write(fd, answer.encode() + b"\n")
         answered = True
 _, status = os.waitpid(pid, 0)
 sys.stdout.write(out.decode(errors="replace"))
@@ -291,7 +300,7 @@ must_not() {
 
 connect_run quiet FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE"
 must "$WORK/quiet.out" 'To connect Claude Code: flightdeck connect claude-code' "no terminal: the command is printed"
-must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "no terminal: nothing is connected"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "no terminal: nothing is connected, nothing planned"
 must_not "$WORK/quiet.out" '[Y/n]' "no terminal: nothing is asked"
 pass "without a terminal the installer prints the command and connects nothing"
 
@@ -309,12 +318,12 @@ pass "FLIGHTDECK_CONNECT=claude-code connects it without asking, with nothing on
 
 connect_run all FAKE_FLIGHTDECK_DETECTED='claude-code\tconnected\tClaude Code\nother-agent\tnot-connected\tOther Agent\tsome later field\n' FLIGHTDECK_CONNECT=all
 must "$FAKE_FLIGHTDECK_LOG" 'connect other-agent --yes' "all connects every agent not connected"
-must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "all leaves a connected agent alone"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "all leaves a connected agent alone"
 must "$WORK/all.out" 'Claude Code is already connected to Flightdeck.' "a connected agent is reported"
 pass "FLIGHTDECK_CONNECT=all connects the agents not connected yet and reads only the first three fields"
 
 connect_run none FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" FLIGHTDECK_CONNECT=none
-must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "none connects nothing"
+must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "none connects nothing"
 must "$WORK/none.out" 'To connect Claude Code: flightdeck connect claude-code' "none prints the command"
 pass "FLIGHTDECK_CONNECT=none connects nothing and prints the command"
 
@@ -329,6 +338,15 @@ must "$FAKE_FLIGHTDECK_LOG" 'connect no-such-agent --yes' "every listed id is tr
 must "$WORK/unknown.out" 'run it again later: flightdeck connect no-such-agent' "an id the binary refuses is reported"
 pass "a list with spaces and an unknown id: each is tried, the install succeeds"
 
+# shellcheck disable=SC2016  # ${IFS} is part of the value, for the installer not to expand
+connect_run badid FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" FLIGHTDECK_CONNECT='claude-code,Bad;touch${IFS}x,*'
+must "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "a valid id beside invalid ones is connected"
+must "$WORK/badid.out" 'FLIGHTDECK_CONNECT names something that is not an agent id' "an invalid id is reported"
+if grep -v -e 'connect claude-code --yes' -e 'connect --detected' "$FAKE_FLIGHTDECK_LOG" | grep -q .; then
+  echo "FAIL: an invalid id reached the binary:"; cat "$FAKE_FLIGHTDECK_LOG"; exit 1
+fi
+pass "ids that are not lower-case letters, digits and - are skipped, a * is not expanded"
+
 connect_run nothing
 must "$WORK/nothing.out" 'To connect a coding agent later: flightdeck connect (it lists the agents it can connect)' "no agent found"
 pass "with no agent found the closing lines name flightdeck connect"
@@ -338,7 +356,7 @@ must_not "$WORK/older.out" 'connect' "an older binary: no connect line"
 must "$WORK/older.out" "run \`flightdeck\` and open the URL it prints" "an older binary installs as before"
 pass "a binary that does not know connect (an older VERSION) skips the step"
 
-for answer in y '' n nope; do
+for answer in y '' n nope __no_answer__; do
   : >"$FAKE_FLIGHTDECK_LOG"
   rm -rf "$WORK/inst-pty"
   out="$WORK/pty.out"
@@ -347,18 +365,43 @@ for answer in y '' n nope; do
     cat "$out"; echo "FAIL: the install on a terminal, answer '$answer'"; exit 1
   fi
   must "$out" 'Connect Claude Code to Flightdeck? [Y/n]' "on a terminal the installer asks"
+  must "$out" 'The fake plugin records what a fake records' "the plan and what it records come before the question"
+  must "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --dry-run (stdin 0 bytes)' "the plan is the binary's own dry run"
   case "$answer" in
     y | '')
       must "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes (stdin 0 bytes)' "answer '$answer' connects"
       must_not "$out" 'To connect Claude Code' "answer '$answer': no hint"
       ;;
     *)
-      must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code' "answer '$answer' connects nothing"
+      must_not "$FAKE_FLIGHTDECK_LOG" 'connect claude-code --yes' "answer '$answer' connects nothing"
       must "$out" 'To connect Claude Code: flightdeck connect claude-code' "answer '$answer' prints the command"
       ;;
   esac
+  if [ "$answer" = __no_answer__ ]; then
+    must "$out" 'No answer in 60 seconds: not connecting.' "an unanswered question times out as no"
+  fi
   pass "on a terminal, under curl | sh, the answer '$answer' is read from /dev/tty and followed"
 done
+
+# A plan the binary cannot make (it printed why): nothing is asked.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DRYRUN_EXIT=1 FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-pty2" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$WORK/pty2.out" 2>&1 ||
+  { cat "$WORK/pty2.out"; echo "FAIL: the install with a failing dry run"; exit 1; }
+must_not "$WORK/pty2.out" '[Y/n]' "a failed dry run: nothing asked"
+must "$WORK/pty2.out" 'To connect Claude Code: flightdeck connect claude-code' "a failed dry run: the command is printed"
+pass "when the binary cannot plan the connect, nothing is asked and the command is printed"
+
+# In the background, the installer asks nothing: the terminal would stop
+# it at the read. The pseudo-terminal's foreground group is the driver's
+# shell; the install runs in a group of its own behind it.
+: >"$FAKE_FLIGHTDECK_LOG"
+FAKE_FLIGHTDECK_DETECTED="$CLAUDE_LINE" INSTALL_DIR="$WORK/inst-bg" timeout "$((PTY_TIMEOUT_SECS + 10))" \
+  python3 "$WORK/pty_answer.py" y "$PTY_TIMEOUT_SECS" bash -c "set -m; curl -fsSL http://127.0.0.1:$PORT/install.sh | sh & wait \$!" >"$WORK/bg.out" 2>&1 ||
+  { cat "$WORK/bg.out"; echo "FAIL: the install in the background"; exit 1; }
+must_not "$WORK/bg.out" '[Y/n]' "in the background nothing is asked"
+must "$WORK/bg.out" 'To connect Claude Code: flightdeck connect claude-code' "in the background the command is printed"
+pass "an install in the background asks nothing and prints the command"
 unset FAKE_FLIGHTDECK_LOG
 
 echo "INSTALL.SH TESTS OK"

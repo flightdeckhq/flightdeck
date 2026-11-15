@@ -91,10 +91,13 @@
         }
         # An older release, pinned with VERSION, does not know the command.
         if (-not $result.Known) { return $result }
+        # Only a word of lower-case letters, digits and - is an agent id,
+        # and only an id is passed on to the binary.
+        $agentIdPattern = '^[a-z0-9-]+$'
         $agents = @($detected | Where-Object { $_ } | ForEach-Object {
             $fields = "$_" -split "`t"
             [pscustomobject]@{ Id = $fields[0]; State = $(if ($fields.Count -gt 1) { $fields[1] } else { '' }); Name = $(if ($fields.Count -gt 2) { $fields[2] } else { $fields[0] }) }
-        })
+        } | Where-Object { $_.Id -cmatch $agentIdPattern })
         $connectOne = {
             param([string]$Id, [string]$Name)
             Write-Host ''
@@ -116,6 +119,11 @@
         if ($words.Count -gt 0 -and -not ($words.Count -eq 1 -and ($words[0] -eq 'all' -or $words[0] -eq 'none'))) {
             foreach ($id in $words) {
                 $result.Found = $true
+                if ($id -cnotmatch $agentIdPattern) {
+                    Write-Host ''
+                    Write-Host 'FLIGHTDECK_CONNECT names something that is not an agent id (lower-case letters, digits and -); skipped it'
+                    continue
+                }
                 $match = @($agents | Where-Object { $_.Id -eq $id })
                 $name = if ($match.Count -gt 0) { $match[0].Name } else { $id }
                 & $connectOne $id $name
@@ -137,7 +145,21 @@
             }
             if ($mode -ne 'none' -and $Ask) {
                 Write-Host ''
-                if (& $Ask "Connect $($agent.Name) to Flightdeck?") {
+                # What connecting changes and what the agent's integration
+                # then records, in the binary's words, before the question;
+                # when the binary cannot say (it printed why), nothing is asked.
+                $savedPreference = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                try {
+                    & $Exe connect $agent.Id --dry-run 2>&1 | ForEach-Object { Write-Host "$_" }
+                    $planned = ($LASTEXITCODE -eq 0)
+                } catch {
+                    Write-Host $_.Exception.Message
+                    $planned = $false
+                } finally {
+                    $ErrorActionPreference = $savedPreference
+                }
+                if ($planned -and (& $Ask "Connect $($agent.Name) to Flightdeck?")) {
                     & $connectOne $agent.Id $agent.Name
                     continue
                 }

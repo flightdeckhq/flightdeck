@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,9 +40,9 @@ const (
 	// well under a second; ten covers a cold start on a slow disk.
 	claudeVersionTimeout = 10 * time.Second
 	// claudeLocalTimeout bounds the commands that read or write Claude
-	// Code's own files (list, configure, enable, uninstall). They take a
-	// second or two, but the CLI may first refresh the account's managed
-	// settings over the network.
+	// Code's own files (list, configure, enable, uninstall) and the help
+	// commands of the check. They take a second or two, but the CLI may
+	// first refresh the account's managed settings over the network.
 	claudeLocalTimeout = 30 * time.Second
 	// claudeCloneTimeout bounds the two commands that clone the
 	// repository (marketplace add, install). Claude Code bounds its own
@@ -74,11 +76,214 @@ func (c *ClaudeCode) Detect(ctx context.Context) (Detection, error) {
 	if err != nil {
 		return Detection{Missing: "no " + claudeCommand + " command on PATH"}, nil
 	}
+	// The version and the check side by side: each is a process start
+	// of the CLI, which takes a second or more on a slow machine.
+	var (
+		version    string
+		versionErr error
+		read       = make(chan struct{})
+	)
+	go func() {
+		defer close(read)
+		version, versionErr = c.version(ctx, path)
+	}()
+	lacks, lacksErr := c.lacks(ctx, path)
+	<-read
+	if versionErr != nil {
+		return Detection{Found: true, Path: path}, versionErr
+	}
+	det := Detection{Found: true, Path: path, Version: version}
+	if lacksErr != nil {
+		return det, lacksErr
+	}
+	if len(lacks) > 0 {
+		det.Outdated = fmt.Sprintf("this version has no %s, which flightdeck connect needs: %s", strings.Join(lacks, " and no "), outdatedAdvice)
+	}
+	return det, nil
+}
+
+// version runs `claude --version` and returns the first line it printed,
+// without control characters: it is printed in the listing and messages.
+func (c *ClaudeCode) version(ctx context.Context, path string) (string, error) {
 	stdout, stderr, err := c.run(ctx, claudeVersionTimeout, nil, path, "--version")
 	if err != nil {
-		return Detection{Found: true, Path: path}, stepError("claude --version", claudeVersionTimeout, stdout, stderr, err, "")
+		return "", stepError("claude --version", claudeVersionTimeout, stdout, stderr, err, "")
 	}
-	return Detection{Found: true, Path: path, Version: firstLine(string(stdout))}, nil
+	return printable(firstLine(string(stdout))), nil
+}
+
+// fail describes a failed `claude` command as stepError does. A command
+// the CLI refused as unknown is an ErrOutdated instead, naming the
+// version, read now (only this path needs it), and what to do (advice):
+// running it again would fail the same way.
+func (c *ClaudeCode) fail(ctx context.Context, path, advice, step string, timeout time.Duration, stdout, stderr []byte, err error, secret string) error {
+	described := stepError(step, timeout, stdout, stderr, err, secret)
+	if errors.Is(err, ErrTimeout) || !refused(stderr) {
+		return described
+	}
+	version, _ := c.version(ctx, path) // "" names it "this Claude Code"
+	return fmt.Errorf("%w: %v, so %s is too old for flightdeck connect: %s", ErrOutdated, described, namedVersion(version), advice)
+}
+
+// claudeNeed is a command the connector runs that older Claude Code
+// versions lack, and how to tell: the options the command's own help
+// must name.
+type claudeNeed struct {
+	// help is the help command: it carries no value and changes nothing.
+	help []string
+	// options are what the help must name.
+	options []string
+	// lacks names what is missing when it does not, for the message.
+	lacks string
+}
+
+// claudeNeeds is what connecting needs of `claude` beyond the commands
+// every version with plugins has (plugin list, install, enable and
+// uninstall with --json): reading and saving the plugin's options, and
+// adding the marketplace with a result line. Claude Code 2.1.283 has
+// neither; it answers `plugin configure --help` with the help of
+// `claude plugin`, with exit status 0.
+var claudeNeeds = []claudeNeed{
+	{help: []string{"plugin", "configure", "--help"}, options: []string{"--values-stdin", "--json"}, lacks: "`claude plugin configure`"},
+	{help: []string{"plugin", "marketplace", "add", "--help"}, options: []string{"--json"}, lacks: "--json on `claude plugin marketplace add`"},
+}
+
+// outdatedAdvice is what to do with a Claude Code too old to connect:
+// update it, or install the plugin from inside it as the README shows.
+var outdatedAdvice = fmt.Sprintf("update it with `claude update`, then run flightdeck connect %s again; "+
+	"or install the plugin from inside Claude Code: /plugin marketplace add %s, then /plugin install %s",
+	claudeCodeID, marketplaceSource, pluginID)
+
+// removeAdvice is what to do when a disconnect meets a Claude Code too
+// old for the commands it runs: update it, or uninstall the plugin from
+// inside it.
+var removeAdvice = fmt.Sprintf("update it with `claude update`, then run flightdeck connect %s --remove again; "+
+	"or uninstall the plugin from inside Claude Code with /plugin", claudeCodeID)
+
+// The lines the check and the failures are read by: a help's first
+// line, and Claude Code's argument parser's refusal of a command or an
+// option it does not know (on stderr, exit status 1, before anything
+// runs).
+const (
+	helpUsagePrefix      = "usage:"
+	refusedCommandPrefix = "error: unknown command '"
+	refusedOptionPrefix  = "error: unknown option '"
+)
+
+// ansiCSI matches a terminal colour sequence (SGR), which a CLI may put
+// around a help's words; the check reads the help without them.
+var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// lacks reads the help of each command in claudeNeeds and returns what
+// this `claude` is missing; none means it can be connected. It asks the
+// CLI rather than comparing a version number, and caches nothing. A help
+// that names the options is enough, whatever else it prints; one that is
+// a help (a Usage: line) and does not name them, or a CLI that refuses
+// the help command as unknown, is missing them; a help command that
+// fails otherwise, times out or prints no help is an error: the check
+// does not guess either way. The help commands run side by side under
+// one budget, claudeLocalTimeout for the whole check, so a CLI that
+// hangs costs one timeout and not one per command; each runs through
+// the RunFunc, whose timeout ends its whole process tree.
+func (c *ClaudeCode) lacks(ctx context.Context, path string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, claudeLocalTimeout)
+	defer cancel()
+	type answer struct {
+		lacks bool
+		err   error
+	}
+	answers := make([]answer, len(claudeNeeds))
+	var wg sync.WaitGroup
+	for i, need := range claudeNeeds {
+		wg.Go(func() {
+			lacks, err := c.lacksOne(ctx, path, need)
+			answers[i] = answer{lacks, err}
+		})
+	}
+	wg.Wait()
+	var lacks []string
+	for i, a := range answers {
+		if a.err != nil {
+			return nil, a.err
+		}
+		if a.lacks {
+			lacks = append(lacks, claudeNeeds[i].lacks)
+		}
+	}
+	return lacks, nil
+}
+
+// lacksOne reads one need's help: whether this `claude` lacks it.
+func (c *ClaudeCode) lacksOne(ctx context.Context, path string, need claudeNeed) (bool, error) {
+	step := "claude " + strings.Join(need.help, " ")
+	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, nil, path, need.help...)
+	help := ansiCSI.ReplaceAllString(string(stdout)+"\n"+string(stderr), "")
+	switch {
+	case err != nil && !errors.Is(err, ErrTimeout) && refused(stderr):
+		return true, nil
+	case err != nil:
+		return false, stepError(step, claudeLocalTimeout, stdout, stderr, err, "")
+	case namesAll(help, need.options):
+		return false, nil
+	case isHelp(help):
+		return true, nil
+	default:
+		return false, fmt.Errorf("`%s` printed no help this command can read", step)
+	}
+}
+
+// namesAll reports whether help names every option: as a word of its
+// own, with any punctuation around it ("--json," "(--json)").
+func namesAll(help string, options []string) bool {
+	named := map[string]bool{}
+	for _, word := range strings.Fields(help) {
+		named[strings.Trim(word, ",;:.()[]<>'\"`")] = true
+	}
+	for _, option := range options {
+		if !named[option] {
+			return false
+		}
+	}
+	return true
+}
+
+// isHelp reports whether text is a command's help: it has a Usage: line.
+func isHelp(text string) bool {
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), helpUsagePrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// refused reports whether the CLI refused its command line: the line
+// Claude Code's argument parser writes on stderr for a command or an
+// option it does not know (exit status 1), before running anything.
+func refused(stderr []byte) bool {
+	for line := range strings.SplitSeq(ansiCSI.ReplaceAllString(string(stderr), ""), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, refusedCommandPrefix) || strings.HasPrefix(line, refusedOptionPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// outdatedError is the refusal to plan a connect on a Claude Code that
+// lacks what connecting needs.
+func outdatedError(version string, lacks []string) error {
+	return fmt.Errorf("%w: %s is too old for flightdeck connect (it has no %s), so nothing changed: %s",
+		ErrOutdated, namedVersion(version), strings.Join(lacks, " and no "), outdatedAdvice)
+}
+
+// namedVersion names the Claude Code a message is about: "Claude Code
+// 2.1.283" from the version line "2.1.283 (Claude Code)".
+func namedVersion(version string) string {
+	if fields := strings.Fields(version); len(fields) > 0 {
+		return claudeCodeName + " " + printable(fields[0])
+	}
+	return "this " + claudeCodeName
 }
 
 // installedPlugin is one entry of `claude plugin list --json`.
@@ -102,32 +307,54 @@ type cliResult struct {
 	Message string `json:"message"`
 }
 
-// Status implements Connector.
+// Status implements Connector. On a Claude Code too old to have `claude
+// plugin configure` (an outdated one) it reports the plugin from `claude
+// plugin list --json`, which such a version has, with ServerUnknown: a
+// plugin installed from inside Claude Code is connected all the same.
 func (c *ClaudeCode) Status(ctx context.Context) (Status, error) {
 	path, err := c.cli()
 	if err != nil {
 		return Status{}, err
 	}
-	return c.status(ctx, path)
+	plugin, found, err := c.installed(ctx, path, outdatedAdvice)
+	if err != nil || !found {
+		return Status{}, err
+	}
+	return c.options(ctx, path, plugin, true)
 }
 
-func (c *ClaudeCode) status(ctx context.Context, path string) (Status, error) {
+// installed returns the flightdeck plugin's entry of `claude plugin list
+// --json` in user scope, and whether there is one. advice is what a
+// refusal of the command says to do.
+func (c *ClaudeCode) installed(ctx context.Context, path, advice string) (installedPlugin, bool, error) {
 	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, nil, path, "plugin", "list", "--json")
 	if err != nil {
-		return Status{}, stepError("claude plugin list --json", claudeLocalTimeout, stdout, stderr, err, "")
+		return installedPlugin{}, false, c.fail(ctx, path, advice, "claude plugin list --json", claudeLocalTimeout, stdout, stderr, err, "")
 	}
 	var plugins []installedPlugin
 	if err := json.Unmarshal(stdout, &plugins); err != nil {
-		return Status{}, fmt.Errorf("`claude plugin list --json` printed no plugin list this command can read: %v", err)
+		return installedPlugin{}, false, fmt.Errorf("`claude plugin list --json` printed no plugin list this command can read: %v", err)
 	}
 	i := slices.IndexFunc(plugins, func(p installedPlugin) bool { return p.ID == pluginID && p.Scope == pluginScope })
 	if i < 0 {
-		return Status{}, nil
+		return installedPlugin{}, false, nil
 	}
-	st := Status{Installed: true, Enabled: plugins[i].Enabled, Version: plugins[i].Version}
-	stdout, stderr, err = c.run(ctx, claudeLocalTimeout, nil, path, "plugin", "configure", pluginID, "--json")
+	return plugins[i], true, nil
+}
+
+// options is the status of the installed plugin, with its saved options
+// from `claude plugin configure <id> --json`. A CLI that refuses that
+// command (an outdated Claude Code) gives a status with ServerUnknown
+// when unreadable is true, and an ErrOutdated otherwise.
+func (c *ClaudeCode) options(ctx context.Context, path string, plugin installedPlugin, unreadable bool) (Status, error) {
+	st := Status{Installed: true, Enabled: plugin.Enabled, Version: printable(plugin.Version)}
+	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, nil, path, "plugin", "configure", pluginID, "--json")
 	if err != nil {
-		return Status{}, stepError("claude plugin configure "+pluginID+" --json", claudeLocalTimeout, stdout, stderr, err, "")
+		if unreadable && !errors.Is(err, ErrTimeout) && refused(stderr) {
+			st.ServerUnknown = true
+			return st, nil
+		}
+		return Status{}, c.fail(ctx, path, outdatedAdvice, "claude plugin configure "+pluginID+" --json", claudeLocalTimeout, stdout, stderr, err, "")
 	}
 	var opts pluginOptions
 	if err := json.Unmarshal(stdout, &opts); err != nil {
@@ -153,9 +380,41 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 	if err != nil {
 		return Plan{}, err
 	}
-	st, err := c.status(ctx, path)
+	// The check, and beside it the plugin list, which every version with
+	// plugins has: each starts the CLI, and the help commands write
+	// nothing, so the list never runs beside another command that may
+	// write Claude Code's files. Nothing else is read before the check
+	// passes: an older Claude Code would refuse the options read and the
+	// steps alike.
+	var (
+		plugin  installedPlugin
+		found   bool
+		listErr error
+		listed  = make(chan struct{})
+	)
+	go func() {
+		defer close(listed)
+		plugin, found, listErr = c.installed(ctx, path, outdatedAdvice)
+	}()
+	lacks, err := c.lacks(ctx, path)
+	<-listed
 	if err != nil {
 		return Plan{}, err
+	}
+	if len(lacks) > 0 {
+		// The version only names it in the message; one that cannot be
+		// read is "this Claude Code".
+		version, _ := c.version(ctx, path)
+		return Plan{}, outdatedError(version, lacks)
+	}
+	if listErr != nil {
+		return Plan{}, listErr
+	}
+	var st Status
+	if found {
+		if st, err = c.options(ctx, path, plugin, false); err != nil {
+			return Plan{}, err
+		}
 	}
 	sameAsSaved := target.Server == "" || sameServer(target.Server, st.Server)
 	keepsToken := st.TokenSaved && sameAsSaved
@@ -185,7 +444,7 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 			steps = append(steps, Step{
 				Summary: fmt.Sprintf("add the %s marketplace (github.com/%s) to Claude Code", marketplaceName, marketplaceSource),
 				Run: func(ctx context.Context) (string, error) {
-					if err := c.change(ctx, claudeCloneTimeout, nil, "", path, "plugin", "marketplace", "add", marketplaceSource, "--json"); err != nil {
+					if err := c.change(ctx, path, outdatedAdvice, claudeCloneTimeout, nil, "", "plugin", "marketplace", "add", marketplaceSource, "--json"); err != nil {
 						return "", err
 					}
 					return fmt.Sprintf("Added the %s marketplace to Claude Code.", marketplaceName), nil
@@ -195,7 +454,7 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		steps = append(steps, Step{
 			Summary: fmt.Sprintf("install the %s plugin for your user from %s", pluginName, installFrom),
 			Run: func(ctx context.Context) (string, error) {
-				if err := c.change(ctx, claudeCloneTimeout, nil, "", path, "plugin", "install", pluginID, "--scope", pluginScope, "--json"); err != nil {
+				if err := c.change(ctx, path, outdatedAdvice, claudeCloneTimeout, nil, "", "plugin", "install", pluginID, "--scope", pluginScope, "--json"); err != nil {
 					return "", err
 				}
 				return fmt.Sprintf("Installed the %s plugin for your user.", pluginName), nil
@@ -205,7 +464,7 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		steps = append(steps, Step{
 			Summary: fmt.Sprintf("turn the installed %s plugin back on", pluginName),
 			Run: func(ctx context.Context) (string, error) {
-				if err := c.change(ctx, claudeLocalTimeout, nil, "", path, "plugin", "enable", pluginID); err != nil {
+				if err := c.change(ctx, path, outdatedAdvice, claudeLocalTimeout, nil, "", "plugin", "enable", pluginID); err != nil {
 					return "", err
 				}
 				return fmt.Sprintf("Turned the %s plugin on.", pluginName), nil
@@ -242,9 +501,9 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 	}
 
 	where := describeServer(server)
-	version := ""
+	pluginVersion := ""
 	if st.Version != "" {
-		version = " " + st.Version
+		pluginVersion = " " + st.Version
 	}
 	return Plan{
 		Steps:   steps,
@@ -255,19 +514,22 @@ func (c *ClaudeCode) PlanConnect(ctx context.Context, target Target) (Plan, erro
 		Notice: fmt.Sprintf("The plugin records your Claude Code sessions, including prompts, responses, tool results and sanitised tool inputs, "+
 			"and sends them to %s (FLIGHTDECK_CAPTURE_PROMPTS=false keeps the content back).", where),
 		Unchanged: fmt.Sprintf("Claude Code is already connected to Flightdeck (plugin %s%s, reporting to %s); nothing changed. "+
-			"Pass --server to change the server.", pluginName, version, where),
+			"Pass --server to change the server.", pluginName, pluginVersion, where),
 		Done: fmt.Sprintf("Claude Code is connected: sessions started from now on report to %s; sessions already open report once restarted.",
 			where),
 	}, nil
 }
 
-// PlanDisconnect implements Connector.
+// PlanDisconnect implements Connector. It needs neither `claude plugin
+// configure` nor --json on `marketplace add`, so it runs on a Claude
+// Code too old to connect as well: a plugin installed from inside it can
+// be removed.
 func (c *ClaudeCode) PlanDisconnect(ctx context.Context) (Plan, error) {
 	path, err := c.cli()
 	if err != nil {
 		return Plan{}, err
 	}
-	st, err := c.status(ctx, path)
+	_, installed, err := c.installed(ctx, path, removeAdvice)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -275,13 +537,13 @@ func (c *ClaudeCode) PlanDisconnect(ctx context.Context) (Plan, error) {
 		Unchanged: fmt.Sprintf("Claude Code has no %s plugin installed for your user; nothing changed.", pluginName),
 		Done:      "Claude Code is disconnected: sessions started from now on do not report to Flightdeck.",
 	}
-	if !st.Installed {
+	if !installed {
 		return plan, nil
 	}
 	plan.Steps = []Step{{
 		Summary: fmt.Sprintf("uninstall the %s plugin with its saved server and token (the %s marketplace stays)", pluginName, marketplaceName),
 		Run: func(ctx context.Context) (string, error) {
-			if err := c.change(ctx, claudeLocalTimeout, nil, "", path, "plugin", "uninstall", pluginID, "--scope", pluginScope, "--json"); err != nil {
+			if err := c.change(ctx, path, removeAdvice, claudeLocalTimeout, nil, "", "plugin", "uninstall", pluginID, "--scope", pluginScope, "--json"); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("Uninstalled the %s plugin.", pluginName), nil
@@ -296,7 +558,7 @@ func (c *ClaudeCode) PlanDisconnect(ctx context.Context) (Plan, error) {
 func (c *ClaudeCode) marketplaceDeclared(ctx context.Context, path string) (bool, string, error) {
 	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, nil, path, "plugin", "marketplace", "list", "--json")
 	if err != nil {
-		return false, "", stepError("claude plugin marketplace list --json", claudeLocalTimeout, stdout, stderr, err, "")
+		return false, "", c.fail(ctx, path, outdatedAdvice, "claude plugin marketplace list --json", claudeLocalTimeout, stdout, stderr, err, "")
 	}
 	var markets []declaredMarketplace
 	if err := json.Unmarshal(stdout, &markets); err != nil {
@@ -365,14 +627,14 @@ func (m declaredMarketplace) foreignSource() string {
 // requires it to succeed: exit status 0 and, when it printed a --json
 // result line, an "ok" outcome. secret, when set, is cut from any
 // message the CLI printed.
-func (c *ClaudeCode) change(ctx context.Context, timeout time.Duration, stdin []byte, secret, path string, args ...string) error {
+func (c *ClaudeCode) change(ctx context.Context, path, advice string, timeout time.Duration, stdin []byte, secret string, args ...string) error {
 	stdout, stderr, err := c.run(ctx, timeout, stdin, path, args...)
 	step := "claude " + strings.Join(args, " ")
 	if err != nil {
-		return stepError(step, timeout, stdout, stderr, err, secret)
+		return c.fail(ctx, path, advice, step, timeout, stdout, stderr, err, secret)
 	}
 	if result, ok := resultLine(stdout); ok && result.Outcome != "" && result.Outcome != "ok" {
-		return stepError(step, timeout, stdout, stderr, fmt.Errorf("outcome %q", result.Outcome), secret)
+		return c.fail(ctx, path, advice, step, timeout, stdout, stderr, fmt.Errorf("outcome %q", result.Outcome), secret)
 	}
 	return nil
 }
@@ -389,7 +651,7 @@ func (c *ClaudeCode) configure(ctx context.Context, path string, values map[stri
 	stdout, stderr, err := c.run(ctx, claudeLocalTimeout, body, path, args...)
 	step := "claude " + strings.Join(args, " ")
 	if err != nil {
-		return stepError(step, claudeLocalTimeout, stdout, stderr, err, values["token"])
+		return c.fail(ctx, path, outdatedAdvice, step, claudeLocalTimeout, stdout, stderr, err, values["token"])
 	}
 	var saved struct {
 		Saved []string `json:"saved"`
@@ -457,7 +719,8 @@ func resultLine(stdout []byte) (cliResult, bool) {
 
 // stepError describes a failed `claude` command in one line: the
 // command, and the CLI's own reason (its --json message, else the last
-// line it wrote on stderr). secret, when set, never appears in it.
+// line it wrote on stderr). secret, when set, never appears in it, and
+// neither do the reason's colour sequences or control characters.
 func stepError(step string, timeout time.Duration, stdout, stderr []byte, err error, secret string) error {
 	if errors.Is(err, ErrTimeout) {
 		return fmt.Errorf("`%s` did not finish within %s and was stopped", step, timeout)
@@ -475,7 +738,7 @@ func stepError(step string, timeout time.Duration, stdout, stderr []byte, err er
 	if secret != "" {
 		reason = strings.ReplaceAll(reason, secret, "[the token]")
 	}
-	return fmt.Errorf("`%s` failed: %s", step, reason)
+	return fmt.Errorf("`%s` failed: %s", step, printable(ansiCSI.ReplaceAllString(reason, "")))
 }
 
 // firstLine returns the first non-blank line of s, trimmed.

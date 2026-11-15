@@ -12339,7 +12339,7 @@ output format changes.
 
 | Command | What it does |
 |---|---|
-| `flightdeck connect` | Lists every connector: whether its agent is found on this machine (where, which version), whether it is connected (the integration's version, the server it reports to, whether a token is saved) and the command that connects it. Changes nothing. |
+| `flightdeck connect` | Lists every connector: whether its agent is found on this machine (where, which version), whether it is connected (the integration's version, the server it reports to, whether a token is saved) and the command that connects it, or, for an agent too old to connect (below), what to do instead. Changes nothing. |
 | `flightdeck connect <agent>` | Connects the agent. Without `--server`, a new connection reports to the local server (`http://localhost:4000` with the development token, the plugin's own defaults, so nothing is saved) and an existing one keeps the server it has. |
 | `flightdeck connect <agent> --server <url>` | Connects it to that server. The token is read from `--token-file <path>`, else from `FLIGHTDECK_TOKEN`; there is no flag that takes the token itself, since a command line is visible to every user of the machine (`ps`, `/proc/<pid>/cmdline`). A server whose host is not this machine's loopback (`localhost`, `127.0.0.0/8`, `::1`) needs a token, as the development token is refused there; one already saved for the same server is kept. |
 | `flightdeck connect <agent> --remove` | Disconnects it. Without a terminal it needs `--yes`, and refuses otherwise with a line saying so: removing is not something a script should do by default. |
@@ -12367,8 +12367,14 @@ value refused); 3 when the agent is not found on this machine; 4 when
 the plan carries a caution that only a yes on a terminal accepts:
 `--dry-run` reports such a plan with 4 (the installers' signal not to
 ask), and a connect under `--yes` or without a terminal refuses it
-with 4. The installers read 0 and 4 by number, and a Go test pins
-them.
+with 4; 5 when the agent is found but too old for the command (an
+outdated agent, below): a connect, with or without `--dry-run` or
+`--yes`, changes nothing and prints one line saying to update the
+agent and the other way to install its integration, and a step that
+the agent's CLI refuses as an unknown command or option says so too,
+with 5 rather than 1, since running it again fails the same way until
+the agent is updated. The installers read 0, 4 and 5 by number, and a
+Go test pins them.
 
 The server value is checked before anything changes: surrounding white
 space is dropped, and it must be an `http://` or `https://` URL with a
@@ -12408,12 +12414,23 @@ marketplace's source) are printed without their control characters.
 **The connector contract.** What every connector guarantees, so a new
 one behaves as the first does:
 
-- **Detect** finds the agent's command on `PATH` and reads its version.
-  It changes nothing and starts nothing else.
+- **Detect** finds the agent's command on `PATH`, reads its version
+  and checks that it has the commands and options the connector runs.
+  The check asks the CLI itself (its own help), never compares a
+  version number, and caches nothing between runs. An agent that lacks
+  them is found but **outdated**: the listing shows the version and
+  what to do (update the agent, or install the integration from inside
+  it), the installers' query reports it as `outdated`, and a connect
+  refuses before reading anything else, with exit status 5. A check
+  that cannot answer (the help command fails or prints no help) is an
+  error naming that command, never a guess either way. Detect changes
+  nothing and starts nothing else.
 - **Status** reads the agent's configuration and never writes it. An
   agent is connected only when Flightdeck's integration is installed
   for the user and enabled; a saved token is reported as present, and
-  its value is never read back.
+  its value is never read back. For an outdated agent it reads what
+  that agent's CLI can show: an integration installed and enabled from
+  inside the agent is connected, with its server reported as unknown.
 - **Connect** is planned before it runs: the connector returns the
   steps still missing (reading only), the command shows them, asks when
   it may, and runs them in order. Connecting an agent that is
@@ -12433,7 +12450,10 @@ one behaves as the first does:
   the step; the command then waits at most five seconds for anything
   still holding the output. A failed or timed-out step is one line on stderr that
   names the step and carries the CLI's own message, and the exit status
-  is 1; the steps after it do not run.
+  is 1; the steps after it do not run. A step the CLI refuses as an
+  unknown command or option (a capability the check above missed) is
+  the same line with the agent's version and what to do, and exit
+  status 5.
 - **Nothing is accepted on the user's behalf.** The agent's CLI gets no
   stdin unless it carries values, and no flag that answers one of its
   own confirmations (Claude Code's `-y`, which accepts a command a
@@ -12441,7 +12461,8 @@ one behaves as the first does:
   step instead.
 - **Never fatal to an install.** The installers run connect after the
   binary is in place, and a failure prints its line and the command to
-  run later; the install still succeeds.
+  run later (for an outdated agent, to update it first); the install
+  still succeeds.
 
 **Tests on every platform the connector runs on.** The connect tests
 drive a stand-in for the agent's CLI on `PATH`, one per platform, held
@@ -12450,8 +12471,11 @@ install gate uses as well; on Windows, where a shell script cannot run,
 the test binary copied as `claude.exe`, whose `TestMain` runs it as the
 Go stand-in `internal/connect/fakeclaude` (the executable's name decides,
 since the binary tests' `flightdeck` child passes its environment on to
-the CLI it starts). On Unix a parity test runs both stand-ins through
-one sequence of the connector's commands and faults and requires the
+the CLI it starts). Both also answer as an outdated Claude Code
+(`FAKE_CLAUDE_OLD_CLI`: 2.1.283's help texts, and its `error: unknown
+command 'configure'` and `error: unknown option '--json'` on stderr
+with exit status 1). On Unix a parity test runs both stand-ins through
+one sequence of the connector's commands and faults, in both modes, and requires the
 same output, exit status, log and state files from each, so neither
 drifts from the other. The Windows run also drives a real `claude.cmd`,
 as npm installs Claude Code, from a directory with and without a space
@@ -12468,10 +12492,43 @@ changes, as it does for Claude Code itself.
 
 | Operation | `claude` commands | Timeout |
 |---|---|---|
-| Detect | `claude --version` | 10 s: it answers in well under a second; ten covers a cold start on a slow disk |
-| Status | `claude plugin list --json`: connected when `flightdeck@flightdeck-plugins` is installed in user scope and enabled; then `claude plugin configure flightdeck@flightdeck-plugins --json` for the saved server (`inputs.server`) and whether `token` is among the `configured` options | 30 s each: local files, after the CLI may first refresh the account's managed settings over the network |
-| Connect | `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared. One of that name that is declared is trusted when its source is this repository (`"source": "github"` with `"repo": "flightdeckhq/flightdeck"`, or `"source": "git"` with its HTTPS or SSH URL); any other source (`"directory"` with a `path`, such as a contributor's checkout, another repository, a URL) makes the install step a caution that names the source (above); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
-| Disconnect | `claude plugin uninstall flightdeck@flightdeck-plugins --scope user --json`; Claude Code drops the plugin's saved options and token with it, and the marketplace entry stays | 30 s |
+| Detect | `claude --version`, and beside it the check (below): `claude plugin configure --help`, which must name `--values-stdin` and `--json`, and `claude plugin marketplace add --help`, which must name `--json`. The three run side by side, since each starts the CLI | 10 s for the version: it answers in well under a second; ten covers a cold start on a slow disk. 30 s for the whole check, its two help commands together, so a CLI that hangs costs one timeout |
+| Status | `claude plugin list --json`: connected when `flightdeck@flightdeck-plugins` is installed in user scope and enabled; then `claude plugin configure flightdeck@flightdeck-plugins --json` for the saved server (`inputs.server`) and whether `token` is among the `configured` options. An outdated Claude Code refuses that command: the plugin list alone decides, and the server is unknown | 30 s each: local files, after the CLI may first refresh the account's managed settings over the network |
+| Connect | The check, with `claude plugin list --json` beside it (the help commands write nothing, so no two commands that may write Claude Code's files run together); `claude --version` only to name an outdated one; then `claude plugin configure flightdeck@flightdeck-plugins --json` for an installed plugin, else `claude plugin marketplace list --json`, and `claude plugin marketplace add flightdeckhq/flightdeck --json` when no marketplace named `flightdeck-plugins` is declared. One of that name that is declared is trusted when its source is this repository (`"source": "github"` with `"repo": "flightdeckhq/flightdeck"`, or `"source": "git"` with its HTTPS or SSH URL); any other source (`"directory"` with a `path`, such as a contributor's checkout, another repository, a URL) makes the install step a caution that names the source (above); `claude plugin install flightdeck@flightdeck-plugins --scope user --json`; `claude plugin enable flightdeck@flightdeck-plugins` for a plugin installed but disabled; `claude plugin configure flightdeck@flightdeck-plugins --values-stdin --json` with `{"server": …, "token": …}` on stdin when there is a value to save | The check and `--version` as for Detect; 180 s for the two that clone the repository, above Claude Code's own 120-second clone bound so its message is the one reported; 30 s for the others |
+| Disconnect | `claude plugin list --json`, and `claude plugin uninstall flightdeck@flightdeck-plugins --scope user --json` when the plugin is installed (no check, and the options are not read: an outdated Claude Code has both commands); Claude Code drops the plugin's saved options and token with it, and the marketplace entry stays. `claude --version` only to name the version in a refusal | 30 s each; 10 s for the version |
+
+**An outdated Claude Code.** The connector reads and saves the plugin's
+options with `claude plugin configure` and adds the marketplace with
+`claude plugin marketplace add … --json`; Claude Code versions before
+those (2.1.283 among them, which has `plugin list`, `install`,
+`enable` and `uninstall` with `--json` but no `configure` and no
+`--json` on `marketplace add`) are outdated. The check reads the two
+help texts: a help that names the options is enough, whatever else it
+prints; one that does not name them but is a help (it has a `Usage:`
+line: an old CLI answers `plugin configure --help` with the help of
+`claude plugin`, exit status 0) makes the agent outdated; a help
+command that exits non-zero (other than with Claude Code's own
+`error: unknown command '…'` or `error: unknown option '…'`), times out
+or prints no help is an error naming it. The help commands carry no
+value and change nothing. The check strips colour sequences from what
+it reads. For an outdated Claude Code the listing
+shows `too old` with the version, and every outdated line says to run
+`claude update` and then `flightdeck connect claude-code` again, or to
+install the plugin from inside Claude Code with `/plugin marketplace
+add flightdeckhq/flightdeck` and `/plugin install
+flightdeck@flightdeck-plugins`. An outdated Claude Code with the plugin
+installed and enabled that way is connected: the listing shows
+`connected` with the plugin's version and that this version cannot
+show the server it reports to, and `--detected` prints `connected`.
+`--remove` needs neither command and
+runs on an outdated Claude Code as on a current one, so a plugin
+installed from inside it can be removed. A step that fails with one of
+those two errors (a version the check passed that still lacks an
+option) reports the step, Claude Code's message, the version (read
+then, for the message) and the same `claude update` (for `--remove`,
+`flightdeck connect claude-code --remove` again, or `/plugin` inside
+Claude Code), with exit status 5. The version and Claude Code's own
+messages are printed without their control characters.
 
 Claude Code keeps the server in the user's `settings.json` and the
 token in its credential store (see Plugin (Claude Code) >
@@ -12488,12 +12545,19 @@ them to, and that `FLIGHTDECK_CAPTURE_PROMPTS=false` keeps the content
 back.
 
 **The installers' query.** `flightdeck connect --detected` prints one
-line per connector whose agent is found: `<id>`, a tab, `connected` or
-`not-connected`, a tab, the display name (for Claude Code not yet
-connected: `claude-code`, `not-connected` and `Claude Code`). Nothing is printed when no agent is found, and the exit status is 0.
+line per connector whose agent is found: `<id>`, a tab, `connected`,
+`not-connected` or `outdated`, a tab, the display name (for Claude
+Code not yet connected: `claude-code`, `not-connected` and `Claude
+Code`). Nothing is printed when no agent is found, and the exit status is 0.
 Fields may be added at the end of a line, never reordered, so an
 installer reads the first three. An agent whose status cannot be read
-counts as `not-connected`, and the connect that follows reports why.
+counts as `not-connected`, and the connect that follows reports why;
+an outdated agent is `connected` when its status (what its CLI can
+show) says so, and `outdated` otherwise. An installer is fetched fresh
+for every install, so it is never older than the states it can meet:
+it reads an older binary's lines (pinned with `VERSION`, which prints
+only `connected` and `not-connected`) as before, and treats any state
+it does not know as `not-connected`.
 
 **What the installers do.** After the binary is installed, `install.sh`
 and `install.ps1` run `<binary> connect --detected`; a binary that does
@@ -12508,7 +12572,8 @@ binary's words, so the installers hold no agent's wording; when the dry
 run fails nothing is asked, and when it exits 4, a plan that needs the
 person's own yes, nothing is asked either, since the installer's connect
 passes `--yes`: the installer says to run `flightdeck connect <id>`,
-which shows the caution and asks): `Connect Claude Code to Flightdeck? [Y/n]`.
+which shows the caution and asks; when it exits 5, the agent turned out
+too old, nothing is asked and the outdated hint below is printed): `Connect Claude Code to Flightdeck? [Y/n]`.
 `install.sh` asks on `/dev/tty`, since under `curl | sh` its stdin is
 the script itself, and counts as interactive only when `/dev/tty` opens
 and its process group is the terminal's foreground group (an install
@@ -12528,9 +12593,14 @@ connect step's commands exited with. A yes runs `<binary> connect <id> --yes` (w
 from `/dev/null` in `install.sh`, so nothing it starts reads input meant
 for the installer's shell, text typed ahead or a pipe). A no, `none`, or no terminal prints the command
 instead: `To connect Claude Code: flightdeck connect claude-code`. A
-connected agent is reported as connected. A failed connect prints the
+connected agent is reported as connected. An outdated agent is not
+asked about, not planned and not connected, whatever
+`FLIGHTDECK_CONNECT` says: the closing lines say `To connect Claude
+Code: update it (this version is too old for flightdeck connect), then
+run flightdeck connect claude-code`. A failed connect prints the
 command's own line and the command to run later, and the installer
-exits 0. When no agent is found, the closing lines say that
+exits 0; a connect that exits 5 prints that it needs the agent updated
+first, not to run it again later. When no agent is found, the closing lines say that
 `flightdeck connect` lists the agents it can connect.
 
 ### Stream sequences

@@ -17,8 +17,9 @@ import (
 // to the same assertions: scripts/fake-claude.sh on Unix, the Go
 // fakeclaude on Windows. A platform runs only its own, so this test runs
 // both side by side through one sequence of the commands the connector
-// runs, with FAKE_CLAUDE_FAIL and FAKE_CLAUDE_VERSION (the hangs are a
-// matter of timing, which the timeout tests check on each platform's
+// runs, with FAKE_CLAUDE_FAIL, FAKE_CLAUDE_VERSION and, as Claude Code
+// 2.1.283, FAKE_CLAUDE_OLD_CLI (the hangs are a matter of timing, which
+// the timeout tests check on each platform's
 // own), through the connector's own runner (Exec), each in a state
 // directory of its own. After every command the two must have
 // printed the same stdout and stderr, exited with the same status and
@@ -42,13 +43,17 @@ func (s standInStep) String() string {
 	if s.stdin != nil {
 		d += " with stdin " + string(s.stdin)
 	}
-	for _, v := range []string{"FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_VERSION"} {
+	for _, v := range standInVariables {
 		if s.env[v] != "" {
 			d += fmt.Sprintf(" and %s=%s", v, s.env[v])
 		}
 	}
 	return d
 }
+
+// standInVariables are the FAKE_CLAUDE_* variables a step may set; each
+// command runs with every one of them, unset ones empty.
+var standInVariables = []string{"FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_VERSION", "FAKE_CLAUDE_OLD_CLI"}
 
 // standInRun is what one stand-in did for one command, with its state
 // directory's path written as $FAKE_CLAUDE_STATE.
@@ -98,7 +103,7 @@ func TestFakeClaude_TheTwoStandInsAgree(t *testing.T) {
 func runStandIn(t *testing.T, f *fakeClaude, step standInStep) standInRun {
 	t.Helper()
 	t.Setenv("FAKE_CLAUDE_STATE", f.state)
-	for _, v := range []string{"FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_VERSION"} {
+	for _, v := range standInVariables {
 		t.Setenv(v, step.env[v])
 	}
 	stdout, stderr, err := Exec(context.Background(), claudeLocalTimeout, step.stdin, f.exe, step.args...)
@@ -127,20 +132,36 @@ func runStandIn(t *testing.T, f *fakeClaude, step standInStep) standInRun {
 // connector does not send but a stand-in could read differently.
 func standInSequence() []standInStep {
 	var (
-		version         = []string{"--version"}
-		list            = []string{"plugin", "list", "--json"}
-		marketplaceList = []string{"plugin", "marketplace", "list", "--json"}
-		marketplaceAdd  = []string{"plugin", "marketplace", "add", marketplaceSource, "--json"}
-		install         = []string{"plugin", "install", pluginID, "--scope", pluginScope, "--json"}
-		enable          = []string{"plugin", "enable", pluginID}
-		configureRead   = []string{"plugin", "configure", pluginID, "--json"}
-		configure       = []string{"plugin", "configure", pluginID, "--values-stdin", "--json"}
-		uninstall       = []string{"plugin", "uninstall", pluginID, "--scope", pluginScope, "--json"}
+		version            = []string{"--version"}
+		configureHelp      = []string{"plugin", "configure", "--help"}
+		marketplaceAddHelp = []string{"plugin", "marketplace", "add", "--help"}
+		list               = []string{"plugin", "list", "--json"}
+		marketplaceList    = []string{"plugin", "marketplace", "list", "--json"}
+		marketplaceAdd     = []string{"plugin", "marketplace", "add", marketplaceSource, "--json"}
+		install            = []string{"plugin", "install", pluginID, "--scope", pluginScope, "--json"}
+		enable             = []string{"plugin", "enable", pluginID}
+		configureRead      = []string{"plugin", "configure", pluginID, "--json"}
+		configure          = []string{"plugin", "configure", pluginID, "--values-stdin", "--json"}
+		uninstall          = []string{"plugin", "uninstall", pluginID, "--scope", pluginScope, "--json"}
 	)
 	values := func(body string) []byte { return []byte(body) }
+	old := map[string]string{"FAKE_CLAUDE_OLD_CLI": "1"}
 	steps := []standInStep{
 		{args: version},
 		{args: version, env: map[string]string{"FAKE_CLAUDE_VERSION": "2.2.0 (Claude Code)"}},
+		{args: configureHelp},
+		{args: marketplaceAddHelp},
+		// As Claude Code 2.1.283, with nothing declared or installed: the
+		// version, the helps without the options, the refusals.
+		{args: version, env: old},
+		{args: version, env: map[string]string{"FAKE_CLAUDE_OLD_CLI": "1", "FAKE_CLAUDE_VERSION": "2.1.200 (Claude Code)"}},
+		{args: configureHelp, env: old},
+		{args: marketplaceAddHelp, env: old},
+		{args: marketplaceAdd, env: old},
+		{args: configureRead, env: old},
+		{args: configure, stdin: values(`{"server":"https://fd.example.com","token":"` + testToken + `"}`), env: old},
+		{args: list, env: old},
+		{args: marketplaceList, env: old},
 		// Nothing declared, nothing installed: the reads answer empty,
 		// the changes fail.
 		{args: list},
@@ -177,6 +198,11 @@ func standInSequence() []standInStep {
 		{args: list},
 		{args: enable},
 		{args: list},
+		// As Claude Code 2.1.283 with the plugin installed: the reads it
+		// has answer, configure is still refused.
+		{args: list, env: old},
+		{args: configureRead, env: old},
+		{args: enable, env: old},
 		// A marketplace of that name from a local directory.
 		{set: []string{`marketplace="source":"directory","path":"/src/flightdeck"`}},
 		{args: marketplaceList},
@@ -188,6 +214,8 @@ func standInSequence() []standInStep {
 		stdin []byte
 	}{
 		{"version", version, nil},
+		{"configure-help", configureHelp, nil},
+		{"marketplace-add-help", marketplaceAddHelp, nil},
 		{"list", list, nil},
 		{"marketplace-list", marketplaceList, nil},
 		{"marketplace-add", marketplaceAdd, nil},
@@ -200,9 +228,13 @@ func standInSequence() []standInStep {
 		steps = append(steps, standInStep{args: fault.args, stdin: fault.stdin, env: map[string]string{"FAKE_CLAUDE_FAIL": fault.step}})
 	}
 	return append(steps,
-		// A disconnect, then again with nothing installed.
+		// A disconnect, then again with nothing installed; and as Claude
+		// Code 2.1.283, which has uninstall with --json.
 		standInStep{args: uninstall},
 		standInStep{args: uninstall},
+		standInStep{set: []string{"installed"}},
+		standInStep{args: uninstall, env: old},
+		standInStep{args: uninstall, env: old},
 		standInStep{args: list},
 		standInStep{args: configureRead},
 		// Commands the connector does not run.

@@ -55,7 +55,7 @@ The per-event `framework` field carries the bare name (`langchain`, `crewai`, et
 
 ## Coding agents
 
-Claude Code agents attach via a separate plugin distributed through this repo's marketplace. `flightdeck connect claude-code` installs it (the installers offer to when they find Claude Code), or, inside Claude Code:
+Claude Code agents attach via a separate plugin distributed through this repo's marketplace. `flightdeck connect claude-code` installs it (the installers offer to when they find Claude Code; it needs a recent Claude Code, and on an older one it changes nothing and says to run `claude update`), or, inside Claude Code:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck

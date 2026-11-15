@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/internal/connect/fakeclaude"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
 	"github.com/gorilla/websocket"
 )
@@ -87,11 +88,29 @@ const (
 const startupBlockEnd = "Press Ctrl+C to stop."
 
 func TestMain(m *testing.M) {
+	// A copy of this test binary named claude.exe is the Go stand-in for
+	// Claude Code's CLI that the connect test drives on Windows. The name
+	// decides, not a variable: the flightdeck child the test starts passes
+	// its environment, runBinaryEnv included, on to the claude it runs.
+	if fakeclaude.Is() {
+		os.Exit(fakeclaude.Main(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if os.Getenv(runBinaryEnv) == "1" {
 		main() // exits the process
 		return
 	}
 	os.Exit(m.Run())
+}
+
+// testBinary is the path of this test binary, which runs the flightdeck
+// binary under runBinaryEnv. os.Executable, not os.Args[0]: the latter is
+// whatever the caller typed, a bare name when the binary was started
+// from its own directory, which exec then refuses to look up.
+func testBinary() string {
+	if self, err := os.Executable(); err == nil {
+		return self
+	}
+	return os.Args[0]
 }
 
 func skipWithoutSignals(t *testing.T) {
@@ -154,7 +173,7 @@ type child struct {
 // of the test's environment is dropped, so a developer's shell cannot
 // point the child at another database or data dir.
 func command(args ...string) (*exec.Cmd, *lockedBuffer) {
-	cmd := exec.Command(os.Args[0], args...)
+	cmd := exec.Command(testBinary(), args...)
 	env := []string{runBinaryEnv + "=1"}
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "FLIGHTDECK_") && !strings.HasPrefix(kv, "ENVIRONMENT=") {

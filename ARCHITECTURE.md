@@ -219,7 +219,8 @@ flightdeck/
 ├── cmd/flightdeck/main.go      # The binary: flags, data dir, the database (SQLite file or Postgres), embedded NATS, the three services, the router
 ├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, lock file, secrets), bootstrap (token mode),
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config),
-│                               # connect (`flightdeck connect`: the coding-agent connectors, Claude Code first)
+│                               # connect (`flightdeck connect`: the coding-agent connectors, Claude Code first;
+│                               # connect/fakeclaude, the Go stand-in `claude` its tests drive on Windows)
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
@@ -235,7 +236,7 @@ flightdeck/
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
 ├── scripts/test-install-ps1.ps1  # install.ps1 piped through iex against a local release layout, under Windows PowerShell 5.1 and 7
-├── scripts/fake-claude.sh      # A stand-in `claude` CLI for the connect tests, the installer tests and the install gate: records argv and stdin, keeps plugin state
+├── scripts/fake-claude.sh      # A stand-in `claude` CLI for the connect tests on Unix and the install gate: records argv and stdin, keeps plugin state
 ├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
 ├── scripts/readme-budget.sh    # The README's command budget: one install command, per-section and total limits, 300 lines
 ├── scripts/demo_seed.py        # Fills a throwaway flightdeck with invented agents, for the README's images
@@ -12123,6 +12124,24 @@ one behaves as the first does:
 - **Never fatal to an install.** The installers run connect after the
   binary is in place, and a failure prints its line and the command to
   run later; the install still succeeds.
+
+**Tests on every platform the connector runs on.** The connect tests
+drive a stand-in for the agent's CLI on `PATH`, one per platform, held
+to the same assertions: on Unix `scripts/fake-claude.sh`, which the
+install gate uses as well; on Windows, where a shell script cannot run,
+the test binary copied as `claude.exe`, whose `TestMain` runs it as the
+Go stand-in `internal/connect/fakeclaude` (the executable's name decides,
+since the binary tests' `flightdeck` child passes its environment on to
+the CLI it starts). On Unix a parity test runs both stand-ins through
+one sequence of the connector's commands and faults and requires the
+same output, exit status, log and state files from each, so neither
+drifts from the other. The Windows run also drives a real `claude.cmd`,
+as npm installs Claude Code, from a directory with and without a space
+in its path (a user profile's often has one): found through `PATHEXT`,
+the token given on stdin through `cmd.exe`, and a timeout that ends
+`cmd.exe`, the CLI and the CLI's child together. CI runs them on
+Windows in the `connect-windows` job: `internal/connect` under the race
+detector, the command-line tests of `cmd/flightdeck` without it.
 
 **Claude Code.** The connector drives the `claude` CLI (`claude.exe` or
 `claude.cmd` on Windows, found through `PATHEXT`) in the environment the

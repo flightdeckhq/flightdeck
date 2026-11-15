@@ -1544,6 +1544,52 @@ jobs:
         shell: pwsh
         run: ./scripts/test-install-ps1.ps1 -Port 8767 -UseRealRegistry
 
+  # flightdeck connect's Windows code, on Windows: the agent CLI found
+  # through PATHEXT (claude.exe, and claude.cmd as npm installs it), the
+  # token given on stdin through cmd.exe, and a timeout ending the CLI's
+  # whole process tree (taskkill /T) so a child it started does not
+  # outlive the step. The Linux jobs run the same tests against the shell
+  # stand-in, scripts/fake-claude.sh; here they drive the Go stand-in
+  # (internal/connect/fakeclaude) and a real claude.cmd. internal/connect
+  # runs under the race detector (cgo, with the runner's MinGW gcc); the
+  # two command-line tests of cmd/flightdeck run without it, since a race
+  # build of the whole binary with its pure-Go SQLite takes minutes on a
+  # Windows runner for two tests whose subject is the command line.
+  connect-windows:
+    name: flightdeck connect on Windows
+    runs-on: windows-2022
+    # The connect tests take under a minute; the time is the module
+    # download and the build of the cmd/flightdeck test binary. Twenty
+    # fails a hung test long before the six-hour default.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - name: internal/connect, race detector
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          gcc --version | Select-Object -First 1
+          go test -race -count=1 ./internal/connect/...
+
+      - name: The connect command through the binary
+        shell: pwsh
+        run: go test -count=1 -run '^TestBinary_(ConnectCommand|HelpNamesConnect)$' ./cmd/flightdeck/
+
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and
   # the all-in-one Docker image is built from the root Dockerfile, so a

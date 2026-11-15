@@ -24,27 +24,37 @@ const testStepTimeout = 2 * time.Second
 
 // fakeClaude is one stand-in `claude` and its state directory.
 type fakeClaude struct {
-	bin, state string
+	// bin is the directory on PATH, exe the stand-in's path in it.
+	bin, exe, state string
 }
 
 // newFakeClaude puts the stand-in on PATH and returns it with no state:
-// no marketplace declared, no plugin installed.
+// no marketplace declared, no plugin installed. On Unix it is
+// scripts/fake-claude.sh, the stand-in the installer tests and the
+// install gate use too; on Windows, where that script cannot run, it is
+// this test binary copied as claude.exe (fakeclaude), so the connector
+// finds it through PATHEXT, gives it values on stdin and kills its
+// process tree there for real. The tests hold both to the same assertions.
 func newFakeClaude(t *testing.T) *fakeClaude {
 	t.Helper()
+	f := &fakeClaude{state: t.TempDir()}
 	if runtime.GOOS == "windows" {
-		t.Skip("the stand-in claude is a POSIX shell script")
-	}
-	src, err := filepath.Abs(filepath.Join("..", "..", "scripts", "fake-claude.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	script, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeClaude{bin: t.TempDir(), state: t.TempDir()}
-	if err := os.WriteFile(filepath.Join(f.bin, "claude"), script, 0o755); err != nil {
-		t.Fatal(err)
+		f.exe = goFakeClaude(t)
+		f.bin = filepath.Dir(f.exe)
+	} else {
+		src, err := filepath.Abs(filepath.Join("..", "..", "scripts", "fake-claude.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.bin = t.TempDir()
+		f.exe = filepath.Join(f.bin, "claude")
+		if err := os.WriteFile(f.exe, script, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", f.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_STATE", f.state)
@@ -134,7 +144,7 @@ func TestClaudeCode_Detect(t *testing.T) {
 	f := newFakeClaude(t)
 	c := newConnector()
 	det, err := c.Detect(context.Background())
-	if err != nil || !det.Found || det.Version != "2.1.325 (Claude Code)" || det.Path != filepath.Join(f.bin, "claude") {
+	if err != nil || !det.Found || det.Version != "2.1.325 (Claude Code)" || !strings.EqualFold(det.Path, f.exe) {
 		t.Fatalf("Detect = %+v, %v; want the stand-in and its version", det, err)
 	}
 

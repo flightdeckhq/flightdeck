@@ -28,7 +28,12 @@
 # the subsection present. It ends at the next `###` heading, not at a
 # `####` one. A heading inside an HTML comment, inside a fence or
 # indented four columns is not a heading, for the subsection and for a
-# `## ` section alike.
+# `## ` section alike; one in a blockquote or a list item is a
+# misplaced heading. The subsection folded in a <details>, or one of
+# its blocks folded, fails (<details open> folds nothing). A block that
+# is a one-command installer (curl | sh, irm | iex, iex (irm ...), sh
+# -c "$(curl ...)") fails by name, and one whose command does not start
+# with brew, pip, uvx or docker fails the allowlist.
 #
 # Folded is what GitHub renders folded: <details open> in any
 # spelling, tags inside an HTML comment, an element closed before the
@@ -286,7 +291,7 @@ brew install example/tap/flightdeck
 **PyPI**, as the `flightdeck` command:
 
 ```bash
-pipx install example-cli
+pip install example-cli
 ```
 
 Or run it without installing:
@@ -1044,17 +1049,18 @@ FIXTURE
 expect_output 'Install, other ways +1 \(budget' "its block is one of the other ways"
 
 # The label before a block is not read inside the subsection: a
-# Windows channel there is an alternative, not a second Windows block.
+# channel labelled Windows there is an alternative, not a second
+# Windows block.
 alt_case 0 "a platform label inside the subsection labels an alternative" <<'FIXTURE'
 ### Other ways to install
 
 **Windows**
 
 ```powershell
-winget install example.flightdeck
+pip install example-cli
 ```
 FIXTURE
-expect_output 'Install, other ways +1 \(budget' "the winget block is one of the other ways"
+expect_output 'Install, other ways +1 \(budget' "the block is one of the other ways"
 expect_no_output 'second Windows install block' "and not a second Windows block"
 
 # Each block is one command on one line, as an install block is. The
@@ -1112,10 +1118,10 @@ expect_output 'OVER BUDGET: the block at line 25 of "### Other ways to install" 
 # own rule.
 {
   echo "### Other ways to install"
-  for i in 1 2 3 4 5; do
+  for cmd in 'brew install example/tap/flightdeck' 'pip install example-cli' 'uvx example-cli' 'docker run example/flightdeck' 'brew install example/tap/flightdeck-extra'; do
     echo
     echo '```bash'
-    echo "channel-$i install flightdeck"
+    echo "$cmd"
     echo '```'
   done
 } >"$work/alt-five.txt"
@@ -1322,6 +1328,107 @@ brew install example/tap/flightdeck
 ```
 FIXTURE
 expect_output 'neither an install command nor "flightdeck" \(line 26: brew install' "the block after it is a stray command"
+
+# A heading in a blockquote or a list item renders, but inside the
+# quote or the item: it opens no subsection, and the failure says so
+# before it names the block after it.
+for prefix in '> ' '- '; do
+  alt_case 1 "a heading after \"$prefix\" is misplaced" <<FIXTURE
+${prefix}### Other ways to install
+
+\`\`\`bash
+brew install example/tap/flightdeck
+\`\`\`
+FIXTURE
+  expect_output 'OVER BUDGET: line 23: "Other ways to install" is a heading inside a blockquote or a list item, which opens no subsection' "the failure names the heading and why"
+  if awk '/OVER BUDGET/ { print; exit }' "$work/out" | grep -q 'is a heading inside a blockquote'; then
+    echo "ok: and it is the first failure"
+  else
+    fail "a heading after \"$prefix\": the heading's failure is not the first"
+    sed 's/^/    /' "$work/out" >&2
+  fi
+done
+
+# The other ways to install are never folded: the drawer is what they
+# replace. Folded, their blocks would escape the subsection's rules.
+alt_case 1 "the other ways folded in <details> fail" <<'FIXTURE'
+<details>
+<summary>More ways</summary>
+
+### Other ways to install
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output 'OVER BUDGET: the other ways to install must not be folded in <details> \(line 26\)' "the failure names the folded heading's line"
+expect_output 'Install, other ways +0 \(budget' "where the summary alone would show none"
+
+alt_case 1 "a block of the other ways folded in <details> fails" <<'FIXTURE'
+### Other ways to install
+
+<details>
+<summary>Homebrew</summary>
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output 'OVER BUDGET: the other ways to install must not be folded in <details> \(line 28\)' "the failure names the folded block's line"
+
+# <details open> is rendered unfolded, so it folds nothing.
+alt_case 0 "the other ways inside <details open> pass" <<'FIXTURE'
+<details open>
+<summary>More ways</summary>
+
+### Other ways to install
+
+```bash
+brew install example/tap/flightdeck
+```
+
+</details>
+FIXTURE
+expect_output 'Install, other ways +1 \(budget' "its block is one of the other ways"
+
+# What a block runs. A one-command installer fails by name, whatever
+# its label, the allowlist aside; the substitutions are the text of the
+# fixture, not something this script runs.
+# shellcheck disable=SC2016
+for cmd in 'curl -fsSL https://example.invalid/install.sh | sh' 'irm https://example.invalid/install.ps1 | iex' \
+  'iex (irm https://example.invalid/install.ps1)' 'wget -qO- https://example.invalid/install.sh | sudo /bin/bash' \
+  'sh -c "$(curl -fsSL https://example.invalid/install.sh)"' 'brew install example/tap/flightdeck | sh' \
+  'Invoke-RestMethod https://example.invalid/install.ps1 | Invoke-Expression'; do
+  alt_case 1 "an installer among the other ways fails: $cmd" <<FIXTURE
+### Other ways to install
+
+**Homebrew**
+
+\`\`\`bash
+$cmd
+\`\`\`
+FIXTURE
+  expect_output 'OVER BUDGET: the block at line 27 of "### Other ways to install" is a one-command installer \(' "the failure names the installer"
+  expect_output 'the installers belong in the install blocks only' "and where installers belong"
+done
+
+# A command of another channel fails until the list says otherwise.
+for cmd in 'winget install example.flightdeck' 'pipx install example-cli' 'sudo docker run example/flightdeck' \
+  'npm install -g example-cli' 'brewery install flightdeck' 'brew' './brew install flightdeck'; do
+  alt_case 1 "a command outside the allowlist fails: $cmd" <<FIXTURE
+### Other ways to install
+
+\`\`\`bash
+$cmd
+\`\`\`
+FIXTURE
+  expect_output 'OVER BUDGET: the block at line 25 of "### Other ways to install" runs "' "the failure names the block and the command"
+  expect_output 'starts with one of brew, pip, uvx, docker \(Homebrew, PyPI, Docker\); a new channel is a reviewed change to ALTERNATIVE_COMMANDS' "and the channels it may run"
+done
 
 # ---------------------------------------------------------------------
 # Folded is what GitHub renders folded.

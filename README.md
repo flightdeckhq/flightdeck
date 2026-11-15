@@ -66,7 +66,7 @@ uvx flightdeck-cli
 docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 ```
 
-**The release page** has the archives for every platform: [github.com/flightdeckhq/flightdeck/releases](https://github.com/flightdeckhq/flightdeck/releases). The installers above download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed).
+**Release page**: the archives for every platform are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers above download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed).
 
 ## Connect your agents
 

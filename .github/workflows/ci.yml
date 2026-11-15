@@ -1447,7 +1447,8 @@ jobs:
       # is measured and the step fails when it is over: a second
       # command in an install block, a fourth on the install section's
       # first-run path, a fifth under Other ways to install (or that
-      # subsection before the install blocks), a fifth under Connect
+      # subsection folded, placed before the install blocks, or running
+      # anything but brew, pip, uvx or docker), a fifth under Connect
       # your agents, a seventh under Self-hosting, more than 20 in all
       # (anything folded in <details> included) or more than 300
       # lines.

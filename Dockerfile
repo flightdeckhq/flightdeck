@@ -29,11 +29,13 @@
 #
 # Configuration. The image sets the binary's data dir and listen
 # address in the environment (FLIGHTDECK_DATA_DIR=/data,
-# FLIGHTDECK_LISTEN=:4000), not as flags, so the health check below,
-# `docker exec <container> flightdeck health` and a Kubernetes exec
-# probe read the same values as the server. Change either with `-e`;
-# a flag after the image name still wins for the server, but the
-# health check does not see it.
+# FLIGHTDECK_LISTEN=0.0.0.0:4000), not as flags, so the health check
+# below, `docker exec <container> flightdeck health` and a Kubernetes
+# exec probe read the same values as the server. Change either with
+# `-e`; a flag after the image name still wins for the server, but the
+# health check does not see it. The listen address keeps its host: a
+# port alone (:4000), like --port, is the container's own loopback,
+# which nothing outside the container reaches.
 #
 # Publish the port on 127.0.0.1 (as above) unless other machines should
 # reach it: the dashboard token is served to anyone who can reach the
@@ -44,7 +46,7 @@
 # reverse proxy's host), add that name:
 #   -e FLIGHTDECK_ALLOWED_HOSTS=localhost,flightdeck,fd.example.com
 # A request for any other name is answered 421 naming the host and
-# this variable, and logged; "*" answers every name. :4000 inside the container is not a loopback address, so the
+# this variable, and logged; "*" answers every name. 0.0.0.0:4000 inside the container is not a loopback address, so the
 # binary mints an access token on its first start, prints it once in the
 # start-up block (treat the container's logs as the secret they carry)
 # and keeps it in /data/secrets.json, mode 0600, for the next starts.
@@ -96,7 +98,7 @@ VOLUME /data
 EXPOSE 4000
 USER nonroot
 ENV FLIGHTDECK_DATA_DIR=/data \
-    FLIGHTDECK_LISTEN=:4000 \
+    FLIGHTDECK_LISTEN=0.0.0.0:4000 \
     FLIGHTDECK_ALLOWED_HOSTS=localhost
 # `flightdeck health` asks the instance in this container whether its
 # query API and its ingestion API answer, and exits 0 or 1. The image

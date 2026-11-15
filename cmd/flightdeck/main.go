@@ -170,8 +170,8 @@ func runHealth(opts cli.Options, stdout, stderr *os.File) int {
 	return 0
 }
 
-// listeners are the bound sockets of one mode: plain on --listen, or
-// :443 and :80 with --domain.
+// listeners are the bound sockets of one mode: plain on the listen
+// address (--port, --public or --listen), or :443 and :80 with --domain.
 type listeners struct {
 	plain, https, redirect net.Listener
 }
@@ -646,8 +646,9 @@ func serveErr(name string, err error) error {
 }
 
 // setServiceEnv sets the variables the three services read to the values
-// the binary's flags decide. FLIGHTDECK_PORT is left alone: each app's
-// listener is turned off after loading. In development mode the services
+// the binary's flags decide. FLIGHTDECK_PORT, the binary's own port
+// (--port), is left alone: each app reads it as its own listener's port,
+// and that listener is turned off after loading. In development mode the services
 // accept the development token; otherwise the variable is cleared so an
 // ENVIRONMENT=dev inherited from the shell cannot enable it.
 func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *datadir.Secrets) error {
@@ -698,7 +699,7 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	p("  Ingestion   %s/ingest   (FLIGHTDECK_SERVER for the sensor and the plugin)\n", base)
 	switch {
 	case dev:
-		p("  Token       %s   (development token: the server listens on loopback only)\n", token.Token)
+		p("  Token       %s   (development token: the server listens on this machine only; --public lets other machines in)\n", token.Token)
 	case token.Source != "":
 		p("  Token       supplied by %s   (named %q in Settings)\n", token.Source, bootstrap.SuppliedTokenNameFor(token.Token))
 	case token.Minted:
@@ -736,9 +737,10 @@ const thisHost = "<this-host>"
 
 // publicURL is the address to open in a browser: the domain in TLS
 // mode; otherwise the listen address, with localhost for a loopback
-// bind and thisHost for a bind on every interface, for which
+// bind and thisHost for a bind on every interface (--public), for which
 // anyInterface is true. An address bound to one interface is shown as
-// given.
+// given. cli.Parse gives every listen address a host; one without a
+// host is still read as the bind it would be, every interface.
 func publicURL(opts cli.Options) (url string, anyInterface bool) {
 	if opts.Domain != "" {
 		return "https://" + opts.Domain, false

@@ -4,6 +4,39 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **`--port` runs Flightdeck on another port, and `--public` lets other
+  machines in.** `flightdeck --port 4100` (or `-p 4100`, or
+  `FLIGHTDECK_PORT=4100`) serves on `127.0.0.1:4100`: this machine only,
+  with the development token, as the default port is. `flightdeck
+  --public` (`FLIGHTDECK_PUBLIC=true`) serves every network interface,
+  `0.0.0.0:4000`, and `--public --port 4100` does so on port 4100; the
+  server then refuses the development token and creates an access token
+  on its first start, as `--listen 0.0.0.0:4000` does. `--listen` stays
+  for one specific address and cannot be combined with either: given
+  together they stop the start with a usage error that names both, as
+  do `FLIGHTDECK_LISTEN` and `FLIGHTDECK_PORT` or `FLIGHTDECK_PUBLIC`
+  set together with no flag deciding. A port outside 1 to 65535 is
+  refused with what to pass. `flightdeck health` takes the same flags
+  and variables and finds the instance they describe (D277).
+
+### Changed
+
+- **`--listen :4000`, a port with no address, now serves this machine
+  only.** It binds `127.0.0.1:4000`, as `--port 4000` does, where it
+  used to bind every interface and so silently refused the development
+  token and opened the server to the network. To serve other machines,
+  say so: `--public` (with `--port` for another port) or `--listen
+  0.0.0.0:4000`, or one interface's address (`--listen 10.0.0.5:4000`).
+  `FLIGHTDECK_LISTEN=:4000` changes the same way: a container started
+  with `-e FLIGHTDECK_LISTEN=:<port>` is no longer reachable from outside
+  it and needs `-e FLIGHTDECK_LISTEN=0.0.0.0:<port>`. The Docker image
+  now sets `FLIGHTDECK_LISTEN=0.0.0.0:4000` and the Helm chart passes
+  `--listen 0.0.0.0:<port>`, so both serve as before. A port already
+  in use names the flags for the next one, `--port 4001` on this
+  machine (D277).
+
 ## v0.10.0 — 2026-11-15
 
 `flightdeck connect` connects a coding agent to Flightdeck in one

@@ -8,10 +8,11 @@
 # The dashboard is then at http://localhost:4000, ingestion at
 # http://localhost:4000/ingest.
 #
-# The token. Inside the container the binary listens on :4000, which
-# is not a loopback address, so the development token is refused: the
-# first start mints an access token and keeps it in /data/secrets.json
-# for the next starts. Read it with
+# The token. Inside the container the binary listens on 0.0.0.0:4000
+# (the image's FLIGHTDECK_LISTEN), which is not a loopback address, so
+# the development token is refused: the first start mints an access
+# token and keeps it in /data/secrets.json for the next starts. Read it
+# with
 #
 #   curl -s http://localhost:4000/runtime-config.json
 #

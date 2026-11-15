@@ -37,7 +37,7 @@ Then start it:
 flightdeck
 ```
 
-The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token; `flightdeck --help` lists the flags. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
+The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token; `flightdeck --port 4100` runs it on another port, and `flightdeck --help` lists the flags. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
 
 ### Other ways to install
 
@@ -162,7 +162,7 @@ The sensor meters every LLM call a framework makes through the Anthropic or Open
 
 ## Self-hosting
 
-The same binary serves a team. Started with `--domain`, or listening on any address but your own machine's, it refuses the development token, creates an access token on its first start and prints it once; make more under **Settings → Access tokens** and give them to your agents ([Connect your agents](#connect-your-agents)).
+The same binary serves a team. Started with `--public` (every network interface, so other machines reach it), with `--domain`, or with `--listen <address>:<port>` on an address beyond your own machine, it refuses the development token, creates an access token on its first start and prints it once; make more under **Settings → Access tokens** and give them to your agents ([Connect your agents](#connect-your-agents)).
 
 ```bash
 flightdeck --domain flightdeck.example.com

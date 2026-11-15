@@ -30,6 +30,8 @@ export FLIGHTDECK_SERVER="https://flightdeck.example.com"
 export FLIGHTDECK_TOKEN="ftd_..."
 ```
 
+For Claude Code, a developer with the `flightdeck` binary can save both in the plugin's options instead, with the token in a file: `flightdeck connect claude-code --server https://flightdeck.example.com --token-file ~/flightdeck-token` installs the plugin if it is missing and keeps the token in Claude Code's credential store.
+
 The dashboard fetches its bearer token at runtime from `/runtime-config.json`, which the binary answers from the token it keeps in `/data/secrets.json`; nothing is baked into the bundle.
 
 ## Kubernetes (Helm)

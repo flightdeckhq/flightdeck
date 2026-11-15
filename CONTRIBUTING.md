@@ -495,7 +495,7 @@ header has the counting rules):
 | The install blocks under `## Install`: one right after a line that reads **Linux and macOS**, one right after **Windows** (emphasis, a colon and words in parentheses aside), both required | exactly one command each, on one line |
 | `## Install`, its first-run path (outside `<details>` and the subsection below) | 3 commands (the two installs, then `flightdeck` to start it, with flags whose values are letters, digits and `_ : . / , -` only; nothing else) |
 | `### Other ways to install`, a subsection of `## Install` after both install blocks, never folded in `<details>` | 4 commands, exactly one per block, on one line, each starting with `brew`, `pip`, `uvx` or `docker` |
-| `## Connect your agents` | 4 commands |
+| `## Connect your agents` | 5 commands (`flightdeck connect claude-code`, the plugin's three `/plugin` lines as the in-session alternative, `pip install flightdeck-sensor`) |
 | `## Self-hosting` | 6 commands |
 | The whole README, anything folded in `<details>` included | 20 commands, 300 lines |
 

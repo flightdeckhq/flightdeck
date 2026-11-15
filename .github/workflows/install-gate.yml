@@ -16,7 +16,8 @@ name: Install gate
 #
 # Legs (RELEASING.md lists what each proves):
 #   ubuntu-24.04      amd64  install.sh (the curl | sh path), pip + uvx, docker run,
-#                            and the binary once more on a Postgres
+#                            the binary once more on a Postgres, and install.sh
+#                            connecting a stand-in Claude Code (FLIGHTDECK_CONNECT)
 #   ubuntu-24.04-arm  arm64  install.sh
 #   macos-15          arm64  brew install flightdeckhq/tap/flightdeck, brew services
 #   macos-15-intel    amd64  install.sh
@@ -183,6 +184,36 @@ jobs:
         run: |
           scripts/install-gate.sh run 127.0.0.1:4003 "$(command -v flightdeck)" \
             --database-url 'postgres://flightdeck:flightdeck_gate@127.0.0.1:5432/flightdeck?sslmode=disable'
+
+      # install.sh offers to connect the coding agents it finds, through
+      # the installed binary's `flightdeck connect`. The runners have no
+      # Claude Code, so a stand-in `claude` (scripts/fake-claude.sh, the
+      # tag's own) goes first on PATH and FLIGHTDECK_CONNECT names it, as
+      # a scripted install does: the stand-in must be asked to add the
+      # marketplace and install the plugin, and the installed binary must
+      # then report Claude Code connected. A tag older than the command
+      # has no stand-in; the step says so and passes.
+      - name: install.sh connects Claude Code (a stand-in claude, FLIGHTDECK_CONNECT)
+        if: matrix.extras
+        run: |
+          set -o pipefail
+          if [ ! -f scripts/fake-claude.sh ]; then
+            echo "::notice::$TAG predates flightdeck connect; nothing to check"
+            exit 0
+          fi
+          stub="$RUNNER_TEMP/claude-stub"
+          mkdir -p "$stub/bin"
+          install -m 0755 scripts/fake-claude.sh "$stub/bin/claude"
+          export FAKE_CLAUDE_STATE="$stub/state"
+          trap 'echo "-- the stand-in was called with:"; cat "$FAKE_CLAUDE_STATE/calls.log" 2>/dev/null || true' EXIT
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh" \
+            | PATH="$stub/bin:$PATH" VERSION="$TAG" INSTALL_DIR="$RUNNER_TEMP/connect-bin" FLIGHTDECK_CONNECT=claude-code sh \
+            | tee "$RUNNER_TEMP/connect.log"
+          grep -qx 'argv: plugin marketplace add flightdeckhq/flightdeck --json' "$FAKE_CLAUDE_STATE/calls.log"
+          grep -qx 'argv: plugin install flightdeck@flightdeck-plugins --scope user --json' "$FAKE_CLAUDE_STATE/calls.log"
+          grep -q '^Claude Code is connected' "$RUNNER_TEMP/connect.log"
+          PATH="$stub/bin:$PATH" "$RUNNER_TEMP/connect-bin/flightdeck" connect --detected \
+            | grep -qx "$(printf 'claude-code\tconnected\tClaude Code')"
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         if: matrix.extras

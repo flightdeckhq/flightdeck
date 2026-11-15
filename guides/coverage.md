@@ -55,14 +55,16 @@ The per-event `framework` field carries the bare name (`langchain`, `crewai`, et
 
 ## Coding agents
 
-Claude Code agents attach via a separate plugin distributed through this repo's marketplace:
+Claude Code agents attach via a separate plugin distributed through this repo's marketplace. `flightdeck connect claude-code` installs it (the installers offer to when they find Claude Code), or, inside Claude Code:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck
 /plugin install flightdeck@flightdeck-plugins
 ```
 
-The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; export `FLIGHTDECK_SERVER` (the server's address, the same value the sensor reads) + `FLIGHTDECK_TOKEN` before launching `claude` to point at a different stack. For `claude -p` scripts, CI and the GitHub Action, see [plugin/README.md](../plugin/README.md#headless-runs-ci-and-the-github-action). See [Connect your agents](../README.md#connect-your-agents) in the README for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
+`flightdeck connect` lists the coding agents the binary can connect and whether each is; Claude Code is the first, and each further agent is a connector of the same command (see "Connecting coding agents" in [ARCHITECTURE.md](../ARCHITECTURE.md)).
+
+The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; `flightdeck connect claude-code --server <url> --token-file <path>` saves a different stack's address and token in the plugin's options, or export `FLIGHTDECK_SERVER` (the server's address, the same value the sensor reads) + `FLIGHTDECK_TOKEN` before launching `claude`. For `claude -p` scripts, CI and the GitHub Action, see [plugin/README.md](../plugin/README.md#headless-runs-ci-and-the-github-action). See [Connect your agents](../README.md#connect-your-agents) in the README for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. By default the plugin only observes and the Stop Agent button is hidden for these sessions; with its `enforcement` option on, a stop or a token budget denies the session's next tool call and blocks its prompts (see [plugin/README.md](../plugin/README.md#enforcement-opt-in)). Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
 

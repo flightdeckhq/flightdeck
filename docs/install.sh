@@ -42,6 +42,18 @@
 #                           one. Only scripts/test-install-sh.sh sets it, to run
 #                           the cosign path against its local server with a fake
 #                           cosign.
+#   FLIGHTDECK_CONNECT      which coding agents to connect to Flightdeck once the
+#                           binary is installed, without asking: agent ids
+#                           separated by commas (claude-code), all (every agent
+#                           found that is not connected yet) or none. Unset, the
+#                           script asks on the terminal for each agent it finds,
+#                           and prints the command to run instead when there is
+#                           no terminal. Connecting runs `flightdeck connect`; a
+#                           connect that fails never fails the install.
+#   FLIGHTDECK_CONNECT_ASK_TIMEOUT  seconds the connect question waits for an
+#                           answer (default 60; no answer is a no). Only
+#                           scripts/test-install-sh.sh sets it, to shorten a
+#                           run that leaves the question unanswered.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
@@ -201,6 +213,209 @@ on_path() {
   esac
 }
 
+# ---- coding agents ------------------------------------------------------
+#
+# The binary knows which coding agents it can connect and how
+# (`flightdeck connect`); this script only asks. `flightdeck connect
+# --detected` prints one line per agent found on this machine: its id,
+# connected or not-connected, and its name, separated by tabs.
+
+TAB="$(printf '\t')"
+# The lines printed after the install's own next step.
+CONNECT_HINTS=""
+# Set when the binary answers `connect --detected`; an older release,
+# pinned with VERSION, does not know the command.
+CONNECT_KNOWN=""
+CONNECT_FOUND=""
+
+# A person can answer when /dev/tty opens: under `curl | sh` stdin is
+# the script itself, so the question and the answer go through the
+# terminal, and with no terminal (CI, a pipe from cron) nothing is asked.
+can_ask() {
+  (: </dev/tty >/dev/tty) 2>/dev/null && in_foreground
+}
+
+# in_foreground: this shell's process group is the terminal's foreground
+# group. An install sent to the background (`curl ... | sh &`) would be
+# stopped by the terminal as soon as it read from it, so it asks nothing.
+# Where ps cannot tell (BusyBox's has no tpgid), the question is asked
+# and its timeout bounds it.
+in_foreground() {
+  pgid="$(ps -o pgid= -p "$$" 2>/dev/null)" || return 0
+  tpgid="$(ps -o tpgid= -p "$$" 2>/dev/null)" || return 0
+  pgid="${pgid##* }"
+  tpgid="${tpgid##* }"
+  [ -z "$pgid" ] || [ -z "$tpgid" ] || [ "$pgid" = "$tpgid" ]
+}
+
+# How long the question waits for an answer. A person at the terminal
+# answers in seconds; an install left running in a window nobody watches
+# is not held for ever, and no answer is a no. The test shortens it with
+# FLIGHTDECK_CONNECT_ASK_TIMEOUT (digits only; anything else is ignored).
+ASK_TIMEOUT_SECS=60
+case "${FLIGHTDECK_CONNECT_ASK_TIMEOUT:-}" in
+  '' | *[!0-9]*) ;;
+  *) ASK_TIMEOUT_SECS="$FLIGHTDECK_CONNECT_ASK_TIMEOUT" ;;
+esac
+# `flightdeck connect <id> --dry-run` exits with this status when the plan
+# needs a person's yes on a terminal (a caution, such as a plugin from a
+# marketplace other than this repository's): the installer does not ask
+# then, since its connect passes --yes, which refuses such a plan.
+CONNECT_NEEDS_CONFIRMATION=4
+
+# ask_yes QUESTION: yes for an empty answer, y or yes; anything else, end
+# of input, or no answer within ASK_TIMEOUT_SECS, is no. POSIX read has
+# no timeout, so the answer is read by a background reader that is
+# killed when the time is up.
+ask_yes() {
+  printf '%s [Y/n] ' "$1" >/dev/tty
+  answer_file="${tmp}/connect-answer"
+  rm -f "$answer_file"
+  (IFS= read -r line </dev/tty && printf '%s' "$line" >"$answer_file") &
+  reader=$!
+  waited=0
+  while kill -0 "$reader" 2>/dev/null; do
+    if [ "$waited" -ge "$ASK_TIMEOUT_SECS" ]; then
+      kill -KILL "$reader" 2>/dev/null || true
+      printf '\nNo answer in %s seconds: not connecting.\n' "$ASK_TIMEOUT_SECS" >/dev/tty
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$reader" 2>/dev/null || true
+  if [ ! -f "$answer_file" ]; then
+    printf '\n' >/dev/tty
+    return 1
+  fi
+  answer="$(cat "$answer_file")"
+  case "$answer" in
+    '' | [Yy] | [Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# agent_id WORD: WORD has the form of an agent id (lower-case letters,
+# digits and -), the only form that is passed on to the binary.
+agent_id() {
+  case "$1" in
+    '' | *[!a-z0-9-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# hint NAME ID keeps the line that tells how to connect an agent later.
+hint() {
+  CONNECT_HINTS="${CONNECT_HINTS}To connect $1: flightdeck connect $2
+"
+}
+
+# connect_one BIN ID NAME runs the connect. Its stdin is /dev/null, so
+# nothing it starts can read the rest of a piped script, and its failure
+# is reported, never fatal: the binary is installed either way.
+connect_one() {
+  if "$1" connect "$2" --yes </dev/null; then
+    return 0
+  fi
+  info "Connecting $3 did not finish (see above); run it again later: flightdeck connect $2"
+}
+
+# name_of ID prints the agent's name from the detected lines, else ID.
+name_of() {
+  found_name="$1"
+  while IFS="$TAB" read -r line_id _ line_name _; do
+    if [ "$line_id" = "$1" ] && [ -n "$line_name" ]; then found_name="$line_name"; fi
+  done <<DETECTED
+$detected
+DETECTED
+  printf '%s' "$found_name"
+}
+
+# connect_agents BIN offers to connect each agent found, or connects
+# the ones FLIGHTDECK_CONNECT names.
+connect_agents() {
+  detected="$("$1" connect --detected </dev/null 2>/dev/null)" || return 0
+  CONNECT_KNOWN=1
+  # The value's words, separated by commas or spaces, joined by commas:
+  # " claude-code, other " is claude-code,other and " all " is all.
+  choice=""
+  old_ifs="$IFS"
+  IFS=', '
+  set -f
+  for word in ${FLIGHTDECK_CONNECT:-}; do
+    choice="${choice:+$choice,}$word"
+  done
+  set +f
+  IFS="$old_ifs"
+  case "$choice" in
+    '' | all | none) ;;
+    *)
+      old_ifs="$IFS"
+      IFS=,
+      set -f
+      for id in $choice; do
+        IFS="$old_ifs"
+        [ -n "$id" ] || continue
+        CONNECT_FOUND=1
+        info ""
+        if ! agent_id "$id"; then
+          info "FLIGHTDECK_CONNECT names something that is not an agent id (lower-case letters, digits and -); skipped it"
+          continue
+        fi
+        connect_one "$1" "$id" "$(name_of "$id")"
+      done
+      set +f
+      IFS="$old_ifs"
+      return 0
+      ;;
+  esac
+  [ -n "$detected" ] || return 0
+  asked=""
+  while IFS="$TAB" read -r id state name _; do
+    agent_id "$id" || continue
+    CONNECT_FOUND=1
+    if [ "$state" = connected ]; then
+      info ""
+      info "$name is already connected to Flightdeck."
+      continue
+    fi
+    case "$choice" in
+      all)
+        info ""
+        connect_one "$1" "$id" "$name"
+        ;;
+      none) hint "$name" "$id" ;;
+      *)
+        if [ -z "$asked" ]; then
+          if can_ask; then asked=yes; else asked=no; fi
+        fi
+        if [ "$asked" = yes ]; then
+          info ""
+          # What connecting changes and what the agent's integration then
+          # records, in the binary's words, before the question; when the
+          # binary cannot say (it printed why), nothing is asked.
+          if "$1" connect "$id" --dry-run </dev/null; then
+            plan_status=0
+          else
+            plan_status=$?
+          fi
+          if [ "$plan_status" -eq "$CONNECT_NEEDS_CONFIRMATION" ]; then
+            info "Connecting $name needs your own yes (see the caution above): run flightdeck connect $id yourself, which shows it and asks."
+            continue
+          fi
+          if [ "$plan_status" -eq 0 ] && ask_yes "Connect $name to Flightdeck?"; then
+            connect_one "$1" "$id" "$name"
+            continue
+          fi
+        fi
+        hint "$name" "$id"
+        ;;
+    esac
+  done <<DETECTED
+$detected
+DETECTED
+}
+
 # ---- main ---------------------------------------------------------------
 
 main() {
@@ -254,6 +469,7 @@ main() {
   if [ -n "${GITHUB_PATH:-}" ]; then
     echo "$dir" >>"$GITHUB_PATH"
   fi
+  connect_agents "${dir}/${BINARY}"
   if on_path "$dir"; then
     info ""
     info "Next: run \`flightdeck\` and open the URL it prints."
@@ -262,6 +478,11 @@ main() {
     info "${dir} is not on your PATH. Add it (for example in ~/.profile):"
     info "  export PATH=\"${dir}:\$PATH\""
     info "Then run \`flightdeck\` and open the URL it prints."
+  fi
+  if [ -n "$CONNECT_HINTS" ]; then
+    printf '%s' "$CONNECT_HINTS"
+  elif [ -n "$CONNECT_KNOWN" ] && [ -z "$CONNECT_FOUND" ]; then
+    info "To connect a coding agent later: flightdeck connect (it lists the agents it can connect)"
   fi
 }
 

@@ -51,11 +51,17 @@ type Options struct {
 	Health bool
 }
 
-// HealthCommand is the binary's one subcommand, given as its first
-// argument: `flightdeck health`. It takes the server's flags and reads
-// the server's environment, so it finds the instance with no arguments
+// HealthCommand is a subcommand, given as the first argument:
+// `flightdeck health`. It takes the server's flags and reads the
+// server's environment, so it finds the instance with no arguments
 // wherever the instance itself was configured through the environment.
 const HealthCommand = "health"
+
+// ConnectCommand is the other subcommand, `flightdeck connect`: it
+// connects coding agents to a Flightdeck server and has flags of its
+// own (internal/connect), so the binary hands it the rest of the line
+// before Parse sees it.
+const ConnectCommand = "connect"
 
 // ErrHelp is returned when the command line asked for the usage text,
 // which Parse has written to the output.
@@ -99,13 +105,15 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		"start the services' metrics listeners on ports 9102 (workers), 9103 (ingestion) and 9104 (query API) (env FLIGHTDECK_METRICS)")
 	fs.BoolVar(&o.Version, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n\n"+
+		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n       flightdeck %s [<agent>] [flags]\n\n"+
 			"Runs the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
 			"With no flags it serves on %s and keeps its data in a SQLite database under the data dir.\n\n"+
 			"flightdeck %s asks the instance that runs with the same --listen and --domain (or their environment\n"+
 			"variables) whether it serves, prints one line and exits 0 when it does and 1 when it does not:\n"+
-			"a container health check that needs no shell and no token.\n\nFlags:\n",
-			HealthCommand, DefaultListen, HealthCommand)
+			"a container health check that needs no shell and no token.\n\n"+
+			"flightdeck %s connects a coding agent on this machine to Flightdeck (flightdeck %s claude-code);\n"+
+			"with no agent it lists the agents and whether each is connected. flightdeck %s --help has its flags.\n\nFlags:\n",
+			HealthCommand, ConnectCommand, DefaultListen, HealthCommand, ConnectCommand, ConnectCommand, ConnectCommand)
 		fs.PrintDefaults()
 	}
 

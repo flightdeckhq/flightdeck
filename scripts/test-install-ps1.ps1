@@ -26,6 +26,17 @@
 # another case, refused before anything is downloaded or written when it
 # names a key outside HKCU\Software\flightdeck-test\.
 #
+# The connect offer (install.ps1's Invoke-FlightdeckConnect) is tested
+# twice. The function itself, taken from install.ps1's syntax tree and
+# given a stand-in binary and an answer source, covers the question
+# answered yes and no, no person to ask, every FLIGHTDECK_CONNECT value,
+# a connect that fails and an older binary that does not know the
+# command. Then the installer is piped through iex in a new
+# -NonInteractive session against a release whose flightdeck.exe is a
+# stand-in compiled here with the .NET Framework's csc.exe: with no
+# terminal it prints the command, FLIGHTDECK_CONNECT connects, and a
+# failed connect leaves the install a success.
+#
 # The user's real PATH is never touched. Every case points the installer
 # at a throwaway key, HKCU\Software\flightdeck-test\Environment-<random>,
 # through FLIGHTDECK_INSTALL_REGISTRY_KEY, and the key is deleted at the
@@ -134,6 +145,53 @@ try {
     }
     # A release whose checksums.txt forgot the Windows archives.
     Set-Content -Path (Join-Path $serve 'releases\download\v0.0.1-noentry\checksums.txt') -Value '0000  flightdeck_linux_amd64.tar.gz' -Encoding Ascii
+    # A release, v0.0.1-connect, whose flightdeck.exe also answers
+    # `flightdeck connect`: `connect --detected` prints
+    # FAKE_FLIGHTDECK_DETECTED (\t and \n for tabs and line ends), every
+    # connect call is appended to FAKE_FLIGHTDECK_LOG, and
+    # FAKE_FLIGHTDECK_CONNECT_EXIT is a connect's exit status.
+    $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    $stubSource = Join-Path $work 'FakeFlightdeck.cs'
+    Set-Content -Path $stubSource -Encoding Ascii -Value @'
+using System;
+using System.IO;
+class FakeFlightdeck {
+    static int Main(string[] args) {
+        if (args.Length > 0 && args[0] == "connect") {
+            string rest = string.Join(" ", args, 1, args.Length - 1);
+            string log = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_LOG");
+            if (!string.IsNullOrEmpty(log)) { File.AppendAllText(log, "connect " + rest + "\n"); }
+            if (args.Length > 2 && args[2] == "--dry-run") {
+                Console.WriteLine("Connect " + args[1] + " to Flightdeck:");
+                return 0;
+            }
+            if (args.Length > 1 && args[1] == "--detected") {
+                string detected = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_DETECTED") ?? "";
+                Console.Write(detected.Replace("\\t", "\t").Replace("\\n", "\n"));
+                return 0;
+            }
+            Console.WriteLine("fake flightdeck: connect " + rest);
+            string code = Environment.GetEnvironmentVariable("FAKE_FLIGHTDECK_CONNECT_EXIT");
+            return string.IsNullOrEmpty(code) ? 0 : int.Parse(code);
+        }
+        Console.WriteLine("flightdeck v0.0.1-connect");
+        return 0;
+    }
+}
+'@
+    $connectStage = Join-Path $work 'stage-connect'
+    New-Item -ItemType Directory -Path $connectStage | Out-Null
+    $cscOutput = & $csc /nologo "/out:$(Join-Path $connectStage 'flightdeck.exe')" $stubSource 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "csc.exe could not build the stand-in flightdeck.exe: $cscOutput" }
+    $connectRelease = Join-Path $serve 'releases\download\v0.0.1-connect'
+    New-Item -ItemType Directory -Path $connectRelease -Force | Out-Null
+    $connectSums = @()
+    foreach ($arch in 'amd64', 'arm64') {
+        $zip = Join-Path $connectRelease "flightdeck_windows_$arch.zip"
+        Compress-Archive -Path (Join-Path $connectStage 'flightdeck.exe') -DestinationPath $zip -Force
+        $connectSums += '{0}  flightdeck_windows_{1}.zip' -f (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant(), $arch
+    }
+    Set-Content -Path (Join-Path $connectRelease 'checksums.txt') -Value $connectSums -Encoding Ascii
     # The script itself, served for the piped case as the project's site serves it.
     Copy-Item -Path (Join-Path $root 'install.ps1') -Destination (Join-Path $serve 'install.ps1')
 
@@ -171,6 +229,7 @@ try {
     }
     $callerErrorAction = $ErrorActionPreference
     $callerProgress = $ProgressPreference
+    $callerExitCode = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     if ($out -match 'Checksum verified') { Write-Pass 'the checksum is verified' } else { Write-Failure 'the checksum is verified' $out }
@@ -184,6 +243,10 @@ try {
     if ($userPath.Raw -ceq "$fixturePath;$dir1") { Write-Pass 'the user PATH gains the directory and keeps %USERPROFILE% unexpanded' } else { Write-Failure 'the user PATH' $userPath.Raw }
     if ($userPath.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) { Write-Pass 'the user PATH stays REG_EXPAND_SZ' } else { Write-Failure 'the user PATH stays REG_EXPAND_SZ' "$($userPath.Kind)" }
     if ($callerErrorAction -eq 'Continue' -and $callerProgress -eq 'Continue') { Write-Pass 'the caller''s preferences are untouched' } else { Write-Failure 'the caller''s preferences are untouched' "ErrorActionPreference=$callerErrorAction ProgressPreference=$callerProgress" }
+    # The stand-in here (curl.exe) refuses `connect --detected`, as an
+    # older release does; a successful install still leaves the session
+    # $LASTEXITCODE 0, which a CI shell exits with.
+    if ($callerExitCode -eq 0) { Write-Pass 'a successful install leaves $LASTEXITCODE 0' } else { Write-Failure 'a successful install leaves $LASTEXITCODE 0' "LASTEXITCODE=$callerExitCode" }
     $leaked = @('asset', 'installDir', 'tmp', 'repoUrl', 'envKey', 'envKeyName', 'requestedKey', 'newPath', 'newLength') | Where-Object { Get-Variable -Name $_ -Scope Script -ErrorAction SilentlyContinue }
     if (-not $leaked) { Write-Pass 'no variable of the installer is left in the session' } else { Write-Failure 'no variable of the installer is left in the session' ($leaked -join ', ') }
 
@@ -299,6 +362,119 @@ irm "$env:FLIGHTDECK_RELEASE_URL/install.ps1" | iex
     if (-not $unknown.Ok -and $unknown.Text -match '404') { Write-Pass 'an unknown version aborts the install' } else { Write-Failure 'an unknown version aborts the install' $unknown.Text }
     $plain = Invoke-Install -Dir (Join-Path $work 'inst6') -Url 'http://example.invalid'
     if (-not $plain.Ok -and $plain.Text -match 'must be https') { Write-Pass 'a plain-HTTP host other than localhost is refused' } else { Write-Failure 'a plain-HTTP host other than localhost is refused' $plain.Text }
+
+    Write-Host '-- connecting coding agents: the decision (Invoke-FlightdeckConnect)'
+    $syntax = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'install.ps1'), [ref]$null, [ref]$null)
+    $decisionAst = $syntax.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-FlightdeckConnect' }, $true)
+    if (-not $decisionAst) { throw 'install.ps1 defines no Invoke-FlightdeckConnect' }
+    . ([scriptblock]::Create($decisionAst.Extent.Text))
+    # The stand-in binary: a function the decision calls as & $Exe.
+    $script:fakeCalls = @()
+    $script:fakeDetected = @()
+    $script:fakeDetectedExit = 0
+    $script:fakeConnectExit = 0
+    $script:fakeDryRunExit = 0
+    function Invoke-FakeFlightdeck {
+        $script:fakeCalls += ($args -join ' ')
+        if ($args[1] -eq '--detected') {
+            $global:LASTEXITCODE = $script:fakeDetectedExit
+            return $script:fakeDetected
+        }
+        if ($args[2] -eq '--dry-run') {
+            "Connect $($args[1]) to Flightdeck:"
+            'The fake plugin records what a fake records.'
+            $global:LASTEXITCODE = $script:fakeDryRunExit
+            return
+        }
+        "fake flightdeck: $($args -join ' ')"
+        $global:LASTEXITCODE = $script:fakeConnectExit
+    }
+    function Test-Decision([string]$Choice, [scriptblock]$Ask) {
+        $script:fakeCalls = @()
+        $script:asked = @()
+        $script:decision = $null
+        $text = ''
+        $failure = ''
+        try {
+            $text = & { $script:decision = Invoke-FlightdeckConnect -Exe 'Invoke-FakeFlightdeck' -Choice $Choice -Ask $Ask } *>&1 | Out-String
+        } catch {
+            $failure = $_.Exception.Message
+        }
+        return [pscustomobject]@{ Result = $script:decision; Text = ($text -replace '\s+', ' '); Calls = @($script:fakeCalls); Failure = $failure }
+    }
+    $askYes = { param($question) $script:asked += $question; $true }
+    $askNo = { param($question) $script:asked += $question; $false }
+    $askNever = { param($question) throw "asked '$question' although FLIGHTDECK_CONNECT decides" }
+    $claudeHint = 'To connect Claude Code: flightdeck connect claude-code'
+    $script:fakeDetected = @("claude-code`tnot-connected`tClaude Code")
+
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked -contains 'Connect Claude Code to Flightdeck?' -and $d.Calls -contains 'connect claude-code --yes' -and $d.Result.Hints.Count -eq 0) { Write-Pass 'a yes connects the agent' } else { Write-Failure 'a yes connects the agent' "$($d.Failure) calls: $($d.Calls -join '; ') asked: $($script:asked -join '; ') $($d.Text)" }
+    if ($d.Calls -contains 'connect claude-code --dry-run' -and $d.Text -match 'The fake plugin records what a fake records\.' -and [array]::IndexOf($d.Calls, 'connect claude-code --dry-run') -lt [array]::IndexOf($d.Calls, 'connect claude-code --yes')) { Write-Pass 'the plan and what it records are shown before the question' } else { Write-Failure 'the plan before the question' "calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 4
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Text -match 'Connecting Claude Code needs your own yes \(see the caution above\): run flightdeck connect claude-code yourself') { Write-Pass 'when the dry run exits 4 (a caution), nothing is asked and the person is told to run the connect' } else { Write-Failure 'a dry run that exits 4' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDryRunExit = 1
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $script:asked.Count -eq 0 -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains 'To connect Claude Code: flightdeck connect claude-code') { Write-Pass 'when the binary cannot plan the connect, nothing is asked' } else { Write-Failure 'a failed dry run' "$($d.Failure) asked: $($script:asked -join '; ') calls: $($d.Calls -join '; ')" }
+    $script:fakeDryRunExit = 0
+    $d = Test-Decision '' $askNo
+    if (-not $d.Failure -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Result.Hints -contains $claudeHint) { Write-Pass 'a no connects nothing and keeps the command to print' } else { Write-Failure 'a no connects nothing' "$($d.Failure) calls: $($d.Calls -join '; ') hints: $($d.Result.Hints -join '; ')" }
+    $d = Test-Decision '' $null
+    if (-not $d.Failure -and $d.Calls.Count -eq 1 -and $d.Result.Hints -contains $claudeHint) { Write-Pass 'with no person to ask it connects nothing and keeps the command to print' } else { Write-Failure 'with no person to ask' "$($d.Failure) calls: $($d.Calls -join '; ')" }
+    $d = Test-Decision 'claude-code' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and $d.Text -match 'fake flightdeck: connect claude-code --yes') { Write-Pass 'FLIGHTDECK_CONNECT=claude-code connects without asking and shows the output' } else { Write-Failure 'FLIGHTDECK_CONNECT=claude-code' "$($d.Failure) calls: $($d.Calls -join '; ') $($d.Text)" }
+    $d = Test-Decision ' claude-code , other-agent ' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and $d.Calls -contains 'connect other-agent --yes') { Write-Pass 'a list with spaces connects every id in it' } else { Write-Failure 'a list with spaces' "$($d.Failure) calls: $($d.Calls -join '; ')" }
+    $d = Test-Decision 'claude-code,Bad;x,*' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect claude-code --yes' -and @($d.Calls | Where-Object { $_ -ne 'connect claude-code --yes' -and $_ -ne 'connect --detected' }).Count -eq 0 -and $d.Text -match 'not an agent id') { Write-Pass 'ids that are not lower-case letters, digits and - are skipped' } else { Write-Failure 'invalid ids' "$($d.Failure) calls: $($d.Calls -join '; ') $($d.Text)" }
+    $d = Test-Decision 'none' $askNever
+    if (-not $d.Failure -and $d.Calls.Count -eq 1 -and $d.Result.Hints -contains $claudeHint) { Write-Pass 'FLIGHTDECK_CONNECT=none connects nothing and keeps the command to print' } else { Write-Failure 'FLIGHTDECK_CONNECT=none' "$($d.Failure) calls: $($d.Calls -join '; ')" }
+    $script:fakeDetected = @("claude-code`tconnected`tClaude Code", "other-agent`tnot-connected`tOther Agent`ta later field")
+    $d = Test-Decision 'all' $askNever
+    if (-not $d.Failure -and $d.Calls -contains 'connect other-agent --yes' -and $d.Calls -notcontains 'connect claude-code --yes' -and $d.Text -match 'Claude Code is already connected to Flightdeck\.') { Write-Pass 'FLIGHTDECK_CONNECT=all connects the agents not connected yet and reports the others' } else { Write-Failure 'FLIGHTDECK_CONNECT=all' "$($d.Failure) calls: $($d.Calls -join '; ') $($d.Text)" }
+    $script:fakeDetected = @("claude-code`tnot-connected`tClaude Code")
+    $script:fakeConnectExit = 1
+    $d = Test-Decision 'claude-code' $askNever
+    if (-not $d.Failure -and $d.Text -match 'Connecting Claude Code did not finish \(see above\); run it again later: flightdeck connect claude-code') { Write-Pass 'a connect that fails is reported and does not throw' } else { Write-Failure 'a connect that fails' "$($d.Failure) $($d.Text)" }
+    $script:fakeConnectExit = 0
+    $script:fakeDetectedExit = 2
+    $d = Test-Decision 'claude-code' $askNever
+    if (-not $d.Failure -and -not $d.Result.Known -and $d.Calls.Count -eq 1) { Write-Pass 'a binary that does not know connect (an older VERSION) skips the step' } else { Write-Failure 'an older binary' "$($d.Failure) calls: $($d.Calls -join '; ')" }
+    $script:fakeDetectedExit = 0
+    $script:fakeDetected = @()
+    $d = Test-Decision '' $askYes
+    if (-not $d.Failure -and $d.Result.Known -and -not $d.Result.Found -and $script:asked.Count -eq 0) { Write-Pass 'no agent found: nothing asked, the closing line names flightdeck connect' } else { Write-Failure 'no agent found' "$($d.Failure) asked: $($script:asked -join '; ')" }
+
+    Write-Host '-- connecting coding agents: piped through iex in a new -NonInteractive session'
+    $connectLog = Join-Path $work 'connect.log'
+    $connectShell = (Get-Process -Id $PID).Path
+    function Invoke-ConnectInstall([hashtable]$Vars, [string]$Dir) {
+        $env:VERSION = 'v0.0.1-connect'
+        $env:INSTALL_DIR = $Dir
+        $env:FLIGHTDECK_RELEASE_URL = $ReleaseUrl
+        $env:FAKE_FLIGHTDECK_LOG = $connectLog
+        Remove-Item $connectLog -ErrorAction SilentlyContinue
+        $names = @('FLIGHTDECK_CONNECT', 'FAKE_FLIGHTDECK_DETECTED', 'FAKE_FLIGHTDECK_CONNECT_EXIT')
+        foreach ($name in $names) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in $Vars.Keys) { Set-Item "Env:$name" $Vars[$name] }
+        $ErrorActionPreference = 'Continue'
+        $text = & $connectShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "irm '$ReleaseUrl/install.ps1' | iex" 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        foreach ($name in $names + 'FAKE_FLIGHTDECK_LOG') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        $log = if (Test-Path $connectLog) { Get-Content -Raw $connectLog } else { '' }
+        return [pscustomobject]@{ Code = $code; Text = ($text -replace '\s+', ' '); Log = "$log" }
+    }
+    $claudeDetected = 'claude-code\tnot-connected\tClaude Code\n'
+    $quiet = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = $claudeDetected } (Join-Path $work 'inst-connect1')
+    if ($quiet.Code -eq 0 -and $quiet.Text -match [regex]::Escape($claudeHint) -and $quiet.Log -notmatch 'connect claude-code') { Write-Pass 'without a person to ask, the installer prints the command and connects nothing' } else { Write-Failure 'without a person to ask' "exit $($quiet.Code) log: $($quiet.Log) $($quiet.Text)" }
+    $named = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = $claudeDetected; FLIGHTDECK_CONNECT = 'claude-code' } (Join-Path $work 'inst-connect2')
+    if ($named.Code -eq 0 -and $named.Log -match 'connect claude-code --yes' -and $named.Text -match 'fake flightdeck: connect claude-code --yes' -and $named.Text -notmatch [regex]::Escape($claudeHint)) { Write-Pass 'FLIGHTDECK_CONNECT=claude-code connects through the installed binary' } else { Write-Failure 'FLIGHTDECK_CONNECT=claude-code through the installer' "exit $($named.Code) log: $($named.Log) $($named.Text)" }
+    $failedDir = Join-Path $work 'inst-connect3'
+    $failed = Invoke-ConnectInstall @{ FAKE_FLIGHTDECK_DETECTED = $claudeDetected; FLIGHTDECK_CONNECT = 'claude-code'; FAKE_FLIGHTDECK_CONNECT_EXIT = '1' } $failedDir
+    if ($failed.Code -eq 0 -and $failed.Text -match 'Connecting Claude Code did not finish' -and $failed.Text -match 'Next: run `flightdeck`' -and (Test-Path (Join-Path $failedDir 'flightdeck.exe'))) { Write-Pass 'a connect that fails does not fail the install' } else { Write-Failure 'a connect that fails' "exit $($failed.Code) $($failed.Text)" }
+    $script:fakeDetected = @()
 
     if ($UseRealRegistry) {
         Write-Host '-- the real HKCU\Environment (-UseRealRegistry)'

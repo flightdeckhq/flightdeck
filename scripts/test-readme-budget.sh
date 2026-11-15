@@ -1718,6 +1718,10 @@ irm https://example.invalid/install.ps1 | iex
 
 ## Connect your agents
 
+```bash
+flightdeck connect example
+```
+
 ```text
 /plugin marketplace add example/example
 /plugin install example@example
@@ -1735,8 +1739,8 @@ export FLIGHTDECK_SERVER=http://localhost:4000/ingest
 flightdeck --domain example.com
 ```
 FIXTURE
-expect 1 "five Connect commands fail" "$work/connect.md"
-expect_output 'OVER BUDGET: Connect your agents has 5 commands, budget 4' "the failure names the section and the counts"
+expect 1 "six Connect commands fail" "$work/connect.md"
+expect_output 'OVER BUDGET: Connect your agents has 6 commands, budget 5' "the failure names the section and the counts"
 
 # Over the Self-hosting budget: seven commands, the last two chained on
 # one line, so a line count of six would have let it through.

@@ -73,7 +73,13 @@ docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 
 ### Claude Code
 
-In Claude Code, install the plugin:
+The installer offers this when it finds Claude Code; otherwise:
+
+```bash
+flightdeck connect claude-code
+```
+
+It installs the Flightdeck plugin for your user, and the sessions you start from then on appear in the fleet view within seconds. `flightdeck connect` shows whether Claude Code is connected and to which server. Or install the plugin from inside Claude Code:
 
 ```text
 /plugin marketplace add flightdeckhq/flightdeck
@@ -81,7 +87,7 @@ In Claude Code, install the plugin:
 /reload-plugins
 ```
 
-The session appears in the fleet view within seconds. The plugin captures prompts and sanitised tool inputs by default, since you are watching your own session. [plugin/README.md](plugin/README.md) covers its options, `claude -p` and CI runs, enforcement and privacy.
+The plugin captures prompts and sanitised tool inputs by default, since you are watching your own session. [plugin/README.md](plugin/README.md) covers its options, `claude -p` and CI runs, enforcement and privacy.
 
 ### Python agents
 
@@ -98,7 +104,7 @@ flightdeck_sensor.patch()
 
 Those two lines go at the top of your entrypoint; nothing else in your code changes. Every call your agent makes through the Anthropic or OpenAI SDK or litellm, directly or inside a framework, is reported, with prompt capture off until you turn it on. [sensor/README.md](sensor/README.md) has the agent identity model, the environment variables and the known limitations.
 
-For a Flightdeck on another machine, set `FLIGHTDECK_SERVER` to its address (`https://flightdeck.example.com`; the ingestion URL its start-up block prints works too) and `FLIGHTDECK_TOKEN` to a token minted under **Settings → Access tokens**: the plugin and the sensor take the same two values. Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](guides/opentelemetry.md).
+For a Flightdeck on another machine, set `FLIGHTDECK_SERVER` to its address (`https://flightdeck.example.com`; the ingestion URL its start-up block prints works too) and `FLIGHTDECK_TOKEN` to a token minted under **Settings → Access tokens**: the plugin and the sensor take the same two values. For Claude Code, `flightdeck connect claude-code --server <address> --token-file <file>` saves both in the plugin's options instead. Runs that neither reaches (`claude --bare`, CI without the plugin, agents in other languages) can report over [OpenTelemetry](guides/opentelemetry.md).
 
 ## What you get
 

@@ -190,11 +190,13 @@ ALTERNATIVE_COMMANDS="brew pip uvx docker"
 # (`sh -c "$(curl ...)"`, `iex (irm ...)`). Refused among the other
 # ways to install by name, whatever the allowlist above says.
 INSTALLER_WORDS="sh bash zsh dash ksh fish iex invoke-expression"
-# Connect your agents: the plugin's three REPL lines (add the
-# marketplace, install, reload) and one pip install (the sensor's two
-# lines of Python are a python fence and not counted). A fifth command
-# means a step crept back in.
-CONNECT_MAX=4
+# Connect your agents: `flightdeck connect claude-code`, the one
+# command that connects Claude Code; the plugin's three REPL lines (add
+# the marketplace, install, reload), kept as the way to do the same
+# from inside Claude Code; and one pip install (the sensor's two lines
+# of Python are a python fence and not counted). A sixth command means
+# a step crept back in.
+CONNECT_MAX=5
 # Self-hosting: TLS is one flag (`--domain`), Postgres one flag
 # (`--database-url`), Docker, Compose and Helm are one command each,
 # and Compose and Helm read their files from a clone, which is the

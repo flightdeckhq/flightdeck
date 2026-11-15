@@ -1050,3 +1050,22 @@ with the tool's own keys (Glob's `truncated` flag).
 **Rejected alternative:** cutting the serialised text; a `truncated`
 key or a `"…"` element inside the response; proportional shares (they
 shorten a short stderr when stdout is long).
+
+## D275 -- Coding agents are connected by `flightdeck connect`, which the installers offer and never run unasked
+
+**Date:** 2026-11-15
+**Decision:** `flightdeck connect <agent>` connects a coding agent
+(`claude-code`: the plugin from the flightdeckhq/flightdeck marketplace,
+the server and token saved in its options), `--remove` undoes it, no
+argument lists the agents, and `--detected` is the installers'
+tab-separated query. Each agent is a connector in one registry: detect,
+status, then a planned connect or disconnect. The installers ask per
+agent found on a terminal, print the command otherwise, and follow
+`FLIGHTDECK_CONNECT` (ids, `all`, `none`); a failed connect never fails
+an install. A token reaches the agent's CLI on stdin, never on argv.
+**Why:** every install channel ships the binary, not a script; new
+agents become connectors without installer changes; changing another
+tool's configuration is the user's call.
+**Rejected alternative:** the installer installing the plugin silently
+when `claude` is found; agent logic in install.sh and install.ps1 (two
+copies per agent, none for brew or pip); a `--token` flag (seen in `ps`).

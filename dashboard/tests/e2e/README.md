@@ -85,6 +85,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T158-run-line-opens-its-run-when-no-glyph-is-in-view.spec.ts` | With neither run's glyphs in view, each run line takes keyboard focus and Enter opens its run drawer; with the glyphs in view the lines leave the tab order |
 | `T161-newest-circles-and-glyphs-stay-inside-the-panel.spec.ts` | At 1h the newest circle sits whole inside its panel with its centre where the grid lines put its time, and a just-started run's ▶ sits at its own start inside the panel |
 | `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
+| `T167-fleet-row-below-the-fold-scrolls-into-view.spec.ts` | A swimlane row several screens below the fold, unmounted by the virtualization, is walked to and ends in the viewport; asked again once mounted, the helper scrolls straight to it without snapping the scroller to the top |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:

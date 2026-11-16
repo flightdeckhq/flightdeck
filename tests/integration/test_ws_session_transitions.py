@@ -10,6 +10,13 @@ worker does the rest on its next tick. The run is its agent's only one,
 so every update must also carry the run's state as the agent's
 rolled-up ``agent_state``. Each test removes what it wrote. Requires the
 dev stack (``make dev``).
+
+Each test opens the stream before it starts its run, and reads the run's
+own session_start broadcast off it before it moves the session. The
+worker commits the session row before it stores the start event and
+announces it, so that broadcast can reach the stream after the API
+already returns the row; read first, it can never be taken for one of
+the state changes the test collects.
 """
 
 from __future__ import annotations
@@ -30,7 +37,6 @@ from .conftest import (
     exec_sql,
     make_event,
     post_event,
-    wait_for_session_in_fleet,
 )
 from .test_session_states import PROCESSING_SLACK_SECS, RECONCILER_POSITIVE_WAIT_SECS
 
@@ -44,6 +50,12 @@ WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
 # drop a slow reader, so they run one at a time after it.
 pytestmark = pytest.mark.exclusive
 
+# How long a run's own session_start may take to reach the stream: the
+# worker's processing of it, then as long again for the hub, which
+# broadcasts in turn and may still be working through what the tests
+# before this one sent. The wait ends as soon as the broadcast arrives.
+START_BROADCAST_WAIT_SECS = 2 * PROCESSING_SLACK_SECS
+
 Update = dict[str, Any]
 
 
@@ -52,12 +64,14 @@ async def _await_update(
     session_id: str,
     matches: Callable[[Update], bool],
     timeout: float,
+    *,
+    expected: str = "matching update",
 ) -> tuple[Update, list[Update]]:
     """Read broadcasts until one for ``session_id`` satisfies ``matches``.
 
     Returns that update and every update for the session received on the
-    way, in arrival order (the matching one last). Fails the test when
-    none arrives within ``timeout`` seconds.
+    way, in arrival order (the matching one last). Fails the test, naming
+    the ``expected`` update, when none arrives within ``timeout`` seconds.
     """
     seen: list[Update] = []
     loop = asyncio.get_running_loop()
@@ -67,7 +81,7 @@ async def _await_update(
         if remaining <= 0:
             states = [u.get("session", {}).get("state") for u in seen]
             pytest.fail(
-                f"no matching update for {session_id} within {timeout}s; "
+                f"no {expected} for {session_id} within {timeout}s; "
                 f"saw {len(seen)} update(s) for it with states {states}"
             )
         try:
@@ -87,6 +101,10 @@ async def _await_update(
 
 def _in_state(state: str) -> Callable[[Update], bool]:
     return lambda u: u["session"]["state"] == state
+
+
+def _is_start(update: Update) -> bool:
+    return update["type"] == "session_start"
 
 
 def _event_count(session_id: str) -> int:
@@ -130,34 +148,51 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
         )
 
 
-def _started_session(flavor_prefix: str) -> tuple[str, str]:
-    """Start a run of a new agent of its own; return (session_id, flavor).
-    The flavor names the agent too, so the run is the agent's only one."""
-    sid = str(uuid.uuid4())
-    flavor = f"{flavor_prefix}-{uuid.uuid4().hex[:6]}"
-    post_event(make_event(sid, flavor, "session_start", agent_name=flavor))
-    assert wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS), (
-        f"session {sid} never landed"
+def _new_run(flavor_prefix: str) -> tuple[str, str]:
+    """A session id and a flavor of its own for a run the test starts."""
+    return str(uuid.uuid4()), f"{flavor_prefix}-{uuid.uuid4().hex[:6]}"
+
+
+async def _start_run(
+    ws: ClientConnection, session_id: str, flavor: str, **fields: Any
+) -> None:
+    """Post the run's session_start and read ``ws`` until the start's own
+    broadcast has arrived.
+
+    ``ws`` must be open before the start is posted, so the broadcast
+    cannot slip past it. Once it has arrived the start is stored: the
+    worker announces it only after storing the event, and the hub fetches
+    that event to send it. The hub broadcasts in the order changes are
+    announced, so everything the test reads for the session from here on
+    is a later change.
+    """
+    post_event(make_event(session_id, flavor, "session_start", **fields))
+    await _await_update(
+        ws,
+        session_id,
+        _is_start,
+        START_BROADCAST_WAIT_SECS,
+        expected="session_start broadcast",
     )
-    return sid, flavor
 
 
 def test_reconciler_stale_then_lost_reach_the_stream_without_an_event() -> None:
     """A run that goes silent shows stale, then lost, on an open stream:
     each a session_update carrying the session and no event, with the
     agent's rolled-up state."""
-    sid, flavor = _started_session("test-ws-transition")
+    sid, flavor = _new_run("test-ws-transition")
     try:
-        _assert_stale_then_lost(sid)
+        _assert_stale_then_lost(sid, flavor)
     finally:
         delete_flavor_data(flavor)
 
 
-def _assert_stale_then_lost(sid: str) -> None:
-    events_before = _event_count(sid)
-
+def _assert_stale_then_lost(sid: str, flavor: str) -> None:
     async def drive() -> tuple[Update, Update, list[Update]]:
         async with connect(WS_URL) as ws:
+            # The flavor names the agent too, so the run is the agent's
+            # only one.
+            await _start_run(ws, sid, flavor, agent_name=flavor)
             # Past the 2-minute stale threshold, short of the 30-minute
             # lost threshold.
             _backdate(sid, "3 minutes")
@@ -184,23 +219,26 @@ def _assert_stale_then_lost(sid: str) -> None:
         "expected exactly one update per transition, stale then lost; got "
         f"{[u['session']['state'] for u in seen]}"
     )
-    assert _event_count(sid) == events_before, "the transitions must not write events"
+    # The start, stored before its broadcast arrived, is the run's one
+    # event; the transitions add none.
+    assert _event_count(sid) == 1, "the transitions must not write events"
 
 
 def test_reaper_close_reaches_the_stream_as_a_session_end() -> None:
     """A lost run past FLIGHTDECK_ORPHAN_TIMEOUT_HOURS (24 h by default)
     closes on an open stream as a session_end carrying the reaper's
     synthetic event, like any other close."""
-    sid, flavor = _started_session("test-ws-reap")
+    sid, flavor = _new_run("test-ws-reap")
     try:
-        _assert_reaped(sid)
+        _assert_reaped(sid, flavor)
     finally:
         delete_flavor_data(flavor)
 
 
-def _assert_reaped(sid: str) -> None:
+def _assert_reaped(sid: str, flavor: str) -> None:
     async def drive() -> Update:
         async with connect(WS_URL) as ws:
+            await _start_run(ws, sid, flavor, agent_name=flavor)
             _backdate(sid, "25 hours", state="lost")
             closed, _ = await _await_update(
                 ws, sid, _in_state("closed"), RECONCILER_POSITIVE_WAIT_SECS
@@ -228,33 +266,31 @@ def _assert_reaped(sid: str) -> None:
 def test_parent_revived_by_its_child_reaches_the_stream() -> None:
     """A stale parent that its sub-agent's event revives shows active again
     on an open stream: the child's own broadcast names only the child."""
-    parent_sid, parent_flavor = _started_session("test-ws-revive-parent")
-    child_flavor = f"test-ws-revive-child-{uuid.uuid4().hex[:6]}"
+    parent_sid, parent_flavor = _new_run("test-ws-revive-parent")
+    child_sid, child_flavor = _new_run("test-ws-revive-child")
     try:
-        _assert_parent_revived(parent_sid, child_flavor)
+        _assert_parent_revived(parent_sid, parent_flavor, child_sid, child_flavor)
     finally:
         delete_flavor_data(child_flavor)
         delete_flavor_data(parent_flavor)
 
 
-def _assert_parent_revived(parent_sid: str, child_flavor: str) -> None:
-    child_sid = str(uuid.uuid4())
-    post_event(
-        make_event(
-            child_sid,
-            child_flavor,
-            "session_start",
-            parent_session_id=parent_sid,
-            agent_role="worker",
-        )
-    )
-    assert wait_for_session_in_fleet(child_sid, timeout=PROCESSING_SLACK_SECS)
-    # Put the parent where the reconciler would have: stale. Done directly
-    # so the test does not wait out the 2-minute threshold.
-    _backdate(parent_sid, "3 minutes", state="stale")
-
+def _assert_parent_revived(
+    parent_sid: str, parent_flavor: str, child_sid: str, child_flavor: str
+) -> None:
     async def drive() -> list[Update]:
         async with connect(WS_URL) as ws:
+            await _start_run(ws, parent_sid, parent_flavor, agent_name=parent_flavor)
+            await _start_run(
+                ws,
+                child_sid,
+                child_flavor,
+                parent_session_id=parent_sid,
+                agent_role="worker",
+            )
+            # Put the parent where the reconciler would have: stale. Done
+            # directly so the test does not wait out the 2-minute threshold.
+            _backdate(parent_sid, "3 minutes", state="stale")
             post_event(
                 make_event(
                     child_sid,

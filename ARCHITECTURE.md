@@ -10723,7 +10723,7 @@ bearer token has full access — both reads and mutations.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by migration 000019; idempotently re-ensured at API boot) |
+| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by a migration; idempotently re-ensured at API boot) |
 | `GET` | `/v1/mcp-policies/:flavor` | Fetch the flavor policy + entries. 404 when no flavor policy exists |
 | `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight. Query params `flavor`, `server_url`, `server_name`; returns the resolved decision (`allow` / `warn` / `block`) and the `decision_path` that produced it (`flavor_entry` / `global_entry` / `mode_default`). GET-only — idempotent, safe, cacheable |
 | `GET` | `/v1/mcp-policies/global/audit-log` | Mutation history for the global policy. Query params `from` (ISO 8601), `to`, `event_type`, `limit`, `offset` |
@@ -10738,8 +10738,8 @@ bearer token has full access — both reads and mutations.
 
 #### Install-time seed and boot-time idempotent retry
 
-The empty-blocklist global policy row is seeded by migration
-`000019_mcp_protection_policy_seed_global.up.sql`. The
+The empty-blocklist global policy row is seeded by the
+`mcp_protection_policy_seed_global` migration. The
 seed SQL is an idempotent INSERT identical in shape to the boot
 hook below:
 
@@ -10749,22 +10749,21 @@ SELECT 'global', NULL, 'blocklist', false
 WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global');
 ```
 
-The migrator is the single writer for this row. By the time api
-can `SELECT` from `mcp_policies` the seed has already landed,
-which closes the cold-boot race where api raced workers to a
-fresh postgres and 500'd every `GET /v1/mcp-policies/global`
-until manual restart (context).
+The migrator is the single writer for this row. By the time the API
+can `SELECT` from `mcp_policies` the seed has already landed, so
+once the migrations have run `GET /v1/mcp-policies/global` finds
+the row, whichever of the API and the migrator started first: the
+endpoint does not depend on the API's own boot step to create it.
 
-`store.EnsureGlobalMCPPolicy(ctx)` still runs at API boot as a
+`store.EnsureGlobalMCPPolicy(ctx)` also runs at API boot as a
 defensive idempotent retry — same SQL, same `WHERE NOT EXISTS`
 predicate, race-safe under read-committed because the unique
 index `(scope, COALESCE(scope_value, ''))` rejects a concurrent
 second insert; on `pgconn.PgError.Code = '23505'`
 (unique_violation) the caller treats it as "already created" and
-proceeds. this hook noops on every cold boot
-(migration owns the row); it remains for install paths that
-might run api before migrations (e.g. operator-managed Helm
-charts in the future). API startup logs `INFO ensure global mcp
+proceeds. On a migrated database the hook changes nothing (the
+migration owns the row); it is there for any install path that
+runs the API before the migrations. API startup logs `INFO ensure global mcp
 policy at boot complete` on success.
 
 #### Policy templates

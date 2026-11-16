@@ -21,6 +21,13 @@ var bootStepFailures = []string{
 	"ensure global mcp policy at boot failed",
 }
 
+// bootStepStops are the debug lines the same steps log when a stop cuts
+// them short.
+var bootStepStops = []string{
+	"pricing table sync at boot stopped by the shutdown",
+	"ensure global mcp policy at boot stopped by the shutdown",
+}
+
 // logBuffer collects the default logger's output while Run's
 // goroutines write to it.
 type logBuffer struct {
@@ -47,20 +54,43 @@ func (b *logBuffer) lines(substr string) []string {
 	return out
 }
 
-// captureLogs routes the default logger into a buffer for the test.
+// captureLogs routes the default logger, debug lines included, into a
+// buffer for the test.
 func captureLogs(t *testing.T) *logBuffer {
 	t.Helper()
 	buf := &logBuffer{}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	return buf
 }
 
+// logPollInterval is how often waitForLine looks at the log again. Run
+// logs its start-up steps within milliseconds, so ten milliseconds
+// finds the line soon after it is written without a busy loop.
+const logPollInterval = 10 * time.Millisecond
+
+// waitForLine waits, within runTimeout, for a line of logs that
+// contains substr and returns the first one.
+func waitForLine(t *testing.T, logs *logBuffer, substr string) string {
+	t.Helper()
+	deadline := time.Now().Add(runTimeout)
+	for {
+		if lines := logs.lines(substr); len(lines) > 0 {
+			return lines[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q line within %s", substr, runTimeout)
+		}
+		time.Sleep(logPollInterval)
+	}
+}
+
 // A stop that comes while Run's start-up steps run cuts them short;
-// that is the stop, not a failure of theirs, so neither logs one. The
-// context has ended before Run starts, so each step runs on a cancelled
-// context, as it does when the binary is stopped right after it starts.
+// that is the stop, not a failure of theirs, so neither logs one: each
+// logs the cut at debug level. The context has ended before Run starts,
+// so each step runs on a cancelled context, as it does when the binary
+// is stopped right after it starts.
 func TestRun_AStopDuringTheBootStepsLogsNoFailure(t *testing.T) {
 	storagetest.Each(t, func(t *testing.T, db *storage.DB) {
 		logs := captureLogs(t)
@@ -78,6 +108,11 @@ func TestRun_AStopDuringTheBootStepsLogsNoFailure(t *testing.T) {
 		for _, msg := range bootStepFailures {
 			if lines := logs.lines(msg); len(lines) != 0 {
 				t.Errorf("a stop during the start-up steps logged a failure: %q", lines)
+			}
+		}
+		for _, msg := range bootStepStops {
+			if lines := logs.lines(msg); len(lines) != 1 || !strings.Contains(lines[0], "level=DEBUG") {
+				t.Errorf("%q: %q, want one debug line", msg, lines)
 			}
 		}
 	})
@@ -102,17 +137,13 @@ func TestRun_AFailedBootStepIsStillLogged(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 
-	deadline := time.Now().Add(runTimeout)
 	for _, msg := range bootStepFailures {
-		for len(logs.lines(msg)) == 0 {
-			if time.Now().After(deadline) {
-				t.Fatalf("no %q line within %s on an unmigrated database", msg, runTimeout)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if line := logs.lines(msg)[0]; !strings.Contains(line, "level=WARN") {
+		if line := waitForLine(t, logs, msg); !strings.Contains(line, "level=WARN") {
 			t.Errorf("the failed step is not logged as a warning: %q", line)
 		}
+	}
+	if lines := logs.lines("stopped by the shutdown"); len(lines) != 0 {
+		t.Errorf("a failure with the API running was taken for the stop: %q", lines)
 	}
 	cancel()
 	if err := awaitRun(t, done); err != nil {

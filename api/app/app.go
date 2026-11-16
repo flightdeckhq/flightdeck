@@ -230,19 +230,26 @@ func (a *App) Run(ctx context.Context) error {
 	// a fresh database the migrator may not have created the table yet,
 	// so a failed first sync keeps retrying in the background; the
 	// table keeps its previous content until a sync succeeds. A sync
-	// the stop cuts short is not a failure: nothing is logged and
-	// nothing retries.
-	if err := store.SyncPricingTable(runCtx, a.db); err != nil && runCtx.Err() == nil {
-		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
-		spawn(func() { store.RetryPricingSync(runCtx, a.db) })
+	// the stop cuts short is not a failure: it is logged at debug level
+	// and nothing retries.
+	if err := store.SyncPricingTable(runCtx, a.db); err != nil {
+		if runCtx.Err() != nil {
+			slog.Debug("pricing table sync at boot stopped by the shutdown", "err", err)
+		} else {
+			slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
+			spawn(func() { store.RetryPricingSync(runCtx, a.db) })
+		}
 	}
 	// Ensure the empty blocklist global MCP policy exists before serving
 	// traffic. Best-effort: a migration also seeds this row, so a
 	// failure here (for example on a database that has not been
 	// migrated yet) leaves nothing missing once the migrations have run.
-	// One the stop cuts short is not logged either.
+	// A failure the stop cuts short is not logged as one either: it is
+	// logged at debug level.
 	if err := a.store.EnsureGlobalMCPPolicy(runCtx); err != nil {
-		if runCtx.Err() == nil {
+		if runCtx.Err() != nil {
+			slog.Debug("ensure global mcp policy at boot stopped by the shutdown", "err", err)
+		} else {
 			slog.Warn("ensure global mcp policy at boot failed",
 				"err", err,
 				"note", "API will continue; the migration seeds the global policy",

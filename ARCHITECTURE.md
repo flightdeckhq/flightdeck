@@ -919,10 +919,11 @@ class PromptContent:
 
 An argument passed as the Anthropic or OpenAI SDK's sentinel for an
 argument left out (`NOT_GIVEN`, `omit`) was not given: the SDK does not
-send it to the provider, so the stored content does not hold it either
-(the field is None), whichever field it is (`system`, `tools`, `model`,
-`messages`; a Responses call's `instructions`, `tools` and `input`; an
-embeddings call's `input`). Wrappers pass them: Google ADK's
+send it to the provider, so the stored content holds what it holds for
+an absent argument: None for `system`, `tools` and `input` (a Responses
+call's `instructions`, stored as `system`, a Responses call's `tools` and
+`input`, an embeddings call's `input`), an empty list for `messages`,
+and an empty string for `model`. Wrappers pass them: Google ADK's
 `AnthropicLlm` gives `tools=NOT_GIVEN` for an agent with no tools, the
 OpenAI Agents SDK's `OpenAIChatCompletionsModel` `tools=omit`.
 
@@ -10421,8 +10422,9 @@ sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
 never cut. An event whose captured `content` cannot be written as JSON
 (an object the capture did not turn into data) is sent without its
-content (`has_content=false`, as an event over the limit is), with one
-warning naming the event type and the object's type, so its token counts
+content (`has_content=false`, as an event over the limit is), with a
+warning naming the event type and the object's type (once per pair of
+the two; later ones at debug level), so its token counts
 and metadata still arrive; the content is never replaced by the object's
 string form, which the provider never received.
 

@@ -758,7 +758,9 @@ def init(
 def wrap(client: Any, quiet: bool = False) -> Any:
     """Wrap a single Anthropic SDK client (any anthropic client class:
     first-party, Bedrock, Vertex, Foundry, AWS, Mantle; sync or async) or
-    OpenAI client. init must be called first."""
+    OpenAI client. init must be called first. The wrapped client reports
+    each call to the session active at that call, and with none passes
+    it to the SDK untouched."""
 
 def patch(
     quiet: bool = False,
@@ -783,7 +785,8 @@ def patch(
 
 def unpatch -> None:...  # also stops patching SDKs as they are imported
 def get_status -> StatusResponse:...
-def teardown -> None:...
+def teardown -> None:...  # ends the session and unpatches; init may follow
+                          # (see "A new session after teardown")
 
 def directive(
     name: str,
@@ -1022,12 +1025,17 @@ different levels:
   With no session active, or once the class has been unpatched, the
   patched methods pass straight through to the SDK, so nothing is ever
   cached in an unmetered state and a view built while patched stops
-  metering with `unpatch`.
+  metering with `unpatch`. Patching the class again installs the same
+  methods, so that view meters again (see "A new session after
+  teardown").
 - **OpenAI** — the `cached_property` descriptors `OpenAI.chat`,
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
   replaced with sensor descriptors that wrap the resource on first
-  access, and the `chat` `cached_property` of the SDK's beta resource
+  access (the proxy is kept in the instance `__dict__`, as the
+  `cached_property` keeps the resource, and reports each call to the
+  session active at that call, passing it through when there is none or
+  the class is unpatched), and the `chat` `cached_property` of the SDK's beta resource
   (`openai.resources.beta.Beta` / `AsyncBeta`, behind `client.beta`),
   replaced the same way so `client.beta.chat.completions.parse()` and
   `.stream()` -- the structured-output path on the SDK's beta resource
@@ -1116,9 +1124,9 @@ different levels:
   whatever `client.chat` (and its siblings) returned at that moment. On
   a client built before `patch`, or built with no session active, the
   view holds the SDK's own resources and is not metered. On a client
-  built while a session was active, the view holds proxies bound to that
-  session, so its calls are reported to that session even after another
-  one starts. A resource the
+  built while a session was active, the view holds the sensor's proxies,
+  which report each call to the session active at that call and pass it
+  through once the class is unpatched. A resource the
   client class has neither as a descriptor nor as an annotation
   (`responses` before 1.66)
   is left alone. CI's `openai floor` lane runs the OpenAI tests against
@@ -2442,6 +2450,106 @@ a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
 are not supported in the current model.
 
+### A new session after teardown
+
+Sessions can follow one another in a process: `teardown` ends the
+session, closes its transport and unpatches every SDK, and `init` (with
+`patch` again) starts the next. A client or framework object the sensor
+already intercepts carries over with no action from the application:
+every call reports to the session active when the call is made, with
+that session's capture setting, and with no session active, or with the
+SDK unpatched, the call goes to the SDK untouched: no event, no policy
+check, no error. So a client kept across `teardown` reports nothing while
+the sensor is down and reports to the new session once `init` and
+`patch` have run again.
+
+What the sensor never intercepted it does not pick up later. An SDK
+object first touched while its SDK is unpatched, that is before the
+first `patch` or between `teardown` and the next `patch`, holds the SDK's
+own methods and is not metered again in that process: an OpenAI client's
+`chat` / `responses` / `embeddings` resource first read then (the client
+caches it), and an Anthropic raw or streaming view
+(`messages.with_raw_response` / `with_streaming_response`) first built
+then. Frameworks touch them for you: a `ChatOpenAI` reads
+`client.chat.completions` when it is built, and a `ChatAnthropic` builds
+its raw view on its first call, so one built, or first called, between
+`teardown` and the next `patch` is never metered. A Google ADK `Runner`
+gets the sensor's plugin when it is built, so one built then opens no
+child sessions (its model calls are still metered by the provider
+patches); one built while patched keeps the plugin across `teardown`,
+and its runs report to the session active when each run starts. Build
+or first use them while the sensor is patched.
+
+A call is matched to a session when its request is sent. A sync call
+sends when it is made. An async call sends when its coroutine is
+awaited, and an async streaming view when it is entered: on every async
+path (the patched Anthropic `create` and `parse`, their raw and
+streaming views, and every call through a following OpenAI or `wrap`
+proxy) the session is read then, so a coroutine created under one
+session and awaited after `teardown` goes to the SDK untouched, and one
+awaited in the next session reports to it, with its capture setting. The
+`.stream()` helpers of the OpenAI SDK send on entry, and a manager is
+matched to the session active when it is entered the same way.
+Anthropic's `messages.stream()`, sync or async, runs the pre-call (the
+policy check and `pre_call`) when it is called, so that call belongs to
+the session it was called in, as a stream still open at `teardown` does:
+it is settled when its session ends (see "Shutdown and signals").
+
+Deferring the session to the await changes nothing a caller can see at
+the call itself. Every async entry point the sensor patches or proxies
+matches the SDK's own method in what `sensor/tests/unit/test_async_parity.py`
+holds: `inspect.iscoroutinefunction`, `inspect.signature`, the name,
+qualified name, docstring and module, and the type and the moment (call
+or await) of the exception a missing or an unknown argument raises.
+Where the SDK's method is a synchronous wrapper returning its coroutine,
+as Anthropic's and OpenAI's `create` are, the sensor's is a plain
+function carrying the SDK's name and docs. Where it is an `async def`, as
+`parse` and `embeddings.create` are, the sensor's is a callable that
+`inspect` takes for a coroutine function because it carries the SDK
+function's code object; `inspect.isfunction` is false for it, where it
+is true for the SDK's function, which is the one difference. Arguments
+are checked when the call is made: the sensor calls the SDK's method
+then, which validates them and returns its coroutine unstarted, and
+closes that coroutine, so nothing is sent or built. Anthropic's async
+`stream()`, which hands back its manager at once, has its arguments
+bound against the SDK's signature instead (cached per SDK function,
+never per client). A raw view's method, which checks its arguments
+only once awaited, raises then, as the SDK's does.
+
+How each interceptor finds the session: the patched Anthropic resource
+methods and the litellm wrappers look it up at each call. The OpenAI
+resource proxies the class patch hands out, which a client keeps in its
+instance `__dict__` and a framework may keep for its lifetime
+(langchain-openai keeps `client.chat.completions`), and the proxies `wrap`
+returns carry a `FollowSession`: each call resolves the active session,
+and passes through when there is none or, for the class patch's
+proxies, when the client class no longer carries the patch's sentinel.
+Such a proxy still holds the session and provider it was built with, to
+hand to the proxies it builds, and never reports to them. The provider,
+which carries the capture setting, is rebuilt only when the session
+changes; the lookup costs about 0.2 µs per call on a developer machine
+(two method calls, a read of the sentinel on the patched class, a
+`sys.modules` lookup, an attribute read and an identity check), against
+0.05 µs for a proxy with a fixed session. Making an async call also runs
+the SDK's own argument check up front, so that a bad argument raises when
+the call is made, as without the sensor: making the call, up to the
+coroutine it returns, takes about 6 µs for an OpenAI
+`chat.completions.create` through a kept proxy against 1.8 µs unsensored,
+and about 3.1 µs for the patched Anthropic `messages.create` against
+1.7 µs (Python 3.13 on a developer machine, a session active, the
+coroutine closed unawaited). Re-patching an Anthropic
+resource class installs the very methods it installed before, so a raw
+or streaming view built while the class was patched, which holds those
+methods (langchain-anthropic sends every request through
+`messages.with_raw_response`), meters again. A `SensorLitellm`, which the
+application builds over a session it passes in, keeps that session.
+
+`init` publishes the session as `flightdeck_sensor._session` only once
+it has started (its `session_start` sent, its policy fetched). A call on
+another thread looks the session up without `init`'s lock, so one made
+while `init` is still starting the session finds none and goes to the SDK
+untouched.
+
 ### Shutdown and signals
 
 `Session.start` registers `Session.end` with `atexit` and, when `init` runs
@@ -2450,6 +2558,23 @@ handler. `end` settles the streams still open, flushes the event queue,
 posts `session_end` (`close_reason=normal_exit`, or `directive_shutdown`
 after a shutdown directive), flushes again and closes the queue; a second
 call does nothing. `teardown()` calls it too.
+
+`teardown()` then takes back what the session registered with the
+process (`Session.release_process_hooks`), so a process that starts and
+ends sessions in turn neither keeps ended sessions alive nor grows a
+chain of handlers. It unregisters the `atexit` callback. Each signal
+handler is an object holding the session and the handler it replaced; it
+lets go of the session, and on the main thread, when it is still the
+handler installed, the handler it replaced is put back. A handler the
+application or another library installed after `init` stays where it
+is; the session's handler under it, which that handler may call, passes
+every signal straight on from then on. Off the main thread a handler
+cannot be changed, so the session's stays installed the same way, and
+the next session's handler, installed on the main thread, chains past it
+to the one before. A failed `init` (its `start` raising, as with
+`FLIGHTDECK_UNAVAILABLE_POLICY=halt` and the control plane down) publishes
+no session and takes down what it set up: the transport, the session's
+event queue and its threads, and anything `start` had registered.
 
 A signal handler runs on the main thread on top of whatever the signal
 interrupted, which can be inside the session's, the policy cache's or the

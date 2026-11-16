@@ -223,6 +223,30 @@ def test_a_client_built_before_the_patch_is_metered_from_its_next_access(
     assert client.chat._real is raw
 
 
+def test_a_proxy_kept_elsewhere_follows_the_active_session(
+    stand_in: type, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proxy handed out under one session and kept outside the
+    descriptor's reach (as the constructor-built client view keeps it)
+    reports to the session active at each call, and passes the call
+    through while none is active or once the class is unpatched."""
+    _patch_stand_in(stand_in)
+    first_session = _activate(monkeypatch)
+    kept = stand_in().chat
+    assert kept._target()[0] is first_session
+
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    assert kept._target() is None
+
+    second_session = _activate(monkeypatch, capture=False)
+    session, provider = kept._target()
+    assert session is second_session
+    assert provider._capture_prompts is False
+
+    _unpatch_one_resource(stand_in, attr_name="chat", sentinel_attr=_SENTINEL)
+    assert kept._target() is None
+
+
 def test_delete_removes_the_resource(stand_in: type) -> None:
     _patch_stand_in(stand_in)
     client = stand_in()
@@ -526,14 +550,15 @@ def _raw_view_call(client: Any) -> None:
 
 
 @pytest.mark.skipif(not EAGER_SDK, reason="the installed openai builds its views lazily")
-def test_the_client_raw_view_follows_the_session_the_client_was_built_in(
+def test_the_client_raw_view_follows_the_active_session(
     patched: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Before 1.78 the constructor builds the client-level raw view over
     whatever ``client.chat`` returned at that moment. Pins what follows:
-    a client built with a session active has a metered view, bound to
-    that session even once another starts; a client built with no
-    session active has an unmetered one."""
+    a client built with a session active has a metered view, which
+    reports to the session active at each call, so to a later session
+    once another starts; a client built with no session active has an
+    unmetered one."""
     building_session = _activate(monkeypatch)
     built_in_session = _client(False)
     monkeypatch.setattr(flightdeck_sensor, "_session", None)
@@ -547,11 +572,17 @@ def test_the_client_raw_view_follows_the_session_the_client_was_built_in(
         _raw_view_call(built_in_session)
         _raw_view_call(built_without_session)
 
-    assert route.call_count == 2
-    # The view built in the first session reports to it.
-    _assert_one_metered_call(building_session)
-    # The view built with no session is the SDK's own, so it is not metered.
-    assert _events_of(later_session, "post_call") == []
+        # Unpatched, the view built in a session passes the call through.
+        unpatch_openai_classes()
+        _raw_view_call(built_in_session)
+        patch_openai_classes(quiet=True)
+
+    assert route.call_count == 3
+    # The view built in the first session reports to the active one.
+    assert _events_of(building_session, "post_call") == []
+    # The view built with no session is the SDK's own, so it is not
+    # metered: the one call later_session has is the first view's.
+    _assert_one_metered_call(later_session)
     # The resources themselves follow the current session.
     assert built_without_session.chat._session is later_session
 

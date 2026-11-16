@@ -1156,6 +1156,23 @@ server moved to 4100, and nothing said why no session arrived.
 services); the address in `flightdeck.lock`, which outlives every stop
 by design; offering a public instance (it refuses the development token).
 
+## D281 -- A sensor proxy reports each call to the session active at that call, so a client outlives `teardown()`
+
+**Date:** 2026-11-16
+**Decision:** every call through an intercepted client (the patched
+methods, the OpenAI class patch's proxies, `wrap()`'s) reads the session
+when its request goes out (an async call when awaited; Anthropic's
+`stream()` when called), with a provider for its capture setting; with
+none (or the class unpatched) the SDK gets it untouched. An Anthropic
+re-patch reinstalls the same methods, so bound views meter again.
+**Why:** proxies kept the session of their first use: after `teardown()`
+and `init()` a reused `ChatAnthropic` reported nothing, and an `OpenAI`
+client or `ChatOpenAI` reported to the ended session, whose policy still
+blocked calls made with the sensor torn down.
+**Rejected alternative:** asking applications to rebuild clients after
+`init()` (frameworks cache clients out of reach); walking live objects
+to clear cached proxies (gc traversal, misses frameworks' references).
+
 ## D282 -- A Google ADK child session is a sub-agent run; the root agent and the workflow agents open none
 
 **Date:** 2026-11-16

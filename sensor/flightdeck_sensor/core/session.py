@@ -340,6 +340,28 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
+class _SessionSignalHandler:
+    """The SIGTERM / SIGINT handler a session installs: it ends the
+    session (see :meth:`Session._on_signal`), then passes the signal on to
+    ``previous``, the handler it replaced. Once the session has released
+    it (:meth:`Session.release_process_hooks`), ``session`` is ``None`` and
+    the handler only passes the signal on, so a handler left in a chain
+    holds no ended session."""
+
+    __slots__ = ("session", "previous")
+
+    def __init__(self, session: Session, previous: Any) -> None:
+        self.session: Session | None = session
+        self.previous = previous
+
+    def __call__(self, signum: int, frame: Any) -> None:
+        session = self.session
+        if session is None:
+            _pass_signal_on(signum, frame, self.previous)
+            return
+        session._on_signal(signum, frame, self.previous)
+
+
 def _pass_signal_on(signum: int, frame: Any, prev: Any) -> None:
     """Do with a signal what the handler the sensor replaced does: call
     it (Python's SIGINT handler raises KeyboardInterrupt), or, for the
@@ -448,6 +470,9 @@ class Session:
         self._ended = threading.Event()
         self._ending_thread: int | None = None
         self._signal_shutdown: DrainShutdown | None = None
+        # The signal handlers start() installed, so release_process_hooks()
+        # can take them back out.
+        self._signal_handlers: list[tuple[signal.Signals, _SessionSignalHandler]] = []
 
         # Prefer the already-resolved hostname from config (which
         # honors FLIGHTDECK_HOSTNAME for k8s pod grouping); fall
@@ -2277,14 +2302,40 @@ class Session:
         handler installed outside Python, which Python cannot pass a
         signal on to.
         """
-        prev = signal.getsignal(sig)
+        prev: Any = signal.getsignal(sig)
+        # A handler an ended session left installed (its teardown() ran
+        # off the main thread, where it could not be put back) only
+        # passes signals on: skip it, so the chain does not grow.
+        while isinstance(prev, _SessionSignalHandler) and prev.session is None:
+            prev = prev.previous
         if prev is None or prev == signal.SIG_IGN:
             return
+        handler = _SessionSignalHandler(self, prev)
+        signal.signal(sig, handler)
+        self._signal_handlers.append((sig, handler))
 
-        def _handler(signum: int, frame: Any) -> None:
-            self._on_signal(signum, frame, prev)
+    def release_process_hooks(self) -> None:
+        """Undo what start() registered with the process, once the session
+        has ended; ``teardown()`` calls it, so a process that starts and
+        ends sessions in turn does not collect them.
 
-        signal.signal(sig, _handler)
+        The atexit callback is unregistered. Each signal handler lets go
+        of the session, and on the main thread, when it is still the
+        handler installed, the handler it replaced is put back. A handler
+        the application or another library installed since stays where
+        it is, with this session's handler under it, which from now on
+        passes every signal straight on; off the main thread, where a
+        handler cannot be changed, this session's handler stays installed
+        the same way and the next session's skips it.
+        """
+        atexit.unregister(self.end)
+        on_main_thread = threading.current_thread() is threading.main_thread()
+        for sig, handler in self._signal_handlers:
+            handler.session = None
+            previous = handler.previous
+            if on_main_thread and signal.getsignal(sig) is handler:
+                signal.signal(sig, previous)
+        self._signal_handlers.clear()
 
     def _on_signal(self, signum: int, frame: Any, prev: Any) -> None:
         """End the session for a SIGTERM / SIGINT, then pass the signal on.

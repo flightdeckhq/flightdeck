@@ -75,6 +75,35 @@ All notable changes to Flightdeck are documented here.
   Nothing had failed: the stop had cut that work short. Such a cut is
   now logged at debug level only and the service stops; work that fails
   while the server runs is logged as before.
+- **Sensor: a client kept across `teardown()` and a new `init()` reports
+  to the new session.** An application that ends a sensor session and
+  starts another in the same process, reusing its clients and models,
+  lost the second session's calls or sent them to the first. A
+  `ChatAnthropic` (and any Anthropic client's `with_raw_response` view,
+  which langchain-anthropic sends every request through) reported
+  nothing in the second session. An `OpenAI` client, a `ChatOpenAI`, a
+  client handed to litellm and a client returned by
+  `flightdeck_sensor.wrap()` kept reporting to the session that had
+  ended, so their calls never landed, and while the sensor was torn
+  down they were still policed by that session's policy and their
+  streamed chat requests still carried the sensor's `stream_options`.
+  Every call now reports to the session active when it is made, with
+  that session's capture setting, and with the sensor torn down it goes
+  to the provider untouched; nothing needs rebuilding. An SDK object
+  first touched while the sensor is unpatched (before the first
+  `patch()`, or between `teardown()` and the next `patch()`: a
+  `ChatOpenAI` built then, a `ChatAnthropic` first called then) is still
+  not metered. A call made on another thread while `init()` is starting
+  the session now goes to the provider untouched instead of reporting to
+  a session whose `session_start` had not been sent. `teardown()` now
+  unregisters the session's `atexit` callback and puts back the SIGTERM /
+  SIGINT handlers it replaced, so starting and ending sessions in turn no
+  longer keeps every ended session alive or grows a chain of signal
+  handlers, and an `init()` that fails (`FLIGHTDECK_UNAVAILABLE_POLICY=halt`
+  with the control plane down) closes what it opened, so it can be
+  retried. A sensored async call looks like the SDK's own at the call
+  (`inspect.iscoroutinefunction` answers alike, and a missing or unknown
+  argument raises when the call is made, as the SDK's does) (D281).
 
 ## v0.11.0 — 2026-11-15
 

@@ -468,6 +468,7 @@ def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any
     assert isinstance(wrapped, SensorAnthropic)
     guarded = wrapped.messages.stream(
         model="claude-sonnet-4-6",
+        max_tokens=10,
         messages=[],
     )
     assert isinstance(guarded, base.GuardedAsyncStream)

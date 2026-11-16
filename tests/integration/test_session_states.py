@@ -42,6 +42,17 @@ from .conftest import (
 # their window.
 RECONCILER_INTERVAL_SECS = 5
 
+# How far a test backdates a session's last_seen_at to put it past one
+# of the reconciler's thresholds on its next tick, without waiting the
+# threshold out. Each is an interval both Postgres (CAST(... AS
+# interval)) and SQLite's date modifiers read.
+# Past the 2-minute stale threshold, short of the 30-minute lost one.
+PAST_STALE_THRESHOLD = "3 minutes"
+# Past the 30-minute lost threshold.
+PAST_LOST_THRESHOLD = "31 minutes"
+# Past the orphan reaper's 24-hour default (FLIGHTDECK_ORPHAN_TIMEOUT_HOURS).
+PAST_ORPHAN_TIMEOUT = "25 hours"
+
 # Room for the worker to process a handful of events on a loaded runner,
 # and for a reconciler tick's result to reach the API: one reconcile
 # pass over the dev database plus the session-detail read, well under a

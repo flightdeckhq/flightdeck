@@ -11,11 +11,11 @@ so every update must also carry the run's state as the agent's
 rolled-up ``agent_state``. Each test removes what it wrote. Requires the
 dev stack (``make dev``).
 
-Each test opens the stream before it starts its run, and reads the run's
-own session_start broadcast off it (``start_run``) before it moves the
-session, so that broadcast, which can reach the stream after the API
-already returns the row, is never taken for one of the state changes the
-test collects.
+Each test opens the stream and starts its run through ``start_run``
+before it moves the session: the socket is then registered with the hub
+and the run's own session_start broadcast has been read, so that
+broadcast, which can reach the stream after the API already returns the
+row, is never taken for one of the state changes the test collects.
 """
 
 from __future__ import annotations
@@ -30,7 +30,13 @@ from websockets.asyncio.client import connect
 
 from ._ws import WS_URL, Update, await_update, start_run
 from .conftest import delete_flavor_data, exec_sql, make_event, post_event
-from .test_session_states import PROCESSING_SLACK_SECS, RECONCILER_POSITIVE_WAIT_SECS
+from .test_session_states import (
+    PAST_LOST_THRESHOLD,
+    PAST_ORPHAN_TIMEOUT,
+    PAST_STALE_THRESHOLD,
+    PROCESSING_SLACK_SECS,
+    RECONCILER_POSITIVE_WAIT_SECS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -108,13 +114,11 @@ def _assert_stale_then_lost(sid: str, flavor: str) -> None:
             # The flavor names the agent too, so the run is the agent's
             # only one.
             await start_run(ws, sid, flavor, agent_name=flavor)
-            # Past the 2-minute stale threshold, short of the 30-minute
-            # lost threshold.
-            _backdate(sid, "3 minutes")
+            await asyncio.to_thread(_backdate, sid, PAST_STALE_THRESHOLD)
             stale, seen_stale = await await_update(
                 ws, sid, _in_state("stale"), RECONCILER_POSITIVE_WAIT_SECS
             )
-            _backdate(sid, "31 minutes")
+            await asyncio.to_thread(_backdate, sid, PAST_LOST_THRESHOLD)
             lost, seen_lost = await await_update(
                 ws, sid, _in_state("lost"), RECONCILER_POSITIVE_WAIT_SECS
             )
@@ -154,7 +158,7 @@ def _assert_reaped(sid: str, flavor: str) -> None:
     async def drive() -> Update:
         async with connect(WS_URL) as ws:
             await start_run(ws, sid, flavor, agent_name=flavor)
-            _backdate(sid, "25 hours", state="lost")
+            await asyncio.to_thread(_backdate, sid, PAST_ORPHAN_TIMEOUT, state="lost")
             closed, _ = await await_update(
                 ws, sid, _in_state("closed"), RECONCILER_POSITIVE_WAIT_SECS
             )
@@ -205,18 +209,19 @@ def _assert_parent_revived(
             )
             # Put the parent where the reconciler would have: stale. Done
             # directly so the test does not wait out the 2-minute threshold.
-            _backdate(parent_sid, "3 minutes", state="stale")
-            post_event(
-                make_event(
-                    child_sid,
-                    child_flavor,
-                    "tool_call",
-                    parent_session_id=parent_sid,
-                    agent_role="worker",
-                    tool_name="Read",
-                    timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                )
+            await asyncio.to_thread(
+                _backdate, parent_sid, PAST_STALE_THRESHOLD, state="stale"
             )
+            child_call = make_event(
+                child_sid,
+                child_flavor,
+                "tool_call",
+                parent_session_id=parent_sid,
+                agent_role="worker",
+                tool_name="Read",
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+            await asyncio.to_thread(post_event, child_call)
             _, seen = await await_update(
                 ws, parent_sid, _in_state("active"), PROCESSING_SLACK_SECS
             )

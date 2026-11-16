@@ -564,14 +564,8 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return err
 	}
 
-	// The start-up clearing of stale session sequences is a safety net
-	// for a recreated stream, not a precondition for consuming: a
-	// failure here is logged and consumption goes ahead, since a pool
-	// that never subscribes would look healthy while nothing is
-	// processed.
-	if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
-		slog.Error("clearing stale session sequences failed",
-			"stream", streamName, "err", err)
+	if !c.clearStaleSequences(ctx, info.State.LastSeq) {
+		return nil
 	}
 
 	delivered, existed, err := ensureConsumer(js)
@@ -591,6 +585,30 @@ func (c *Consumer) Start(ctx context.Context) error {
 	return c.run(ctx, func() ([]*nats.Msg, error) {
 		return sub.Fetch(fetchBatch, nats.MaxWait(nats.DefaultTimeout))
 	})
+}
+
+// clearStaleSequences runs the processor's start-up clearing of stale
+// session sequences and reports whether the consumer goes on to
+// consume. The clearing is a safety net for a recreated stream, not a
+// precondition for consuming: a failure is logged and consumption goes
+// ahead, since a pool that never subscribes would look healthy while
+// nothing is processed. A clearing that fails because ctx ended is the
+// stop cutting it short, not an error: it is logged at debug level and
+// the consumer stops there, as it does when the stop comes while it
+// waits for the stream.
+func (c *Consumer) clearStaleSequences(ctx context.Context, lastSeq uint64) bool {
+	err := c.processor.StreamReady(ctx, lastSeq)
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		slog.Debug("clearing stale session sequences stopped by the shutdown",
+			"stream", streamName, "err", err)
+		return false
+	}
+	slog.Error("clearing stale session sequences failed",
+		"stream", streamName, "err", err)
+	return true
 }
 
 // streamWaitInterval is how often a worker that started before

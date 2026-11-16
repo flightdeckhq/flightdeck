@@ -20,6 +20,8 @@ import {
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
+import { RunLanes } from "./RunLanes";
+import { RUN_LANE_MAX_HEIGHT_PX, runLaneHeights } from "@/lib/run-lane-layout";
 import {
   SubAgentConnector,
   centreWithin,
@@ -102,7 +104,25 @@ interface TimelineProps {
    * timeline -- see filteredFlavors below for the flavor-level cull.
    */
   matchingSessionIds?: Set<string> | null;
+  /**
+   * Agents whose row draws as run lanes (``RunLanes``): one lane per
+   * run in the window. The per-agent swimlane modal names its agent;
+   * the Fleet view names none and keeps every row compact.
+   */
+  expandedAgentIds?: ReadonlySet<string>;
+  /**
+   * The height of the viewport the Timeline scrolls in. With
+   * ``expandedAgentIds``, the lanes share what the rest of the Timeline
+   * leaves of it (``runLaneHeights``).
+   */
+  fillHeight?: number;
+  /** Opens the per-agent swimlane modal; a row with two or more runs at
+   *  once then shows the runs chip (see SwimLane). */
+  onExpandRuns?: (agentId: string) => void;
 }
+
+/** Data attribute on each run lane, which the lane sizing counts. */
+const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
 
 export function Timeline({
   flavors,
@@ -115,6 +135,9 @@ export function Timeline({
   effectiveNowMs,
   sessionVersions,
   matchingSessionIds = null,
+  expandedAgentIds,
+  fillHeight,
+  onExpandRuns,
 }: TimelineProps) {
   // Resizable left panel width. Persisted to localStorage so the
   // user's preference survives page reloads. Clamped on init AND on
@@ -416,6 +439,40 @@ export function Timeline({
   // contract; the useLayoutEffect's body short-circuits cleanly
   // when there's nothing to measure.
   const innerContentRef = useRef<HTMLDivElement | null>(null);
+
+  // Run-lane sizing (the per-agent modal). Every lane gets an equal
+  // share of what the rest of the content leaves of ``fillHeight``. The
+  // rest is measured from the rendered content less the lanes, so the
+  // time axis, the ALL row in either state, the lane headings and any
+  // compact sub-agent rows all count without the Timeline knowing their
+  // heights. Measured after every render, and again whenever the content
+  // resizes: a lane opening or closing as a run enters or leaves the
+  // window can land without re-rendering the Timeline.
+  const hasRunLanes = expandedAgentIds !== undefined && expandedAgentIds.size > 0;
+  const [runLaneHeight, setRunLaneHeight] = useState(RUN_LANE_MAX_HEIGHT_PX);
+  const measureRunLanes = useCallback(() => {
+    const content = innerContentRef.current;
+    if (!content || fillHeight === undefined) return;
+    const lanes = content.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR);
+    if (lanes.length === 0) return;
+    let lanesPx = 0;
+    for (const lane of lanes) lanesPx += lane.offsetHeight;
+    const restPx = content.offsetHeight - lanesPx;
+    const next = runLaneHeights(lanes.length, fillHeight - restPx).laneHeight;
+    setRunLaneHeight((prev) => (prev === next ? prev : next));
+  }, [fillHeight]);
+  useLayoutEffect(() => {
+    if (hasRunLanes) measureRunLanes();
+  });
+  useEffect(() => {
+    if (!hasRunLanes || typeof ResizeObserver === "undefined") return;
+    const content = innerContentRef.current;
+    if (!content) return;
+    const observer = new ResizeObserver(() => measureRunLanes());
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [hasRunLanes, measureRunLanes]);
+
   const [connectorSpecs, setConnectorSpecs] = useState<
     SubAgentConnectorSpec[]
   >([]);
@@ -560,10 +617,12 @@ export function Timeline({
         // A circle within the panel's inset of "now" is clipped by its
         // row's timeline panel; a connector to its centre would run
         // past the now line. Skip the pair, as for an unmounted circle.
-        const parentPanel = parentRow.querySelector(
+        // The panel is the circle's own: a row drawn as run lanes has
+        // one per lane.
+        const parentPanel = parentCircle.closest(
           '[data-testid="swimlane-timeline-panel"]',
         );
-        const childPanel = childRow.querySelector(
+        const childPanel = childCircle.closest(
           '[data-testid="swimlane-timeline-panel"]',
         );
         if (
@@ -650,6 +709,33 @@ export function Timeline({
           />,
         );
       }
+      if (expandedAgentIds?.has(f.flavor)) {
+        // Drawn as run lanes, and never virtualized: the lane sizing
+        // counts the lanes in the DOM, and the modal holds few rows.
+        rendered.push(
+          <RunLanes
+            key={f.flavor}
+            flavor={f.flavor}
+            agentName={f.agent_name}
+            clientType={f.client_type ?? undefined}
+            telemetry={f.telemetry ?? undefined}
+            agentType={f.agent_type}
+            sessions={f.sessions}
+            scale={scale}
+            onSessionClick={onNodeClick}
+            timelineWidth={timelineWidth}
+            leftPanelWidth={leftPanelWidth}
+            activeFilter={activeFilter}
+            sessionVersions={sessionVersions}
+            matchingSessionIds={matchingSessionIds}
+            topology={topologyByFlavor.get(f.flavor) ?? "root"}
+            onScrollToAgent={scrollToAgentRow}
+            laneHeight={runLaneHeight}
+          />,
+        );
+        if (!isChild) prevBucket = b;
+        continue;
+      }
       rendered.push(
         <VirtualizedSwimLane
           key={f.flavor}
@@ -667,6 +753,7 @@ export function Timeline({
           sessionVersions={sessionVersions}
           matchingSessionIds={matchingSessionIds}
           topology={topologyByFlavor.get(f.flavor) ?? "root"}
+          onExpandRuns={onExpandRuns}
           onScrollToAgent={(agentId) => {
             // Clicking the relationship pill jumps to another agent's
             // swimlane row. We already stamp
@@ -705,6 +792,9 @@ export function Timeline({
     activeFilter,
     sessionVersions,
     matchingSessionIds,
+    expandedAgentIds,
+    runLaneHeight,
+    onExpandRuns,
   ]);
 
   if (flavors.length === 0) {

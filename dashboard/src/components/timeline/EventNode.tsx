@@ -123,6 +123,12 @@ export interface EventNodeProps {
    * centre line.
    */
   centrePct?: number;
+  /**
+   * The icon's size, for a circle the lane table does not cover (the
+   * per-agent modal's larger run-lane circle). Defaults to
+   * ``eventIconSize(size)``.
+   */
+  iconSize?: number;
 }
 
 /**
@@ -141,7 +147,7 @@ function EventNodeComponent({
   x, eventType, sessionId, flavor, model, toolName,
   tokensTotal, latencyMs, occurredAt, eventId, onClick,
   size = 24, isVisible = true, directiveName, directiveStatus,
-  isAttachment = false, lane, centrePct,
+  isAttachment = false, lane, centrePct, iconSize: iconSizeProp,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const override = eventType === "directive_result"
@@ -196,7 +202,7 @@ function EventNodeComponent({
       : config.label;
   const [hovered, setHovered] = useState(false);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
-  const iconSize = eventIconSize(size);
+  const iconSize = iconSizeProp ?? eventIconSize(size);
 
   const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -350,5 +356,6 @@ export const EventNode = memo(EventNodeComponent, (prev, next) => {
   if (prev.isAttachment !== next.isAttachment) return false;
   if (prev.lane !== next.lane) return false;
   if (prev.centrePct !== next.centrePct) return false;
+  if (prev.iconSize !== next.iconSize) return false;
   return true;
 });

@@ -390,6 +390,72 @@ export function overlapsInWindow(
   return false;
 }
 
+/**
+ * The most runs of ``segments`` running at one instant inside the
+ * window ``[d0, d1]``: 0 with nothing in it, 1 while no two overlap by
+ * more than ``toleranceMs`` (the rule ``overlapsInWindow`` splits a row
+ * by). The count is taken at each segment's start, where it can only
+ * rise, and counts runs, not segments, so it is the number a row split
+ * into lanes stands for, also past ``MAX_RUN_LANES``.
+ */
+export function maxConcurrentRuns(
+  segments: readonly RunSegment[],
+  d0: number,
+  d1: number,
+  toleranceMs: number,
+): number {
+  const clipped: { s: number; e: number; run: string }[] = [];
+  for (const seg of segments) {
+    const s = Math.max(seg.startMs, d0);
+    const e = Math.min(seg.endMs, d1);
+    if (e > s) clipped.push({ s, e, run: seg.sessionId });
+  }
+  let best = 0;
+  for (const at of clipped) {
+    const runs = new Set<string>([at.run]);
+    for (const other of clipped) {
+      if (other.s <= at.s && other.e > at.s + toleranceMs) runs.add(other.run);
+    }
+    best = Math.max(best, runs.size);
+  }
+  return best;
+}
+
+/** One lane of the per-agent swimlane modal: a run and its segments in
+ *  view. */
+export interface RunLane {
+  sessionId: string;
+  /** The run's start (its first segment's), which orders the lanes. */
+  startMs: number;
+  /** The run's segments that overlap the window. */
+  segments: RunSegment[];
+}
+
+/**
+ * The modal's lanes: one per run with a segment overlapping
+ * ``[d0, d1]``, whether or not it overlaps another run, so a run that
+ * finishes keeps its lane until its last segment leaves the window.
+ * Lanes are ordered by the run's start, ties by run id. A run's start
+ * never changes, so a new run lands below the lanes already shown and
+ * none of them moves; a run that leaves the window closes its lane.
+ */
+export function runLanesInView(
+  runs: readonly { sessionId: string; segments: readonly RunSegment[] }[],
+  d0: number,
+  d1: number,
+): RunLane[] {
+  const lanes: RunLane[] = [];
+  for (const run of runs) {
+    if (run.segments.length === 0) continue;
+    const inView = run.segments.filter((s) => s.startMs <= d1 && s.endMs >= d0);
+    if (inView.length === 0) continue;
+    const startMs = Math.min(...run.segments.map((s) => s.startMs));
+    lanes.push({ sessionId: run.sessionId, startMs, segments: inView });
+  }
+  lanes.sort((a, b) => a.startMs - b.startMs || compareIds(a.sessionId, b.sessionId));
+  return lanes;
+}
+
 /** One glyph to pack in a lane of the row. */
 export interface GlyphBox {
   key: string;
@@ -555,6 +621,10 @@ export interface RowLaneLayout {
   laneCount: number;
   /** More tracks are in view than lanes, so the last lane is shared. */
   overflow: boolean;
+  /** The most runs in view running at one instant (``maxConcurrentRuns``):
+   *  2 or more exactly when the row splits, 1 on a one-line row with a
+   *  run in view, 0 with none. */
+  concurrency: number;
   /** Every segment in view with its lane. */
   placements: SegmentPlacement[];
   /** The glyphs of the segments in view, by lane and then left to
@@ -586,7 +656,8 @@ const MIN_LINE_WIDTH_PX = 1;
  *
  * ``toX`` maps a time to an x in the panel's inset wrapper, and
  * ``visibleLeft`` / ``visibleRight`` are the panel's edges in those
- * coordinates.
+ * coordinates. ``drawLines`` draws the run lines on a one-line row too:
+ * the per-agent modal lays out each run's own lane that way.
  */
 export function layoutRowLanes({
   segments,
@@ -595,6 +666,7 @@ export function layoutRowLanes({
   toX,
   visibleLeft,
   visibleRight,
+  drawLines = false,
 }: {
   segments: readonly RunSegment[];
   d0: number;
@@ -602,10 +674,18 @@ export function layoutRowLanes({
   toX: (ms: number) => number;
   visibleLeft: number;
   visibleRight: number;
+  drawLines?: boolean;
 }): RowLaneLayout {
   const rangeMs = d1 - d0;
   if (!(rangeMs > 0)) {
-    return { laneCount: 1, overflow: false, placements: [], glyphs: [], lines: [] };
+    return {
+      laneCount: 1,
+      overflow: false,
+      concurrency: 0,
+      placements: [],
+      glyphs: [],
+      lines: [],
+    };
   }
   const spanPx = toX(d1) - toX(d0);
   const msPerPx = spanPx > 0 ? rangeMs / spanPx : 0;
@@ -614,6 +694,7 @@ export function layoutRowLanes({
   const tracks = assignSegmentTracks(segments, rangeMs, toleranceMs);
   const inView = segments.filter((s) => s.startMs <= d1 && s.endMs >= d0);
   const split = overlapsInWindow(inView, d0, d1, toleranceMs);
+  const concurrency = maxConcurrentRuns(inView, d0, d1, toleranceMs);
 
   // The tracks in view become lanes, in track order.
   const shownTracks = [...new Set(inView.map((s) => tracks.get(segmentKey(s)) ?? 0))].sort(
@@ -700,7 +781,7 @@ export function layoutRowLanes({
   glyphs.sort((a, b) => a.lane - b.lane || a.left - b.left);
 
   const lines: RowLine[] = [];
-  if (split) {
+  if (split || drawLines) {
     const clampX = (x: number) => Math.min(Math.max(x, visibleLeft), visibleRight);
     for (const { segment, lane } of placements) {
       const startInView = segment.startMs >= d0 && segment.startMs <= d1;
@@ -732,7 +813,7 @@ export function layoutRowLanes({
     lines.sort((a, b) => a.lane - b.lane || a.x1 - b.x1);
   }
 
-  return { laneCount, overflow, placements, glyphs, lines };
+  return { laneCount, overflow, concurrency, placements, glyphs, lines };
 }
 
 /**

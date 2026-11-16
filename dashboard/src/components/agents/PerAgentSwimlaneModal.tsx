@@ -311,12 +311,29 @@ export function PerAgentSwimlaneModal({
   // ref read in that first commit is still null. The callback ref
   // snaps when the element attaches, and the layout effect snaps
   // again when the range or the scope changes.
+  //
+  // The same element's height is the space the agent's run lanes
+  // share (Timeline's ``fillHeight``): it changes with the window, the
+  // Live feed's resize handle and the header's wrap, so it is observed.
   const swimScrollRef = useRef<HTMLDivElement | null>(null);
+  const [swimViewportHeight, setSwimViewportHeight] = useState<number | undefined>(undefined);
   const attachSwimScroll = useCallback((el: HTMLDivElement | null) => {
     swimScrollRef.current = el;
-    if (el) snapToNow(el);
+    if (!el) return;
+    snapToNow(el);
+    setSwimViewportHeight(el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setSwimViewportHeight(el.clientHeight));
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
   const open = agent !== null;
+  // The agent's own row draws as run lanes, one per run; its sub-agents
+  // stay compact rows.
+  const expandedAgentIds = useMemo(
+    () => new Set(agentId ? [agentId] : []),
+    [agentId],
+  );
   useLayoutEffect(() => {
     if (!open) return;
     const el = swimScrollRef.current;
@@ -566,6 +583,8 @@ export function PerAgentSwimlaneModal({
                 <Timeline
                   flavors={scopedFlavors}
                   timeRange={timeRange}
+                  expandedAgentIds={expandedAgentIds}
+                  fillHeight={swimViewportHeight}
                   onNodeClick={(sessionId, _eventId, event) => {
                     // An event circle opens the event drawer; a run
                     // glyph (no event) opens the run drawer.

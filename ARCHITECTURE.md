@@ -2533,9 +2533,9 @@ changes; the lookup costs about 0.2 µs per call on a developer machine
 0.05 µs for a proxy with a fixed session. Making an async call also runs
 the SDK's own argument check up front, so that a bad argument raises when
 the call is made, as without the sensor: making the call, up to the
-coroutine it returns, takes about 5.2 µs for an OpenAI
+coroutine it returns, takes about 6 µs for an OpenAI
 `chat.completions.create` through a kept proxy against 1.8 µs unsensored,
-and about 3.0 µs for the patched Anthropic `messages.create` against
+and about 3.1 µs for the patched Anthropic `messages.create` against
 1.7 µs (Python 3.13 on a developer machine, a session active, the
 coroutine closed unawaited). Re-patching an Anthropic
 resource class installs the very methods it installed before, so a raw

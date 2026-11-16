@@ -414,8 +414,10 @@ class CoroutineFunctionLike:
         # Class attributes, so read from the instance dict rather than
         # through __getattr__.
         function = _function_of(like)
-        self.__doc__ = function.__doc__
-        self.__module__ = function.__module__
+        self.__doc__ = getattr(function, "__doc__", None)
+        module = getattr(function, "__module__", None)
+        if isinstance(module, str):
+            self.__module__ = module
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._call(*args, **kwargs)
@@ -442,10 +444,13 @@ def _function_like(call: Callable[..., Any], like: Callable[..., Any]) -> Callab
         return call(*args, **kwargs)
 
     function = _function_of(like)
-    method.__name__ = function.__name__
-    method.__qualname__ = function.__qualname__
-    method.__doc__ = function.__doc__
-    method.__module__ = function.__module__
+    # Copied when present: a stand-in for the SDK's method (a test double)
+    # may lack some, and a missing one must never cost the call its
+    # interception.
+    for name in ("__name__", "__qualname__", "__doc__", "__module__"):
+        value = getattr(function, name, None)
+        if isinstance(value, str) or (name == "__doc__" and value is None):
+            setattr(method, name, value)
     method.__wrapped__ = like  # type: ignore[attr-defined]
     return method
 
@@ -483,12 +488,19 @@ class SDKMethod:
         bound = types.MethodType(self._function, instance)
         if not instance._is_async:
             return bound
-        sdk_method = getattr(instance._real, self._name, None)
-        if sdk_method is None:
+        # An AttributeError raised here would send the lookup to the
+        # proxy's __getattr__, the SDK's unsensored method: shaping is
+        # best effort, the bound method the fallback.
+        try:
+            sdk_method = getattr(instance._real, self._name, None)
+            if sdk_method is None:
+                return bound
+            if _is_coroutine_function(sdk_method):
+                return CoroutineFunctionLike(bound, sdk_method)
+            return _function_like(bound, sdk_method)
+        except Exception:
+            _log.debug("SDK method %s not shaped", self._name, exc_info=True)
             return bound
-        if _is_coroutine_function(sdk_method):
-            return CoroutineFunctionLike(bound, sdk_method)
-        return _function_like(bound, sdk_method)
 
 
 def drain_deferred_settles(session: Session) -> None:

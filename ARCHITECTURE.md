@@ -7929,7 +7929,7 @@ lanes (see SwimLane).
   viewport that the rest of the Timeline (time axis, ALL row, AGENTS
   header, the group's heading, any sub-agent rows) leaves, down to the
   Live feed. `Timeline` measures that rest from the rendered content
-  (its `viewport` prop carries the scroll viewport's size and scroll),
+  (its `viewportHeight` prop is the scroll viewport's client height),
   so the feed's height, the ALL row toggle and a sub-agent row all
   re-size the lanes. `runLaneHeights` in `lib/run-lane-layout.ts` gives
   each of N lanes an equal whole-pixel share between
@@ -7948,9 +7948,9 @@ lanes (see SwimLane).
   viewport scrolls vertically. The modal's Timeline reports the lanes
   drawn and the height of the rest of its content (`onRunLaneSpace`),
   which the feed's height does not change; the modal reads the feed's
-  body and the scroll viewport from the page together, so their sum is
-  fixed and the cap (`LiveFeed`'s `maxBodyHeight`) holds once the feed
-  takes it. With room to spare the feed grows back to the height the
+  body (through `LiveFeed`'s `bodyRef`) and the scroll viewport from
+  the page together, so their sum is fixed and the cap (`LiveFeed`'s
+  `maxBodyHeight`) holds once the feed takes it. With room to spare the feed grows back to the height the
   operator chose. Once the operator drags the
   feed's resize handle, the feed keeps their height and the lanes
   scroll instead. The heading row and the AGENTS header stay.
@@ -7958,7 +7958,11 @@ lanes (see SwimLane).
   short id (the first 8 characters, as the Live feed's RUN column
   shows it), its state (`AgentStatusBadge` with the run's own state),
   its model, and its tokens so far (`formatTokens`, as the modal
-  header's KPI tiles read them). It sits 12 px further in than its
+  header's KPI tiles read them). The run's model is the model of most
+  of its LLM calls in the window, ties going to the model called first
+  (`dominantModel`), else the session row's: the session row carries
+  the latest call's model, which in a run that switches models now and
+  then would flip the label, and every LLM call's text, at each switch. It sits 12 px further in than its
   heading's text, for a root and a sub-agent row alike.
 - **Lane panel.** Each lane draws only its run: its run line through
   the lane's centre (dashed past a stale run's last signal), its ▶ and
@@ -7971,13 +7975,17 @@ lanes (see SwimLane).
   its tool name and an LLM call (`pre_call`, `post_call`, `embeddings`,
   `llm_error`) its model, without a trailing `-YYYYMMDD` date and cut
   to 18 characters with an ellipsis (`markerText`). An LLM call on the
-  run's own model, which the lane label already names, carries none,
-  so the room goes to the tool names. `placeMarkerLabels` keeps a text
+  run's model as the lane label shows it (its dominant model above)
+  carries none, so the room goes to the tool names. `placeMarkerLabels` keeps a text
   only by a circle wholly inside the visible part of the panel: right
   of the sticky label column at the current horizontal scroll, left of
   the scroll viewport's edge, and left of the now line (the panel's
   width less the scale's 19 px inset), the text inside it too. The
-  modal reads the viewport's scroll at most once a frame.
+  modal reads the viewport's width and horizontal scroll at most once
+  a frame into a small store outside React state (`lib/lane-viewport.ts`)
+  that only the lanes read, so a sideways scroll re-renders the lanes'
+  text placement and not the modal, its header, its Timeline or its
+  Live feed.
   - On a lane shorter than `MARKER_TEXT_STACKED_MIN_LANE_PX` (63 px:
     the circle at its hover scale, and an 11 px text with a 3 px gap
     above and below it) the text sits beside its circle, 4 px right of

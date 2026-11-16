@@ -20,7 +20,13 @@ All notable changes to Flightdeck are documented here.
   streamed chat requests still carried the sensor's `stream_options`.
   Every call now reports to the session active when it is made, with
   that session's capture setting, and with the sensor torn down it goes
-  to the provider untouched; nothing needs rebuilding (D281).
+  to the provider untouched; nothing needs rebuilding. An SDK object
+  first touched while the sensor is unpatched (before the first
+  `patch()`, or between `teardown()` and the next `patch()`: a
+  `ChatOpenAI` built then, a `ChatAnthropic` first called then) is still
+  not metered. A call made on another thread while `init()` is starting
+  the session now goes to the provider untouched instead of reporting to
+  a session whose `session_start` had not been sent (D281).
 
 ## v0.11.0 — 2026-11-15
 

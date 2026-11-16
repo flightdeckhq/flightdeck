@@ -91,13 +91,12 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import functools
 import inspect
 import json
 import logging
 import time
 import types
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.core.types import EventType
@@ -107,8 +106,6 @@ from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from flightdeck_sensor.core.session import Session
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
@@ -465,7 +462,10 @@ class _HelperRequest:
     whose own ``chat`` is not patched, its request is metered too. Every
     other attribute (``retrieve`` for resuming a stored response) is the
     proxy's. The guards the helper opened are kept so the manager's exit
-    can settle them."""
+    can settle them. A request the proxy passed to the SDK untouched (the
+    sensor was torn down by the time the manager sent it: a sync manager
+    sends on entry) opened no guard, and the SDK's own stream it returns
+    is left to the SDK's manager."""
 
     def __init__(self, proxy: Any) -> None:
         self._proxy = proxy
@@ -475,18 +475,22 @@ class _HelperRequest:
         return self.send(self._proxy, kwargs)
 
     def send(self, proxy: Any, kwargs: dict[str, Any]) -> Any:
-        """``proxy.create(**kwargs)``, keeping the guard it opens."""
+        """``proxy.create(**kwargs)``, keeping the guard it opens, if any."""
         result = proxy.create(**_given(kwargs))
         if inspect.iscoroutine(result):
 
             async def _opened() -> Any:
-                guard = await result
-                self.guards.append(guard)
-                return guard
+                opened = await result
+                self._keep(opened)
+                return opened
 
             return _opened()
-        self.guards.append(result)
+        self._keep(result)
         return result
+
+    def _keep(self, opened: Any) -> None:
+        if isinstance(opened, base._GuardCore):
+            self.guards.append(opened)
 
     def __getattr__(self, name: str) -> Any:
         value = getattr(self._proxy, name)
@@ -619,9 +623,12 @@ class SensorCompletions(base.SessionProxy):
         Async streaming is supported via
         :func:`base.call_stream_async`. Sync and async streaming go through
         guarded wrappers that measure TTFT, chunk count, and abort
-        reasons.
+        reasons. A following async proxy resolves its session when the
+        call is awaited (see :meth:`base.SessionProxy._call`).
         """
-        target = self._target()
+        return self._call(self._create, kwargs)
+
+    def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
             return self._real.create(**kwargs)
         session, provider = target
@@ -905,10 +912,14 @@ class SensorResponses(base.SessionProxy):
         ``stream=True`` takes the stream guard: Responses streams carry
         their usage on the ``response.completed`` event, which the guard
         reads as the chunk passes through. No ``stream_options`` injection
-        is needed on this API.
+        is needed on this API. A following async proxy resolves its
+        session when the call is awaited (see
+        :meth:`base.SessionProxy._call`).
         """
+        return self._call(self._create, kwargs)
+
+    def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         real_fn = self._real.create
-        target = self._target()
         if target is None:
             return real_fn(**kwargs)
         session, provider = target
@@ -1078,6 +1089,10 @@ class SensorBeta(base.SessionProxy):
         return getattr(self._real, name)
 
 
+# A sensor resource proxy class, for SensorOpenAI._resource.
+_Proxy = TypeVar("_Proxy", bound=base.SessionProxy)
+
+
 class SensorOpenAI(base.SessionProxy):
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
@@ -1107,7 +1122,7 @@ class SensorOpenAI(base.SessionProxy):
         )
         self._client = client
 
-    def _resource(self, name: str, proxy_cls: type[base.SessionProxy]) -> Any:
+    def _resource(self, name: str, proxy_cls: type[_Proxy]) -> _Proxy:
         """The client's ``name`` resource behind a ``proxy_cls`` proxy."""
         return proxy_cls(
             getattr(self._client, name),
@@ -1118,22 +1133,22 @@ class SensorOpenAI(base.SessionProxy):
         )
 
     @property
-    def chat(self) -> Any:
+    def chat(self) -> SensorChat:
         """Return a :class:`SensorChat` proxy that intercepts completions."""
         return self._resource("chat", SensorChat)
 
     @property
-    def responses(self) -> Any:
+    def responses(self) -> SensorResponses:
         """Return a :class:`SensorResponses` proxy that intercepts create()."""
         return self._resource("responses", SensorResponses)
 
     @property
-    def embeddings(self) -> Any:
+    def embeddings(self) -> SensorEmbeddings:
         """Return a :class:`SensorEmbeddings` proxy that intercepts create()."""
         return self._resource("embeddings", SensorEmbeddings)
 
     @property
-    def beta(self) -> Any:
+    def beta(self) -> SensorBeta:
         """Return a :class:`SensorBeta` proxy that intercepts ``beta.chat``."""
         return self._resource("beta", SensorBeta)
 
@@ -1204,20 +1219,16 @@ def _current_session() -> Session | None:
     return flightdeck_sensor._session
 
 
-def _carries(cls: Any, sentinel_attr: str) -> bool:
-    """Whether ``cls`` still carries the class patch's ``sentinel_attr``."""
-    return sentinel_attr in cls.__dict__
-
-
-def _follow_for(client: Any, patched: Callable[[], bool] | None) -> base.FollowSession:
+def _follow_for(client: Any, patched_on: tuple[type, str] | None) -> base.FollowSession:
     """How a proxy the class patch hands out for ``client`` finds its
-    session: the one active at each call, while ``patched`` (the class
-    still carrying the patch) holds. The proxy outlives the session it
-    was first built in -- in the client's ``__dict__``, or in a framework
-    that keeps ``client.chat.completions`` -- so after ``teardown()`` its
-    calls go to the SDK untouched, and after a new ``init()`` and
-    ``patch()`` they report to the new session."""
-    return base.FollowSession(client, _provider_for, patched)
+    session: the one active at each call, while the class in
+    ``patched_on`` still carries the sentinel attribute named there. The
+    proxy outlives the session it was first built in -- in the client's
+    ``__dict__``, or in a framework that keeps ``client.chat.completions``
+    -- so after ``teardown()`` its calls go to the SDK untouched, and
+    after a new ``init()`` and ``patch()`` they report to the new
+    session."""
+    return base.FollowSession(client, _provider_for, patched_on)
 
 
 class _OpenAIChatDescriptor:
@@ -1246,9 +1257,9 @@ class _OpenAIChatDescriptor:
         self._original = original  # the original functools.cached_property
         self._is_async = is_async
         self._attr_name: str | None = None
-        # Whether the class still carries this patch; set by
-        # _patch_one_resource.
-        self._patched: Callable[[], bool] | None = None
+        # The class this descriptor is installed on and its sentinel
+        # attribute; set by _patch_one_resource.
+        self._patched_on: tuple[type, str] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1273,7 +1284,7 @@ class _OpenAIChatDescriptor:
             session,
             _provider_for(client, session),
             is_async=self._is_async,
-            follow=_follow_for(client, self._patched),
+            follow=_follow_for(client, self._patched_on),
         )
 
         if self._attr_name is not None:
@@ -1309,7 +1320,7 @@ class _OpenAIResponsesDescriptor:
         self._original = original
         self._is_async = is_async
         self._attr_name: str | None = None
-        self._patched: Callable[[], bool] | None = None
+        self._patched_on: tuple[type, str] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1329,7 +1340,7 @@ class _OpenAIResponsesDescriptor:
             session,
             _provider_for(instance, session),
             is_async=self._is_async,
-            follow=_follow_for(instance, self._patched),
+            follow=_follow_for(instance, self._patched_on),
         )
 
         if self._attr_name is not None:
@@ -1354,7 +1365,7 @@ class _OpenAIEmbeddingsDescriptor:
         self._original = original
         self._is_async = is_async
         self._attr_name: str | None = None
-        self._patched: Callable[[], bool] | None = None
+        self._patched_on: tuple[type, str] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1374,7 +1385,7 @@ class _OpenAIEmbeddingsDescriptor:
             session,
             _provider_for(instance, session),
             is_async=self._is_async,
-            follow=_follow_for(instance, self._patched),
+            follow=_follow_for(instance, self._patched_on),
         )
 
         if self._attr_name is not None:
@@ -1419,14 +1430,14 @@ class _OpenAIConstructedResourceDescriptor:
         *,
         is_async: bool,
         attr_name: str,
-        patched: Callable[[], bool] | None = None,
+        patched_on: tuple[type, str] | None = None,
     ) -> None:
         self._wrapper_cls = wrapper_cls
         self._is_async = is_async
         # Set here as well as by ``__set_name__``, which Python does not
         # call for a descriptor assigned to a class after it is created.
         self._attr_name = attr_name
-        self._patched = patched
+        self._patched_on = patched_on
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1461,7 +1472,7 @@ class _OpenAIConstructedResourceDescriptor:
             session,
             _provider_for(instance, session),
             is_async=self._is_async,
-            follow=_follow_for(instance, self._patched),
+            follow=_follow_for(instance, self._patched_on),
         )
         proxies[self._attr_name] = wrapped
         return wrapped
@@ -1621,7 +1632,7 @@ def _patch_one_resource(
                 wrapper_cls,
                 is_async=is_async,
                 attr_name=attr_name,
-                patched=functools.partial(_carries, cls, sentinel_attr),
+                patched_on=(cls, sentinel_attr),
             )
             setattr(cls, sentinel_attr, _CONSTRUCTED_RESOURCE)
             setattr(cls, attr_name, constructed)
@@ -1645,7 +1656,7 @@ def _patch_one_resource(
         is_async=is_async,
     )
     new_descriptor._attr_name = attr_name
-    new_descriptor._patched = functools.partial(_carries, cls, sentinel_attr)
+    new_descriptor._patched_on = (cls, sentinel_attr)
     setattr(cls, attr_name, new_descriptor)
 
     if not quiet:

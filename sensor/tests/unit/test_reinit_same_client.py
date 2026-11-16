@@ -29,7 +29,10 @@ import respx
 import flightdeck_sensor
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
-from flightdeck_sensor.interceptor.anthropic import unpatch_anthropic_classes
+from flightdeck_sensor.interceptor.anthropic import (
+    patch_anthropic_classes,
+    unpatch_anthropic_classes,
+)
 from flightdeck_sensor.interceptor.openai import unpatch_openai_classes
 
 if TYPE_CHECKING:
@@ -38,9 +41,16 @@ if TYPE_CHECKING:
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 OPENAI_MODEL = "gpt-4o-mini"
 PROMPT = "SECRET-PROMPT-reinit-6b2e"
+# The argument the model's streamed tool call carries: content, so it may
+# leave the process only with capture on.
+TOOL_ARG = "SECRET-TOOL-INPUT-reinit-3f8a"
 HI = [{"role": "user", "content": PROMPT}]
 ANTHROPIC_REQUEST: dict[str, Any] = {"model": ANTHROPIC_MODEL, "max_tokens": 10, "messages": HI}
 OPENAI_REQUEST: dict[str, Any] = {"model": OPENAI_MODEL, "messages": HI}
+
+# How long a test waits on another thread it started; a healthy run
+# takes milliseconds.
+_THREAD_WAIT_SECS = 10.0
 
 # The events one metered call builds (a session's own start and end are
 # not calls).
@@ -54,6 +64,7 @@ _SENSOR_ENV = (
     "FLIGHTDECK_API_URL",
     "FLIGHTDECK_SESSION_ID",
     "FLIGHTDECK_CAPTURE_PROMPTS",
+    "FLIGHTDECK_CAPTURE_TOOL_INPUTS",
 )
 
 
@@ -80,22 +91,58 @@ MESSAGE: dict[str, Any] = {
 }
 
 
+WEATHER_TOOL_ANTHROPIC = {
+    "name": "get_weather",
+    "description": "The weather in a city.",
+    "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+WEATHER_TOOL_OPENAI = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "The weather in a city.",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    },
+}
+
+
 def _anthropic_reply(request: httpx.Request) -> httpx.Response:
-    if json.loads(request.content or b"{}").get("stream") is not True:
+    body = json.loads(request.content or b"{}")
+    if body.get("stream") is not True:
         return httpx.Response(200, json=MESSAGE, headers={"request-id": "req_reinit"})
     start = {**MESSAGE, "content": [], "stop_reason": None}
     start["usage"] = {"input_tokens": 12, "output_tokens": 1}
-    return _sse(
-        [
-            ("message_start", {"type": "message_start", "message": start}),
+    if body.get("tools"):
+        # A streamed tool call whose argument carries TOOL_ARG.
+        block: dict[str, Any] = {"type": "tool_use", "id": "toolu_1", "name": "get_weather"}
+        block["input"] = {}
+        deltas = ['{"city": "', TOOL_ARG + '"}']
+        stop = "tool_use"
+    else:
+        block = {"type": "text", "text": ""}
+        deltas = []
+        stop = "end_turn"
+    frames: list[tuple[str | None, Any]] = [
+        ("message_start", {"type": "message_start", "message": start}),
+        (
+            "content_block_start",
+            {"type": "content_block_start", "index": 0, "content_block": block},
+        ),
+    ]
+    if deltas:
+        frames += [
             (
-                "content_block_start",
+                "content_block_delta",
                 {
-                    "type": "content_block_start",
+                    "type": "content_block_delta",
                     "index": 0,
-                    "content_block": {"type": "text", "text": ""},
+                    "delta": {"type": "input_json_delta", "partial_json": part},
                 },
-            ),
+            )
+            for part in deltas
+        ]
+    else:
+        frames.append(
             (
                 "content_block_delta",
                 {
@@ -103,19 +150,21 @@ def _anthropic_reply(request: httpx.Request) -> httpx.Response:
                     "index": 0,
                     "delta": {"type": "text_delta", "text": "Hello"},
                 },
-            ),
-            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            (
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                    "usage": {"output_tokens": 9},
-                },
-            ),
-            ("message_stop", {"type": "message_stop"}),
-        ]
-    )
+            )
+        )
+    frames += [
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": stop, "stop_sequence": None},
+                "usage": {"output_tokens": 9},
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return _sse(frames)
 
 
 USAGE = {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21}
@@ -151,6 +200,20 @@ def _openai_reply(request: httpx.Request) -> httpx.Response:
             },
         )
     usage_chunk = {**_chunk({}, None), "choices": [], "usage": USAGE}
+    if json.loads(request.content).get("tools"):
+        # A streamed tool call whose argument carries TOOL_ARG.
+        call = {"index": 0, "id": "call_1", "type": "function"}
+        call["function"] = {"name": "get_weather", "arguments": ""}
+        rest = {"index": 0, "function": {"arguments": '{"city": "' + TOOL_ARG + '"}'}}
+        return _sse(
+            [
+                (None, _chunk({"role": "assistant", "tool_calls": [call]}, None)),
+                (None, _chunk({"tool_calls": [rest]}, None)),
+                (None, _chunk({}, "tool_calls")),
+                (None, usage_chunk),
+                (None, "[DONE]"),
+            ]
+        )
     return _sse(
         [
             (None, _chunk({"role": "assistant", "content": "Hel"}, None)),
@@ -484,45 +547,215 @@ def test_a_block_policy_of_the_ended_session_never_blocks_a_call_while_torn_down
     assert completion.choices[0].message.content == "Hello"
 
 
+# ----- a stream manager built in one session and entered later --------------
+#
+# The SDKs' .stream() helpers build a manager and send the request only
+# when it is entered; whatever the sensor is doing then decides.
+
+
+def _openai_manager(client: Any) -> Any:
+    return client.chat.completions.stream(**OPENAI_REQUEST)
+
+
+def _enter_sync(manager: Any) -> str:
+    with manager as stream:
+        return str(stream.get_final_completion().choices[0].message.content)
+
+
+async def _enter_async(manager: Any) -> str:
+    async with manager as stream:
+        completion = await stream.get_final_completion()
+    return str(completion.choices[0].message.content)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_an_openai_stream_manager_entered_after_teardown_goes_to_the_sdk_untouched(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+) -> None:
+    route = provider.routes["chat"]
+    sensor.start("s1")
+    client = openai.AsyncOpenAI(api_key="k") if is_async else openai.OpenAI(api_key="k")
+    manager = _openai_manager(client)
+    sensor.stop()
+
+    def enter() -> Any:
+        return _enter_async(manager) if is_async else _enter_sync(manager)
+
+    sent = route.call_count
+    assert sensor.run(enter) == []
+    assert route.call_count == sent + 1
+    assert "stream_options" not in json.loads(route.calls.last.request.content)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_an_openai_stream_manager_entered_in_the_next_session_reports_to_it(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+) -> None:
+    sensor.start("s1")
+    client = openai.AsyncOpenAI(api_key="k") if is_async else openai.OpenAI(api_key="k")
+    manager = _openai_manager(client)
+    sensor.stop()
+    sensor.start("s2")
+    replies: list[str] = []
+
+    def enter() -> Any:
+        if is_async:
+
+            async def _entered() -> None:
+                replies.append(await _enter_async(manager))
+
+            return _entered()
+        replies.append(_enter_sync(manager))
+        return None
+
+    assert sensor.run(enter) == [("s2", "pre_call"), ("s2", "post_call")]
+    assert replies == ["Hello"]
+
+
+def test_an_openai_stream_manager_entered_after_a_teardown_on_another_thread(
+    sensor: _Sensor, provider: respx.MockRouter
+) -> None:
+    sensor.start("s1")
+    manager = _openai_manager(openai.OpenAI(api_key="k"))
+    stopper = threading.Thread(target=sensor.stop)
+    stopper.start()
+    stopper.join()
+    replies: list[str] = []
+    assert sensor.run(lambda: replies.append(_enter_sync(manager))) == []
+    assert replies == ["Hello"]
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_an_anthropic_stream_manager_entered_after_teardown_raises_nothing(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+) -> None:
+    """Anthropic's ``stream()`` reads the session once, when it is
+    called: the call began under the first session, which was policed
+    then, and is reported to it, as a stream still open at teardown is.
+    Entering the manager after ``teardown()`` sends the request and
+    raises nothing."""
+    sensor.start("s1")
+    if is_async:
+        manager = anthropic.AsyncAnthropic(api_key="k").messages.stream(**ANTHROPIC_REQUEST)
+    else:
+        manager = anthropic.Anthropic(api_key="k").messages.stream(**ANTHROPIC_REQUEST)
+    sensor.stop()
+
+    async def _enter_async_stream() -> str:
+        async with manager as stream:
+            message = await stream.get_final_message()
+        return str(message.content[0].text)
+
+    def _enter_sync_stream() -> str:
+        with manager as stream:
+            return str(stream.get_final_message().content[0].text)
+
+    replies: list[str] = []
+
+    async def _entered() -> None:
+        replies.append(await _enter_async_stream())
+
+    events = sensor.run(_entered if is_async else lambda: replies.append(_enter_sync_stream()))
+    assert replies == ["Hello"]
+    assert {name for name, _ in events} <= {"s1"}
+
+
+# ----- init() publishes the session once it has started -------------------
+
+
+def test_a_call_while_init_is_starting_the_session_goes_to_the_sdk_untouched(
+    sensor: _Sensor, provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call on another thread looks the session up without init()'s
+    lock: while init() is still starting the session (its session_start
+    not yet sent) the call finds no session and goes to the SDK
+    untouched; once init() returns it reports to the session."""
+    patch_anthropic_classes(quiet=True)
+    client = anthropic.Anthropic(api_key="k", max_retries=0)
+    starting = threading.Event()
+    go_on = threading.Event()
+    start = Session.start
+
+    def _slow_start(self: Session) -> None:
+        starting.set()
+        go_on.wait(_THREAD_WAIT_SECS)
+        start(self)
+
+    monkeypatch.setattr(Session, "start", _slow_start)
+    initialiser = threading.Thread(target=sensor.start, args=("s1",))
+    initialiser.start()
+    try:
+        assert starting.wait(_THREAD_WAIT_SECS)
+        assert flightdeck_sensor._session is None
+        assert sensor.run(lambda: client.messages.create(**ANTHROPIC_REQUEST)) == []
+    finally:
+        go_on.set()
+        initialiser.join(_THREAD_WAIT_SECS)
+    assert sensor.run(lambda: client.messages.create(**ANTHROPIC_REQUEST)) == [
+        ("s1", "pre_call"),
+        ("s1", "post_call"),
+    ]
+
+
 # ----- the capture setting is the active session's ------------------------
+
+
+def _capture_call(sdk: str, kind: str) -> Callable[[], Any]:
+    """A call through a kept client: plain, or streamed with a tool call
+    whose argument is TOOL_ARG (the path through the raw view for
+    Anthropic, as langchain-anthropic streams)."""
+    if sdk == "anthropic":
+        claude = anthropic.Anthropic(api_key="k", max_retries=0)
+        if kind == "plain":
+            return lambda: claude.messages.with_raw_response.create(**ANTHROPIC_REQUEST).parse()
+        return lambda: list(
+            claude.messages.with_raw_response.create(
+                **ANTHROPIC_REQUEST, tools=[WEATHER_TOOL_ANTHROPIC], stream=True
+            ).parse()
+        )
+    gpt = openai.OpenAI(api_key="k", max_retries=0)
+    if kind == "plain":
+        return lambda: gpt.chat.completions.create(**OPENAI_REQUEST)
+    return lambda: list(
+        gpt.chat.completions.create(**OPENAI_REQUEST, tools=[WEATHER_TOOL_OPENAI], stream=True)
+    )
 
 
 @pytest.mark.parametrize(
     ("first", "second"), [(True, False), (False, True)], ids=["on-then-off", "off-then-on"]
 )
+@pytest.mark.parametrize("kind", ["plain", "streamed-tool-call"])
 @pytest.mark.parametrize("sdk", ["anthropic", "openai"])
 def test_a_kept_client_takes_the_capture_setting_of_the_active_session(
-    sensor: _Sensor, provider: respx.MockRouter, sdk: str, first: bool, second: bool
+    sensor: _Sensor, provider: respx.MockRouter, sdk: str, kind: str, first: bool, second: bool
 ) -> None:
     """The proxy built under a session with capture on must not carry
-    content into a later session with capture off, and the reverse."""
+    content into a later session with capture off, and the reverse: on a
+    streamed call with a tool call too, the path where the prompt, the
+    response and the tool's input are all content."""
     sensor.start("s1", capture=first)
-    if sdk == "anthropic":
-        client: Any = anthropic.Anthropic(api_key="k", max_retries=0)
-
-        def call() -> Any:
-            return client.messages.with_raw_response.create(**ANTHROPIC_REQUEST).parse()
-
-    else:
-        client = openai.OpenAI(api_key="k", max_retries=0)
-
-        def call() -> Any:
-            return client.chat.completions.create(**OPENAI_REQUEST)
-
+    call = _capture_call(sdk, kind)
     for capture, name in ((first, "s1"), (second, "s2")):
         if name == "s2":
             sensor.stop()
             sensor.start("s2", capture=second)
-        (post_call,) = [p for p in sensor.payloads(call) if p["event_type"] == "post_call"]
-        assert sensor.names[post_call["session_id"]] == name
-        wire = json.dumps(post_call, default=str)
+        events = sensor.payloads(call)
+        assert {sensor.names[p["session_id"]] for p in events} == {name}
+        (post_call,) = [p for p in events if p["event_type"] == "post_call"]
+        wire = json.dumps(events, default=str)
+        if kind == "streamed-tool-call":
+            (tool_call,) = [p for p in events if p["event_type"] == "tool_call"]
+            assert tool_call["tool_name"] == "get_weather"
         if capture:
             assert post_call.get("has_content")
             assert PROMPT in wire
+            if kind == "streamed-tool-call":
+                assert TOOL_ARG in json.dumps(tool_call, default=str)
         else:
-            assert not post_call.get("has_content")
-            assert post_call.get("content") is None
+            assert not any(p.get("has_content") for p in events)
+            assert all(p.get("content") is None for p in events)
             assert PROMPT not in wire
+            assert TOOL_ARG not in wire
 
 
 # ----- unpatched, or initialised without patch() -----------------------------

@@ -179,40 +179,43 @@ def outer_intercept_active() -> bool:
 # The session a proxy reports to
 # ------------------------------------------------------------------
 
-
-def active_session() -> Session | None:
-    """The session ``init()`` started and ``teardown()`` has not ended,
-    else ``None``. Imported lazily: ``flightdeck_sensor`` imports the
-    interceptor modules that import this one."""
-    import flightdeck_sensor
-
-    return flightdeck_sensor._session
+# The package whose ``_session`` is the active session. Read from
+# ``sys.modules`` at each lookup rather than imported: an interceptor
+# module is imported through the package, so it is always there, and the
+# lookup is cheaper than an ``import`` statement on the call path.
+_SENSOR_MODULE = "flightdeck_sensor"
 
 
 class FollowSession:
     """How a sensor proxy that outlives a session finds the session to
     report a call to: the one active at the call, so a client kept across
     ``teardown()`` and a new ``init()`` reports to the new session, and
-    with none active, or once ``patched`` says the patch that handed the
-    proxy out is gone, the call goes to the SDK untouched. The proxies the
-    OpenAI class patch hands out and the ones ``wrap()`` returns carry
-    one, shared down their tree of resource proxies.
+    with none active, or once the class named by ``patched_on`` no longer
+    carries the patch's sentinel attribute, the call goes to the SDK
+    untouched. The proxies the OpenAI class patch hands out and the ones
+    ``wrap()`` returns carry one, shared down their tree of resource
+    proxies.
 
     The provider carries the session's capture setting, so it is built by
-    ``make_provider(client, session)`` for each session, once: a call
-    costs one attribute read and one identity check."""
+    ``make_provider(client, session)`` once per session. A call costs two
+    method calls, a read of the sentinel attribute on the patched class,
+    a ``sys.modules`` lookup, an attribute read and an identity check:
+    about 0.2 microseconds on a developer machine, against 0.05 for a
+    proxy with a fixed session."""
 
-    __slots__ = ("_client", "_make_provider", "_patched", "_bound")
+    __slots__ = ("_client", "_make_provider", "_patched_on", "_bound")
 
     def __init__(
         self,
         client: Any,
         make_provider: Callable[[Any, Session], Any],
-        patched: Callable[[], bool] | None = None,
+        patched_on: tuple[type, str] | None = None,
     ) -> None:
         self._client = client
         self._make_provider = make_provider
-        self._patched = patched
+        # (class, sentinel attribute) of the patch that handed the proxy
+        # out; None for a proxy no patch handed out (wrap()).
+        self._patched_on = patched_on
         # (session, provider) for the session the last call reported to;
         # replaced whole, so a reader never sees one without the other.
         self._bound: tuple[Session, Any] | None = None
@@ -220,9 +223,13 @@ class FollowSession:
     def resolve(self) -> tuple[Session, Any] | None:
         """``(session, provider)`` for a call made now, or ``None`` when
         the call must go to the SDK untouched."""
-        if self._patched is not None and not self._patched():
+        patched_on = self._patched_on
+        # The class attribute read goes through the type's attribute
+        # cache; the patch sets and deletes the sentinel on that class.
+        if patched_on is not None and getattr(patched_on[0], patched_on[1], None) is None:
             return None
-        session = active_session()
+        sensor = sys.modules.get(_SENSOR_MODULE)
+        session: Session | None = None if sensor is None else sensor._session
         if session is None:
             return None
         bound = self._bound
@@ -239,7 +246,9 @@ class SessionProxy:
     as the proxies the OpenAI class patch hands out and the ones
     ``wrap()`` returns do: then each call reports to the session active
     at that call, and with none (or the class unpatched) goes to the SDK
-    untouched (see :class:`FollowSession`)."""
+    untouched (see :class:`FollowSession`). A following proxy still holds
+    the session and provider it was built with, which it hands to the
+    proxies it builds and never reports to."""
 
     def __init__(
         self,
@@ -262,6 +271,25 @@ class SessionProxy:
         if self._follow is None:
             return self._session, self._provider
         return self._follow.resolve()
+
+    def _call(
+        self,
+        send: Callable[[dict[str, Any], tuple[Session, Any] | None], Any],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """``send(kwargs, target)`` for the target of this call. On a
+        following async proxy the target is resolved when the call is
+        awaited, which is when an async SDK request goes out: a stream
+        manager awaits it on entry, not when it is built, so its request
+        reports to the session active on entry, and goes out untouched
+        with none."""
+        if self._is_async and self._follow is not None:
+
+            async def _awaited() -> Any:
+                return await send(kwargs, self._target())
+
+            return _awaited()
+        return send(kwargs, self._target())
 
 
 def drain_deferred_settles(session: Session) -> None:

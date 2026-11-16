@@ -763,7 +763,12 @@ def init(
             api_url=config.api_url,
             unavailable_policy=config.unavailable_policy,
         )
-        _session = Session(config=config, client=_client)
+        # Built and started before it is published as _session: a call
+        # on another thread looks _session up without the lock, and one
+        # that finds a session must find it started (session_start sent,
+        # policy prefetched). Until then such a call goes to the SDK
+        # untouched, as with no session at all.
+        session = Session(config=config, client=_client)
 
         # Best-effort runtime context collection. Never raises -- if
         # any collector fails the agent continues with no context
@@ -772,7 +777,7 @@ def init(
         runtime_ctx: dict[str, Any] = {}
         with contextlib.suppress(Exception):
             runtime_ctx = _collect_context()
-        _session.set_context(runtime_ctx)
+        session.set_context(runtime_ctx)
 
         # Derive the per-event ``framework`` field from the
         # FrameworkCollector's first detected entry. Without this
@@ -798,7 +803,7 @@ def init(
         if frameworks:
             bare = _framework_label(frameworks[0])
             if bare:
-                _session.record_framework(bare)
+                session.record_framework(bare)
 
         # Wire the LangGraph agent-node regex (if any) into the
         # langgraph interceptor's module state before patch_langgraph_classes
@@ -806,7 +811,8 @@ def init(
         # multi-test scenarios start clean.
         _set_langgraph_agent_node_pattern(langgraph_agent_node_pattern)
 
-        _session.start()
+        session.start()
+        _session = session
 
 
 def wrap(client: Any, quiet: bool = False) -> Any:

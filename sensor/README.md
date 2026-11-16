@@ -224,10 +224,15 @@ and forces the exit. A signal your application ignores stays ignored, and
 the session carries on.
 
 After `teardown()`, `init()` (and `patch()`) can start another session in
-the same process. Clients and framework models built earlier keep
-working with nothing rebuilt: while no session is active their calls go to
-the provider untouched, and once the new session starts they report to
-it, with its `capture_prompts` setting.
+the same process. A client or framework model the sensor already
+intercepts carries over with nothing rebuilt: while no session is active
+its calls go to the provider untouched, and once the new session starts
+they report to it, with its `capture_prompts` setting. An SDK object
+first touched while the sensor is unpatched (before the first `patch()`,
+or between `teardown()` and the next `patch()`) is not metered: an OpenAI
+client whose `.chat` is first read then, a `ChatOpenAI` built then, or a
+`ChatAnthropic` whose first call comes then. Build and first use them
+while the sensor is patched.
 
 ## Framework support
 

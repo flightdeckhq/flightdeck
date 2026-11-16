@@ -253,3 +253,51 @@ def test_langchain_models_kept_across_teardown_report_to_each_session(
         return 4
 
     _across_two_sessions(unique_flavor, build, calls)
+
+
+def test_a_stream_manager_reports_to_the_session_it_is_entered_in(
+    sensor_reset: None, unique_flavor: str
+) -> None:
+    """The OpenAI ``.stream()`` helper sends its request when its manager
+    is entered. Two managers built under the first session: the one
+    entered with the sensor torn down reaches the provider and lands
+    nowhere, the one entered in the second session lands there."""
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        chat_route = rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=_openai_reply
+        )
+        first = _start()
+        client = openai.OpenAI(api_key="test-key", max_retries=0)
+        entered_torn_down = client.chat.completions.stream(model=OPENAI_MODEL, messages=HI)
+        entered_later = client.chat.completions.stream(model=OPENAI_MODEL, messages=HI)
+        client.chat.completions.create(model=OPENAI_MODEL, messages=HI)
+        flightdeck_sensor.teardown()
+
+        with entered_torn_down as stream:
+            assert stream.get_final_completion().choices[0].message.content == "Hello"
+        assert "stream_options" not in json.loads(chat_route.calls.last.request.content)
+
+        second = _start()
+        with entered_later as stream:
+            stream.get_final_completion()
+        flightdeck_sensor.teardown()
+
+    def _landed() -> bool:
+        rows = _query_events_for_flavor(flavor)
+        ends = {e["session_id"] for e in rows if e["event_type"] == "session_end"}
+        posts = [e for e in rows if e["event_type"] == "post_call"]
+        return {first, second} <= ends and len(posts) >= 2
+
+    wait_until(_landed, timeout=20, msg=f"both sessions of {flavor} never landed")
+    rows = _query_events_for_flavor(flavor)
+    posts = {
+        session_id: [
+            e for e in rows if e["session_id"] == session_id and e["event_type"] == "post_call"
+        ]
+        for session_id in (first, second)
+    }
+    assert {e["session_id"] for e in rows} == {first, second}
+    assert [len(posts[first]), len(posts[second])] == [1, 1]
+    (streamed,) = posts[second]
+    assert (streamed["tokens_input"], streamed["tokens_output"]) == (12, 9)

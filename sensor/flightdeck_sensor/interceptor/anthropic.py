@@ -234,6 +234,14 @@ _PATCHED_SENTINEL = "_flightdeck_patched"
 # steps aside whenever the class no longer resolves to it, so fresh
 # methods on a re-patch would leave every such view unmetered for good
 # after ``teardown()`` and a new ``init()``.
+#
+# A module-level dict that the patch functions write to, which the code
+# otherwise avoids, fits here: the patch it records is itself
+# process-wide state on the SDK's classes, it holds one entry per
+# resource class (the handful _resource_targets() names), and patch(),
+# unpatch() and the import hook write it only under the sensor's patch
+# lock, as they write the classes. A direct call of
+# patch_anthropic_classes() is as thread-safe as that class mutation.
 _INSTALLED: dict[type, tuple[dict[str, Callable[..., Any]], dict[str, Any]]] = {}
 
 # The resource methods that send an inference request. count_tokens,

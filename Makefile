@@ -127,6 +127,10 @@ test-integration: ## Run the integration suite against the dev stack (starts it 
 	$(STACK_ENV); $(PYTHON) -m pytest tests/integration -p no:respx -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
 	$(STACK_ENV); $(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
+test-integration-google-adk: ## Run the Google ADK integration test against the dev stack from the sensor ADK venv (starts the stack when none runs)
+	@[ -n "$$FLIGHTDECK_TEST_BASE_URL" ] || scripts/dev-stack.sh up $(DB)
+	$(STACK_ENV); $(SENSOR_ADK_PYTHON) -m pytest tests/integration/test_google_adk.py -p no:respx -v
+
 # test-go-db runs the Go tests that need Postgres (the ones gated on
 # TEST_POSTGRES_URL) against the dev stack's Postgres container, each
 # package on a fresh database of its own that the script creates,
@@ -134,10 +138,6 @@ test-integration: ## Run the integration suite against the dev stack (starts it 
 # It never touches the `flightdeck` database. It also runs the Go tests
 # gated on TEST_NATS_URL against a NATS server the script starts for
 # the run. CI runs it in the integration job's Postgres legs.
-test-integration-google-adk: ## Run the Google ADK integration test against the dev stack from the sensor ADK venv (starts the stack when none runs)
-	@[ -n "$$FLIGHTDECK_TEST_BASE_URL" ] || scripts/dev-stack.sh up $(DB)
-	$(STACK_ENV); $(SENSOR_ADK_PYTHON) -m pytest tests/integration/test_google_adk.py -p no:respx -v
-
 test-go-db: ## Run the Go tests that need Postgres or NATS (requires the dev stack on Postgres)
 	$(STACK_ENV); ./scripts/go-db-tests.sh
 

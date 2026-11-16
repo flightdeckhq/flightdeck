@@ -967,6 +967,9 @@ jobs:
       - name: Google ADK integration test (from the google-adk group's environment)
         id: google_adk
         if: ${{ !cancelled() && matrix.stack != 'split' && steps.boot.outcome == 'success' }}
+        # The sync and one test take a minute or two; ten turn a hang into a
+        # failure with its output.
+        timeout-minutes: 10
         # Google ADK holds websockets and OpenTelemetry below the dev
         # extra's releases, so its integration test runs from an
         # environment of its own (the lock's google-adk group) against the
@@ -978,6 +981,13 @@ jobs:
           make test-integration-google-adk DB=${{ matrix.stack }} \
             SENSOR_ADK_PYTHON="$RUNNER_TEMP/sensor-adk-venv/bin/python" PYTEST_ADDOPTS=-rs \
             2>&1 | tee "$RUNNER_TEMP/evidence/test-output-google-adk.log"
+          # A skip (ADK not importable in that environment) is not a pass:
+          # the test must be reported PASSED by name.
+          id=tests/integration/test_google_adk.py::test_sub_agents_hand_off_and_error_land_as_designed
+          if ! grep -Fq "$id PASSED" "$RUNNER_TEMP/evidence/test-output-google-adk.log"; then
+            echo "::error::$id was not reported PASSED"
+            exit 1
+          fi
 
       # What a failure leaves behind, kept before anything else runs:
       # the test output, and the log of the stack (the binary's, or the

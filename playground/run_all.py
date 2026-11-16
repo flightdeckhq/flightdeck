@@ -118,8 +118,8 @@ def main() -> int:
         # assemble the trace. 40_openai_agents runs four multi-agent
         # runs, about ten model calls; 41_langgraph_runnable_nodes three
         # graph runs, five or more; 42_deepagents two Deep Agent runs,
-        # four or more model calls each; 38_google_adk three runs per
-        # provider, about ten model calls each.
+        # four or more model calls each; 38_google_adk two runs per
+        # provider, about eight model calls each.
         if (
             "subagents" in name
             or "_genai_" in name

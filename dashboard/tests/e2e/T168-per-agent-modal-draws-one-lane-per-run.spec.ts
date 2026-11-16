@@ -12,32 +12,27 @@
  * tokens; the lanes share the scroll viewport's height equally (between
  * the 40 px minimum and the 144 px maximum), so the last lane ends at the
  * Live feed and nothing scrolls. The heading shows the agent's whole
- * name. The spec posts one tool call 15 s ago on a run, and its name
- * shows by its circle; every marker text sits by a circle wholly inside
- * the panel's visible part, left of the now line.
+ * name. Marker text is T172's, on runs of its own: on these shared runs
+ * the seed's, the keep-alive's and other specs' calls decide which texts
+ * have room.
  *
  * Geometry and attributes, read in one browser evaluation per poll, so
  * both theme projects run it unchanged.
  */
 import { test, expect } from "@playwright/test";
-import { FANOUT_FIXTURE, fixtureSessionId, openPerAgentModal, postFanoutWorkerToolCall } from "./_fixtures";
+import { FANOUT_FIXTURE, fixtureSessionId, openPerAgentModal } from "./_fixtures";
 
 test.use({ viewport: { width: 1920, height: 1080 } });
 
 const RUN_LANE_MIN_HEIGHT_PX = 40;
-/** The tool name the spec posts and expects by its circle: unique to
- *  the run, as a repeated run's earlier calls stay in the window. */
-const MARKER_PROBE = `t168_probe_${Math.random().toString(36).slice(2, 8)}`;
 const RUN_LANE_MAX_HEIGHT_PX = 144;
+
 /** Lanes take equal whole-pixel shares, so up to one pixel per lane is
  *  left over, plus the agent row's 1 px bottom border. */
 const FILL_SLACK_PX = 3 + 1;
 
 test.describe("T168 — The per-agent modal draws one lane per run", () => {
 	test("three concurrent runs get three labelled lanes that fill the space above the feed", async ({ page }) => {
-		// A tool call 15 s ago on the first run, whose name its circle
-		// carries (the keep-alive's own calls land at no fixed age).
-		await postFanoutWorkerToolCall(page, FANOUT_FIXTURE.workerRoles[0], MARKER_PROBE, 15_000);
 		const modal = await openPerAgentModal(page, FANOUT_FIXTURE.workerName);
 		const group = modal.locator(`[data-testid="swimlane-agent-row-${FANOUT_FIXTURE.workerName}"]`);
 		await expect(group).toHaveAttribute("data-run-lanes", "true", { timeout: 10_000 });
@@ -121,30 +116,6 @@ test.describe("T168 — The per-agent modal draws one lane per run", () => {
 		const name = group.getByTestId("swimlane-run-lanes-heading").getByTestId("swimlane-agent-name-link");
 		await expect(name).toHaveAttribute("title", FANOUT_FIXTURE.workerName);
 		expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-
-		// The posted tool call carries its name, by its circle; every text
-		// sits inside the visible panel and left of the now line.
-		await expect(
-			modal.locator('[data-testid="swimlane-marker-text"]').filter({ hasText: MARKER_PROBE }),
-		).toHaveCount(1, { timeout: 10_000 });
-		const texts = await modal.evaluate((m) => {
-			const now = m.querySelector('[data-testid="grid-line-now"]')!.getBoundingClientRect().left;
-			return Array.from(m.querySelectorAll<HTMLElement>('[data-testid="swimlane-marker-text"]')).map((t) => {
-				const lane = t.closest("[data-run-lane-row]")!;
-				const label = lane.querySelector('[data-testid="swimlane-run-lane-label"]')!.getBoundingClientRect();
-				const circle = lane
-					.querySelector(`[data-event-id="${t.getAttribute("data-marker-for")}"]`)!
-					.getBoundingClientRect();
-				const r = t.getBoundingClientRect();
-				return { text: t.textContent, labelRight: label.right, circleLeft: circle.left, left: r.left, right: r.right, now };
-			});
-		});
-		for (const t of texts) {
-			expect(t.text).toMatch(/^(t168_probe_\w+|t172_probe_\w+|e2e_fanout_work)$/);
-			expect(t.circleLeft).toBeGreaterThanOrEqual(t.labelRight - 0.5);
-			expect(t.left).toBeGreaterThanOrEqual(t.labelRight - 0.5);
-			expect(t.right).toBeLessThanOrEqual(t.now + 0.5);
-		}
 
 		// The lost run, which left the window two hours ago, has no lane.
 		const lost = fixtureSessionId(FANOUT_FIXTURE.workerName, FANOUT_FIXTURE.workerLostRole);

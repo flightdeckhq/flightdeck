@@ -5,6 +5,14 @@ import { Timeline } from "@/components/timeline/Timeline";
 import type { FlavorSummary, Session, SessionDetail } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { eventsCache } from "@/hooks/useSessionEvents";
+import { createLaneViewport } from "@/lib/lane-viewport";
+
+/** A lane viewport ``width`` px wide, scrolled to its start. */
+function viewportOf(width: number) {
+  const viewport = createLaneViewport();
+  viewport.set({ width, scrollLeft: 0 });
+  return viewport;
+}
 import {
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
@@ -114,7 +122,7 @@ describe("Timeline run lanes", () => {
     const compactAgent = mkFlavor("agent-b", "compact-agent", [mkSession(), mkSession()]);
     renderTimeline([lanesAgent, compactAgent], {
       expandedAgentIds: new Set(["agent-a"]),
-      viewport: { height: 600, width: 1536, scrollLeft: 0 },
+      viewportHeight: 600, laneViewport: viewportOf(1536),
     });
     expect(screen.getByTestId("swimlane-agent-row-lanes-agent")).toHaveAttribute("data-run-lanes", "true");
     const compact = screen.getByTestId("swimlane-agent-row-compact-agent");
@@ -125,14 +133,14 @@ describe("Timeline run lanes", () => {
 
   it("shares the space the rest of the content leaves equally between the lanes", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
-    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewport: { height: 500, width: 1536, scrollLeft: 0 } });
+    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewportHeight: 500, laneViewport: viewportOf(1536) });
     // (500 - 150) / 3 = 116.67: 116 px each, so the lanes end at the feed.
     expect(laneRows().map((l) => l.style.height)).toEqual(["116px", "116px", "116px"]);
   });
 
   it("stops a single run at the maximum", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession()]);
-    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewport: { height: 800, width: 1536, scrollLeft: 0 } });
+    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewportHeight: 800, laneViewport: viewportOf(1536) });
     expect(laneRows().map((l) => l.style.height)).toEqual([`${RUN_LANE_MAX_HEIGHT_PX}px`]);
   });
 
@@ -142,7 +150,7 @@ describe("Timeline run lanes", () => {
       "lanes-agent",
       Array.from({ length: 5 }, () => mkSession()),
     );
-    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewport: { height: 250, width: 1536, scrollLeft: 0 } });
+    renderTimeline([agent], { expandedAgentIds: new Set(["agent-a"]), viewportHeight: 250, laneViewport: viewportOf(1536) });
     expect(laneRows()).toHaveLength(5);
     for (const lane of laneRows()) expect(lane.style.height).toBe(`${RUN_LANE_MIN_HEIGHT_PX}px`);
   });
@@ -151,7 +159,7 @@ describe("Timeline run lanes", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession()]);
     const { rerender } = renderTimeline([agent], {
       expandedAgentIds: new Set(["agent-a"]),
-      viewport: { height: 350, width: 1536, scrollLeft: 0 },
+      viewportHeight: 350, laneViewport: viewportOf(1536),
     });
     expect(laneRows().map((l) => l.style.height)).toEqual(["100px", "100px"]);
     rerender(
@@ -161,7 +169,8 @@ describe("Timeline run lanes", () => {
           timeRange="1m"
           onNodeClick={() => {}}
           expandedAgentIds={new Set(["agent-a"])}
-          viewport={{ height: 250, width: 1536, scrollLeft: 0 }}
+          viewportHeight={250}
+          laneViewport={viewportOf(1536)}
         />
       </MemoryRouter>,
     );
@@ -173,7 +182,7 @@ describe("Timeline run lanes", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
     renderTimeline([agent], {
       expandedAgentIds: new Set(["agent-a"]),
-      viewport: { height: 260, width: 1024, scrollLeft: 0 },
+      viewportHeight: 260, laneViewport: viewportOf(1024),
       onRunLaneSpace,
     });
     expect(onRunLaneSpace).toHaveBeenLastCalledWith({ laneCount: 3, restPx: REST_PX });
@@ -183,7 +192,7 @@ describe("Timeline run lanes", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession()]);
     const { rerender } = renderTimeline([agent], {
       expandedAgentIds: new Set(["agent-a"]),
-      viewport: { height: 600, width: 1024, scrollLeft: 0 },
+      viewportHeight: 600, laneViewport: viewportOf(1024),
     });
     const strip = () =>
       screen.getByTestId("swimlane-run-lanes-heading").querySelector<HTMLElement>(".swimlane-row-label")!;
@@ -196,7 +205,8 @@ describe("Timeline run lanes", () => {
           timeRange="1m"
           onNodeClick={() => {}}
           expandedAgentIds={new Set(["agent-a"])}
-          viewport={{ height: 600, width: 2000, scrollLeft: 0 }}
+          viewportHeight={600}
+          laneViewport={viewportOf(2000)}
         />
       </MemoryRouter>,
     );
@@ -219,7 +229,7 @@ describe("Timeline run lanes", () => {
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
     renderTimeline([agent], {
       expandedAgentIds: new Set(["agent-a"]),
-      viewport: { height: 600, width: 1536, scrollLeft: 0 },
+      viewportHeight: 600, laneViewport: viewportOf(1536),
       onExpandRuns: () => {},
     });
     expect(screen.queryByTestId("swimlane-runs-chip")).toBeNull();

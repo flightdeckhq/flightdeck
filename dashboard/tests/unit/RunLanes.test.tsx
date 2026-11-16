@@ -6,6 +6,7 @@ import type { AgentEvent, Session, SessionDetail } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { RunLanes } from "@/components/timeline/RunLanes";
 import { eventsCache } from "@/hooks/useSessionEvents";
+import { createLaneViewport } from "@/lib/lane-viewport";
 import {
   MARKER_TEXT_STACKED_MIN_LANE_PX,
   RUN_LANE_CIRCLE_SIZE_PX,
@@ -97,17 +98,18 @@ function renderLanes(
   {
     laneHeight = 100,
     onSessionClick = () => {},
-    markerTextRange = { left: 0, right: 881 },
-    headingWidth = 1360,
+    view,
     topology = "root",
   }: {
     laneHeight?: number;
     onSessionClick?: (id: string, eventId?: string, ev?: AgentEvent) => void;
-    markerTextRange?: { left: number; right: number };
-    headingWidth?: number;
+    /** The scroll viewport's width and scroll; none: the whole row shows. */
+    view?: { width: number; scrollLeft: number };
     topology?: "root" | "child";
   } = {},
 ) {
+  const laneViewport = createLaneViewport();
+  if (view) laneViewport.set(view);
   return render(
     <MemoryRouter>
       <RunLanes
@@ -120,8 +122,8 @@ function renderLanes(
         timelineWidth={900}
         leftPanelWidth={460}
         laneHeight={laneHeight}
-        markerTextRange={markerTextRange}
-        headingWidth={headingWidth}
+        laneViewport={laneViewport}
+        nowX={881}
         topology={topology}
       />
     </MemoryRouter>,
@@ -185,6 +187,26 @@ describe("RunLanes", () => {
     expect(within(label).getByTestId("swimlane-run-lane-status")).toHaveAttribute("data-state", "stale");
     expect(within(label).getByTestId("swimlane-run-lane-model")).toHaveTextContent("claude-opus-4-1");
     expect(within(label).getByTestId("swimlane-run-lane-tokens")).toHaveTextContent("12.3k tokens");
+  });
+
+  it("labels a run that switches models with the model of most of its calls", () => {
+    // The session row carries the latest call's model, haiku; most calls
+    // in the window are sonnet.
+    const run = mkSession({ session_id: nextId("t"), model: "claude-haiku-4-5" });
+    eventsCache.set(run.session_id, [
+      mkEvent(run.session_id, "post_call", -50 * S, { model: "claude-sonnet-4-5" }),
+      mkEvent(run.session_id, "post_call", -40 * S, { model: "claude-sonnet-4-5" }),
+      mkEvent(run.session_id, "post_call", -30 * S, { model: "claude-sonnet-4-5" }),
+      mkEvent(run.session_id, "post_call", -20 * S, { model: "claude-haiku-4-5" }),
+      mkEvent(run.session_id, "post_call", -5 * S, { model: "claude-haiku-4-5" }),
+    ]);
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX });
+    const lane = lanes()[0]!;
+    expect(within(lane).getByTestId("swimlane-run-lane-model")).toHaveTextContent("claude-sonnet-4-5");
+    // The sonnet calls carry no text; a haiku call that has room names it.
+    const texts = within(lane).queryAllByTestId("swimlane-marker-text").map((t) => t.textContent);
+    expect(texts).not.toContain("claude-sonnet-4-5");
+    expect(texts).toContain("claude-haiku-4-5");
   });
 
   it("shows a dash for a run with no model yet", () => {
@@ -260,13 +282,13 @@ describe("RunLanes", () => {
   it("writes a tool call's name beside its circle when it has room, naming it by data-marker-for", () => {
     const run = mkSession({ session_id: nextId("l") });
     const bash = mkEvent(run.session_id, "tool_call", -40 * S, { tool_name: "Bash" });
-    const llm = mkEvent(run.session_id, "post_call", -20 * S, { model: "claude-haiku-4-5-20251001" });
-    eventsCache.set(run.session_id, [bash, llm]);
+    const read = mkEvent(run.session_id, "tool_call", -20 * S, { tool_name: "Read" });
+    eventsCache.set(run.session_id, [bash, read]);
     renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX });
     const texts = within(lanes()[0]!).getAllByTestId("swimlane-marker-text");
     expect(texts.map((t) => [t.getAttribute("data-marker-for"), t.textContent])).toEqual([
       [bash.id, "Bash"],
-      [llm.id, "claude-haiku-4-5"],
+      [read.id, "Read"],
     ]);
     expect(texts.every((t) => t.getAttribute("data-marker-row") === "beside")).toBe(true);
     // The text does not carry the circle's attribute: one element per event id.
@@ -304,14 +326,15 @@ describe("RunLanes", () => {
     const middle = mkEvent(run.session_id, "tool_call", -30 * S, { tool_name: "Read" });
     const late = mkEvent(run.session_id, "tool_call", -5 * S, { tool_name: "Edit" });
     eventsCache.set(run.session_id, [early, middle, late]);
-    // Scrolled 200 px in, 400 px of panel showing: [200, 600].
-    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX, markerTextRange: { left: 200, right: 600 } });
+    // Scrolled 200 px in, 400 px of panel showing beside the 460 px
+    // label column: [200, 600].
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX, view: { width: 860, scrollLeft: 200 } });
     const texts = within(lanes()[0]!).getAllByTestId("swimlane-marker-text");
     expect(texts.map((t) => t.textContent)).toEqual(["Read"]);
   });
 
   it("spans the heading over the visible row with the badge after the pills", () => {
-    renderLanes([mkSession({ session_id: nextId("q") })], { headingWidth: 1024 });
+    renderLanes([mkSession({ session_id: nextId("q") })], { view: { width: 1024, scrollLeft: 0 } });
     const heading = within(group()).getByTestId("swimlane-run-lanes-heading");
     const strip = heading.querySelector<HTMLElement>(".swimlane-row-label")!;
     expect(strip.style.width).toBe("1024px");

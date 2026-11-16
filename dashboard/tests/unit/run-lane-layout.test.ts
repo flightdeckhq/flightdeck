@@ -12,6 +12,7 @@ import {
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
+  dominantModel,
   feedHeightCap,
   markerText,
   markerTextWidth,
@@ -297,13 +298,19 @@ function randomMarkers(n: number, width: number, seed: number): LaneMarker[] {
 
 describe("placeMarkerLabels scan", () => {
   it("keeps exactly what the full scan keeps, on random lanes", () => {
-    for (let seed = 1; seed <= 40; seed++) {
-      const markers = randomMarkers(300 + seed * 20, 862, seed);
+    // 2 to 60 markers on an 862 px lane: sparse enough that many texts
+    // fit, dense enough that many collide.
+    let kept = 0;
+    for (let seed = 1; seed <= 400; seed++) {
+      const markers = randomMarkers(2 + (seed % 59), 862, seed);
       const fast = placeMarkerLabels(markers, { circleSize: 28, right: 881 });
       const naive = naivePlace(markers, 28, 881);
       expect([...fast.keys()].sort(), `seed ${seed}`).toEqual([...naive.keys()].sort());
       for (const [id, left] of naive) expect(fast.get(id)!.left).toBe(left);
+      kept += fast.size;
     }
+    // The comparison is not between two empty results.
+    expect(kept).toBeGreaterThan(400);
   });
 
   it("stays fast on a busy run: thirty thousand markers well under a second", () => {
@@ -408,5 +415,56 @@ describe("feedHeightCap", () => {
 describe("measureMarkerText", () => {
   it("falls back to the estimate without a font loading API (jsdom)", () => {
     expect(measureMarkerText("Bash")).toBe(markerTextWidth("Bash"));
+  });
+});
+
+describe("dominantModel", () => {
+  const T0 = Date.parse("2026-11-16T10:00:00Z");
+  const call = (model: string | null, offsetS: number, eventType = "post_call") => ({
+    event_type: eventType,
+    model,
+    occurred_at: new Date(T0 + offsetS * 1000).toISOString(),
+  });
+
+  it("names the model of most of the run's LLM calls in the window", () => {
+    const events = [
+      call("claude-sonnet-4-5", 1),
+      call("claude-haiku-4-5", 2),
+      call("claude-sonnet-4-5", 3),
+      call("claude-haiku-4-5", 4),
+      call("claude-sonnet-4-5", 5),
+    ];
+    expect(dominantModel(events, T0, T0 + 60_000)).toBe("claude-sonnet-4-5");
+  });
+
+  it("holds while an alternating run's latest call switches model", () => {
+    // Haiku, sonnet, haiku, sonnet...: the latest call flips the session
+    // row's model at every call; the dominant model does not move.
+    const events = Array.from({ length: 9 }, (_, i) =>
+      call(i % 2 === 0 ? "claude-haiku-4-5" : "claude-sonnet-4-5", i + 1),
+    );
+    const answers = new Set<string | null>();
+    for (let n = 3; n <= events.length; n++) {
+      answers.add(dominantModel(events.slice(0, n), T0, T0 + 60_000));
+    }
+    expect([...answers]).toEqual(["claude-haiku-4-5"]);
+  });
+
+  it("breaks a tie by the model called first", () => {
+    const events = [call("b-model", 5), call("a-model", 2), call("b-model", 9), call("a-model", 7)];
+    expect(dominantModel(events, T0, T0 + 60_000)).toBe("a-model");
+  });
+
+  it("counts LLM calls in the window only", () => {
+    const events = [
+      call("old-model", -30),
+      call("old-model", -20),
+      call("tool-model", 2, "tool_call"),
+      call("new-model", 3),
+      call(null, 4),
+    ];
+    expect(dominantModel(events, T0, T0 + 60_000)).toBe("new-model");
+    expect(dominantModel([], T0, T0 + 60_000)).toBeNull();
+    expect(dominantModel(undefined, T0, T0 + 60_000)).toBeNull();
   });
 });

@@ -10,13 +10,22 @@
  * strip's badge column under the status badge, so the row stays 48 px
  * and the name keeps the width it had, at 1700 px and at 1280x720. The
  * chip, a button in the tab order, opens the modal for its agent from
- * the keyboard (focus, Enter) and by click.
+ * the keyboard (focus, Enter) and by click. An agent of the spec's own
+ * with ten runs at once reads `9+ runs`, the full count in its tooltip,
+ * and its widest label still fits the badge column.
  *
  * Geometry and attributes, read in one browser evaluation, so both
  * theme projects run it unchanged.
  */
 import { test, expect, type Page } from "@playwright/test";
-import { FANOUT_FIXTURE, bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
+import {
+	FANOUT_FIXTURE,
+	bringSwimlaneRowIntoView,
+	endPrivateAgent,
+	startPrivateAgent,
+	waitForFleetReady,
+	type PrivateAgent,
+} from "./_fixtures";
 
 /** The label strip's right padding that holds the badge column
  *  (SwimLane's ``BADGE_RESERVED_ZONE_PX``). */
@@ -116,5 +125,26 @@ test.describe("T171 — The Fleet runs chip opens the per-agent modal", () => {
 		await wide.getByTestId("swimlane-runs-chip").click();
 		await expect(modal).toBeVisible();
 		await expect(modal.getByTestId("per-agent-swimlane-modal-name")).toHaveText(FANOUT_FIXTURE.wideName);
+	});
+});
+
+test.describe("T171 — The Fleet runs chip caps its label past nine runs", () => {
+	test.use({ viewport: { width: 1280, height: 720 } });
+	let agent: PrivateAgent | null = null;
+
+	test.afterEach(async ({ page }) => {
+		if (agent) await endPrivateAgent(page, agent);
+		agent = null;
+	});
+
+	test("ten runs at once read 9+ runs and the chip fits the badge column", async ({ page }) => {
+		agent = await startPrivateAgent(page, "ten-runs", 10);
+		await page.goto("/");
+		await waitForFleetReady(page);
+		const g = await chipGeometry(page, agent.agentName);
+		expect(g.text).toBe("9+ runs");
+		expect(g.title).toBe("10 runs at once: expand in swimlane");
+		expect(g.ariaLabel).toBe("10 runs at once: expand in swimlane");
+		expectChipFits(g);
 	});
 });

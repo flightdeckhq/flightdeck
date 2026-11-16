@@ -12,6 +12,14 @@ never saw and on a sensored one (patched, or wrapped by
 ``flightdeck_sensor.wrap()``): the call comes to the same outcome (the
 same request body, or the same exception), and the sensor's estimate and
 stored content are those of the same call made with lists.
+
+The tests that compare estimates run on both of the OpenAI estimate's
+paths, on every machine: tiktoken, and its char/4 fallback, forced. Which
+one a call takes otherwise depends on the machine: tiktoken downloads its
+encoding data on first use and the unit suite blocks sockets, so a fresh
+CI runner takes the fallback while a developer machine with the data
+cached takes tiktoken. The tiktoken runs skip, saying so, where the data
+is not there.
 """
 
 from __future__ import annotations
@@ -19,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import collections.abc
 import copy
+import functools
 import gc
 import inspect
 import io
@@ -50,8 +59,10 @@ from flightdeck_sensor.interceptor.openai import (
     patch_openai_classes,
     unpatch_openai_classes,
 )
+from flightdeck_sensor.providers import openai as openai_provider
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.providers.openai import OpenAIProvider
+from flightdeck_sensor.transport.body_limit import serialize_event
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 if TYPE_CHECKING:
@@ -240,6 +251,32 @@ def _sdks_unpatched() -> Iterator[None]:
     unpatch_openai_classes()
 
 
+@functools.cache
+def _tiktoken_unavailable() -> str | None:
+    """Why tiktoken cannot encode for :data:`OPENAI_MODEL` here, or None."""
+    try:
+        import tiktoken
+
+        tiktoken.encoding_for_model(OPENAI_MODEL).encode("x")
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+@pytest.fixture(params=["tiktoken", "char-4 fallback"])
+def estimate_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The OpenAI estimate's path for the test: tiktoken, or the char/4
+    fallback it takes when tiktoken cannot count (see the module
+    docstring)."""
+    if request.param == "tiktoken":
+        reason = _tiktoken_unavailable()
+        if reason is not None:
+            pytest.skip(f"tiktoken has no encoding data for {OPENAI_MODEL} here: {reason}")
+    else:
+        monkeypatch.setattr(openai_provider, "_try_tiktoken_count", lambda messages, model: None)
+    return str(request.param)
+
+
 # ----- the arguments the sensor reads ----------------------------------------
 #
 # Each takes ``seq``, which turns a list of items into what is passed: a
@@ -367,10 +404,11 @@ def _read(value: Any, steps: list[str]) -> None:
     before it is taken."""
     if value is None or isinstance(value, _MODELS):
         return
-    parse = getattr(value, "parse", None)
-    if callable(parse):
+    # Looked up on the type: a stream guard opens its stream to answer
+    # an attribute it does not have.
+    if callable(getattr(type(value), "parse", None)):
         steps.append("parse")
-        _read(parse(), steps)
+        _read(value.parse(), steps)
         return
     if hasattr(value, "__enter__"):
         steps.append("enter")
@@ -406,10 +444,9 @@ async def _read_async(value: Any, steps: list[str]) -> None:
         steps.append("await")
         await _read_async(await value, steps)
         return
-    parse = getattr(value, "parse", None)
-    if callable(parse):
+    if callable(getattr(type(value), "parse", None)):
         steps.append("parse")
-        await _read_async(parse(), steps)
+        await _read_async(value.parse(), steps)
         return
     if hasattr(value, "__aiter__"):
         steps.append("iterate")
@@ -491,6 +528,12 @@ def _sensored(
         patch_openai_classes(quiet=True)
         return session, _client(sdk, is_async)
     return session, flightdeck_sensor.wrap(_client(sdk, is_async))
+
+
+def _call_events(session: Session) -> list[str]:
+    """The types of the call events the session emitted, in order."""
+    kinds = ("pre_call", "post_call", "embeddings", "llm_error")
+    return [e["event_type"] for e in _events(session) if e["event_type"] in kinds]
 
 
 def _llm_events(session: Session) -> list[dict[str, Any]]:
@@ -601,6 +644,7 @@ def _expected_estimate(
 def test_an_iterator_argument_reaches_the_provider_as_without_the_sensor(
     provider: respx.MockRouter,
     monkeypatch: pytest.MonkeyPatch,
+    estimate_path: str,
     name: str,
     mode: str,
     is_async: bool,
@@ -643,7 +687,11 @@ def test_an_iterator_argument_reaches_the_provider_as_without_the_sensor(
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_with_capture_off_an_iterator_argument_reaches_the_provider_and_no_content_is_kept(
-    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, name: str, is_async: bool
+    provider: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+    estimate_path: str,
+    name: str,
+    is_async: bool,
 ) -> None:
     sdk, route, build, call = CASES[name]
     routed = provider.routes[ROUTE[route]]
@@ -1099,14 +1147,316 @@ def test_an_iterator_that_raises_midway_raises_as_without_the_sensor(
     provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, name: str, is_async: bool
 ) -> None:
     """The same exception at the same step (the call itself, the await,
-    the entering of a stream manager), and no event."""
+    the entering of a stream manager), nothing sent, and the call reported
+    as any call the SDK rejects: an ``llm_error`` after its ``pre_call``."""
     sdk, call = RAISING_ENTRIES[name]
+    routed = provider.routes["anthropic" if sdk == "anthropic" else "chat"]
     unsensored = _moment(lambda: call(_client(sdk, is_async), {"messages": _raising()}), is_async)
     session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
+    sent = routed.call_count
     sensored = _moment(lambda: call(client, {"messages": _raising()}), is_async)
     assert sensored == unsensored
     assert "did not raise" not in sensored
-    assert _llm_events(session) == []
+    assert routed.call_count == sent
+    assert _call_events(session) == ["pre_call", "llm_error"]
+
+
+# ----- the policy check, and arguments the SDK does not read -------------------
+
+
+def _bad() -> Any:
+    """An iterator that raises as soon as it is read."""
+    raise _Midway("the iterator failed")
+    yield  # pragma: no cover
+
+
+def _blocking(session: Session) -> Session:
+    session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+    return session
+
+
+# entry point -> (sdk, route, the call with ``where`` holding a failing
+# iterator: "read" in an argument the sensor reads, "unread" in one only
+# the SDK sees)
+POLICED_ENTRIES: dict[str, tuple[str, str, Callable[[Any, str], Any]]] = {
+    "openai chat create": (
+        "openai",
+        "chat",
+        lambda c, where: c.chat.completions.create(model=OPENAI_MODEL, **_placed(where, "openai")),
+    ),
+    "openai chat create(stream=True)": (
+        "openai",
+        "chat",
+        lambda c, where: c.chat.completions.create(
+            model=OPENAI_MODEL, stream=True, **_placed(where, "openai")
+        ),
+    ),
+    "openai chat stream()": (
+        "openai",
+        "chat",
+        lambda c, where: c.chat.completions.stream(model=OPENAI_MODEL, **_placed(where, "openai")),
+    ),
+    "openai chat with_raw_response.create": (
+        "openai",
+        "chat",
+        lambda c, where: c.chat.completions.with_raw_response.create(
+            model=OPENAI_MODEL, **_placed(where, "openai")
+        ),
+    ),
+    "openai chat with_streaming_response.create": (
+        "openai",
+        "chat",
+        lambda c, where: c.chat.completions.with_streaming_response.create(
+            model=OPENAI_MODEL, **_placed(where, "openai")
+        ),
+    ),
+    "anthropic create": (
+        "anthropic",
+        "anthropic",
+        lambda c, where: c.messages.create(
+            model=ANTHROPIC_MODEL, max_tokens=10, **_placed(where, "anthropic")
+        ),
+    ),
+    "anthropic stream()": (
+        "anthropic",
+        "anthropic",
+        lambda c, where: c.messages.stream(
+            model=ANTHROPIC_MODEL, max_tokens=10, **_placed(where, "anthropic")
+        ),
+    ),
+}
+
+
+def _placed(where: str, sdk: str) -> dict[str, Any]:
+    """A call's arguments with a failing iterator in an argument the
+    sensor reads (a message's content), or in one only the SDK sees (a
+    query parameter, which the SDK stringifies without reading it)."""
+    if where == "read":
+        return {"messages": [{"role": "user", "content": _bad()}]}
+    return {"messages": [{"role": "user", "content": PROMPT}], "extra_query": {"q": _bad()}}
+
+
+@pytest.mark.parametrize("where", ["read", "unread"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("name", sorted(POLICED_ENTRIES))
+def test_a_blocked_call_with_a_failing_iterator_sends_nothing(
+    provider: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    is_async: bool,
+    where: str,
+) -> None:
+    """The policy check runs before the SDK is touched, wherever the
+    failing iterator is: a BLOCK raises and no request goes out."""
+    sdk, route, call = POLICED_ENTRIES[name]
+    routed = provider.routes[route]
+    session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
+    _blocking(session)
+    sent = routed.call_count
+    with pytest.raises(flightdeck_sensor.BudgetExceededError):
+        _finish(call(client, where), is_async)
+    assert routed.call_count == sent
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("name", sorted(POLICED_ENTRIES))
+def test_a_failing_iterator_the_sensor_does_not_read_reaches_the_sdk_untouched(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, name: str, is_async: bool
+) -> None:
+    """An iterator in an argument only the SDK reads (here a query
+    parameter the SDK stringifies) is the SDK's: the call comes to what it
+    comes to without the sensor, and a call sent is metered."""
+    sdk, route, call = POLICED_ENTRIES[name]
+    routed = provider.routes[route]
+    unsensored = _detailed_outcome(
+        lambda: call(_client(sdk, is_async), "unread"), is_async, routed, route
+    )
+    session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
+    sensored = _detailed_outcome(lambda: call(client, "unread"), is_async, routed, route)
+    assert sensored == unsensored
+    if sensored[0] == "sent":
+        assert _call_events(session) == ["pre_call", "post_call"]
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["allowed", "blocked"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_failing_iterator_given_to_litellm_is_policed(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, is_async: bool, blocked: bool
+) -> None:
+    """litellm never reads its ``metadata``: with a failing iterator there
+    the call goes out and is metered, unless the policy blocks it, when
+    nothing is sent."""
+    litellm = pytest.importorskip("litellm")
+    from flightdeck_sensor.interceptor.litellm import (
+        patch_litellm_functions,
+        unpatch_litellm_functions,
+    )
+
+    routed = provider.routes["chat"]
+
+    def call() -> Any:
+        kwargs = {
+            "model": OPENAI_MODEL,
+            "messages": [{"role": "user", "content": PROMPT}],
+            "metadata": {"k": _bad()},
+            "client": _client("openai", is_async),
+        }
+        return litellm.acompletion(**kwargs) if is_async else litellm.completion(**kwargs)
+
+    session = _session(capture=True)
+    if blocked:
+        _blocking(session)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    patch_litellm_functions(quiet=True)
+    sent = routed.call_count
+    try:
+        with warnings.catch_warnings():
+            # See test_an_iterator_litellm_can_copy_reaches_the_provider_as_without_the_sensor.
+            warnings.filterwarnings(
+                "ignore",
+                message="coroutine 'Logging.async_success_handler' was never awaited",
+                category=RuntimeWarning,
+            )
+            if blocked:
+                with pytest.raises(flightdeck_sensor.BudgetExceededError):
+                    _finish(call(), is_async)
+            else:
+                _finish(call(), is_async)
+            gc.collect()
+    finally:
+        unpatch_litellm_functions()
+    if blocked:
+        assert routed.call_count == sent
+    else:
+        assert routed.call_count == sent + 1
+        assert "pre_call" in _call_events(session)
+        assert "post_call" in _call_events(session)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_failing_iterator_the_sdk_never_reads_lets_the_call_through_metered(
+    is_async: bool,
+) -> None:
+    """Should the SDK never read an argument the sensor reads, the call is
+    sent and metered as any other, the estimate counting what was read."""
+    session = _session(capture=False)
+    response = None
+    seen: dict[str, Any] = {}
+
+    def real_fn(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return response
+
+    async def async_real_fn(**kwargs: Any) -> Any:
+        return real_fn(**kwargs)
+
+    kwargs = {"model": OPENAI_MODEL, "messages": [{"role": "user", "content": _bad()}]}
+    if is_async:
+        result = asyncio.run(base.call_async(async_real_fn, kwargs, session, OpenAIProvider()))
+    else:
+        result = base.call(real_fn, kwargs, session, OpenAIProvider())
+    assert result is response
+    assert type(seen["messages"][0]["content"]).__name__ == "generator"
+    assert _call_events(session) == ["pre_call", "post_call"]
+
+
+# ----- collections the SDKs list ------------------------------------------------
+
+
+LISTED_CASES: dict[str, tuple[str, str, Callable[[Any], Any]]] = {
+    "openai messages=dict_values": (
+        "openai",
+        "chat",
+        lambda c: c.chat.completions.create(
+            model=OPENAI_MODEL, messages={"a": {"role": "user", "content": PROMPT}}.values()
+        ),
+    ),
+    "openai tools=deque": (
+        "openai",
+        "chat",
+        lambda c: c.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": PROMPT}],
+            tools=collections.deque([TOOL_OPENAI]),
+        ),
+    ),
+    "openai embeddings input=range": (
+        "openai",
+        "embeddings",
+        lambda c: c.embeddings.create(model=EMBEDDING_MODEL, input=range(3)),
+    ),
+    "openai embeddings input=dict_keys": (
+        "openai",
+        "embeddings",
+        lambda c: c.embeddings.create(model=EMBEDDING_MODEL, input={PROMPT: 1, "b": 2}.keys()),
+    ),
+    "openai embeddings input=frozenset": (
+        "openai",
+        "embeddings",
+        lambda c: c.embeddings.create(model=EMBEDDING_MODEL, input=frozenset({PROMPT})),
+    ),
+    "anthropic content=dict_values": (
+        "anthropic",
+        "anthropic",
+        lambda c: c.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=10,
+            messages=[
+                {"role": "user", "content": {"a": {"type": "text", "text": PROMPT}}.values()}
+            ],
+        ),
+    ),
+    "anthropic tools=dict_values": (
+        "anthropic",
+        "anthropic",
+        lambda c: c.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": PROMPT}],
+            tools={"a": TOOL_ANTHROPIC}.values(),
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("capture", [True, False], ids=["capture on", "capture off"])
+@pytest.mark.parametrize("name", sorted(LISTED_CASES))
+def test_a_collection_the_sdk_lists_is_stored_as_the_list_it_sends(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, name: str, capture: bool
+) -> None:
+    """A dict view, a set, a deque or a range given for an ``Iterable``
+    argument reaches the provider as without the sensor, and the stored
+    content holds the list the SDK sent, where JSON could not write the
+    collection itself."""
+    sdk, route, call = LISTED_CASES[name]
+    routed = provider.routes[route]
+    unsensored = _outcome(lambda: call(_client(sdk, False)), False, routed, route)
+    session, client = _sensored("patched", sdk, False, monkeypatch, capture=capture)
+    sensored = _outcome(lambda: call(client), False, routed, route)
+    assert sensored == unsensored
+    assert sensored[0] == "sent"
+    events = [e for e in _llm_events(session) if e["event_type"] != "pre_call"]
+    if capture:
+        assert _stored_as_sent(session, sensored[1])
+        for event in events:
+            body = json.loads(serialize_event(dict(event)))
+            assert body.get("content"), "the content was dropped as not JSON"
+    else:
+        assert not any(e.get("has_content") for e in events)
+
+
+def test_the_sdk_gets_the_callers_own_collection() -> None:
+    values = {"a": {"role": "user", "content": PROMPT}}.values()
+    items = {"k": "v"}.items()
+    received: dict[str, Any] = {}
+    kwargs = {"model": OPENAI_MODEL, "messages": values, "input": items}
+    arguments = base.materialise_iterators(
+        kwargs, lambda **call_kwargs: received.update(call_kwargs)
+    )
+    arguments.send(**arguments.kwargs)
+    assert received["messages"] is values
+    assert received["input"] is items
+    assert base.as_received(arguments.kwargs)["input"] == [("k", "v")]
 
 
 # ----- the argument check when the call is made ------------------------------------

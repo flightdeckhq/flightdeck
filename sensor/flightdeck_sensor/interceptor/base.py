@@ -590,11 +590,35 @@ def settle_open_guards(session: Session, lock_wait: float | None = None) -> None
 # litellm, which copies its arguments, still fails to copy a generator).
 # The _Replay records how the SDK read it, so the stored content holds
 # what the SDK's last read yielded: what it sent, when it reads an
-# argument twice.
+# argument twice. Only the arguments the sensor reads are looked at; an
+# iterator anywhere else is the SDK's alone and reaches it untouched.
 
 # Argument types that are never an iterator and hold none: most of a
 # request's values, so the common path is one type lookup each.
 _PLAIN_TYPES = frozenset({str, int, float, bool, type(None), bytes})
+
+# The arguments the sensor reads before the SDK does: the estimate's
+# (Anthropic's count_tokens takes messages, system and tools; the OpenAI
+# and litellm counts messages, a Responses input and instructions, a text
+# completion's prompt) and content capture's (the same, and tools). These
+# alone are walked for iterators: one in extra_query, metadata, stop or a
+# client option is never read by the sensor, so it goes to the SDK as it
+# is and can never keep the policy check from running.
+_READ_ARGUMENT_NAMES = frozenset({"messages", "system", "tools", "input", "instructions", "prompt"})
+
+# Collections the SDKs accept for an ``Iterable`` argument and list before
+# they send it, but that JSON cannot write: content capture stores them as
+# the lists the SDK sends (see as_received). Read again, they yield the
+# same items, so the SDK still gets the caller's own object.
+_LISTED_COLLECTIONS = (
+    collections.abc.KeysView,
+    collections.abc.ValuesView,
+    collections.abc.ItemsView,
+    set,
+    frozenset,
+    collections.deque,
+    range,
+)
 
 # How deep the sensor looks into a call's arguments for an iterator. A
 # request nests a few levels (messages, a message, its content blocks, a
@@ -612,24 +636,27 @@ def _is_one_shot(value: Any) -> bool:
     return isinstance(value, collections.abc.Iterator) and not isinstance(value, io.IOBase)
 
 
-def _holds_iterator(value: Any, depth: int = 0) -> bool:
-    """Whether an iterator is anywhere in ``value``, inside the lists,
-    tuples and dicts it is made of, down to :data:`_MAX_ARGUMENT_DEPTH`:
-    a walk that copies nothing, the whole cost of an ordinary call's
-    arguments."""
+def _to_read(value: Any, depth: int = 0) -> bool:
+    """Whether an iterator, or a collection JSON cannot write (see
+    :data:`_LISTED_COLLECTIONS`), is anywhere in ``value``, inside the
+    lists, tuples and dicts it is made of, down to
+    :data:`_MAX_ARGUMENT_DEPTH`: a walk that copies nothing, the whole
+    cost of an ordinary call's arguments."""
     kind = type(value)
     if kind is dict:
         items: Any = value.values()
     elif kind is list or kind is tuple:
         items = value
     else:
-        return kind not in _PLAIN_TYPES and _is_one_shot(value)
+        return kind not in _PLAIN_TYPES and (
+            _is_one_shot(value) or isinstance(value, _LISTED_COLLECTIONS)
+        )
     if depth >= _MAX_ARGUMENT_DEPTH:
         return False
     for item in items:
         if type(item) in _PLAIN_TYPES:
             continue
-        if _holds_iterator(item, depth + 1):
+        if _to_read(item, depth + 1):
             return True
     return False
 
@@ -827,9 +854,11 @@ def as_received(value: Any, depth: int = 0) -> Any:
     the argument twice (the OpenAI SDK's chat ``parse()`` checks ``tools``
     before it builds the request, which then holds what is left). An
     iterator the SDK never read (it passed the replay on, or copied it)
-    is the items the caller's iterator held, as a list argument is. The
-    very same object, and nothing copied, for arguments that held no
-    iterator."""
+    is the items the caller's iterator held, as a list argument is. A
+    collection JSON cannot write (see :data:`_LISTED_COLLECTIONS`) is the
+    list of its items in their own order, which is what the SDK sends.
+    The very same object, and nothing copied, for arguments that hold
+    neither."""
     if isinstance(value, _ReadIterator):
         replay = value.replay
         items: list[Any] = value
@@ -839,6 +868,8 @@ def as_received(value: Any, depth: int = 0) -> Any:
         return [as_received(item, depth + 1) for item in items]
     if depth >= _MAX_ARGUMENT_DEPTH:
         return value
+    if isinstance(value, _LISTED_COLLECTIONS):
+        return [as_received(item, depth + 1) for item in value]
     return _rebuilt(value, as_received, depth)
 
 
@@ -856,30 +887,42 @@ class Arguments(NamedTuple):
 
     kwargs: dict[str, Any]
     send: Callable[..., Any]
-    # False when reading an iterator among them raised: the call is then
-    # ``send(**kwargs)`` alone, unmetered.
+    # False when reading an iterator among them raised (see
+    # materialise_iterators); a stream intercept then calls the SDK at once.
     readable: bool
 
 
 def materialise_iterators(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -> Arguments:
     """A call's arguments for the sensor to read and the SDK call to make
-    with them. With no iterator among the arguments, they are ``kwargs``
-    and ``real_fn`` themselves. Otherwise the arguments are a copy in
-    which each iterator is a list of its items, and the SDK call hands
-    the SDK a :class:`_Replay` of those items in its place (see the
-    comment above).
+    with them. Only the arguments the sensor reads are looked at (see
+    :data:`_READ_ARGUMENT_NAMES`). With no iterator among them, the
+    arguments are ``kwargs`` and ``real_fn`` themselves. Otherwise they
+    are a copy in which each iterator is a list of its items, and the SDK
+    call hands the SDK a :class:`_Replay` of those items in its place (see
+    the comment above).
 
-    An iterator that raises while it is read makes the arguments
-    unreadable: the caller then makes the SDK call alone, and the SDK
-    gets a replay of the items read before the failure that raises the
-    same exception. So the SDK raises it when it reads the argument, at
-    the step it would without the sensor (the call, its await, or the
-    entering of a stream manager), and the sensor builds no event."""
+    An iterator that raises while it is read stops the reading, and the
+    arguments are not readable: the caller still runs the estimate (on
+    the items read) and the policy check before the SDK is touched, and
+    the SDK gets a replay of the items read before the failure that then
+    raises the same exception. So the SDK raises it where it reads that
+    argument, as without the sensor, and the call is reported as any call
+    the SDK rejects (an ``llm_error`` after its ``pre_call``); an SDK that
+    never reads it sends the call, which is metered as any other."""
     try:
-        if not _holds_iterator(kwargs):
+        names = [
+            name
+            for name, value in kwargs.items()
+            if name in _READ_ARGUMENT_NAMES
+            and type(value) not in _PLAIN_TYPES
+            and _to_read(value, 1)
+        ]
+        if not names:
             return Arguments(kwargs, real_fn, True)
         failure: list[Exception] = []
-        read: dict[str, Any] = _ReadArguments(_materialised(kwargs, failure))
+        read: dict[str, Any] = _ReadArguments(kwargs)
+        for name in names:
+            read[name] = _materialised(kwargs[name], failure, 1)
     except RecursionError:
         # The caller's own stack is too deep for the walk: the SDK gets
         # the arguments as they are. The log line needs stack too.
@@ -895,44 +938,33 @@ def materialise_iterators(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -
     return Arguments(read, send, not failure)
 
 
-class _PassedOn:
-    """What a stream intercept hands back for a call whose arguments are
-    unreadable (see :func:`materialise_iterators`): the SDK's own result,
-    unmetered. The SDK has been called, so one that reads its arguments
-    when called has raised already; a manager that reads them when it is
-    entered raises there."""
+def _returning(result: Any) -> Callable[..., Any]:
+    """An SDK call already made, for a stream guard to open: it returns
+    ``result`` whatever it is given."""
 
-    def __init__(self, result: Any) -> None:
-        self._result = result
+    def made(**_kwargs: Any) -> Any:
+        return result
 
-    def open(self) -> Any:
-        return self._result
-
-    def __enter__(self) -> Any:
-        return self._result.__enter__()
-
-    def __exit__(self, *exc: Any) -> Any:
-        return self._result.__exit__(*exc)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._result, name)
+    return made
 
 
-class _AsyncPassedOn(_PassedOn):
-    """:class:`_PassedOn` for an async stream intercept, whose SDK result
-    is a coroutine (``create(stream=True)``, read when awaited) or an
-    async manager (read when entered)."""
-
-    async def open(self) -> Any:
-        if inspect.isawaitable(self._result):
-            return await self._result
-        return self._result
-
-    async def __aenter__(self) -> Any:
-        return await self._result.__aenter__()
-
-    async def __aexit__(self, *exc: Any) -> Any:
-        return await self._result.__aexit__(*exc)
+def _sent_at_once(
+    session: Session, provider: Provider, real_fn: Any, call_kwargs: dict[str, Any]
+) -> Callable[..., Any]:
+    """A stream call whose arguments are unreadable, made now, as the
+    caller made it: a release whose ``stream()`` reads its arguments when
+    called raises the iterator's exception here (reported as a failed
+    call), one that reads them on entry raises when the guard enters what
+    this returns."""
+    t0 = time.monotonic()
+    try:
+        result = real_fn(**call_kwargs)
+    except (BudgetExceededError, DirectiveError):
+        raise
+    except BaseException as exc:
+        _emit_error(session, provider, exc, int((time.monotonic() - t0) * 1000), call_kwargs)
+        raise
+    return _returning(result)
 
 
 # ------------------------------------------------------------------
@@ -959,12 +991,10 @@ def call(
 
     An iterator among the arguments is read into a list for the sensor,
     and the SDK gets an iterator of the sensor's over the same items; one
-    that raises midway sends the call to the SDK unmetered (see
+    that raises midway raises from the SDK where it reads it (see
     :func:`materialise_iterators`).
     """
     arguments = materialise_iterators(kwargs, real_fn)
-    if not arguments.readable:
-        return arguments.send(**arguments.kwargs)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
@@ -1011,8 +1041,6 @@ async def call_async(
 ) -> Any:
     """Asynchronous call intercept -- same logic as :func:`call`, awaited."""
     arguments = materialise_iterators(kwargs, real_fn)
-    if not arguments.readable:
-        return await arguments.send(**arguments.kwargs)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
@@ -1062,15 +1090,14 @@ def call_stream(
 
     An iterator among the arguments is read into a list first (see
     :func:`materialise_iterators`). When one raises midway, the SDK is
-    called at once with the items and the exception, and its own result
-    is handed back unguarded (see :class:`_PassedOn`).
+    called at once, after the policy check (see :func:`_sent_at_once`).
     """
     arguments = materialise_iterators(kwargs, real_fn)
-    if not arguments.readable:
-        return cast("GuardedStream", _PassedOn(arguments.send(**arguments.kwargs)))
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    if not arguments.readable:
+        real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedStream(
         real_fn,
         call_kwargs,
@@ -1099,11 +1126,11 @@ def call_stream_async(
     arguments is read as in :func:`call_stream`.
     """
     arguments = materialise_iterators(kwargs, real_fn)
-    if not arguments.readable:
-        return cast("GuardedAsyncStream", _AsyncPassedOn(arguments.send(**arguments.kwargs)))
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    if not arguments.readable:
+        real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedAsyncStream(
         real_fn,
         call_kwargs,

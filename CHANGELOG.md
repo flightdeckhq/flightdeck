@@ -4,6 +4,20 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A stop logs no error for the work it cuts short.** Stopping
+  `flightdeck` within a second or two of its start could log `ERROR
+  clearing stale session sequences failed … context canceled` from the
+  workers, and every such stop logged two warnings from the query API
+  (`pricing table sync at boot failed; retrying in the background` and
+  `ensure global mcp policy at boot failed`). A stop that landed inside
+  one of the workers' reconciler passes (every 60 seconds by default)
+  logged `ERROR reconciler error` and `ERROR orphan reaper error`.
+  Nothing had failed: the stop had cut that work short. Such a cut is
+  now logged at debug level only and the service stops; work that fails
+  while the server runs is logged as before.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

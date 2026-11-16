@@ -382,7 +382,8 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 
 // requireCleanLog fails the test when a child's log reports a locked
 // database or an error. A stop is not an error: the worker lanes
-// finish what they are processing, so no event is logged as failed.
+// finish what they are processing, so no event is logged as failed,
+// and a start-up step the stop cuts short is not logged as failed.
 // (The query API's hub may warn that it could not read a session for a
 // broadcast it was building when it was told to stop; nobody is
 // connected to receive it by then.)
@@ -590,6 +591,43 @@ func TestBinary_SQLiteRecoversAfterAKill(t *testing.T) {
 		t.Fatalf("exit after SIGINT: %v\n%s", err, second.out.String())
 	}
 	requireCleanLog(t, second.out.String())
+}
+
+// quickStops is how many times TestBinary_AStopRightAfterTheStartIsClean
+// starts the binary and stops it the moment it serves. Whether a stop
+// lands inside a service's start-up step is a matter of timing: on a
+// laptop 8 of 20 quick stops of the plain binary did, and every one
+// under the race detector, so five stops catch such a step nearly every
+// time, while a start and a stop take about a second and a half under
+// the race detector and the test stays under ten seconds.
+const quickStops = 5
+
+// A stop right after the start, the moment the binary serves, is an
+// orderly stop like any other. The start-up steps it cuts short (the
+// workers' clearing of stale session sequences, the query API's first
+// sync of the price table and its ensure of the global MCP policy) are
+// not logged as failures: the log is clean, and no line reports a
+// cancellation. Each start is on a fresh data dir, as a first start is.
+func TestBinary_AStopRightAfterTheStartIsClean(t *testing.T) {
+	skipWithoutSignals(t)
+	base := tempDir(t)
+	for i := range quickStops {
+		t.Run(fmt.Sprintf("stop %d", i+1), func(t *testing.T) {
+			dataDir := filepath.Join(base, fmt.Sprintf("data-%d", i+1))
+			port := freePort(t)
+			c := start(t, "127.0.0.1:"+port, port, dataDir)
+			if err := c.stop(t, syscall.SIGINT); err != nil {
+				t.Fatalf("exit after SIGINT: %v\n%s", err, c.out.String())
+			}
+			out := c.out.String()
+			requireCleanLog(t, out)
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, context.Canceled.Error()) {
+					t.Errorf("the log reports a step the stop cut short: %s", line)
+				}
+			}
+		})
+	}
 }
 
 // refused runs a second binary that must exit non-zero on its own,

@@ -15,6 +15,7 @@ collected after this module.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import sys
 import textwrap
@@ -43,10 +44,10 @@ USER = "tester"
 # How long a test waits for the posts a run's end queued (they run in the
 # loop's executor and take microseconds against the mocked client).
 POSTS_SETTLED_S = 5.0
-# How long the cancellation tests let a run get into its slow model call.
-CANCEL_AFTER_S = 0.3
-# The scripted model's sleep in those tests: far longer than the wait.
-SLOW_CALL_S = 30.0
+# The bound on a child Python process (a sensor import, init() and
+# patch(), an ADK import): seconds normally; past this it has hung, and
+# the test fails with its output rather than holding the run.
+SUBPROCESS_TIMEOUT_S = 120
 # What the scripted model answers when its script is used up.
 DEFAULT_ANSWER = "done"
 
@@ -78,11 +79,33 @@ def _session(*, capture_prompts: bool = True, session_id: str = ROOT) -> tuple[S
     return session, client
 
 
-class _Sleep:
-    """A scripted model step that waits (to be cancelled or closed)."""
+class _Hold:
+    """A scripted model step that holds its call until the call is
+    cancelled, and says when it has started."""
 
-    def __init__(self, seconds: float) -> None:
-        self.seconds = seconds
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+
+    async def hold(self) -> None:
+        self.entered.set()
+        await asyncio.Event().wait()
+
+
+class _Meet:
+    """A scripted model step shared by concurrent calls: each waits until
+    all ``parties`` have arrived, so every one is under way before any
+    ends."""
+
+    def __init__(self, parties: int) -> None:
+        self.parties = parties
+        self.arrived = 0
+        self.all_here = asyncio.Event()
+
+    async def meet(self) -> None:
+        self.arrived += 1
+        if self.arrived >= self.parties:
+            self.all_here.set()
+        await self.all_here.wait()
 
 
 class _Call:
@@ -99,8 +122,10 @@ class ADK:
 
     def __init__(self) -> None:
         from google.adk.agents import LlmAgent, LoopAgent, ParallelAgent, SequentialAgent
+        from google.adk.agents.live_request_queue import LiveRequestQueue
         from google.adk.apps import App
         from google.adk.models.base_llm import BaseLlm
+        from google.adk.models.base_llm_connection import BaseLlmConnection
         from google.adk.models.llm_response import LlmResponse
         from google.adk.plugins.base_plugin import BasePlugin
         from google.adk.runners import InMemoryRunner, Runner
@@ -113,6 +138,7 @@ class ADK:
         self.App, self.BasePlugin, self.AgentTool = App, BasePlugin, AgentTool
         self.InMemoryRunner, self.Runner = InMemoryRunner, Runner
         self.InMemorySessionService = InMemorySessionService
+        self.LiveRequestQueue = LiveRequestQueue
         self.types = types
 
         class Scripted(BaseLlm):
@@ -126,8 +152,10 @@ class ADK:
                 self, llm_request: Any, stream: bool = False
             ) -> Any:
                 step = self.script.pop(0) if self.script else DEFAULT_ANSWER
-                if isinstance(step, _Sleep):
-                    await asyncio.sleep(step.seconds)
+                if isinstance(step, _Hold):
+                    await step.hold()
+                if isinstance(step, _Meet):
+                    await step.meet()
                     step = DEFAULT_ANSWER
                 if isinstance(step, BaseException):
                     raise step
@@ -139,9 +167,68 @@ class ADK:
 
         self.Scripted = Scripted
 
+        def part(step: Any) -> Any:
+            if isinstance(step, _Call):
+                return types.Part.from_function_call(name=step.name, args=step.args)
+            return types.Part.from_text(text=step)
+
+        class Connection(BaseLlmConnection):
+            """A live connection that answers the first user content with its
+            script, then completes the turn and stays open until the run
+            closes it."""
+
+            def __init__(self, script: list[Any]) -> None:
+                self.script = script
+                self.asked = asyncio.Event()
+
+            async def send_history(self, history: list[Any]) -> None:
+                if history and history[-1].role == "user":
+                    self.asked.set()
+
+            async def send_content(self, content: Any) -> None:
+                self.asked.set()
+
+            async def send_realtime(self, blob: Any) -> None:
+                return None
+
+            async def receive(self) -> Any:
+                await self.asked.wait()
+                for step in self.script:
+                    if isinstance(step, _Hold):
+                        await step.hold()
+                    yield LlmResponse(content=types.Content(role="model", parts=[part(step)]))
+                yield LlmResponse(turn_complete=True)
+                await asyncio.Event().wait()
+
+            async def close(self) -> None:
+                return None
+
+        class LiveScripted(BaseLlm):
+            """A model with a scripted live connection (``connect``) and no
+            request-response calls."""
+
+            model: str = "live-scripted"
+            script: list[Any] = []
+
+            async def generate_content_async(  # type: ignore[override]
+                self, llm_request: Any, stream: bool = False
+            ) -> Any:
+                raise NotImplementedError("a live-only model")
+                yield
+
+            @contextlib.asynccontextmanager
+            async def connect(self, llm_request: Any) -> Any:  # type: ignore[override]
+                yield Connection(list(self.script))
+
+        self.LiveScripted = LiveScripted
+
     def agent(self, name: str, *script: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("description", name)
         return self.LlmAgent(name=name, model=self.Scripted(script=list(script)), **kwargs)
+
+    def live_agent(self, name: str, *script: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("description", name)
+        return self.LlmAgent(name=name, model=self.LiveScripted(script=list(script)), **kwargs)
 
     def message(self, text: str) -> Any:
         return self.types.Content(role="user", parts=[self.types.Part.from_text(text=text)])
@@ -184,6 +271,16 @@ async def _consume(
 def _run(adk: ADK, root: Any, **kwargs: Any) -> list[Any]:
     runner = adk.InMemoryRunner(agent=root, app_name=APP)
     return asyncio.run(_consume(runner, adk, **kwargs))
+
+
+async def _until_held(hold: _Hold, task: asyncio.Task[Any]) -> None:
+    """Wait until the run's held model call is under way; a run that ends
+    first fails the test instead of leaving it waiting."""
+    entered = asyncio.create_task(hold.entered.wait())
+    await asyncio.wait({entered, task}, return_when=asyncio.FIRST_COMPLETED)
+    if not entered.done():
+        entered.cancel()
+        raise AssertionError(f"the run ended before its held call: {task!r}")
 
 
 def _posted(session: Session, client: MagicMock) -> list[dict[str, Any]]:
@@ -367,8 +464,8 @@ def test_sequential_sub_agents_are_children_and_the_workflow_is_not(adk: ADK, pa
 
 def test_parallel_branches_are_open_at_once_under_the_same_parent(adk: ADK, patched: Any) -> None:
     session, client = patched
-    a = adk.agent("a_agent", _Sleep(0.05), "from a")
-    b = adk.agent("b_agent", _Sleep(0.05), "from b")
+    meet = _Meet(2)
+    a, b = adk.agent("a_agent", meet), adk.agent("b_agent", meet)
     _run(adk, adk.ParallelAgent(name="fan_out", sub_agents=[a, b]))
     posts = _posted(session, client)
     children = _children(posts)
@@ -436,6 +533,112 @@ def test_the_consumer_never_runs_in_a_child_scope(adk: ADK, patched: Any) -> Non
     assert seen == [None] * len(seen)
 
 
+def test_a_workflow_opens_no_child_and_its_agents_do(adk: ADK, patched: Any) -> None:
+    """ADK 2's graph Workflow is not an agent: it opens no child, and each
+    agent it runs as a node opens one under the sensor's session."""
+    from google.adk.workflow import START, Workflow
+
+    session, client = patched
+    w1, w2 = adk.agent("w1_agent", "one"), adk.agent("w2_agent", "two")
+    runner = adk.Runner(
+        node=Workflow(name="flow", edges=[(START, w1, w2)]),
+        app_name=APP,
+        session_service=adk.InMemorySessionService(),
+    )
+    asyncio.run(_consume(runner, adk))
+    posts = _posted(session, client)
+    children = _children(posts)
+    assert set(children) == {"w1_agent", "w2_agent"}
+    assert {_one(children, r)["parent"] for r in children} == {ROOT}
+    assert all(_closed(_one(children, r)) for r in children)
+
+
+# ----------------------------------------------------------------------
+# run_live, over a scripted live connection
+# ----------------------------------------------------------------------
+
+
+def _live_tree(adk: ADK, *b_script: Any) -> Any:
+    b = adk.live_agent("b_agent", *b_script)
+    return adk.live_agent(
+        "root_agent", _Call("transfer_to_agent", agent_name="b_agent"), sub_agents=[b]
+    )
+
+
+def _live_view(event: Any) -> tuple[str, str | None, bool]:
+    text = event.content.parts[0].text if event.content and event.content.parts else None
+    return event.author, text, bool(event.get_function_calls())
+
+
+async def _consume_live(runner: Any, adk: ADK, *, until_text_from: str) -> list[Any]:
+    """A live run's events until ``until_text_from`` says something; the
+    request queue is closed then and the run's stream with it."""
+    adk_session = await runner.session_service.create_session(app_name=APP, user_id=USER)
+    queue = adk.LiveRequestQueue()
+    queue.send_content(adk.message("hi"))
+    seen = []
+    async with contextlib.aclosing(
+        runner.run_live(user_id=USER, session_id=adk_session.id, live_request_queue=queue)
+    ) as agen:
+        async for event in agen:
+            seen.append(_live_view(event))
+            if event.author == until_text_from and seen[-1][1]:
+                queue.close()
+                break
+    return seen
+
+
+def test_run_live_is_watched_and_its_events_unchanged(
+    adk: ADK, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unpatched = asyncio.run(
+        _consume_live(
+            adk.InMemoryRunner(agent=_live_tree(adk, "from b"), app_name=APP),
+            adk,
+            until_text_from="b_agent",
+        )
+    )
+    session, client = _session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    wrap.patch_google_adk(quiet=True)
+    try:
+        runner = adk.InMemoryRunner(agent=_live_tree(adk, "from b"), app_name=APP)
+        patched = asyncio.run(_consume_live(runner, adk, until_text_from="b_agent"))
+    finally:
+        wrap.unpatch_google_adk()
+    assert patched == unpatched
+    assert unpatched[-1] == ("b_agent", "from b", False)
+    posts = _posted(session, client)
+    b_child = _one(_children(posts), "b_agent")
+    assert b_child["parent"] == ROOT and _closed(b_child)
+    (handoff,) = _handoffs(posts)
+    assert handoff["signal_data"] == {"from": "root_agent", "to": "b_agent"}
+
+
+def test_a_live_run_that_times_out_ends_the_open_child_in_error(adk: ADK, patched: Any) -> None:
+    session, client = patched
+    hold = _Hold()
+    runner = adk.InMemoryRunner(agent=_live_tree(adk, hold), app_name=APP)
+    deadlines: list[Any] = []
+
+    async def consume() -> None:
+        async with asyncio.timeout(None) as deadline:
+            deadlines.append(deadline)
+            await _consume_live(runner, adk, until_text_from="nobody")
+
+    async def main() -> None:
+        task = asyncio.create_task(consume())
+        await _until_held(hold, task)
+        # The deadline passes now: the run is timed out as asyncio.timeout
+        # times anything out, by cancelling it.
+        deadlines[0].reschedule(asyncio.get_running_loop().time())
+        with pytest.raises(TimeoutError):
+            await task
+
+    asyncio.run(main())
+    assert _errored(_one(_children(_posted(session, client)), "b_agent"), "CancelledError")
+
+
 # ----------------------------------------------------------------------
 # Errors, cancellation, early close
 # ----------------------------------------------------------------------
@@ -470,7 +673,8 @@ def test_a_cancelled_run_ends_the_open_child_in_error(
     adk: ADK, patched: Any, workflow: bool
 ) -> None:
     session, client = patched
-    b = adk.agent("b_agent", _Sleep(SLOW_CALL_S))
+    hold = _Hold()
+    b = adk.agent("b_agent", hold)
     if workflow:
         root = adk.SequentialAgent(name="pipeline", sub_agents=[b])
     else:
@@ -481,7 +685,7 @@ def test_a_cancelled_run_ends_the_open_child_in_error(
     async def main() -> None:
         runner = adk.InMemoryRunner(agent=root, app_name=APP)
         task = asyncio.create_task(_consume(runner, adk))
-        await asyncio.sleep(CANCEL_AFTER_S)
+        await _until_held(hold, task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -700,6 +904,36 @@ def test_a_failing_post_never_changes_the_run_or_its_exception(adk: ADK, patched
         _run(adk, root)
 
 
+def _raising_after(calls: int) -> Any:
+    """A stand-in that answers None ``calls`` times, then raises."""
+    seen = [0]
+
+    def method(*args: Any, **kwargs: Any) -> Any:
+        seen[0] += 1
+        if seen[0] > calls:
+            raise RuntimeError("sensor bug")
+        return None
+
+    return method
+
+
+@pytest.mark.parametrize(
+    ("method", "calls"),
+    [("raise_if_shutdown", 0), ("active_subagent_scope", 1)],
+    ids=["shutdown-check", "scope-read"],
+)
+def test_a_failure_in_the_run_wrapper_s_own_work_never_reaches_the_caller(
+    adk: ADK, patched: Any, monkeypatch: pytest.MonkeyPatch, method: str, calls: int
+) -> None:
+    """Only the shutdown's DirectiveError leaves the run wrapper; any other
+    failure of its own checks before and between steps leaves the run as
+    unpatched."""
+    session, _ = patched
+    reported = _texts(_run(adk, _scenario(adk)))
+    monkeypatch.setattr(session, method, _raising_after(calls))
+    assert _texts(_run(adk, _scenario(adk))) == reported
+
+
 # ----------------------------------------------------------------------
 # Capture
 # ----------------------------------------------------------------------
@@ -776,7 +1010,7 @@ def _python(code: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
     )
 

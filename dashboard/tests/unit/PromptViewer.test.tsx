@@ -466,7 +466,7 @@ describe("PromptViewer edge shapes", () => {
     expect(within(box).queryAllByTestId("content-block-cache-control")).toHaveLength(0);
   });
 
-  it("a system block of a type the viewer does not know shows as its JSON, not dropped", async () => {
+  it("a system block of a type the viewer does not know shows as its JSON, not dropped, and gets no second mark", async () => {
     mockFetchResult = {
       ...mockContent,
       system_prompt: [
@@ -481,7 +481,21 @@ describe("PromptViewer edge shapes", () => {
     const json = box.querySelector('[data-testid="pretty-json"]');
     expect(json?.textContent).toContain('"citations_note"');
     expect(json?.textContent).toContain('"an unknown block"');
-    expect(within(box).getByTestId("content-block-cache-control")).toHaveTextContent("cache_control · ephemeral");
+    // The JSON already shows its cache_control; no mark repeats it.
+    expect(json?.textContent).toContain('"cache_control"');
+    expect(within(box).queryAllByTestId("content-block-cache-control")).toHaveLength(0);
+  });
+
+  it("the cache_control mark has no hover-only text", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      system_prompt: [{ type: "text", text: "Cached.", cache_control: { type: "ephemeral" } }],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-system-mark-title" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    const mark = within(screen.getByTestId("prompt-box-system")).getByTestId("content-block-cache-control");
+    expect(mark).toHaveTextContent("cache_control · ephemeral");
+    expect(mark.querySelector("[title]")).toBeNull();
   });
 
   it("survives null messages and tools, null content and thinking blocks", async () => {

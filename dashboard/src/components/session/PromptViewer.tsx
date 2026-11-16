@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { isValidElement, useCallback, useEffect, useRef, useState } from "react";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
@@ -250,8 +250,9 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
 
 /** The mark under a content block that carries ``cache_control`` (an
  *  Anthropic cache breakpoint: the provider caches the prompt up to and
- *  including the block), in the provider's own terms: its type and,
- *  when set, its ttl. */
+ *  including the block), in the provider's own terms, as Raw shows them:
+ *  the field, its type and, when set, its ttl. The text is the whole
+ *  mark; nothing more hides behind a hover. */
 function CacheControlMark({ control }: { control: unknown }) {
   const parts = ["cache_control"];
   if (isPlainObject(control)) {
@@ -260,11 +261,7 @@ function CacheControlMark({ control }: { control: unknown }) {
   }
   return (
     <div data-testid="content-block-cache-control" className="mt-1 flex justify-end">
-      <span
-        className="font-mono text-[10px] tracking-[0.04em]"
-        style={{ color: "var(--text-muted)" }}
-        title="A cache breakpoint: the provider caches the prompt up to and including this block."
-      >
+      <span className="font-mono text-[10px] tracking-[0.04em]" style={{ color: "var(--text-secondary)" }}>
         {parts.join(" · ")}
       </span>
     </div>
@@ -272,7 +269,9 @@ function CacheControlMark({ control }: { control: unknown }) {
 }
 
 /** Provider content blocks, each in the provider's own terms; a block
- *  that carries ``cache_control`` is marked under it. */
+ *  that carries ``cache_control`` is marked under it, unless it is shown
+ *  as its JSON (a block type the viewer does not know), which already
+ *  shows the key. */
 function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   if (blocks.length === 0) {
     return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
@@ -281,7 +280,8 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
     <div className="space-y-2">
       {blocks.map((raw, i) => {
         const block = contentBlock(raw, i);
-        if (!isPlainObject(raw) || raw.cache_control == null) return block;
+        const shownAsJson = isValidElement(block) && block.type === JsonBox;
+        if (!isPlainObject(raw) || raw.cache_control == null || shownAsJson) return block;
         return (
           <div key={i} data-testid="content-block-cached">
             {block}

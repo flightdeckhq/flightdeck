@@ -9,16 +9,24 @@ All notable changes to Flightdeck are documented here.
 - The per-agent swimlane modal draws one lane per run. An agent with
   several runs at once, such as a Claude Code sub-agent role the
   coordinator fans out, gets a lane for each run, sized to fill the
-  modal down to the Live feed (between 40 and 144 px; the lanes scroll
-  when they do not fit), labelled with the run's short id, state,
-  model and tokens so far. The lanes draw larger event circles, and
-  where markers have room a tool call shows its tool name and an LLM
-  call its model beside the circle. A run that finishes keeps its lane
-  until it leaves the selected window, and lanes stay in start order,
-  so they do not jump while you watch.
-- A Fleet row whose agent has two or more runs at once shows a chip
-  under its status badge (`3 runs`) that opens the per-agent swimlane
-  modal for that agent.
+  modal down to the Live feed (between 40 and 144 px), labelled with
+  the run's short id, state, model and tokens so far. When the lanes do
+  not fit, the Live feed gives up height first, down to its header and
+  three rows, until three lanes show whole; past that the lanes scroll
+  (not once you have dragged the feed's height yourself). The lanes
+  draw larger event circles, and where there is room a tool call shows
+  its tool name and an LLM call on another model than the run's shows
+  that model, beside the circle or, on a tall lane, above and below
+  it; text never shows under the label column or past "now". A run
+  that finishes keeps its lane until it leaves the selected window,
+  and lanes are ordered by the start of each run's first segment in
+  the window, so a new or resumed run opens a lane at the bottom and
+  the lanes shown do not jump while you watch; the lanes below a run
+  move up only when it leaves the window.
+- A Fleet row whose agent has two or more runs at once (a row split
+  into run lanes) shows a chip under its status badge (`3 runs`,
+  `9+ runs` past nine) that opens the per-agent swimlane modal for
+  that agent.
 
 ### Fixed
 

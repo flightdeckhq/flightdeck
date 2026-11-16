@@ -811,7 +811,22 @@ def init(
         # multi-test scenarios start clean.
         _set_langgraph_agent_node_pattern(langgraph_agent_node_pattern)
 
-        session.start()
+        try:
+            session.start()
+        except BaseException:
+            # start() raises when the control plane is unreachable under
+            # FLIGHTDECK_UNAVAILABLE_POLICY=halt. Nothing is published, and
+            # what this init() set up is taken down, so a retried init()
+            # starts clean: the transport, the session's event queue and
+            # its threads, and anything start() registered with the
+            # process before it failed.
+            with contextlib.suppress(Exception):
+                session.release_process_hooks()
+            with contextlib.suppress(Exception):
+                session.event_queue.close()
+            _client.close()
+            _client = None
+            raise
         _session = session
 
 
@@ -1071,6 +1086,10 @@ def teardown() -> None:
     with _lock:
         if _session is not None:
             _session.end()
+            # Its atexit callback and signal handlers go too, so sessions
+            # started and ended in turn are not kept alive by the process
+            # (see Session.release_process_hooks).
+            _session.release_process_hooks()
             _session = None
         if _client is not None:
             _client.close()

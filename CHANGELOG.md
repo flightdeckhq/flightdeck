@@ -37,7 +37,13 @@ All notable changes to Flightdeck are documented here.
   `ChatOpenAI` built then, a `ChatAnthropic` first called then) is still
   not metered. A call made on another thread while `init()` is starting
   the session now goes to the provider untouched instead of reporting to
-  a session whose `session_start` had not been sent (D281).
+  a session whose `session_start` had not been sent. `teardown()` now
+  unregisters the session's `atexit` callback and puts back the SIGTERM /
+  SIGINT handlers it replaced, so starting and ending sessions in turn no
+  longer keeps every ended session alive or grows a chain of signal
+  handlers, and an `init()` that fails (`FLIGHTDECK_UNAVAILABLE_POLICY=halt`
+  with the control plane down) closes what it opened, so it can be
+  retried (D281).
 
 ## v0.11.0 — 2026-11-15
 

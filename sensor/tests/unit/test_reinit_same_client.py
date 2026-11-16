@@ -14,9 +14,15 @@ no longer delivers them: a call made while torn down must build none.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
+import gc
+import inspect
 import json
+import os
+import signal
 import threading
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +33,7 @@ import pytest
 import respx
 
 import flightdeck_sensor
+from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.interceptor.anthropic import (
@@ -34,6 +41,7 @@ from flightdeck_sensor.interceptor.anthropic import (
     unpatch_anthropic_classes,
 )
 from flightdeck_sensor.interceptor.openai import unpatch_openai_classes
+from flightdeck_sensor.transport.client import ControlPlaneClient
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -232,6 +240,33 @@ EMBEDDINGS = {
     "usage": {"prompt_tokens": 4, "total_tokens": 4},
 }
 
+RESPONSE: dict[str, Any] = {
+    "id": "resp_reinit",
+    "object": "response",
+    "created_at": 1,
+    "model": OPENAI_MODEL,
+    "status": "completed",
+    "output": [
+        {
+            "type": "message",
+            "id": "msg_reinit",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello", "annotations": []}],
+        }
+    ],
+    "usage": {
+        "input_tokens": 12,
+        "output_tokens": 9,
+        "total_tokens": 21,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0},
+    },
+    "parallel_tool_calls": True,
+    "tool_choice": "auto",
+    "tools": [],
+}
+
 
 @pytest.fixture
 def provider() -> Iterator[respx.MockRouter]:
@@ -242,6 +277,9 @@ def provider() -> Iterator[respx.MockRouter]:
         )
         router.post("https://api.openai.com/v1/embeddings").mock(
             return_value=httpx.Response(200, json=EMBEDDINGS)
+        )
+        router.post("https://api.openai.com/v1/responses").mock(
+            return_value=httpx.Response(200, json=RESPONSE)
         )
         yield router
 
@@ -658,6 +696,333 @@ def test_an_anthropic_stream_manager_entered_after_teardown_raises_nothing(
     events = sensor.run(_entered if is_async else lambda: replies.append(_enter_sync_stream()))
     assert replies == ["Hello"]
     assert {name for name, _ in events} <= {"s1"}
+
+
+# ----- an async call created in one session and awaited later ---------------
+#
+# An async SDK call sends its request when its coroutine is awaited (an
+# async streaming view, when it is entered): the session is the one active
+# then, on every path.
+
+
+async def _await(pending: Any) -> None:
+    await pending
+
+
+async def _await_raw(pending: Any) -> None:
+    response = await pending
+    parsed = response.parse()
+    if inspect.isawaitable(parsed):
+        await parsed
+
+
+async def _enter_view(pending: Any) -> None:
+    async with pending as response:
+        parsed = response.parse()
+        if inspect.isawaitable(parsed):
+            await parsed
+
+
+_EMBEDDING_MODEL = "text-embedding-3-small"
+
+# name -> (sdk, built by wrap(), the call made now, what awaits it later)
+ASYNC_PATHS: dict[str, tuple[str, bool, Callable[[Any], Any], Callable[[Any], Any]]] = {
+    "openai-raw-view-create": (
+        "openai",
+        False,
+        lambda c: c.chat.completions.with_raw_response.create(**OPENAI_REQUEST),
+        _await_raw,
+    ),
+    "openai-raw-view-parse": (
+        "openai",
+        False,
+        lambda c: c.chat.completions.with_raw_response.parse(**OPENAI_REQUEST),
+        _await_raw,
+    ),
+    "openai-parse": ("openai", False, lambda c: c.chat.completions.parse(**OPENAI_REQUEST), _await),
+    "openai-responses-parse": (
+        "openai",
+        False,
+        lambda c: c.responses.parse(model=OPENAI_MODEL, input=PROMPT),
+        _await,
+    ),
+    "openai-embeddings": (
+        "openai",
+        False,
+        lambda c: c.embeddings.create(model=_EMBEDDING_MODEL, input=PROMPT),
+        _await,
+    ),
+    "openai-embeddings-streaming-view": (
+        "openai",
+        False,
+        lambda c: c.embeddings.with_streaming_response.create(model=_EMBEDDING_MODEL, input=PROMPT),
+        _enter_view,
+    ),
+    "openai-wrapped-embeddings": (
+        "openai",
+        True,
+        lambda c: c.embeddings.create(model=_EMBEDDING_MODEL, input=PROMPT),
+        _await,
+    ),
+    "openai-wrapped-raw-view-create": (
+        "openai",
+        True,
+        lambda c: c.chat.completions.with_raw_response.create(**OPENAI_REQUEST),
+        _await_raw,
+    ),
+    "anthropic-create": (
+        "anthropic",
+        False,
+        lambda c: c.messages.create(**ANTHROPIC_REQUEST),
+        _await,
+    ),
+    "anthropic-parse": (
+        "anthropic",
+        False,
+        lambda c: c.messages.parse(**ANTHROPIC_REQUEST),
+        _await,
+    ),
+    "anthropic-raw-view": (
+        "anthropic",
+        False,
+        lambda c: c.messages.with_raw_response.create(**ANTHROPIC_REQUEST),
+        _await_raw,
+    ),
+    "anthropic-streaming-view": (
+        "anthropic",
+        False,
+        lambda c: c.messages.with_streaming_response.create(**ANTHROPIC_REQUEST),
+        _enter_view,
+    ),
+    "anthropic-wrapped-create": (
+        "anthropic",
+        True,
+        lambda c: c.messages.create(**ANTHROPIC_REQUEST),
+        _await,
+    ),
+    "anthropic-wrapped-parse": (
+        "anthropic",
+        True,
+        lambda c: c.messages.parse(**ANTHROPIC_REQUEST),
+        _await,
+    ),
+}
+
+
+def _async_client(sdk: str, wrapped: bool) -> Any:
+    client: Any = (
+        anthropic.AsyncAnthropic(api_key="k", max_retries=0)
+        if sdk == "anthropic"
+        else openai.AsyncOpenAI(api_key="k", max_retries=0)
+    )
+    return flightdeck_sensor.wrap(client) if wrapped else client
+
+
+@pytest.mark.parametrize("path", sorted(ASYNC_PATHS))
+def test_an_async_call_created_in_a_session_and_awaited_after_teardown_goes_out_untouched(
+    sensor: _Sensor, provider: respx.MockRouter, path: str
+) -> None:
+    """Created under the first session, which then blocks every call, and
+    awaited after teardown(): no event, no policy, and the request the
+    provider gets is the one a client the sensor never saw sends."""
+    sdk, wrapped, make, finish = ASYNC_PATHS[path]
+    sensor.start("s1", patch=not wrapped)
+    pending = make(_async_client(sdk, wrapped))
+    session = flightdeck_sensor._session
+    assert session is not None
+    session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+    sensor.stop()
+
+    assert sensor.run(lambda: finish(pending)) == []
+    sent = provider.calls.last.request.content
+    asyncio.run(finish(make(_async_client(sdk, wrapped=False))))
+    assert provider.calls.last.request.content == sent
+
+
+@pytest.mark.parametrize("path", sorted(ASYNC_PATHS))
+def test_an_async_call_created_in_a_session_and_awaited_in_the_next_reports_to_it(
+    sensor: _Sensor, provider: respx.MockRouter, path: str
+) -> None:
+    """Created under the first session (capture off), awaited in the
+    second (capture on): it reports to the second, with its content."""
+    sdk, wrapped, make, finish = ASYNC_PATHS[path]
+    sensor.start("s1", patch=not wrapped)
+    pending = make(_async_client(sdk, wrapped))
+    sensor.stop()
+    sensor.start("s2", capture=True, patch=not wrapped)
+
+    events = sensor.payloads(lambda: finish(pending))
+    assert events
+    assert {sensor.names[p["session_id"]] for p in events} == {"s2"}
+    assert any(p.get("has_content") for p in events)
+    assert PROMPT in json.dumps(events, default=str)
+
+
+# ----- teardown() releases what the session registered with the process ---
+
+
+# How many init() / teardown() cycles the lifecycle tests run.
+_CYCLES = 4
+# The signals a session installs a handler for on the main thread.
+_SIGNALS = (signal.SIGTERM,) if os.name == "nt" else (signal.SIGTERM, signal.SIGINT)
+
+
+@pytest.fixture
+def signals_restored() -> Iterator[dict[signal.Signals, Any]]:
+    """The handlers installed before the test, put back after it."""
+    before = {sig: signal.getsignal(sig) for sig in _SIGNALS}
+    yield before
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
+
+
+def test_init_and_teardown_cycles_leave_no_atexit_callback_behind(
+    sensor: _Sensor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each session registers its end() with atexit and teardown() takes
+    it back out. (CPython's own callback count is no measure: unregister
+    clears a slot without counting it down. That the process no longer
+    holds the ended session is the collection test below.)"""
+    live: list[Any] = []
+    register, unregister = atexit.register, atexit.unregister
+
+    def _register(func: Any, *args: Any, **kwargs: Any) -> Any:
+        live.append(func)
+        return register(func, *args, **kwargs)
+
+    def _unregister(func: Any) -> None:
+        live[:] = [f for f in live if f != func]
+        unregister(func)
+
+    monkeypatch.setattr(atexit, "register", _register)
+    monkeypatch.setattr(atexit, "unregister", _unregister)
+    for cycle in range(_CYCLES):
+        sensor.start(f"s{cycle}")
+        assert live == [flightdeck_sensor._session.end]  # type: ignore[union-attr]
+        sensor.stop()
+        assert live == []
+
+
+def test_an_ended_session_is_collected_once_its_client_is_dropped(
+    sensor: _Sensor, provider: respx.MockRouter, signals_restored: dict[signal.Signals, Any]
+) -> None:
+    """Nothing the process holds keeps an ended session alive: not its
+    atexit callback, not its signal handlers. A kept client holds it until
+    the client is dropped (or reports to a later session)."""
+    sensor.start("s1")
+    client = openai.OpenAI(api_key="k", max_retries=0)
+    client.chat.completions.create(**OPENAI_REQUEST)
+    session = flightdeck_sensor._session
+    assert session is not None
+    ended = weakref.ref(session)
+    del session
+    sensor.stop()
+    del client
+    gc.collect()
+    assert ended() is None
+
+
+def test_init_and_teardown_cycles_put_the_signal_handlers_back(
+    sensor: _Sensor, signals_restored: dict[signal.Signals, Any]
+) -> None:
+    for cycle in range(_CYCLES):
+        sensor.start(f"s{cycle}")
+        for sig, before in signals_restored.items():
+            installed = signal.getsignal(sig)
+            # The session's own handler, over the one that was there.
+            assert getattr(installed, "previous", None) == before
+        sensor.stop()
+        for sig, before in signals_restored.items():
+            assert signal.getsignal(sig) == before
+
+
+def test_an_application_handler_installed_after_init_is_left_alone(
+    sensor: _Sensor, signals_restored: dict[signal.Signals, Any]
+) -> None:
+    """The application's handler stays; the session's, under it, lets go
+    of the session and passes the signal on to the handler before it."""
+    seen: list[str] = []
+    signal.signal(signal.SIGTERM, lambda _s, _f: seen.append("original"))
+    sensor.start("s1")
+    session_handler = signal.getsignal(signal.SIGTERM)
+    assert callable(session_handler)
+
+    def app_handler(signum: int, frame: Any) -> None:
+        seen.append("app")
+        session_handler(signum, frame)
+
+    signal.signal(signal.SIGTERM, app_handler)
+    sensor.stop()
+    assert signal.getsignal(signal.SIGTERM) is app_handler
+    assert getattr(session_handler, "session", "missing") is None
+
+    app_handler(signal.SIGTERM, None)
+    assert seen == ["app", "original"]
+
+    for cycle in range(_CYCLES):
+        sensor.start(f"s{cycle + 2}")
+        assert getattr(signal.getsignal(signal.SIGTERM), "previous", None) is app_handler
+        sensor.stop()
+        assert signal.getsignal(signal.SIGTERM) is app_handler
+
+
+def test_a_teardown_off_the_main_thread_leaves_a_handler_the_next_session_skips(
+    sensor: _Sensor, signals_restored: dict[signal.Signals, Any]
+) -> None:
+    """Off the main thread a handler cannot be changed: the session's
+    stays installed, holding no session, and the next session started on
+    the main thread chains past it, so the chain does not grow."""
+    original = signals_restored[signal.SIGTERM]
+    sensor.start("s1")
+    left = signal.getsignal(signal.SIGTERM)
+    stopper = threading.Thread(target=sensor.stop)
+    stopper.start()
+    stopper.join(_THREAD_WAIT_SECS)
+    assert signal.getsignal(signal.SIGTERM) is left
+    assert getattr(left, "session", "missing") is None
+
+    sensor.start("s2")
+    assert getattr(signal.getsignal(signal.SIGTERM), "previous", None) == original
+    sensor.stop()
+    assert signal.getsignal(signal.SIGTERM) == original
+
+
+# ----- a failed start leaves nothing behind --------------------------------
+
+
+def test_a_failed_start_leaves_nothing_behind_and_init_can_be_retried(
+    sensor: _Sensor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start() raises when the control plane is unreachable under
+    FLIGHTDECK_UNAVAILABLE_POLICY=halt: init() re-raises with no session
+    published, its transport closed and cleared and its event queue
+    closed, and a retried init() starts clean."""
+    started: list[Session] = []
+    closed: list[ControlPlaneClient] = []
+    start = Session.start
+    close = ControlPlaneClient.close
+
+    def _unreachable(self: Session) -> None:
+        started.append(self)
+        raise DirectiveError(action="halt", reason="Control plane unreachable: test")
+
+    def _closing(self: ControlPlaneClient) -> None:
+        closed.append(self)
+        close(self)
+
+    monkeypatch.setattr(Session, "start", _unreachable)
+    monkeypatch.setattr(ControlPlaneClient, "close", _closing)
+    with pytest.raises(DirectiveError):
+        sensor.start("failed")
+    assert flightdeck_sensor._session is None
+    assert flightdeck_sensor._client is None
+    assert len(closed) == 1
+    assert not started[0].event_queue._drain_thread.is_alive()
+
+    monkeypatch.setattr(Session, "start", start)
+    sensor.start("s1")
+    assert flightdeck_sensor._session is not None
+    assert flightdeck_sensor._client is not None and flightdeck_sensor._client is not closed[0]
 
 
 # ----- init() publishes the session once it has started -------------------

@@ -2336,15 +2336,20 @@ its raw view on its first call, so one built, or first called, between
 `teardown` and the next `patch` is never metered. Build or first use
 them while the sensor is patched.
 
-A call is matched to a session when its request is sent. The `.stream()`
-helpers of the OpenAI SDK send on entry, so a manager built under one
-session and entered after `teardown` goes to the SDK untouched, and one
-entered in the next session reports to it; an async call through a
-proxy that follows the session resolves it when the call is awaited.
-Anthropic's `messages.stream()` runs the pre-call (the policy check and
-`pre_call`) when it is called, so that call belongs to the session it was
-called in, as a stream still open at `teardown` does: it is settled when
-its session ends (see "Shutdown and signals").
+A call is matched to a session when its request is sent. A sync call
+sends when it is made. An async call sends when its coroutine is
+awaited, and an async streaming view when it is entered: on every async
+path (the patched Anthropic `create` and `parse`, their raw and
+streaming views, and every call through a following OpenAI or `wrap`
+proxy) the session is read then, so a coroutine created under one
+session and awaited after `teardown` goes to the SDK untouched, and one
+awaited in the next session reports to it, with its capture setting. The
+`.stream()` helpers of the OpenAI SDK send on entry, and a manager is
+matched to the session active when it is entered the same way.
+Anthropic's `messages.stream()`, sync or async, runs the pre-call (the
+policy check and `pre_call`) when it is called, so that call belongs to
+the session it was called in, as a stream still open at `teardown` does:
+it is settled when its session ends (see "Shutdown and signals").
 
 How each interceptor finds the session: the patched Anthropic resource
 methods and the litellm wrappers look it up at each call. The OpenAI
@@ -2381,6 +2386,23 @@ handler. `end` settles the streams still open, flushes the event queue,
 posts `session_end` (`close_reason=normal_exit`, or `directive_shutdown`
 after a shutdown directive), flushes again and closes the queue; a second
 call does nothing. `teardown()` calls it too.
+
+`teardown()` then takes back what the session registered with the
+process (`Session.release_process_hooks`), so a process that starts and
+ends sessions in turn neither keeps ended sessions alive nor grows a
+chain of handlers. It unregisters the `atexit` callback. Each signal
+handler is an object holding the session and the handler it replaced; it
+lets go of the session, and on the main thread, when it is still the
+handler installed, the handler it replaced is put back. A handler the
+application or another library installed after `init` stays where it
+is; the session's handler under it, which that handler may call, passes
+every signal straight on from then on. Off the main thread a handler
+cannot be changed, so the session's stays installed the same way, and
+the next session's handler, installed on the main thread, chains past it
+to the one before. A failed `init` (its `start` raising, as with
+`FLIGHTDECK_UNAVAILABLE_POLICY=halt` and the control plane down) publishes
+no session and takes down what it set up: the transport, the session's
+event queue and its threads, and anything `start` had registered.
 
 A signal handler runs on the main thread on top of whatever the signal
 interrupted, which can be inside the session's, the policy cache's or the

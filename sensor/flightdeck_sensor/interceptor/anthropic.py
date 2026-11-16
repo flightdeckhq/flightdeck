@@ -431,9 +431,18 @@ class SensorMessages(base.SessionProxy):
         """
         real_fn = self._method("create")
         # An outer interceptor (litellm) making this call already meters
-        # it, and with no session to report to the call is not metered:
-        # either way the SDK gets it untouched (see base.outer_intercept).
-        target = None if base.outer_intercept_active() else self._target()
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
+        return self._call(
+            lambda call_kwargs, target: self._create(real_fn, call_kwargs, target), kwargs
+        )
+
+    def _create(
+        self, real_fn: Any, kwargs: dict[str, Any], target: tuple[Session, Any] | None
+    ) -> Any:
+        """``create`` for the session and provider of ``target``; with none
+        (no session to report to) the SDK gets the call untouched."""
         if target is None:
             return real_fn(**kwargs)
         session, provider = target
@@ -484,9 +493,19 @@ class SensorMessages(base.SessionProxy):
         and tool calls come out as for ``create()``. Through the
         streaming view it is deferred like ``create()``."""
         real_fn = self._method("parse")
-        # As for create(): an outer interceptor's call, or no session to
-        # report to, goes to the SDK untouched.
-        target = None if base.outer_intercept_active() else self._target()
+        # As for create(): an outer interceptor's call goes to the SDK
+        # untouched.
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
+        return self._call(
+            lambda call_kwargs, target: self._parse(real_fn, call_kwargs, target), kwargs
+        )
+
+    def _parse(
+        self, real_fn: Any, kwargs: dict[str, Any], target: tuple[Session, Any] | None
+    ) -> Any:
+        """``parse`` for the session and provider of ``target`` (see
+        :meth:`_create`)."""
         if target is None:
             return real_fn(**kwargs)
         session, provider = target
@@ -708,6 +727,12 @@ def _under_outer_mark(fn: Any) -> Any:
     return run
 
 
+# The methods of an async resource class that return a coroutine, whose
+# request goes out when it is awaited (``stream`` hands back its manager
+# at once, and sends on entry through ``create``).
+_AWAITED_METHODS = frozenset({"create", "parse"})
+
+
 def _intercepting_method(
     name: str, originals: dict[str, Callable[..., Any]], *, is_async: bool
 ) -> Any:
@@ -720,8 +745,38 @@ def _intercepting_method(
     it is the original, untouched, so a client built before ``init()``
     is metered as soon as a session exists, nothing is cached in an
     unmetered state, and a view that captured the wrapper stops metering
-    with ``unpatch``."""
+    with ``unpatch``. On an async resource, ``create`` and ``parse`` read
+    the session when their coroutine is awaited, the moment the request
+    goes out, so a coroutine (or an async streaming view) created under
+    one session and awaited after ``teardown()`` or in the next session
+    is matched to the session active then."""
     original = originals[name]
+
+    def _proxy(resource: Any, session: Session) -> SensorMessages:
+        client = getattr(resource, "_client", None)
+        return SensorMessages(
+            resource,
+            session,
+            _provider_for(client, session),
+            is_async=is_async,
+            originals=originals,
+        )
+
+    if is_async and name in _AWAITED_METHODS:
+
+        @functools.wraps(original)
+        async def awaited(self: Any, **kwargs: Any) -> Any:
+            session = _current_session()
+            # As for the sync method below, read when the request goes out.
+            if (
+                session is None
+                or base.outer_intercept_active()
+                or not _installed(type(self), name, awaited)
+            ):
+                return await original(self, **kwargs)
+            return await getattr(_proxy(self, session), name)(**kwargs)
+
+        return awaited
 
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
@@ -735,15 +790,7 @@ def _intercepting_method(
             or not _installed(type(self), name, method)
         ):
             return original(self, **kwargs)
-        client = getattr(self, "_client", None)
-        proxy = SensorMessages(
-            self,
-            session,
-            _provider_for(client, session),
-            is_async=is_async,
-            originals=originals,
-        )
-        return getattr(proxy, name)(**kwargs)
+        return getattr(_proxy(self, session), name)(**kwargs)
 
     return method
 

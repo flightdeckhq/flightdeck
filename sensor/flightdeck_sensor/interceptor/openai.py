@@ -694,7 +694,9 @@ class SensorCompletions(base.SessionProxy):
         ``post_call`` followed by the ``llm_error``; see
         :func:`_call_parse`.
         """
-        target = self._target()
+        return self._call(self._parse, kwargs)
+
+    def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
             return self._real.parse(**kwargs)
         session, provider = target
@@ -823,8 +825,10 @@ class _SensorRawResponseWrapper(base.SessionProxy):
         :mod:`flightdeck_sensor.interceptor.raw_views`). langchain-openai
         takes this path with ``include_response_headers=True``.
         """
+        return self._call(self._create, kwargs)
+
+    def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         real_fn = self._real.create
-        target = self._target()
         if target is None:
             return real_fn(**kwargs)
         session, provider = target
@@ -850,7 +854,9 @@ class _SensorRawResponseWrapper(base.SessionProxy):
         reported here rather than silently at the caller's ``.parse()``;
         see :func:`_call_parse`.
         """
-        target = self._target()
+        return self._call(self._parse, kwargs)
+
+    def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
             return self._real.parse(**kwargs)
         session, provider = target
@@ -955,7 +961,9 @@ class SensorResponses(base.SessionProxy):
         caller's ``text_format`` schema lands as a ``post_call`` followed
         by the ``llm_error``; see :func:`_call_parse`.
         """
-        target = self._target()
+        return self._call(self._parse, kwargs)
+
+    def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
             return self._real.parse(**kwargs)
         session, provider = target
@@ -1025,12 +1033,14 @@ class SensorEmbeddings(base.SessionProxy):
         input tokens only, ``output_tokens=0`` as returned by
         :meth:`OpenAIProvider.extract_usage`.
         """
-        real_fn = self._real.create
         # An outer interceptor (litellm) making this call already meters
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
-            return real_fn(**kwargs)
-        target = self._target()
+            return self._real.create(**kwargs)
+        return self._call(self._create, kwargs)
+
+    def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
+        real_fn = self._real.create
         if target is None:
             return real_fn(**kwargs)
         session, provider = target

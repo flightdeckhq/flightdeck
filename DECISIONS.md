@@ -1159,12 +1159,12 @@ by design; offering a public instance (it refuses the development token).
 ## D281 -- A sensor proxy reports each call to the session active at that call, so a client outlives `teardown()`
 
 **Date:** 2026-11-16
-**Decision:** the OpenAI class patch's proxies and `wrap()`'s resolve the
-session as each request is sent, with a provider built for its capture
-setting; with none (or the class unpatched) the call goes to the SDK
-untouched. An Anthropic re-patch reinstalls the same methods, so views
-bound to them meter again. An intercepted client needs nothing from the
-application across `teardown()` and `init()`.
+**Decision:** every call through an intercepted client (the patched
+methods, the OpenAI class patch's proxies, `wrap()`'s) reads the session
+when its request goes out (an async call when awaited; Anthropic's
+`stream()` when called), with a provider for its capture setting; with
+none (or the class unpatched) the SDK gets it untouched. An Anthropic
+re-patch reinstalls the same methods, so bound views meter again.
 **Why:** proxies kept the session of their first use: after `teardown()`
 and `init()` a reused `ChatAnthropic` reported nothing, and an `OpenAI`
 client or `ChatOpenAI` reported to the ended session, whose policy still

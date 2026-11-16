@@ -8,6 +8,10 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { Timeline } from "@/components/timeline/Timeline";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
+import {
+  PerAgentSwimlaneModal,
+  usePerAgentModalTarget,
+} from "@/components/agents/PerAgentSwimlaneModal";
 import type {
   AgentEvent,
   AgentSummary,
@@ -177,6 +181,13 @@ export function Fleet() {
 
   const { flavors, loading, error } = useFleet(handleNewEvent);
   const contextFacets = useFleetStore((s) => s.contextFacets);
+
+  // The per-agent swimlane modal a row's runs chip opens (a row whose
+  // agent has two or more runs at once): the same modal the agent
+  // drawer's "Open in swimlane" opens, on the roster's summary of the
+  // agent. It closes for good if the agent leaves the roster.
+  const agents = useFleetStore((s) => s.agents);
+  const runsModal = usePerAgentModalTarget(agents);
   const {
     selectedSessionId,
     selectSession,
@@ -792,6 +803,7 @@ export function Fleet() {
               effectiveNowMs={effectiveNowMs}
               sessionVersions={sessionVersions}
               matchingSessionIds={matchingSessionIds}
+              onExpandRuns={runsModal.open}
             />
           </div>
           {swimCanScrollLeft && (
@@ -880,6 +892,8 @@ export function Fleet() {
           selectSession(sessionId);
         }}
       />
+
+      <PerAgentSwimlaneModal agent={runsModal.agent} onClose={runsModal.close} />
     </div>
   );
 }

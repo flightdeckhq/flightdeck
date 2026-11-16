@@ -20,6 +20,9 @@ import {
 import { TimeAxis } from "./TimeAxis";
 import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
+import { RunLanes } from "./RunLanes";
+import { RUN_LANE_MAX_HEIGHT_PX, runLaneHeights } from "@/lib/run-lane-layout";
+import type { LaneViewport } from "@/lib/lane-viewport";
 import {
   SubAgentConnector,
   centreWithin,
@@ -102,6 +105,45 @@ interface TimelineProps {
    * timeline -- see filteredFlavors below for the flavor-level cull.
    */
   matchingSessionIds?: Set<string> | null;
+  /**
+   * Agents whose row draws as run lanes (``RunLanes``): one lane per
+   * run in the window. The per-agent swimlane modal names its agent;
+   * the Fleet view names none and keeps every row compact.
+   */
+  expandedAgentIds?: ReadonlySet<string>;
+  /**
+   * The client height of the scroll viewport the Timeline sits in (the
+   * per-agent modal's). With ``expandedAgentIds``, the lanes share what
+   * the rest of the Timeline leaves of it (``runLaneHeights``).
+   */
+  viewportHeight?: number;
+  /**
+   * The same viewport's width and horizontal scroll, which the run lanes
+   * read themselves (the headings span the width; marker text keeps to
+   * the visible part of each panel), so a sideways scroll re-renders the
+   * lanes and not the Timeline.
+   */
+  laneViewport?: LaneViewport;
+  /**
+   * Called with the lanes drawn and the height of the rest of the
+   * content, whenever either changes: the modal gives its Live feed's
+   * height up to the lanes when they do not fit (``feedHeightCap``).
+   */
+  onRunLaneSpace?: (space: RunLaneSpace) => void;
+  /** Opens the per-agent swimlane modal; a row with two or more runs at
+   *  once then shows the runs chip (see SwimLane). */
+  onExpandRuns?: (agentId: string) => void;
+}
+
+/** Data attribute on each run lane, which the lane sizing counts. */
+const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
+
+/** The run lanes drawn, and the height of everything else the
+ *  Timeline draws (axis, ALL row, headings, other rows), which the
+ *  viewport's height does not change. */
+export interface RunLaneSpace {
+  laneCount: number;
+  restPx: number;
 }
 
 export function Timeline({
@@ -115,6 +157,11 @@ export function Timeline({
   effectiveNowMs,
   sessionVersions,
   matchingSessionIds = null,
+  expandedAgentIds,
+  viewportHeight,
+  laneViewport,
+  onRunLaneSpace,
+  onExpandRuns,
 }: TimelineProps) {
   // Resizable left panel width. Persisted to localStorage so the
   // user's preference survives page reloads. Clamped on init AND on
@@ -416,6 +463,47 @@ export function Timeline({
   // contract; the useLayoutEffect's body short-circuits cleanly
   // when there's nothing to measure.
   const innerContentRef = useRef<HTMLDivElement | null>(null);
+
+  // Run-lane sizing (the per-agent modal). Every lane gets an equal
+  // share of what the rest of the content leaves of the viewport. The
+  // rest is measured from the rendered content less the lanes, so the
+  // time axis, the ALL row in either state, the lane headings and any
+  // compact sub-agent rows all count without the Timeline knowing their
+  // heights. Measured after every render, and again whenever the content
+  // resizes: a lane opening or closing as a run enters or leaves the
+  // window can land without re-rendering the Timeline.
+  const hasRunLanes = expandedAgentIds !== undefined && expandedAgentIds.size > 0;
+  const [runLaneHeight, setRunLaneHeight] = useState(RUN_LANE_MAX_HEIGHT_PX);
+  const fillHeight = viewportHeight;
+  const reportedSpace = useRef<RunLaneSpace | null>(null);
+  const measureRunLanes = useCallback(() => {
+    const content = innerContentRef.current;
+    if (!content || fillHeight === undefined) return;
+    const lanes = content.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR);
+    let lanesPx = 0;
+    for (const lane of lanes) lanesPx += lane.offsetHeight;
+    const restPx = content.offsetHeight - lanesPx;
+    const prev = reportedSpace.current;
+    if (!prev || prev.laneCount !== lanes.length || prev.restPx !== restPx) {
+      reportedSpace.current = { laneCount: lanes.length, restPx };
+      onRunLaneSpace?.(reportedSpace.current);
+    }
+    if (lanes.length === 0) return;
+    const next = runLaneHeights(lanes.length, fillHeight - restPx).laneHeight;
+    setRunLaneHeight((height) => (height === next ? height : next));
+  }, [fillHeight, onRunLaneSpace]);
+  useLayoutEffect(() => {
+    if (hasRunLanes) measureRunLanes();
+  });
+  useEffect(() => {
+    if (!hasRunLanes || typeof ResizeObserver === "undefined") return;
+    const content = innerContentRef.current;
+    if (!content) return;
+    const observer = new ResizeObserver(() => measureRunLanes());
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [hasRunLanes, measureRunLanes]);
+
   const [connectorSpecs, setConnectorSpecs] = useState<
     SubAgentConnectorSpec[]
   >([]);
@@ -560,10 +648,12 @@ export function Timeline({
         // A circle within the panel's inset of "now" is clipped by its
         // row's timeline panel; a connector to its centre would run
         // past the now line. Skip the pair, as for an unmounted circle.
-        const parentPanel = parentRow.querySelector(
+        // The panel is the circle's own: a row drawn as run lanes has
+        // one per lane.
+        const parentPanel = parentCircle.closest(
           '[data-testid="swimlane-timeline-panel"]',
         );
-        const childPanel = childRow.querySelector(
+        const childPanel = childCircle.closest(
           '[data-testid="swimlane-timeline-panel"]',
         );
         if (
@@ -605,6 +695,9 @@ export function Timeline({
     sessionVersions,
     connectorNonce,
   ]);
+
+  // "Now" in a lane panel's coordinates: marker text never runs past it.
+  const nowX = timelineWidth - TIMELINE_SCALE_INSET_PX;
 
   // Bucket-divider rows interleaved with VirtualizedSwimLane rows.
   // Walks ``filteredFlavors`` once, tracking the previous ROOT
@@ -650,6 +743,35 @@ export function Timeline({
           />,
         );
       }
+      if (expandedAgentIds?.has(f.flavor)) {
+        // Drawn as run lanes, and never virtualized: the lane sizing
+        // counts the lanes in the DOM, and the modal holds few rows.
+        rendered.push(
+          <RunLanes
+            key={f.flavor}
+            flavor={f.flavor}
+            agentName={f.agent_name}
+            clientType={f.client_type ?? undefined}
+            telemetry={f.telemetry ?? undefined}
+            agentType={f.agent_type}
+            sessions={f.sessions}
+            scale={scale}
+            onSessionClick={onNodeClick}
+            timelineWidth={timelineWidth}
+            leftPanelWidth={leftPanelWidth}
+            activeFilter={activeFilter}
+            sessionVersions={sessionVersions}
+            matchingSessionIds={matchingSessionIds}
+            topology={topologyByFlavor.get(f.flavor) ?? "root"}
+            onScrollToAgent={scrollToAgentRow}
+            laneHeight={runLaneHeight}
+            laneViewport={laneViewport}
+            nowX={nowX}
+          />,
+        );
+        if (!isChild) prevBucket = b;
+        continue;
+      }
       rendered.push(
         <VirtualizedSwimLane
           key={f.flavor}
@@ -667,21 +789,14 @@ export function Timeline({
           sessionVersions={sessionVersions}
           matchingSessionIds={matchingSessionIds}
           topology={topologyByFlavor.get(f.flavor) ?? "root"}
-          onScrollToAgent={(agentId) => {
-            // Clicking the relationship pill jumps to another agent's
-            // swimlane row. We already stamp
-            // ``data-testid="swimlane-agent-row-<name>"`` on every
-            // collapsed header, but the robust selector for client-
-            // side scroll uses the agent_id itself; tag added on the
-            // SwimLane outermost wrapper for this lookup. Fallback
-            // to hash anchor when querySelector misses (e.g. the
-            // target agent isn't in the rendered viewport; the
-            // virtualizer hasn't materialized it). See
-            // lib/relationship.ts::scrollToAgentRow for the shared
-            // rationale on the intentional querySelector bypass of
-            // React refs.
-            scrollToAgentRow(agentId);
-          }}
+          onExpandRuns={onExpandRuns}
+          // Clicking the relationship pill jumps to another agent's
+          // swimlane row by its agent_id (see
+          // lib/relationship.ts::scrollToAgentRow for the shared
+          // rationale on the intentional querySelector bypass of React
+          // refs). One stable function, so a Timeline render does not
+          // re-render every row for a new handler.
+          onScrollToAgent={scrollToAgentRow}
         />,
       );
       // Only update prevBucket on root rows. Children inherit their
@@ -705,6 +820,11 @@ export function Timeline({
     activeFilter,
     sessionVersions,
     matchingSessionIds,
+    expandedAgentIds,
+    runLaneHeight,
+    laneViewport,
+    nowX,
+    onExpandRuns,
   ]);
 
   if (flavors.length === 0) {

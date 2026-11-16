@@ -32,6 +32,10 @@ interface RunBracketProps {
 	/** The run the glyph marks: its state and tokens fill the tooltip. */
 	session: Session;
 	onClick: (sessionId: string) => void;
+	/** Sit on the centre of a one-lane panel rather than its top edge:
+	 *  a run's own lane in the per-agent modal, where the run line runs
+	 *  through the centre. */
+	centred?: boolean;
 }
 
 // Vertical inset from the row's top edge, where a one-line row's glyphs
@@ -155,9 +159,9 @@ function ariaLabel(glyph: RowGlyph): string {
 }
 
 /** The top of a mark ``size`` px tall: the row's top edge on a
- *  one-line row, else centred on its lane. */
-function markTop(lane: number, laneCount: number, size: number): string | number {
-	if (laneCount <= 1) return VERTICAL_MARGIN;
+ *  one-line row (unless ``centred``), else centred on its lane. */
+function markTop(lane: number, laneCount: number, size: number, centred = false): string | number {
+	if (laneCount <= 1 && !centred) return VERTICAL_MARGIN;
 	return `calc(${laneCentrePct(lane, laneCount)}% - ${size / 2}px)`;
 }
 
@@ -193,7 +197,7 @@ function useMarkTooltip() {
 	return { tooltipPos, onHoverEnter, onHoverLeave };
 }
 
-function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
+function RunBracketComponent({ glyph, session, onClick, centred = false }: RunBracketProps) {
 	const { segment, kind } = glyph;
 	const sessionId = segment.sessionId;
 	const idPrefix = sessionId.slice(0, 8);
@@ -226,7 +230,7 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 				style={{
 					position: "absolute",
 					left: glyph.left,
-					top: markTop(glyph.lane, glyph.laneCount, size),
+					top: markTop(glyph.lane, glyph.laneCount, size, centred),
 					width: size,
 					height: size,
 					padding: 0,
@@ -329,6 +333,9 @@ interface RunLineProps {
 	/** A mark of the line's run is hovered or focused on the row. */
 	highlighted: boolean;
 	onClick: (sessionId: string) => void;
+	/** Run through the centre of a one-lane panel (see RunBracket's
+	 *  ``centred``). */
+	centred?: boolean;
 }
 
 /** A line's accessible end: how its segment ends. */
@@ -350,7 +357,7 @@ function lineEnd(segment: RunSegment): string {
  * in view, so the segment keeps one tab stop. In the overflow lane the
  * lines overlap, so they take no pointer input there.
  */
-function RunLineComponent({ line, session, highlighted, onClick }: RunLineProps) {
+function RunLineComponent({ line, session, highlighted, onClick, centred = false }: RunLineProps) {
 	const { segment } = line;
 	const sessionId = segment.sessionId;
 	const idPrefix = sessionId.slice(0, 8);
@@ -392,7 +399,7 @@ function RunLineComponent({ line, session, highlighted, onClick }: RunLineProps)
 					position: "absolute",
 					left: line.x1,
 					width,
-					top: markTop(line.lane, line.laneCount, RUN_LINE_HIT_PX),
+					top: markTop(line.lane, line.laneCount, RUN_LINE_HIT_PX, centred),
 					height: RUN_LINE_HIT_PX,
 					padding: 0,
 					background: "transparent",

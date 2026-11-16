@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ScaleTime } from "d3-scale";
-import type { Session, AgentEvent } from "@/lib/types";
-import type { ClientType } from "@/lib/agent-identity";
-import { SwimLane } from "./SwimLane";
+import { SwimLane, type SwimLaneProps } from "./SwimLane";
 
 /**
  * Tailwind `h-12` on SwimLane's collapsed header row. Used only as
@@ -13,29 +10,8 @@ import { SwimLane } from "./SwimLane";
  */
 const FALLBACK_ROW_HEIGHT = 48;
 
-interface VirtualizedSwimLaneProps {
-  flavor: string;
-  /** Label + pill metadata. Forwarded verbatim to SwimLane. */
-  agentName?: string;
-  clientType?: ClientType;
-  /** The agent's ``telemetry``; ``"otlp"`` adds the OTel pill. */
-  telemetry?: string;
-  agentType?: string;
-  sessions: Session[];
-  scale: ScaleTime<number, number>;
-  onSessionClick: (sessionId: string, eventId?: string, event?: AgentEvent) => void;
-  timelineWidth: number;
-  leftPanelWidth: number;
-  activeFilter?: string | null;
-  sessionVersions?: Record<string, number>;
-  matchingSessionIds?: Set<string> | null;
-  /** Forwarded to SwimLane for relationship-pill click navigation. */
-  onScrollToAgent?: (agentId: string) => void;
-  /** Row topology (``"root"`` or ``"child"``); forwarded verbatim to
-   *  SwimLane so the ``data-topology`` attribute drives the indent +
-   *  bg tint. */
-  topology?: "root" | "child";
-}
+/** SwimLane's props, forwarded verbatim. */
+type VirtualizedSwimLaneProps = SwimLaneProps;
 
 /**
  * Row-level virtualization wrapper for SwimLane.

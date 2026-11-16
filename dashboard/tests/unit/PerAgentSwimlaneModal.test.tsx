@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
+import { PerAgentSwimlaneModal, usePerAgentModalTarget } from "@/components/agents/PerAgentSwimlaneModal";
 import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { ClientType } from "@/lib/agent-identity";
 import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
 import { fetchAgentSummary } from "@/lib/api";
 import { eventsCache } from "@/hooks/useSessionEvents";
+import { placeMarkerLabels } from "@/lib/run-lane-layout";
 import { useFleetStore } from "@/store/fleet";
 import type {
   AgentEvent,
@@ -21,14 +22,34 @@ import type {
 // passes — the test reads ``data-event-count`` straight off the
 // stub rather than walking the (heavy) recharts/Radix render tree
 // inside the real component.
+// The stub and the wrapped KPI cost cell count their renders, and the
+// marker-text placement counts its calls, for the scroll render test.
+const renders = vi.hoisted(() => ({ feed: 0, cost: 0 }));
 vi.mock("@/components/fleet/LiveFeed", () => ({
-  LiveFeed: (props: { events: FeedEvent[] }) => (
-    <div
-      data-testid="livefeed-stub"
-      data-event-count={props.events.length}
-    />
-  ),
+  LiveFeed: (props: { events: FeedEvent[] }) => {
+    renders.feed += 1;
+    return (
+      <div
+        data-testid="livefeed-stub"
+        data-event-count={props.events.length}
+      />
+    );
+  },
 }));
+vi.mock("@/components/agents/AgentCost", async (orig) => {
+  const actual = await orig<typeof import("@/components/agents/AgentCost")>();
+  return {
+    ...actual,
+    AgentCost: (props: React.ComponentProps<typeof actual.AgentCost>) => {
+      renders.cost += 1;
+      return <actual.AgentCost {...props} />;
+    },
+  };
+});
+vi.mock("@/lib/run-lane-layout", async (orig) => {
+  const actual = await orig<typeof import("@/lib/run-lane-layout")>();
+  return { ...actual, placeMarkerLabels: vi.fn(actual.placeMarkerLabels) };
+});
 
 // Stub the summary fetch so the modal's useAgentSummary hook
 // doesn't hit jsdom's broken fetch path. See AgentTable.test.tsx
@@ -437,4 +458,189 @@ describe("PerAgentSwimlaneModal", () => {
     useFleetStore.setState({ flavors: [] });
     nowSpy.mockRestore();
   });
+
+  it("draws the agent's own row as run lanes and its sub-agent as a compact row", () => {
+    const now = Date.now();
+    const session = (id: string, flavor: string, parent: string | null = null): Session =>
+      ({
+        session_id: id,
+        flavor,
+        agent_type: "coding",
+        host: null,
+        framework: null,
+        model: "claude-sonnet-4-5",
+        state: "active",
+        started_at: new Date(now - 20_000).toISOString(),
+        last_seen_at: new Date(now).toISOString(),
+        ended_at: null,
+        tokens_used: 0,
+        token_limit: null,
+        parent_session_id: parent,
+      }) as Session;
+    const flavor = (agentId: string, name: string, sessions: Session[]): FlavorSummary => ({
+      flavor: agentId,
+      agent_type: "coding",
+      session_count: sessions.length,
+      active_count: sessions.length,
+      tokens_used_total: 0,
+      sessions,
+      agent_id: agentId,
+      agent_name: name,
+      client_type: ClientType.ClaudeCode,
+    });
+    useFleetStore.setState({
+      flavors: [
+        flavor("agent-parent", "parent-agent", [
+          session("p0000001-0000-4000-8000-000000000000", "agent-parent"),
+          session("p0000002-0000-4000-8000-000000000000", "agent-parent"),
+        ]),
+        flavor("agent-child", "parent-agent/worker", [
+          session("c0000001-0000-4000-8000-000000000000", "agent-child", "p0000001-0000-4000-8000-000000000000"),
+        ]),
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal
+          agent={mkAgent({ agent_id: "agent-parent", agent_name: "parent-agent", topology: "parent" })}
+          onClose={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const parentRow = screen.getByTestId("swimlane-agent-row-parent-agent");
+    expect(parentRow).toHaveAttribute("data-run-lanes", "true");
+    expect(parentRow.querySelectorAll("[data-run-lane-row]")).toHaveLength(2);
+    const childRow = screen.getByTestId("swimlane-agent-row-parent-agent/worker");
+    expect(childRow).not.toHaveAttribute("data-run-lanes");
+    // The modal's rows carry no runs chip: they are already expanded.
+    expect(screen.queryByTestId("swimlane-runs-chip")).toBeNull();
+
+    useFleetStore.setState({ flavors: [] });
+  });
+
+  it("lets the keyboard reach the lanes' scroller, named for the agent", () => {
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    const scroller = screen.getByTestId("per-agent-swimlane-modal-scroll");
+    expect(scroller.tabIndex).toBe(0);
+    expect(scroller).toHaveAccessibleName("Run lanes of test-agent");
+  });
 });
+
+describe("usePerAgentModalTarget", () => {
+  it("opens on an agent of the roster and closes", () => {
+    const agents = [mkAgent({ agent_id: "a1" }), mkAgent({ agent_id: "a2" })];
+    const { result } = renderHook(() => usePerAgentModalTarget(agents));
+    expect(result.current.agent).toBeNull();
+    act(() => result.current.open("a2"));
+    expect(result.current.agent?.agent_id).toBe("a2");
+    act(() => result.current.close());
+    expect(result.current.agent).toBeNull();
+  });
+
+  it("closes for good when the agent leaves the roster: it does not reopen when it returns", () => {
+    const a1 = mkAgent({ agent_id: "a1" });
+    const { result, rerender } = renderHook(({ agents }) => usePerAgentModalTarget(agents), {
+      initialProps: { agents: [a1] },
+    });
+    act(() => result.current.open("a1"));
+    expect(result.current.agent?.agent_id).toBe("a1");
+    // A roster reload without it.
+    rerender({ agents: [] });
+    expect(result.current.agent).toBeNull();
+    // Back in the roster: the modal stays closed until the next click.
+    rerender({ agents: [a1] });
+    expect(result.current.agent).toBeNull();
+  });
+});
+
+describe("PerAgentSwimlaneModal on a sideways scroll", () => {
+  it("re-places the lanes' marker text, and leaves the header, KPI tiles and Live feed alone", async () => {
+    const now = Date.now();
+    const sid = "s5000001-0000-4000-8000-000000000000";
+    eventsCache.set(sid, [
+      {
+        id: "ev-scroll",
+        session_id: sid,
+        flavor: "agent-scroll",
+        event_type: "tool_call",
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        tokens_cache_read: null,
+        tokens_cache_creation: null,
+        latency_ms: null,
+        tool_name: "Bash",
+        has_content: false,
+        payload: null,
+        occurred_at: new Date(now - 10_000).toISOString(),
+        source: null,
+        framework: null,
+        client_type: null,
+        agent_type: null,
+      } as AgentEvent,
+    ]);
+    useFleetStore.setState({
+      flavors: [
+        {
+          flavor: "agent-scroll",
+          agent_type: "coding",
+          session_count: 1,
+          active_count: 1,
+          tokens_used_total: 0,
+          sessions: [
+            {
+              session_id: sid,
+              flavor: "agent-scroll",
+              agent_type: "coding",
+              host: null,
+              framework: null,
+              model: null,
+              state: "active",
+              started_at: new Date(now - 20_000).toISOString(),
+              last_seen_at: new Date(now).toISOString(),
+              ended_at: null,
+              tokens_used: 0,
+              token_limit: null,
+            } as Session,
+          ],
+          agent_id: "agent-scroll",
+          agent_name: "agent-scroll",
+          client_type: ClientType.ClaudeCode,
+        },
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent({ agent_id: "agent-scroll", agent_name: "agent-scroll" })} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    // Let the summary and the feed seed land.
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.getAllByTestId("swimlane-run-lane-label")).toHaveLength(1);
+
+    const placed = vi.mocked(placeMarkerLabels);
+    const before = { feed: renders.feed, cost: renders.cost, placed: placed.mock.calls.length };
+    const scroller = screen.getByTestId("per-agent-swimlane-modal-scroll");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 1000 });
+    scroller.scrollLeft = 120;
+    await act(async () => {
+      scroller.dispatchEvent(new Event("scroll"));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+
+    expect(placed.mock.calls.length).toBeGreaterThan(before.placed);
+    expect(renders.feed).toBe(before.feed);
+    expect(renders.cost).toBe(before.cost);
+
+    eventsCache.delete(sid);
+    useFleetStore.setState({ flavors: [] });
+  });
+});
+

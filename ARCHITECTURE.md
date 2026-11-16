@@ -7694,7 +7694,8 @@ expanded ALL row draws the same events), so a connector lands on its
 circles wherever they sit. The rim radius is half the circle's
 `offsetWidth`, which a hover scale does not change. A pair is
 skipped when a circle is not mounted, such as one on a virtualised row,
-or when its row's timeline panel clips it near "now" (its centre past
+or when the timeline panel the circle sits in (its row's, or its lane's
+in the per-agent modal's run lanes) clips it near "now" (its centre past
 the panel's edge), so a connector never runs past the now line.
 
 Connectors rest at 10% opacity. Hovering a run's mark (an event
@@ -7938,11 +7939,14 @@ malformed value silently no-ops instead of throwing.
 ### Per-agent swimlane modal
 
 `dashboard/src/components/agents/PerAgentSwimlaneModal.tsx`
-opens as a shadcn Dialog at ~80 vw × 80 vh from two surfaces:
-the `/agents` row STATUS chip (column 2) and the agent drawer
-header's **Open in swimlane** button. It scopes the existing `SwimLane` /
-`VirtualizedSwimLane` primitives to a single agent's flavor
-(plus its sub-agents when the **Show sub-agents** toggle is on).
+opens as a shadcn Dialog at ~80 vw × 80 vh from three surfaces:
+the `/agents` row STATUS chip (column 2), the agent drawer
+header's **Open in swimlane** button, and the runs chip on a Fleet
+swimlane row whose agent has two or more runs at once (see SwimLane).
+It scopes the existing `Timeline` and `SwimLane` primitives to a single
+agent's flavor (plus its sub-agents when the **Show sub-agents** toggle
+is on), and draws the agent's own row as run lanes: one lane per run,
+sized to the space above the Live feed (see Run lanes below).
 
 Modal layout:
 
@@ -7967,10 +7971,12 @@ Modal layout:
   a re-fetch. Does not affect the `/agents` table sparklines.
 - **Show sub-agents toggle** — defaults ON for parents
   (`topology === "parent"`), DISABLED + off for lone agents.
-  When ON, the modal renders the parent row plus every
-  sub-agent row with the existing `SubAgentConnector` overlay.
-- **Swimlane body** — the existing `SwimLane` primitive
-  filtered to the agent's flavor set. The Timeline's natural
+  When ON, the modal renders the parent's run lanes plus every
+  sub-agent row, a compact 48 px row as in the Fleet view, with the
+  existing `SubAgentConnector` overlay.
+- **Swimlane body** — the existing `Timeline` filtered to the
+  agent's flavor set, with the agent's own row drawn as run lanes
+  (`Timeline`'s `expandedAgentIds`). The Timeline's natural
   inner width (`leftPanelWidth + TIMELINE_WIDTH_PX`) is typically
   wider than the 80 vw modal viewport, so a horizontal
   scrollbar appears on the swim wrapper. The modal snaps
@@ -8030,6 +8036,128 @@ Modal layout:
   Returns to the launching surface at the same scroll
   position; the URL gains no segments while the modal is
   open.
+
+**Run lanes.** In the modal the agent's row is a group: a 32 px
+heading (`RUN_LANE_HEADING_HEIGHT_PX`), then one lane per run
+(`components/timeline/RunLanes.tsx`; the group carries
+`data-run-lanes="true"` and `data-lane-count`, each lane is
+`swimlane-run-lane-<id8>` with `data-run-id`; `data-session-id` stays on
+the marks, so hovering a lane's empty space lights no connector). The
+heading carries the row's label strip (name, pills, icons, rolled-up
+status badge) across the visible width of the row, the badge right
+after the pills, so the agent's whole name shows whenever it fits. The
+Fleet view draws the same agent as its compact 48 px row with packed
+lanes (see SwimLane).
+
+- **Which runs, in what order.** A run has a lane while any of its
+  segments (see Run segments under SwimLane) overlaps the selected
+  window, whether or not it overlaps another run, so a run that
+  finishes keeps its lane until it leaves the window, and a run that
+  ran after another one gets its own lane too. Lanes are ordered by
+  the start of the run's first segment in the window, ties by run id.
+  A run that appears in the window, a new run or an old one resumed
+  under its id, starts later than every lane shown, so it opens a lane
+  at the bottom and the lanes already shown keep their place. A run
+  whose last segment leaves the window closes its lane, and only then
+  do the lanes below it move up. A resumed run whose earlier segment
+  leaves the window while its later one stays is then ordered by the
+  later one. There is no overflow lane. An agent with no run in the
+  window shows its heading and one line, "No runs in this window", in
+  `--text-muted` as the dashboard's other empty states (the Live
+  feed's "Waiting for events…", the swimlane's "No agents connected").
+- **Sizing.** The lanes share the height of the modal's scroll
+  viewport that the rest of the Timeline (time axis, ALL row, AGENTS
+  header, the group's heading, any sub-agent rows) leaves, down to the
+  Live feed. `Timeline` measures that rest from the rendered content
+  (its `viewportHeight` prop is the scroll viewport's client height),
+  so the feed's height, the ALL row toggle and a sub-agent row all
+  re-size the lanes. `runLaneHeights` in `lib/run-lane-layout.ts` gives
+  each of N lanes an equal whole-pixel share between
+  `RUN_LANE_MIN_HEIGHT_PX` (40) and `RUN_LANE_MAX_HEIGHT_PX` (144):
+  - 40 px holds a 28 px circle at its 1.25x hover scale (35 px) and the
+    lane label's two 11 px lines;
+  - 144 px is three Fleet rows: a lane's marks and text are one line,
+    so a taller lane holds nothing more, and a single run (or two runs
+    on a large screen) stops there instead of filling the modal.
+
+  When N lanes at 40 px do not fit, the Live feed gives up height
+  first (`feedHeightCap`): its body shrinks by the shortfall, down to
+  `FEED_MIN_HEIGHT_PX` (114 px, its column header and three event rows,
+  enough to read the newest events and see the feed move), until
+  min(N, 3) lanes fit. Past that the lanes stay at 40 px and the scroll
+  viewport scrolls vertically. The modal's Timeline reports the lanes
+  drawn and the height of the rest of its content (`onRunLaneSpace`),
+  which the feed's height does not change; the modal reads the feed's
+  body (through `LiveFeed`'s `bodyRef`) and the scroll viewport from
+  the page together, so their sum is fixed and the cap (`LiveFeed`'s
+  `maxBodyHeight`) holds once the feed takes it. With room to spare the feed grows back to the height the
+  operator chose. Once the operator drags the
+  feed's resize handle, the feed keeps their height and the lanes
+  scroll instead. The heading row and the AGENTS header stay.
+- **Lane label.** The label column of each lane names the run: its
+  short id (the first 8 characters, as the Live feed's RUN column
+  shows it), its state (`AgentStatusBadge` with the run's own state),
+  its model, and its tokens so far (`formatTokens`, as the modal
+  header's KPI tiles read them). The run's model is held by the lane
+  (`chooseLaneModel`): on its first render, the model of most of the
+  run's LLM calls in the window (a `post_call`, `embeddings` or
+  `llm_error` counts once; a `pre_call` starts a call and does not), a
+  tie going to the session row's model, then to name order, and with
+  no call in the window the session row's model; afterwards the lane
+  keeps it until another model has `LANE_MODEL_SWITCH_LEAD` (2) more
+  calls in the window. One call entering or leaving the window moves a
+  count by one, so an evenly mixed run's label, and the texts it
+  leaves out, do not flip as the window slides, while a run that has
+  moved to another model takes it within two calls. The session row
+  carries the latest call's model and would flip at each switch. The
+  lane keeps the model in its own state, keyed by the run, so a change
+  re-renders that lane alone. It sits 12 px further in than its
+  heading's text, for a root and a sub-agent row alike.
+- **Lane panel.** Each lane draws only its run: its run line through
+  the lane's centre (dashed past a stale run's last signal), its ▶ and
+  ■ glyphs on the centre (packed as on a Fleet row), and its events as
+  28 px circles (`RUN_LANE_CIRCLE_SIZE_PX`, a 17 px icon) on the
+  centre. The circles' tooltip and click (the event detail drawer) and
+  the glyphs' and line's click (the run drawer) work as on a Fleet
+  row.
+- **Marker text.** A tool call (`tool_call`, `mcp_tool_call`) carries
+  its tool name and an LLM call (`pre_call`, `post_call`, `embeddings`,
+  `llm_error`) its model, without a trailing `-YYYYMMDD` date and cut
+  to 18 characters with an ellipsis (`markerText`). An LLM call on the
+  run's model as the lane label shows it (the held model above)
+  carries none, so the room goes to the tool names. `placeMarkerLabels` keeps a text
+  only by a circle wholly inside the visible part of the panel: right
+  of the sticky label column at the current horizontal scroll, left of
+  the scroll viewport's edge, and left of the now line (the panel's
+  width less the scale's 19 px inset), the text inside it too. The
+  modal reads the viewport's width and horizontal scroll at most once
+  a frame into a small store outside React state (`lib/lane-viewport.ts`)
+  that only the lanes read, so a sideways scroll re-renders the lanes'
+  text placement and not the modal, its header, its Timeline or its
+  Live feed.
+  - On a lane shorter than `MARKER_TEXT_STACKED_MIN_LANE_PX` (63 px:
+    the circle at its hover scale, and an 11 px text with a 3 px gap
+    above and below it) the text sits beside its circle, 4 px right of
+    it and just above the run line (its bottom 3 px above the lane's
+    centre, so the line never strikes it). Taking markers left to
+    right, a text is kept only clear of every other kept text and every
+    other circle; only circles to its right can reach it, so the scan
+    stops at the first circle past its end.
+  - On a taller lane the text is centred above or below its circle, on
+    the row other than the last kept text's when it fits there, else on
+    the other row, and only has to stay clear of the texts on its row.
+
+  A text that does not fit is dropped and its circle stays. A text's
+  width is its length times 7 px (`MARKER_TEXT_CHAR_PX`, GeistMono's
+  advance at 11 px) or, in a browser, what a canvas measures if wider
+  (a CJK glyph); a browser minimum font size above 11 px still draws it
+  wider than measured. The text carries `data-marker-for` (its
+  circle's event id; `data-event-id` names the circle alone) and
+  `data-marker-row`, and takes no pointer input, so hover and click
+  reach the circle under it.
+- **Keyboard.** The lanes' scroll viewport is in the tab order with
+  the accessible name "Run lanes of <agent>", so the keyboard can
+  scroll it.
 
 ### Agent drawer
 
@@ -8857,7 +8985,32 @@ left-to-right order:
    parent, none on a lone agent);
 10. optional `SubAgentLostDot` (when the most recent sub-agent session
     per role is in `lost` state);
-11. `AgentStatusBadge` at the right edge.
+11. `AgentStatusBadge` at the right edge, and under it, on a Fleet row
+    whose agent has two or more runs at once, the runs chip.
+
+**Runs chip.** On the Fleet view, a row split into run lanes (two or
+more of its runs overlap inside the window, see Run lanes; the row's
+`data-lane-count` is above 1) carries a small chip
+(`data-testid="swimlane-runs-chip"`): an expand icon and the number of
+runs at once, `3 runs`. The split decides whether the chip shows; the
+number is the most runs that overlap at one instant inside the window
+(`maxConcurrentRuns`, one sweep over the segments' starts and ends,
+with the overlap tolerance that splits the row), so five runs at once
+read `5 runs` although the row draws four lanes. Past nine the label
+reads `9+ runs`, so it fits the badge column. Its tooltip and
+`aria-label` carry the full count: `3 runs at once: expand in
+swimlane`. It is a button in the tab order, and a click opens the
+per-agent swimlane modal for that agent, the modal the agent drawer's
+**Open in swimlane** opens, hosted by `Fleet.tsx`; if the agent leaves
+the fleet roster while it is open, the modal closes and does not
+reopen by itself when the agent returns (`usePerAgentModalTarget`). The
+chip draws the topology pill's accent tint and border and an accent
+icon, with its text in `--text` (the accent text on that tint falls
+under 4.5:1 in the light theme); hovered, its border turns full accent
+while its tint stays, so its text keeps its contrast. It sits in the badge column at the label strip's right edge,
+stacked under the status badge, so it takes no width from the name and
+leaves the row's 48 px height as it is. A row with one run at a time
+has no chip, and neither do the modal's own rows.
 
 The agent-name link (`data-testid="swimlane-agent-name-link"`) sets
 `white-space: nowrap`, `overflow: hidden` and `text-overflow: ellipsis`,

@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { ScaleTime } from "d3-scale";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Maximize2 } from "lucide-react";
 import type { Session, AgentEvent } from "@/lib/types";
 import { deriveRelationship } from "@/lib/relationship";
 import { findLostSubAgent } from "@/lib/swimlane-lost-sub-agent";
@@ -41,6 +41,16 @@ import {
 	type SegmentPlacement,
 } from "@/lib/swimlane-lanes";
 import { attachmentStartIds, isDiscoveryEvent, isEventVisible } from "@/lib/events";
+import {
+	CIRCLE_HOVER_SCALE,
+	MARKER_TEXT_FONT_PX,
+	MARKER_TEXT_LINE_CLEARANCE_PX,
+	MARKER_TEXT_STACK_GAP_PX,
+	markerText,
+	measureMarkerText,
+	placeMarkerLabels,
+	type MarkerTextRow,
+} from "@/lib/run-lane-layout";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { useFleetStore } from "@/store/fleet";
@@ -72,7 +82,7 @@ function readContextString(
 	return typeof v === "string" && v.length > 0 ? v : null;
 }
 
-interface SwimLaneProps {
+export interface SwimLaneProps {
 	flavor: string;
 	/** Human-readable label for the row. When absent (legacy data
 	 *  without an agent name), falls back to rendering ``flavor``
@@ -127,9 +137,57 @@ interface SwimLaneProps {
 	 * selector. Defaults to ``"root"``.
 	 */
 	topology?: "root" | "child";
+	/**
+	 * Opens the per-agent swimlane modal for this agent (the argument is
+	 * the agent_id). With it, a row whose agent has two or more runs at
+	 * once shows the runs chip under its status badge; without it (the
+	 * modal's own rows) there is no chip.
+	 */
+	onExpandRuns?: (agentId: string) => void;
 }
 
 const ROW_HEIGHT = 48;
+
+/** The label strip's padding at each side of a root row. */
+export const ROW_LABEL_PADDING_PX = 12;
+
+/** A sub-agent row's label padding at its left: it sits 16 px further
+ *  in than its parent's, under the parent's name (the same 28 px as the
+ *  ``[data-topology="child"] .swimlane-row-label`` rule in globals.css,
+ *  which this inline value overrides). */
+export const CHILD_ROW_LABEL_PADDING_PX = 28;
+
+// The runs chip under the status badge: tall enough for its 10 px
+// text, short enough that it and the badge (16 px) stack inside the
+// 48 px row with room above and below.
+const RUNS_CHIP_HEIGHT_PX = 16;
+// Space between the status badge and the runs chip under it.
+const RUNS_CHIP_GAP_PX = 2;
+// The chip's text, the size of the row's other small labels (the
+// agent-type badge), and its icon, a pixel smaller so the widest label
+// fits (below).
+const RUNS_CHIP_FONT_PX = 10;
+const RUNS_CHIP_ICON_PX = 9;
+// The chip's horizontal padding and the space between its icon and its
+// text: the least that keeps them apart and off its border, so the
+// widest label, "9+ runs" (7 characters of 10 px GeistMono, about 45 px,
+// 63.5 px in all), fits the 88 px badge column with the column's 12 px
+// padding at each side.
+const RUNS_CHIP_PADDING_X_PX = 3;
+const RUNS_CHIP_ICON_GAP_PX = 2;
+// The 3 px corner radius of the dashboard's other small inline chips
+// (the time-range buttons, the Live feed's type pill).
+const RUNS_CHIP_RADIUS_PX = 3;
+// The chip's tint and border: the accent pill the topology pill draws
+// (TopologyCell), so the two accent chips read as one family. Hovered,
+// the border turns full accent; the tint stays, so the text keeps its
+// contrast.
+const RUNS_CHIP_TINT = "color-mix(in srgb, var(--accent) 15%, transparent)";
+const RUNS_CHIP_BORDER = "color-mix(in srgb, var(--accent) 40%, transparent)";
+// The highest count the chip prints; more read "9+ runs", so the label
+// fits the badge column. The tooltip and accessible name carry the
+// full count.
+const RUNS_CHIP_MAX_SHOWN = 9;
 
 // Reserved zone at the strip's right edge for the absolutely-
 // positioned AgentStatusBadge wrapper. The wrapper itself sits at
@@ -150,7 +208,10 @@ const segmentsCache = new WeakMap<
 	{ events: readonly AgentEvent[] | undefined; segments: RunSegment[] }
 >();
 
-function segmentsFor(session: Session, events: readonly AgentEvent[] | undefined): RunSegment[] {
+export function segmentsFor(
+	session: Session,
+	events: readonly AgentEvent[] | undefined,
+): RunSegment[] {
 	const hit = segmentsCache.get(session);
 	if (hit && hit.events === events) return hit.segments;
 	const segments = runSegments(session, events);
@@ -202,7 +263,7 @@ const CHILD_ACCENT_LAYER = "linear-gradient(to right, var(--accent) 2px, transpa
  * line, the row's tint, and the colour the row sits on. The result is
  * the same colour, but nothing scrolled under it shows.
  */
-const CHILD_LABEL_BACKGROUND = `${CHILD_TINT_LAYER}, ${CHILD_ACCENT_LAYER}, ${CHILD_TINT_LAYER}, var(${SWIMLANE_LABEL_BACKDROP_VAR}, var(--bg))`;
+export const CHILD_LABEL_BACKGROUND = `${CHILD_TINT_LAYER}, ${CHILD_ACCENT_LAYER}, ${CHILD_TINT_LAYER}, var(${SWIMLANE_LABEL_BACKDROP_VAR}, var(--bg))`;
 
 // Shared single-line truncation styles for the two parts of a split
 // sub-agent name.
@@ -212,23 +273,47 @@ const NAME_PART_TRUNCATE: React.CSSProperties = {
 	whiteSpace: "nowrap",
 };
 
-function SwimLaneComponent({
+export interface AgentLabelStripProps {
+	flavor: string;
+	agentName?: string;
+	clientType?: ClientTypeT;
+	telemetry?: string;
+	agentType?: string;
+	sessions: Session[];
+	leftPanelWidth: number;
+	onScrollToAgent?: (agentId: string) => void;
+	topology?: "root" | "child";
+	/** Drawn under the status badge in the badge column: the runs chip. */
+	badgeExtra?: React.ReactNode;
+	/** The strip's width; ``leftPanelWidth`` by default. The per-agent
+	 *  modal's run-lanes heading spans the visible row. */
+	width?: number;
+	/** Draw the status badge right after the pills, in the strip's flow,
+	 *  rather than pinned at its right edge: the wide heading strip, whose
+	 *  right edge is far from the name. */
+	inlineBadge?: boolean;
+}
+
+/**
+ * A swimlane row's label strip: the agent's name, pills, icons and
+ * rolled-up status badge, sticky at the row's left edge. The Fleet row
+ * draws it at the row's height; the per-agent modal's run lanes draw it
+ * as the heading above an agent's lanes.
+ */
+export function AgentLabelStrip({
 	flavor,
 	agentName,
 	clientType,
 	telemetry,
 	agentType,
 	sessions,
-	scale,
-	onSessionClick,
-	timelineWidth,
 	leftPanelWidth,
-	activeFilter,
-	sessionVersions,
-	matchingSessionIds = null,
 	onScrollToAgent,
 	topology = "root",
-}: SwimLaneProps) {
+	badgeExtra,
+	width,
+	inlineBadge = false,
+}: AgentLabelStripProps) {
 	// Derive the always-on relationship pill from the same session-
 	// linkage scan used elsewhere, so the swimlane stays in lock-step.
 	// ``flavor`` is the agent_id (the swimlane row keys by agent).
@@ -293,6 +378,346 @@ function SwimLaneComponent({
 	const displayName = agentName ?? flavor;
 	const nameParts = splitRoleSuffix(displayName, mostRecentSession?.agent_role);
 
+	// The left panel, sticky so it stays pinned during horizontal
+	// scroll. Width tracks the resizable leftPanelWidth state owned by
+	// Timeline.tsx. The ``swimlane-row-label`` class is the indent target
+	// for ``[data-topology="child"]`` rows; the CSS rule lives in
+	// globals.css so the same class works for swimlane + Events page
+	// sub-rows.
+	return (
+		<div
+			className="swimlane-row-label flex h-full items-center gap-2"
+			style={{
+				width: width ?? leftPanelWidth,
+				flexShrink: 0,
+				// Background lives on the row container via the
+				// ``[data-topology="..."]`` CSS rules; pulling the
+				// surface colour through ``inherit`` keeps the
+				// sticky panel matching the row tint (otherwise
+				// the panel pin-fights with the row's child tint
+				// and a thin seam of var(--surface) shows under
+				// horizontal scroll). A root row's ``--surface``
+				// is opaque; a child row's tint is not, so its
+				// label paints the same look opaquely (see
+				// CHILD_LABEL_BACKGROUND) and circles scrolled
+				// under it stay hidden.
+				background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
+				// The label column's edge; the wide heading strip spans the
+				// row and has none.
+				borderRight: inlineBadge ? undefined : "1px solid var(--border)",
+				position: "sticky",
+				left: 0,
+				zIndex: 3,
+				overflow: "hidden",
+				// Replaces Tailwind's ``px-3`` so the right padding
+				// reserves room for the absolutely-positioned
+				// AgentStatusBadge (see ``BADGE_RESERVED_ZONE_PX``).
+				// Flex pills inside the strip stop before the
+				// badge zone instead of overlapping it, so the
+				// badge always reads as the rightmost element on
+				// the row (T49 contract).
+				//
+				// Inline ``paddingLeft`` MUST branch on topology
+				// because an inline style beats any selector
+				// (including the ``[data-topology="child"]
+				// .swimlane-row-label { padding-left: 28px }``
+				// rule in globals.css). Setting a flat 12 px
+				// here would silently kill the child-row indent
+				// (a regression once shipped where child swimlanes
+				// rendered flush with parents instead of 16 px
+				// inset under the parent's left edge). Mirrors
+				// the same inline-override pattern AgentTableRow
+				// used before the shared table primitive.
+				paddingLeft: topology === "child" ? CHILD_ROW_LABEL_PADDING_PX : ROW_LABEL_PADDING_PX,
+				paddingRight: inlineBadge ? ROW_LABEL_PADDING_PX : BADGE_RESERVED_ZONE_PX,
+			}}
+		>
+			{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
+				<ClaudeCodeLogo size={14} className="shrink-0" />
+			)}
+			{/* Agent name — primary label. The row's ``flavor``
+			    prop carries the agent_id (the swimlane keys rows
+			    by agent — see SwimLaneProps). Clicking it sets
+			    the ``?agent_drawer=`` URL param, which the
+			    app-level AgentDrawerHost reads to open this
+			    agent's drawer inline — no route change, the
+			    Fleet view stays mounted underneath.
+			    Ellipsis-truncates at any width with an
+			    always-on native ``title`` tooltip carrying the
+			    full name, so a hover always reveals the
+			    complete value — even when the text fits. The
+			    ellipsis styles live on the link itself (not a
+			    nested TruncatedText) because the user-facing
+			    contract is "the link clips with an ellipsis";
+			    keeping the styles on the named test-id element
+			    makes the computed-style assertion in T92
+			    point at the same element a designer would
+			    inspect.
+
+			    The ``minWidth: "3rem"`` floor (~6 chars + the
+			    ellipsis glyph at 13 px) is the contract that
+			    the name never collapses to zero. ``min-w-0``
+			    on a flex item lets the browser shrink the
+			    element below its content's intrinsic width;
+			    without an explicit floor, the trailing
+			    ``shrink-0`` pills + icons + status badge would
+			    claim every available pixel and the name link
+			    would collapse to 0 at the 200 px panel floor.
+			    The 3-rem floor flips the precedence: as the
+			    column narrows the trailing siblings clip
+			    against the parent's ``overflow: hidden``
+			    boundary BEFORE the name shrinks below
+			    readability.
+
+			    A sub-agent name (``{parent}/{role}``) renders
+			    as two spans in a flex link: the head gives
+			    way first and ellipsis-truncates, and the
+			    ``/{role}`` suffix keeps its full width until
+			    it fills the whole link (then it truncates
+			    too). The suffix takes no shrink share at all:
+			    flex hands every shrinkable item a slice of the
+			    overflow, and a fraction of a pixel is already
+			    enough for the browser to draw ``/wor…``. */}
+			<Link
+				to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
+				data-testid="swimlane-agent-name-link"
+				title={displayName}
+				// A split name's two flex items read with a space
+				// between them; name the link exactly instead.
+				aria-label={nameParts ? displayName : undefined}
+				className="block text-[13px] font-medium"
+				style={{
+					color: "var(--text)",
+					textDecoration: "none",
+					flex: "0 1 auto",
+					minWidth: "3rem",
+					whiteSpace: "nowrap",
+					overflow: "hidden",
+					textOverflow: "ellipsis",
+					display: nameParts ? "flex" : undefined,
+				}}
+			>
+				{nameParts ? (
+					<>
+						<span
+							data-testid="swimlane-agent-name-head"
+							style={{
+								...NAME_PART_TRUNCATE,
+								flexGrow: 0,
+								flexShrink: 1,
+								flexBasis: "auto",
+								minWidth: 0,
+							}}
+						>
+							{nameParts.head}
+						</span>
+						<span
+							data-testid="swimlane-agent-name-role"
+							style={{
+								...NAME_PART_TRUNCATE,
+								flexGrow: 0,
+								flexShrink: 0,
+								flexBasis: "auto",
+								maxWidth: "100%",
+							}}
+						>
+							{nameParts.role}
+						</span>
+					</>
+				) : (
+					displayName
+				)}
+			</Link>
+			{clientType && (
+				<ClientTypePill
+					clientType={clientType}
+					size="compact"
+					testId="swimlane-client-type-pill"
+				/>
+			)}
+			<TelemetrySourcePill
+				telemetry={telemetry}
+				clientType={clientType}
+				testId="swimlane-telemetry-source-pill"
+			/>
+			{agentType && (
+				<span
+					className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
+					style={{ color: "var(--text-muted)" }}
+					data-testid="swimlane-agent-type-badge"
+				>
+					{agentType}
+				</span>
+			)}
+			{providerName && (
+				<ProviderLogo
+					provider={providerName}
+					size={14}
+					className="shrink-0"
+				/>
+			)}
+			{osName && <OSIcon os={osName} size={14} className="shrink-0" />}
+			{orchestration && (
+				<OrchestrationIcon
+					orchestration={orchestration}
+					size={14}
+					className="shrink-0"
+				/>
+			)}
+			{relationship.mode === "child" && (
+				<RelationshipPill
+					mode="child"
+					parentName={relationship.parentName}
+					// The pill names the parent, which the row's
+					// indent under it already shows (for a plugin
+					// sub-agent it also repeats the head of the
+					// row's own name), so it gives way before the
+					// name does.
+					shrinkable
+					testId="swimlane-relationship-pill"
+					onClick={
+						onScrollToAgent && relationship.parentAgentId
+							? () => onScrollToAgent(relationship.parentAgentId!)
+							: undefined
+					}
+				/>
+			)}
+			{relationship.mode === "parent" && relationship.childCount > 0 && (
+				<RelationshipPill
+					mode="parent"
+					childCount={relationship.childCount}
+					testId="swimlane-relationship-pill"
+					onClick={
+						onScrollToAgent && relationship.firstChildAgentId
+							? () => onScrollToAgent(relationship.firstChildAgentId!)
+							: undefined
+					}
+				/>
+			)}
+			{lostSubAgent && (
+				<SubAgentLostDot
+					role={lostSubAgent.role}
+					sessionIdSuffix={lostSubAgent.sessionIdSuffix}
+					testId="swimlane-sub-agent-lost-dot"
+				/>
+			)}
+			{/* Badge is absolutely positioned at the label strip's
+			    right edge so it always reads as a fully visible
+			    anchor even when the strip's flex content (name
+			    + pills + icons + topology pill) overflows the
+			    strip width — an in-flex ``ml-auto``
+			    placement would let a wide topology pill push the badge
+			    past the strip's right edge, where
+			    ``overflow: hidden`` either clipped it entirely
+			    or left it crowded by the first event circle in
+			    the timeline panel. The wrapper has NO own
+			    background. Two reasons: (1) ``--surface`` /
+			    ``--swimlane-row-child-bg`` are
+			    semi-transparent overlays on top of the page
+			    bg, so painting the same value here would stack
+			    on top of the row's already-painted layer and
+			    show as a visibly brighter rectangle (12%
+			    effective opacity over 6%); (2) the label
+			    strip's ``overflow: hidden`` already clips any
+			    overflowing flex sibling at the strip's right
+			    edge — the wrapper sits flush against that
+			    edge, so an opaque occluder is unnecessary. */}
+			{inlineBadge ? (
+				<AgentStatusBadge state={agentState} align="inline" />
+			) : (
+			<div
+				data-testid="swimlane-badge-wrapper"
+				style={{
+					position: "absolute",
+					top: 0,
+					right: 0,
+					bottom: 0,
+					paddingLeft: ROW_LABEL_PADDING_PX,
+					paddingRight: ROW_LABEL_PADDING_PX,
+					display: "flex",
+					// A column, so the runs chip stacks under the badge
+					// and takes no width from the name.
+					flexDirection: "column",
+					alignItems: "flex-end",
+					justifyContent: "center",
+					gap: RUNS_CHIP_GAP_PX,
+					zIndex: 4,
+				}}
+			>
+				<AgentStatusBadge state={agentState} />
+				{badgeExtra}
+			</div>
+			)}
+		</div>
+	);
+}
+
+/**
+ * The runs chip under a Fleet row's status badge: how many of the
+ * agent's runs ran at once in the window, and a button that opens the
+ * per-agent swimlane modal, where each run has its own lane.
+ */
+function RunsChip({ count, onClick }: { count: number; onClick: () => void }) {
+	const label = `${count} runs at once: expand in swimlane`;
+	const shown = count > RUNS_CHIP_MAX_SHOWN ? `${RUNS_CHIP_MAX_SHOWN}+` : String(count);
+	return (
+		<button
+			type="button"
+			data-testid="swimlane-runs-chip"
+			data-run-count={count}
+			aria-label={label}
+			title={label}
+			onClick={(e) => {
+				e.stopPropagation();
+				onClick();
+			}}
+			className="inline-flex shrink-0 cursor-pointer items-center border border-solid border-(--runs-chip-border) font-mono hover:border-(--accent) focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+			style={
+				{
+					height: RUNS_CHIP_HEIGHT_PX,
+					gap: RUNS_CHIP_ICON_GAP_PX,
+					padding: `0 ${RUNS_CHIP_PADDING_X_PX}px`,
+					fontSize: RUNS_CHIP_FONT_PX,
+					lineHeight: 1,
+					borderRadius: RUNS_CHIP_RADIUS_PX,
+					"--runs-chip-border": RUNS_CHIP_BORDER,
+					background: RUNS_CHIP_TINT,
+					// The text in the status badge's label colour: the accent
+					// foreground on the accent tint falls under 4.5:1 in the
+					// light theme. The icon keeps the accent.
+					color: "var(--text)",
+					whiteSpace: "nowrap",
+				} as React.CSSProperties
+			}
+		>
+			<Maximize2
+				size={RUNS_CHIP_ICON_PX}
+				aria-hidden="true"
+				style={{ color: "var(--topology-pill-fg)" }}
+			/>
+			{shown} runs
+		</button>
+	);
+}
+
+function SwimLaneComponent({
+	flavor,
+	agentName,
+	clientType,
+	telemetry,
+	agentType,
+	sessions,
+	scale,
+	onSessionClick,
+	timelineWidth,
+	leftPanelWidth,
+	activeFilter,
+	sessionVersions,
+	matchingSessionIds = null,
+	onScrollToAgent,
+	topology = "root",
+	onExpandRuns,
+}: SwimLaneProps) {
 	// Run lanes: where each of the row's runs ran (its segments, from
 	// the run's session_start / session_end events the page holds), in
 	// which lane of the row, where each glyph sits so none covers
@@ -369,6 +794,15 @@ function SwimLaneComponent({
 	);
 	const onMarkBlur = useCallback(() => setFocusRun(null), []);
 	const litRun = pointerRun ?? focusRun;
+	// A row split into run lanes (two or more runs at once) shows the
+	// chip that opens the per-agent modal, where each run has its own
+	// lane. The split decides whether it shows; the count of runs at
+	// once is only its number.
+	const expandRuns = useCallback(() => onExpandRuns?.(flavor), [onExpandRuns, flavor]);
+	const runsChip =
+		onExpandRuns && runLayout.laneCount > 1 ? (
+			<RunsChip count={Math.max(runLayout.concurrency, 2)} onClick={expandRuns} />
+		) : null;
 
 	return (
 		<div
@@ -390,264 +824,18 @@ function SwimLaneComponent({
 				// child rows would render the same colour as root.
 			}}
 		>
-			{/* Left panel — sticky so it stays pinned during horizontal
-			    scroll. Width tracks the resizable leftPanelWidth state
-			    owned by Timeline.tsx. The ``swimlane-row-label`` class
-			    is the indent target for ``[data-topology="child"]`` rows;
-			    the CSS rule lives in globals.css so the same class works
-			    for swimlane + Events page sub-rows. */}
-			<div
-				className="swimlane-row-label flex h-full items-center gap-2"
-				style={{
-					width: leftPanelWidth,
-					flexShrink: 0,
-					// Background lives on the row container via the
-					// ``[data-topology="..."]`` CSS rules; pulling the
-					// surface colour through ``inherit`` keeps the
-					// sticky panel matching the row tint (otherwise
-					// the panel pin-fights with the row's child tint
-					// and a thin seam of var(--surface) shows under
-					// horizontal scroll). A root row's ``--surface``
-					// is opaque; a child row's tint is not, so its
-					// label paints the same look opaquely (see
-					// CHILD_LABEL_BACKGROUND) and circles scrolled
-					// under it stay hidden.
-					background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
-					borderRight: "1px solid var(--border)",
-					position: "sticky",
-					left: 0,
-					zIndex: 3,
-					overflow: "hidden",
-					// Replaces Tailwind's ``px-3`` so the right padding
-					// reserves room for the absolutely-positioned
-					// AgentStatusBadge (see ``BADGE_RESERVED_ZONE_PX``).
-					// Flex pills inside the strip stop before the
-					// badge zone instead of overlapping it, so the
-					// badge always reads as the rightmost element on
-					// the row (T49 contract).
-					//
-					// Inline ``paddingLeft`` MUST branch on topology
-					// because an inline style beats any selector
-					// (including the ``[data-topology="child"]
-					// .swimlane-row-label { padding-left: 28px }``
-					// rule in globals.css). Setting a flat 12 px
-					// here would silently kill the child-row indent
-					// (a regression once shipped where child swimlanes
-					// rendered flush with parents instead of 16 px
-					// inset under the parent's left edge). Mirrors
-					// the same inline-override pattern AgentTableRow
-					// used before the shared table primitive.
-					paddingLeft: topology === "child" ? 28 : 12,
-					paddingRight: BADGE_RESERVED_ZONE_PX,
-				}}
-			>
-				{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
-					<ClaudeCodeLogo size={14} className="shrink-0" />
-				)}
-				{/* Agent name — primary label. The row's ``flavor``
-				    prop carries the agent_id (the swimlane keys rows
-				    by agent — see SwimLaneProps). Clicking it sets
-				    the ``?agent_drawer=`` URL param, which the
-				    app-level AgentDrawerHost reads to open this
-				    agent's drawer inline — no route change, the
-				    Fleet view stays mounted underneath.
-				    Ellipsis-truncates at any width with an
-				    always-on native ``title`` tooltip carrying the
-				    full name, so a hover always reveals the
-				    complete value — even when the text fits. The
-				    ellipsis styles live on the link itself (not a
-				    nested TruncatedText) because the user-facing
-				    contract is "the link clips with an ellipsis";
-				    keeping the styles on the named test-id element
-				    makes the computed-style assertion in T92
-				    point at the same element a designer would
-				    inspect.
-
-				    The ``minWidth: "3rem"`` floor (~6 chars + the
-				    ellipsis glyph at 13 px) is the contract that
-				    the name never collapses to zero. ``min-w-0``
-				    on a flex item lets the browser shrink the
-				    element below its content's intrinsic width;
-				    without an explicit floor, the trailing
-				    ``shrink-0`` pills + icons + status badge would
-				    claim every available pixel and the name link
-				    would collapse to 0 at the 200 px panel floor.
-				    The 3-rem floor flips the precedence: as the
-				    column narrows the trailing siblings clip
-				    against the parent's ``overflow: hidden``
-				    boundary BEFORE the name shrinks below
-				    readability.
-
-				    A sub-agent name (``{parent}/{role}``) renders
-				    as two spans in a flex link: the head gives
-				    way first and ellipsis-truncates, and the
-				    ``/{role}`` suffix keeps its full width until
-				    it fills the whole link (then it truncates
-				    too). The suffix takes no shrink share at all:
-				    flex hands every shrinkable item a slice of the
-				    overflow, and a fraction of a pixel is already
-				    enough for the browser to draw ``/wor…``. */}
-				<Link
-					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
-					data-testid="swimlane-agent-name-link"
-					title={displayName}
-					// A split name's two flex items read with a space
-					// between them; name the link exactly instead.
-					aria-label={nameParts ? displayName : undefined}
-					className="block text-[13px] font-medium"
-					style={{
-						color: "var(--text)",
-						textDecoration: "none",
-						flex: "0 1 auto",
-						minWidth: "3rem",
-						whiteSpace: "nowrap",
-						overflow: "hidden",
-						textOverflow: "ellipsis",
-						display: nameParts ? "flex" : undefined,
-					}}
-				>
-					{nameParts ? (
-						<>
-							<span
-								data-testid="swimlane-agent-name-head"
-								style={{
-									...NAME_PART_TRUNCATE,
-									flexGrow: 0,
-									flexShrink: 1,
-									flexBasis: "auto",
-									minWidth: 0,
-								}}
-							>
-								{nameParts.head}
-							</span>
-							<span
-								data-testid="swimlane-agent-name-role"
-								style={{
-									...NAME_PART_TRUNCATE,
-									flexGrow: 0,
-									flexShrink: 0,
-									flexBasis: "auto",
-									maxWidth: "100%",
-								}}
-							>
-								{nameParts.role}
-							</span>
-						</>
-					) : (
-						displayName
-					)}
-				</Link>
-				{clientType && (
-					<ClientTypePill
-						clientType={clientType}
-						size="compact"
-						testId="swimlane-client-type-pill"
-					/>
-				)}
-				<TelemetrySourcePill
-					telemetry={telemetry}
-					clientType={clientType}
-					testId="swimlane-telemetry-source-pill"
-				/>
-				{agentType && (
-					<span
-						className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
-						style={{ color: "var(--text-muted)" }}
-						data-testid="swimlane-agent-type-badge"
-					>
-						{agentType}
-					</span>
-				)}
-				{providerName && (
-					<ProviderLogo
-						provider={providerName}
-						size={14}
-						className="shrink-0"
-					/>
-				)}
-				{osName && <OSIcon os={osName} size={14} className="shrink-0" />}
-				{orchestration && (
-					<OrchestrationIcon
-						orchestration={orchestration}
-						size={14}
-						className="shrink-0"
-					/>
-				)}
-				{relationship.mode === "child" && (
-					<RelationshipPill
-						mode="child"
-						parentName={relationship.parentName}
-						// The pill names the parent, which the row's
-						// indent under it already shows (for a plugin
-						// sub-agent it also repeats the head of the
-						// row's own name), so it gives way before the
-						// name does.
-						shrinkable
-						testId="swimlane-relationship-pill"
-						onClick={
-							onScrollToAgent && relationship.parentAgentId
-								? () => onScrollToAgent(relationship.parentAgentId!)
-								: undefined
-						}
-					/>
-				)}
-				{relationship.mode === "parent" && relationship.childCount > 0 && (
-					<RelationshipPill
-						mode="parent"
-						childCount={relationship.childCount}
-						testId="swimlane-relationship-pill"
-						onClick={
-							onScrollToAgent && relationship.firstChildAgentId
-								? () => onScrollToAgent(relationship.firstChildAgentId!)
-								: undefined
-						}
-					/>
-				)}
-				{lostSubAgent && (
-					<SubAgentLostDot
-						role={lostSubAgent.role}
-						sessionIdSuffix={lostSubAgent.sessionIdSuffix}
-						testId="swimlane-sub-agent-lost-dot"
-					/>
-				)}
-				{/* Badge is absolutely positioned at the label strip's
-				    right edge so it always reads as a fully visible
-				    anchor even when the strip's flex content (name
-				    + pills + icons + topology pill) overflows the
-				    strip width — an in-flex ``ml-auto``
-				    placement would let a wide topology pill push the badge
-				    past the strip's right edge, where
-				    ``overflow: hidden`` either clipped it entirely
-				    or left it crowded by the first event circle in
-				    the timeline panel. The wrapper has NO own
-				    background. Two reasons: (1) ``--surface`` /
-				    ``--swimlane-row-child-bg`` are
-				    semi-transparent overlays on top of the page
-				    bg, so painting the same value here would stack
-				    on top of the row's already-painted layer and
-				    show as a visibly brighter rectangle (12%
-				    effective opacity over 6%); (2) the label
-				    strip's ``overflow: hidden`` already clips any
-				    overflowing flex sibling at the strip's right
-				    edge — the wrapper sits flush against that
-				    edge, so an opaque occluder is unnecessary. */}
-				<div
-					data-testid="swimlane-badge-wrapper"
-					style={{
-						position: "absolute",
-						top: 0,
-						right: 0,
-						bottom: 0,
-						paddingLeft: 12,
-						paddingRight: 12,
-						display: "flex",
-						alignItems: "center",
-						zIndex: 4,
-					}}
-				>
-					<AgentStatusBadge state={agentState} />
-				</div>
-			</div>
+			<AgentLabelStrip
+				flavor={flavor}
+				agentName={agentName}
+				clientType={clientType}
+				telemetry={telemetry}
+				agentType={agentType}
+				sessions={sessions}
+				leftPanelWidth={leftPanelWidth}
+				onScrollToAgent={onScrollToAgent}
+				topology={topology}
+				badgeExtra={runsChip}
+			/>
 
 			{/* Right panel — aggregated events + run boundary brackets.
 			    Sized to exactly timelineWidth so xScale.range =
@@ -746,6 +934,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
 	if (prev.sessionVersions !== next.sessionVersions) return false;
 	if (prev.onSessionClick !== next.onSessionClick) return false;
 	if (prev.onScrollToAgent !== next.onScrollToAgent) return false;
+	if (prev.onExpandRuns !== next.onExpandRuns) return false;
 	// Shallow scale comparison: identical domain bounds reuse memo.
 	const prevDomain = prev.scale.domain();
 	const nextDomain = next.scale.domain();
@@ -999,7 +1188,29 @@ function AggregatedSwimLane({
 // circles' memo does not see a new value every render.
 const NO_PLACEMENTS: readonly SegmentPlacement[] = [];
 
-function AggregatedSessionEvents({
+/** The top of a marker text on ``row``, around a circle ``circleSize``
+ *  across centred on the lane: beside it, its bottom just above the run
+ *  line, so the line does not strike it; above or below it, clear of the
+ *  circle at its hover scale. */
+function markerTextTop(row: MarkerTextRow, circleSize: number): string {
+	const hoverHalf = (circleSize * CIRCLE_HOVER_SCALE) / 2;
+	if (row === "above") {
+		return `calc(50% - ${hoverHalf + MARKER_TEXT_STACK_GAP_PX + MARKER_TEXT_FONT_PX}px)`;
+	}
+	if (row === "below") return `calc(50% + ${hoverHalf + MARKER_TEXT_STACK_GAP_PX}px)`;
+	return `calc(50% - ${MARKER_TEXT_FONT_PX + MARKER_TEXT_LINE_CLEARANCE_PX}px)`;
+}
+
+/**
+ * The event circles of one run. On a Fleet agent row they sit on the
+ * run's lane (``laneCount`` and ``placements``); on the ALL row on its
+ * centre line. The per-agent modal's run lanes draw one run per lane at
+ * ``size`` with ``iconSize``, and with ``markerTextRange`` set, the short
+ * text by each circle that ``placeMarkerLabels`` keeps inside that
+ * visible range of the panel, beside the circle or, on a lane
+ * ``laneHeight`` tall enough, above and below it.
+ */
+export function AggregatedSessionEvents({
 	session,
 	scale,
 	onSessionClick,
@@ -1009,6 +1220,11 @@ function AggregatedSessionEvents({
 	matchingSessionIds,
 	laneCount,
 	placements = NO_PLACEMENTS,
+	size,
+	iconSize,
+	markerTextRange,
+	laneHeight,
+	runModel,
 }: {
 	session: Session;
 	scale: ScaleTime<number, number>;
@@ -1022,9 +1238,22 @@ function AggregatedSessionEvents({
 	laneCount?: number;
 	/** The run's segments in view with their lanes (agent rows only). */
 	placements?: readonly SegmentPlacement[];
+	/** The circle size, overriding the lane table's. */
+	size?: number;
+	/** The circle's icon size, for a ``size`` the lane table lacks. */
+	iconSize?: number;
+	/** Draw marker text, kept inside this range of the panel: the part
+	 *  of it the scroll viewport shows, up to "now". */
+	markerTextRange?: { left: number; right: number };
+	/** The lane's height, which decides whether texts stack. */
+	laneHeight?: number;
+	/** The run's model, which its lane label shows: an LLM call on it
+	 *  carries no text. */
+	runModel?: string | null;
 }) {
 	const split = laneCount !== undefined && laneCount > 1;
-	const circleSize = laneCount === undefined ? EVENT_CIRCLE_SIZE : laneGeometry(laneCount).circle;
+	const circleSize =
+		size ?? (laneCount === undefined ? EVENT_CIRCLE_SIZE : laneGeometry(laneCount).circle);
 	const isActive = session.state === "active";
 	const { events } = useSessionEvents(session.session_id, isActive, version);
 	const [showDiscovery] = useShowDiscoveryEvents();
@@ -1078,6 +1307,31 @@ function AggregatedSessionEvents({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [events, scale, session.session_id, version, placements]);
 
+	const isShown = useCallback(
+		(eventType: string) =>
+			isEventVisible(eventType, activeFilter) &&
+			(showDiscovery || !isDiscoveryEvent(eventType)),
+		[activeFilter, showDiscovery],
+	);
+
+	// The marker texts that fit, among the circles drawn: a hidden
+	// circle neither carries text nor blocks one.
+	const textLeft = markerTextRange?.left;
+	const textRight = markerTextRange?.right;
+	const markerLabels = useMemo(() => {
+		if (textLeft === undefined || textRight === undefined) return null;
+		const markers = nodes
+			.filter((node) => isShown(node.eventType))
+			.map((node) => ({ id: node.id, x: node.x, text: markerText(node, runModel) }));
+		return placeMarkerLabels(markers, {
+			circleSize,
+			left: textLeft,
+			right: textRight,
+			laneHeight,
+			measure: measureMarkerText,
+		});
+	}, [nodes, isShown, circleSize, textLeft, textRight, laneHeight, runModel]);
+
 	return (
 		<div
 			style={{
@@ -1107,15 +1361,41 @@ function AggregatedSessionEvents({
 						onSessionClick(session.session_id, eid, fullEvent);
 					}}
 					size={circleSize}
+					iconSize={iconSize}
 					lane={laneCount === undefined ? undefined : node.lane}
 					centrePct={split ? laneCentrePct(node.lane, laneCount) : undefined}
-					isVisible={
-						isEventVisible(node.eventType, activeFilter) &&
-						(showDiscovery || !isDiscoveryEvent(node.eventType))
-					}
+					isVisible={isShown(node.eventType)}
 					isAttachment={node.isAttachment}
 				/>
 			))}
+			{markerLabels &&
+				[...markerLabels].map(([eventId, label]) => (
+					<span
+						key={`${eventId}:text`}
+						data-testid="swimlane-marker-text"
+						// Not ``data-event-id``, which names the circle.
+						data-marker-for={eventId}
+						data-marker-row={label.row}
+						// The circle's tooltip carries the same name; the text
+						// is a visual aid, and takes no pointer input, so a
+						// hover or click reaches the circle as before.
+						aria-hidden="true"
+						style={{
+							position: "absolute",
+							left: label.left,
+							top: markerTextTop(label.row, circleSize),
+							fontFamily: "var(--font-mono)",
+							fontSize: MARKER_TEXT_FONT_PX,
+							lineHeight: 1,
+							color: "var(--text-secondary)",
+							whiteSpace: "nowrap",
+							pointerEvents: "none",
+							zIndex: 2,
+						}}
+					>
+						{label.text}
+					</span>
+				))}
 		</div>
 	);
 }

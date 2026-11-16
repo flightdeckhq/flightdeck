@@ -78,10 +78,25 @@ interface LiveFeedProps {
   catchingUp?: boolean;
   onPause?: () => void;
   onResume?: () => void;
+  /**
+   * The most height the feed body may take, below the height the
+   * operator chose: the per-agent modal gives the feed's height up to
+   * its run lanes when they do not fit. Ignored once the operator drags
+   * this feed's resize handle.
+   */
+  maxBodyHeight?: number;
+  /** The feed body's element, for a host that measures it (the
+   *  per-agent modal's height cap). */
+  bodyRef?: React.Ref<HTMLDivElement>;
 }
 
-export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume }: LiveFeedProps) {
+export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight, bodyRef }: LiveFeedProps) {
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
+  // Set once the operator drags the resize handle: their height then
+  // holds, whatever ``maxBodyHeight`` asks.
+  const [userSized, setUserSized] = useState(false);
+  const bodyHeight =
+    userSized || maxBodyHeight === undefined ? feedHeight : Math.min(feedHeight, maxBodyHeight);
   const [colWidths, setColWidths] = useState<ColWidths>(getInitialColWidths);
   const [sortCol, setSortCol] = useState<SortCol>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -93,14 +108,22 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   // bursts list events at startup would otherwise push all the
   // useful tool/resource/prompt rows out of the cap window before
   // the operator could read them.
+  // Memoised on the inputs, so a host's render with the same events
+  // keeps the same lists and the sort below does not run again.
   const [showDiscovery] = useShowDiscoveryEvents();
-  const visibleAfterDiscovery = showDiscovery
-    ? events
-    : events.filter((fe) => !isDiscoveryEvent(fe.event.event_type));
-  const capped = visibleAfterDiscovery.slice(-FEED_MAX_EVENTS);
-  const filtered = activeFilter
-    ? capped.filter((fe) => isEventVisible(fe.event.event_type, activeFilter))
-    : capped;
+  const capped = useMemo(() => {
+    const visibleAfterDiscovery = showDiscovery
+      ? events
+      : events.filter((fe) => !isDiscoveryEvent(fe.event.event_type));
+    return visibleAfterDiscovery.slice(-FEED_MAX_EVENTS);
+  }, [events, showDiscovery]);
+  const filtered = useMemo(
+    () =>
+      activeFilter
+        ? capped.filter((fe) => isEventVisible(fe.event.event_type, activeFilter))
+        : capped,
+    [capped, activeFilter],
+  );
 
   const displayEvents = useMemo(() => {
     const sorted = [...filtered].sort((a, b) => {
@@ -135,8 +158,9 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
 
   function handleHeightResizeStart(e: React.MouseEvent) {
     e.preventDefault();
+    setUserSized(true);
     const startY = e.clientY;
-    const startHeight = feedHeight;
+    const startHeight = bodyHeight;
     const onMove = (ev: MouseEvent) => {
       setFeedHeight(Math.min(FEED_MAX_HEIGHT, Math.max(FEED_MIN_HEIGHT, startHeight + (startY - ev.clientY))));
     };
@@ -215,7 +239,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
       </div>
 
       {/* Feed body */}
-      <div className="relative" style={{ height: feedHeight, background: "var(--bg)" }}>
+      <div ref={bodyRef} className="relative" style={{ height: bodyHeight, background: "var(--bg)" }} data-testid="feed-body-frame">
         {/* Column headers */}
         <div
           className="absolute left-0 right-0 top-0 z-10 flex h-6 items-center px-3 font-mono text-[11px] font-bold uppercase tracking-[0.06em]"

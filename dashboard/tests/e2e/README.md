@@ -86,11 +86,27 @@ the swimlane↔table parity assertion). The current journeys:
 | `T161-newest-circles-and-glyphs-stay-inside-the-panel.spec.ts` | At 1h the newest circle sits whole inside its panel with its centre where the grid lines put its time, and a just-started run's ▶ sits at its own start inside the panel |
 | `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
 | `T167-fleet-row-below-the-fold-scrolls-into-view.spec.ts` | A swimlane row several screens below the fold, unmounted by the virtualization, is walked to and ends in the viewport; asked again once mounted, the helper scrolls straight to it without snapping the scroller to the top |
+| `T168-per-agent-modal-draws-one-lane-per-run.spec.ts` | At 1920x1080 the fan-out worker's modal draws a heading and three lanes, one per open run in start order (none for its lost run), each labelled with the run's short id, state, model and tokens; the equal lanes fill the scroll viewport to within a few pixels of the Live feed, with nothing to scroll; the heading shows the whole agent name; marker text is T172's, on runs of its own |
+| `T169-per-agent-modal-single-run-keeps-its-maximum.spec.ts` | The coordinator's one run gets one 144 px lane (the maximum), not the whole modal; its sub-agents stay compact 48 px rows without a runs chip |
+| `T170-per-agent-modal-many-runs-scroll.spec.ts` | At 1280x720 the wide sub-agent's five runs draw five 40 px lanes (the minimum, no overflow lane); the Live feed gives up height until the first three show whole, and the viewport scrolls to the last one |
+| `T171-fleet-runs-chip-opens-the-per-agent-modal.spec.ts` | At 1700 px and 1280x720 the worker's and the wide row's runs chips read `3 runs` / `5 runs` with matching tooltip and accessible name, sit in the badge column under the status badge of a 48 px row; the one-run coordinator has none; Enter on the focused chip, and a click, open the agent's per-agent modal; an agent of its own with ten runs reads `9+ runs` (full count in its tooltip) and fits the 88 px badge column |
+| `T172-per-agent-modal-small-window-shows-three-lanes.spec.ts` | On an agent of its own with three runs at 1280x720, the Live feed gives up height (not below 114 px) so the three lanes show whole with nothing to scroll; the heading's name is whole; at 5m (where both calls keep their places for over 100 s, whatever the spec's pace) a 60 s old call names itself on its run's lane inside the view and a 200 s old call under the label column shows no name; scrolled back to the window's start, the 200 s call names itself inside the view |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
 `findSwimlaneRow`, `bringSwimlaneRowIntoView`, `waitForFleetReady`,
-`waitForInvestigateReady`, `investigateParamsFromUrl`.
+`waitForInvestigateReady`, `investigateParamsFromUrl`, and
+`agentIdByName` / `openPerAgentModal` (the modal through the agent
+drawer's "Open in swimlane"), and the private-agent helpers
+`createPrivateAgent` / `startPrivateAgent` / `postPrivateToolCall` /
+`endPrivateAgent`: an agent of one spec run's own, named
+`e2e-test-<label>-<id>`, with runs started through ingestion (their
+`session_start` can be dated in the past), so its lanes draw only what
+the spec posts (T171's ten-run row, T172's marker text). The spec keeps
+the agent from `createPrivateAgent` before `startPrivateAgent` waits, so
+its `afterEach` ends the runs even when the start fails. On the seed's shared runs the
+seed's, the keep-alive's and other specs' calls decide which marker
+texts have room, so a spec asserts marker text only on runs of its own.
 
 ## Running locally
 
@@ -259,6 +275,9 @@ Structural testids the suite relies on:
 - `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket; a resumed run has one per segment), with `data-session-id`, `data-run-lane` (`0` is the top lane), `data-segment-index` and, on an end, `data-end-kind` (`closed` or `lost`); the row carries `data-lane-count` (1 to 4) and, with more runs overlapping than lanes, `data-lane-overflow="true"`
 - `swimlane-run-line-<sid_prefix>` (RunLine, one per segment on a split row), with `data-session-id`, `data-run-lane`, `data-segment-index`, `data-tail` (`live` or `quiet`), `data-shared` in the overflow lane and `data-highlighted`; its parts are `swimlane-run-solid-part` and `swimlane-run-quiet-tail`, and its tooltip `swimlane-run-line-tooltip-<sid_prefix>`
 - `swimlane-agent-status-badge` + `data-state` (AgentStatusBadge)
+- `swimlane-runs-chip` (the Fleet row's runs chip under the status badge), with `data-run-count` (the full count; the label reads `9+ runs` past nine)
+- `feed-body-frame` (the Live feed's body, whose height the per-agent modal can cap)
+- per-agent modal run lanes: the agent's row (`swimlane-agent-row-<agent_name>`) carries `data-run-lanes="true"` and `data-lane-count` (lanes drawn); `swimlane-run-lanes-heading`; each lane `swimlane-run-lane-<sid_prefix>` with `data-run-lane-row`, `data-run-id` and `data-lane-index`, its label `swimlane-run-lane-label` (`swimlane-run-lane-id`, `swimlane-run-lane-status` + `data-state`, `swimlane-run-lane-model`, `swimlane-run-lane-tokens`); `swimlane-marker-text` (a kept marker text, with `data-marker-for`, its circle's event id, and `data-marker-row`: `beside`, `above` or `below`); `swimlane-run-lanes-empty` with no run in the window
 - `swimlane-sub-agent-lost-dot` (lost sub-agent cue inside the row strip)
 - `session-circle-<session_id>` (EventNode circles), with `data-event-id`, `data-session-id` and, on an agent row, `data-run-lane`
 - `session-drawer` (SessionDrawer root)

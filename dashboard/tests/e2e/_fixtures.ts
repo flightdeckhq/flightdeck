@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import type { Page, Locator } from "@playwright/test";
-import { API_URL } from "./_stack";
+import { createHash, randomUUID } from "node:crypto";
+import { expect, type Page, type Locator } from "@playwright/test";
+import { API_URL, INGEST_URL } from "./_stack";
 
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
 // dataset seeded by tests/e2e-fixtures/seed.py (via canonical.json).
@@ -646,3 +646,199 @@ export async function openAgentDrawerFromRow(row: Locator): Promise<void> {
   await row.locator('[data-testid^="agent-row-name-"]').first().click();
 }
 
+
+/** An agent's id by its name, from the fleet roster the dashboard
+ *  loads (``GET /v1/fleet``, paged). */
+export async function agentIdByName(page: Page, agentName: string): Promise<string> {
+  const perPage = 200;
+  for (let p = 1; p <= 50; p++) {
+    const resp = await page.request.get(`${GENAI_API}/v1/fleet?page=${p}&per_page=${perPage}`, {
+      headers: GENAI_AUTH,
+    });
+    if (!resp.ok()) throw new Error(`fleet page ${p}: ${resp.status()}`);
+    const { agents } = (await resp.json()) as {
+      agents: { agent_id: string; agent_name: string }[] | null;
+    };
+    const hit = agents?.find((a) => a.agent_name === agentName);
+    if (hit) return hit.agent_id;
+    if (!agents || agents.length < perPage) break;
+  }
+  throw new Error(`no agent named ${agentName} in the fleet`);
+}
+
+/** Open the per-agent swimlane modal for ``agentName`` the way an
+ *  operator does from anywhere: its agent drawer (the ``?agent_drawer=``
+ *  param) and the drawer's "Open in swimlane". Returns the modal. */
+export async function openPerAgentModal(page: Page, agentName: string): Promise<Locator> {
+  const agentId = await agentIdByName(page, agentName);
+  await page.goto(`/?agent_drawer=${encodeURIComponent(agentId)}`);
+  const drawer = page.locator(`[data-testid="agent-drawer"][data-agent-id="${agentId}"]`);
+  await drawer.waitFor({ timeout: 15_000 });
+  await drawer.locator('[data-testid="agent-drawer-open-swimlane"]').click();
+  const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
+  await modal.waitFor();
+  return modal;
+}
+
+/** How long the private-agent helpers wait for the worker to store a
+ *  run or an event: what the dashboard then fetches. */
+const PRIVATE_STORE_WAIT_MS = 15_000;
+const PRIVATE_HOST = "e2e-host-private";
+/** The model the private runs report: the lane label shows it, and an
+ *  LLM call on it carries no marker text. */
+const PRIVATE_MODEL = "claude-sonnet-4-5";
+
+/** An agent of one spec run's own, made through ingestion: no other
+ *  spec, no seed and no keep-alive posts to its runs, so what its lanes
+ *  draw is only what the spec posts. */
+export interface PrivateAgent {
+  agentId: string;
+  agentName: string;
+  flavor: string;
+  sessionIds: string[];
+}
+
+function privateEvent(
+  agent: PrivateAgent,
+  sessionId: string,
+  eventType: string,
+  at: Date,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    session_id: sessionId,
+    flavor: agent.flavor,
+    event_type: eventType,
+    host: PRIVATE_HOST,
+    framework: "claude-code",
+    model: PRIVATE_MODEL,
+    tokens_input: null,
+    tokens_output: null,
+    tokens_total: null,
+    tokens_used_session: 0,
+    token_limit_session: null,
+    latency_ms: null,
+    tool_name: null,
+    tool_input: null,
+    tool_result: null,
+    has_content: false,
+    content: null,
+    capture_prompts: true,
+    timestamp: at.toISOString(),
+    agent_id: agent.agentId,
+    agent_type: "coding",
+    agent_name: agent.agentName,
+    client_type: "claude_code",
+    user: "e2e-runner",
+    hostname: PRIVATE_HOST,
+    ...extra,
+  };
+  if (eventType === "session_start") {
+    payload.sensor_version = "e2e-fixture/0.0.0";
+    payload.context = { os: "Linux", arch: "x86_64", hostname: PRIVATE_HOST, user: "e2e-runner" };
+  }
+  return payload;
+}
+
+async function postPrivateEvent(page: Page, payload: Record<string, unknown>): Promise<void> {
+  const resp = await page.request.post(`${INGEST_URL}/v1/events`, { headers: GENAI_AUTH, data: payload });
+  if (!resp.ok()) {
+    throw new Error(`POST ${String(payload.event_type)}: ${resp.status()} ${await resp.text()}`);
+  }
+}
+
+async function privateSession(
+  page: Page,
+  sessionId: string,
+): Promise<{ state: string; events: { id: string; tool_name: string | null }[] } | null> {
+  const resp = await page.request.get(`${GENAI_API}/v1/sessions/${sessionId}`, { headers: GENAI_AUTH });
+  if (resp.status() === 404) return null;
+  if (!resp.ok()) throw new Error(`session ${sessionId}: ${resp.status()}`);
+  const body = (await resp.json()) as {
+    session: { state: string };
+    events: { id: string; tool_name: string | null }[];
+  };
+  return { state: body.session.state, events: body.events };
+}
+
+/**
+ * An agent of this spec run's own, named ``e2e-test-<label>-<id>``, with
+ * ``runs`` run ids, nothing posted yet. The spec keeps it before
+ * ``startPrivateAgent`` waits, so its ``afterEach`` can end whatever runs
+ * a failed start left open.
+ */
+export function createPrivateAgent(label: string, runs: number): PrivateAgent {
+  return {
+    agentId: randomUUID(),
+    agentName: `e2e-test-${label}-${randomUUID().slice(0, 8)}`,
+    flavor: `e2e-${label}`,
+    sessionIds: Array.from({ length: runs }, () => randomUUID()),
+  };
+}
+
+/**
+ * Start every run of ``agent`` with a ``session_start`` dated
+ * ``startedAgoMs`` before now, and wait until each is stored and active.
+ * The date places the start's circle on the lanes; the worker dates the
+ * run itself when it takes the event. End it with ``endPrivateAgent``.
+ */
+export async function startPrivateAgent(
+  page: Page,
+  agent: PrivateAgent,
+  { startedAgoMs = 0 }: { startedAgoMs?: number } = {},
+): Promise<void> {
+  const at = new Date(Date.now() - startedAgoMs);
+  for (const sessionId of agent.sessionIds) {
+    await postPrivateEvent(page, privateEvent(agent, sessionId, "session_start", at));
+  }
+  for (const sessionId of agent.sessionIds) {
+    await expect
+      .poll(async () => (await privateSession(page, sessionId))?.state ?? null, {
+        timeout: PRIVATE_STORE_WAIT_MS,
+        message: `run ${sessionId} did not start`,
+      })
+      .toBe("active");
+  }
+}
+
+/** Post one ``tool_call`` named ``toolName`` on the private run
+ *  ``sessionId``, ``agoMs`` before now, wait until it is stored, and
+ *  return its event id. */
+export async function postPrivateToolCall(
+  page: Page,
+  agent: PrivateAgent,
+  sessionId: string,
+  toolName: string,
+  agoMs: number,
+): Promise<string> {
+  await postPrivateEvent(
+    page,
+    privateEvent(agent, sessionId, "tool_call", new Date(Date.now() - agoMs), {
+      tool_name: toolName,
+      latency_ms: 11,
+    }),
+  );
+  let eventId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        eventId = (await privateSession(page, sessionId))?.events.find((e) => e.tool_name === toolName)?.id;
+        return eventId;
+      },
+      { timeout: PRIVATE_STORE_WAIT_MS, message: `${toolName} on ${sessionId} was not stored` },
+    )
+    .toBeDefined();
+  return eventId!;
+}
+
+/** End every run of a private agent, so none stays open after its spec:
+ *  each run's end is posted even when another's is refused (a run a
+ *  failed start never stored). */
+export async function endPrivateAgent(page: Page, agent: PrivateAgent): Promise<void> {
+  for (const sessionId of agent.sessionIds) {
+    await page.request.post(`${INGEST_URL}/v1/events`, {
+      headers: GENAI_AUTH,
+      data: privateEvent(agent, sessionId, "session_end", new Date()),
+    });
+  }
+}

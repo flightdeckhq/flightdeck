@@ -944,22 +944,40 @@ func (sp *SessionProcessor) StartReconciler(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := sp.w.ReconcileStaleSessions(ctx); err != nil {
-				slog.Error("reconciler error", "err", err)
-			}
-			reaped, err := sp.w.ReapOrphanedLostSessions(ctx, orphanTimeout)
-			if err != nil {
-				slog.Error("orphan reaper error", "err", err)
-				continue
-			}
-			if reaped > 0 {
-				metrics.IncrSessionClosedN(metrics.CloseReasonOrphanTimeout, uint64(reaped))
-				slog.Info("reaped orphaned sessions",
-					"count", reaped,
-					"close_reason", string(metrics.CloseReasonOrphanTimeout),
-					"timeout", orphanTimeout.String(),
-				)
-			}
+			sp.reconcileOnce(ctx, orphanTimeout)
 		}
+	}
+}
+
+// reconcileOnce is one reconciler tick: the stale and lost transitions,
+// then the orphan reaper. A failure of either is logged as an error,
+// and a failed transition does not keep the reaper from running. A
+// failure because ctx ended is the stop cutting the tick short, not an
+// error: it is logged at debug level and the tick ends there, since
+// every statement after it would fail the same way.
+func (sp *SessionProcessor) reconcileOnce(ctx context.Context, orphanTimeout time.Duration) {
+	if err := sp.w.ReconcileStaleSessions(ctx); err != nil {
+		if ctx.Err() != nil {
+			slog.Debug("reconciler tick stopped by the shutdown", "err", err)
+			return
+		}
+		slog.Error("reconciler error", "err", err)
+	}
+	reaped, err := sp.w.ReapOrphanedLostSessions(ctx, orphanTimeout)
+	if err != nil {
+		if ctx.Err() != nil {
+			slog.Debug("orphan reaper stopped by the shutdown", "err", err)
+			return
+		}
+		slog.Error("orphan reaper error", "err", err)
+		return
+	}
+	if reaped > 0 {
+		metrics.IncrSessionClosedN(metrics.CloseReasonOrphanTimeout, uint64(reaped))
+		slog.Info("reaped orphaned sessions",
+			"count", reaped,
+			"close_reason", string(metrics.CloseReasonOrphanTimeout),
+			"timeout", orphanTimeout.String(),
+		)
 	}
 }

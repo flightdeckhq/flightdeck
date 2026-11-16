@@ -349,6 +349,16 @@ class SensorMessages(base.SessionProxy):
         can be a subclass override that calls ``super()`` into a patched
         base method, so it runs under the outer-call mark: this proxy
         already meters the call and the patched base passes through."""
+        sdk_method = self._sdk_method(name)
+        if sdk_method is not None:
+            return sdk_method
+        return _under_outer_mark(getattr(self._real, name))
+
+    def _sdk_method(self, name: str) -> Any:
+        """The SDK's own ``name`` method of the resource, as an
+        unsensored call reaches it: the original a patched class stored,
+        else ``None`` when the class is not patched along the MRO (see
+        :meth:`_method`, which then reads the method as usual)."""
         if self._originals is not None and name in self._originals:
             return types.MethodType(self._originals[name], self._real)
         for klass in type(self._real).__mro__:
@@ -358,7 +368,7 @@ class SensorMessages(base.SessionProxy):
             if isinstance(originals, dict) and name in originals:
                 return types.MethodType(originals[name], self._real)
             break
-        return _under_outer_mark(getattr(self._real, name))
+        return None
 
     def _deferred(
         self, real_fn: Any, kwargs: dict[str, Any], session: Session, provider: AnthropicProvider
@@ -413,6 +423,7 @@ class SensorMessages(base.SessionProxy):
 
         return _call()
 
+    @base.SDKMethod
     def create(self, **kwargs: Any) -> Any:
         """Intercept messages.create() -- sync or async depending on client type.
 
@@ -435,7 +446,9 @@ class SensorMessages(base.SessionProxy):
         if base.outer_intercept_active():
             return real_fn(**kwargs)
         return self._call(
-            lambda call_kwargs, target: self._create(real_fn, call_kwargs, target), kwargs
+            lambda call_kwargs, target: self._create(real_fn, call_kwargs, target),
+            kwargs,
+            self._sdk_method("create") or self._real.create,
         )
 
     def _create(
@@ -484,9 +497,14 @@ class SensorMessages(base.SessionProxy):
             return real_fn(**kwargs)
         session, provider = target
         if self._is_async:
+            # The SDK's async ``stream()`` binds its arguments when it is
+            # called; the sensor sends the request on entry, so it binds
+            # them now (see base.check_signature).
+            base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
             return base.call_stream_async(real_fn, kwargs, session, provider)
         return base.call_stream(real_fn, kwargs, session, provider)
 
+    @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
         """Intercept messages.parse() (structured output): a plain call
         whose response is a parsed ``Message`` subclass, so usage, content
@@ -498,7 +516,9 @@ class SensorMessages(base.SessionProxy):
         if base.outer_intercept_active():
             return real_fn(**kwargs)
         return self._call(
-            lambda call_kwargs, target: self._parse(real_fn, call_kwargs, target), kwargs
+            lambda call_kwargs, target: self._parse(real_fn, call_kwargs, target),
+            kwargs,
+            self._sdk_method("parse") or self._real.parse,
         )
 
     def _parse(
@@ -764,19 +784,29 @@ def _intercepting_method(
 
     if is_async and name in _AWAITED_METHODS:
 
-        @functools.wraps(original)
-        async def awaited(self: Any, **kwargs: Any) -> Any:
+        async def _send(resource: Any, kwargs: dict[str, Any]) -> Any:
             session = _current_session()
             # As for the sync method below, read when the request goes out.
             if (
                 session is None
                 or base.outer_intercept_active()
-                or not _installed(type(self), name, awaited)
+                or not _installed(type(resource), name, installed)
             ):
-                return await original(self, **kwargs)
-            return await getattr(_proxy(self, session), name)(**kwargs)
+                return await original(resource, **kwargs)
+            return await getattr(_proxy(resource, session), name)(**kwargs)
 
-        return awaited
+        def awaited(self: Any, **kwargs: Any) -> Any:
+            # The SDK checks the arguments now, when the call is made, as
+            # it does unsensored; the request waits for the await.
+            base.check_arguments(types.MethodType(original, self), kwargs)
+            return _send(self, kwargs)
+
+        # A plain function for ``create`` (the SDK's own is a synchronous
+        # wrapper returning the coroutine) and a coroutine-function-like
+        # one for ``parse`` (an ``async def``): each introspects as the
+        # SDK's method does.
+        installed = base.like_sdk(original, awaited)
+        return installed
 
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
@@ -790,6 +820,11 @@ def _intercepting_method(
             or not _installed(type(self), name, method)
         ):
             return original(self, **kwargs)
+        if is_async:
+            # The async ``stream()`` hands back its manager at once and
+            # sends on entry: its arguments are checked now, as the SDK's
+            # own binding does.
+            base.check_signature(original, self, **kwargs)
         return getattr(_proxy(self, session), name)(**kwargs)
 
     return method

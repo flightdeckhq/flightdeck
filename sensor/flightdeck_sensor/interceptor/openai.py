@@ -614,6 +614,7 @@ def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:
 class SensorCompletions(base.SessionProxy):
     """Proxy for ``chat.completions`` -- intercepts ``create()``."""
 
+    @base.SDKMethod
     def create(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.create().
 
@@ -626,7 +627,7 @@ class SensorCompletions(base.SessionProxy):
         reasons. A following async proxy resolves its session when the
         call is awaited (see :meth:`base.SessionProxy._call`).
         """
-        return self._call(self._create, kwargs)
+        return self._call(self._create, kwargs, self._real.create)
 
     def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
@@ -683,6 +684,7 @@ class SensorCompletions(base.SessionProxy):
             return base.call_async(real_fn, kwargs, session, provider)
         return base.call(real_fn, kwargs, session, provider)
 
+    @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.parse() (structured outputs).
 
@@ -694,7 +696,7 @@ class SensorCompletions(base.SessionProxy):
         ``post_call`` followed by the ``llm_error``; see
         :func:`_call_parse`.
         """
-        return self._call(self._parse, kwargs)
+        return self._call(self._parse, kwargs, self._real.parse)
 
     def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
@@ -816,6 +818,7 @@ class _SensorRawResponseWrapper(base.SessionProxy):
         # Responses streams carry it on their terminal event.
         self._chat = chat
 
+    @base.SDKMethod
     def create(self, **kwargs: Any) -> Any:
         """Intercept the raw-response create closure with the sensor pipeline.
 
@@ -825,7 +828,7 @@ class _SensorRawResponseWrapper(base.SessionProxy):
         :mod:`flightdeck_sensor.interceptor.raw_views`). langchain-openai
         takes this path with ``include_response_headers=True``.
         """
-        return self._call(self._create, kwargs)
+        return self._call(self._create, kwargs, self._real.create)
 
     def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         real_fn = self._real.create
@@ -847,6 +850,7 @@ class _SensorRawResponseWrapper(base.SessionProxy):
             return base.call_async(real_fn, kwargs, session, provider)
         return base.call(real_fn, kwargs, session, provider)
 
+    @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
         """Intercept the raw-response parse closure with the sensor pipeline.
 
@@ -854,7 +858,7 @@ class _SensorRawResponseWrapper(base.SessionProxy):
         reported here rather than silently at the caller's ``.parse()``;
         see :func:`_call_parse`.
         """
-        return self._call(self._parse, kwargs)
+        return self._call(self._parse, kwargs, self._real.parse)
 
     def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
@@ -912,6 +916,7 @@ class SensorResponses(base.SessionProxy):
     event per invocation.
     """
 
+    @base.SDKMethod
     def create(self, **kwargs: Any) -> Any:
         """Intercept responses.create() -- sync or async dispatch.
 
@@ -922,7 +927,7 @@ class SensorResponses(base.SessionProxy):
         session when the call is awaited (see
         :meth:`base.SessionProxy._call`).
         """
-        return self._call(self._create, kwargs)
+        return self._call(self._create, kwargs, self._real.create)
 
     def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         real_fn = self._real.create
@@ -952,6 +957,7 @@ class SensorResponses(base.SessionProxy):
             return base.call_async(real_fn, kwargs, session, provider)
         return base.call(real_fn, kwargs, session, provider)
 
+    @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
         """Intercept responses.parse() (structured outputs).
 
@@ -961,7 +967,7 @@ class SensorResponses(base.SessionProxy):
         caller's ``text_format`` schema lands as a ``post_call`` followed
         by the ``llm_error``; see :func:`_call_parse`.
         """
-        return self._call(self._parse, kwargs)
+        return self._call(self._parse, kwargs, self._real.parse)
 
     def _parse(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         if target is None:
@@ -1024,6 +1030,7 @@ class SensorEmbeddings(base.SessionProxy):
     text.
     """
 
+    @base.SDKMethod
     def create(self, **kwargs: Any) -> Any:
         """Intercept embeddings.create() -- sync or async dispatch.
 
@@ -1037,7 +1044,7 @@ class SensorEmbeddings(base.SessionProxy):
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return self._real.create(**kwargs)
-        return self._call(self._create, kwargs)
+        return self._call(self._create, kwargs, self._real.create)
 
     def _create(self, kwargs: dict[str, Any], target: tuple[Session, OpenAIProvider] | None) -> Any:
         real_fn = self._real.create

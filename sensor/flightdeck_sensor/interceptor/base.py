@@ -18,6 +18,7 @@ import collections
 import contextlib
 import contextvars
 import copy
+import functools
 import inspect
 import logging
 import sys
@@ -276,20 +277,153 @@ class SessionProxy:
         self,
         send: Callable[[dict[str, Any], tuple[Session, Any] | None], Any],
         kwargs: dict[str, Any],
+        sdk_call: Callable[..., Any],
     ) -> Any:
-        """``send(kwargs, target)`` for the target of this call. On a
+        """``send(kwargs, target)`` for the target of this call;
+        ``sdk_call`` is the SDK method the call stands in for. On a
         following async proxy the target is resolved when the call is
         awaited, which is when an async SDK request goes out: a stream
         manager awaits it on entry, not when it is built, so its request
         reports to the session active on entry, and goes out untouched
-        with none."""
+        with none. The SDK checks the arguments when the call is made, as
+        it does unsensored (see :func:`check_arguments`)."""
         if self._is_async and self._follow is not None:
+            check_arguments(sdk_call, kwargs)
 
             async def _awaited() -> Any:
                 return await send(kwargs, self._target())
 
             return _awaited()
         return send(kwargs, self._target())
+
+
+# ------------------------------------------------------------------
+# Parity with the SDK method a sensor callable stands in for
+# ------------------------------------------------------------------
+#
+# A sensored client behaves like an unsensored one, so a sensor callable
+# that stands in for an async SDK method looks like it to introspection
+# (frameworks tell sync from async with inspect.iscoroutinefunction) and
+# rejects bad arguments at the same moment: when the call is made, or for
+# an SDK method that checks them only once awaited (the raw views'
+# ``async def wrapped(*args, **kwargs)``), when it is awaited.
+
+
+def check_arguments(sdk_call: Callable[..., Any], kwargs: dict[str, Any]) -> None:
+    """Have the SDK check the arguments of an async call now, as it does
+    when the call is made unsensored: its method validates them (a
+    missing or unknown one raises ``TypeError``) and returns its
+    coroutine without running it, and that coroutine is closed unawaited,
+    which sends nothing and warns of nothing. Only for a method whose
+    underlying function is a coroutine function, which returns an
+    unstarted coroutine; anything else is left to the call itself."""
+    if not inspect.iscoroutinefunction(inspect.unwrap(sdk_call)):
+        return
+    pending = sdk_call(**kwargs)
+    if inspect.iscoroutine(pending):
+        pending.close()
+
+
+# The signatures check_signature() binds against, one per SDK function.
+_SIGNATURE_CACHE_SIZE = 64
+
+
+@functools.lru_cache(maxsize=_SIGNATURE_CACHE_SIZE)
+def _signature(function: Callable[..., Any]) -> inspect.Signature:
+    return inspect.signature(function)
+
+
+def check_signature(function: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Raise the ``TypeError`` calling ``function`` with these arguments
+    would raise on binding them, without calling it: for an SDK method
+    that hands back an object at once (``messages.stream()``'s manager)
+    while the sensor sends its request later."""
+    _signature(function).bind(*args, **kwargs)
+
+
+# The attributes of a function inspect reads to tell what kind of
+# callable an object is and what its signature is; a CoroutineFunctionLike
+# answers them for the SDK function it stands in for.
+_FUNCTION_ATTRIBUTES = frozenset(
+    {"__code__", "__name__", "__qualname__", "__defaults__", "__kwdefaults__", "__annotations__"}
+)
+
+
+class CoroutineFunctionLike:
+    """A synchronous callable that introspection takes for the SDK
+    coroutine function it stands in for.
+
+    A sensor callable standing in for an ``async def`` SDK method
+    (``AsyncMessages.parse``, ``AsyncEmbeddings.create``) must reject bad
+    arguments when it is called, as Python does for the SDK's, so it is a
+    plain callable returning a coroutine; yet ``inspect.iscoroutinefunction``
+    (and ``asyncio.iscoroutinefunction``, ``inspect.signature``) must
+    answer for it as for the SDK's. ``inspect`` decides from a function's
+    code object and accepts any object carrying one with a function's
+    other attributes, so this one carries the SDK function's (``like``);
+    ``__wrapped__`` is ``like``, for the signature. Marking a plain
+    function with ``inspect.markcoroutinefunction`` would do the same,
+    but that is not on Python 3.11. As a class attribute it binds like a
+    method."""
+
+    __slots__ = ("_call", "_like")
+
+    def __init__(self, call: Callable[..., Any], like: Callable[..., Any]) -> None:
+        self._call = call
+        self._like = like
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call(*args, **kwargs)
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        return self if instance is None else types.MethodType(self, instance)
+
+    @property
+    def __wrapped__(self) -> Callable[..., Any]:
+        return self._like
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _FUNCTION_ATTRIBUTES:
+            return getattr(getattr(self._like, "__func__", self._like), name)
+        raise AttributeError(name)
+
+
+def like_sdk(sdk_function: Callable[..., Any], call: Callable[..., Any]) -> Any:
+    """``call`` standing in for ``sdk_function``: a :class:`CoroutineFunctionLike`
+    when that is a coroutine function, else ``call`` itself, which carries
+    ``sdk_function``'s name, docs and signature (``functools.wraps``)."""
+    if inspect.iscoroutinefunction(sdk_function):
+        return CoroutineFunctionLike(call, sdk_function)
+    return functools.wraps(sdk_function)(call)
+
+
+class SDKMethod:
+    """A :class:`SessionProxy` method that stands in for the method of the
+    same name on the SDK object the proxy wraps (``_real``): on a proxy
+    over an async resource whose method is a coroutine function, the
+    bound method is handed out as a :class:`CoroutineFunctionLike` of the
+    SDK's, so the two introspect alike; otherwise it is the plain bound
+    method. One proxy class serves sync and async resources, whose
+    methods differ in kind, so this is decided per proxy."""
+
+    def __init__(self, function: Callable[..., Any]) -> None:
+        self._function = function
+        self._name = function.__name__
+        self.__doc__ = function.__doc__
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self._function
+        bound = types.MethodType(self._function, instance)
+        if not instance._is_async:
+            return bound
+        sdk_method = getattr(instance._real, self._name, None)
+        if sdk_method is None or not inspect.iscoroutinefunction(sdk_method):
+            return bound
+        return CoroutineFunctionLike(bound, sdk_method)
 
 
 def drain_deferred_settles(session: Session) -> None:

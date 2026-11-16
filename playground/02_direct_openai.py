@@ -14,8 +14,6 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
-import urllib.request
-import urllib.error
 import uuid
 
 try:
@@ -29,12 +27,12 @@ import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import (
     assert_token_cost_fields,
-    API_TOKEN,
-    API_URL,
     assert_event_landed,
+    fetch_event_content,
     fetch_events_for_session,
     init_sensor,
     print_result,
+    stored_content_of,
     wait_for_streamed_post_calls,
 )
 
@@ -75,38 +73,6 @@ NEW_PATH_EVENTS_POLL_S = 0.5
 class CityAnswer(BaseModel):
     city: str
     country: str
-
-
-# The worker writes an event's row before its event_content row, so a
-# capture-on event can be listed with has_content=true a moment before
-# its content is fetchable. Content trails the row by well under a
-# second; 10 s bounds the wait at an order of magnitude above that.
-CONTENT_LANDED_DEADLINE_S = 10.0
-CONTENT_POLL_S = 0.3
-
-
-def _fetch_event_content(event_id: str) -> dict:
-    """GET /v1/events/{id}/content; returns the parsed JSON body.
-
-    Polls through 404 until ``CONTENT_LANDED_DEADLINE_S``: this script
-    runs with capture on, so a 404 here means the content row has not
-    landed yet, not that capture is off. The last 404 is raised.
-    """
-    import json
-
-    req = urllib.request.Request(
-        f"{API_URL}/v1/events/{event_id}/content",
-        headers={"Authorization": f"Bearer {API_TOKEN}"},
-    )
-    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
-    while True:
-        try:
-            with urllib.request.urlopen(req, timeout=5) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404 or time.monotonic() > deadline:
-                raise
-        time.sleep(CONTENT_POLL_S)
 
 
 def main() -> None:
@@ -288,6 +254,72 @@ def main() -> None:
     )
     if not function_calls:
         raise AssertionError(f"no function_call in output: {tool_resp.output!r}")
+
+    # Tool-use loops that pass the SDK's reply objects back: the stored
+    # content holds the JSON the provider received for them (the objects'
+    # dump of their set fields), never their string form.
+    marker = f"tool-loop-{session_id[:8]}"
+    t0 = time.monotonic()
+    follow_input = [
+        {"role": "user", "content": f"What is the weather in Paris? ({marker})"},
+        *tool_resp.output,
+        *[
+            {"type": "function_call_output", "call_id": call.call_id, "output": "Sunny, 21 C"}
+            for call in function_calls
+        ],
+    ]
+    openai.OpenAI().responses.create(
+        model=MODEL, input=follow_input, tools=[WEATHER_TOOL], max_output_tokens=64
+    )
+    stored_input = stored_content_of(session_id, marker, "input", least=len(follow_input))
+    sent_items = [item.model_dump(mode="json", exclude_unset=True) for item in tool_resp.output]
+    responses_ok = stored_input[1 : 1 + len(sent_items)] == sent_items
+    print_result(
+        "Responses output items passed back are stored as the JSON sent",
+        responses_ok,
+        int((time.monotonic() - t0) * 1000),
+        f"{len(sent_items)} items",
+    )
+    if not responses_ok:
+        raise AssertionError(f"stored {stored_input!r}, sent {sent_items!r}")
+
+    t0 = time.monotonic()
+    chat_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": WEATHER_TOOL["name"],
+                "description": WEATHER_TOOL["description"],
+                "parameters": WEATHER_TOOL["parameters"],
+            },
+        }
+    ]
+    loop: list[object] = [
+        {"role": "user", "content": f"What is the weather in Paris? Use the tool. ({marker})"}
+    ]
+    first = openai.OpenAI().chat.completions.create(
+        model=MODEL, messages=loop, tools=chat_tools, tool_choice="required", max_tokens=64
+    )
+    reply = first.choices[0].message
+    loop.append(reply)
+    loop.extend(
+        {"role": "tool", "tool_call_id": call.id, "content": "Sunny, 21 C"}
+        for call in reply.tool_calls or []
+    )
+    openai.OpenAI().chat.completions.create(
+        model=MODEL, messages=loop, tools=chat_tools, max_tokens=32
+    )
+    stored_messages = stored_content_of(session_id, marker, "messages", least=len(loop))
+    sent_reply = reply.model_dump(mode="json", exclude_unset=True)
+    chat_ok = stored_messages[1] == sent_reply and bool(reply.tool_calls)
+    print_result(
+        "ChatCompletionMessage passed back is stored as the JSON sent",
+        chat_ok,
+        int((time.monotonic() - t0) * 1000),
+        f"{len(reply.tool_calls or [])} tool calls",
+    )
+    if not chat_ok:
+        raise AssertionError(f"stored {stored_messages[1]!r}, sent {sent_reply!r}")
 
     # Hosted tool: web search runs server-side and lands as a
     # web_search_call output item -> tool_call event named after the item.
@@ -505,7 +537,7 @@ def main() -> None:
     for e in embeds[-2:]:
         if not e.get("has_content"):
             raise AssertionError(f"embedding event missing has_content: {e!r}")
-        body = _fetch_event_content(e["id"])
+        body = fetch_event_content(e["id"])
         captured.append(body.get("input"))
     print_result(
         "embeddings capture round-trip", True, 0, f"captured {len(captured)} inputs"

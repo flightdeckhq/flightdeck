@@ -560,18 +560,6 @@ def _litellm_details(obj: Any) -> CallDetails | None:
 # ----------------------------------------------------------------------
 
 
-def _as_json(value: Any) -> Any:
-    """``value`` when it is plain JSON data, else its ``str``; a request
-    parameter is stored verbatim and must still encode."""
-    import json as _json
-
-    try:
-        _json.dumps(value)
-        return value
-    except (TypeError, ValueError):
-        return str(value)
-
-
 def _dump(response: Any) -> dict[str, Any]:
     """A response object as the dict content capture stores; empty for
     anything that is not a response (a stream wrapper's own state, which
@@ -722,7 +710,7 @@ class LitellmTextCompletionProvider(LitellmProvider):
                 session_id="",
                 event_id="",
                 captured_at=datetime.now(UTC).isoformat(),
-                input=_as_json(request_kwargs.get("prompt")),
+                input=request_kwargs.get("prompt"),
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)
@@ -951,14 +939,14 @@ class LitellmResponsesProvider(LitellmProvider):
             return PromptContent(
                 system=instructions if isinstance(instructions, str) else None,
                 messages=[],
-                tools=_as_json(tools) if isinstance(tools, list) else None,
+                tools=tools if isinstance(tools, list) else None,
                 response=_dump(response),
                 provider="litellm",
                 model=request_kwargs.get("model", ""),
                 session_id="",
                 event_id="",
                 captured_at=datetime.now(UTC).isoformat(),
-                input=_as_json(request_kwargs.get("input")),
+                input=request_kwargs.get("input"),
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)

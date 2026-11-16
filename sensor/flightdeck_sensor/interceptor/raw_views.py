@@ -469,7 +469,7 @@ def send_deferred(
     ``event_type`` is the event the settle emits (``embeddings`` for an
     embeddings call). An iterator among the arguments is read as in
     :func:`base.materialise_iterators`."""
-    arguments = base.materialise_iterators(kwargs, real_fn)
+    arguments = base.materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = base._pre_call(session, provider, kwargs, estimated, estimated_via)

@@ -20,16 +20,16 @@ import (
 	"github.com/flightdeckhq/flightdeck/storage"
 )
 
-// EnsureGlobalMCPPolicy is a boot-time idempotent retry. Migration
-// 000019 seeds the global empty-blocklist row at install time,
-// which closes the cold-boot race where api beat workers to a
-// fresh database and 500'd until manual restart. This hook stays as
-// a defensive noop for install paths where api may run before the
-// migrator (e.g. future operator-managed Helm charts). Race-safe
-// under read-committed because the unique index
+// EnsureGlobalMCPPolicy inserts the global empty-blocklist policy row
+// when it is missing, at API boot, with the same idempotent INSERT as
+// the Postgres seed migration. On a migrated database it changes
+// nothing; it adds the row where the table exists without it. On a
+// database the migrations have not reached the table does not exist,
+// so it fails, and the caller logs a warning and carries on: the
+// migrations seed the row when they run. Race-safe under
+// read-committed because the unique index
 // (scope, COALESCE(scope_value, ”)) rejects a concurrent second
-// insert; the unique-violation is treated as "already created" and
-// the caller continues.
+// insert; the unique violation is treated as "already created".
 func (s *Store) EnsureGlobalMCPPolicy(ctx context.Context) error {
 	const query = `
 		INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)

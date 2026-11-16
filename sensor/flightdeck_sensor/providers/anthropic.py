@@ -43,10 +43,21 @@ _EVENT_MESSAGE_STOP = "message_stop"
 _EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
 _DELTA_TEXT = "text_delta"
 
+# The class names of the SDK's sentinels for an argument left out
+# (``NOT_GIVEN``, ``omit``): a wrapper that passes one through
+# (``tools=NOT_GIVEN`` for an agent with no tools) has given nothing, and
+# the sentinel is not JSON, so the captured content stores None instead.
+_OMITTED_ARGUMENT_TYPES = frozenset({"NotGiven", "Omit"})
+
 # The beta Messages API's event classes live under this package; their
 # stream is assembled with the SDK's beta accumulator, whose content-block
 # union carries the beta-only block types.
 _BETA_TYPES_PACKAGE = "anthropic.types.beta"
+
+
+def _given(value: Any) -> Any:
+    """``value``, or None for the SDK's sentinel of an argument left out."""
+    return None if type(value).__name__ in _OMITTED_ARGUMENT_TYPES else value
 
 
 class _MessageStreamAccumulator:
@@ -528,12 +539,12 @@ class AnthropicProvider:
                 resp_dict = {"raw": str(response)}
 
             return PromptContent(
-                system=request_kwargs.get("system"),
-                messages=request_kwargs.get("messages", []),
-                tools=request_kwargs.get("tools"),
+                system=_given(request_kwargs.get("system")),
+                messages=_given(request_kwargs.get("messages")) or [],
+                tools=_given(request_kwargs.get("tools")),
                 response=resp_dict,
                 provider="anthropic",
-                model=request_kwargs.get("model", ""),
+                model=_given(request_kwargs.get("model")) or "",
                 session_id="",  # Filled by caller
                 event_id="",  # Filled by caller
                 captured_at=datetime.now(UTC).isoformat(),

@@ -497,3 +497,27 @@ def test_litellm_stop_reason_reads_finish_reason_on_response_and_chunk() -> None
     )
     assert provider.stop_reason_from_stream_chunk(mid) is None
     assert provider.response_stop_reason(_Plain(stop_reason="refusal")) is None
+
+
+def test_anthropic_content_stores_none_for_an_argument_left_out() -> None:
+    """A wrapper that passes the SDK's ``NOT_GIVEN`` through (Google ADK's
+    ``AnthropicLlm`` does, for an agent with no tools or no system prompt)
+    gave nothing: the content stores None, and the event stays JSON."""
+    import dataclasses
+    import json
+
+    import anthropic
+
+    from flightdeck_sensor.providers.anthropic import AnthropicProvider
+
+    kwargs = {
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "system": anthropic.NOT_GIVEN,
+        "tools": anthropic.NOT_GIVEN,
+    }
+    content = AnthropicProvider(capture_prompts=True).extract_content(kwargs, {"content": []})
+    assert content is not None
+    assert content.tools is None and content.system is None
+    assert content.messages == kwargs["messages"]
+    json.dumps(dataclasses.asdict(content))

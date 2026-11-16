@@ -8094,9 +8094,9 @@ lanes (see SwimLane).
   enough to read the newest events and see the feed move), until
   min(N, 3) lanes of the first group (the agent's own) fit. Past that
   the lanes stay at 40 px and the scroll viewport scrolls vertically.
-  The modal's Timeline reports the first group's lane count and where
-  its first lane starts (`onRunLaneSpace`), which the feed's height
-  does not change; the modal reads the feed's
+  The modal's Timeline reports the first group's lane count and the
+  height of the rest of its content, less the other groups, which
+  scroll (`onRunLaneSpace`); the feed's height does not change it; the modal reads the feed's
   body (through `LiveFeed`'s `bodyRef`) and the scroll viewport from
   the page together, so their sum is fixed and the cap (`LiveFeed`'s
   `maxBodyHeight`) holds once the feed takes it. With room to spare the feed grows back to the height the

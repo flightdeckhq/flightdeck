@@ -701,6 +701,82 @@ def test_sensor_capture_prompts_true(
             assert "response" not in payload
 
 
+def test_sensor_generator_arguments_reach_the_provider_and_their_content_lands(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """A generator given as ``messages`` (read by the OpenAI estimate) or as
+    a message's ``content`` (Anthropic) reaches the provider whole, each
+    call is metered, and the prompt each generator yields lands in
+    event_content."""
+    flavor = unique_flavor
+    openai_prompt = f"generator-prompt-openai-{flavor}"
+    anthropic_prompt = f"generator-prompt-anthropic-{flavor}"
+    with respx.mock(assert_all_called=False) as rmock:
+        anthropic_route = rmock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(200, json=ANTHROPIC_RESPONSE)
+        )
+        openai_route = rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=OPENAI_RESPONSE)
+        )
+
+        flightdeck_sensor.init(
+            server=INGESTION_URL,
+            token=TOKEN,
+            capture_prompts=True,
+        )
+        openai_client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        anthropic_client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+
+        openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=(m for m in [{"role": "user", "content": openai_prompt}]),
+        )
+        anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (b for b in [{"type": "text", "text": anthropic_prompt}]),
+                }
+            ],
+        )
+
+        sent_openai = json.loads(openai_route.calls.last.request.content)
+        sent_anthropic = json.loads(anthropic_route.calls.last.request.content)
+        assert sent_openai["messages"] == [{"role": "user", "content": openai_prompt}]
+        assert sent_anthropic["messages"] == [
+            {"role": "user", "content": [{"type": "text", "text": anthropic_prompt}]}
+        ]
+
+        def _both_calls_landed() -> bool:
+            events = _query_events_for_flavor(flavor)
+            return sum(1 for e in events if e.get("event_type") == "post_call") >= 2
+
+        wait_until(_both_calls_landed, timeout=15, msg="two post_call events not in DB")
+        post_calls = [
+            e for e in _query_events_for_flavor(flavor) if e.get("event_type") == "post_call"
+        ]
+        assert all(e.get("has_content") is True for e in post_calls), post_calls
+
+        sess = _query_session_for_flavor(flavor)
+        assert sess is not None
+        stored: list[str] = []
+
+        def _both_prompts_stored() -> bool:
+            stored[:] = [
+                json.dumps(row, default=str)
+                for row in _query_event_content_for_session(sess["session_id"])
+            ]
+            return any(openai_prompt in row for row in stored) and any(
+                anthropic_prompt in row for row in stored
+            )
+
+        wait_until(_both_prompts_stored, timeout=15, msg="the prompts are not in event_content")
+        assert not any("generator object" in row for row in stored)
+
+
 # ======================================================================
 # Test 4 -- Custom directive registered AND triggered end-to-end
 # ======================================================================

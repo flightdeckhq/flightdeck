@@ -467,7 +467,9 @@ def send_deferred(
     guard a parsed event stream gets. On an async client the result is
     a coroutine resolving to the proxy, as the SDK's own call is.
     ``event_type`` is the event the settle emits (``embeddings`` for an
-    embeddings call)."""
+    embeddings call). An iterator among the arguments is read as in
+    :func:`base.materialise_iterators`."""
+    kwargs, real_fn = base.materialise_iterators(kwargs, real_fn)
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = base._pre_call(session, provider, kwargs, estimated, estimated_via)
     t0 = time.monotonic()

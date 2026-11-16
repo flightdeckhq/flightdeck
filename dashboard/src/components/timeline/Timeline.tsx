@@ -111,11 +111,19 @@ interface TimelineProps {
    */
   expandedAgentIds?: ReadonlySet<string>;
   /**
-   * The height of the viewport the Timeline scrolls in. With
+   * The scroll viewport the Timeline sits in (the per-agent modal's):
+   * its client height and width and its horizontal scroll. With
    * ``expandedAgentIds``, the lanes share what the rest of the Timeline
-   * leaves of it (``runLaneHeights``).
+   * leaves of its height (``runLaneHeights``), the lane headings span its
+   * width, and marker text is kept to the part of the panels it shows.
    */
-  fillHeight?: number;
+  viewport?: TimelineViewport;
+  /**
+   * Called with the lanes drawn and the height of the rest of the
+   * content, whenever either changes: the modal gives its Live feed's
+   * height up to the lanes when they do not fit (``feedHeightCap``).
+   */
+  onRunLaneSpace?: (space: RunLaneSpace) => void;
   /** Opens the per-agent swimlane modal; a row with two or more runs at
    *  once then shows the runs chip (see SwimLane). */
   onExpandRuns?: (agentId: string) => void;
@@ -123,6 +131,21 @@ interface TimelineProps {
 
 /** Data attribute on each run lane, which the lane sizing counts. */
 const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
+
+/** The scroll viewport a Timeline with run lanes sits in. */
+export interface TimelineViewport {
+  height: number;
+  width: number;
+  scrollLeft: number;
+}
+
+/** The run lanes drawn, and the height of everything else the
+ *  Timeline draws (axis, ALL row, headings, other rows), which the
+ *  viewport's height does not change. */
+export interface RunLaneSpace {
+  laneCount: number;
+  restPx: number;
+}
 
 export function Timeline({
   flavors,
@@ -136,7 +159,8 @@ export function Timeline({
   sessionVersions,
   matchingSessionIds = null,
   expandedAgentIds,
-  fillHeight,
+  viewport,
+  onRunLaneSpace,
   onExpandRuns,
 }: TimelineProps) {
   // Resizable left panel width. Persisted to localStorage so the
@@ -441,7 +465,7 @@ export function Timeline({
   const innerContentRef = useRef<HTMLDivElement | null>(null);
 
   // Run-lane sizing (the per-agent modal). Every lane gets an equal
-  // share of what the rest of the content leaves of ``fillHeight``. The
+  // share of what the rest of the content leaves of the viewport. The
   // rest is measured from the rendered content less the lanes, so the
   // time axis, the ALL row in either state, the lane headings and any
   // compact sub-agent rows all count without the Timeline knowing their
@@ -450,17 +474,24 @@ export function Timeline({
   // window can land without re-rendering the Timeline.
   const hasRunLanes = expandedAgentIds !== undefined && expandedAgentIds.size > 0;
   const [runLaneHeight, setRunLaneHeight] = useState(RUN_LANE_MAX_HEIGHT_PX);
+  const fillHeight = viewport?.height;
+  const reportedSpace = useRef<RunLaneSpace | null>(null);
   const measureRunLanes = useCallback(() => {
     const content = innerContentRef.current;
     if (!content || fillHeight === undefined) return;
     const lanes = content.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR);
-    if (lanes.length === 0) return;
     let lanesPx = 0;
     for (const lane of lanes) lanesPx += lane.offsetHeight;
     const restPx = content.offsetHeight - lanesPx;
+    const prev = reportedSpace.current;
+    if (!prev || prev.laneCount !== lanes.length || prev.restPx !== restPx) {
+      reportedSpace.current = { laneCount: lanes.length, restPx };
+      onRunLaneSpace?.(reportedSpace.current);
+    }
+    if (lanes.length === 0) return;
     const next = runLaneHeights(lanes.length, fillHeight - restPx).laneHeight;
-    setRunLaneHeight((prev) => (prev === next ? prev : next));
-  }, [fillHeight]);
+    setRunLaneHeight((height) => (height === next ? height : next));
+  }, [fillHeight, onRunLaneSpace]);
   useLayoutEffect(() => {
     if (hasRunLanes) measureRunLanes();
   });
@@ -665,6 +696,23 @@ export function Timeline({
     connectorNonce,
   ]);
 
+  // The part of every lane's panel the viewport shows, in panel
+  // coordinates: from the sticky label column's edge (scrolled
+  // ``scrollLeft`` into the row) to the viewport's right edge, and never
+  // past "now". Marker text is kept inside it. The lane headings span the
+  // visible row.
+  const scrollLeft = viewport?.scrollLeft ?? 0;
+  const viewportWidth = viewport?.width;
+  const nowX = timelineWidth - TIMELINE_SCALE_INSET_PX;
+  const markerTextRight =
+    viewportWidth === undefined ? nowX : Math.min(scrollLeft + viewportWidth - leftPanelWidth, nowX);
+  const markerTextRange = useMemo(
+    () => ({ left: scrollLeft, right: markerTextRight }),
+    [scrollLeft, markerTextRight],
+  );
+  const rowWidth = leftPanelWidth + timelineWidth;
+  const headingWidth = viewportWidth === undefined ? rowWidth : Math.min(viewportWidth, rowWidth);
+
   // Bucket-divider rows interleaved with VirtualizedSwimLane rows.
   // Walks ``filteredFlavors`` once, tracking the previous ROOT
   // flavor's bucket so a thin horizontal divider is injected at
@@ -731,6 +779,8 @@ export function Timeline({
             topology={topologyByFlavor.get(f.flavor) ?? "root"}
             onScrollToAgent={scrollToAgentRow}
             laneHeight={runLaneHeight}
+            markerTextRange={markerTextRange}
+            headingWidth={headingWidth}
           />,
         );
         if (!isChild) prevBucket = b;
@@ -794,6 +844,8 @@ export function Timeline({
     matchingSessionIds,
     expandedAgentIds,
     runLaneHeight,
+    markerTextRange,
+    headingWidth,
     onExpandRuns,
   ]);
 

@@ -78,10 +78,22 @@ interface LiveFeedProps {
   catchingUp?: boolean;
   onPause?: () => void;
   onResume?: () => void;
+  /**
+   * The most height the feed body may take, below the height the
+   * operator chose: the per-agent modal gives the feed's height up to
+   * its run lanes when they do not fit. Ignored once the operator drags
+   * this feed's resize handle.
+   */
+  maxBodyHeight?: number;
 }
 
-export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume }: LiveFeedProps) {
+export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight }: LiveFeedProps) {
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
+  // Set once the operator drags the resize handle: their height then
+  // holds, whatever ``maxBodyHeight`` asks.
+  const [userSized, setUserSized] = useState(false);
+  const bodyHeight =
+    userSized || maxBodyHeight === undefined ? feedHeight : Math.min(feedHeight, maxBodyHeight);
   const [colWidths, setColWidths] = useState<ColWidths>(getInitialColWidths);
   const [sortCol, setSortCol] = useState<SortCol>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -135,8 +147,9 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
 
   function handleHeightResizeStart(e: React.MouseEvent) {
     e.preventDefault();
+    setUserSized(true);
     const startY = e.clientY;
-    const startHeight = feedHeight;
+    const startHeight = bodyHeight;
     const onMove = (ev: MouseEvent) => {
       setFeedHeight(Math.min(FEED_MAX_HEIGHT, Math.max(FEED_MIN_HEIGHT, startHeight + (startY - ev.clientY))));
     };
@@ -215,7 +228,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
       </div>
 
       {/* Feed body */}
-      <div className="relative" style={{ height: feedHeight, background: "var(--bg)" }}>
+      <div className="relative" style={{ height: bodyHeight, background: "var(--bg)" }} data-testid="feed-body-frame">
         {/* Column headers */}
         <div
           className="absolute left-0 right-0 top-0 z-10 flex h-6 items-center px-3 font-mono text-[11px] font-bold uppercase tracking-[0.06em]"

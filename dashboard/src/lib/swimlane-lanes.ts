@@ -393,10 +393,15 @@ export function overlapsInWindow(
 /**
  * The most runs of ``segments`` running at one instant inside the
  * window ``[d0, d1]``: 0 with nothing in it, 1 while no two overlap by
- * more than ``toleranceMs`` (the rule ``overlapsInWindow`` splits a row
- * by). The count is taken at each segment's start, where it can only
- * rise, and counts runs, not segments, so it is the number a row split
- * into lanes stands for, also past ``MAX_RUN_LANES``.
+ * more than ``toleranceMs``. A segment counts as running from its start
+ * until ``toleranceMs`` before its end, so a hand-off is not two at once;
+ * one shorter than the tolerance counts only at its own start. A run's
+ * segments never overlap each other, so the count is of runs, also past
+ * ``MAX_RUN_LANES``: the number on the Fleet row's runs chip.
+ *
+ * One sweep over the segments' start and end instants, O(S log S): at
+ * one instant ends are taken before starts, and a segment too short to
+ * run past the tolerance after all of them.
  */
 export function maxConcurrentRuns(
   segments: readonly RunSegment[],
@@ -404,19 +409,26 @@ export function maxConcurrentRuns(
   d1: number,
   toleranceMs: number,
 ): number {
-  const clipped: { s: number; e: number; run: string }[] = [];
+  // kind: 0 an end, 1 a start, 2 a segment that only counts at its start.
+  const points: { t: number; kind: 0 | 1 | 2 }[] = [];
   for (const seg of segments) {
     const s = Math.max(seg.startMs, d0);
     const e = Math.min(seg.endMs, d1);
-    if (e > s) clipped.push({ s, e, run: seg.sessionId });
-  }
-  let best = 0;
-  for (const at of clipped) {
-    const runs = new Set<string>([at.run]);
-    for (const other of clipped) {
-      if (other.s <= at.s && other.e > at.s + toleranceMs) runs.add(other.run);
+    if (!(e > s)) continue;
+    const runsUntil = e - toleranceMs;
+    if (runsUntil > s) {
+      points.push({ t: s, kind: 1 }, { t: runsUntil, kind: 0 });
+    } else {
+      points.push({ t: s, kind: 2 });
     }
-    best = Math.max(best, runs.size);
+  }
+  points.sort((a, b) => a.t - b.t || a.kind - b.kind);
+  let running = 0;
+  let best = 0;
+  for (const point of points) {
+    if (point.kind === 0) running -= 1;
+    else if (point.kind === 1) best = Math.max(best, (running += 1));
+    else best = Math.max(best, running + 1);
   }
   return best;
 }
@@ -425,7 +437,8 @@ export function maxConcurrentRuns(
  *  view. */
 export interface RunLane {
   sessionId: string;
-  /** The run's start (its first segment's), which orders the lanes. */
+  /** The start of the run's first segment in the window, which orders
+   *  the lanes. */
   startMs: number;
   /** The run's segments that overlap the window. */
   segments: RunSegment[];
@@ -435,9 +448,12 @@ export interface RunLane {
  * The modal's lanes: one per run with a segment overlapping
  * ``[d0, d1]``, whether or not it overlaps another run, so a run that
  * finishes keeps its lane until its last segment leaves the window.
- * Lanes are ordered by the run's start, ties by run id. A run's start
- * never changes, so a new run lands below the lanes already shown and
- * none of them moves; a run that leaves the window closes its lane.
+ * Lanes are ordered by the start of the run's first segment in the
+ * window, ties by run id. A run that appears in the window, a new run or
+ * an old one resumed, starts later than every lane shown, so it opens a
+ * lane at the bottom and none of them moves; a run whose last segment
+ * leaves the window closes its lane, and only then do the lanes below it
+ * move up.
  */
 export function runLanesInView(
   runs: readonly { sessionId: string; segments: readonly RunSegment[] }[],
@@ -446,10 +462,9 @@ export function runLanesInView(
 ): RunLane[] {
   const lanes: RunLane[] = [];
   for (const run of runs) {
-    if (run.segments.length === 0) continue;
     const inView = run.segments.filter((s) => s.startMs <= d1 && s.endMs >= d0);
     if (inView.length === 0) continue;
-    const startMs = Math.min(...run.segments.map((s) => s.startMs));
+    const startMs = Math.min(...inView.map((s) => s.startMs));
     lanes.push({ sessionId: run.sessionId, startMs, segments: inView });
   }
   lanes.sort((a, b) => a.startMs - b.startMs || compareIds(a.sessionId, b.sessionId));

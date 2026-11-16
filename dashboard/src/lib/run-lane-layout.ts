@@ -18,6 +18,12 @@ export const RUN_LANE_CIRCLE_SIZE_PX = 28;
  *  row's 13 px icon is of its 22 px circle. */
 export const RUN_LANE_ICON_SIZE_PX = 17;
 
+/** The hover scale ``EventNode`` applies to a circle. */
+export const CIRCLE_HOVER_SCALE = 1.25;
+
+/** A run-lane circle's footprint at its hover scale, rounded up. */
+export const RUN_LANE_CIRCLE_HOVER_PX = Math.ceil(RUN_LANE_CIRCLE_SIZE_PX * CIRCLE_HOVER_SCALE);
+
 /**
  * The shortest lane: room for a circle at its hover scale (28 px × 1.25
  * = 35 px) with a few pixels above and below, and for the lane label's
@@ -64,6 +70,47 @@ export function runLaneHeights(laneCount: number, availablePx: number): RunLaneH
   return { laneHeight, totalHeight, scrolls: totalHeight > Math.max(availablePx, 0) };
 }
 
+/**
+ * The Live feed's column-header row and one of its event rows, in px
+ * (``LiveFeed``'s ``h-6`` header and ``h-[30px]`` rows).
+ */
+const FEED_COLUMN_HEADER_PX = 24;
+const FEED_ROW_PX = 30;
+
+/**
+ * The shortest the per-agent modal's Live feed body gets when it gives
+ * up height to the lanes: its column header plus three event rows,
+ * enough to read the newest events and see the feed move.
+ */
+export const FEED_MIN_HEIGHT_PX = FEED_COLUMN_HEADER_PX + 3 * FEED_ROW_PX;
+
+/** How many lanes the feed gives up height for before the lanes scroll:
+ *  three runs side by side, the fan-out an operator most often opens
+ *  the modal to read. */
+export const RUN_LANES_FEED_YIELDS_FOR = 3;
+
+/**
+ * The most height the Live feed body may take so the lanes fit: when
+ * ``laneCount`` lanes at the minimum do not fit in ``laneSpacePx`` (the
+ * space left for them now, with the feed body at ``feedHeightPx``), the
+ * feed gives up the shortfall, down to ``FEED_MIN_HEIGHT_PX``, until
+ * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit; past that the lanes scroll.
+ * With room to spare the cap rises above the feed, which then keeps its
+ * own height.
+ */
+export function feedHeightCap({
+  laneCount,
+  laneSpacePx,
+  feedHeightPx,
+}: {
+  laneCount: number;
+  laneSpacePx: number;
+  feedHeightPx: number;
+}): number {
+  const need = Math.min(Math.max(0, laneCount), RUN_LANES_FEED_YIELDS_FOR) * RUN_LANE_MIN_HEIGHT_PX;
+  return Math.max(FEED_MIN_HEIGHT_PX, feedHeightPx + laneSpacePx - need);
+}
+
 /** Space between a circle's right edge and its text. */
 export const MARKER_TEXT_GAP_PX = 4;
 
@@ -71,15 +118,17 @@ export const MARKER_TEXT_GAP_PX = 4;
 export const MARKER_TEXT_FONT_PX = 11;
 
 /** Space between the marker text's bottom and the lane's centre, where
- *  the 2 px run line runs: the text sits just above the line, so the
- *  line never strikes through it. */
+ *  the 2 px run line runs: a text beside its circle sits just above the
+ *  line, so the line never strikes through it. */
 export const MARKER_TEXT_LINE_CLEARANCE_PX = 3;
 
 /** The advance of one character of the mono font at
  *  ``MARKER_TEXT_FONT_PX``: GeistMono, measured in Chromium, advances
- *  7 px per character at 11 px, every character alike. The text's width
- *  is its length times this; the narrower ``ui-monospace`` fallback
- *  only leaves more room. */
+ *  7 px per character at 11 px, every Latin character alike. It is the
+ *  estimate; in a browser ``measureMarkerText`` also measures the text
+ *  with a canvas and takes the wider, so a wide glyph (CJK) is not
+ *  undercounted. A browser minimum font size above 11 px still widens
+ *  the drawn text past both. */
 export const MARKER_TEXT_CHAR_PX = 7;
 
 /** The longest text a marker carries, the ellipsis included: a tool
@@ -89,6 +138,18 @@ export const MARKER_TEXT_MAX_CHARS = 18;
 
 /** Clear space kept between one marker's text and the next mark. */
 export const MARKER_TEXT_CLEARANCE_PX = 2;
+
+/** Space between a circle at its hover scale and a text stacked above
+ *  or below it. */
+export const MARKER_TEXT_STACK_GAP_PX = 3;
+
+/**
+ * The lane height from which marker texts stack above and below their
+ * circle instead of beside it: the circle at its hover scale, and a
+ * text line with its gap above and below it.
+ */
+export const MARKER_TEXT_STACKED_MIN_LANE_PX =
+  RUN_LANE_CIRCLE_HOVER_PX + 2 * (MARKER_TEXT_STACK_GAP_PX + MARKER_TEXT_FONT_PX);
 
 const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set(["tool_call", "mcp_tool_call"]);
 const LLM_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -109,22 +170,28 @@ export function shortenMarkerText(text: string): string {
   return `${chars.slice(0, MARKER_TEXT_MAX_CHARS - 1).join("")}…`;
 }
 
+function modelText(model: string | null | undefined): string | null {
+  const name = model?.trim().replace(MODEL_DATE_SUFFIX, "");
+  return name ? shortenMarkerText(name) : null;
+}
+
 /**
  * The short text beside an event's circle: a tool call's tool name, an
- * LLM call's model without its date suffix, else null (no text).
+ * LLM call's model without its date suffix, else null (no text). An LLM
+ * call on the run's own model (``runModel``, which the lane label shows)
+ * carries none, so the room goes to the tool names.
  */
-export function markerText(event: {
-  eventType: string;
-  toolName?: string | null;
-  model?: string | null;
-}): string | null {
+export function markerText(
+  event: { eventType: string; toolName?: string | null; model?: string | null },
+  runModel?: string | null,
+): string | null {
   if (TOOL_EVENT_TYPES.has(event.eventType)) {
     const tool = event.toolName?.trim();
     return tool ? shortenMarkerText(tool) : null;
   }
   if (LLM_EVENT_TYPES.has(event.eventType)) {
-    const model = event.model?.trim().replace(MODEL_DATE_SUFFIX, "");
-    return model ? shortenMarkerText(model) : null;
+    const text = modelText(event.model);
+    return text !== null && text === modelText(runModel) ? null : text;
   }
   return null;
 }
@@ -138,58 +205,133 @@ export interface LaneMarker {
   text: string | null;
 }
 
-/** A kept marker text: where it starts and how wide it is. */
+/** Where a kept text sits: beside its circle (right of it, just above
+ *  the run line), or centred above or below it on a tall lane. */
+export type MarkerTextRow = "beside" | "above" | "below";
+
+/** A kept marker text: where it starts, how wide it is, and its row. */
 export interface PlacedMarkerLabel {
   text: string;
   left: number;
   width: number;
+  row: MarkerTextRow;
 }
 
-/** The width of ``text`` in the marker font. */
+/** The estimated width of ``text`` in the marker font. */
 export function markerTextWidth(text: string): number {
   return Array.from(text).length * MARKER_TEXT_CHAR_PX;
 }
 
+let monoMeasure: ((text: string) => number) | null | undefined;
+
 /**
- * Which markers keep their text, by marker id. Taking markers left to
- * right, a text starts ``MARKER_TEXT_GAP_PX`` right of its circle and
- * is kept when it ends inside ``right`` (the panel's edge) and stays
- * ``MARKER_TEXT_CLEARANCE_PX`` clear of the last kept text and of every
- * other circle. A text that would collide is dropped; its circle stays.
+ * The width of ``text`` in the marker font: the estimate, or wider where
+ * a canvas measures it wider (a CJK glyph). Without the font loading API
+ * (jsdom) or a 2D canvas, the estimate.
+ */
+export function measureMarkerText(text: string): number {
+  if (monoMeasure === undefined) {
+    monoMeasure = null;
+    if (typeof document !== "undefined" && "fonts" in document) {
+      const ctx = document.createElement("canvas").getContext("2d");
+      if (ctx) {
+        const family = getComputedStyle(document.documentElement)
+          .getPropertyValue("--font-mono")
+          .trim();
+        ctx.font = `${MARKER_TEXT_FONT_PX}px ${family || "monospace"}`;
+        monoMeasure = (t) => ctx.measureText(t).width;
+      }
+    }
+  }
+  const estimate = markerTextWidth(text);
+  return monoMeasure ? Math.max(estimate, monoMeasure(text)) : estimate;
+}
+
+/**
+ * Which markers keep their text, by marker id, inside the visible range
+ * ``[left, right]`` of the panel (the part not under the sticky label
+ * column, not past the scroll viewport's edge, and not past "now"). A
+ * text is kept only when its circle is wholly in the range and the text
+ * is too.
+ *
+ * On a lane shorter than ``MARKER_TEXT_STACKED_MIN_LANE_PX``, taking
+ * markers left to right, a text starts ``MARKER_TEXT_GAP_PX`` right of
+ * its circle and must stay ``MARKER_TEXT_CLEARANCE_PX`` clear of the
+ * last kept text and of every other circle. Only circles to the right
+ * can reach it, so the scan stops at the first circle past its end:
+ * O(n log n + n·k), k the circles a text spans.
+ *
+ * On a taller lane, a text is centred above or below its circle, on the
+ * row other than the last kept text's when it fits there, else on the
+ * other row; it only has to stay clear of the texts on its row.
+ *
+ * A text that does not fit is dropped; its circle stays.
  */
 export function placeMarkerLabels(
   markers: readonly LaneMarker[],
   {
     circleSize = EVENT_CIRCLE_SIZE,
+    left = Number.NEGATIVE_INFINITY,
     right,
+    laneHeight = 0,
     measure = markerTextWidth,
-  }: { circleSize?: number; right: number; measure?: (text: string) => number },
+  }: {
+    circleSize?: number;
+    left?: number;
+    right: number;
+    laneHeight?: number;
+    measure?: (text: string) => number;
+  },
 ): Map<string, PlacedMarkerLabel> {
   const sorted = [...markers].sort((a, b) => a.x - b.x || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const half = circleSize / 2;
+  const stacked = laneHeight >= MARKER_TEXT_STACKED_MIN_LANE_PX;
   const kept = new Map<string, PlacedMarkerLabel>();
   let lastTextRight = Number.NEGATIVE_INFINITY;
+  const rowRight: Record<"above" | "below", number> = {
+    above: Number.NEGATIVE_INFINITY,
+    below: Number.NEGATIVE_INFINITY,
+  };
+  let lastRow: "above" | "below" = "below";
   for (let i = 0; i < sorted.length; i++) {
     const marker = sorted[i]!;
     if (!marker.text) continue;
-    const left = marker.x + half + MARKER_TEXT_GAP_PX;
+    if (marker.x - half < left || marker.x + half > right) continue;
     const width = measure(marker.text);
-    const end = left + width;
+    if (stacked) {
+      const textLeft = marker.x - width / 2;
+      const end = textLeft + width;
+      if (textLeft < left || end > right) continue;
+      const preferred: "above" | "below" = lastRow === "above" ? "below" : "above";
+      const other: "above" | "below" = preferred === "above" ? "below" : "above";
+      const row: "above" | "below" | null =
+        textLeft >= rowRight[preferred] + MARKER_TEXT_CLEARANCE_PX
+          ? preferred
+          : textLeft >= rowRight[other] + MARKER_TEXT_CLEARANCE_PX
+            ? other
+            : null;
+      if (row === null) continue;
+      kept.set(marker.id, { text: marker.text, left: textLeft, width, row });
+      rowRight[row] = end;
+      lastRow = row;
+      continue;
+    }
+    const textLeft = marker.x + half + MARKER_TEXT_GAP_PX;
+    const end = textLeft + width;
     if (end > right) continue;
-    if (left < lastTextRight + MARKER_TEXT_CLEARANCE_PX) continue;
+    if (textLeft < lastTextRight + MARKER_TEXT_CLEARANCE_PX) continue;
+    // A circle at or left of this one ends before the text starts.
     let hitsCircle = false;
-    for (let j = 0; j < sorted.length; j++) {
-      if (j === i) continue;
-      const other = sorted[j]!;
-      const circleLeft = other.x - half;
-      const circleRight = other.x + half;
-      if (circleLeft < end + MARKER_TEXT_CLEARANCE_PX && circleRight > left) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const circleLeft = sorted[j]!.x - half;
+      if (circleLeft >= end + MARKER_TEXT_CLEARANCE_PX) break;
+      if (sorted[j]!.x + half > textLeft) {
         hitsCircle = true;
         break;
       }
     }
     if (hitsCircle) continue;
-    kept.set(marker.id, { text: marker.text, left, width });
+    kept.set(marker.id, { text: marker.text, left: textLeft, width, row: "beside" });
     lastTextRight = end;
   }
   return kept;

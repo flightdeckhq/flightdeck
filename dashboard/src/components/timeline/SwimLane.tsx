@@ -42,10 +42,14 @@ import {
 } from "@/lib/swimlane-lanes";
 import { attachmentStartIds, isDiscoveryEvent, isEventVisible } from "@/lib/events";
 import {
+	CIRCLE_HOVER_SCALE,
 	MARKER_TEXT_FONT_PX,
 	MARKER_TEXT_LINE_CLEARANCE_PX,
+	MARKER_TEXT_STACK_GAP_PX,
 	markerText,
+	measureMarkerText,
 	placeMarkerLabels,
+	type MarkerTextRow,
 } from "@/lib/run-lane-layout";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -144,6 +148,15 @@ export interface SwimLaneProps {
 
 const ROW_HEIGHT = 48;
 
+/** The label strip's padding at each side of a root row. */
+export const ROW_LABEL_PADDING_PX = 12;
+
+/** A sub-agent row's label padding at its left: it sits 16 px further
+ *  in than its parent's, under the parent's name (the same 28 px as the
+ *  ``[data-topology="child"] .swimlane-row-label`` rule in globals.css,
+ *  which this inline value overrides). */
+export const CHILD_ROW_LABEL_PADDING_PX = 28;
+
 // The runs chip under the status badge: tall enough for its 10 px
 // text, short enough that it and the badge (16 px) stack inside the
 // 48 px row with room above and below.
@@ -154,6 +167,23 @@ const RUNS_CHIP_GAP_PX = 2;
 // (the agent-type badge).
 const RUNS_CHIP_FONT_PX = 10;
 const RUNS_CHIP_ICON_PX = 10;
+// The chip's horizontal padding: the least that keeps its text off its
+// border, so "9+ runs" fits the 88 px badge column with the badge
+// column's own padding.
+const RUNS_CHIP_PADDING_X_PX = 4;
+// The 3 px corner radius of the dashboard's other small inline chips
+// (the time-range buttons, the Live feed's type pill).
+const RUNS_CHIP_RADIUS_PX = 3;
+// The chip's tint and border: the accent pill the topology pill draws
+// (TopologyCell), so the two accent chips read as one family. Hovered,
+// the border turns full accent; the tint stays, so the text keeps its
+// contrast.
+const RUNS_CHIP_TINT = "color-mix(in srgb, var(--accent) 15%, transparent)";
+const RUNS_CHIP_BORDER = "color-mix(in srgb, var(--accent) 40%, transparent)";
+// The highest count the chip prints; more read "9+ runs", so the label
+// fits the badge column. The tooltip and accessible name carry the
+// full count.
+const RUNS_CHIP_MAX_SHOWN = 9;
 
 // Reserved zone at the strip's right edge for the absolutely-
 // positioned AgentStatusBadge wrapper. The wrapper itself sits at
@@ -251,6 +281,13 @@ export interface AgentLabelStripProps {
 	topology?: "root" | "child";
 	/** Drawn under the status badge in the badge column: the runs chip. */
 	badgeExtra?: React.ReactNode;
+	/** The strip's width; ``leftPanelWidth`` by default. The per-agent
+	 *  modal's run-lanes heading spans the visible row. */
+	width?: number;
+	/** Draw the status badge right after the pills, in the strip's flow,
+	 *  rather than pinned at its right edge: the wide heading strip, whose
+	 *  right edge is far from the name. */
+	inlineBadge?: boolean;
 }
 
 /**
@@ -270,6 +307,8 @@ export function AgentLabelStrip({
 	onScrollToAgent,
 	topology = "root",
 	badgeExtra,
+	width,
+	inlineBadge = false,
 }: AgentLabelStripProps) {
 	// Derive the always-on relationship pill from the same session-
 	// linkage scan used elsewhere, so the swimlane stays in lock-step.
@@ -345,7 +384,7 @@ export function AgentLabelStrip({
 		<div
 			className="swimlane-row-label flex h-full items-center gap-2"
 			style={{
-				width: leftPanelWidth,
+				width: width ?? leftPanelWidth,
 				flexShrink: 0,
 				// Background lives on the row container via the
 				// ``[data-topology="..."]`` CSS rules; pulling the
@@ -359,7 +398,9 @@ export function AgentLabelStrip({
 				// CHILD_LABEL_BACKGROUND) and circles scrolled
 				// under it stay hidden.
 				background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
-				borderRight: "1px solid var(--border)",
+				// The label column's edge; the wide heading strip spans the
+				// row and has none.
+				borderRight: inlineBadge ? undefined : "1px solid var(--border)",
 				position: "sticky",
 				left: 0,
 				zIndex: 3,
@@ -383,8 +424,8 @@ export function AgentLabelStrip({
 				// inset under the parent's left edge). Mirrors
 				// the same inline-override pattern AgentTableRow
 				// used before the shared table primitive.
-				paddingLeft: topology === "child" ? 28 : 12,
-				paddingRight: BADGE_RESERVED_ZONE_PX,
+				paddingLeft: topology === "child" ? CHILD_ROW_LABEL_PADDING_PX : ROW_LABEL_PADDING_PX,
+				paddingRight: inlineBadge ? ROW_LABEL_PADDING_PX : BADGE_RESERVED_ZONE_PX,
 			}}
 		>
 			{(clientType === ClientType.ClaudeCode || flavor === "claude-code") && (
@@ -577,6 +618,9 @@ export function AgentLabelStrip({
 			    overflowing flex sibling at the strip's right
 			    edge — the wrapper sits flush against that
 			    edge, so an opaque occluder is unnecessary. */}
+			{inlineBadge ? (
+				<AgentStatusBadge state={agentState} align="inline" />
+			) : (
 			<div
 				data-testid="swimlane-badge-wrapper"
 				style={{
@@ -584,8 +628,8 @@ export function AgentLabelStrip({
 					top: 0,
 					right: 0,
 					bottom: 0,
-					paddingLeft: 12,
-					paddingRight: 12,
+					paddingLeft: ROW_LABEL_PADDING_PX,
+					paddingRight: ROW_LABEL_PADDING_PX,
 					display: "flex",
 					// A column, so the runs chip stacks under the badge
 					// and takes no width from the name.
@@ -599,6 +643,7 @@ export function AgentLabelStrip({
 				<AgentStatusBadge state={agentState} />
 				{badgeExtra}
 			</div>
+			)}
 		</div>
 	);
 }
@@ -610,6 +655,7 @@ export function AgentLabelStrip({
  */
 function RunsChip({ count, onClick }: { count: number; onClick: () => void }) {
 	const label = `${count} runs at once: expand in swimlane`;
+	const shown = count > RUNS_CHIP_MAX_SHOWN ? `${RUNS_CHIP_MAX_SHOWN}+` : String(count);
 	return (
 		<button
 			type="button"
@@ -621,23 +667,30 @@ function RunsChip({ count, onClick }: { count: number; onClick: () => void }) {
 				e.stopPropagation();
 				onClick();
 			}}
-			className="inline-flex shrink-0 cursor-pointer items-center gap-[3px] font-mono hover:bg-[color-mix(in_srgb,var(--accent)_24%,transparent)] focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
-			style={{
-				height: RUNS_CHIP_HEIGHT_PX,
-				padding: "0 4px",
-				fontSize: RUNS_CHIP_FONT_PX,
-				lineHeight: 1,
-				borderRadius: 3,
-				border: "1px solid color-mix(in srgb, var(--accent) 40%, transparent)",
-				background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-				// The accent pill foreground, readable on both themes' surfaces
-				// (the topology pill uses it too).
-				color: "var(--topology-pill-fg)",
-				whiteSpace: "nowrap",
-			}}
+			className="inline-flex shrink-0 cursor-pointer items-center gap-[3px] border border-solid border-(--runs-chip-border) font-mono hover:border-(--accent) focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+			style={
+				{
+					height: RUNS_CHIP_HEIGHT_PX,
+					padding: `0 ${RUNS_CHIP_PADDING_X_PX}px`,
+					fontSize: RUNS_CHIP_FONT_PX,
+					lineHeight: 1,
+					borderRadius: RUNS_CHIP_RADIUS_PX,
+					"--runs-chip-border": RUNS_CHIP_BORDER,
+					background: RUNS_CHIP_TINT,
+					// The text in the status badge's label colour: the accent
+					// foreground on the accent tint falls under 4.5:1 in the
+					// light theme. The icon keeps the accent.
+					color: "var(--text)",
+					whiteSpace: "nowrap",
+				} as React.CSSProperties
+			}
 		>
-			<Maximize2 size={RUNS_CHIP_ICON_PX} aria-hidden="true" />
-			{count} runs
+			<Maximize2
+				size={RUNS_CHIP_ICON_PX}
+				aria-hidden="true"
+				style={{ color: "var(--topology-pill-fg)" }}
+			/>
+			{shown} runs
 		</button>
 	);
 }
@@ -736,12 +789,14 @@ function SwimLaneComponent({
 	);
 	const onMarkBlur = useCallback(() => setFocusRun(null), []);
 	const litRun = pointerRun ?? focusRun;
-	// Two or more runs at once: the chip that opens the per-agent
-	// modal, where each run has its own lane.
+	// A row split into run lanes (two or more runs at once) shows the
+	// chip that opens the per-agent modal, where each run has its own
+	// lane. The split decides whether it shows; the count of runs at
+	// once is only its number.
 	const expandRuns = useCallback(() => onExpandRuns?.(flavor), [onExpandRuns, flavor]);
 	const runsChip =
-		onExpandRuns && runLayout.concurrency >= 2 ? (
-			<RunsChip count={runLayout.concurrency} onClick={expandRuns} />
+		onExpandRuns && runLayout.laneCount > 1 ? (
+			<RunsChip count={Math.max(runLayout.concurrency, 2)} onClick={expandRuns} />
 		) : null;
 
 	return (
@@ -1128,13 +1183,27 @@ function AggregatedSwimLane({
 // circles' memo does not see a new value every render.
 const NO_PLACEMENTS: readonly SegmentPlacement[] = [];
 
+/** The top of a marker text on ``row``, around a circle ``circleSize``
+ *  across centred on the lane: beside it, its bottom just above the run
+ *  line, so the line does not strike it; above or below it, clear of the
+ *  circle at its hover scale. */
+function markerTextTop(row: MarkerTextRow, circleSize: number): string {
+	const hoverHalf = (circleSize * CIRCLE_HOVER_SCALE) / 2;
+	if (row === "above") {
+		return `calc(50% - ${hoverHalf + MARKER_TEXT_STACK_GAP_PX + MARKER_TEXT_FONT_PX}px)`;
+	}
+	if (row === "below") return `calc(50% + ${hoverHalf + MARKER_TEXT_STACK_GAP_PX}px)`;
+	return `calc(50% - ${MARKER_TEXT_FONT_PX + MARKER_TEXT_LINE_CLEARANCE_PX}px)`;
+}
+
 /**
  * The event circles of one run. On a Fleet agent row they sit on the
  * run's lane (``laneCount`` and ``placements``); on the ALL row on its
  * centre line. The per-agent modal's run lanes draw one run per lane at
- * ``size`` with ``iconSize``, and with ``markerTextRight`` set, the short
- * text beside each circle that ``placeMarkerLabels`` keeps inside
- * ``[0, markerTextRight]``.
+ * ``size`` with ``iconSize``, and with ``markerTextRange`` set, the short
+ * text by each circle that ``placeMarkerLabels`` keeps inside that
+ * visible range of the panel, beside the circle or, on a lane
+ * ``laneHeight`` tall enough, above and below it.
  */
 export function AggregatedSessionEvents({
 	session,
@@ -1148,7 +1217,9 @@ export function AggregatedSessionEvents({
 	placements = NO_PLACEMENTS,
 	size,
 	iconSize,
-	markerTextRight,
+	markerTextRange,
+	laneHeight,
+	runModel,
 }: {
 	session: Session;
 	scale: ScaleTime<number, number>;
@@ -1166,8 +1237,14 @@ export function AggregatedSessionEvents({
 	size?: number;
 	/** The circle's icon size, for a ``size`` the lane table lacks. */
 	iconSize?: number;
-	/** Draw marker text, kept left of this x (the panel's right edge). */
-	markerTextRight?: number;
+	/** Draw marker text, kept inside this range of the panel: the part
+	 *  of it the scroll viewport shows, up to "now". */
+	markerTextRange?: { left: number; right: number };
+	/** The lane's height, which decides whether texts stack. */
+	laneHeight?: number;
+	/** The run's model, which its lane label shows: an LLM call on it
+	 *  carries no text. */
+	runModel?: string | null;
 }) {
 	const split = laneCount !== undefined && laneCount > 1;
 	const circleSize =
@@ -1234,13 +1311,21 @@ export function AggregatedSessionEvents({
 
 	// The marker texts that fit, among the circles drawn: a hidden
 	// circle neither carries text nor blocks one.
+	const textLeft = markerTextRange?.left;
+	const textRight = markerTextRange?.right;
 	const markerLabels = useMemo(() => {
-		if (markerTextRight === undefined) return null;
+		if (textLeft === undefined || textRight === undefined) return null;
 		const markers = nodes
 			.filter((node) => isShown(node.eventType))
-			.map((node) => ({ id: node.id, x: node.x, text: markerText(node) }));
-		return placeMarkerLabels(markers, { circleSize, right: markerTextRight });
-	}, [nodes, isShown, circleSize, markerTextRight]);
+			.map((node) => ({ id: node.id, x: node.x, text: markerText(node, runModel) }));
+		return placeMarkerLabels(markers, {
+			circleSize,
+			left: textLeft,
+			right: textRight,
+			laneHeight,
+			measure: measureMarkerText,
+		});
+	}, [nodes, isShown, circleSize, textLeft, textRight, laneHeight, runModel]);
 
 	return (
 		<div
@@ -1283,7 +1368,9 @@ export function AggregatedSessionEvents({
 					<span
 						key={`${eventId}:text`}
 						data-testid="swimlane-marker-text"
-						data-event-id={eventId}
+						// Not ``data-event-id``, which names the circle.
+						data-marker-for={eventId}
+						data-marker-row={label.row}
 						// The circle's tooltip carries the same name; the text
 						// is a visual aid, and takes no pointer input, so a
 						// hover or click reaches the circle as before.
@@ -1291,9 +1378,7 @@ export function AggregatedSessionEvents({
 						style={{
 							position: "absolute",
 							left: label.left,
-							// Its bottom just above the run line through the
-							// lane's centre, so the line does not strike it.
-							top: `calc(50% - ${MARKER_TEXT_FONT_PX + MARKER_TEXT_LINE_CLEARANCE_PX}px)`,
+							top: markerTextTop(label.row, circleSize),
 							fontFamily: "var(--font-mono)",
 							fontSize: MARKER_TEXT_FONT_PX,
 							lineHeight: 1,

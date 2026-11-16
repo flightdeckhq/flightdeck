@@ -17,6 +17,8 @@ import {
 	AgentLabelStrip,
 	AggregatedSessionEvents,
 	CHILD_LABEL_BACKGROUND,
+	CHILD_ROW_LABEL_PADDING_PX,
+	ROW_LABEL_PADDING_PX,
 	segmentsFor,
 } from "./SwimLane";
 import { RunBracket, RunLine } from "./RunBracket";
@@ -28,13 +30,9 @@ import { AgentStatusBadge } from "./AgentStatusBadge";
 // its own panel (run line, glyphs, larger circles, marker text). The
 // Fleet view keeps its compact 48 px row (SwimLane).
 
-/** How far a lane's label sits right of the heading's text (its 12 px
- *  padding plus 12), so each run reads as belonging to the agent above. */
-const RUN_LANE_LABEL_INDENT_PX = 24;
-
-/** The extra indent of a sub-agent's lanes, as a child row's label is
- *  indented under its parent's. */
-const CHILD_INDENT_PX = 28;
+/** How far a lane's label sits right of its heading's text, so each
+ *  run reads as belonging to the agent above it. */
+const RUN_LANE_LABEL_OFFSET_PX = 12;
 
 /** Space between the lane label's two lines. */
 const LANE_LABEL_LINE_GAP_PX = 3;
@@ -57,6 +55,12 @@ export interface RunLanesProps {
 	topology?: "root" | "child";
 	/** Each lane's height, which Timeline sizes to the space it has. */
 	laneHeight: number;
+	/** The part of a lane's panel the scroll viewport shows, up to
+	 *  "now": marker text is kept inside it. */
+	markerTextRange: { left: number; right: number };
+	/** The heading strip's width: the visible row, so the agent's name
+	 *  shows whole whenever it fits. */
+	headingWidth: number;
 }
 
 function RunLanesComponent({
@@ -76,6 +80,8 @@ function RunLanesComponent({
 	onScrollToAgent,
 	topology = "root",
 	laneHeight,
+	markerTextRange,
+	headingWidth,
 }: RunLanesProps) {
 	// One lane per run with a segment in the window, by run start. The
 	// cache epoch catches a run's history landing, which can move its
@@ -102,7 +108,12 @@ function RunLanesComponent({
 		() => new Map(sessions.map((s) => [s.session_id, s])),
 		[sessions],
 	);
-	const indent = RUN_LANE_LABEL_INDENT_PX + (topology === "child" ? CHILD_INDENT_PX : 0);
+	// The heading's text starts at the label padding; the lanes' labels
+	// sit a step further in.
+	const indent =
+		(topology === "child" ? CHILD_ROW_LABEL_PADDING_PX : ROW_LABEL_PADDING_PX) +
+		RUN_LANE_LABEL_OFFSET_PX;
+	const rowWidth = leftPanelWidth + timelineWidth;
 
 	return (
 		<div
@@ -124,6 +135,10 @@ function RunLanesComponent({
 					background: topology === "root" ? "inherit" : undefined,
 				}}
 			>
+				{/* The heading spans the visible row, its status badge
+				    right after the pills, so the agent's name is not
+				    cut at the label column while the rest of the row is
+				    empty. */}
 				<AgentLabelStrip
 					flavor={flavor}
 					agentName={agentName}
@@ -134,8 +149,10 @@ function RunLanesComponent({
 					leftPanelWidth={leftPanelWidth}
 					onScrollToAgent={onScrollToAgent}
 					topology={topology}
+					width={headingWidth}
+					inlineBadge
 				/>
-				<div style={{ width: timelineWidth, flexShrink: 0 }} />
+				<div style={{ width: Math.max(0, rowWidth - headingWidth), flexShrink: 0 }} />
 			</div>
 			{lanes.length === 0 ? (
 				<div
@@ -180,6 +197,7 @@ function RunLanesComponent({
 							topology={topology}
 							indent={indent}
 							height={laneHeight}
+							markerTextRange={markerTextRange}
 						/>
 					) : null;
 				})
@@ -208,7 +226,7 @@ function laneLabelBox(
 		background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
 		borderRight: "1px solid var(--border)",
 		paddingLeft: indent,
-		paddingRight: 12,
+		paddingRight: ROW_LABEL_PADDING_PX,
 	};
 }
 
@@ -229,6 +247,7 @@ function RunLaneRow({
 	topology,
 	indent,
 	height,
+	markerTextRange,
 }: {
 	lane: RunLane;
 	index: number;
@@ -246,6 +265,7 @@ function RunLaneRow({
 	topology: "root" | "child";
 	indent: number;
 	height: number;
+	markerTextRange: { left: number; right: number };
 }) {
 	// The run's own glyphs and line, laid out as a one-lane row that
 	// draws its line, then centred on the lane.
@@ -364,7 +384,9 @@ function RunLaneRow({
 						matchingSessionIds={matchingSessionIds}
 						size={RUN_LANE_CIRCLE_SIZE_PX}
 						iconSize={RUN_LANE_ICON_SIZE_PX}
-						markerTextRight={timelineWidth}
+						markerTextRange={markerTextRange}
+						laneHeight={height}
+						runModel={model}
 					/>
 					{layout.lines.map((line) => (
 						<RunLine
@@ -411,6 +433,8 @@ export const RunLanes = memo(RunLanesComponent, (prev, next) => {
 		"onScrollToAgent",
 		"topology",
 		"laneHeight",
+		"markerTextRange",
+		"headingWidth",
 	];
 	for (const key of keys) if (prev[key] !== next[key]) return false;
 	const [ps, pe] = prev.scale.domain();

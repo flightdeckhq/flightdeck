@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Timeline } from "@/components/timeline/Timeline";
+import {
+  Timeline,
+  type RunLaneSpace,
+  type TimelineViewport,
+} from "@/components/timeline/Timeline";
 import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
@@ -14,6 +18,7 @@ import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useS
 import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
+import { feedHeightCap } from "@/lib/run-lane-layout";
 import {
   formatLatencyMs,
   formatTokens,
@@ -42,6 +47,28 @@ const FEED_WINDOW_TICK_MS = 5_000;
  *  sits. */
 function snapToNow(el: HTMLDivElement): void {
   el.scrollLeft = el.scrollWidth - el.clientWidth;
+}
+
+/**
+ * Which agent a page's per-agent modal is open on, by id, looked up in
+ * ``agents`` (the roster). When the agent leaves the roster (a reload, a
+ * filter), the modal closes for good: the id is cleared, so the modal
+ * never reopens by itself when the agent comes back.
+ */
+export function usePerAgentModalTarget(agents: readonly AgentSummary[]): {
+  agent: AgentSummary | null;
+  open: (agentId: string) => void;
+  close: () => void;
+} {
+  const [agentId, setAgentId] = useState<string | null>(null);
+  const agent = useMemo(
+    () => (agentId ? (agents.find((a) => a.agent_id === agentId) ?? null) : null),
+    [agents, agentId],
+  );
+  // Adjusted during render, as the modal's own reset is.
+  if (agentId !== null && agent === null) setAgentId(null);
+  const close = useCallback(() => setAgentId(null), []);
+  return { agent, open: setAgentId, close };
 }
 
 interface PerAgentSwimlaneModalProps {
@@ -312,21 +339,68 @@ export function PerAgentSwimlaneModal({
   // snaps when the element attaches, and the layout effect snaps
   // again when the range or the scope changes.
   //
-  // The same element's height is the space the agent's run lanes
-  // share (Timeline's ``fillHeight``): it changes with the window, the
-  // Live feed's resize handle and the header's wrap, so it is observed.
+  // The same element is the viewport the run lanes size to (Timeline's
+  // ``viewport``): its height is the space the lanes share, and changes
+  // with the window, the Live feed's height and the header's wrap; its
+  // width and horizontal scroll decide which part of each lane shows,
+  // where marker text is kept. It is observed for size, and its scroll
+  // read at most once a frame.
   const swimScrollRef = useRef<HTMLDivElement | null>(null);
-  const [swimViewportHeight, setSwimViewportHeight] = useState<number | undefined>(undefined);
+  const [swimViewport, setSwimViewport] = useState<TimelineViewport | undefined>(undefined);
   const attachSwimScroll = useCallback((el: HTMLDivElement | null) => {
     swimScrollRef.current = el;
     if (!el) return;
     snapToNow(el);
-    setSwimViewportHeight(el.clientHeight);
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => setSwimViewportHeight(el.clientHeight));
-    observer.observe(el);
-    return () => observer.disconnect();
+    const read = () =>
+      setSwimViewport((prev) =>
+        prev &&
+        prev.height === el.clientHeight &&
+        prev.width === el.clientWidth &&
+        prev.scrollLeft === el.scrollLeft
+          ? prev
+          : { height: el.clientHeight, width: el.clientWidth, scrollLeft: el.scrollLeft },
+      );
+    read();
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        read();
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+      observer?.disconnect();
+      swimScrollRef.current = null;
+    };
   }, []);
+
+  // When the lanes at their minimum do not fit above the Live feed, the
+  // feed gives up height to them, down to its minimum, until three fit
+  // (``feedHeightCap``); the lanes scroll past that. The feed's body and
+  // the scroll viewport are read from the page in one go, so their sum,
+  // which the feed's height does not change, gives a cap that holds once
+  // the feed takes it. The feed ignores the cap once the operator drags
+  // its resize handle.
+  const [laneSpace, setLaneSpace] = useState<RunLaneSpace | null>(null);
+  const [feedCap, setFeedCap] = useState<number | undefined>(undefined);
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const scrollEl = swimScrollRef.current;
+    const body = feedRef.current?.querySelector<HTMLElement>('[data-testid="feed-body-frame"]');
+    if (!laneSpace || !scrollEl || !body) return;
+    const cap = feedHeightCap({
+      laneCount: laneSpace.laneCount,
+      laneSpacePx: scrollEl.clientHeight - laneSpace.restPx,
+      feedHeightPx: body.offsetHeight,
+    });
+    setFeedCap((prev) => (prev === cap ? prev : cap));
+  }, [laneSpace, swimViewport]);
   const open = agent !== null;
   // The agent's own row draws as run lanes, one per run; its sub-agents
   // stay compact rows.
@@ -578,13 +652,19 @@ export function PerAgentSwimlaneModal({
               <div
                 ref={attachSwimScroll}
                 data-testid="per-agent-swimlane-modal-scroll"
+                // A scroller the keyboard can reach and scroll, as the
+                // Fleet's is.
+                tabIndex={0}
+                aria-label={`Run lanes of ${agent.agent_name}`}
+                className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--accent)"
                 style={{ flex: 1, minHeight: 0, overflow: "auto" }}
               >
                 <Timeline
                   flavors={scopedFlavors}
                   timeRange={timeRange}
                   expandedAgentIds={expandedAgentIds}
-                  fillHeight={swimViewportHeight}
+                  viewport={swimViewport}
+                  onRunLaneSpace={setLaneSpace}
                   onNodeClick={(sessionId, _eventId, event) => {
                     // An event circle opens the event drawer; a run
                     // glyph (no event) opens the run drawer.
@@ -594,6 +674,7 @@ export function PerAgentSwimlaneModal({
                 />
               </div>
               <div
+                ref={feedRef}
                 data-testid="per-agent-swimlane-modal-feed"
                 style={{
                   flexShrink: 0,
@@ -602,6 +683,7 @@ export function PerAgentSwimlaneModal({
                 }}
               >
                 <LiveFeed
+                  maxBodyHeight={feedCap}
                   events={visibleFeedEvents}
                   onEventClick={(event) => setSelectedEvent(event)}
                 />

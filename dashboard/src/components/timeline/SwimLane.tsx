@@ -1225,6 +1225,7 @@ export function AggregatedSessionEvents({
 	markerTextRange,
 	laneHeight,
 	runModel,
+	linkedEventId = null,
 }: {
 	session: Session;
 	scale: ScaleTime<number, number>;
@@ -1250,6 +1251,9 @@ export function AggregatedSessionEvents({
 	/** The run's model, which its lane label shows: an LLM call on it
 	 *  carries no text. */
 	runModel?: string | null;
+	/** The event whose Live feed row is hovered (the per-agent modal):
+	 *  its circle carries the linked ring. */
+	linkedEventId?: string | null;
 }) {
 	const split = laneCount !== undefined && laneCount > 1;
 	const circleSize =
@@ -1362,6 +1366,7 @@ export function AggregatedSessionEvents({
 					}}
 					size={circleSize}
 					iconSize={iconSize}
+					linked={linkedEventId !== null && node.id === linkedEventId}
 					lane={laneCount === undefined ? undefined : node.lane}
 					centrePct={split ? laneCentrePct(node.lane, laneCount) : undefined}
 					isVisible={isShown(node.eventType)}

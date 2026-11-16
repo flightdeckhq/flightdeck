@@ -23,6 +23,7 @@ import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 import { RunLanes } from "./RunLanes";
 import { RUN_LANE_MAX_HEIGHT_PX, runLaneHeights } from "@/lib/run-lane-layout";
 import type { LaneViewport } from "@/lib/lane-viewport";
+import type { RunLink } from "@/lib/run-link";
 import {
   SubAgentConnector,
   centreWithin,
@@ -125,11 +126,23 @@ interface TimelineProps {
    */
   laneViewport?: LaneViewport;
   /**
-   * Called with the lanes drawn and the height of the rest of the
-   * content, whenever either changes: the modal gives its Live feed's
-   * height up to the lanes when they do not fit (``feedHeightCap``).
+   * Called with the first run-lane group's lane count and where its
+   * first lane starts, whenever either changes: the modal gives its Live
+   * feed's height up to those lanes when they do not fit
+   * (``feedHeightCap``).
    */
   onRunLaneSpace?: (space: RunLaneSpace) => void;
+  /**
+   * The per-agent modal's run link, which the run lanes light from and
+   * set on hover (see ``lib/run-link.ts``).
+   */
+  runLink?: RunLink;
+  /** The run the modal's Live feed is filtered to: its lane's label is
+   *  pressed. */
+  runFilter?: string | null;
+  /** A lane label's click: the modal filters its feed to that run, or
+   *  clears the filter when it is the filtered run. */
+  onRunFilter?: (sessionId: string) => void;
   /** Opens the per-agent swimlane modal; a row with two or more runs at
    *  once then shows the runs chip (see SwimLane). */
   onExpandRuns?: (agentId: string) => void;
@@ -138,12 +151,16 @@ interface TimelineProps {
 /** Data attribute on each run lane, which the lane sizing counts. */
 const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
 
-/** The run lanes drawn, and the height of everything else the
- *  Timeline draws (axis, ALL row, headings, other rows), which the
- *  viewport's height does not change. */
+/** A group of run lanes: an agent's heading and its lanes. */
+const RUN_LANE_GROUP_SELECTOR = '[data-run-lanes="true"]';
+
+/** The first run-lane group (the modal's own agent): its lane count, and
+ *  where its first lane starts from the top of the content (the axis,
+ *  the ALL row and the group's heading above it), which the viewport's
+ *  height does not change. */
 export interface RunLaneSpace {
   laneCount: number;
-  restPx: number;
+  topPx: number;
 }
 
 export function Timeline({
@@ -162,6 +179,9 @@ export function Timeline({
   laneViewport,
   onRunLaneSpace,
   onExpandRuns,
+  runLink,
+  runFilter = null,
+  onRunFilter,
 }: TimelineProps) {
   // Resizable left panel width. Persisted to localStorage so the
   // user's preference survives page reloads. Clamped on init AND on
@@ -483,9 +503,17 @@ export function Timeline({
     let lanesPx = 0;
     for (const lane of lanes) lanesPx += lane.offsetHeight;
     const restPx = content.offsetHeight - lanesPx;
+    // The first group's lanes, which the modal's feed gives up height
+    // for: a sub-agent's group below them scrolls.
+    const lead = content.querySelector<HTMLElement>(RUN_LANE_GROUP_SELECTOR);
+    const leadLanes = lead?.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR) ?? [];
+    const firstLane = leadLanes[0];
+    const topPx = firstLane
+      ? Math.round(firstLane.getBoundingClientRect().top - content.getBoundingClientRect().top)
+      : 0;
     const prev = reportedSpace.current;
-    if (!prev || prev.laneCount !== lanes.length || prev.restPx !== restPx) {
-      reportedSpace.current = { laneCount: lanes.length, restPx };
+    if (!prev || prev.laneCount !== leadLanes.length || prev.topPx !== topPx) {
+      reportedSpace.current = { laneCount: leadLanes.length, topPx };
       onRunLaneSpace?.(reportedSpace.current);
     }
     if (lanes.length === 0) return;
@@ -767,6 +795,9 @@ export function Timeline({
             laneHeight={runLaneHeight}
             laneViewport={laneViewport}
             nowX={nowX}
+            runLink={runLink}
+            runFilter={runFilter}
+            onRunFilter={onRunFilter}
           />,
         );
         if (!isChild) prevBucket = b;
@@ -825,6 +856,9 @@ export function Timeline({
     laneViewport,
     nowX,
     onExpandRuns,
+    runLink,
+    runFilter,
+    onRunFilter,
   ]);
 
   if (flavors.length === 0) {
@@ -982,6 +1016,8 @@ export function Timeline({
             scroll; this sticky positions against that scroll context. */}
         <div
           className="flex"
+          // The modal's cues for lanes out of view count from below it.
+          data-timeline-axis="true"
           style={{
             position: "sticky",
             top: 0,

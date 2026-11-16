@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { scaleTime } from "d3-scale";
 import type { AgentEvent, Session, SessionDetail } from "@/lib/types";
@@ -7,6 +7,8 @@ import { useFleetStore } from "@/store/fleet";
 import { RunLanes } from "@/components/timeline/RunLanes";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import { createLaneViewport } from "@/lib/lane-viewport";
+import { createRunLink, useRunLitEvent, type RunLink } from "@/lib/run-link";
+import { truncateSessionId } from "@/lib/events";
 import {
   MARKER_TEXT_STACKED_MIN_LANE_PX,
   RUN_LANE_CIRCLE_SIZE_PX,
@@ -26,6 +28,12 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
   fetchSession,
 }));
+// Each lane reads its lit event once per render: the count of calls is
+// the count of lane renders.
+vi.mock("@/lib/run-link", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/run-link")>();
+  return { ...actual, useRunLitEvent: vi.fn(actual.useRunLitEvent) };
+});
 
 const NOW = Date.parse("2026-11-16T10:00:00Z");
 const S = 1000;
@@ -101,6 +109,9 @@ function lanesElement(
     view,
     topology = "root",
     endMs = NOW,
+    runLink,
+    runFilter,
+    onRunFilter,
   }: {
     laneHeight?: number;
     onSessionClick?: (id: string, eventId?: string, ev?: AgentEvent) => void;
@@ -108,6 +119,9 @@ function lanesElement(
     view?: { width: number; scrollLeft: number };
     topology?: "root" | "child";
     endMs?: number;
+    runLink?: RunLink;
+    runFilter?: string | null;
+    onRunFilter?: (sessionId: string) => void;
   } = {},
   laneViewport = createLaneViewport(),
 ) {
@@ -127,6 +141,9 @@ function lanesElement(
         laneViewport={laneViewport}
         nowX={881}
         topology={topology}
+        runLink={runLink}
+        runFilter={runFilter}
+        onRunFilter={onRunFilter}
       />
     </MemoryRouter>
   );
@@ -398,5 +415,105 @@ describe("RunLanes", () => {
     expect(within(lane).getAllByTestId(`session-circle-${run.session_id}`)).toHaveLength(2);
     const texts = within(lane).queryAllByTestId("swimlane-marker-text");
     expect(texts.map((t) => t.textContent)).toEqual(["Edit"]);
+  });
+});
+
+describe("RunLanes linked to the Live feed", () => {
+  function twoRuns() {
+    const a = mkSession({ session_id: nextId("a"), started_at: at(-50 * S) });
+    const b = mkSession({ session_id: nextId("b"), started_at: at(-30 * S) });
+    return [a, b] as const;
+  }
+  const laneOf = (sessionId: string) =>
+    lanes().find((l) => l.getAttribute("data-run-id") === sessionId)!;
+
+  it("keeps the label a plain cell without a filter handler", () => {
+    const [a] = twoRuns();
+    renderLanes([a]);
+    expect(within(lanes()[0]!).getByTestId("swimlane-run-lane-label").tagName).toBe("DIV");
+    expect(screen.queryByRole("button", { name: /Show only run/ })).toBeNull();
+  });
+
+  it("makes the label a button that filters the feed to its run, pressed while filtered", () => {
+    const [a, b] = twoRuns();
+    const onRunFilter = vi.fn();
+    renderLanes([a, b], { onRunFilter, runFilter: b.session_id });
+    const label = (sessionId: string) =>
+      screen.getByRole("button", { name: `Show only run ${truncateSessionId(sessionId)} in the Live feed` });
+    expect(label(a.session_id)).toHaveAttribute("aria-pressed", "false");
+    expect(label(b.session_id)).toHaveAttribute("aria-pressed", "true");
+    // The filtered run's id reads in the accent.
+    expect(within(label(b.session_id)).getByTestId("swimlane-run-lane-id").style.color).toBe("var(--accent)");
+    expect(within(label(a.session_id)).getByTestId("swimlane-run-lane-id").style.color).toBe("var(--text)");
+    fireEvent.click(label(a.session_id));
+    expect(onRunFilter).toHaveBeenCalledWith(a.session_id);
+    // The label still reads as the run's id, state, model and tokens.
+    expect(within(label(a.session_id)).getByTestId("swimlane-run-lane-id")).toHaveTextContent(
+      truncateSessionId(a.session_id),
+    );
+  });
+
+  it("puts a hovered lane's run on the link, and takes it off on leaving", () => {
+    const [a, b] = twoRuns();
+    const runLink = createRunLink();
+    renderLanes([a, b], { runLink });
+    fireEvent.mouseOver(within(laneOf(a.session_id)).getByTestId("swimlane-run-lane-label"));
+    expect(runLink.get().run).toBe(a.session_id);
+    expect(laneOf(a.session_id)).toHaveAttribute("data-linked", "true");
+    expect(laneOf(b.session_id)).not.toHaveAttribute("data-linked");
+    fireEvent.mouseOut(laneOf(a.session_id), { relatedTarget: document.body });
+    expect(runLink.get().run).toBeNull();
+    expect(laneOf(a.session_id)).not.toHaveAttribute("data-linked");
+  });
+
+  it("lights its run's lane from the feed, ringing the hovered event's circle", () => {
+    const [a, b] = twoRuns();
+    const first = mkEvent(a.session_id, "tool_call", -40 * S, { tool_name: "Read" });
+    const second = mkEvent(a.session_id, "tool_call", -20 * S, { tool_name: "Edit" });
+    eventsCache.set(a.session_id, [first, second]);
+    const runLink = createRunLink();
+    renderLanes([a, b], { runLink });
+    act(() => runLink.set(a.session_id, second.id));
+    const lane = laneOf(a.session_id);
+    expect(lane).toHaveAttribute("data-linked", "true");
+    const circle = (id: string) => lane.querySelector<HTMLElement>(`[data-event-id="${id}"]`)!;
+    expect(circle(second.id)).toHaveAttribute("data-linked", "true");
+    expect(circle(second.id).style.boxShadow).toContain("var(--accent)");
+    expect(circle(first.id)).not.toHaveAttribute("data-linked");
+    act(() => runLink.set(a.session_id, first.id));
+    expect(circle(first.id)).toHaveAttribute("data-linked", "true");
+    expect(circle(second.id)).not.toHaveAttribute("data-linked");
+  });
+
+  it("re-renders only the lanes whose light changes", () => {
+    const [a, b] = twoRuns();
+    const c = mkSession({ session_id: nextId("c"), started_at: at(-20 * S) });
+    const runLink = createRunLink();
+    renderLanes([a, b, c], { runLink });
+    const laneRenders = vi.mocked(useRunLitEvent);
+    const rendered = (from: number) =>
+      laneRenders.mock.calls
+        .slice(from)
+        .map(([, run]) => run)
+        .sort();
+    // Lane a lights: lane a alone renders.
+    const before = laneRenders.mock.calls.length;
+    act(() => runLink.set(a.session_id));
+    expect(rendered(before)).toEqual([a.session_id]);
+    // From a to b: a goes out and b lights; c renders not at all.
+    const moved = laneRenders.mock.calls.length;
+    act(() => runLink.set(b.session_id));
+    expect(rendered(moved)).toEqual([a.session_id, b.session_id].sort());
+  });
+
+  it("lights its run while its label has the keyboard focus", () => {
+    const [a] = twoRuns();
+    const runLink = createRunLink();
+    renderLanes([a], { runLink, onRunFilter: () => {} });
+    const label = screen.getByRole("button", { name: /Show only run/ });
+    fireEvent.focus(label);
+    expect(runLink.get().run).toBe(a.session_id);
+    fireEvent.blur(label);
+    expect(runLink.get().run).toBeNull();
   });
 });

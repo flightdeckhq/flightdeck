@@ -16,11 +16,14 @@ import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
 import { feedHeightCap } from "@/lib/run-lane-layout";
 import { createLaneViewport } from "@/lib/lane-viewport";
+import { createRunLink } from "@/lib/run-link";
+import { truncateSessionId } from "@/lib/events";
 import {
   formatLatencyMs,
   formatTokens,
 } from "@/lib/agents-format";
 import { AgentCost } from "./AgentCost";
+import { LaneFoldCues } from "./LaneFoldCues";
 import type { AgentEvent, AgentSummary, FeedEvent } from "@/lib/types";
 import {
   DEFAULT_TIME_RANGE,
@@ -96,6 +99,8 @@ export function PerAgentSwimlaneModal({
   // The run open in the run drawer, from a run glyph click or the event
   // drawer's "View entire run".
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // The run the Live feed is filtered to, from a lane label's click.
+  const [runFilter, setRunFilter] = useState<string | null>(null);
 
   // Reset the toggle and the window to the shared default whenever the
   // modal re-points at a different agent — a reopen never inherits the
@@ -109,6 +114,7 @@ export function PerAgentSwimlaneModal({
     setTimeRange(DEFAULT_TIME_RANGE);
     setSelectedEvent(null);
     setSelectedRunId(null);
+    setRunFilter(null);
   }
 
   const { summary } = useAgentSummary(agent?.agent_id ?? "", {
@@ -156,8 +162,9 @@ export function PerAgentSwimlaneModal({
   // matches what the lanes show.
   //
   //   1. On mount + scope change: per-session ``fetchSession``
-  //      for each scoped session_id. Skips sessions already in
-  //      ``eventsCache``; populates the cache on fetch resolve
+  //      for each scoped session_id. Skips sessions whose whole
+  //      history ``eventsCache`` holds (``fullHistoryLoaded``);
+  //      populates the cache on fetch resolve
   //      so the swimlane's ``useSessionEvents`` reads find it
   //      pre-warmed. Seeds the feed from the union of cached
   //      events across the scoped session set.
@@ -198,6 +205,10 @@ export function PerAgentSwimlaneModal({
       new Set(scopedSessionIdsKey ? scopedSessionIdsKey.split(",") : []),
     [scopedSessionIdsKey],
   );
+  // A filter on a run that left the scope (Show sub-agents turned off
+  // while a sub-agent's run was picked) is dropped. Adjusted during
+  // render.
+  if (runFilter !== null && !scopedSessionIds.has(runFilter)) setRunFilter(null);
   const lastEvent = useFleetStore((s) => s.lastEvent);
   const [feedState, setFeedEvents] = useState<FeedEvent[]>([]);
   // The agent whose seed the feed state holds. The feed is shown only
@@ -222,22 +233,25 @@ export function PerAgentSwimlaneModal({
       : [];
     Promise.all(
       sessionIds.map(async (sid) => {
+        // A run the cache holds whole is read from it. One it holds part
+        // of (the Fleet page caches only its own window's events) is
+        // fetched, or the modal's wider ranges would miss its older
+        // events, on its lane and in the feed alike.
         const cached = eventsCache.get(sid);
-        if (cached && cached.length > 0) {
+        if (cached && cached.length > 0 && fullHistoryLoaded.has(sid)) {
           return { sid, events: cached };
         }
         try {
           const detail = await fetchSession(sid);
-          const evs = detail.events ?? [];
-          // Merge, never replace: a live tick may have reached the
-          // cache while the fetch was in flight.
-          // A fetch without a cap: the run's whole history.
+          // A fetch without a cap: the run's whole history. Merge, never
+          // replace: a live tick may have reached the cache while the
+          // fetch was in flight.
           fullHistoryLoaded.add(sid);
-          mergeSessionEvents(sid, evs);
-          return { sid, events: evs };
+          mergeSessionEvents(sid, detail.events ?? []);
         } catch {
-          return { sid, events: [] as AgentEvent[] };
+          // The cache keeps what it has.
         }
+        return { sid, events: eventsCache.get(sid) ?? ([] as AgentEvent[]) };
       }),
     )
       .then((perSession) => {
@@ -311,9 +325,11 @@ export function PerAgentSwimlaneModal({
   const visibleFeedEvents = useMemo(() => {
     const cutoffMs = now - TIMELINE_RANGE_MS[timeRange];
     return feedEvents.filter(
-      (fe) => new Date(fe.event.occurred_at).getTime() >= cutoffMs,
+      (fe) =>
+        new Date(fe.event.occurred_at).getTime() >= cutoffMs &&
+        (runFilter === null || fe.event.session_id === runFilter),
     );
-  }, [feedEvents, timeRange, now]);
+  }, [feedEvents, timeRange, now, runFilter]);
 
   // Modal swim viewport is narrower than the Timeline's natural
   // ``leftPanelWidth + TIMELINE_WIDTH_PX`` (≈1280 px) at the
@@ -344,10 +360,14 @@ export function PerAgentSwimlaneModal({
   // sideways scroll re-renders the lanes and not the modal. It is
   // observed for size, and its scroll read at most once a frame.
   const swimScrollRef = useRef<HTMLDivElement | null>(null);
+  // The same element for the cues of lanes out of view, which read it
+  // themselves.
+  const [swimScrollEl, setSwimScrollEl] = useState<HTMLDivElement | null>(null);
   const [swimHeight, setSwimHeight] = useState<number | undefined>(undefined);
   const [laneViewport] = useState(createLaneViewport);
   const attachSwimScroll = useCallback((el: HTMLDivElement | null) => {
     swimScrollRef.current = el;
+    setSwimScrollEl(el);
     if (!el) return;
     snapToNow(el);
     const readScroll = () => laneViewport.set({ width: el.clientWidth, scrollLeft: el.scrollLeft });
@@ -372,16 +392,18 @@ export function PerAgentSwimlaneModal({
       if (frame) cancelAnimationFrame(frame);
       observer?.disconnect();
       swimScrollRef.current = null;
+      setSwimScrollEl(null);
     };
   }, [laneViewport]);
 
-  // When the lanes at their minimum do not fit above the Live feed, the
-  // feed gives up height to them, down to its minimum, until three fit
-  // (``feedHeightCap``); the lanes scroll past that. The feed's body and
-  // the scroll viewport are read from the page in one go, so their sum,
-  // which the feed's height does not change, gives a cap that holds once
-  // the feed takes it. The feed ignores the cap once the operator drags
-  // its resize handle.
+  // When the first group's lanes (the agent's own) at their minimum do
+  // not fit above the Live feed, the feed gives up height to them, down
+  // to its minimum, until three fit (``feedHeightCap``); the lanes, and
+  // any sub-agent's group below them, scroll past that. The feed's body
+  // and the scroll viewport are read from the page in one go, so their
+  // sum, which the feed's height does not change, gives a cap that holds
+  // once the feed takes it. The feed ignores the cap once the operator
+  // drags its resize handle.
   const [laneSpace, setLaneSpace] = useState<RunLaneSpace | null>(null);
   const [feedCap, setFeedCap] = useState<number | undefined>(undefined);
   const feedBodyRef = useRef<HTMLDivElement | null>(null);
@@ -391,7 +413,7 @@ export function PerAgentSwimlaneModal({
     if (!laneSpace || !scrollEl || !body) return;
     const cap = feedHeightCap({
       laneCount: laneSpace.laneCount,
-      laneSpacePx: scrollEl.clientHeight - laneSpace.restPx,
+      laneSpacePx: scrollEl.clientHeight - laneSpace.topPx,
       feedHeightPx: body.offsetHeight,
     });
     setFeedCap((prev) => (prev === cap ? prev : cap));
@@ -407,12 +429,30 @@ export function PerAgentSwimlaneModal({
     },
     [],
   );
-  // The agent's own row draws as run lanes, one per run; its sub-agents
-  // stay compact rows.
-  const expandedAgentIds = useMemo(
-    () => new Set(agentId ? [agentId] : []),
-    [agentId],
+  // Every row in scope draws as run lanes, one per run: the agent's own
+  // and, with Show sub-agents, each sub-agent's. Keyed by the ids, as
+  // ``scopedFlavors`` is a new array on every fleet store write.
+  const scopedAgentIdsKey = useMemo(
+    () => scopedFlavors.map((f) => f.flavor).join(","),
+    [scopedFlavors],
   );
+  const expandedAgentIds = useMemo(
+    () => new Set(scopedAgentIdsKey ? scopedAgentIdsKey.split(",") : []),
+    [scopedAgentIdsKey],
+  );
+  // The run the pointer is on, lanes and feed alike (``lib/run-link.ts``):
+  // read by each lane and feed row, so a hover re-renders neither the
+  // modal nor the Timeline. Cleared when the modal closes or re-points.
+  const [runLink] = useState(createRunLink);
+  useEffect(() => {
+    runLink.set(null);
+  }, [runLink, agentId, open]);
+  // A lane label's click filters the feed to its run; the filtered run's
+  // label clears it.
+  const toggleRunFilter = useCallback((sessionId: string) => {
+    setRunFilter((prev) => (prev === sessionId ? null : sessionId));
+  }, []);
+  const clearRunFilter = useCallback(() => setRunFilter(null), []);
   useLayoutEffect(() => {
     if (!open) return;
     const el = swimScrollRef.current;
@@ -424,7 +464,8 @@ export function PerAgentSwimlaneModal({
       <DialogContent
         data-testid="per-agent-swimlane-modal"
         // Esc closes the innermost open layer first: the event drawer,
-        // then the run drawer, and only then the modal.
+        // then the run drawer, then the feed's run filter, and only then
+        // the modal.
         onEscapeKeyDown={(e) => {
           if (selectedEvent) {
             e.preventDefault();
@@ -432,6 +473,9 @@ export function PerAgentSwimlaneModal({
           } else if (selectedRunId) {
             e.preventDefault();
             setSelectedRunId(null);
+          } else if (runFilter) {
+            e.preventDefault();
+            setRunFilter(null);
           }
         }}
         className="max-w-[80vw]!"
@@ -654,25 +698,41 @@ export function PerAgentSwimlaneModal({
                 flexDirection: "column",
               }}
             >
+              {/* The lane area: the scroll viewport and, over its edges,
+                  the cues for lanes out of view. */}
               <div
-                ref={attachSwimScroll}
-                data-testid="per-agent-swimlane-modal-scroll"
-                // A scroller the keyboard can reach and scroll, as the
-                // Fleet's is.
-                tabIndex={0}
-                aria-label={`Run lanes of ${agent.agent_name}`}
-                className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--accent)"
-                style={{ flex: 1, minHeight: 0, overflow: "auto" }}
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
               >
-                <Timeline
-                  flavors={scopedFlavors}
-                  timeRange={timeRange}
-                  expandedAgentIds={expandedAgentIds}
-                  viewportHeight={swimHeight}
-                  laneViewport={laneViewport}
-                  onRunLaneSpace={setLaneSpace}
-                  onNodeClick={openMark}
-                />
+                <div
+                  ref={attachSwimScroll}
+                  data-testid="per-agent-swimlane-modal-scroll"
+                  // A scroller the keyboard can reach and scroll, as the
+                  // Fleet's is.
+                  tabIndex={0}
+                  aria-label={`Run lanes of ${agent.agent_name}`}
+                  className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--accent)"
+                  style={{ flex: 1, minHeight: 0, overflow: "auto" }}
+                >
+                  <Timeline
+                    flavors={scopedFlavors}
+                    timeRange={timeRange}
+                    expandedAgentIds={expandedAgentIds}
+                    viewportHeight={swimHeight}
+                    laneViewport={laneViewport}
+                    onRunLaneSpace={setLaneSpace}
+                    onNodeClick={openMark}
+                    runLink={runLink}
+                    runFilter={runFilter}
+                    onRunFilter={toggleRunFilter}
+                  />
+                </div>
+                <LaneFoldCues scrollEl={swimScrollEl} lanesKey={laneSpace} />
               </div>
               <div
                 data-testid="per-agent-swimlane-modal-feed"
@@ -687,6 +747,12 @@ export function PerAgentSwimlaneModal({
                   bodyRef={feedBodyRef}
                   events={visibleFeedEvents}
                   onEventClick={setSelectedEvent}
+                  runLink={runLink}
+                  headerExtra={
+                    runFilter ? (
+                      <RunFilterChip runId={runFilter} onClear={clearRunFilter} />
+                    ) : null
+                  }
                 />
               </div>
             </div>
@@ -744,6 +810,33 @@ function ModalRunDrawer({
       version={sessionId ? cacheEpoch : 0}
       onSwitchSession={onSwitchSession}
     />
+  );
+}
+
+/**
+ * The Live feed's run filter, ``Run <id8> ×``: a button that clears it.
+ * Its name starts with what it shows, so it can be spoken by its text.
+ */
+function RunFilterChip({ runId, onClear }: { runId: string; onClear: () => void }) {
+  const id8 = truncateSessionId(runId);
+  return (
+    <button
+      type="button"
+      onClick={onClear}
+      data-testid="feed-run-filter-chip"
+      data-run-id={runId}
+      aria-label={`Run ${id8}: clear the run filter`}
+      className="inline-flex cursor-pointer items-center gap-1 rounded-full font-mono text-[11px] hover:bg-surface-hover focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+      style={{
+        padding: "1px 6px 1px 8px",
+        border: "1px solid var(--accent-border)",
+        background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+        color: "var(--accent)",
+      }}
+    >
+      Run {id8}
+      <X size={12} aria-hidden="true" />
+    </button>
   );
 }
 

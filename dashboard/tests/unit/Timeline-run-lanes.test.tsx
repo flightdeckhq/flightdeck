@@ -177,15 +177,50 @@ describe("Timeline run lanes", () => {
     expect(laneRows().map((l) => l.style.height)).toEqual(["50px", "50px"]);
   });
 
-  it("reports the lanes drawn and the height of the rest of its content", () => {
+  it("reports the first group's lanes and where its first lane starts", () => {
+    // jsdom lays nothing out: the first lane starts 90 px below the
+    // content's top, every other box at 0.
+    const FIRST_LANE_TOP_PX = 90;
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const top =
+          this.hasAttribute("data-run-lane-row") && this.getAttribute("data-lane-index") === "0"
+            ? FIRST_LANE_TOP_PX
+            : 0;
+        return { top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON: () => ({}) };
+      });
     const onRunLaneSpace = vi.fn();
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
-    renderTimeline([agent], {
-      expandedAgentIds: new Set(["agent-a"]),
+    // A second group (a sub-agent's) below: its lanes scroll, so they are
+    // not counted.
+    const other = mkFlavor("agent-b", "other-agent", [mkSession(), mkSession()]);
+    renderTimeline([agent, other], {
+      expandedAgentIds: new Set(["agent-a", "agent-b"]),
       viewportHeight: 260, laneViewport: viewportOf(1024),
       onRunLaneSpace,
     });
-    expect(onRunLaneSpace).toHaveBeenLastCalledWith({ laneCount: 3, restPx: REST_PX });
+    expect(laneRows()).toHaveLength(5);
+    const firstGroup = document.querySelector('[data-run-lanes="true"]')!;
+    expect(onRunLaneSpace).toHaveBeenLastCalledWith({
+      laneCount: Number(firstGroup.getAttribute("data-lane-count")),
+      topPx: FIRST_LANE_TOP_PX,
+    });
+    expect(Number(firstGroup.getAttribute("data-lane-count"))).toBeGreaterThan(1);
+    rect.mockRestore();
+  });
+
+  it("draws every agent it is told to expand as its own group of lanes, sharing the space", () => {
+    const parent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession()]);
+    const child = mkFlavor("agent-b", "lanes-agent/worker", [mkSession()]);
+    renderTimeline([parent, child], {
+      expandedAgentIds: new Set(["agent-a", "agent-b"]),
+      viewportHeight: 450, laneViewport: viewportOf(1536),
+    });
+    const groups = Array.from(document.querySelectorAll<HTMLElement>('[data-run-lanes="true"]'));
+    expect(groups.map((g) => g.getAttribute("data-lane-count")).sort()).toEqual(["1", "2"]);
+    // (450 - 150) / 3 lanes: 100 px each, whichever group a lane is in.
+    expect(laneRows().map((l) => l.style.height)).toEqual(["100px", "100px", "100px"]);
   });
 
   it("spans the lane heading over the visible row", () => {

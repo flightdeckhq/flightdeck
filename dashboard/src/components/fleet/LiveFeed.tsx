@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, type ReactNode } from "react";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
 import { getBadge, getEventDetail, flavorColor, isDiscoveryEvent, isEventVisible, truncateSessionId } from "@/lib/events";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
@@ -6,6 +6,7 @@ import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { TruncatedText } from "@/components/ui/TruncatedText";
+import { useRunLit, type RunLink } from "@/lib/run-link";
 import {
   FEED_MAX_EVENTS,
   PAUSE_QUEUE_MAX_EVENTS,
@@ -88,9 +89,32 @@ interface LiveFeedProps {
   /** The feed body's element, for a host that measures it (the
    *  per-agent modal's height cap). */
   bodyRef?: React.Ref<HTMLDivElement>;
+  /** The per-agent modal's run link: hovering a row lights its run's
+   *  lane and the event's circle, and a row of the lit run lights up.
+   *  Absent on the Fleet page. */
+  runLink?: RunLink;
+  /** Drawn in the header after the counts: the modal's run-filter chip. */
+  headerExtra?: ReactNode;
 }
 
-export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight, bodyRef }: LiveFeedProps) {
+/** A row of the lit run: the accent tint and left bar the modal's lit
+ *  lane draws, so the two read as one. */
+const LINKED_ROW_TINT = "color-mix(in srgb, var(--accent) 12%, transparent)";
+const LINKED_ROW_BAR = "inset 2px 0 0 var(--accent)";
+
+/** The row under the pointer lights its run: one handler on the rows'
+ *  container, so moving from one row of a run to the next sets the
+ *  link once and the run's rows stay lit. */
+function lightRowUnderPointer(runLink: RunLink, target: EventTarget) {
+  const row = (target as HTMLElement).closest?.<HTMLElement>("[data-feed-event-id]") ?? null;
+  if (!row) {
+    runLink.set(null);
+    return;
+  }
+  runLink.set(row.dataset.runId ?? null, row.dataset.feedEventId ?? null);
+}
+
+export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight, bodyRef, runLink, headerExtra }: LiveFeedProps) {
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
   // Set once the operator drags the resize handle: their height then
   // holds, whatever ``maxBodyHeight`` asks.
@@ -236,6 +260,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
             · {activeFilter}
           </button>
         )}
+        {headerExtra}
       </div>
 
       {/* Feed body */}
@@ -284,6 +309,8 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           className="absolute left-0 right-0 overflow-y-auto"
           style={{ top: sortCol !== "time" ? 48 : 24, bottom: 0 }}
           data-testid="feed-body"
+          onMouseOver={runLink ? (e) => lightRowUnderPointer(runLink, e.target) : undefined}
+          onMouseLeave={runLink ? () => runLink.set(null) : undefined}
         >
           {displayEvents.length === 0 && (
             <div className="flex items-center justify-center text-xs" style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}>
@@ -291,7 +318,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
             </div>
           )}
           {displayEvents.map((fe) => (
-            <FeedRow key={`${fe.arrivedAt}-${fe.event.id}`} fe={fe} colWidths={colWidths} onClick={() => onEventClick(fe.event)} />
+            <FeedRow key={`${fe.arrivedAt}-${fe.event.id}`} fe={fe} colWidths={colWidths} onClick={() => onEventClick(fe.event)} runLink={runLink} />
           ))}
         </div>
       </div>
@@ -299,18 +326,39 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   );
 }
 
-function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidths; onClick: () => void }) {
+function FeedRow({
+  fe,
+  colWidths,
+  onClick,
+  runLink,
+}: {
+  fe: FeedEvent;
+  colWidths: ColWidths;
+  onClick: () => void;
+  runLink?: RunLink;
+}) {
   const { event } = fe;
   const badge = getBadge(event.event_type);
   const detail = getEventDetail(event);
   const color = flavorColor(event.flavor);
+  // Lit while its run is hovered in the lanes (or another of its rows
+  // is); re-renders only when that flips.
+  const linked = useRunLit(runLink, event.session_id);
 
   return (
     <div
       className="flex h-[30px] cursor-pointer items-center px-3 transition-colors hover:bg-surface-hover"
-      style={{ borderBottom: "1px solid var(--border-subtle)", overflow: "hidden" }}
+      style={{
+        borderBottom: "1px solid var(--border-subtle)",
+        overflow: "hidden",
+        background: linked ? LINKED_ROW_TINT : undefined,
+        boxShadow: linked ? LINKED_ROW_BAR : undefined,
+      }}
       onClick={onClick}
       data-testid="feed-row"
+      data-run-id={event.session_id}
+      data-feed-event-id={event.id}
+      data-linked={linked ? "true" : undefined}
     >
       <span
         className="shrink-0 font-mono text-xs"

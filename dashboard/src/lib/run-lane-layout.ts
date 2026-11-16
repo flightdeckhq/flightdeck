@@ -412,3 +412,55 @@ export function placeMarkerLabels(
   }
   return kept;
 }
+
+/** How far past the viewport's edge a lane may reach and still count as
+ *  fully in view: fractional layout rounds lane edges by up to a pixel. */
+export const LANE_IN_VIEW_TOLERANCE_PX = 1;
+
+/** The lanes not fully in a scroll viewport, by side, and how far to
+ *  scroll to bring the next one on each side fully into view (0 when
+ *  there is none). */
+export interface LanesOutOfView {
+  above: number;
+  below: number;
+  /** A negative scroll: the nearest lane above, its top at the view's top. */
+  scrollUpPx: number;
+  /** A positive scroll: the nearest lane below, its bottom at the view's
+   *  bottom (its top at the view's top when it is the taller). */
+  scrollDownPx: number;
+}
+
+/**
+ * Counts the lanes, given by their top and bottom edges, that are not
+ * fully between ``viewTop`` and ``viewBottom``: a lane reaching past the
+ * bottom counts below, one reaching past the top counts above (a lane
+ * taller than the view, past both, counts below).
+ */
+export function lanesOutOfView(
+  lanes: readonly { top: number; bottom: number }[],
+  viewTop: number,
+  viewBottom: number,
+): LanesOutOfView {
+  let above = 0;
+  let below = 0;
+  let nearestAbove: { top: number; bottom: number } | null = null;
+  let nearestBelow: { top: number; bottom: number } | null = null;
+  for (const lane of lanes) {
+    if (lane.bottom > viewBottom + LANE_IN_VIEW_TOLERANCE_PX) {
+      below += 1;
+      if (!nearestBelow || lane.top < nearestBelow.top) nearestBelow = lane;
+    } else if (lane.top < viewTop - LANE_IN_VIEW_TOLERANCE_PX) {
+      above += 1;
+      if (!nearestAbove || lane.top > nearestAbove.top) nearestAbove = lane;
+    }
+  }
+  let scrollDownPx = 0;
+  if (nearestBelow) {
+    const toBottom = nearestBelow.bottom - viewBottom;
+    // A lane taller than the view goes no further than its top.
+    scrollDownPx =
+      nearestBelow.top > viewTop ? Math.min(toBottom, nearestBelow.top - viewTop) : toBottom;
+  }
+  const scrollUpPx = nearestAbove ? nearestAbove.top - viewTop : 0;
+  return { above, below, scrollUpPx, scrollDownPx };
+}

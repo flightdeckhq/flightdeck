@@ -12,8 +12,10 @@ import {
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
+  LANE_IN_VIEW_TOLERANCE_PX,
   LANE_MODEL_SWITCH_LEAD,
   chooseLaneModel,
+  lanesOutOfView,
   feedHeightCap,
   modelCallCounts,
   markerText,
@@ -488,5 +490,54 @@ describe("lane model", () => {
       model = chooseLaneModel(model, modelCallCounts(events, d0, d0 + 60_000), "new");
     }
     expect(model).toBe("new");
+  });
+});
+
+describe("lanesOutOfView", () => {
+  // Lanes 40 px tall from y = 100, in a view from 100 to 220 (three fit).
+  const lanes = (n: number, top = 100, height = 40) =>
+    Array.from({ length: n }, (_, i) => ({ top: top + i * height, bottom: top + (i + 1) * height }));
+
+  it("counts nothing when every lane is in view", () => {
+    expect(lanesOutOfView(lanes(3), 100, 220)).toEqual({ above: 0, below: 0, scrollUpPx: 0, scrollDownPx: 0 });
+  });
+
+  it("counts the lanes not fully visible below, and scrolls the next one fully in", () => {
+    // The view ends at 230: lane 4 (220-260) shows 10 px, lane 5 none.
+    const out = lanesOutOfView(lanes(5), 100, 230);
+    expect(out.below).toBe(2);
+    expect(out.above).toBe(0);
+    // Lane 4's bottom (260) to the view's bottom (230).
+    expect(out.scrollDownPx).toBe(30);
+  });
+
+  it("counts the lanes scrolled above, and scrolls back to the nearest", () => {
+    // Scrolled 70 px: lane 1 (30-70) is gone, lane 2 (70-110) half under
+    // the axis at 100.
+    const out = lanesOutOfView(lanes(5, 30), 100, 230);
+    expect(out.above).toBe(2);
+    expect(out.below).toBe(0);
+    // Lane 2's top (70) to the view's top (100).
+    expect(out.scrollUpPx).toBe(-30);
+  });
+
+  it("forgives a pixel of rounding at either edge", () => {
+    const out = lanesOutOfView(
+      [
+        { top: 100 - LANE_IN_VIEW_TOLERANCE_PX, bottom: 140 },
+        { top: 140, bottom: 180 + LANE_IN_VIEW_TOLERANCE_PX },
+      ],
+      100,
+      180,
+    );
+    expect(out).toEqual({ above: 0, below: 0, scrollUpPx: 0, scrollDownPx: 0 });
+  });
+
+  it("counts a lane taller than the view below, and scrolls no further than its top", () => {
+    const out = lanesOutOfView([{ top: 150, bottom: 400 }], 100, 200);
+    expect(out.below).toBe(1);
+    expect(out.scrollDownPx).toBe(50);
+    // Already at its top: on to its bottom.
+    expect(lanesOutOfView([{ top: 80, bottom: 400 }], 100, 200).scrollDownPx).toBe(200);
   });
 });

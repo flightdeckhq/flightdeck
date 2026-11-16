@@ -14,6 +14,7 @@ from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import given as _given
 from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
@@ -43,21 +44,10 @@ _EVENT_MESSAGE_STOP = "message_stop"
 _EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
 _DELTA_TEXT = "text_delta"
 
-# The class names of the SDK's sentinels for an argument left out
-# (``NOT_GIVEN``, ``omit``): a wrapper that passes one through
-# (``tools=NOT_GIVEN`` for an agent with no tools) has given nothing, and
-# the sentinel is not JSON, so the captured content stores None instead.
-_OMITTED_ARGUMENT_TYPES = frozenset({"NotGiven", "Omit"})
-
 # The beta Messages API's event classes live under this package; their
 # stream is assembled with the SDK's beta accumulator, whose content-block
 # union carries the beta-only block types.
 _BETA_TYPES_PACKAGE = "anthropic.types.beta"
-
-
-def _given(value: Any) -> Any:
-    """``value``, or None for the SDK's sentinel of an argument left out."""
-    return None if type(value).__name__ in _OMITTED_ARGUMENT_TYPES else value
 
 
 class _MessageStreamAccumulator:

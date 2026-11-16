@@ -96,13 +96,44 @@ def _without_content(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _encode(payload: dict[str, Any]) -> tuple[bytes | None, str]:
+    """``payload`` as JSON, or (None, what could not be encoded): the type
+    name of the first object json cannot write, else the error's text (a
+    circular reference)."""
+    unencodable: list[str] = []
+
+    def refuse(value: Any) -> Any:
+        unencodable.append(type(value).__name__)
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+    try:
+        return json.dumps(payload, default=refuse).encode(), ""
+    except (TypeError, ValueError) as exc:
+        return None, unencodable[0] if unencodable else str(exc)
+
+
 def serialize_event(payload: dict[str, Any]) -> bytes:
     """The JSON body for one event, kept within :data:`MAX_EVENT_BODY_BYTES`.
 
     An event without content, or one over the limit even without it, is
-    sent as it is.
+    sent as it is. An event whose content json cannot write is sent
+    without it, with a warning: its token counts and metadata still
+    arrive, and the content is never replaced by a string form the
+    provider never received. A failure outside the content raises, as
+    before.
     """
-    body = json.dumps(payload).encode()
+    body, unencodable = _encode(payload)
+    if body is None:
+        if payload.get("content") is None:
+            raise TypeError(f"event is not JSON serializable: {unencodable}")
+        payload = _without_content(payload)
+        body = json.dumps(payload).encode()
+        _log.warning(
+            "%s event's captured content holds %s, which cannot be written as JSON; "
+            "sent without its content",
+            payload.get("event_type"),
+            unencodable,
+        )
     size = encoded_size(body)
     content = payload.get("content")
     if size <= MAX_EVENT_BODY_BYTES or content is None:

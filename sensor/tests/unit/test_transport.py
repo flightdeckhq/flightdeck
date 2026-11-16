@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import threading
@@ -402,3 +403,42 @@ def test_parse_directive_unknown_action() -> None:
     # DirectiveAction("unknown_future_action") raises ValueError,
     # caught internally → returns None
     assert result is None
+
+
+def test_an_event_whose_content_json_cannot_write_arrives_without_it(
+    mock_control_plane: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Through the real queue and client: a post_call whose captured content
+    holds the SDK's "not given" sentinel (a capture that missed it) and one
+    built by the OpenAI provider from a call given that sentinel both reach
+    the control plane with their tokens; the first without its content."""
+    openai = pytest.importorskip("openai")
+    from flightdeck_sensor.providers.openai import OpenAIProvider
+
+    sentinel = getattr(openai, "omit", openai.NOT_GIVEN)
+    content = OpenAIProvider(capture_prompts=True).extract_content(
+        {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": sentinel,
+        },
+        {"choices": []},
+    )
+    assert content is not None
+    captured = {"event_type": "post_call", "session_id": "s1", "tokens_input": 7}
+    queue = EventQueue(ControlPlaneClient(mock_control_plane["url"], "tok"))
+    try:
+        with caplog.at_level(logging.WARNING, logger="flightdeck_sensor.transport.body_limit"):
+            queue.enqueue({**captured, "has_content": True, "content": {"tools": sentinel}, "n": 1})
+            queue.enqueue(
+                {**captured, "has_content": True, "content": dataclasses.asdict(content), "n": 2}
+            )
+            queue.flush()
+    finally:
+        queue.close()
+    by_n = {r["body"]["n"]: r["body"] for r in mock_control_plane["requests"]}
+    assert set(by_n) == {1, 2}
+    assert by_n[1]["tokens_input"] == 7 and by_n[1]["content"] is None
+    assert by_n[1]["has_content"] is False
+    assert by_n[2]["has_content"] is True and by_n[2]["content"]["tools"] is None
+    assert [r for r in caplog.records if "cannot be written as JSON" in r.getMessage()]

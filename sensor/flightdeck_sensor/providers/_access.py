@@ -5,6 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
+# The class names of the Anthropic and OpenAI SDKs' sentinels for an
+# argument left out (``NOT_GIVEN``, ``omit``). The SDK sends no such
+# argument to the provider, and the sentinel is not JSON.
+_OMITTED_ARGUMENT_TYPES = frozenset({"NotGiven", "Omit"})
+
+
+def given(value: Any) -> Any:
+    """``value``, or None when it is the SDK's sentinel for an argument
+    left out: a wrapper that passes one through (``tools=NOT_GIVEN`` for an
+    agent with no tools) gave nothing, and the stored content says so."""
+    return None if type(value).__name__ in _OMITTED_ARGUMENT_TYPES else value
+
 
 def field(obj: Any, name: str) -> Any:
     """Attribute or dict key ``name`` of ``obj``; ``None`` when absent.

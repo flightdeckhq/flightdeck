@@ -204,3 +204,42 @@ def test_content_with_nothing_to_cut_skips_the_search(monkeypatch: pytest.Monkey
 
 def test_the_budget_leaves_room_under_the_one_mib_limit() -> None:
     assert MAX_EVENT_BODY_BYTES <= 0.8 * 1024 * 1024
+
+
+class _NotData:
+    """An object json cannot write, as an SDK object a capture missed."""
+
+
+def test_content_json_cannot_write_is_dropped_and_the_tokens_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = _post_call({"messages": [], "tools": _NotData()})
+    payload["incoming_message"] = {"has_content": True, "content_bytes": 9, "captured_at": "t"}
+    with caplog.at_level(logging.WARNING):
+        sent = json.loads(serialize_event(payload))
+    assert sent["tokens_input"] == 42
+    assert sent["has_content"] is False and sent["content"] is None
+    assert sent["incoming_message"]["has_content"] is False
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "post_call" in message and "_NotData" in message
+    assert "<" not in json.dumps(sent), "no string form of the object is stored"
+
+
+def test_content_with_a_cycle_is_dropped_and_the_tokens_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with caplog.at_level(logging.WARNING):
+        sent = json.loads(serialize_event(_post_call({"messages": cycle})))
+    assert sent["tokens_input"] == 42 and sent["content"] is None
+    assert "post_call" in caplog.records[0].getMessage()
+
+
+def test_a_field_outside_the_content_json_cannot_write_still_raises() -> None:
+    import pytest
+
+    payload = {**_post_call(None), "model": _NotData()}
+    with pytest.raises(TypeError):
+        serialize_event(payload)

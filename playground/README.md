@@ -16,7 +16,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `06_crewai.py` | `crewai` (+ optional `mcpadapt`) | `LLM("anthropic/...").call(...)` + `LLM("openai/...").call(...)` + MCP tool call via `mcpadapt` direct (version-drift canary for `crewai-tools[mcp]`) |
 | `07_directives.py` | anthropic | register → POST custom directive → handler runs |
 | `08_enforcement.py` | anthropic | server policy `block_at_pct=1` → `BudgetExceededError` |
-| `09_capture.py` | anthropic | `capture_prompts` OFF (404) vs ON (200) |
+| `09_capture.py` | anthropic | `capture_prompts` OFF (404) vs ON (200); `system` as cached content blocks, stored and served as the list |
 | `10_killswitch.py` | anthropic | POST `shutdown` directive → `DirectiveError` |
 | `11_unavailability.py` | anthropic | `continue` vs `halt` against a dead URL |
 | `12_litellm.py` | `litellm` | Anthropic + OpenAI routes / sync-stream (Anthropic route) / async-stream (OpenAI route); asserts every streamed `post_call` carries real token usage and that the four chat calls land as exactly four `post_call`s (the two served through the OpenAI SDK are counted once); embeddings capture round-trip; invalid-model `llm_error` |

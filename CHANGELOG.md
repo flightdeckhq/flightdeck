@@ -4,6 +4,21 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Google ADK sub-agents as child sessions.** `patch()`
+  (`Provider.GOOGLE_ADK`) adds a plugin to every Google ADK runner: each
+  sub-agent run lands as a child session of the sensor's session (an
+  agent reached by `transfer_to_agent`, each sub-agent a
+  `SequentialAgent`, `ParallelAgent` or `LoopAgent` runs, an
+  `AgentTool`'s agent nested under the agent that called it), with an
+  `agent_handoff` signal for each transfer. The root agent is the
+  sensor's session, and the model calls stay on it, metered on `LiteLlm`
+  and ADK's Anthropic models. Gemini calls are not metered yet
+  ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); their
+  agents still appear as child sessions. Call `patch()` before building
+  runners and before the first `LiteLlm` call.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

@@ -136,7 +136,7 @@ Flightdeck is an observability and control plane for AI agents that you host you
 |---|---|
 | LLM SDKs | Anthropic (`messages.create`, `.stream`, `.parse`, on every client class: first-party, Bedrock, Vertex, Foundry), OpenAI (Chat Completions, Responses, embeddings) and litellm, sync, async and streaming. Not yet: Gemini through `google-genai` ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)), boto3 Bedrock Converse ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)). |
 | Coding agents | Claude Code, through the plugin or its own OpenTelemetry export. |
-| Sub-agents | A child session per sub-agent, linked to its parent: Claude Code sub-agents, CrewAI agents, LangGraph nodes and nested graph runs, Deep Agents sub-agents, LlamaIndex agent workflows, OpenAI Agents SDK agents. |
+| Sub-agents | A child session per sub-agent, linked to its parent: Claude Code sub-agents, CrewAI agents, LangGraph nodes and nested graph runs, Deep Agents sub-agents, LlamaIndex agent workflows, OpenAI Agents SDK agents, Google ADK sub-agents. |
 | MCP | Tool calls, resource reads and prompt fetches through the official `mcp` SDK (1.28 and later, and 2.x), whichever framework drives it; tool calls for Claude Code. |
 
 The sensor meters every LLM call a framework makes through the Anthropic or OpenAI SDK or litellm, live, and can stop or budget the run. For some frameworks it also opens a session per sub-agent, and some export OpenTelemetry spans that Flightdeck maps after the run, observe-only. Report a run one way: both paths together count it twice.
@@ -149,7 +149,7 @@ The sensor meters every LLM call a framework makes through the Anthropic or Open
 | LlamaIndex | yes | yes | no |
 | OpenAI Agents SDK 0.6+ | yes | yes | yes |
 | Claude Agent SDK (Python) | yes | a session per run | no |
-| Google ADK | not on Gemini | planned | yes |
+| Google ADK | not on Gemini | yes | yes |
 | Pydantic AI | Anthropic and OpenAI models | through OpenTelemetry | yes |
 | Strands Agents | not on Bedrock | through OpenTelemetry | yes |
 | Microsoft Agent Framework | not on `AzureAIAgentClient` | planned | no |

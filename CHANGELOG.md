@@ -4,6 +4,22 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- The per-agent swimlane modal draws one lane per run. An agent with
+  several runs at once, such as a Claude Code sub-agent role the
+  coordinator fans out, gets a lane for each run, sized to fill the
+  modal down to the Live feed (between 40 and 144 px; the lanes scroll
+  when they do not fit), labelled with the run's short id, state,
+  model and tokens so far. The lanes draw larger event circles, and
+  where markers have room a tool call shows its tool name and an LLM
+  call its model beside the circle. A run that finishes keeps its lane
+  until it leaves the selected window, and lanes stay in start order,
+  so they do not jump while you watch.
+- A Fleet row whose agent has two or more runs at once shows a chip
+  under its status badge (`3 runs`) that opens the per-agent swimlane
+  modal for that agent.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

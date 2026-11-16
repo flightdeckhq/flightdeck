@@ -71,9 +71,15 @@ def _installed(module: str) -> bool:
     the module (only its top-level package is looked up)."""
     parts = module.split(".")
     # ``google`` is a namespace package other distributions install too
-    # (google-genai, google-auth): Google ADK is ``google.adk``.
+    # (google-genai, google-auth): Google ADK is ``google.adk``. Looking up
+    # a subpackage imports its parent, and find_spec raises rather than
+    # answering None when the parent is not there (a lane with no
+    # ``google`` package at all).
     top = ".".join(parts[:2]) if parts[0] == _NAMESPACE_PACKAGE else parts[0]
-    return importlib.util.find_spec(top) is not None
+    try:
+        return importlib.util.find_spec(top) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _run_child(

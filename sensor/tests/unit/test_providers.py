@@ -506,7 +506,7 @@ def test_anthropic_content_stores_none_for_an_argument_left_out() -> None:
     import dataclasses
     import json
 
-    import anthropic
+    anthropic = pytest.importorskip("anthropic")
 
     from flightdeck_sensor.providers.anthropic import AnthropicProvider
 

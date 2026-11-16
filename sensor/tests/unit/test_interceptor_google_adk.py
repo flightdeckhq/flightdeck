@@ -795,6 +795,29 @@ def test_importing_the_sensor_imports_no_adk() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_patch_and_unpatch_without_any_google_package() -> None:
+    """With no ``google`` package at all (no ADK, no google-genai), patch()
+    and unpatch() for Google ADK do nothing and raise nothing."""
+    result = _python(
+        """
+        import sys
+        # Every google.* import fails, as on a lane that installs none.
+        sys.modules["google"] = None
+        import flightdeck_sensor
+        from flightdeck_sensor.interceptor import google_adk
+        flightdeck_sensor.init(server="http://127.0.0.1:9/ingest", token="tok", quiet=True)
+        flightdeck_sensor.patch(providers=["google_adk"], quiet=True)
+        flightdeck_sensor.patch(quiet=True)
+        google_adk.patch_google_adk(quiet=False)
+        google_adk.unpatch_google_adk()
+        flightdeck_sensor.unpatch()
+        flightdeck_sensor.teardown()
+        assert not [m for m in sys.modules if m.startswith("google.")]
+        """
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_patch_before_import_patches_the_runner_when_adk_is_imported(adk: ADK) -> None:
     result = _python(
         """

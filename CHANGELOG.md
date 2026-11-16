@@ -21,11 +21,15 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
-- **An Anthropic call given `NOT_GIVEN` keeps its event under
-  `capture_prompts`.** A call whose `tools` or `system` was the SDK's
-  `NOT_GIVEN` (Google ADK's `AnthropicLlm` passes it for an agent with no
-  tools) lost its `post_call`, tokens included, because the sentinel
-  could not be written as JSON; it is now stored as None.
+- **A call given `NOT_GIVEN` or `omit` keeps its event under
+  `capture_prompts`.** An Anthropic or OpenAI call with an argument set
+  to the SDK's "not given" sentinel lost its whole `post_call`, tokens
+  included, because the sentinel could not be written as JSON: Google
+  ADK's `AnthropicLlm` passes `tools=NOT_GIVEN` for an agent with no
+  tools, and the OpenAI Agents SDK's `OpenAIChatCompletionsModel`
+  `tools=omit`. Such an argument is now stored as not given. And an event
+  whose captured content still cannot be written as JSON is sent without
+  its content, with a warning, instead of being dropped.
 
 - **A stop logs no error for the work it cuts short.** Stopping
   `flightdeck` within a second or two of its start could log `ERROR

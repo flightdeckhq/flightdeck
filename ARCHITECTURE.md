@@ -917,10 +917,14 @@ class PromptContent:
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
-An Anthropic argument passed as the SDK's sentinel for an argument left
-out (`NOT_GIVEN`, `omit`), as a wrapper such as Google ADK's
-`AnthropicLlm` passes `tools` for an agent with no tools, was not given:
-its field is stored as None, so the event stays JSON.
+An argument passed as the Anthropic or OpenAI SDK's sentinel for an
+argument left out (`NOT_GIVEN`, `omit`) was not given: the SDK does not
+send it to the provider, so the stored content does not hold it either
+(the field is None), whichever field it is (`system`, `tools`, `model`,
+`messages`; a Responses call's `instructions`, `tools` and `input`; an
+embeddings call's `input`). Wrappers pass them: Google ADK's
+`AnthropicLlm` gives `tools=NOT_GIVEN` for an agent with no tools, the
+OpenAI Agents SDK's `OpenAIChatCompletionsModel` `tools=omit`.
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
@@ -1429,7 +1433,7 @@ both (see Sub-agent framework coverage).
 | LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
-| Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | yes | yes | Native: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with its hand-offs, enforced per session; the root agent is the sensor's session (see Google ADK). Its Gemini calls are not metered while Gemini is not supported (see Providers); the child sessions still appear. OTLP: agents, model calls and tool calls, observe only |
+| Google ADK 2.13+ | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | yes | yes | Native: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with its hand-offs, enforced per session; the root agent is the sensor's session (see Google ADK). Its Gemini calls are not metered while Gemini is not supported (see Providers); the child sessions still appear. OTLP: agents, model calls and tool calls, observe only |
 | OpenAI Agents SDK 0.6+ | yes (Responses tool items become `tool_call` events); not over the Responses WebSocket transport | yes | yes, through `opentelemetry-instrumentation-openai-agents-v2` | Native: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires, enforced per session (see Sub-agent framework coverage). OTLP: agents, hand-offs, model and tool calls, observe only |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
 | LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
@@ -2046,8 +2050,9 @@ deduplicated.
 
 #### Google ADK
 
-`patch()` (`Provider.GOOGLE_ADK`) wraps Google ADK once
-`google.adk.runners` is imported (nothing of ADK is imported before the
+`patch()` (`Provider.GOOGLE_ADK`) wraps Google ADK 2.13 and later (CI's
+Google ADK lane runs the wrap's tests on 2.13.0; they also pass on
+2.14.1) once `google.adk.runners` is imported (nothing of ADK is imported before the
 application imports it). It patches `Runner.__init__`, so every runner
 built afterwards (`Runner`, `InMemoryRunner`, the runner an `AgentTool`
 builds for each call) gets the sensor's plugin, named
@@ -2066,7 +2071,10 @@ the same plugin callbacks.
   `transfer_to_agent`, for each sub-agent a workflow agent runs, and for
   the agent of an `AgentTool`, whose nested run's root agent opens one.
   One child per agent run: each `LoopAgent` iteration is a new child, and
-  `ParallelAgent` branches are children open at the same time. The root
+  `ParallelAgent` branches are children open at the same time. ADK 2's
+  graph `Workflow` (`Runner(node=Workflow(...))`) is not an agent and
+  opens none; each agent it runs as a node opens one, under the sensor's
+  session. The root
   agent is the runner's own (`Runner.agent`): when ADK resumes a
   conversation on the sub-agent that answered last, that sub-agent opens
   a child. A run started inside another (an `AgentTool`'s, one a function
@@ -2116,7 +2124,14 @@ the same plugin callbacks.
   `run_async` (or `run`); once a shutdown directive has arrived, a run
   that starts raises `DirectiveError` before its first event. The plugin
   callbacks never raise: ADK wraps a plugin's exception in a
-  `RuntimeError` and stops the run.
+  `RuntimeError` and stops the run. So, unlike the OpenAI Agents SDK wrap,
+  which raises at an agent's start or hand-off, a run stops at its next
+  model call: a `DirectiveError` the `halt` unavailability policy raises
+  while a hand-off signal is posted is dropped in the callback, and the
+  run goes on to that call. Of the run wrapper's own work before and
+  between steps, only that `DirectiveError` at the run's start reaches
+  the caller; any other failure there leaves the run as it would run
+  unpatched.
 
 ADK runs a root `LlmAgent` on its node runtime, one asyncio task per
 agent and per tool call, and a workflow-agent root on the consumer's
@@ -2155,9 +2170,10 @@ Known limits:
   Flightdeck counts each run twice, once by the sensor and once as an
   `otlp` session ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
   The wrap does not detect it.
-- `run_live` is wrapped as `run_async` is, but a live run needs a model
-  with a live connection (the Gemini Live API), whose calls are not
-  metered; it has not been exercised against a live model.
+- `run_live` is wrapped as `run_async` is, and is exercised with a
+  scripted live connection (the same events patched and unpatched, the
+  hand-off and the child, a timeout ending the open child in error), not
+  against the Gemini Live API, whose calls are not metered anyway.
 - Nothing ties a child to ADK's own OpenTelemetry trace or invocation
   ids.
 
@@ -10403,7 +10419,12 @@ event past the 768 KiB body limit, marking each cut string (see
 Plugin, Configuration, which describes the measure and the marker; the
 sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
-never cut.
+never cut. An event whose captured `content` cannot be written as JSON
+(an object the capture did not turn into data) is sent without its
+content (`has_content=false`, as an event over the limit is), with one
+warning naming the event type and the object's type, so its token counts
+and metadata still arrive; the content is never replaced by the object's
+string form, which the provider never received.
 
 When `capture_prompts=false`, every content field on every event type is
 zeroed: `has_content=false`, `content=null`. The event still ships, so

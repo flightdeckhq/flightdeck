@@ -149,7 +149,7 @@ The sensor meters every LLM call a framework makes through the Anthropic or Open
 | LlamaIndex | yes | yes | no |
 | OpenAI Agents SDK 0.6+ | yes | yes | yes |
 | Claude Agent SDK (Python) | yes | a session per run | no |
-| Google ADK | not on Gemini | yes | yes |
+| Google ADK 2.13+ | not on Gemini | yes | yes |
 | Pydantic AI | Anthropic and OpenAI models | through OpenTelemetry | yes |
 | Strands Agents | not on Bedrock | through OpenTelemetry | yes |
 | Microsoft Agent Framework | not on `AzureAIAgentClient` | planned | no |

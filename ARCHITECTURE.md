@@ -8844,7 +8844,8 @@ a block the viewer does not know as its JSON; Raw shows the list as
 stored. A content block that carries `cache_control` (a cache
 breakpoint), in the system prompt or a message, is marked under it in
 the provider's terms, `cache_control · ephemeral` with its `ttl` when
-set. An OpenAI Responses call (the sensor's `responses` calls
+set, unless it is shown as its JSON (a block type the viewer does not
+know), which already shows the key. An OpenAI Responses call (the sensor's `responses` calls
 and litellm's) is shown in the Responses API's own terms: its stored
 `system` text under `instructions`, and its stored `input` under
 Input, a string as written and an input item list as one box per item:

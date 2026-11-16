@@ -7554,7 +7554,8 @@ expanded ALL row draws the same events), so a connector lands on its
 circles wherever they sit. The rim radius is half the circle's
 `offsetWidth`, which a hover scale does not change. A pair is
 skipped when a circle is not mounted, such as one on a virtualised row,
-or when its row's timeline panel clips it near "now" (its centre past
+or when the timeline panel the circle sits in (its row's, or its lane's
+in the per-agent modal's run lanes) clips it near "now" (its centre past
 the panel's edge), so a connector never runs past the now line.
 
 Connectors rest at 10% opacity. Hovering a run's mark (an event
@@ -7901,7 +7902,9 @@ heading (`RUN_LANE_HEADING_HEIGHT_PX`) that carries the row's label
 strip as the Fleet row draws it (name, pills, icons, rolled-up status
 badge), then one lane per run (`components/timeline/RunLanes.tsx`;
 the group carries `data-run-lanes="true"` and `data-lane-count`, each
-lane is `swimlane-run-lane-<id8>` with `data-session-id`). The Fleet
+lane is `swimlane-run-lane-<id8>` with `data-run-id`; `data-session-id`
+stays on the marks, so hovering a lane's empty space lights no
+connector). The Fleet
 view's compact 48 px row, with its packed lanes, is unchanged.
 
 - **Which runs, in what order.** A run has a lane while any of its
@@ -7943,17 +7946,22 @@ view's compact 48 px row, with its packed lanes, is unchanged.
   centre. The circles' tooltip and click (the event detail drawer) and
   the glyphs' and line's click (the run drawer) work as on a Fleet
   row.
-- **Marker text.** Beside a circle, 4 px right of it, a tool call
+- **Marker text.** Beside a circle, 4 px right of it and just above
+  the run line (its bottom 3 px above the lane's centre, so the line
+  never strikes it), a tool call
   (`tool_call`, `mcp_tool_call`) carries its tool name and an LLM call
   (`pre_call`, `post_call`, `embeddings`, `llm_error`) its model,
   without a trailing `-YYYYMMDD` date and cut to 18 characters with an
   ellipsis (`markerText`). `placeMarkerLabels` keeps a text only where
   it fits: inside the panel, clear of every other kept text and of
   every other circle, taking markers left to right. A text that would
-  collide is dropped and its circle stays. The 40 px lane always has
+  collide is dropped and its circle stays. A text's width is its
+  length times 7 px, GeistMono's advance at 11 px. The 40 px lane always has
   room for the text's 11 px line, so the space between markers, which
-  the selected range sets, decides: at 1m most markers a few seconds
-  apart carry their text, at 1h few do. The text takes no pointer
+  the selected range sets, decides: at 1m (about 14 px a second) a
+  tool name shows when the next marker is about four seconds away, a
+  model name (17 characters) when it is about ten seconds away, and
+  at 1h few texts show. The text takes no pointer
   input, so hover and click reach the circle under it.
 
 ### Agent drawer

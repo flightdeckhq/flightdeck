@@ -127,6 +127,21 @@ All notable changes to Flightdeck are documented here.
   view, set, deque or range given for such an argument is now stored as
   the list the SDK sends instead of being dropped (D283).
 
+- **Sensor: a reply object passed back to the SDK is stored as the JSON
+  the provider received.** A tool-use loop appends the model's reply to
+  the conversation as the SDK returned it: an OpenAI
+  `ChatCompletionMessage` and its tool calls, Responses output items, or
+  Anthropic content blocks. The event of such a call went out without its
+  content, because those objects cannot be written as JSON as they are.
+  Responses output items were stored with fields the SDK did not send.
+  The sensor now reads each pydantic model the way the SDK writes it into
+  the request, so the stored content and the estimate hold the JSON that
+  was sent, and the SDK still gets the caller's own objects. Nothing is
+  stored as an object's string form. The request side of the content is
+  also copied when the call settles: the event is written later, and a
+  loop that appended the reply to the list it had sent made the earlier
+  call's stored content show messages it never sent (D285).
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

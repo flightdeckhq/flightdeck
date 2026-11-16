@@ -1004,6 +1004,23 @@ and 5% of it (Python 3.13 on a developer machine, a session active, the
 tools carrying six-property JSON schemas). Content capture for such a
 call walks nothing more.
 
+The stored content is the JSON the provider received, never an object's
+string form: a pydantic model in an argument the sensor reads (the
+model's reply passed back in a tool-use loop, such as an OpenAI
+`ChatCompletionMessage`, Responses output items or Anthropic content
+blocks) is read as the SDK writes it into the request, the JSON dump of
+its set fields without those the class marks `__api_exclude__` (by alias
+from anthropic 2.x), for the estimate and the stored content alike, while
+the SDK gets the caller's own object. A `NOT_GIVEN` or `omit` value inside
+a message is dropped as the SDK drops it, litellm's stored input dumps
+models the OpenAI SDK's way, and an object the sensor cannot write as
+what was sent (a file the Anthropic SDK reads and base64-encodes itself,
+a `beta_tool` function) leaves the event without its content (see
+`capturePrompts`). The request side of the content is copied when the
+call settles, before it returns to the caller, because the event is
+written as JSON later on the drain thread and a tool-use loop appends the
+reply to the very list it sent.
+
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
 names no `model` is counted against `claude-sonnet-4-6`

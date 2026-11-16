@@ -27,7 +27,7 @@ import sys
 import time
 import types
 import weakref
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from flightdeck_sensor.core.errors import (
     REQUEST_ID_MAX_LEN,
@@ -584,14 +584,25 @@ def settle_open_guards(session: Session, lock_wait: float | None = None) -> None
 # estimate: Anthropic's count_tokens, litellm's token_counter, the
 # tiktoken count; then content capture), and an iterator can be read only
 # once. So the sensor reads each one into a list for itself, and the SDK
-# is handed a fresh generator over the same items in its place: it reads,
-# rejects or re-reads it exactly as it would the caller's (an SDK that
-# does not accept an iterator for an argument still raises; litellm,
-# which copies its arguments, still fails to copy a generator).
+# is handed a _Replay of the same items in its place: an iterator the SDK
+# reads, rejects, copies or re-reads exactly as it would the caller's (an
+# SDK that does not accept an iterator for an argument still raises;
+# litellm, which copies its arguments, still fails to copy a generator).
+# The _Replay records how the SDK read it, so the stored content holds
+# what the SDK's last read yielded: what it sent, when it reads an
+# argument twice.
 
 # Argument types that are never an iterator and hold none: most of a
 # request's values, so the common path is one type lookup each.
 _PLAIN_TYPES = frozenset({str, int, float, bool, type(None), bytes})
+
+# How deep the sensor looks into a call's arguments for an iterator. A
+# request nests a few levels (messages, a message, its content blocks, a
+# tool result's content, a tool's JSON schema), so 64 leaves room for any
+# real one, keeps the walk well inside the interpreter's recursion limit
+# when the caller's own stack is deep, and stops it on arguments that
+# hold themselves. Anything deeper is passed on unread.
+_MAX_ARGUMENT_DEPTH = 64
 
 
 def _is_one_shot(value: Any) -> bool:
@@ -601,10 +612,11 @@ def _is_one_shot(value: Any) -> bool:
     return isinstance(value, collections.abc.Iterator) and not isinstance(value, io.IOBase)
 
 
-def _holds_iterator(value: Any) -> bool:
-    """Whether an iterator is anywhere in ``value``, at any depth inside
-    the lists, tuples and dicts it is made of: a walk that copies nothing,
-    the whole cost of an ordinary call's arguments."""
+def _holds_iterator(value: Any, depth: int = 0) -> bool:
+    """Whether an iterator is anywhere in ``value``, inside the lists,
+    tuples and dicts it is made of, down to :data:`_MAX_ARGUMENT_DEPTH`:
+    a walk that copies nothing, the whole cost of an ordinary call's
+    arguments."""
     kind = type(value)
     if kind is dict:
         items: Any = value.values()
@@ -612,33 +624,119 @@ def _holds_iterator(value: Any) -> bool:
         items = value
     else:
         return kind not in _PLAIN_TYPES and _is_one_shot(value)
+    if depth >= _MAX_ARGUMENT_DEPTH:
+        return False
     for item in items:
         if type(item) in _PLAIN_TYPES:
             continue
-        if _holds_iterator(item):
+        if _holds_iterator(item, depth + 1):
             return True
     return False
 
 
+def _pickling_error(iterator: Any) -> str | None:
+    """The message of the ``TypeError`` copying or pickling ``iterator``
+    raises (a generator's ``cannot pickle 'generator' object``), or
+    ``None`` when it can be copied."""
+    try:
+        iterator.__reduce_ex__(4)
+    except TypeError as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
 class _ReadIterator(list):  # type: ignore[type-arg]
     """The items of an iterator the sensor read from a call's arguments;
-    the SDK gets a generator over them in its place (see
+    the SDK gets a :class:`_Replay` of them in its place (see
     :func:`_as_sent`)."""
 
+    # The exception the iterator raised after these items, if any.
+    error: Exception | None = None
+    # The name of the iterator's type, and the TypeError message copying
+    # it raises (see _pickling_error).
+    kind: str = "generator"
+    pickling_error: str | None = None
+    # The _Replay last handed to the SDK in its place.
+    replay: _Replay | None = None
 
-def _materialised(value: Any) -> Any:
+
+class _Replay:
+    """The iterator the SDK gets in place of one the sensor read: its
+    items, then the exception it raised, if it raised one. Each pass the
+    SDK makes over it (from an ``iter()``) is recorded as the range of
+    items it yielded, for :func:`as_received`. Copying it copies the items
+    not yet yielded, and fails with the caller's iterator's own
+    ``TypeError`` when that one cannot be copied. Its type bears the name
+    of the caller's iterator's type (see :func:`_replay_type`), so an SDK
+    that names it in an error names it as it would the caller's."""
+
+    __slots__ = ("_error", "_items", "_pickling_error", "_position", "passes")
+
+    def __init__(self, items: list[Any], error: Exception | None, pickling_error: str | None):
+        self._items = items
+        self._error = error
+        self._pickling_error = pickling_error
+        self._position = 0
+        self.passes: list[list[int]] = []
+
+    def __iter__(self) -> _Replay:
+        self.passes.append([self._position, self._position])
+        return self
+
+    def __next__(self) -> Any:
+        if not self.passes:
+            self.passes.append([self._position, self._position])
+        if self._position < len(self._items):
+            item = self._items[self._position]
+            self._position += 1
+            self.passes[-1][1] = self._position
+            return item
+        error = self._error
+        if error is not None:
+            self._error = None
+            raise error
+        raise StopIteration
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        if self._pickling_error is not None:
+            raise TypeError(self._pickling_error)
+        remaining = self._items[self._position :]
+        return (_replay_copy, (type(self).__name__, remaining, self._error))
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} object at {id(self):#x}>"
+
+
+@functools.cache
+def _replay_type(kind: str) -> type[_Replay]:
+    """The :class:`_Replay` type named ``kind``."""
+    return type(kind, (_Replay,), {"__slots__": ()})
+
+
+def _replay_copy(kind: str, items: list[Any], error: Exception | None) -> _Replay:
+    """A copy of a :class:`_Replay`, made by ``copy`` or ``pickle``."""
+    return _replay_type(kind)(items, error, None)
+
+
+def _materialised(value: Any, failure: list[Exception], depth: int = 0) -> Any:
     """``value`` with every iterator in it read into a :class:`_ReadIterator`
-    of its items, at any depth inside the lists, tuples and dicts it is
-    made of. The very same object when it holds none; otherwise a copy
-    along the path to each iterator only, so the caller's own containers
-    are never changed."""
+    of its items, inside the lists, tuples and dicts it is made of, down
+    to :data:`_MAX_ARGUMENT_DEPTH`. The very same object when it holds
+    none; otherwise a copy along the path to each iterator only, so the
+    caller's own containers are never changed. An iterator that raises
+    keeps the items read before it did and the exception, which is also
+    put in ``failure``; nothing after it is read."""
     kind = type(value)
-    if kind in _PLAIN_TYPES:
+    if kind in _PLAIN_TYPES or failure:
         return value
     if kind is list or kind is tuple:
+        if depth >= _MAX_ARGUMENT_DEPTH:
+            return value
         items: list[Any] | None = None
         for index, item in enumerate(value):
-            read = _materialised(item)
+            read = _materialised(item, failure, depth + 1)
             if read is not item:
                 if items is None:
                     items = list(value)
@@ -647,115 +745,194 @@ def _materialised(value: Any) -> Any:
             return value
         return items if kind is list else tuple(items)
     if kind is dict:
+        if depth >= _MAX_ARGUMENT_DEPTH:
+            return value
         entries: dict[Any, Any] | None = None
         for key, item in value.items():
-            read = _materialised(item)
+            read = _materialised(item, failure, depth + 1)
             if read is not item:
                 if entries is None:
                     entries = dict(value)
                 entries[key] = read
         return value if entries is None else entries
     if _is_one_shot(value):
-        return _ReadIterator(_materialised(item) for item in value)
+        read_items = _ReadIterator()
+        read_items.kind = type(value).__name__
+        try:
+            for item in value:
+                read_items.append(_materialised(item, failure, depth + 1))
+                if failure:
+                    break
+        except Exception as exc:
+            read_items.error = exc
+            failure.append(exc)
+        read_items.pickling_error = _pickling_error(value)
+        return read_items
     return value
 
 
-def _replay(items: list[Any]) -> Iterator[Any]:
-    yield from items
-
-
-def _as_sent(value: Any) -> Any:
-    """What the SDK is given for a value :func:`_materialised` produced:
-    a generator in place of each :class:`_ReadIterator`, its items sent the
-    same way, inside new containers along the path to it; the sensor's
-    own lists are left as they are for content capture."""
-    if isinstance(value, _ReadIterator):
-        return _replay([_as_sent(item) for item in value])
+def _rebuilt(value: Any, convert: Callable[[Any, int], Any], depth: int) -> Any:
+    """``value`` with ``convert`` applied to each item of the lists,
+    tuples and dicts it is made of: the very same object when no item
+    changed, else a copy along the path to each change only."""
     kind = type(value)
     if kind is list or kind is tuple:
-        sent = [_as_sent(item) for item in value]
-        changed = any(new is not old for new, old in zip(sent, value, strict=True))
-        if not changed:
+        items: list[Any] | None = None
+        for index, item in enumerate(value):
+            if type(item) in _PLAIN_TYPES:
+                continue
+            new = convert(item, depth + 1)
+            if new is not item:
+                if items is None:
+                    items = list(value)
+                items[index] = new
+        if items is None:
             return value
-        return sent if kind is list else tuple(sent)
-    if kind is dict:
-        sent_entries = {key: _as_sent(item) for key, item in value.items()}
-        changed = any(sent_entries[key] is not item for key, item in value.items())
-        return sent_entries if changed else value
+        return items if kind is list else tuple(items)
+    if kind is dict or kind is _ReadArguments:
+        entries: dict[Any, Any] | None = None
+        for key, item in value.items():
+            if type(item) in _PLAIN_TYPES:
+                continue
+            new = convert(item, depth + 1)
+            if new is not item:
+                if entries is None:
+                    entries = dict(value)
+                entries[key] = new
+        return value if entries is None else entries
     return value
 
 
-def materialise_iterators(
-    kwargs: dict[str, Any], real_fn: Callable[..., Any]
-) -> tuple[dict[str, Any], Callable[..., Any]]:
+def _as_sent(value: Any, depth: int = 0) -> Any:
+    """What the SDK is given for a value :func:`_materialised` produced:
+    a fresh :class:`_Replay` in place of each :class:`_ReadIterator`
+    (linked to it as its ``replay``), its items sent the same way, inside
+    new containers along the path to it; the sensor's own lists are left
+    as they are for content capture."""
+    if isinstance(value, _ReadIterator):
+        replay = _replay_type(value.kind)(
+            [_as_sent(item, depth + 1) for item in value], value.error, value.pickling_error
+        )
+        value.replay = replay
+        return replay
+    if depth >= _MAX_ARGUMENT_DEPTH:
+        return value
+    return _rebuilt(value, _as_sent, depth)
+
+
+def as_received(value: Any, depth: int = 0) -> Any:
+    """A call's arguments as the SDK read them, for content capture: in
+    place of each iterator the sensor read, what the SDK's last pass over
+    its :class:`_Replay` yielded. That is what the SDK sent when it reads
+    the argument twice (the OpenAI SDK's chat ``parse()`` checks ``tools``
+    before it builds the request, which then holds what is left). An
+    iterator the SDK never read (it passed the replay on, or copied it)
+    is the items the caller's iterator held, as a list argument is. The
+    very same object, and nothing copied, for arguments that held no
+    iterator."""
+    if isinstance(value, _ReadIterator):
+        replay = value.replay
+        items: list[Any] = value
+        if replay is not None and replay.passes:
+            start, end = replay.passes[-1]
+            items = value[start:end]
+        return [as_received(item, depth + 1) for item in items]
+    if depth >= _MAX_ARGUMENT_DEPTH:
+        return value
+    return _rebuilt(value, as_received, depth)
+
+
+class _ReadArguments(dict):  # type: ignore[type-arg]
+    """A call's arguments with the iterators among them read (see
+    :func:`materialise_iterators`). Content capture resolves only
+    arguments of this type (see :func:`as_received`), so an ordinary
+    call's capture walks nothing more; the copy the policy check makes on
+    a degrade keeps the type."""
+
+
+class Arguments(NamedTuple):
+    """A call's arguments as the sensor reads them, and the SDK call to
+    make with them (see :func:`materialise_iterators`)."""
+
+    kwargs: dict[str, Any]
+    send: Callable[..., Any]
+    # False when reading an iterator among them raised: the call is then
+    # ``send(**kwargs)`` alone, unmetered.
+    readable: bool
+
+
+def materialise_iterators(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -> Arguments:
     """A call's arguments for the sensor to read and the SDK call to make
     with them. With no iterator among the arguments, they are ``kwargs``
     and ``real_fn`` themselves. Otherwise the arguments are a copy in
     which each iterator is a list of its items, and the SDK call hands
-    the SDK a generator over those items in its place (see the comment
-    above). An iterator that raises while it is read raises here, before
-    the sensor builds any event."""
+    the SDK a :class:`_Replay` of those items in its place (see the
+    comment above).
+
+    An iterator that raises while it is read makes the arguments
+    unreadable: the caller then makes the SDK call alone, and the SDK
+    gets a replay of the items read before the failure that raises the
+    same exception. So the SDK raises it when it reads the argument, at
+    the step it would without the sensor (the call, its await, or the
+    entering of a stream manager), and the sensor builds no event."""
     try:
         if not _holds_iterator(kwargs):
-            return kwargs, real_fn
+            return Arguments(kwargs, real_fn, True)
+        failure: list[Exception] = []
+        read: dict[str, Any] = _ReadArguments(_materialised(kwargs, failure))
     except RecursionError:
-        # Arguments nested past the interpreter's limit, or holding
-        # themselves: the SDK gets them as they are, and rejects them.
-        return kwargs, real_fn
-    read: dict[str, Any] = _materialised(kwargs)
+        # The caller's own stack is too deep for the walk: the SDK gets
+        # the arguments as they are. The log line needs stack too.
+        with contextlib.suppress(RecursionError):
+            _log.debug(
+                "A call's arguments could not be walked for iterators; passed on as they are"
+            )
+        return Arguments(kwargs, real_fn, True)
 
     def send(**call_kwargs: Any) -> Any:
         return real_fn(**_as_sent(call_kwargs))
 
-    return read, send
+    return Arguments(read, send, not failure)
 
 
-class _FailedStream:
-    """What a stream intercept hands back when reading the call's
-    arguments raised (an iterator failing midway): the SDK reads them when
-    the stream is opened (``messages.stream()``'s manager on entry), so
-    the exception is raised there, on the first use of this object, and
-    the SDK is never called."""
+class _PassedOn:
+    """What a stream intercept hands back for a call whose arguments are
+    unreadable (see :func:`materialise_iterators`): the SDK's own result,
+    unmetered. The SDK has been called, so one that reads its arguments
+    when called has raised already; a manager that reads them when it is
+    entered raises there."""
 
-    def __init__(self, error: BaseException) -> None:
-        self._error = error
-
-    def _raise(self) -> Any:
-        raise self._error
+    def __init__(self, result: Any) -> None:
+        self._result = result
 
     def open(self) -> Any:
-        return self._raise()
+        return self._result
 
     def __enter__(self) -> Any:
-        return self._raise()
+        return self._result.__enter__()
 
-    def __exit__(self, *_exc: Any) -> None:
-        return None
+    def __exit__(self, *exc: Any) -> Any:
+        return self._result.__exit__(*exc)
 
-    def __iter__(self) -> Any:
-        return self._raise()
-
-    def __next__(self) -> Any:
-        return self._raise()
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._result, name)
 
 
-class _FailedAsyncStream(_FailedStream):
-    """:class:`_FailedStream` for an async stream intercept."""
+class _AsyncPassedOn(_PassedOn):
+    """:class:`_PassedOn` for an async stream intercept, whose SDK result
+    is a coroutine (``create(stream=True)``, read when awaited) or an
+    async manager (read when entered)."""
 
     async def open(self) -> Any:
-        return self._raise()
+        if inspect.isawaitable(self._result):
+            return await self._result
+        return self._result
 
     async def __aenter__(self) -> Any:
-        return self._raise()
+        return await self._result.__aenter__()
 
-    async def __aexit__(self, *_exc: Any) -> None:
-        return None
-
-    def __aiter__(self) -> Any:
-        return self
-
-    async def __anext__(self) -> Any:
-        return self._raise()
+    async def __aexit__(self, *exc: Any) -> Any:
+        return await self._result.__aexit__(*exc)
 
 
 # ------------------------------------------------------------------
@@ -781,10 +958,14 @@ def call(
        error taxonomy and re-raise.
 
     An iterator among the arguments is read into a list for the sensor,
-    and the SDK gets a generator over the same items (see
+    and the SDK gets an iterator of the sensor's over the same items; one
+    that raises midway sends the call to the SDK unmetered (see
     :func:`materialise_iterators`).
     """
-    kwargs, real_fn = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn)
+    if not arguments.readable:
+        return arguments.send(**arguments.kwargs)
+    kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
@@ -829,7 +1010,10 @@ async def call_async(
     event_type: EventType = EventType.POST_CALL,
 ) -> Any:
     """Asynchronous call intercept -- same logic as :func:`call`, awaited."""
-    kwargs, real_fn = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn)
+    if not arguments.readable:
+        return await arguments.send(**arguments.kwargs)
+    kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
@@ -877,14 +1061,14 @@ def call_stream(
     ``with`` block exits (including early exit).
 
     An iterator among the arguments is read into a list first (see
-    :func:`materialise_iterators`). One that raises midway raises when
-    the stream is opened, where the SDK reads its arguments.
+    :func:`materialise_iterators`). When one raises midway, the SDK is
+    called at once with the items and the exception, and its own result
+    is handed back unguarded (see :class:`_PassedOn`).
     """
-    try:
-        kwargs, real_fn = materialise_iterators(kwargs, real_fn)
-    except Exception as exc:
-        # A stand-in that raises on first use; nothing else is done.
-        return cast("GuardedStream", _FailedStream(exc))
+    arguments = materialise_iterators(kwargs, real_fn)
+    if not arguments.readable:
+        return cast("GuardedStream", _PassedOn(arguments.send(**arguments.kwargs)))
+    kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
     return GuardedStream(
@@ -914,10 +1098,10 @@ def call_stream_async(
     honoured before the first network byte. An iterator among the
     arguments is read as in :func:`call_stream`.
     """
-    try:
-        kwargs, real_fn = materialise_iterators(kwargs, real_fn)
-    except Exception as exc:
-        return cast("GuardedAsyncStream", _FailedAsyncStream(exc))
+    arguments = materialise_iterators(kwargs, real_fn)
+    if not arguments.readable:
+        return cast("GuardedAsyncStream", _AsyncPassedOn(arguments.send(**arguments.kwargs)))
+    kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
     return GuardedAsyncStream(
@@ -2192,7 +2376,7 @@ def _post_call(
     has_content = False
     if session.config.capture_prompts and call_kwargs is not None:
         pc = provider.extract_content(
-            call_kwargs,
+            as_received(call_kwargs) if isinstance(call_kwargs, _ReadArguments) else call_kwargs,
             content_response if content_response is not None else response,
             event_type=event_type,
         )

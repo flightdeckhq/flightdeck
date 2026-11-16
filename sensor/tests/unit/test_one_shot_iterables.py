@@ -17,11 +17,16 @@ stored content are those of the same call made with lists.
 from __future__ import annotations
 
 import asyncio
+import collections.abc
+import copy
+import gc
 import inspect
 import io
 import json
+import pickle
 import sys
 import types
+import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -463,6 +468,11 @@ def _as_list(items: list[Any]) -> Any:
     return list(items)
 
 
+def _empty(items: list[Any]) -> Any:
+    """What is left of an iterator the SDK has read already."""
+    return []
+
+
 def _body(request: httpx.Request, route: str) -> dict[str, Any]:
     body = json.loads(request.content)
     # The sensor asks a streamed chat call for its usage chunk, by design.
@@ -505,6 +515,11 @@ def _what_was_counted(session: Session) -> list[tuple[str, Any, Any]]:
     return out
 
 
+def _pre_calls(counted: list[tuple[str, Any, Any]]) -> list[tuple[str, Any]]:
+    """The estimate of each ``pre_call`` among :func:`_what_was_counted`."""
+    return [c[:2] for c in counted if c[0] == "pre_call"]
+
+
 def _outcome(make: Callable[[], Any], is_async: bool, routed: Any, route: str) -> tuple[str, Any]:
     """What a call came to: the request the provider received, or the
     exception it raised (an SDK may not accept an iterator for an argument
@@ -534,6 +549,52 @@ def _stored_as_sent(session: Session, body: dict[str, Any]) -> bool:
     )
 
 
+class _Readers:
+    """Generators that note who started reading them: the sensor (inside
+    ``base.materialise_iterators``) or the SDK, which reads an argument
+    before the sensor when it checks it in a helper that then calls the
+    sensored method (the OpenAI SDK's async chat ``stream()`` checks
+    ``tools`` when it is called)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.first: list[str] = []
+        self._sensor_reading = 0
+        materialise = base.materialise_iterators
+
+        def spy(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -> base.Arguments:
+            self._sensor_reading += 1
+            try:
+                return materialise(kwargs, real_fn)
+            finally:
+                self._sensor_reading -= 1
+
+        monkeypatch.setattr(base, "materialise_iterators", spy)
+
+    def generator(self, items: list[Any]) -> Any:
+        def noted() -> Any:
+            self.first.append("sensor" if self._sensor_reading else "sdk")
+            yield from items
+
+        return noted()
+
+
+def _expected_estimate(
+    readers: _Readers,
+    sent_as_with_lists: bool,
+    with_lists: Session,
+    rerun_with_empty: Callable[[], Session],
+) -> list[tuple[str, Any]]:
+    """The estimate a sensored call with a generator makes: that of the
+    same call made with lists when the sensor read the caller's items.
+    When the SDK read the generator first, the sensor read what the SDK
+    then handed on: the items in a list of the SDK's own when the request
+    is the one the call with lists sends (openai 3.26's ``stream()``),
+    else what was left, an empty list (openai 2.x's async ``stream()``)."""
+    if readers.first[:1] == ["sdk"] and not sent_as_with_lists:
+        return _pre_calls(_what_was_counted(rerun_with_empty()))
+    return _pre_calls(_what_was_counted(with_lists))
+
+
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("mode", ["patched", "wrapped"])
 @pytest.mark.parametrize("name", sorted(CASES))
@@ -550,34 +611,33 @@ def test_an_iterator_argument_reaches_the_provider_as_without_the_sensor(
     plain = _client(sdk, is_async)
     unsensored = _outcome(lambda: call(plain, build(_generator)), is_async, routed, route)
 
+    readers = _Readers(monkeypatch)
     with_lists, listed = _sensored(mode, sdk, is_async, monkeypatch, capture=True)
     as_lists = _outcome(lambda: call(listed, build(_as_list)), is_async, routed, route)
     with_iterators, client = _sensored(mode, sdk, is_async, monkeypatch, capture=True)
-    sensored = _outcome(lambda: call(client, build(_generator)), is_async, routed, route)
+    sensored = _outcome(lambda: call(client, build(readers.generator)), is_async, routed, route)
 
     assert sensored == unsensored
-    # The estimate is that of the same call made with lists. So is the
-    # stored content when the provider received the same request: an SDK
-    # that reads an iterator twice (chat ``stream()`` checks ``tools``
-    # before it sends) sends what is left, without the sensor as with it,
-    # and the content then holds what was sent.
-    counted, expected = _what_was_counted(with_iterators), _what_was_counted(with_lists)
-    assert [c[:2] for c in counted if c[0] == "pre_call"] == [
-        e[:2] for e in expected if e[0] == "pre_call"
-    ]
+    counted = _what_was_counted(with_iterators)
     if sensored[0] == "sent":
+        # The stored content holds what the provider received, also where
+        # the SDK reads an iterator twice and sends what is left (the
+        # OpenAI SDK's chat parse() checks ``tools`` before it builds the
+        # request).
         assert any(e.get("has_content") for e in _llm_events(with_iterators))
-        if sensored == as_lists:
-            assert counted == expected
-            assert _stored_as_sent(with_iterators, sensored[1])
-        else:
-            # The SDK read an iterator twice and sent what was left, without
-            # the sensor as with it (the OpenAI SDK's chat parse() and
-            # stream() check ``tools`` before sending). The stored content
-            # holds what was sent when the SDK read the iterator first
-            # (stream() checks when it is called), else the items the
-            # caller's iterator yielded (parse() checks inside the call).
-            assert _stored_as_sent(with_iterators, sensored[1]) or counted == expected
+        assert _stored_as_sent(with_iterators, sensored[1])
+
+    def rerun_with_empty() -> Session:
+        session, emptied = _sensored(mode, sdk, is_async, monkeypatch, capture=True)
+        assert _outcome(lambda: call(emptied, build(_empty)), is_async, routed, route) == sensored
+        return session
+
+    expected = _expected_estimate(readers, sensored == as_lists, with_lists, rerun_with_empty)
+    assert _pre_calls(counted) == expected
+    if sensored == as_lists:
+        # The SDK read each iterator once: everything the sensor counted
+        # is what the same call made with lists counts.
+        assert counted == _what_was_counted(with_lists)
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
@@ -589,21 +649,127 @@ def test_with_capture_off_an_iterator_argument_reaches_the_provider_and_no_conte
     routed = provider.routes[ROUTE[route]]
     plain = _client(sdk, is_async)
     unsensored = _outcome(lambda: call(plain, build(_generator)), is_async, routed, route)
+    readers = _Readers(monkeypatch)
     with_lists, listed = _sensored("patched", sdk, is_async, monkeypatch, capture=False)
-    _outcome(lambda: call(listed, build(_as_list)), is_async, routed, route)
+    as_lists = _outcome(lambda: call(listed, build(_as_list)), is_async, routed, route)
     session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=False)
-    sensored = _outcome(lambda: call(client, build(_generator)), is_async, routed, route)
+    sensored = _outcome(lambda: call(client, build(readers.generator)), is_async, routed, route)
     assert sensored == unsensored
-    # The estimate is that of the same call made with lists.
-    assert [c[:2] for c in _what_was_counted(session) if c[0] == "pre_call"] == [
-        c[:2] for c in _what_was_counted(with_lists) if c[0] == "pre_call"
-    ]
+
+    def rerun_with_empty() -> Session:
+        emptied_session, emptied = _sensored("patched", sdk, is_async, monkeypatch, capture=False)
+        _outcome(lambda: call(emptied, build(_empty)), is_async, routed, route)
+        return emptied_session
+
+    expected = _expected_estimate(readers, sensored == as_lists, with_lists, rerun_with_empty)
+    assert _pre_calls(_what_was_counted(session)) == expected
     events = _llm_events(session)
     assert events
     assert not any(e.get("has_content") for e in events)
     assert all(e.get("content") is None for e in events)
     assert PROMPT not in json.dumps(events, default=str)
     assert SYSTEM not in json.dumps(events, default=str)
+
+
+# ----- other kinds of iterator ----------------------------------------------------
+#
+# The SDK gets an iterator of the sensor's in place of the caller's; for
+# any kind of iterator it reads, copies, rejects and names it as it does
+# the caller's.
+
+
+def _same(item: Any) -> Any:
+    return item
+
+
+ITERATOR_KINDS: dict[str, Callable[[list[Any]], Any]] = {
+    "generator": _generator,
+    "list iterator": lambda items: iter(list(items)),
+    "map": lambda items: map(_same, items),
+}
+KIND_CASES = sorted(
+    n
+    for n in CASES
+    if any(f" {entry} " in f" {n} " for entry in ("create", "parse", "stream()"))
+    or "responses.create input" in n
+)
+
+
+def _detailed_outcome(
+    make: Callable[[], Any], is_async: bool, routed: Any, route: str
+) -> tuple[str, Any]:
+    """:func:`_outcome` with an exception's message as well as its type."""
+    sent = routed.call_count
+    try:
+        _finish(make(), is_async)
+    except Exception as exc:
+        return ("raised", f"{type(exc).__name__}: {exc}")
+    assert routed.call_count == sent + 1
+    return ("sent", _body(routed.calls.last.request, route))
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("kind", sorted(ITERATOR_KINDS))
+@pytest.mark.parametrize("name", KIND_CASES)
+def test_every_kind_of_iterator_comes_to_what_it_comes_to_without_the_sensor(
+    provider: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    kind: str,
+    is_async: bool,
+) -> None:
+    sdk, route, build, call = CASES[name]
+    routed = provider.routes[ROUTE[route]]
+    seq = ITERATOR_KINDS[kind]
+    plain = _client(sdk, is_async)
+    unsensored = _detailed_outcome(lambda: call(plain, build(seq)), is_async, routed, route)
+    session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
+    sensored = _detailed_outcome(lambda: call(client, build(seq)), is_async, routed, route)
+    assert sensored == unsensored
+    if sensored[0] == "sent":
+        assert _stored_as_sent(session, sensored[1])
+
+
+def test_the_sdk_gets_an_iterator_that_behaves_as_the_callers() -> None:
+    """The replay is an iterator and nothing more, named as the caller's
+    iterator; copying it copies the items not yet read, or fails as
+    copying the caller's iterator fails."""
+    for make, copyable in ((_generator, False), (lambda items: iter(list(items)), True)):
+        original = make([1, 2, 3])
+        kind = type(original).__name__
+        arguments = base.materialise_iterators({"input": original}, lambda **kwargs: kwargs)
+        replay = arguments.send(**arguments.kwargs)["input"]
+        assert isinstance(replay, collections.abc.Iterator)
+        assert not isinstance(replay, (list, tuple, str, collections.abc.Sequence))
+        assert type(replay).__name__ == kind
+        assert next(replay) == 1
+        if copyable:
+            assert list(copy.deepcopy(replay)) == [2, 3]
+            assert list(pickle.loads(pickle.dumps(replay))) == [2, 3]
+        else:
+            with pytest.raises(TypeError) as copied:
+                copy.deepcopy(replay)
+            with pytest.raises(TypeError) as of_the_callers:
+                copy.deepcopy(make([1]))
+            assert str(copied.value) == str(of_the_callers.value)
+        assert list(replay) == [2, 3]
+        assert list(replay) == []
+
+
+def test_the_stored_content_holds_what_the_sdks_last_read_yielded() -> None:
+    """One read is the items; a second read over the exhausted replay is
+    what the SDK sends then, an empty list; a replay the SDK never read
+    is the items the caller's iterator held."""
+    for reads, expected in ((1, [TOOL_OPENAI]), (2, []), (0, [TOOL_OPENAI])):
+        kwargs = {"model": OPENAI_MODEL, "tools": _generator([TOOL_OPENAI])}
+
+        def real_fn(reads: int = reads, **call_kwargs: Any) -> None:
+            for _ in range(reads):
+                list(call_kwargs["tools"])
+
+        arguments = base.materialise_iterators(kwargs, real_fn)
+        arguments.send(**arguments.kwargs)
+        assert base.as_received(arguments.kwargs)["tools"] == expected
 
 
 # ----- litellm ------------------------------------------------------------------
@@ -685,6 +851,59 @@ def test_an_iterator_given_to_litellm_fails_as_without_the_sensor(
         assert estimate > len(PROMPT) // 8
 
 
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_an_iterator_litellm_can_copy_reaches_the_provider_as_without_the_sensor(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, is_async: bool
+) -> None:
+    """litellm copies a call's arguments: a list iterator copies, so the
+    request goes out, the same request with the sensor as without it, and
+    the content holds the items the copy carried."""
+    litellm = pytest.importorskip("litellm")
+    from flightdeck_sensor.interceptor.litellm import (
+        patch_litellm_functions,
+        unpatch_litellm_functions,
+    )
+
+    routed = provider.routes["chat"]
+
+    def call() -> Any:
+        kwargs = {
+            "model": OPENAI_MODEL,
+            "messages": iter([{"role": "user", "content": PROMPT}]),
+            "client": _client("openai", is_async),
+        }
+        if is_async:
+            return litellm.acompletion(**kwargs)
+        return litellm.completion(**kwargs)
+
+    def outcome() -> tuple[str, Any]:
+        # On Python 3.11 litellm builds an async success-logging coroutine
+        # it never awaits once the call's event loop closes, with or
+        # without the sensor; it is dropped here, inside the call.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="coroutine 'Logging.async_success_handler' was never awaited",
+                category=RuntimeWarning,
+            )
+            result = _outcome(call, is_async, routed, "chat")
+            gc.collect()
+        return result
+
+    unsensored = outcome()
+    session = _session(capture=True)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    patch_litellm_functions(quiet=True)
+    try:
+        sensored = outcome()
+    finally:
+        unpatch_litellm_functions()
+    assert sensored == unsensored
+    assert sensored[0] == "sent"
+    assert sensored[1]["messages"] == [{"role": "user", "content": PROMPT}]
+    assert _stored_as_sent(session, sensored[1])
+
+
 # ----- the caller's arguments ----------------------------------------------------
 
 
@@ -694,12 +913,14 @@ def test_lists_keep_their_identity_and_the_callers_arguments_are_not_changed() -
     messages = [message]
     kwargs = {"model": OPENAI_MODEL, "messages": messages, "tools": (TOOL_OPENAI,)}
     real_fn = MagicMock()
-    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn)
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
 
     iterator = _generator([{"type": "text", "text": PROMPT}])
     with_iterator = {"model": OPENAI_MODEL, "messages": [{"role": "user", "content": iterator}]}
     original_message = with_iterator["messages"][0]
-    read, _send = base.materialise_iterators(with_iterator, lambda **kwargs: None)
+    arguments = base.materialise_iterators(with_iterator, lambda **kwargs: None)
+    assert arguments.readable
+    read = arguments.kwargs
     assert read is not with_iterator
     assert read["messages"][0]["content"] == [{"type": "text", "text": PROMPT}]
     # The caller's dicts and list still hold what they held.
@@ -713,9 +934,7 @@ def test_a_file_among_the_arguments_is_passed_on_as_it_is() -> None:
     upload = io.BytesIO(b"first line\nsecond line\n")
     kwargs = {"model": OPENAI_MODEL, "messages": [], "extra_body": {"file": upload}}
     real_fn = MagicMock()
-    read, send = base.materialise_iterators(kwargs, real_fn)
-    assert read is kwargs
-    assert send is real_fn
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
     assert upload.tell() == 0
 
 
@@ -725,9 +944,87 @@ def test_arguments_that_hold_themselves_are_handed_on_as_they_are() -> None:
     messages.append(messages)
     kwargs = {"model": OPENAI_MODEL, "messages": messages}
     real_fn = MagicMock()
-    read, send = base.materialise_iterators(kwargs, real_fn)
-    assert read is kwargs
-    assert send is real_fn
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+
+
+def test_an_iterator_beside_arguments_that_hold_themselves_is_read() -> None:
+    """The walk stops at a fixed depth, so a branch that holds itself
+    does not stop the sensor reading an iterator elsewhere; that branch
+    reaches the SDK as the same object, which rejects it."""
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    kwargs = {"model": OPENAI_MODEL, "messages": _generator([{"role": "user"}]), "extra": cycle}
+    received: dict[str, Any] = {}
+    arguments = base.materialise_iterators(
+        kwargs, lambda **call_kwargs: received.update(call_kwargs)
+    )
+    assert arguments.readable
+    assert arguments.kwargs["messages"] == [{"role": "user"}]
+    assert arguments.kwargs["extra"] is cycle
+    arguments.send(**arguments.kwargs)
+    assert received["extra"] is cycle
+    assert list(received["messages"]) == [{"role": "user"}]
+    assert base.as_received(arguments.kwargs)["extra"] is cycle
+
+
+def test_an_iterator_deeper_than_the_walk_goes_is_passed_on_unread() -> None:
+    deep = iter([1])
+    nested: Any = deep
+    for _ in range(base._MAX_ARGUMENT_DEPTH + 1):
+        nested = [nested]
+    kwargs = {"model": OPENAI_MODEL, "messages": nested}
+    real_fn = MagicMock()
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+    assert list(deep) == [1]
+
+
+def test_arguments_the_walk_runs_out_of_stack_on_are_passed_on_unread(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A caller whose own stack is nearly used up: the walk stops, the SDK
+    gets the arguments as they are, and the debug log names no value."""
+    deep = iter([PROMPT])
+    nested: Any = deep
+    for _ in range(base._MAX_ARGUMENT_DEPTH - 4):
+        nested = [nested]
+    kwargs = {"model": OPENAI_MODEL, "messages": nested}
+    real_fn = MagicMock()
+    limit = sys.getrecursionlimit()
+    caplog.set_level("DEBUG", logger="flightdeck_sensor")
+
+    def at_depth(frames: int) -> Any:
+        if frames:
+            return at_depth(frames - 1)
+        # Room for the logging call, not for the walk's 60 levels.
+        sys.setrecursionlimit(len(inspect.stack(0)) + 45)
+        try:
+            return base.materialise_iterators(kwargs, real_fn)
+        finally:
+            sys.setrecursionlimit(limit)
+
+    assert at_depth(5) == (kwargs, real_fn, True)
+    assert list(deep) == [PROMPT]
+    assert "passed on as they are" in caplog.text
+    assert PROMPT not in caplog.text
+
+
+def test_an_iterator_beside_a_self_holding_branch_reaches_the_sdk_as_without_the_sensor(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routed = provider.routes["chat"]
+
+    def make(client: Any) -> Any:
+        cycle: list[Any] = []
+        cycle.append(cycle)
+        return client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=_generator([{"role": "user", "content": PROMPT}]),
+            extra_body={"loop": cycle},
+        )
+
+    unsensored = _detailed_outcome(lambda: make(_client("openai", False)), False, routed, "chat")
+    _session_, client = _sensored("patched", "openai", False, monkeypatch, capture=True)
+    assert _detailed_outcome(lambda: make(client), False, routed, "chat") == unsensored
 
 
 def test_the_sdk_gets_the_callers_own_list() -> None:
@@ -762,6 +1059,32 @@ def _moment(make: Callable[[], Any], is_async: bool) -> list[str]:
     except _Midway:
         return steps
     return [*steps, "did not raise"]
+
+
+def test_an_iterator_that_raises_is_replayed_to_the_sdk_with_its_exception() -> None:
+    """The SDK gets the items read before the failure and then the same
+    exception, and nothing after the failure is read."""
+    error = _Midway("the iterator failed")
+
+    def failing() -> Any:
+        yield {"role": "user", "content": PROMPT}
+        raise error
+
+    later = _generator([TOOL_OPENAI])
+    kwargs = {"model": OPENAI_MODEL, "messages": failing(), "tools": later}
+    received: dict[str, Any] = {}
+
+    def real_fn(**call_kwargs: Any) -> Any:
+        received.update(call_kwargs)
+        return list(call_kwargs["messages"])
+
+    arguments = base.materialise_iterators(kwargs, real_fn)
+    assert not arguments.readable
+    with pytest.raises(_Midway) as raised:
+        arguments.send(**arguments.kwargs)
+    assert raised.value is error
+    assert received["tools"] is later
+    assert inspect.getgeneratorstate(later) == inspect.GEN_CREATED
 
 
 RAISING_ENTRIES: dict[str, tuple[str, Callable[[Any, dict[str, Any]], Any]]] = {

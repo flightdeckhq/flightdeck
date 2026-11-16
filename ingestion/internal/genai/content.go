@@ -381,29 +381,24 @@ func (r *resolver) contentOf(n *node) map[string]any {
 // output messages, system instructions and tool definitions, as the
 // framework sent them; nil when it has no messages, response or
 // instructions (tool definitions alone describe the agent, not the
-// call).
+// call). The system instructions keep their JSON type: the conventions'
+// list of parts (what every recorded framework sends) is stored as the
+// list, and text as text.
 func (r *resolver) callContent(n *node, model string) map[string]any {
 	c := r.contentOf(n)
 	messages, response, system := c[contentInput], c[contentOutput], c[contentSystem]
 	if messages == nil && response == nil && system == nil {
 		return nil
 	}
-	env := map[string]any{
+	return map[string]any{
 		"provider": ContentProvider,
 		"model":    model,
-		"system":   nil,
+		"system":   system,
 		"messages": orEmptyList(messages),
 		"tools":    c[contentTools],
 		"response": orEmptyList(response),
 		"input":    nil,
 	}
-	if system != nil {
-		// The column is text; the instructions are kept as JSON in it.
-		if b, err := json.Marshal(system); err == nil {
-			env["system"] = string(b)
-		}
-	}
-	return env
 }
 
 // toolContent is a tool_call's content, in the tool-capture envelope:

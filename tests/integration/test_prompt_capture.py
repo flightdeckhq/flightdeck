@@ -7,6 +7,7 @@ Requires `make dev` to be running.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -25,6 +26,7 @@ from .conftest import (
     query_rows,
     session_exists_in_fleet,
     wait_until,
+    worker_log_lines,
     worker_paused,
 )
 
@@ -326,6 +328,125 @@ def test_nul_in_content_is_stored_as_the_replacement_character() -> None:
     assert result is not None, "content endpoint answered 404"
     assert result["system_prompt"] == "before\ufffdafter", result["system_prompt"]
     assert result["messages"] == [{"role": "user", "content": "Hello \ufffd"}], result["messages"]
+
+
+# An Anthropic ``system`` in the form prompt caching uses: text blocks,
+# the first a cache breakpoint.
+SYSTEM_BLOCKS = [
+    {
+        "type": "text",
+        "text": "You are a terse geography assistant.",
+        "cache_control": {"type": "ephemeral"},
+    },
+    {"type": "text", "text": "Answer in one word."},
+]
+
+
+def _anthropic_content(system: object) -> dict:
+    return {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+        "system": system,
+        "messages": [{"role": "user", "content": "Capital of France?"}],
+        "tools": None,
+        "response": {"content": [{"type": "text", "text": "Paris."}]},
+    }
+
+
+def _stored_system(event_id: str) -> dict:
+    """The event's two system columns, as stored."""
+    (row,) = query_rows(
+        "SELECT system_prompt, system_blocks FROM event_content WHERE event_id = :'eid'::uuid",
+        eid=event_id,
+    )
+    return row
+
+
+def test_a_block_list_system_is_stored_and_served_as_that_list() -> None:
+    """A call whose ``system`` is a list of content blocks keeps its
+    content: the event claims it, the list is stored in system_blocks
+    (system_prompt NULL), and GET /events/:id/content serves it as
+    ``system_prompt``, the same list with each block's ``cache_control``."""
+    _, eid = _post_call_with_content(_anthropic_content(SYSTEM_BLOCKS))
+    assert _has_content(eid), "the event was stored without its content"
+    assert _query_event_content_rows(eid) == 1
+    assert _stored_system(eid) == {"system_prompt": None, "system_blocks": SYSTEM_BLOCKS}
+    result = _get_event_content(eid)
+    assert result is not None, "content endpoint answered 404"
+    assert result["system_prompt"] == SYSTEM_BLOCKS
+    assert result["messages"] == [{"role": "user", "content": "Capital of France?"}]
+    assert result["response"] == {"content": [{"type": "text", "text": "Paris."}]}
+
+
+@pytest.mark.parametrize(
+    "system",
+    ["You are a terse geography assistant.", '[{"type": "text", "text": "reads as JSON"}]'],
+    ids=["text", "text that reads as JSON"],
+)
+def test_a_text_system_is_stored_and_served_as_that_text(system: str) -> None:
+    """A ``system`` given as text stays text, in system_prompt, even when
+    it reads as JSON: the JSON type the client sent picks the column."""
+    _, eid = _post_call_with_content(_anthropic_content(system))
+    assert _stored_system(eid) == {"system_prompt": system, "system_blocks": None}
+    result = _get_event_content(eid)
+    assert result is not None
+    assert result["system_prompt"] == system
+
+
+def test_a_system_of_another_json_type_is_dropped_alone() -> None:
+    """A ``system`` that is neither text nor a list (an object here) is no
+    system prompt a provider takes: the rest of the content is stored and
+    served, the system is not, and the worker's warning names the JSON
+    type and never the value."""
+    started = time.time()
+    sid, eid = _post_call_with_content(
+        _anthropic_content({"type": "text", "text": "SECRET-OBJECT-SYSTEM-6b2c"})
+    )
+    assert _has_content(eid)
+    assert _stored_system(eid) == {"system_prompt": None, "system_blocks": None}
+    result = _get_event_content(eid)
+    assert result is not None
+    assert result["system_prompt"] is None
+    assert result["messages"] == [{"role": "user", "content": "Capital of France?"}]
+    wait_until(
+        lambda: bool(worker_log_lines("json_type=object", f"session_id={sid}", since=started)),
+        timeout=10,
+        msg="no warning naming the dropped system's JSON type",
+    )
+    assert not worker_log_lines("SECRET-OBJECT-SYSTEM", since=started)
+
+
+def test_capture_off_stores_no_block_list_system() -> None:
+    """With capture off for the session, a post_call that carries a
+    block-list system all the same stores nothing: no event_content row,
+    the event does not claim content, and the endpoint answers 404."""
+    sid = str(uuid.uuid4())
+    flavor = f"capture-off-blocks-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start", capture_prompts=False))
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            tokens_total=50,
+            has_content=True,
+            content=_anthropic_content(SYSTEM_BLOCKS),
+        )
+    )
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
+    (eid,) = _get_event_ids(sid)
+    assert not _has_content(eid)
+    assert _query_event_content_rows(eid) == 0
+    assert _get_event_content(eid) is None
 
 
 def _post_raw_event(body: str) -> None:

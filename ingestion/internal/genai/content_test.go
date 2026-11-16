@@ -319,8 +319,9 @@ func TestContentE7KeptOnce(t *testing.T) {
 	if msgs := first["messages"].([]any); len(msgs) != 1 {
 		t.Errorf("the first call's input is %d messages, want the 1 it was sent", len(msgs))
 	}
-	if first["system"] != `[{"content":"Answer weather questions with the get_weather tool.","type":"text"}]` {
-		t.Errorf("system = %v", first["system"])
+	if _, isList := first["system"].([]any); !isList ||
+		asJSON(t, first["system"]) != `[{"content":"Answer weather questions with the get_weather tool.","type":"text"}]` {
+		t.Errorf("system = %#v, want the list of parts the framework sent", first["system"])
 	}
 	tool := ofType(evs, "tool_call")[0]["content"].(map[string]any)
 	if asJSON(t, tool["tool_input"]) != `{"city":"Paris"}` || asJSON(t, tool["tool_output"]) != `[{"text":"Paris: sunny, 21 C"}]` {
@@ -328,11 +329,38 @@ func TestContentE7KeptOnce(t *testing.T) {
 	}
 }
 
+// A call's system instructions keep the JSON type they were staged with:
+// the conventions' list of parts is the list (the worker stores it in
+// system_blocks), and text that is no JSON list or object is that text,
+// never JSON-quoted (system_prompt). Neither is turned into the other.
+func TestCallContentKeepsTheSystemInstructionsType(t *testing.T) {
+	id := [8]byte{0, 0, 0, 0, 0, 0, 0, 7}
+	n := &node{fact: &otlpstage.StagedFact{Fact: otlpstage.Fact{SpanID: id}}}
+	parts := []any{map[string]any{"type": "text", "content": "be brief"}}
+	for _, tc := range []struct {
+		name   string
+		system any
+	}{
+		{"a list of parts", parts},
+		{"text", "be brief"},
+		{"text that reads as JSON", `[{"type":"text"}] is how parts look`},
+	} {
+		r := &resolver{content: map[[8]byte]map[string]any{id: {contentSystem: tc.system}}}
+		c := r.callContent(n, "claude-haiku-4-5")
+		if c == nil {
+			t.Fatalf("%s: a call with only system instructions carries no content", tc.name)
+		}
+		if !reflect.DeepEqual(c["system"], tc.system) {
+			t.Errorf("%s: system = %#v, want %#v as staged", tc.name, c["system"], tc.system)
+		}
+	}
+}
+
 // A post_call's content is the call's own: its input and output messages
 // as the framework sent them (rule 20: never converted), its system
-// instructions as JSON text and its tool definitions, under the GenAI
-// provider and the requested model. A tool_call's is its arguments and
-// result in the tool-capture envelope.
+// instructions as the list of parts they were sent as and its tool
+// definitions, under the GenAI provider and the requested model. A
+// tool_call's is its arguments and result in the tool-capture envelope.
 func TestContentPostCallAndToolCall(t *testing.T) {
 	cases := []struct {
 		e, fw, scenario string

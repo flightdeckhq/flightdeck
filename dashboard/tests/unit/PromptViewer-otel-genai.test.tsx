@@ -92,6 +92,27 @@ describe("PromptViewer: OpenTelemetry GenAI content", () => {
     expect(box("prompt-box-tool-0")).toHaveTextContent(/city\s*·\s*string/);
   });
 
+  it("system instructions stored as their list of parts render as the JSON-text form does", async () => {
+    const call = at(fixture("pydantic_ai").calls, 0);
+    const asText = call.system_prompt;
+    if (typeof asText !== "string") throw new Error("the fixture's instructions are not JSON text");
+    // The list the framework sent, as the content endpoint serves it.
+    const parts = JSON.parse(asText) as unknown[];
+    await renderContent({ ...call, event_id: `${call.event_id}-list`, system_prompt: parts });
+    const system = box("prompt-box-system");
+    expect(system).toHaveTextContent("Answer weather questions with the get_weather tool.");
+    expect(system).not.toHaveTextContent('"type"');
+    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
+    expect(screen.getByTestId("prompt-box-system-raw-json")).toHaveTextContent('"content"');
+  });
+
+  it("an empty list of system instructions shows no System section, as empty text does", async () => {
+    const call = at(fixture("pydantic_ai").calls, 0);
+    await renderContent({ ...call, event_id: `${call.event_id}-empty`, system_prompt: [] });
+    expect(screen.queryByTestId("prompt-box-system")).toBeNull();
+    expect(box("prompt-box-message-1")).toBeInTheDocument();
+  });
+
   it("Pydantic AI: a tool's result inside the next call's messages", async () => {
     await renderContent(at(fixture("pydantic_ai").calls, 1));
     const result = within(box("prompt-box-message-3")).getByTestId("genai-part-tool-response");

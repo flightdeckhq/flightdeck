@@ -260,7 +260,11 @@ class PromptContent:
 
     Provider terminology is preserved exactly -- no normalization.
     Anthropic uses 'system' as a separate field; OpenAI chat embeds it in
-    messages.
+    messages. ``system`` holds what the provider received: text, or the
+    list of content blocks an Anthropic ``system`` was given as (the form
+    prompt caching uses, ``cache_control`` on a block), never joined into
+    one string. The server stores the two forms in separate columns by
+    their JSON type.
 
     ``input`` holds a request's ``input`` parameter verbatim, the
     provider's own name for it. Embedding calls (OpenAI
@@ -276,7 +280,7 @@ class PromptContent:
     has no ``messages`` either, puts its ``prompt`` here verbatim.
     """
 
-    system: str | None
+    system: str | list[Any] | None
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] | None
     response: dict[str, Any]

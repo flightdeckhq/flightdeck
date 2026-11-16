@@ -873,10 +873,12 @@ function genaiList(value: unknown): unknown[] {
   return value == null ? [] : [value];
 }
 
-/** The system instructions: ingestion keeps them as JSON in the text
- *  column, so a column that holds a JSON list or object is that JSON,
- *  and any other text is the instructions as sent. */
-function genaiSystem(systemPrompt: string | null): unknown {
+/** The system instructions: the list of parts the framework sent, as
+ *  stored; text that holds a JSON list or object (how such content is
+ *  also stored) is that JSON, and any other text is the instructions as
+ *  sent. */
+function genaiSystem(systemPrompt: string | unknown[] | null): unknown {
+  if (Array.isArray(systemPrompt)) return systemPrompt.length > 0 ? systemPrompt : undefined;
   if (systemPrompt == null || systemPrompt === "") return undefined;
   return parseJsonContainer(systemPrompt) ?? systemPrompt;
 }

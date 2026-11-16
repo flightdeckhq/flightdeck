@@ -1,9 +1,13 @@
 package writer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +134,170 @@ func TestInsertEventWithContent_RejectedContentRollsBackTheEvent(t *testing.T) {
 			}
 			if n := countRows(t, db, "event_content", sessionID); n != 0 {
 				t.Fatalf("%s: %d event_content rows written", name, n)
+			}
+		}
+	})
+}
+
+// The content's system is read by its JSON type: text, a list of content
+// blocks, or nothing; a value of any other type is dropped alone, and
+// never makes the rest of the content unreadable.
+func TestParseEventContent_SystemByJSONType(t *testing.T) {
+	cases := []struct {
+		name, system string // "" leaves the key out
+		text         *string
+		blocks       string
+		dropped      string
+	}{
+		{name: "absent"},
+		{name: "null", system: `null`},
+		{name: "text", system: `"be brief"`, text: ptr("be brief")},
+		{name: "empty text", system: `""`, text: ptr("")},
+		{name: "text that reads as JSON", system: `"[{\"type\":\"text\",\"text\":\"x\"}]"`, text: ptr(`[{"type":"text","text":"x"}]`)},
+		{name: "blocks", system: `[{"type":"text","text":"be brief","cache_control":{"type":"ephemeral"}}]`,
+			blocks: `[{"type":"text","text":"be brief","cache_control":{"type":"ephemeral"}}]`},
+		{name: "empty list", system: ` [] `, blocks: `[]`},
+		{name: "object", system: `{"type":"text","text":"be brief"}`, dropped: "object"},
+		{name: "number", system: `42`, dropped: "number"},
+		{name: "negative number", system: `-1.5e3`, dropped: "number"},
+		{name: "boolean", system: `true`, dropped: "boolean"},
+	}
+	for _, tc := range cases {
+		blob := `{"provider":"anthropic","model":"m","messages":[{"role":"user","content":"hi"}],"response":{}`
+		if tc.system != "" {
+			blob += `,"system":` + tc.system
+		}
+		blob += `}`
+		c, err := parseEventContent(json.RawMessage(blob))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if (c.System.text == nil) != (tc.text == nil) || (c.System.text != nil && *c.System.text != *tc.text) {
+			t.Errorf("%s: text = %v, want %v", tc.name, c.System.text, tc.text)
+		}
+		if string(c.System.blocks) != tc.blocks {
+			t.Errorf("%s: blocks = %q, want %q", tc.name, c.System.blocks, tc.blocks)
+		}
+		if c.System.dropped != tc.dropped {
+			t.Errorf("%s: dropped = %q, want %q", tc.name, c.System.dropped, tc.dropped)
+		}
+		if string(c.Messages) != `[{"role":"user","content":"hi"}]` {
+			t.Errorf("%s: the rest of the content was not read: messages = %s", tc.name, c.Messages)
+		}
+	}
+}
+
+// storedSystem reads an event's two system columns: system_prompt as
+// text, system_blocks as its JSON text, each nil when NULL.
+func storedSystem(t *testing.T, db *storage.DB, eventID string) (text, blocks *string) {
+	t.Helper()
+	if err := db.Reader().QueryRowContext(context.Background(),
+		`SELECT system_prompt, CAST(system_blocks AS TEXT) FROM event_content WHERE event_id = $1`, eventID,
+	).Scan(&text, &blocks); err != nil {
+		t.Fatalf("read event_content: %v", err)
+	}
+	return text, blocks
+}
+
+// A system given as text is stored in system_prompt, one given as a list
+// of content blocks in system_blocks as that list (cache_control and
+// every other key kept); a row holds at most one. A system of another
+// JSON type is left out and the rest of the content is stored, with a
+// warning that names the type and never the value.
+func TestInsertEventWithContent_SystemColumnByJSONType(t *testing.T) {
+	each(t, func(t *testing.T, db *storage.DB) {
+		w, _ := newTestWriter(db)
+		sessionID := testSession(t, db)
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		const blocks = `[{"type":"text","text":"You are terse. SECRET-BLOCK","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Answer in one word."}]`
+		cases := []struct {
+			name, system string
+			wantText     *string
+			wantBlocks   []any
+		}{
+			{name: "text", system: `"You are terse."`, wantText: ptr("You are terse.")},
+			{name: "text that reads as JSON", system: `"[{\"type\":\"text\"}]"`, wantText: ptr(`[{"type":"text"}]`)},
+			{name: "blocks", system: blocks, wantBlocks: []any{
+				map[string]any{"type": "text", "text": "You are terse. SECRET-BLOCK", "cache_control": map[string]any{"type": "ephemeral"}},
+				map[string]any{"type": "text", "text": "Answer in one word."},
+			}},
+			{name: "null", system: `null`},
+			{name: "object", system: `{"type":"text","text":"SECRET-OBJECT"}`},
+		}
+		for _, tc := range cases {
+			eventID := newUUID(t)
+			_, err := insertWithContent(w, eventID, sessionID, json.RawMessage(
+				`{"provider":"anthropic","model":"claude-haiku-4-5","system":`+tc.system+
+					`,"messages":[{"role":"user","content":"hi"}],"response":{"content":[]}}`))
+			if err != nil {
+				t.Fatalf("%s: InsertEventWithContent: %v", tc.name, err)
+			}
+			text, stored := storedSystem(t, db, eventID)
+			if (text == nil) != (tc.wantText == nil) || (text != nil && *text != *tc.wantText) {
+				t.Errorf("%s: system_prompt = %v, want %v", tc.name, text, tc.wantText)
+			}
+			if tc.wantBlocks == nil {
+				if stored != nil {
+					t.Errorf("%s: system_blocks = %s, want NULL", tc.name, *stored)
+				}
+			} else {
+				var got []any
+				if stored == nil || json.Unmarshal([]byte(*stored), &got) != nil || !reflect.DeepEqual(got, tc.wantBlocks) {
+					t.Errorf("%s: system_blocks = %v, want the list as sent", tc.name, stored)
+				}
+			}
+			var hasContent bool
+			var messages string
+			if err := db.Reader().QueryRowContext(context.Background(), `
+				SELECT e.has_content, CAST(c.messages AS TEXT)
+				FROM events e JOIN event_content c ON c.event_id = e.id
+				WHERE e.id = $1`, eventID).Scan(&hasContent, &messages); err != nil {
+				t.Fatalf("%s: read event: %v", tc.name, err)
+			}
+			if !hasContent || !strings.Contains(messages, `"hi"`) {
+				t.Errorf("%s: has_content = %v, messages = %s; want the rest of the content stored", tc.name, hasContent, messages)
+			}
+		}
+		out := logs.String()
+		if strings.Count(out, "neither text nor a list of content blocks") != 1 ||
+			!strings.Contains(out, "json_type=object") || !strings.Contains(out, "event_type=post_call") {
+			t.Errorf("want one warning naming the dropped system's JSON type, got:\n%s", out)
+		}
+		if strings.Contains(out, "SECRET") {
+			t.Errorf("a log line carries captured content:\n%s", out)
+		}
+	})
+}
+
+// The database refuses a system_blocks that is not a list, and a row
+// with both system columns set: the writer never writes either, and the
+// checks keep a direct write from breaking the one-form rule.
+func TestEventContent_SystemColumnChecks(t *testing.T) {
+	each(t, func(t *testing.T, db *storage.DB) {
+		sessionID := testSession(t, db)
+		insert := func(text any, blocks any) error {
+			_, err := db.ExecContext(context.Background(), `
+				INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, system_blocks, messages, response)
+				VALUES ($1, $2, 'anthropic', 'm', $3, $4, '[]', '{}')`, newUUID(t), sessionID, text, blocks)
+			return err
+		}
+		if err := insert(nil, `[{"type":"text","text":"x"}]`); err != nil {
+			t.Fatalf("a list: %v", err)
+		}
+		if err := insert("x", nil); err != nil {
+			t.Fatalf("text: %v", err)
+		}
+		for name, err := range map[string]error{
+			"an object":    insert(nil, `{"type":"text","text":"x"}`),
+			"a string":     insert(nil, `"x"`),
+			"both columns": insert("x", `[{"type":"text","text":"x"}]`),
+		} {
+			if err == nil || !storage.IsDataError(err) {
+				t.Errorf("%s in system_blocks: err = %v, want a check violation", name, err)
 			}
 		}
 	})

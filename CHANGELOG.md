@@ -46,6 +46,19 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A call whose system prompt is a list of content blocks keeps its
+  captured content.** An Anthropic call given `system` as a list of
+  blocks, the form prompt caching uses
+  (`system=[{"type": "text", "text": ..., "cache_control": {...}}]`),
+  was stored without any of its content under `capture_prompts`: the
+  worker could read `system` only as text, and the Prompts tab said no
+  content was recorded. The list is now stored as the provider received
+  it (a new `event_content.system_blocks` column, migration 000038),
+  `GET /v1/events/:id/content` returns it as `system_prompt`, a list
+  where it was a string, and the Prompts tab shows its blocks. An
+  OpenTelemetry GenAI framework's system instructions are stored as
+  their list of parts the same way, rather than as JSON text.
+
 - **A call given `NOT_GIVEN` or `omit` keeps its event under
   `capture_prompts`.** An Anthropic or OpenAI call with an argument set
   to the SDK's "not given" sentinel lost its whole `post_call`, tokens

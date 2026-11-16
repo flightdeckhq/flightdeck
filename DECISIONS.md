@@ -1190,3 +1190,20 @@ sensor's session, metered by the provider patches.
 wrap opens one (a duplicate of the sensor's session); children for the
 workflow shells (no agent of their own); token counts from ADK's
 `after_model` callback (a second count beside the provider patches).
+
+## D284 -- A system prompt given as a list of content blocks is stored as that list, in a column of its own
+
+**Date:** 2026-11-16
+**Decision:** a content's `system` is text, a list or null, by the JSON
+type its producer sent. Text stays in `event_content.system_prompt`; a
+list goes to a new nullable `system_blocks` (JSONB), a row holding at
+most one. Any other type is dropped alone, with a warning naming the
+type. `GET /v1/events/:id/content` returns the stored one as
+`system_prompt`: a string or the list. OpenTelemetry GenAI system
+instructions are passed as their list too.
+**Why:** an Anthropic call with `system` as blocks (the prompt-caching
+form) lost all its content: the worker's string field refused the array.
+**Rejected alternative:** the list as JSON text in `system_prompt` (a text
+prompt that reads as JSON would turn into blocks); flattening the blocks
+to one string (loses `cache_control` and block bounds); one `system
+JSONB` replacing the TEXT column (rewrites every stored prompt).

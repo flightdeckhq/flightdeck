@@ -126,10 +126,10 @@ interface TimelineProps {
    */
   laneViewport?: LaneViewport;
   /**
-   * Called with the first run-lane group's lane count and where its
-   * first lane starts, whenever either changes: the modal gives its Live
-   * feed's height up to those lanes when they do not fit
-   * (``feedHeightCap``).
+   * Called with the first run-lane group's lane count and the height of
+   * the rest of the content (less the other groups), whenever either
+   * changes: the modal gives its Live feed's height up to those lanes
+   * when they do not fit (``feedHeightCap``).
    */
   onRunLaneSpace?: (space: RunLaneSpace) => void;
   /**
@@ -155,12 +155,12 @@ const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
 const RUN_LANE_GROUP_SELECTOR = '[data-run-lanes="true"]';
 
 /** The first run-lane group (the modal's own agent): its lane count, and
- *  where its first lane starts from the top of the content (the axis,
- *  the ALL row and the group's heading above it), which the viewport's
- *  height does not change. */
+ *  the height of everything else the Timeline draws (axis, ALL row, the
+ *  group's heading and border) less the other groups, which scroll; the
+ *  viewport's height does not change it. */
 export interface RunLaneSpace {
   laneCount: number;
-  topPx: number;
+  restPx: number;
 }
 
 export function Timeline({
@@ -504,16 +504,16 @@ export function Timeline({
     for (const lane of lanes) lanesPx += lane.offsetHeight;
     const restPx = content.offsetHeight - lanesPx;
     // The first group's lanes, which the modal's feed gives up height
-    // for: a sub-agent's group below them scrolls.
-    const lead = content.querySelector<HTMLElement>(RUN_LANE_GROUP_SELECTOR);
-    const leadLanes = lead?.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR) ?? [];
-    const firstLane = leadLanes[0];
-    const topPx = firstLane
-      ? Math.round(firstLane.getBoundingClientRect().top - content.getBoundingClientRect().top)
-      : 0;
+    // for; the other groups (sub-agents') below them scroll, so they
+    // count in neither.
+    const groups = Array.from(content.querySelectorAll<HTMLElement>(RUN_LANE_GROUP_SELECTOR));
+    const leadLanes = groups[0]?.querySelectorAll<HTMLElement>(RUN_LANE_ROW_SELECTOR) ?? [];
+    let leadRestPx = content.offsetHeight;
+    for (const lane of leadLanes) leadRestPx -= lane.offsetHeight;
+    for (const group of groups.slice(1)) leadRestPx -= group.offsetHeight;
     const prev = reportedSpace.current;
-    if (!prev || prev.laneCount !== leadLanes.length || prev.topPx !== topPx) {
-      reportedSpace.current = { laneCount: leadLanes.length, topPx };
+    if (!prev || prev.laneCount !== leadLanes.length || prev.restPx !== leadRestPx) {
+      reportedSpace.current = { laneCount: leadLanes.length, restPx: leadRestPx };
       onRunLaneSpace?.(reportedSpace.current);
     }
     if (lanes.length === 0) return;

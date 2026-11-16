@@ -413,7 +413,7 @@ export function PerAgentSwimlaneModal({
     if (!laneSpace || !scrollEl || !body) return;
     const cap = feedHeightCap({
       laneCount: laneSpace.laneCount,
-      laneSpacePx: scrollEl.clientHeight - laneSpace.topPx,
+      laneSpacePx: scrollEl.clientHeight - laneSpace.restPx,
       feedHeightPx: body.offsetHeight,
     });
     setFeedCap((prev) => (prev === cap ? prev : cap));

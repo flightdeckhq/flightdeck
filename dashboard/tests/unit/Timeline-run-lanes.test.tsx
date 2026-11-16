@@ -14,6 +14,7 @@ function viewportOf(width: number) {
   return viewport;
 }
 import {
+  RUN_LANE_HEADING_HEIGHT_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
 } from "@/lib/run-lane-layout";
@@ -177,23 +178,33 @@ describe("Timeline run lanes", () => {
     expect(laneRows().map((l) => l.style.height)).toEqual(["50px", "50px"]);
   });
 
-  it("reports the first group's lanes and where its first lane starts", () => {
-    // jsdom lays nothing out: the first lane starts 90 px below the
-    // content's top, every other box at 0.
-    const FIRST_LANE_TOP_PX = 90;
-    const rect = vi
-      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
-      .mockImplementation(function (this: HTMLElement) {
-        const top =
-          this.hasAttribute("data-run-lane-row") && this.getAttribute("data-lane-index") === "0"
-            ? FIRST_LANE_TOP_PX
-            : 0;
-        return { top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON: () => ({}) };
-      });
+  it("reports the lanes drawn and the height of the rest of its content", () => {
     const onRunLaneSpace = vi.fn();
     const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
-    // A second group (a sub-agent's) below: its lanes scroll, so they are
-    // not counted.
+    renderTimeline([agent], {
+      expandedAgentIds: new Set(["agent-a"]),
+      viewportHeight: 260, laneViewport: viewportOf(1024),
+      onRunLaneSpace,
+    });
+    expect(onRunLaneSpace).toHaveBeenLastCalledWith({ laneCount: 3, restPx: REST_PX });
+  });
+
+  it("reports the first group's lanes, leaving out the groups below it", () => {
+    // A group is as tall as its heading and its lanes.
+    const stubbed = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!.get!;
+    const group = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get");
+    group.mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("data-run-lanes") !== "true") return stubbed.call(this);
+      let px = RUN_LANE_HEADING_HEIGHT_PX;
+      for (const lane of this.querySelectorAll<HTMLElement>("[data-run-lane-row]")) {
+        px += parseFloat(lane.style.height) || 0;
+      }
+      return px;
+    });
+    const onRunLaneSpace = vi.fn();
+    const agent = mkFlavor("agent-a", "lanes-agent", [mkSession(), mkSession(), mkSession()]);
+    // A sub-agent's group below: its lanes scroll, so neither its lanes
+    // nor its heading count.
     const other = mkFlavor("agent-b", "other-agent", [mkSession(), mkSession()]);
     renderTimeline([agent, other], {
       expandedAgentIds: new Set(["agent-a", "agent-b"]),
@@ -201,13 +212,13 @@ describe("Timeline run lanes", () => {
       onRunLaneSpace,
     });
     expect(laneRows()).toHaveLength(5);
-    const firstGroup = document.querySelector('[data-run-lanes="true"]')!;
+    const groups = Array.from(document.querySelectorAll<HTMLElement>('[data-run-lanes="true"]'));
     expect(onRunLaneSpace).toHaveBeenLastCalledWith({
-      laneCount: Number(firstGroup.getAttribute("data-lane-count")),
-      topPx: FIRST_LANE_TOP_PX,
+      laneCount: Number(groups[0]!.getAttribute("data-lane-count")),
+      // REST_PX holds both headings; the second group's goes with it.
+      restPx: REST_PX - RUN_LANE_HEADING_HEIGHT_PX,
     });
-    expect(Number(firstGroup.getAttribute("data-lane-count"))).toBeGreaterThan(1);
-    rect.mockRestore();
+    group.mockRestore();
   });
 
   it("draws every agent it is told to expand as its own group of lanes, sharing the space", () => {

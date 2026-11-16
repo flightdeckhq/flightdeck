@@ -12,9 +12,14 @@ import {
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
+  LANE_FOLD_CUE_HEIGHT_PX,
+  LANE_FOLD_FOOTER_HEIGHT_PX,
+  LANE_IN_VIEW_TOLERANCE_PX,
   LANE_MODEL_SWITCH_LEAD,
   chooseLaneModel,
+  lanesOutOfView,
   feedHeightCap,
+  foldFooterFor,
   modelCallCounts,
   markerText,
   markerTextWidth,
@@ -412,6 +417,31 @@ describe("feedHeightCap", () => {
   it("asks nothing with no lanes", () => {
     expect(feedHeightCap({ laneCount: 0, laneSpacePx: -10, feedHeightPx: 240 })).toBe(230);
   });
+
+  it("keeps the footer strip's height to spare beside the lanes in view", () => {
+    // 3 × 40 + 24 = 144 needed, 87 left: the feed gives up 57 px.
+    expect(
+      feedHeightCap({ laneCount: 5, laneSpacePx: 87, feedHeightPx: 240, footerPx: LANE_FOLD_FOOTER_HEIGHT_PX }),
+    ).toBe(240 - (3 * 40 + LANE_FOLD_FOOTER_HEIGHT_PX - 87));
+  });
+});
+
+describe("foldFooterFor", () => {
+  it("keeps the strip's room when other lanes scroll past the first group's", () => {
+    // The first group's lanes past three scroll.
+    expect(foldFooterFor(4, 1)).toBe(LANE_FOLD_FOOTER_HEIGHT_PX);
+    // A sub-agent's group scrolls past the first group's lanes.
+    expect(foldFooterFor(2, 2)).toBe(LANE_FOLD_FOOTER_HEIGHT_PX);
+  });
+
+  it("keeps none when the first group's lanes are all there is", () => {
+    expect(foldFooterFor(3, 1)).toBe(0);
+    expect(foldFooterFor(1, 1)).toBe(0);
+  });
+
+  it("holds the cue with room above and below", () => {
+    expect(LANE_FOLD_FOOTER_HEIGHT_PX).toBeGreaterThan(LANE_FOLD_CUE_HEIGHT_PX);
+  });
 });
 
 describe("measureMarkerText", () => {
@@ -488,5 +518,54 @@ describe("lane model", () => {
       model = chooseLaneModel(model, modelCallCounts(events, d0, d0 + 60_000), "new");
     }
     expect(model).toBe("new");
+  });
+});
+
+describe("lanesOutOfView", () => {
+  // Lanes 40 px tall from y = 100, in a view from 100 to 220 (three fit).
+  const lanes = (n: number, top = 100, height = 40) =>
+    Array.from({ length: n }, (_, i) => ({ top: top + i * height, bottom: top + (i + 1) * height }));
+
+  it("counts nothing when every lane is in view", () => {
+    expect(lanesOutOfView(lanes(3), 100, 220)).toEqual({ above: 0, below: 0, scrollUpPx: 0, scrollDownPx: 0 });
+  });
+
+  it("counts the lanes not fully visible below, and scrolls the next one fully in", () => {
+    // The view ends at 230: lane 4 (220-260) shows 10 px, lane 5 none.
+    const out = lanesOutOfView(lanes(5), 100, 230);
+    expect(out.below).toBe(2);
+    expect(out.above).toBe(0);
+    // Lane 4's bottom (260) to the view's bottom (230).
+    expect(out.scrollDownPx).toBe(30);
+  });
+
+  it("counts the lanes scrolled above, and scrolls back to the nearest", () => {
+    // Scrolled 70 px: lane 1 (30-70) is gone, lane 2 (70-110) half under
+    // the axis at 100.
+    const out = lanesOutOfView(lanes(5, 30), 100, 230);
+    expect(out.above).toBe(2);
+    expect(out.below).toBe(0);
+    // Lane 2's top (70) to the view's top (100).
+    expect(out.scrollUpPx).toBe(-30);
+  });
+
+  it("forgives a pixel of rounding at either edge", () => {
+    const out = lanesOutOfView(
+      [
+        { top: 100 - LANE_IN_VIEW_TOLERANCE_PX, bottom: 140 },
+        { top: 140, bottom: 180 + LANE_IN_VIEW_TOLERANCE_PX },
+      ],
+      100,
+      180,
+    );
+    expect(out).toEqual({ above: 0, below: 0, scrollUpPx: 0, scrollDownPx: 0 });
+  });
+
+  it("counts a lane taller than the view below, and scrolls no further than its top", () => {
+    const out = lanesOutOfView([{ top: 150, bottom: 400 }], 100, 200);
+    expect(out.below).toBe(1);
+    expect(out.scrollDownPx).toBe(50);
+    // Already at its top: on to its bottom.
+    expect(lanesOutOfView([{ top: 80, bottom: 400 }], 100, 200).scrollDownPx).toBe(200);
   });
 });

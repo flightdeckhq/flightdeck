@@ -129,7 +129,14 @@ export interface EventNodeProps {
    * ``eventIconSize(size)``.
    */
   iconSize?: number;
+  /** The per-agent modal's Live feed row for this event is hovered:
+   *  the circle carries an accent ring. */
+  linked?: boolean;
 }
+
+/** The ring of a circle whose feed row is hovered: a gap in the page's
+ *  colour, then the accent, so it reads on any circle colour. */
+const LINKED_RING = "0 0 0 2px var(--bg), 0 0 0 4px var(--accent)";
 
 /**
  * The icon size for a circle ``size`` px across: the icon of the
@@ -147,7 +154,7 @@ function EventNodeComponent({
   x, eventType, sessionId, flavor, model, toolName,
   tokensTotal, latencyMs, occurredAt, eventId, onClick,
   size = 24, isVisible = true, directiveName, directiveStatus,
-  isAttachment = false, lane, centrePct, iconSize: iconSizeProp,
+  isAttachment = false, lane, centrePct, iconSize: iconSizeProp, linked = false,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const override = eventType === "directive_result"
@@ -229,6 +236,7 @@ function EventNodeComponent({
         data-event-id={eventId}
         data-session-id={sessionId}
         data-run-lane={lane}
+        data-linked={linked ? "true" : undefined}
         className={cn(
           // ``top-1/2 -translate-y-1/2`` is the only vertical shift.
           // Tailwind 4 emits ``-translate-y-1/2`` as the separate
@@ -282,7 +290,8 @@ function EventNodeComponent({
           transform: hovered ? "scale(1.25)" : undefined,
           // zIndex 2 (was 1) so circles paint above the timeline
           // grid line overlay which now sits at zIndex 1.
-          zIndex: hovered ? 10 : 2,
+          zIndex: hovered ? 10 : linked ? 3 : 2,
+          boxShadow: linked ? LINKED_RING : undefined,
           opacity: isVisible ? 1 : 0,
           pointerEvents: isVisible ? "auto" : "none",
         }}
@@ -357,5 +366,6 @@ export const EventNode = memo(EventNodeComponent, (prev, next) => {
   if (prev.lane !== next.lane) return false;
   if (prev.centrePct !== next.centrePct) return false;
   if (prev.iconSize !== next.iconSize) return false;
+  if (prev.linked !== next.linked) return false;
   return true;
 });

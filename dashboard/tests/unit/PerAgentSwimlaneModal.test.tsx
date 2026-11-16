@@ -459,7 +459,7 @@ describe("PerAgentSwimlaneModal", () => {
     nowSpy.mockRestore();
   });
 
-  it("draws the agent's own row as run lanes and its sub-agent as a compact row", () => {
+  it("draws each sub-agent as its own group of run lanes under the agent's", () => {
     const now = Date.now();
     const session = (id: string, flavor: string, parent: string | null = null): Session =>
       ({
@@ -512,9 +512,18 @@ describe("PerAgentSwimlaneModal", () => {
     expect(parentRow).toHaveAttribute("data-run-lanes", "true");
     expect(parentRow.querySelectorAll("[data-run-lane-row]")).toHaveLength(2);
     const childRow = screen.getByTestId("swimlane-agent-row-parent-agent/worker");
-    expect(childRow).not.toHaveAttribute("data-run-lanes");
+    expect(childRow).toHaveAttribute("data-run-lanes", "true");
+    expect(childRow).toHaveAttribute("data-topology", "child");
+    expect(childRow.querySelectorAll("[data-run-lane-row]")).toHaveLength(1);
+    // The agent's own group comes first, its sub-agent's under it.
+    expect(parentRow.compareDocumentPosition(childRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The modal's rows carry no runs chip: they are already expanded.
     expect(screen.queryByTestId("swimlane-runs-chip")).toBeNull();
+
+    // Show sub-agents off: the agent's group alone.
+    fireEvent.click(screen.getByTestId("per-agent-swimlane-modal-show-sub-agents-input"));
+    expect(screen.queryByTestId("swimlane-agent-row-parent-agent/worker")).toBeNull();
+    expect(screen.getByTestId("swimlane-agent-row-parent-agent")).toHaveAttribute("data-run-lanes", "true");
 
     useFleetStore.setState({ flavors: [] });
   });

@@ -48,6 +48,11 @@ POSTS_SETTLED_S = 5.0
 # patch(), an ADK import): seconds normally; past this it has hung, and
 # the test fails with its output rather than holding the run.
 SUBPROCESS_TIMEOUT_S = 120
+# The bound on a parallel branch's wait for the others at a _Meet: the
+# branches start within milliseconds of each other, so one still alone
+# after this ran them one after another, and the test fails instead of
+# hanging.
+MEET_BOUND_S = 30.0
 # What the scripted model answers when its script is used up.
 DEFAULT_ANSWER = "done"
 
@@ -105,7 +110,12 @@ class _Meet:
         self.arrived += 1
         if self.arrived >= self.parties:
             self.all_here.set()
-        await self.all_here.wait()
+        try:
+            await asyncio.wait_for(self.all_here.wait(), MEET_BOUND_S)
+        except TimeoutError as exc:
+            raise AssertionError(
+                f"{self.arrived} of {self.parties} branches ran: not at the same time"
+            ) from exc
 
 
 class _Call:
@@ -932,6 +942,56 @@ def test_a_failure_in_the_run_wrapper_s_own_work_never_reaches_the_caller(
     reported = _texts(_run(adk, _scenario(adk)))
     monkeypatch.setattr(session, method, _raising_after(calls))
     assert _texts(_run(adk, _scenario(adk))) == reported
+
+
+def _raising(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("sensor bug")
+
+
+def test_a_failing_scope_reset_still_takes_the_run_off_the_consumer(
+    adk: ADK, patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step's scope reset and run reset are separate: one failing
+    leaves the other done, so the consumer never runs inside the run."""
+    reported = _texts(_run(adk, _scenario(adk)))
+    monkeypatch.setattr(Session, "exit_subagent_scope", staticmethod(_raising))
+    seen: list[Any] = []
+
+    async def main() -> list[Any]:
+        runner = adk.InMemoryRunner(agent=_scenario(adk), app_name=APP)
+        adk_session = await runner.session_service.create_session(app_name=APP, user_id=USER)
+        events = []
+        async with contextlib.aclosing(
+            runner.run_async(user_id=USER, session_id=adk_session.id, new_message=adk.message("hi"))
+        ) as agen:
+            async for event in agen:
+                seen.append(wrap._RUN.get())
+                events.append(event)
+        return events
+
+    assert _texts(asyncio.run(main())) == reported
+    assert seen and seen == [None] * len(seen)
+
+
+def test_a_failing_scope_restore_still_closes_the_child(
+    adk: ADK, patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent's end is queued before its caller's scope is restored, so
+    a restore that fails leaves no child open."""
+    session, client = patched
+
+    def pipeline() -> Any:
+        a, b = adk.agent("a_agent", "from a"), adk.agent("b_agent", "from b")
+        return adk.SequentialAgent(name="pipeline", sub_agents=[a, b])
+
+    reported = _texts(_run(adk, pipeline()))
+    assert session.wait_child_posts(POSTS_SETTLED_S)
+    client.post_event.reset_mock()
+    monkeypatch.setattr(Session, "enter_subagent_scope", staticmethod(_raising))
+    assert _texts(_run(adk, pipeline())) == reported
+    children = _children(_posted(session, client))
+    assert set(children) == {"a_agent", "b_agent"}
+    assert all(_closed(_one(children, role)) for role in children)
 
 
 # ----------------------------------------------------------------------

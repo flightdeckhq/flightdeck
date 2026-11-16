@@ -397,8 +397,14 @@ async def _agent_ended(agent: Any, error: BaseException | None) -> None:
     child = run.take(agent)
     if child is None:
         return
-    Session.enter_subagent_scope(child.outer_scope)
-    await _wait(_queue(child, _end, child, _error_block(error) if error is not None else None))
+    # Queued first: the child has left the run's open children, so nothing
+    # else would close it if what follows failed.
+    post = _queue(child, _end, child, _error_block(error) if error is not None else None)
+    try:
+        Session.enter_subagent_scope(child.outer_scope)
+    except Exception:  # noqa: BLE001 - fail open: the end is queued already
+        _log.debug("Google ADK scope not restored after an agent", exc_info=True)
+    await _wait(post)
 
 
 def _cancelled_here() -> bool:
@@ -562,14 +568,19 @@ def _enter_step(run: _Run, scope: SubagentScope | None) -> tuple[Any, Any]:
 
 
 def _exit_step(tokens: tuple[Any, Any]) -> None:
+    # Each reset on its own: the run must leave the consumer's context even
+    # when the scope cannot be reset, and the other way round.
     run_token, scope_token = tokens
-    try:
-        if scope_token is not None:
+    if scope_token is not None:
+        try:
             Session.exit_subagent_scope(scope_token)
-        if run_token is not None:
+        except Exception:  # noqa: BLE001 - another context's token, or a failure: fail open
+            _log.debug("Google ADK step scope not reset", exc_info=True)
+    if run_token is not None:
+        try:
             _RUN.reset(run_token)
-    except Exception:  # noqa: BLE001 - another context's token, or a failure: fail open
-        _log.debug("Google ADK run step state not reset", exc_info=True)
+        except Exception:  # noqa: BLE001 - another context's token, or a failure: fail open
+            _log.debug("Google ADK step run not reset", exc_info=True)
 
 
 def _close_run(run: _Run, error: BaseException | None) -> None:

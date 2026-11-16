@@ -59,6 +59,12 @@ GENAI_ADK_PYTHON = os.environ.get(
 OPENAI_FLOOR_PYTHON = os.environ.get(
     "FD_OPENAI_FLOOR_PYTHON", str(_HOME / ".cache/fd-openai-floor-venv/bin/python")
 )
+# ``38_google_adk.py`` runs the sensor with Google ADK, from a venv of its
+# own (playground/README.md, Sensor ADK venv); it is tagged SKIP when that
+# venv is missing.
+SENSOR_ADK_PYTHON = os.environ.get(
+    "FD_SENSOR_ADK_PYTHON", str(_HOME / ".cache/fd-sensor-adk-venv/bin/python")
+)
 
 
 def _venv_python(name: str) -> str | None:
@@ -68,6 +74,8 @@ def _venv_python(name: str) -> str | None:
         return GENAI_ADK_PYTHON if "google_adk" in name else GENAI_PYTHON
     if "_openai_floor" in name:
         return OPENAI_FLOOR_PYTHON
+    if name.endswith("_google_adk.py"):
+        return SENSOR_ADK_PYTHON
     return None
 
 
@@ -110,13 +118,20 @@ def main() -> int:
         # assemble the trace. 40_openai_agents runs four multi-agent
         # runs, about ten model calls; 41_langgraph_runnable_nodes three
         # graph runs, five or more; 42_deepagents two Deep Agent runs,
-        # four or more model calls each.
+        # four or more model calls each; 38_google_adk two runs per
+        # provider, about eight model calls each.
         if (
             "subagents" in name
             or "_genai_" in name
             or "mcp_policy_langchain" in name
             or "mcp_policy_llamaindex" in name
-            or name in ("40_openai_agents.py", "41_langgraph_runnable_nodes.py", "42_deepagents.py")
+            or name
+            in (
+                "38_google_adk.py",
+                "40_openai_agents.py",
+                "41_langgraph_runnable_nodes.py",
+                "42_deepagents.py",
+            )
         ):
             timeout_s = 180
         else:
@@ -124,6 +139,14 @@ def main() -> int:
         print(f"\n=== {name} ===", flush=True)
         python = _interpreter(name)
         if python is None:
+            if name.endswith("_google_adk.py") and "_genai_" not in name:
+                print(
+                    f"Google ADK script skipped: no venv at {SENSOR_ADK_PYTHON}"
+                    " (playground/README.md, Sensor ADK venv)",
+                    flush=True,
+                )
+                rows.append((name, SKIP_RC, 0.0, "no sensor ADK venv"))
+                continue
             if "_openai_floor" in name:
                 print(
                     f"OpenAI floor script skipped: no venv at {OPENAI_FLOOR_PYTHON}"

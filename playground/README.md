@@ -45,6 +45,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `35_genai_google_adk.py` | Google ADK over OpenTelemetry, no sensor | The same run through `AgentTool` with `maybe_set_otel_providers()`, which also exports each call's content as a log record to `/ingest/v1/logs`; OpenAI `gpt-4o-mini` through ADK's LiteLLM wrapper in place of its Gemini default. ADK records tool arguments only inside model messages, so its tool calls and child carry no content of their own and only the calls' content is checked |
 | `36_openai_floor.py` | openai 1.26 to 1.77, from the OpenAI floor venv | On the client layout of openai before 1.78, which builds `chat` and `embeddings` in its constructor: sync and async chat, a sync and an async chat stream, embeddings (single + list input), and a chat call on a client built and touched before `patch()`; asserts five `post_call`s with input and output tokens (two of them streamed), two `embeddings` events with tokens, and stored content on all. SKIPs on a newer openai |
 | `37_agent_handoff.py` | sensor only, no provider key | `Session.emit_agent_handoff`, called as the ADK and OpenAI Agents wraps call it: a hand-off on the sensor's session, then one on a child session opened with `emit_subagent_session_start`; asserts each lands as a `session_signal` with `signal=agent_handoff`, `signal_data` `{from, to}`, no model and `has_content=false`, the child's carrying its `parent_session_id`, and a 404 from `GET /v1/events/:id/content` for both although capture is on |
+| `38_google_adk.py` | `google-adk` + litellm and/or the anthropic SDK (the sensor ADK venv) | The sensor's native Google ADK wrap (`Provider.GOOGLE_ADK`), per provider whose key is set (OpenAI `gpt-4o-mini` through `LiteLlm`, Anthropic through ADK's `AnthropicLlm`): a root agent that calls a function tool and an `AgentTool` agent and then transfers to a sub-agent. Asserts the `AgentTool` agent's and the transferred-to agent's child sessions under the sensor's session (the root agent opens none), the `agent_handoff` signal with `from` / `to` on the sensor's session, the model calls on the sensor's session with tokens, and one `tool_call` per function call. A Gemini section self-skips without `GOOGLE_API_KEY` (its calls would not be metered). Exits 2 when no provider key is set |
 | `39_llamaindex_agents.py` | `llama-index-core` 0.14+, `llama-index-llms-openai` | Three runs on `gpt-4o-mini` under one sensor session: a `FunctionAgent` with a `multiply` tool, an `AgentWorkflow` where `calculator` multiplies and hands off to `writer`, and a `ReActAgent`; asserts one closed child per agent (`agent_role` the agent's name) parented on the sensor's session and carrying only its start and end (plus the `agent_handoff` signal on `calculator`) with no tokens, the hand-off reason as `writer`'s `incoming_message`, every model call on the sensor's session with its `tokens_used` their sum, exactly one `multiply` `tool_call` per run on the sensor's session (from the response for the FunctionAgents, from the wrap for the ReActAgent, the only one with a stored tool output), and a 200 from `GET /v1/events/:id/content` for a model call |
 | `40_openai_agents.py` | `openai-agents` (0.20 in the dev venv) + openai SDK | The sensor's native OpenAI Agents SDK wrap (`Provider.OPENAI_AGENTS`), four runs on `gpt-4.1-nano` (`PLAYGROUND_OPENAI_AGENTS_MODEL` overrides it; `gpt-4o-mini` when the account cannot use it): a hand-off (two sibling child sessions, `agent_handoff` on the triage child, which ends before the weather child starts, model calls on the sensor's session); a function tool and an agent used as a tool (the expert's child nests under the lead's, one `tool_call` per function call on the sensor's session); a streamed run with `run_config.group_id` (its child closed, `gen_ai_conversation_id` in its context, a streamed `post_call` with a TTFT); an input guardrail tripwire (the run raises, `guardrail_tripwire` with names only on the child, which ends in error) and a tool guardrail's `reject_content` (signal, the run goes on). Prints every session id |
 | `41_langgraph_runnable_nodes.py` | `langgraph`, `langchain-anthropic` | Three runs on `claude-haiku-4-5`: a hand-built tool loop (a `RunnableLambda` model node, a `ToolNode`, a `RunnableLambda` summarise node) lands one closed child per node run under the sensor's session, carrying only its start and end, with the model calls and the `multiply` `tool_call` on the sensor's session; an async `delegate` node awaiting an inner graph (`inner_graph`), whose run opens a child under the delegate's child and whose natively async `RunnableCallable` node's child nests under the run's; and `create_agent` doing the same work under a second session, which opens no child session |
@@ -117,6 +118,24 @@ uv pip install --python ~/.cache/fd-openai-floor-venv/bin/python \
 the path), and `run_all.py` runs it under `FD_OPENAI_FLOOR_PYTHON` (the
 same default), tagging it SKIP when the venv is missing. Any release
 from 1.26 to 1.77 exercises the same layout.
+
+## Sensor ADK venv
+
+`38_google_adk.py` runs the sensor with Google ADK, which holds
+websockets and OpenTelemetry below the releases the project venv
+resolves, so it comes from the lock's `google-adk` group in a venv of its
+own. Keep it on a Linux filesystem:
+
+```bash
+cd sensor && UV_PROJECT_ENVIRONMENT=~/.cache/fd-sensor-adk-venv \
+  uv sync --locked --extra test --extra anthropic --extra openai --extra litellm --group google-adk
+```
+
+`make playground-google-adk` runs it (`SENSOR_ADK_PYTHON` overrides the
+path), `make test-integration-google-adk` runs the ADK integration test
+from the same venv, and `run_all.py` runs the script under
+`FD_SENSOR_ADK_PYTHON` (the same default), tagging it SKIP when the venv
+is missing.
 
 ## Running
 

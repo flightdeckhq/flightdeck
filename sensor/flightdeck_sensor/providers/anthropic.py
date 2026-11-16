@@ -14,6 +14,7 @@ from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import given as _given
 from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
@@ -528,12 +529,12 @@ class AnthropicProvider:
                 resp_dict = {"raw": str(response)}
 
             return PromptContent(
-                system=request_kwargs.get("system"),
-                messages=request_kwargs.get("messages", []),
-                tools=request_kwargs.get("tools"),
+                system=_given(request_kwargs.get("system")),
+                messages=_given(request_kwargs.get("messages")) or [],
+                tools=_given(request_kwargs.get("tools")),
                 response=resp_dict,
                 provider="anthropic",
-                model=request_kwargs.get("model", ""),
+                model=_given(request_kwargs.get("model")) or "",
                 session_id="",  # Filled by caller
                 event_id="",  # Filled by caller
                 captured_at=datetime.now(UTC).isoformat(),

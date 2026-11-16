@@ -113,13 +113,11 @@ node or the run.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import functools
 import importlib
 import inspect
 import logging
 import re
-import threading
 import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -134,8 +132,11 @@ from flightdeck_sensor.core.session import (
     subagent_error,
 )
 from flightdeck_sensor.core.types import SubagentMessage
+from flightdeck_sensor.interceptor._child_posts import queue_post as _queue
+from flightdeck_sensor.interceptor._child_posts import wait_post as _wait
 
 if TYPE_CHECKING:
+    import concurrent.futures
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
     from contextvars import Token
 
@@ -475,9 +476,9 @@ class _Child:
     scope: SubagentScope
     # The child session this one nests under; None for the sensor's own.
     parent_session_id: str | None
-    # The start post when it was queued on a loop's executor; a later post
-    # still in flight is queued from its completion (see _queue).
-    start_post: concurrent.futures.Future[None] | None = None
+    # The child's last post queued on a loop's executor; the next one is
+    # queued from its completion, so the start comes first (see _queue).
+    last_post: concurrent.futures.Future[None] | None = None
 
     def identity(self) -> dict[str, Any]:
         return {
@@ -551,61 +552,6 @@ def _end(child: _Child, result: Any = _NO_RESULT, error: BaseException | None = 
         _log.debug("LangGraph child session_end failed", exc_info=True)
 
 
-def _submit(loop: asyncio.AbstractEventLoop, run: Callable[[], None]) -> None:
-    """Run ``run`` on the loop's executor; in place when the executor no
-    longer takes work (the loop is shutting down)."""
-    try:
-        loop.run_in_executor(None, run)
-    except RuntimeError:
-        run()
-
-
-def _queue(child: _Child, post: Callable[..., None], *args: Any) -> concurrent.futures.Future[None]:
-    """Queue a child post on the running loop's executor, apart from any
-    task, so cancelling the task that waits for it cannot drop it; the
-    session's ``end()`` waits for it. Posted in place when there is no
-    loop. While the child's start is still being posted, the post is
-    queued from the start post's completion instead, in the thread that
-    finishes it: it follows the start, and no thread waits for the start.
-    The posts never raise."""
-    done: concurrent.futures.Future[None] = concurrent.futures.Future()
-
-    def run() -> None:
-        try:
-            post(*args)
-        finally:
-            done.set_result(None)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        run()
-        return done
-    child.session.track_child_post(done)
-    started = child.start_post
-    if started is None or started.done():
-        _submit(loop, run)
-        return done
-    loop_thread = threading.get_ident()
-
-    def after_start(_: concurrent.futures.Future[None]) -> None:
-        # Called on the loop's thread when the start finished before the
-        # callback was added; the post must not run there.
-        if threading.get_ident() == loop_thread:
-            _submit(loop, run)
-        else:
-            run()
-
-    started.add_done_callback(after_start)
-    return done
-
-
-async def _wait(post: concurrent.futures.Future[None]) -> None:
-    """Wait for a queued post. A cancellation of the waiter propagates
-    and leaves the post running."""
-    await asyncio.shield(asyncio.wrap_future(post))
-
-
 def _on_loop_thread() -> bool:
     """Whether this thread runs an event loop: sync LangGraph code called
     from a coroutine, where a post in place would hold the loop."""
@@ -620,7 +566,7 @@ def _start_from_sync(child: _Child, body: Any) -> None:
     """Post the child's start from sync code: in place, or queued and not
     waited for on a loop's thread."""
     if _on_loop_thread():
-        child.start_post = _queue(child, _start, child, body)
+        _queue(child, _start, child, body)
     else:
         _start(child, body)
 
@@ -656,10 +602,10 @@ async def _run_async(node_name: str, body: Any, call: Callable[[], Awaitable[Any
     child = _open(node_name)
     if child is None:
         return await call()
-    child.start_post = _queue(child, _start, child, body)
+    start = _queue(child, _start, child, body)
     token = child.session.enter_subagent_scope(child.scope)
     try:
-        await _wait(child.start_post)
+        await _wait(start)
         result = await call()
     except (Exception, asyncio.CancelledError) as exc:
         await _wait(_queue(child, _end, child, _NO_RESULT, exc))
@@ -681,11 +627,11 @@ async def _stream_child(
         async for chunk in stream():
             yield chunk
         return
-    child.start_post = _queue(child, _start, child, body)
+    start = _queue(child, _start, child, body)
     token = child.session.enter_subagent_scope(child.scope)
     last = _NO_RESULT
     try:
-        await _wait(child.start_post)
+        await _wait(start)
         async for chunk in stream():
             last = chunk
             yield chunk
@@ -1144,11 +1090,11 @@ def _astream_wrapper(
                 await _aclose(unwatched, unwatched_tracking)
             return
         output = _RunOutput(self, config, kwargs)
-        child.start_post = _queue(child, _start, child, input)
+        start = _queue(child, _start, child, input)
         inner = original(self, input, config, **kwargs)
         tracking = _LoopTracking()
         try:
-            await _wait(child.start_post)
+            await _wait(start)
             while True:
                 tokens = _enter_step(child, self)
                 try:

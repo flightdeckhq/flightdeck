@@ -497,3 +497,75 @@ def test_litellm_stop_reason_reads_finish_reason_on_response_and_chunk() -> None
     )
     assert provider.stop_reason_from_stream_chunk(mid) is None
     assert provider.response_stop_reason(_Plain(stop_reason="refusal")) is None
+
+
+def test_anthropic_content_stores_none_for_an_argument_left_out() -> None:
+    """A wrapper that passes the SDK's ``NOT_GIVEN`` through (Google ADK's
+    ``AnthropicLlm`` does, for an agent with no tools or no system prompt)
+    gave nothing: the content stores None, and the event stays JSON."""
+    import dataclasses
+    import json
+
+    anthropic = pytest.importorskip("anthropic")
+
+    from flightdeck_sensor.providers.anthropic import AnthropicProvider
+
+    kwargs = {
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "system": anthropic.NOT_GIVEN,
+        "tools": anthropic.NOT_GIVEN,
+    }
+    content = AnthropicProvider(capture_prompts=True).extract_content(kwargs, {"content": []})
+    assert content is not None
+    assert content.tools is None and content.system is None
+    assert content.messages == kwargs["messages"]
+    json.dumps(dataclasses.asdict(content))
+
+
+def _openai_sentinels() -> list[Any]:
+    """The installed openai SDK's "not given" sentinels: ``NOT_GIVEN``,
+    and ``omit`` on the releases that have it."""
+    openai = pytest.importorskip("openai")
+    return [openai.NOT_GIVEN] + ([openai.omit] if hasattr(openai, "omit") else [])
+
+
+@pytest.mark.parametrize("call", ["chat", "responses", "embeddings"])
+def test_openai_content_stores_an_argument_left_out_as_not_given(call: str) -> None:
+    """The OpenAI Agents SDK's ``OpenAIChatCompletionsModel`` passes
+    ``tools=omit`` for an agent with no tools: the SDK sends no such
+    argument, so the stored content does not hold it, and stays JSON."""
+    import dataclasses
+    import json
+
+    from flightdeck_sensor.core.types import EventType
+    from flightdeck_sensor.providers.openai import OpenAIProvider
+
+    provider = OpenAIProvider(capture_prompts=True)
+    for sentinel in _openai_sentinels():
+        if call == "chat":
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": sentinel,
+            }
+            content = provider.extract_content(kwargs, {"choices": []})
+            assert content is not None
+            assert content.tools is None and content.messages == kwargs["messages"]
+        elif call == "responses":
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "input": "hi",
+                "instructions": sentinel,
+                "tools": sentinel,
+            }
+            content = provider.extract_content(kwargs, {"output": []})
+            assert content is not None
+            assert content.tools is None and content.system is None and content.input == "hi"
+        else:
+            # input is the field an embeddings call's content stores.
+            kwargs = {"model": "text-embedding-3-small", "input": sentinel}
+            content = provider.extract_content(kwargs, {"data": []}, EventType.EMBEDDINGS)
+            assert content is not None
+            assert content.input is None
+        json.dumps(dataclasses.asdict(content))

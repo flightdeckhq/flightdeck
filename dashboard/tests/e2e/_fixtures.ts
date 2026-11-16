@@ -646,3 +646,36 @@ export async function openAgentDrawerFromRow(row: Locator): Promise<void> {
   await row.locator('[data-testid^="agent-row-name-"]').first().click();
 }
 
+
+/** An agent's id by its name, from the fleet roster the dashboard
+ *  loads (``GET /v1/fleet``, paged). */
+export async function agentIdByName(page: Page, agentName: string): Promise<string> {
+  const perPage = 200;
+  for (let p = 1; p <= 50; p++) {
+    const resp = await page.request.get(`${GENAI_API}/v1/fleet?page=${p}&per_page=${perPage}`, {
+      headers: GENAI_AUTH,
+    });
+    if (!resp.ok()) throw new Error(`fleet page ${p}: ${resp.status()}`);
+    const { agents } = (await resp.json()) as {
+      agents: { agent_id: string; agent_name: string }[] | null;
+    };
+    const hit = agents?.find((a) => a.agent_name === agentName);
+    if (hit) return hit.agent_id;
+    if (!agents || agents.length < perPage) break;
+  }
+  throw new Error(`no agent named ${agentName} in the fleet`);
+}
+
+/** Open the per-agent swimlane modal for ``agentName`` the way an
+ *  operator does from anywhere: its agent drawer (the ``?agent_drawer=``
+ *  param) and the drawer's "Open in swimlane". Returns the modal. */
+export async function openPerAgentModal(page: Page, agentName: string): Promise<Locator> {
+  const agentId = await agentIdByName(page, agentName);
+  await page.goto(`/?agent_drawer=${encodeURIComponent(agentId)}`);
+  const drawer = page.locator(`[data-testid="agent-drawer"][data-agent-id="${agentId}"]`);
+  await drawer.waitFor({ timeout: 15_000 });
+  await drawer.locator('[data-testid="agent-drawer-open-swimlane"]').click();
+  const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
+  await modal.waitFor();
+  return modal;
+}

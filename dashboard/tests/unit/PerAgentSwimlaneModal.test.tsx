@@ -437,4 +437,64 @@ describe("PerAgentSwimlaneModal", () => {
     useFleetStore.setState({ flavors: [] });
     nowSpy.mockRestore();
   });
+
+  it("draws the agent's own row as run lanes and its sub-agent as a compact row", () => {
+    const now = Date.now();
+    const session = (id: string, flavor: string, parent: string | null = null): Session =>
+      ({
+        session_id: id,
+        flavor,
+        agent_type: "coding",
+        host: null,
+        framework: null,
+        model: "claude-sonnet-4-5",
+        state: "active",
+        started_at: new Date(now - 20_000).toISOString(),
+        last_seen_at: new Date(now).toISOString(),
+        ended_at: null,
+        tokens_used: 0,
+        token_limit: null,
+        parent_session_id: parent,
+      }) as Session;
+    const flavor = (agentId: string, name: string, sessions: Session[]): FlavorSummary => ({
+      flavor: agentId,
+      agent_type: "coding",
+      session_count: sessions.length,
+      active_count: sessions.length,
+      tokens_used_total: 0,
+      sessions,
+      agent_id: agentId,
+      agent_name: name,
+      client_type: ClientType.ClaudeCode,
+    });
+    useFleetStore.setState({
+      flavors: [
+        flavor("agent-parent", "parent-agent", [
+          session("p0000001-0000-4000-8000-000000000000", "agent-parent"),
+          session("p0000002-0000-4000-8000-000000000000", "agent-parent"),
+        ]),
+        flavor("agent-child", "parent-agent/worker", [
+          session("c0000001-0000-4000-8000-000000000000", "agent-child", "p0000001-0000-4000-8000-000000000000"),
+        ]),
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal
+          agent={mkAgent({ agent_id: "agent-parent", agent_name: "parent-agent", topology: "parent" })}
+          onClose={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const parentRow = screen.getByTestId("swimlane-agent-row-parent-agent");
+    expect(parentRow).toHaveAttribute("data-run-lanes", "true");
+    expect(parentRow.querySelectorAll("[data-run-lane-row]")).toHaveLength(2);
+    const childRow = screen.getByTestId("swimlane-agent-row-parent-agent/worker");
+    expect(childRow).not.toHaveAttribute("data-run-lanes");
+    // The modal's rows carry no runs chip: they are already expanded.
+    expect(screen.queryByTestId("swimlane-runs-chip")).toBeNull();
+
+    useFleetStore.setState({ flavors: [] });
+  });
 });

@@ -164,6 +164,15 @@ describe("EventNode in run lanes", () => {
   const circle = (container: HTMLElement) =>
     container.querySelector("[data-session-id]") as HTMLElement;
 
+  it("takes an explicit icon size for a circle the lane table lacks", () => {
+    const { container } = render(
+      <EventNode {...baseProps} size={28} iconSize={17} />,
+    );
+    const svg = circle(container).querySelector("svg");
+    expect(svg).toHaveAttribute("width", "17");
+    expect(circle(container).style.width).toBe("28px");
+  });
+
   it("sizes the icon for each lane's circle", () => {
     expect(eventIconSize(24)).toBe(13);
     expect(eventIconSize(22)).toBe(13);

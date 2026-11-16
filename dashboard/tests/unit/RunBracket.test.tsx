@@ -433,3 +433,26 @@ describe("RunLine", () => {
 		);
 	});
 });
+
+describe("centred marks on a run's own lane (the per-agent modal)", () => {
+	it("puts a one-lane glyph on the lane's centre instead of its top edge", () => {
+		render(
+			<RunBracket glyph={makeGlyph("start")} session={makeSession()} onClick={vi.fn()} centred />,
+		);
+		const glyph = screen.getByTestId("swimlane-run-bracket-start-abcd1234");
+		expect(glyph.style.top).toBe("calc(50% - 5px)");
+	});
+
+	it("runs a one-lane line through the lane's centre", () => {
+		render(
+			<RunLine
+				line={makeLine({}, { lane: 0, laneCount: 1 })}
+				session={makeSession()}
+				highlighted={false}
+				onClick={vi.fn()}
+				centred
+			/>,
+		);
+		expect(screen.getByTestId("swimlane-run-line-abcd1234").style.top).toBe("calc(50% - 4px)");
+	});
+});

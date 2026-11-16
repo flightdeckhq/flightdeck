@@ -7996,7 +7996,10 @@ Modal layout:
   the swimlane's `useSessionEvents` path so the lane and the
   feed read from one source of truth, including events older
   than any wall-clock window), merging each fetched run into the
-  cache by event id (`mergeIntoEventsCache`);
+  cache by event id (`mergeIntoEventsCache`). A run is fetched
+  unless the cache holds its whole history (`fullHistoryLoaded`):
+  the Fleet page caches only its own window's events of a run, which
+  the modal's wider ranges would otherwise miss;
   `useFleetStore.lastEvent` ticks every WS event into the feed
   dedup'd by `event.id` and merges it into `eventsCache` the same
   way, so the swimlane sees the same live tick. Both streams filter through
@@ -8090,9 +8093,10 @@ lanes (see SwimLane).
   `FEED_MIN_HEIGHT_PX` (114 px, its column header and three event rows,
   enough to read the newest events and see the feed move), until
   min(N, 3) lanes of the first group (the agent's own) fit. Past that
-  the lanes stay at 40 px and the scroll viewport scrolls vertically. The modal's Timeline reports the lanes
-  drawn and the height of the rest of its content (`onRunLaneSpace`),
-  which the feed's height does not change; the modal reads the feed's
+  the lanes stay at 40 px and the scroll viewport scrolls vertically.
+  The modal's Timeline reports the first group's lane count and where
+  its first lane starts (`onRunLaneSpace`), which the feed's height
+  does not change; the modal reads the feed's
   body (through `LiveFeed`'s `bodyRef`) and the scroll viewport from
   the page together, so their sum is fixed and the cap (`LiveFeed`'s
   `maxBodyHeight`) holds once the feed takes it. With room to spare the feed grows back to the height the
@@ -8172,23 +8176,25 @@ lanes (see SwimLane).
   pattern of `lib/lane-viewport.ts`): each lane and each feed row reads
   whether it is lit, so a pointer move re-renders only the lanes and
   rows that light or go out, not the modal, the Timeline or the rest
-  of the feed. A lane's label is a button (`aria-pressed`): a click
-  filters the Live feed to that run, a click on another lane's label
+  of the feed. A lane's label is a button (`aria-pressed`; pressed, it
+  draws an accent bar and its run id in the accent): a click filters
+  the Live feed to that run, a click on another lane's label
   switches the filter, and a click on the filtered lane's label clears
   it. While filtered, the feed's header shows a chip, `Run <id8> ×`, a
   button that clears the filter; `Esc` clears it too, after any open
   drawer and before the modal. The feed's sort, its resize handle and
-  its counts work as before, over the filtered rows. The Fleet page's
-  Live feed has no store and no filter, and is as it was.
+  its counts apply to the filtered rows. The Fleet page's Live feed has
+  neither the link nor the run filter.
 - **Lanes below the fold.** When lanes are out of the scroll viewport,
   a small cue at the lane area's bottom edge counts the lanes not
   fully visible below (`2 more below`), and a mirror cue under the
   time axis counts those above (`1 more above`) once scrolled. A click
   scrolls the next hidden lane into full view. The cues update as the
-  viewport scrolls or the lanes change and disappear at either end;
-  they are buttons with a fixed accessible name and no live region, so
-  a screen reader is not told of every scroll (the scroll viewport's
-  own name says what it holds).
+  viewport scrolls or the lanes change and disappear at either end,
+  handing the focus to the scroll viewport when the focused cue goes.
+  They are buttons named by their text, outside any live region, so a
+  screen reader is not told of every scroll; the scroll viewport keeps
+  its fixed name, "Run lanes of <agent>".
 
 ### Agent drawer
 

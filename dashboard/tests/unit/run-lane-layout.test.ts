@@ -418,7 +418,7 @@ describe("feedHeightCap", () => {
     expect(feedHeightCap({ laneCount: 0, laneSpacePx: -10, feedHeightPx: 240 })).toBe(230);
   });
 
-  it("keeps room for the footer strip under the lanes in view", () => {
+  it("keeps the footer strip's height to spare beside the lanes in view", () => {
     // 3 × 40 + 24 = 144 needed, 87 left: the feed gives up 57 px.
     expect(
       feedHeightCap({ laneCount: 5, laneSpacePx: 87, feedHeightPx: 240, footerPx: LANE_FOLD_FOOTER_HEIGHT_PX }),

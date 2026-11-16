@@ -14,7 +14,8 @@ All notable changes to Flightdeck are documented here.
   the feed says so. With **Show sub-agents** on, each sub-agent gets its
   own group of run lanes under the parent's. When lanes are out of view,
   a `2 more below` cue (and `1 more above` once scrolled) counts them
-  and scrolls to the next one, in space of its own beside the lanes.
+  and scrolls to the next one, from space of its own that no lane
+  content passes under.
 - The per-agent modal fetches a run's whole history when the Fleet page
   has cached only its newest events, so the modal's wider ranges show
   the run's older events and start; it fetches at most four runs at

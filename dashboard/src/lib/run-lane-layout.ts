@@ -93,11 +93,12 @@ export const RUN_LANES_FEED_YIELDS_FOR = 3;
 export const LANE_FOLD_CUE_HEIGHT_PX = 18;
 
 /**
- * The opaque footer strip at the bottom of the label column that holds
- * the "more below" cue while lanes are below the fold: the cue with
- * 3 px above and below. The lanes' labels scroll under it, so a lane
- * counts as in view only above it, and the scroll viewport gains as much
- * room at its end so the last lane can scroll clear of it.
+ * The height of the footer strip under the per-agent modal's lane
+ * viewport, which holds the "more below" cue while the lanes overflow:
+ * the 18 px cue with 3 px above and below. The strip is a row of its own
+ * between the viewport and the Live feed, so nothing scrolls under it;
+ * it takes its height from the viewport, and the feed's cap counts the
+ * two together.
  */
 export const LANE_FOLD_FOOTER_HEIGHT_PX = LANE_FOLD_CUE_HEIGHT_PX + 6;
 
@@ -106,9 +107,10 @@ export const LANE_FOLD_FOOTER_HEIGHT_PX = LANE_FOLD_CUE_HEIGHT_PX + 6;
  * ``laneCount`` lanes at the minimum do not fit in ``laneSpacePx`` (the
  * space left for them now, with the feed body at ``feedHeightPx``), the
  * feed gives up the shortfall, down to ``FEED_MIN_HEIGHT_PX``, until
- * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit, above ``footerPx`` (the
- * footer strip, when lanes will scroll past them); past that the lanes
- * scroll. With room to spare the cap rises above the feed, which then
+ * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit with ``footerPx`` to spare
+ * (the footer strip's height, which the lane area gives the strip when
+ * other lanes will scroll past them; ``laneSpacePx`` then counts the
+ * strip with the viewport); past that the lanes scroll. With room to spare the cap rises above the feed, which then
  * keeps its own height.
  */
 export function feedHeightCap({
@@ -128,10 +130,11 @@ export function feedHeightCap({
 }
 
 /**
- * The footer strip ``feedHeightCap`` keeps room for: when the feed gives
- * up height to the first group's lanes, every other lane scrolls past
- * them (the first group's past ``RUN_LANES_FEED_YIELDS_FOR``, and any
- * other group), and the strip then shows under the lanes in view.
+ * The footer strip's height ``feedHeightCap`` keeps to spare: when the
+ * feed gives up height to the first group's lanes, every other lane
+ * scrolls past them (the first group's past ``RUN_LANES_FEED_YIELDS_FOR``,
+ * and any other group), and the strip then shows under the viewport,
+ * below the lanes in view.
  */
 export function foldFooterFor(laneCount: number, groupCount: number): number {
   return laneCount > RUN_LANES_FEED_YIELDS_FOR || groupCount > 1 ? LANE_FOLD_FOOTER_HEIGHT_PX : 0;

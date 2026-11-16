@@ -412,10 +412,11 @@ export function PerAgentSwimlaneModal({
   // not fit above the Live feed, the feed gives up height to them, down
   // to its minimum, until three fit (``feedHeightCap``); the lanes, and
   // any sub-agent's group below them, scroll past that. The feed's body
-  // and the scroll viewport are read from the page in one go, so their
-  // sum, which the feed's height does not change, gives a cap that holds
-  // once the feed takes it. The feed ignores the cap once the operator
-  // drags its resize handle.
+  // and the scroll viewport (with the footer strip under it, while it
+  // shows) are read from the page in one go, so their sum, which the
+  // feed's height does not change, gives a cap that holds once the feed
+  // takes it. The feed ignores the cap once the operator drags its resize
+  // handle.
   const [laneSpace, setLaneSpace] = useState<RunLaneSpace | null>(null);
   const [feedCap, setFeedCap] = useState<number | undefined>(undefined);
   // The lanes overflow the lane area (``LaneFoldCues`` reads it), and the

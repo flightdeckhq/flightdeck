@@ -1190,3 +1190,19 @@ sensor's session, metered by the provider patches.
 wrap opens one (a duplicate of the sensor's session); children for the
 workflow shells (no agent of their own); token counts from ADK's
 `after_model` callback (a second count beside the provider patches).
+
+## D283 -- The sensor reads a call's iterator arguments into lists for itself and hands the SDK an iterator of its own over the same items
+
+**Date:** 2026-11-16
+**Decision:** with a session active, the sensor reads each iterator in the
+arguments it reads (`messages`, `system`, `tools`, `input`, `instructions`,
+`prompt`; 64 levels deep) into a list; the SDK gets the sensor's iterator
+over those items, which records each pass, and content stores what the last
+pass yielded. One that raises still gets the policy check, then raises from
+the SDK where it reads it. Other arguments reach the SDK untouched.
+**Why:** the estimate (`count_tokens`, `token_counter`, tiktoken) exhausted
+a generator `messages`, so the provider received an empty list.
+**Rejected alternative:** handing the SDK the sensor's list (calls the SDK
+rejects without the sensor would succeed); a generator (blind to the SDK's
+second read: content held tools never sent); walking every argument (an
+iterator only the SDK reads must not change the call).

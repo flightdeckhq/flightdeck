@@ -7958,11 +7958,20 @@ lanes (see SwimLane).
   short id (the first 8 characters, as the Live feed's RUN column
   shows it), its state (`AgentStatusBadge` with the run's own state),
   its model, and its tokens so far (`formatTokens`, as the modal
-  header's KPI tiles read them). The run's model is the model of most
-  of its LLM calls in the window, ties going to the model called first
-  (`dominantModel`), else the session row's: the session row carries
-  the latest call's model, which in a run that switches models now and
-  then would flip the label, and every LLM call's text, at each switch. It sits 12 px further in than its
+  header's KPI tiles read them). The run's model is held by the lane
+  (`chooseLaneModel`): on its first render, the model of most of the
+  run's LLM calls in the window (a `post_call`, `embeddings` or
+  `llm_error` counts once; a `pre_call` starts a call and does not), a
+  tie going to the session row's model, then to name order, and with
+  no call in the window the session row's model; afterwards the lane
+  keeps it until another model has `LANE_MODEL_SWITCH_LEAD` (2) more
+  calls in the window. One call entering or leaving the window moves a
+  count by one, so an evenly mixed run's label, and the texts it
+  leaves out, do not flip as the window slides, while a run that has
+  moved to another model takes it within two calls. The session row
+  carries the latest call's model and would flip at each switch. The
+  lane keeps the model in its own state, keyed by the run, so a change
+  re-renders that lane alone. It sits 12 px further in than its
   heading's text, for a root and a sub-agent row alike.
 - **Lane panel.** Each lane draws only its run: its run line through
   the lane's centre (dashed past a stale run's last signal), its ▶ and
@@ -7975,7 +7984,7 @@ lanes (see SwimLane).
   its tool name and an LLM call (`pre_call`, `post_call`, `embeddings`,
   `llm_error`) its model, without a trailing `-YYYYMMDD` date and cut
   to 18 characters with an ellipsis (`markerText`). An LLM call on the
-  run's model as the lane label shows it (its dominant model above)
+  run's model as the lane label shows it (the held model above)
   carries none, so the room goes to the tool names. `placeMarkerLabels` keeps a text
   only by a circle wholly inside the visible part of the panel: right
   of the sticky label column at the current horizontal scroll, left of

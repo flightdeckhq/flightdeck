@@ -24,8 +24,9 @@ All notable changes to Flightdeck are documented here.
   the lanes shown do not jump while you watch; the lanes below a run
   move up only when it leaves the window, and a resumed run's lane
   moves once, when its earlier segment leaves the window. A lane names
-  the model of most of the run's calls in the window, so its label
-  holds while the run switches models now and then.
+  the model most of the run's calls in the window used and keeps it
+  until another model leads by two calls, so its label holds while the
+  run switches models back and forth.
 - A Fleet row whose agent has two or more runs at once (a row split
   into run lanes) shows a chip under its status badge (`3 runs`,
   `9+ runs` past nine) that opens the per-agent swimlane modal for

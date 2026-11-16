@@ -704,6 +704,7 @@ class SensorCompletions(base.SessionProxy):
         session, provider = target
         return _view_aware_parse(self._real, kwargs, session, provider, is_async=self._is_async)
 
+    @base.SDKMethod
     def stream(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.stream(): the SDK's own helper,
         whose request goes through :meth:`create` with ``stream=True`` and
@@ -975,6 +976,7 @@ class SensorResponses(base.SessionProxy):
         session, provider = target
         return _view_aware_parse(self._real, kwargs, session, provider, is_async=self._is_async)
 
+    @base.SDKMethod
     def stream(self, **kwargs: Any) -> Any:
         """Intercept responses.stream(): the SDK's own helper, whose
         request for a new response goes through :meth:`create` with

@@ -309,6 +309,39 @@ class SessionProxy:
 # ``async def wrapped(*args, **kwargs)``), when it is awaited.
 
 
+# How many ``__wrapped__`` links _unwrapped() follows: an SDK method is
+# wrapped once or twice (``required_args``, a raw view's wrapper).
+_MAX_WRAPPED_DEPTH = 8
+
+
+def _function_of(method: Callable[..., Any]) -> Any:
+    """The function behind a bound method, or the callable itself."""
+    return getattr(method, "__func__", method)
+
+
+def _unwrapped(method: Callable[..., Any]) -> Any:
+    """The innermost function behind ``method``, along ``__wrapped__``
+    (``inspect.unwrap`` without its bookkeeping: this runs on every async
+    call)."""
+    function = _function_of(method)
+    for _ in range(_MAX_WRAPPED_DEPTH):
+        inner = getattr(function, "__wrapped__", None)
+        if inner is None:
+            break
+        function = _function_of(inner)
+    return function
+
+
+def _is_coroutine_function(method: Callable[..., Any]) -> bool:
+    """``inspect.iscoroutinefunction(method)``, read straight from the code
+    flags for a plain function or a method of one, the SDKs' case; any
+    other callable goes to ``inspect``."""
+    function = _function_of(method)
+    if type(function) is types.FunctionType:
+        return bool(function.__code__.co_flags & inspect.CO_COROUTINE)
+    return inspect.iscoroutinefunction(method)
+
+
 def check_arguments(sdk_call: Callable[..., Any], kwargs: dict[str, Any]) -> None:
     """Have the SDK check the arguments of an async call now, as it does
     when the call is made unsensored: its method validates them (a
@@ -317,14 +350,16 @@ def check_arguments(sdk_call: Callable[..., Any], kwargs: dict[str, Any]) -> Non
     which sends nothing and warns of nothing. Only for a method whose
     underlying function is a coroutine function, which returns an
     unstarted coroutine; anything else is left to the call itself."""
-    if not inspect.iscoroutinefunction(inspect.unwrap(sdk_call)):
+    if not _is_coroutine_function(_unwrapped(sdk_call)):
         return
     pending = sdk_call(**kwargs)
     if inspect.iscoroutine(pending):
         pending.close()
 
 
-# The signatures check_signature() binds against, one per SDK function.
+# The signatures check_signature() binds against, one per SDK function
+# (never per bound method: a cache keyed on one would hold its resource,
+# and so its client, alive, and never hit for the next client's).
 _SIGNATURE_CACHE_SIZE = 64
 
 
@@ -337,7 +372,11 @@ def check_signature(function: Callable[..., Any], *args: Any, **kwargs: Any) -> 
     """Raise the ``TypeError`` calling ``function`` with these arguments
     would raise on binding them, without calling it: for an SDK method
     that hands back an object at once (``messages.stream()``'s manager)
-    while the sensor sends its request later."""
+    while the sensor sends its request later. A bound method is checked
+    as its function with its ``self`` bound first."""
+    if inspect.ismethod(function):
+        _signature(function.__func__).bind(function.__self__, *args, **kwargs)
+        return
     _signature(function).bind(*args, **kwargs)
 
 
@@ -357,20 +396,26 @@ class CoroutineFunctionLike:
     (``AsyncMessages.parse``, ``AsyncEmbeddings.create``) must reject bad
     arguments when it is called, as Python does for the SDK's, so it is a
     plain callable returning a coroutine; yet ``inspect.iscoroutinefunction``
-    (and ``asyncio.iscoroutinefunction``, ``inspect.signature``) must
-    answer for it as for the SDK's. ``inspect`` decides from a function's
-    code object and accepts any object carrying one with a function's
-    other attributes, so this one carries the SDK function's (``like``);
-    ``__wrapped__`` is ``like``, for the signature. Marking a plain
-    function with ``inspect.markcoroutinefunction`` would do the same,
-    but that is not on Python 3.11. As a class attribute it binds like a
-    method."""
+    must answer for it as for the SDK's. ``inspect`` decides from a
+    function's code object and accepts any object carrying one with a
+    function's other attributes, so this one carries the SDK function's
+    (``like``): its code, name, qualified name, defaults and annotations,
+    and its docstring and module, so ``help()`` shows the SDK's own;
+    ``__wrapped__`` is ``like``, for the signature. ``inspect.isfunction``
+    is still false for it. Marking a plain function with
+    ``inspect.markcoroutinefunction`` would serve too, but that is not on
+    Python 3.11. As a class attribute it binds like a method."""
 
-    __slots__ = ("_call", "_like")
+    __slots__ = ("_call", "_like", "__dict__")
 
     def __init__(self, call: Callable[..., Any], like: Callable[..., Any]) -> None:
         self._call = call
         self._like = like
+        # Class attributes, so read from the instance dict rather than
+        # through __getattr__.
+        function = _function_of(like)
+        self.__doc__ = function.__doc__
+        self.__module__ = function.__module__
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._call(*args, **kwargs)
@@ -384,8 +429,25 @@ class CoroutineFunctionLike:
 
     def __getattr__(self, name: str) -> Any:
         if name in _FUNCTION_ATTRIBUTES:
-            return getattr(getattr(self._like, "__func__", self._like), name)
+            return getattr(_function_of(self._like), name)
         raise AttributeError(name)
+
+
+def _function_like(call: Callable[..., Any], like: Callable[..., Any]) -> Callable[..., Any]:
+    """``call`` as a plain function carrying ``like``'s name, qualified
+    name, docstring and module, with ``__wrapped__`` set to ``like`` for
+    the signature."""
+
+    def method(*args: Any, **kwargs: Any) -> Any:
+        return call(*args, **kwargs)
+
+    function = _function_of(like)
+    method.__name__ = function.__name__
+    method.__qualname__ = function.__qualname__
+    method.__doc__ = function.__doc__
+    method.__module__ = function.__module__
+    method.__wrapped__ = like  # type: ignore[attr-defined]
+    return method
 
 
 def like_sdk(sdk_function: Callable[..., Any], call: Callable[..., Any]) -> Any:
@@ -399,12 +461,13 @@ def like_sdk(sdk_function: Callable[..., Any], call: Callable[..., Any]) -> Any:
 
 class SDKMethod:
     """A :class:`SessionProxy` method that stands in for the method of the
-    same name on the SDK object the proxy wraps (``_real``): on a proxy
-    over an async resource whose method is a coroutine function, the
-    bound method is handed out as a :class:`CoroutineFunctionLike` of the
-    SDK's, so the two introspect alike; otherwise it is the plain bound
-    method. One proxy class serves sync and async resources, whose
-    methods differ in kind, so this is decided per proxy."""
+    same name on the SDK object the proxy wraps (``_real``). On a proxy
+    over an async resource the bound method is handed out shaped like the
+    SDK's: a :class:`CoroutineFunctionLike` of it when it is a coroutine
+    function, else a plain function carrying its name and docs, so the
+    two introspect alike. One proxy class serves sync and async
+    resources, whose methods differ in kind, so this is decided per
+    proxy; on a sync resource it is the plain bound method."""
 
     def __init__(self, function: Callable[..., Any]) -> None:
         self._function = function
@@ -421,9 +484,11 @@ class SDKMethod:
         if not instance._is_async:
             return bound
         sdk_method = getattr(instance._real, self._name, None)
-        if sdk_method is None or not inspect.iscoroutinefunction(sdk_method):
+        if sdk_method is None:
             return bound
-        return CoroutineFunctionLike(bound, sdk_method)
+        if _is_coroutine_function(sdk_method):
+            return CoroutineFunctionLike(bound, sdk_method)
+        return _function_like(bound, sdk_method)
 
 
 def drain_deferred_settles(session: Session) -> None:

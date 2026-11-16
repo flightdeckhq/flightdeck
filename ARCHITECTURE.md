@@ -2496,20 +2496,25 @@ the session it was called in, as a stream still open at `teardown` does:
 it is settled when its session ends (see "Shutdown and signals").
 
 Deferring the session to the await changes nothing a caller can see at
-the call itself: every async entry point the sensor patches or proxies
-introspects and rejects arguments as the SDK's own method does.
-`inspect.iscoroutinefunction` answers for it as for the SDK's (a plain
-function where the SDK's is a synchronous wrapper returning its
-coroutine, as Anthropic's and OpenAI's `create` are; a callable
-`inspect` takes for a coroutine function, from the SDK function's code
-object, where the SDK's is an `async def`, as `parse` and
-`embeddings.create` are), and a missing or unknown argument raises the
-SDK's exception when the call is made: the sensor calls the SDK's method
-then, which checks the arguments and returns its coroutine unstarted,
-and closes that coroutine, so nothing is sent or built. Anthropic's async
-`stream()`, which hands back its manager at once, has its arguments bound
-against the SDK's signature instead. A raw view's method, which checks
-its arguments only once awaited, raises then, as the SDK's does.
+the call itself. Every async entry point the sensor patches or proxies
+matches the SDK's own method in what `sensor/tests/unit/test_async_parity.py`
+holds: `inspect.iscoroutinefunction`, `inspect.signature`, the name,
+qualified name, docstring and module, and the type and the moment (call
+or await) of the exception a missing or an unknown argument raises.
+Where the SDK's method is a synchronous wrapper returning its coroutine,
+as Anthropic's and OpenAI's `create` are, the sensor's is a plain
+function carrying the SDK's name and docs. Where it is an `async def`, as
+`parse` and `embeddings.create` are, the sensor's is a callable that
+`inspect` takes for a coroutine function because it carries the SDK
+function's code object; `inspect.isfunction` is false for it, where it
+is true for the SDK's function, which is the one difference. Arguments
+are checked when the call is made: the sensor calls the SDK's method
+then, which validates them and returns its coroutine unstarted, and
+closes that coroutine, so nothing is sent or built. Anthropic's async
+`stream()`, which hands back its manager at once, has its arguments
+bound against the SDK's signature instead (cached per SDK function,
+never per client). A raw view's method, which checks its arguments
+only once awaited, raises then, as the SDK's does.
 
 How each interceptor finds the session: the patched Anthropic resource
 methods and the litellm wrappers look it up at each call. The OpenAI
@@ -2525,7 +2530,14 @@ which carries the capture setting, is rebuilt only when the session
 changes; the lookup costs about 0.2 µs per call on a developer machine
 (two method calls, a read of the sentinel on the patched class, a
 `sys.modules` lookup, an attribute read and an identity check), against
-0.05 µs for a proxy with a fixed session. Re-patching an Anthropic
+0.05 µs for a proxy with a fixed session. Making an async call also runs
+the SDK's own argument check up front, so that a bad argument raises when
+the call is made, as without the sensor: making the call, up to the
+coroutine it returns, takes about 5.2 µs for an OpenAI
+`chat.completions.create` through a kept proxy against 1.8 µs unsensored,
+and about 3.0 µs for the patched Anthropic `messages.create` against
+1.7 µs (Python 3.13 on a developer machine, a session active, the
+coroutine closed unawaited). Re-patching an Anthropic
 resource class installs the very methods it installed before, so a raw
 or streaming view built while the class was patched, which holds those
 methods (langchain-anthropic sends every request through

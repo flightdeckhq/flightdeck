@@ -1,8 +1,10 @@
 """A sensored async client behaves like an unsensored one at every async
 entry point the sensor patches or proxies: each introspects alike
-(``inspect.iscoroutinefunction``) and rejects a missing or an unknown
-argument with the same exception at the same moment, when the call is
-made or when it is awaited.
+(``inspect.iscoroutinefunction``, ``inspect.signature``, name, qualified
+name, docstring and module) and rejects a missing or an unknown argument
+with the same exception at the same moment, when the call is made or
+when it is awaited. ``inspect.isfunction`` on the object behind a
+coroutine function's stand-in is the one difference ARCHITECTURE states.
 
 Each entry point is driven twice over the same mocked provider (respx):
 on a client the sensor never saw, with no session and the SDKs unpatched,
@@ -17,6 +19,7 @@ import asyncio
 import gc
 import inspect
 import json
+import weakref
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -31,6 +34,7 @@ from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.interceptor import anthropic as anthropic_interceptor
+from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor.anthropic import (
     patch_anthropic_classes,
     unpatch_anthropic_classes,
@@ -341,8 +345,14 @@ def _moment(entry: Callable[..., Any], kwargs: dict[str, Any]) -> str:
 def _profile(
     entry: Callable[[], Any], ok: dict[str, Any], missing: dict[str, Any]
 ) -> dict[str, Any]:
+    method = entry()
     profile = {
-        "coroutine function": inspect.iscoroutinefunction(entry()),
+        "coroutine function": inspect.iscoroutinefunction(method),
+        "signature": str(inspect.signature(method)),
+        "name": method.__name__,
+        "qualified name": method.__qualname__,
+        "docstring": method.__doc__,
+        "module": method.__module__,
         "unknown argument": _moment(entry(), {**ok, "not_a_parameter": True}),
         "missing argument": _moment(entry(), missing),
     }
@@ -398,3 +408,34 @@ def test_the_patched_async_resource_methods_introspect_as_the_sdks_own() -> None
     unpatched = profile()
     patch_anthropic_classes(quiet=True)
     assert profile() == unpatched
+
+
+# How many wrap()'d clients the signature-cache test drops.
+_CLIENTS = 5
+
+
+def test_wrapped_clients_that_streamed_are_collected_once_dropped(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The async ``stream()`` binds its arguments against the SDK's
+    signature, cached per SDK function: the cache holds one entry however
+    many clients stream, and no client stays alive in it."""
+    monkeypatch.setattr(flightdeck_sensor, "_session", _session())
+    base._signature.cache_clear()
+    alive: list[weakref.ref[Any]] = []
+
+    async def _stream(client: Any) -> None:
+        async with client.messages.stream(**ANTHROPIC_OK):
+            pass
+
+    for _ in range(_CLIENTS):
+        raw = _client("anthropic")
+        alive.append(weakref.ref(raw))
+        wrapped = flightdeck_sensor.wrap(raw)
+        asyncio.run(_stream(wrapped))
+        del raw, wrapped
+    gc.collect()
+
+    assert [ref() for ref in alive] == [None] * _CLIENTS
+    info = base._signature.cache_info()
+    assert (info.currsize, info.misses, info.hits) == (1, 1, _CLIENTS - 1)

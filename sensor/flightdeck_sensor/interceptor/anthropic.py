@@ -479,6 +479,7 @@ class SensorMessages(base.SessionProxy):
             return base.call_async(real_fn, kwargs, session, provider)
         return base.call(real_fn, kwargs, session, provider)
 
+    @base.SDKMethod
     def stream(self, **kwargs: Any) -> Any:
         """Intercept messages.stream() -- returns a guarded context manager.
 

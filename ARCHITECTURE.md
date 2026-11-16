@@ -920,6 +920,16 @@ class PromptContent:
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
+An argument passed as the Anthropic or OpenAI SDK's sentinel for an
+argument left out (`NOT_GIVEN`, `omit`) was not given: the SDK does not
+send it to the provider, so the stored content holds what it holds for
+an absent argument: None for `system`, `tools` and `input` (a Responses
+call's `instructions`, stored as `system`, a Responses call's `tools` and
+`input`, an embeddings call's `input`), an empty list for `messages`,
+and an empty string for `model`. Wrappers pass them: Google ADK's
+`AnthropicLlm` gives `tools=NOT_GIVEN` for an agent with no tools, the
+OpenAI Agents SDK's `OpenAIChatCompletionsModel` `tools=omit`.
+
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
 names no `model` is counted against `claude-sonnet-4-6`
@@ -1432,7 +1442,7 @@ both (see Sub-agent framework coverage).
 | LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
-| Google ADK | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | planned | yes | OTLP: agents, model calls and tool calls, observe only. Native (planned): a child session per agent, tool calls and hand-offs, enforced per session; its Gemini calls stay unmetered while Gemini is not supported (see Providers) |
+| Google ADK 2.13+ | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | yes | yes | Native: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with its hand-offs, enforced per session; the root agent is the sensor's session (see Google ADK). Its Gemini calls are not metered while Gemini is not supported (see Providers); the child sessions still appear. OTLP: agents, model calls and tool calls, observe only |
 | OpenAI Agents SDK 0.6+ | yes (Responses tool items become `tool_call` events); not over the Responses WebSocket transport | yes | yes, through `opentelemetry-instrumentation-openai-agents-v2` | Native: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires, enforced per session (see Sub-agent framework coverage). OTLP: agents, hand-offs, model and tool calls, observe only |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
 | LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
@@ -1583,6 +1593,7 @@ sub-agent execution. Each child session carries
 | LangGraph graph run inside another (a compiled graph used as a node, a graph or an agent invoked from a node or a tool, each Deep Agents `task` sub-agent) | the child it runs in, else the sensor's session | the run's name: `run_name`, else the graph's name (`create_agent(name=...)`, the Deep Agents sub-agent's name), else the node it runs in, else `subgraph` | `sensor/.../interceptor/langgraph.py` (`Pregel.stream` / `astream`, which `invoke` and `ainvoke` call; a top-level run opens none; see LangGraph graphs) |
 | LlamaIndex agent workflow run | the sensor's session | the agent's `name` | `sensor/.../interceptor/llama_index.py` (a span handler on LlamaIndex's root instrumentation dispatcher; see LlamaIndex agent workflows) |
 | OpenAI Agents SDK agent run | the sensor's session; for an agent used as a tool, the child session of the agent that called the tool | `Agent.name` | `sensor/.../interceptor/openai_agents.py` (`AgentRunner.run` / `run_streamed`, run hooks, and the four guardrail classes' `run`) |
+| Google ADK sub-agent run (an agent reached by `transfer_to_agent`, a workflow agent's sub-agent, an `AgentTool`'s agent) | the nearest ancestor agent with a child open in the same run, else the child the run runs in (an `AgentTool`'s caller), else the sensor's session | the agent's `name` | `sensor/.../interceptor/google_adk.py` (a plugin put first in every `Runner`'s plugin manager, and `Runner.run_async` / `run_live`; see Google ADK) |
 
 Direct Anthropic / OpenAI SDK calls and litellm calls outside a
 multi-agent framework emit root sessions with
@@ -1639,8 +1650,7 @@ mirroring the existing `error_types` (`llm_error`) and
 
 A framework hand-off, one agent passing the conversation to another,
 is reported with `Session.emit_agent_handoff(from_agent=, to_agent=)`,
-which the LlamaIndex and OpenAI Agents SDK wraps call and the planned
-Google ADK wrap will. It
+which the LlamaIndex, OpenAI Agents SDK and Google ADK wraps call. It
 emits the `agent_handoff`
 `session_signal` the GenAI dialect emits (see Event Types >
 `session_signal`), so a hand-off reads the same whether the sensor or
@@ -1690,8 +1700,8 @@ end exactly as a hand-off is.
 sessions carry the run's structure: their `session_start`, their
 `session_end` and the hand-off signals. The model calls, `tool_call`,
 `llm_error`, MCP and `policy_*` events made during a child's turn stay
-on the sensor's own session, for the CrewAI, LangGraph, LlamaIndex
-and OpenAI Agents SDK wraps alike, so that session's row counts every token of the run.
+on the sensor's own session, for the CrewAI, LangGraph, LlamaIndex,
+OpenAI Agents SDK and Google ADK wraps alike, so that session's row counts every token of the run.
 Enforcement is therefore per session: the sensor's session's token
 policy, and a Stop on that session, act on every agent of the run (the
 next model call raises `DirectiveError`). A child session posts only its
@@ -1707,8 +1717,9 @@ child's asyncio tasks and threads started with a copied context and
 nothing else). The scope changes no event: it records the call ids of
 the tool calls a model response made during the child's work, so a wrap
 that also sees the tool run can tell whether it is already reported. The
-LlamaIndex and LangGraph wraps use it; the LangGraph wrap also reads it
-to nest a child opened inside another child's work.
+LlamaIndex, LangGraph and Google ADK wraps use it; the LangGraph and
+Google ADK wraps also read it to nest a child opened inside another
+child's work.
 
 #### LangGraph graphs
 
@@ -2045,6 +2056,135 @@ exporter's endpoint (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
 `OTEL_EXPORTER_OTLP_ENDPOINT`) is this sensor's server host and port or
 is not set; an endpoint on another host logs at debug level. Nothing is
 deduplicated.
+
+#### Google ADK
+
+`patch()` (`Provider.GOOGLE_ADK`) wraps Google ADK 2.13 and later (CI's
+Google ADK lane runs the wrap's tests on 2.13.0; they also pass on
+2.14.1) once `google.adk.runners` is imported (nothing of ADK is imported before the
+application imports it). It patches `Runner.__init__`, so every runner
+built afterwards (`Runner`, `InMemoryRunner`, the runner an `AgentTool`
+builds for each call) gets the sensor's plugin, named
+`flightdeck_sensor`, first in its plugin manager unless one is there
+already; the application's plugins, given through `App(plugins=...)` or
+the deprecated `Runner(plugins=...)`, are kept and run after it, and
+`App.plugins` itself is left as given. It wraps `Runner.run_async`
+(which the sync `Runner.run` calls) and `Runner.run_live`, which runs
+the same plugin callbacks.
+
+- **What opens a child.** A child session is a sub-agent: every agent
+  run except the root agent of a top-level run, whose session is the
+  sensor's own, and except the workflow agents (`SequentialAgent`,
+  `ParallelAgent`, `LoopAgent`), which orchestrate their sub-agents and
+  open no child of their own. So a child opens for an agent reached by
+  `transfer_to_agent`, for each sub-agent a workflow agent runs, and for
+  the agent of an `AgentTool`, whose nested run's root agent opens one.
+  One child per agent run: each `LoopAgent` iteration is a new child, and
+  `ParallelAgent` branches are children open at the same time. ADK 2's
+  graph `Workflow` (`Runner(node=Workflow(...))`) is not an agent and
+  opens none; each agent it runs as a node opens one, under the sensor's
+  session. The root
+  agent is the runner's own (`Runner.agent`): when ADK resumes a
+  conversation on the sub-agent that answered last, that sub-agent opens
+  a child. A run started inside another (an `AgentTool`'s, one a function
+  tool starts) or inside another framework's child is nested, and its
+  root agent opens a child too. `agent_role` is the agent's `name`,
+  `agent_name` is `<sensor agent name>/<agent name>`, and the agent id is
+  derived from the role (ADK names every agent of a tree uniquely).
+- **Parents.** A child's parent is the nearest ancestor agent
+  (`parent_agent`) with a child open in the same run, else the child the
+  run itself runs in (an `AgentTool`'s caller), else the sensor's
+  session. An agent's work runs in its child's scope
+  (`Session.enter_subagent_scope`), entered when the agent starts, which
+  is how a nested run finds the agent that called the tool. So an
+  `AgentTool`'s agent nests under its caller's child, or under the
+  sensor's session when the root agent calls it, and an agent reached by
+  transfer from a sub-agent nests under that sub-agent's child.
+- **Hand-offs.** A `transfer_to_agent`, read from the run's events (the
+  event's `transfer_to_agent` action; its author is the agent handing
+  off), posts `agent_handoff` with `from` and `to` on the session of the
+  agent handing off: its child, or the sensor's session for the root
+  agent. The agent handed to opens its own child when it starts.
+- **Ends.** A child closes when its agent ends (`after_agent`). It ends
+  with `state=error` and the exception's type (and message, with capture
+  on) when the agent raises (`on_agent_error`: a model error, a tool's
+  error that no tool-error callback recovered, a `DirectiveError`), and
+  with `state=error` and `CancelledError` when its task is cancelled
+  (ADK runs `after_agent` inside the cancellation). An agent that ends
+  without `after_agent` is closed when the run ends, normally or in error
+  with the run's exception: an agent that transfers (on ADK's node
+  runtime it never gets `after_agent`), an agent whose run ends the
+  invocation, and the agents still open when the consumer closes the
+  run's stream early or a timeout cancels it.
+- **Messages.** With capture on, a run's first child takes the run's new
+  message (its text) as `incoming_message`, and each child its agent's
+  last final response (its text) as `outgoing_message`. With capture off
+  neither is read.
+- **Model, tool and MCP calls** go through the patched litellm (`LiteLlm`)
+  and Anthropic SDK (`AnthropicLlm`, `Claude`) and the MCP patch (ADK's
+  `McpToolset` uses the official `mcp` SDK), and stay on the sensor's own
+  session. The plugin adds no `tool_call`: the model response's function
+  calls (an `AgentTool`'s and `transfer_to_agent` included) are already
+  the `tool_call` events. The plugin reads no token counts. `AnthropicLlm`
+  passes `NOT_GIVEN` for the `tools` of an agent with none, which the
+  captured content stores as None (see `PromptContent` dataclass).
+- **Enforcement** is per session. A model call's `pre_call` raises
+  `DirectiveError` or `BudgetExceededError` through ADK unchanged, out of
+  `run_async` (or `run`); once a shutdown directive has arrived, a run
+  that starts raises `DirectiveError` before its first event. The plugin
+  callbacks never raise: ADK wraps a plugin's exception in a
+  `RuntimeError` and stops the run. So, unlike the OpenAI Agents SDK wrap,
+  which raises at an agent's start or hand-off, a run stops at its next
+  model call: a `DirectiveError` the `halt` unavailability policy raises
+  while a hand-off signal is posted is dropped in the callback, and the
+  run goes on to that call. Of the run wrapper's own work before and
+  between steps, only that `DirectiveError` at the run's start reaches
+  the caller; any other failure there leaves the run as it would run
+  unpatched.
+
+ADK runs a root `LlmAgent` on its node runtime, one asyncio task per
+agent and per tool call, and a workflow-agent root on the consumer's
+own task, with each `ParallelAgent` branch in a task of its own. The
+run wrapper sets the run's state in a context variable around each step
+of the run's event stream and leaves it before each event reaches the
+consumer, so the tasks ADK starts inherit it and the consumer's own code
+between two events runs in no child's scope. A child's posts (start,
+hand-off, end) are queued on the event loop's executor, chained so they
+arrive in that order; a callback waits for its post shielded, so the
+loop is not held and a cancellation drops no post, and the session's
+`end()` waits for posts still running (up to 2 seconds). The posts the
+end of a run makes are queued and not waited for. The plugin keeps no
+state of its own: each run reports to the session active when it starts,
+a run with none active runs as unpatched, and a run whose session ended
+meanwhile stops reporting. Every callback catches its own failures and
+returns None, so the run's events, output and exceptions are those of
+the unpatched run.
+
+Known limits:
+
+- **Gemini calls are not metered**: the sensor has no `google-genai`
+  interceptor ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)),
+  so an agent on ADK's default Gemini model reports no model calls or
+  tokens. Its child sessions and hand-offs still appear.
+- **A runner built before `patch()`** has no plugin and its runs open no
+  children; its model calls are still metered.
+- **A `LiteLlm` call made before `patch()`** leaves that process's
+  `LiteLlm` calls unmetered: on first use `LiteLlm` copies
+  `litellm.acompletion` and `litellm.completion` into its own module, so
+  the patch made afterwards is never called. `patch()` before the first
+  model call.
+- **A run reported twice.** ADK also reports its runs through
+  OpenTelemetry when the application sets up an exporter (`adk web` does
+  when `OTEL_EXPORTER_OTLP_ENDPOINT` is set); one pointed at this
+  Flightdeck counts each run twice, once by the sensor and once as an
+  `otlp` session ([#279](https://github.com/flightdeckhq/flightdeck/issues/279)).
+  The wrap does not detect it.
+- `run_live` is wrapped as `run_async` is, and is exercised with a
+  scripted live connection (the same events patched and unpatched, the
+  hand-off and the child, a timeout ending the open child in error), not
+  against the Gemini Live API, whose calls are not metered anyway.
+- Nothing ties a child to ADK's own OpenTelemetry trace or invocation
+  ids.
 
 ### Claude Agent SDK
 
@@ -10373,7 +10513,13 @@ event past the 768 KiB body limit, marking each cut string (see
 Plugin, Configuration, which describes the measure and the marker; the
 sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
-never cut.
+never cut. An event whose captured `content` cannot be written as JSON
+(an object the capture did not turn into data) is sent without its
+content (`has_content=false`, as an event over the limit is), with a
+warning naming the event type and the object's type (once per pair of
+the two; later ones at debug level), so its token counts
+and metadata still arrive; the content is never replaced by the object's
+string form, which the provider never received.
 
 When `capture_prompts=false`, every content field on every event type is
 zeroed: `has_content=false`, `content=null`. The event still ships, so

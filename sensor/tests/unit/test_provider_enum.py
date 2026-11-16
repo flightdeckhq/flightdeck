@@ -59,7 +59,7 @@ def _reset_sensor() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_provider_has_exactly_nine_members() -> None:
+def test_provider_has_exactly_ten_members() -> None:
     """Adding a new interceptor target requires editing the enum AND
     its entry in ``_SDK_TARGETS``; this test ensures one doesn't drift
     without the other (the test in
@@ -67,8 +67,9 @@ def test_provider_has_exactly_nine_members() -> None:
     value-side drift; this one catches the count-side).
 
     Sub-agent observability added three targets (CREWAI, LANGGRAPH,
-    LLAMA_INDEX), the Claude Agent SDK one (CLAUDE_AGENT_SDK) and the
-    OpenAI Agents SDK one (OPENAI_AGENTS). AutoGen is archived upstream
+    LLAMA_INDEX), the Claude Agent SDK one (CLAUDE_AGENT_SDK), the
+    OpenAI Agents SDK one (OPENAI_AGENTS) and the Google ADK one
+    (GOOGLE_ADK). AutoGen is archived upstream
     and not planned; its successor, Microsoft Agent Framework, is
     roadmap issue #185.
     """
@@ -82,8 +83,9 @@ def test_provider_has_exactly_nine_members() -> None:
         Provider.LLAMA_INDEX,
         Provider.CLAUDE_AGENT_SDK,
         Provider.OPENAI_AGENTS,
+        Provider.GOOGLE_ADK,
     }
-    assert len(Provider) == 9
+    assert len(Provider) == 10
 
 
 def test_provider_values_match_patch_branches() -> None:
@@ -101,6 +103,7 @@ def test_provider_values_match_patch_branches() -> None:
     assert Provider.LLAMA_INDEX.value == "llama_index"
     assert Provider.CLAUDE_AGENT_SDK.value == "claude_agent_sdk"
     assert Provider.OPENAI_AGENTS.value == "openai_agents"
+    assert Provider.GOOGLE_ADK.value == "google_adk"
 
 
 def test_provider_member_is_a_string() -> None:

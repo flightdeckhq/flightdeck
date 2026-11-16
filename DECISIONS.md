@@ -1172,3 +1172,21 @@ blocked calls made with the sensor torn down.
 **Rejected alternative:** asking applications to rebuild clients after
 `init()` (frameworks cache clients out of reach); walking live objects
 to clear cached proxies (gc traversal, misses frameworks' references).
+
+## D282 -- A Google ADK child session is a sub-agent run; the root agent and the workflow agents open none
+
+**Date:** 2026-11-16
+**Decision:** a sensor plugin, put first in every ADK runner, opens a child
+per agent run reached by transfer, run by a workflow agent (one per loop
+iteration; parallel branches at once) or used as a tool (`AgentTool`,
+`include_plugins=False` too), nested under the nearest ancestor with an
+open child, else the run's caller. The root agent of a top-level run is the
+sensor's session; `SequentialAgent`, `ParallelAgent` and `LoopAgent` open
+none. `transfer_to_agent` posts `agent_handoff` on the agent handing off.
+The plugin reports no `tool_call` and reads no tokens.
+**Why:** "real sub-agents only" (D276, D278); the calls stay on the
+sensor's session, metered by the provider patches.
+**Rejected alternative:** a child for the root agent, as the OpenAI Agents
+wrap opens one (a duplicate of the sensor's session); children for the
+workflow shells (no agent of their own); token counts from ADK's
+`after_model` callback (a second count beside the provider patches).

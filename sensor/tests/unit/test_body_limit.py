@@ -204,3 +204,64 @@ def test_content_with_nothing_to_cut_skips_the_search(monkeypatch: pytest.Monkey
 
 def test_the_budget_leaves_room_under_the_one_mib_limit() -> None:
     assert MAX_EVENT_BODY_BYTES <= 0.8 * 1024 * 1024
+
+
+class _NotData:
+    """An object json cannot write, as an SDK object a capture missed."""
+
+
+def test_content_json_cannot_write_is_dropped_and_the_tokens_kept(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
+    payload = _post_call({"messages": [], "tools": _NotData()})
+    payload["incoming_message"] = {"has_content": True, "content_bytes": 9, "captured_at": "t"}
+    with caplog.at_level(logging.WARNING):
+        sent = json.loads(serialize_event(payload))
+    assert sent["tokens_input"] == 42
+    assert sent["has_content"] is False and sent["content"] is None
+    assert sent["incoming_message"]["has_content"] is False
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "post_call" in message and "_NotData" in message
+    assert "<" not in json.dumps(sent), "no string form of the object is stored"
+
+
+def test_content_with_a_cycle_is_dropped_and_the_tokens_kept(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with caplog.at_level(logging.WARNING):
+        sent = json.loads(serialize_event(_post_call({"messages": cycle})))
+    assert sent["tokens_input"] == 42 and sent["content"] is None
+    assert "post_call" in caplog.records[0].getMessage()
+
+
+def test_a_field_outside_the_content_json_cannot_write_still_raises() -> None:
+    import pytest
+
+    payload = {**_post_call(None), "model": _NotData()}
+    with pytest.raises(TypeError):
+        serialize_event(payload)
+
+
+def test_the_warning_for_content_json_cannot_write_is_logged_once_per_kind(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A framework that always hands over the same unencodable object gets
+    one warning per event type and object type; the rest go to debug."""
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
+    with caplog.at_level(logging.DEBUG, logger="flightdeck_sensor.transport.body_limit"):
+        for _ in range(3):
+            serialize_event(_post_call({"tools": _NotData()}))
+        serialize_event({**_post_call({"tools": _NotData()}), "event_type": "embeddings"})
+        serialize_event(_post_call({"tools": {1, 2}}))
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 3, warnings
+    assert any("post_call" in w and "_NotData" in w for w in warnings)
+    assert any("embeddings" in w and "_NotData" in w for w in warnings)
+    assert any("post_call" in w and "set" in w for w in warnings)
+    assert len(debugs) == 2

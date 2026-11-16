@@ -55,6 +55,12 @@ class Provider(StrEnum):
       session per agent and per agent used as a tool, hand-offs and
       guardrail tripwires. Patched only when ``agents`` comes from the
       ``openai-agents`` distribution.
+    * ``Provider.GOOGLE_ADK`` — a plugin the sensor puts first in every
+      Google ADK runner (``google.adk.runners.Runner.__init__``) and a
+      wrap around ``Runner.run_async`` / ``run_live``: a child session per
+      sub-agent run (an agent reached by transfer, a workflow agent's
+      sub-agent, an ``AgentTool``'s agent) and the hand-offs; the root
+      agent of a top-level run is the sensor's session.
 
     Each member's ``.value`` is the canonical string name. The string
     name is what ``patch()`` matches against internally, so passing
@@ -70,3 +76,4 @@ class Provider(StrEnum):
     LLAMA_INDEX = "llama_index"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
     OPENAI_AGENTS = "openai_agents"
+    GOOGLE_ADK = "google_adk"

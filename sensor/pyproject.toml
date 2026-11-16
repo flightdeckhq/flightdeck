@@ -231,6 +231,17 @@ llama-index-floor = [
     "llama-index-workflows==2.0.0",
     "llama-index-llms-openai==0.5.6",
 ]
+# Google ADK, for the ADK wrap's tests and playground 38. A lane of its
+# own: every google-adk 2.x release holds websockets below 16 and 2.13
+# holds OpenTelemetry below 1.45, older than the dev extra resolves, so
+# in the dev extra it would move both for every framework test. CI's
+# Google ADK lane installs this group with the test, anthropic, openai
+# and litellm extras; the integration job runs the ADK integration test
+# from the same environment.
+google-adk = [
+    "google-adk>=2.13,<3",
+    "litellm>=1.100",
+]
 
 [tool.uv]
 # uv.lock resolves every CI lane in one file; the framework lane (dev
@@ -244,6 +255,7 @@ conflicts = [
         { group = "openai-floor" },
         { group = "sdk-floors" },
         { group = "llama-index-floor" },
+        { group = "google-adk" },
     ],
     # Every litellm release the litellm extra admits needs a newer openai.
     [{ extra = "litellm" }, { group = "openai-floor" }],

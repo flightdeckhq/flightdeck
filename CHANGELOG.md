@@ -123,7 +123,9 @@ All notable changes to Flightdeck are documented here.
   counts its items, the stored content holds what the SDK sent (also
   where it reads an argument twice, as the OpenAI SDK's chat `parse()`
   does with `tools`), and an iterator that raises midway raises from the
-  SDK where it would without the sensor (D283).
+  SDK where it would without the sensor, after the policy check. A dict
+  view, set, deque or range given for such an argument is now stored as
+  the list the SDK sends instead of being dropped (D283).
 
 ## v0.11.0 — 2026-11-15
 

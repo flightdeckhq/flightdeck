@@ -1194,16 +1194,15 @@ workflow shells (no agent of their own); token counts from ADK's
 ## D283 -- The sensor reads a call's iterator arguments into lists for itself and hands the SDK an iterator of its own over the same items
 
 **Date:** 2026-11-16
-**Decision:** with a session active, the sensor first reads each iterator in
-a call's arguments (in lists, tuples and dicts, 64 levels deep; not a file)
-into a list. The SDK gets the sensor's iterator over those items, which
-records each pass; the content stores what the last pass yielded. One that
-raises goes to the SDK unmetered, replayed up to the failure.
+**Decision:** with a session active, the sensor reads each iterator in the
+arguments it reads (`messages`, `system`, `tools`, `input`, `instructions`,
+`prompt`; 64 levels deep) into a list; the SDK gets the sensor's iterator
+over those items, which records each pass, and content stores what the last
+pass yielded. One that raises still gets the policy check, then raises from
+the SDK where it reads it. Other arguments reach the SDK untouched.
 **Why:** the estimate (`count_tokens`, `token_counter`, tiktoken) exhausted
 a generator `messages`, so the provider received an empty list.
 **Rejected alternative:** handing the SDK the sensor's list (calls the SDK
-rejects without the sensor, a generator Responses `input` or any litellm
-call, would succeed); a generator over the items (cannot see the SDK's
-second read, so `parse()` content would hold tools never sent); `tee`
-(buffers it all the same); the sensor raising a failed read itself (the
-step varies: anthropic 0.86's `stream()` reads when called, 2.1 on entry).
+rejects without the sensor would succeed); a generator (blind to the SDK's
+second read: content held tools never sent); walking every argument (an
+iterator only the SDK reads must not change the call).

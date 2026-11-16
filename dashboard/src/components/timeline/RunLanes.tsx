@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ScaleTime } from "d3-scale";
 import type { AgentEvent, Session } from "@/lib/types";
 import type { ClientType } from "@/lib/agent-identity";
@@ -17,6 +17,7 @@ import {
 } from "@/lib/run-lane-layout";
 import { useLaneViewport, type LaneViewport } from "@/lib/lane-viewport";
 import { useRunLit, useRunLitEvent, type RunLink } from "@/lib/run-link";
+import { isKeyboardFocus } from "@/lib/keyboard-focus";
 import {
 	AgentLabelStrip,
 	AggregatedSessionEvents,
@@ -50,6 +51,13 @@ const LIT_LANE_TINT_LAYER =
 /** The label of the lane the Live feed is filtered to: an accent bar at
  *  its left edge, the pressed state of its button. */
 const FILTERED_LABEL_BAR = "inset 3px 0 0 var(--accent)";
+
+/** The label of a lit lane: the 2 px accent bar a lit Live feed row
+ *  draws, so the lane and its rows read as one. */
+const LIT_LABEL_BAR = "inset 2px 0 0 var(--accent)";
+
+/** What a lane label's button does, for its tooltip and description. */
+const LANE_FILTER_ACTION = "Show only this run in the Live feed";
 
 export interface RunLanesProps {
 	flavor: string;
@@ -370,8 +378,26 @@ function RunLaneRow({
 	// when it changes.
 	const lit = useRunLit(runLink, sessionId);
 	const linkedEventId = useRunLitEvent(runLink, sessionId);
-	const lightRun = runLink ? () => runLink.set(sessionId) : undefined;
-	const darkenRun = runLink ? () => runLink.set(null) : undefined;
+	// The pointer in the lane, or the keyboard focus on its label, lights
+	// the run. Either leaving puts it out unless the other holds it, or
+	// another run took the light meanwhile (a feed row under the pointer).
+	const pointerIn = useRef(false);
+	const focusIn = useRef(false);
+	const holdLight = (which: { current: boolean }, held: boolean) => {
+		if (!runLink) return;
+		which.current = held;
+		if (held) runLink.set(sessionId);
+		else if (!pointerIn.current && !focusIn.current && runLink.get().run === sessionId) runLink.set(null);
+	};
+	// A lane that leaves (its run out of the window) under the pointer
+	// gets no leave event: it puts its light out as it goes.
+	useEffect(
+		() => () => {
+			if ((pointerIn.current || focusIn.current) && runLink?.get().run === sessionId) runLink.set(null);
+		},
+		[runLink, sessionId],
+	);
+	const describedBy = useId();
 	const rowBackground =
 		topology === "root"
 			? lit
@@ -386,7 +412,7 @@ function RunLaneRow({
 		background:
 			topology === "child" && lit ? `${LIT_LANE_TINT_LAYER}, ${CHILD_LABEL_BACKGROUND}` : labelBox.background,
 		gap: LANE_LABEL_LINE_GAP_PX,
-		boxShadow: filtered ? FILTERED_LABEL_BAR : undefined,
+		boxShadow: filtered ? FILTERED_LABEL_BAR : lit ? LIT_LABEL_BAR : undefined,
 	};
 	const labelContent = (
 		<>
@@ -394,15 +420,16 @@ function RunLaneRow({
 				<span
 					data-testid="swimlane-run-lane-id"
 					className="shrink-0 font-mono text-[11px] font-semibold"
-					// The run the feed is filtered to reads in the accent,
-					// beside its label's bar.
-					style={{ color: filtered ? "var(--accent)" : "var(--text)" }}
+					style={{ color: "var(--text)" }}
 				>
 					{id8}
 				</span>
-				<AgentStatusBadge state={session.state} align="inline" testId="swimlane-run-lane-status" />
+				<span id={`${describedBy}-state`} className="inline-flex">
+					<AgentStatusBadge state={session.state} align="inline" testId="swimlane-run-lane-status" />
+				</span>
 			</div>
 			<div
+				id={`${describedBy}-details`}
 				className="flex min-w-0 items-center gap-1.5 font-mono text-[11px]"
 				style={{ color: "var(--text-secondary)" }}
 			>
@@ -440,8 +467,8 @@ function RunLaneRow({
 			data-run-id={session.session_id}
 			data-lane-index={index}
 			data-linked={lit ? "true" : undefined}
-			onMouseEnter={lightRun}
-			onMouseLeave={darkenRun}
+			onMouseEnter={runLink ? () => holdLight(pointerIn, true) : undefined}
+			onMouseLeave={runLink ? () => holdLight(pointerIn, false) : undefined}
 			className="flex w-full items-stretch"
 			style={{
 				height,
@@ -451,20 +478,31 @@ function RunLaneRow({
 		>
 			{/* A button that filters the Live feed to this run: pressed
 			    while the feed is filtered to it, and a click again clears
-			    it. Hover and keyboard focus light the run's feed rows. */}
+			    it. Hover and keyboard focus light the run's feed rows. It
+			    is named by the run, as its label shows it; its state, model
+			    and tokens, and what it does, are its description. */}
 			{onRunFilter ? (
 				<button
 					type="button"
 					data-testid="swimlane-run-lane-label"
 					aria-pressed={filtered}
-					aria-label={`Show only run ${id8} in the Live feed`}
+					aria-label={`Run ${id8}`}
+					aria-describedby={`${describedBy}-state ${describedBy}-details ${describedBy}-action`}
+					title={LANE_FILTER_ACTION}
 					onClick={() => onRunFilter(sessionId)}
-					onFocus={lightRun}
-					onBlur={darkenRun}
+					// Keyboard focus lights the run; a click's focus does not,
+					// so the light goes with the pointer.
+					onFocus={(e) => {
+						if (isKeyboardFocus(e.currentTarget)) holdLight(focusIn, true);
+					}}
+					onBlur={() => holdLight(focusIn, false)}
 					className="flex h-full cursor-pointer flex-col justify-center border-0 text-left focus-visible:outline-solid focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--accent)"
 					style={{ ...labelStyle, font: "inherit", color: "inherit" }}
 				>
 					{labelContent}
+					<span id={`${describedBy}-action`} className="sr-only">
+						{LANE_FILTER_ACTION}
+					</span>
 				</button>
 			) : (
 				<div

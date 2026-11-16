@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { scaleTime } from "d3-scale";
@@ -418,6 +418,15 @@ describe("RunLanes", () => {
   });
 });
 
+/** Whether ``:focus-visible`` matches, as the browser decides after a key
+ *  press (true) or a click (false); jsdom does not track it. */
+function focusVisible(visible: boolean) {
+  const matches = Element.prototype.matches;
+  return vi.spyOn(Element.prototype, "matches").mockImplementation(function (this: Element, selector: string) {
+    return selector === ":focus-visible" ? visible : matches.call(this, selector);
+  });
+}
+
 describe("RunLanes linked to the Live feed", () => {
   function twoRuns() {
     const a = mkSession({ session_id: nextId("a"), started_at: at(-50 * S) });
@@ -431,7 +440,7 @@ describe("RunLanes linked to the Live feed", () => {
     const [a] = twoRuns();
     renderLanes([a]);
     expect(within(lanes()[0]!).getByTestId("swimlane-run-lane-label").tagName).toBe("DIV");
-    expect(screen.queryByRole("button", { name: /Show only run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Run / })).toBeNull();
   });
 
   it("makes the label a button that filters the feed to its run, pressed while filtered", () => {
@@ -439,11 +448,13 @@ describe("RunLanes linked to the Live feed", () => {
     const onRunFilter = vi.fn();
     renderLanes([a, b], { onRunFilter, runFilter: b.session_id });
     const label = (sessionId: string) =>
-      screen.getByRole("button", { name: `Show only run ${truncateSessionId(sessionId)} in the Live feed` });
+      screen.getByRole("button", { name: `Run ${truncateSessionId(sessionId)}` });
     expect(label(a.session_id)).toHaveAttribute("aria-pressed", "false");
     expect(label(b.session_id)).toHaveAttribute("aria-pressed", "true");
-    // The filtered run's id reads in the accent.
-    expect(within(label(b.session_id)).getByTestId("swimlane-run-lane-id").style.color).toBe("var(--accent)");
+    // Pressed, the label draws its accent bar; its id stays in the text
+    // colour, which holds 4.5:1 at 11 px in both themes.
+    expect(label(b.session_id).style.boxShadow).toContain("3px");
+    expect(within(label(b.session_id)).getByTestId("swimlane-run-lane-id").style.color).toBe("var(--text)");
     expect(within(label(a.session_id)).getByTestId("swimlane-run-lane-id").style.color).toBe("var(--text)");
     fireEvent.click(label(a.session_id));
     expect(onRunFilter).toHaveBeenCalledWith(a.session_id);
@@ -451,6 +462,18 @@ describe("RunLanes linked to the Live feed", () => {
     expect(within(label(a.session_id)).getByTestId("swimlane-run-lane-id")).toHaveTextContent(
       truncateSessionId(a.session_id),
     );
+  });
+
+  it("names the label by its run and describes its state, model, tokens and action", () => {
+    const [a] = twoRuns();
+    renderLanes([a], { onRunFilter: () => {} });
+    const id8 = truncateSessionId(a.session_id);
+    const label = screen.getByRole("button", { name: `Run ${id8}` });
+    expect(label).toHaveAccessibleName(`Run ${id8}`);
+    expect(label).toHaveAccessibleDescription(
+      /Active.*claude-sonnet-4-5.*0 tokens.*Show only this run in the Live feed/,
+    );
+    expect(label).toHaveAttribute("title", "Show only this run in the Live feed");
   });
 
   it("puts a hovered lane's run on the link, and takes it off on leaving", () => {
@@ -461,6 +484,11 @@ describe("RunLanes linked to the Live feed", () => {
     expect(runLink.get().run).toBe(a.session_id);
     expect(laneOf(a.session_id)).toHaveAttribute("data-linked", "true");
     expect(laneOf(b.session_id)).not.toHaveAttribute("data-linked");
+    // The lit lane's label draws the lit feed row's 2 px accent bar.
+    expect(within(laneOf(a.session_id)).getByTestId("swimlane-run-lane-label").style.boxShadow).toBe(
+      "inset 2px 0 0 var(--accent)",
+    );
+    expect(within(laneOf(b.session_id)).getByTestId("swimlane-run-lane-label").style.boxShadow).toBe("");
     fireEvent.mouseOut(laneOf(a.session_id), { relatedTarget: document.body });
     expect(runLink.get().run).toBeNull();
     expect(laneOf(a.session_id)).not.toHaveAttribute("data-linked");
@@ -507,13 +535,54 @@ describe("RunLanes linked to the Live feed", () => {
   });
 
   it("lights its run while its label has the keyboard focus", () => {
+    const visible = focusVisible(true);
     const [a] = twoRuns();
     const runLink = createRunLink();
     renderLanes([a], { runLink, onRunFilter: () => {} });
-    const label = screen.getByRole("button", { name: /Show only run/ });
+    const label = screen.getByRole("button", { name: /^Run / });
     fireEvent.focus(label);
     expect(runLink.get().run).toBe(a.session_id);
     fireEvent.blur(label);
+    expect(runLink.get().run).toBeNull();
+    visible.mockRestore();
+  });
+
+  it("keeps no light from a click's focus once the pointer leaves", () => {
+    const visible = focusVisible(false);
+    const [a] = twoRuns();
+    const runLink = createRunLink();
+    renderLanes([a], { runLink, onRunFilter: () => {} });
+    const label = screen.getByRole("button", { name: /^Run / });
+    fireEvent.mouseOver(label);
+    fireEvent.focus(label);
+    expect(runLink.get().run).toBe(a.session_id);
+    fireEvent.mouseOut(laneOf(a.session_id), { relatedTarget: document.body });
+    expect(runLink.get().run).toBeNull();
+    visible.mockRestore();
+  });
+
+  it("leaves another run's light alone when the pointer or the focus leaves", () => {
+    const visible = focusVisible(true);
+    onTestFinished(() => visible.mockRestore());
+    const [a, b] = twoRuns();
+    const runLink = createRunLink();
+    renderLanes([a, b], { runLink, onRunFilter: () => {} });
+    const label = screen.getByRole("button", { name: `Run ${truncateSessionId(a.session_id)}` });
+    fireEvent.focus(label);
+    // A feed row of run b is hovered meanwhile.
+    act(() => runLink.set(b.session_id, "ev-b"));
+    fireEvent.blur(label);
+    expect(runLink.get()).toEqual({ run: b.session_id, eventId: "ev-b" });
+  });
+
+  it("puts its light out when it leaves under the pointer", () => {
+    const [a, b] = twoRuns();
+    const runLink = createRunLink();
+    const { rerender } = render(lanesElement([a, b], { runLink }));
+    fireEvent.mouseOver(within(laneOf(a.session_id)).getByTestId("swimlane-run-lane-label"));
+    expect(runLink.get().run).toBe(a.session_id);
+    // Run a leaves the window: its lane unmounts with no leave event.
+    rerender(lanesElement([b], { runLink }));
     expect(runLink.get().run).toBeNull();
   });
 });

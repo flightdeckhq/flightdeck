@@ -95,6 +95,9 @@ interface LiveFeedProps {
   runLink?: RunLink;
   /** Drawn in the header after the counts: the modal's run-filter chip. */
   headerExtra?: ReactNode;
+  /** What the feed says with no rows to show; "Waiting for events..."
+   *  when not given. The modal's run filter names its run. */
+  emptyText?: string;
 }
 
 /** A row of the lit run: the accent tint and left bar the modal's lit
@@ -114,7 +117,7 @@ function lightRowUnderPointer(runLink: RunLink, target: EventTarget) {
   runLink.set(row.dataset.runId ?? null, row.dataset.feedEventId ?? null);
 }
 
-export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight, bodyRef, runLink, headerExtra }: LiveFeedProps) {
+export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, isPaused, queueLength = 0, catchingUp, onPause, onResume, maxBodyHeight, bodyRef, runLink, headerExtra, emptyText }: LiveFeedProps) {
   const [feedHeight, setFeedHeight] = useState(getInitialHeight);
   // Set once the operator drags the resize handle: their height then
   // holds, whatever ``maxBodyHeight`` asks.
@@ -311,39 +314,53 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
           data-testid="feed-body"
           onMouseOver={runLink ? (e) => lightRowUnderPointer(runLink, e.target) : undefined}
           onMouseLeave={runLink ? () => runLink.set(null) : undefined}
+          // The modal moves the focus here when its run filter clears and
+          // the run's lane is gone: reachable by script, not by Tab.
+          tabIndex={runLink ? -1 : undefined}
         >
           {displayEvents.length === 0 && (
-            <div className="flex items-center justify-center text-xs" style={{ color: "var(--text-muted)", padding: 16, height: "100%" }}>
-              Waiting for events...
+            <div className="flex items-center justify-center text-xs" style={{ color: "var(--text-muted)", padding: 16, height: "100%" }} data-testid="feed-empty">
+              {emptyText ?? "Waiting for events..."}
             </div>
           )}
-          {displayEvents.map((fe) => (
-            <FeedRow key={`${fe.arrivedAt}-${fe.event.id}`} fe={fe} colWidths={colWidths} onClick={() => onEventClick(fe.event)} runLink={runLink} />
-          ))}
+          {displayEvents.map((fe) =>
+            runLink ? (
+              <LinkedFeedRow key={`${fe.arrivedAt}-${fe.event.id}`} fe={fe} colWidths={colWidths} onClick={() => onEventClick(fe.event)} runLink={runLink} />
+            ) : (
+              <FeedRow key={`${fe.arrivedAt}-${fe.event.id}`} fe={fe} colWidths={colWidths} onClick={() => onEventClick(fe.event)} />
+            ),
+          )}
         </div>
       </div>
     </div>
   );
 }
 
+/** A row of the per-agent modal's feed: lit while its run is hovered in
+ *  the lanes (or another of its rows is), re-rendering only when that
+ *  flips, and naming its run and event for the hover handler. */
+function LinkedFeedRow(props: { fe: FeedEvent; colWidths: ColWidths; onClick: () => void; runLink: RunLink }) {
+  const linked = useRunLit(props.runLink, props.fe.event.session_id);
+  return <FeedRow fe={props.fe} colWidths={props.colWidths} onClick={props.onClick} link={{ linked }} />;
+}
+
 function FeedRow({
   fe,
   colWidths,
   onClick,
-  runLink,
+  link,
 }: {
   fe: FeedEvent;
   colWidths: ColWidths;
   onClick: () => void;
-  runLink?: RunLink;
+  /** Given in the per-agent modal's feed only. */
+  link?: { linked: boolean };
 }) {
   const { event } = fe;
   const badge = getBadge(event.event_type);
   const detail = getEventDetail(event);
   const color = flavorColor(event.flavor);
-  // Lit while its run is hovered in the lanes (or another of its rows
-  // is); re-renders only when that flips.
-  const linked = useRunLit(runLink, event.session_id);
+  const linked = link?.linked ?? false;
 
   return (
     <div
@@ -356,8 +373,8 @@ function FeedRow({
       }}
       onClick={onClick}
       data-testid="feed-row"
-      data-run-id={event.session_id}
-      data-feed-event-id={event.id}
+      data-run-id={link ? event.session_id : undefined}
+      data-feed-event-id={link ? event.id : undefined}
       data-linked={linked ? "true" : undefined}
     >
       <span

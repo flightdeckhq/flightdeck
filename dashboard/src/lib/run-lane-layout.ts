@@ -89,26 +89,52 @@ export const FEED_MIN_HEIGHT_PX = FEED_COLUMN_HEADER_PX + 3 * FEED_ROW_PX;
  *  the modal to read. */
 export const RUN_LANES_FEED_YIELDS_FOR = 3;
 
+/** The height of a lane cue ("2 more below"): one 11 px line. */
+export const LANE_FOLD_CUE_HEIGHT_PX = 18;
+
+/**
+ * The opaque footer strip at the bottom of the label column that holds
+ * the "more below" cue while lanes are below the fold: the cue with
+ * 3 px above and below. The lanes' labels scroll under it, so a lane
+ * counts as in view only above it, and the scroll viewport gains as much
+ * room at its end so the last lane can scroll clear of it.
+ */
+export const LANE_FOLD_FOOTER_HEIGHT_PX = LANE_FOLD_CUE_HEIGHT_PX + 6;
+
 /**
  * The most height the Live feed body may take so the lanes fit: when
  * ``laneCount`` lanes at the minimum do not fit in ``laneSpacePx`` (the
  * space left for them now, with the feed body at ``feedHeightPx``), the
  * feed gives up the shortfall, down to ``FEED_MIN_HEIGHT_PX``, until
- * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit; past that the lanes scroll.
- * With room to spare the cap rises above the feed, which then keeps its
- * own height.
+ * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit, above ``footerPx`` (the
+ * footer strip, when lanes will scroll past them); past that the lanes
+ * scroll. With room to spare the cap rises above the feed, which then
+ * keeps its own height.
  */
 export function feedHeightCap({
   laneCount,
   laneSpacePx,
   feedHeightPx,
+  footerPx = 0,
 }: {
   laneCount: number;
   laneSpacePx: number;
   feedHeightPx: number;
+  footerPx?: number;
 }): number {
-  const need = Math.min(Math.max(0, laneCount), RUN_LANES_FEED_YIELDS_FOR) * RUN_LANE_MIN_HEIGHT_PX;
+  const need =
+    Math.min(Math.max(0, laneCount), RUN_LANES_FEED_YIELDS_FOR) * RUN_LANE_MIN_HEIGHT_PX + footerPx;
   return Math.max(FEED_MIN_HEIGHT_PX, feedHeightPx + laneSpacePx - need);
+}
+
+/**
+ * The footer strip ``feedHeightCap`` keeps room for: when the feed gives
+ * up height to the first group's lanes, every other lane scrolls past
+ * them (the first group's past ``RUN_LANES_FEED_YIELDS_FOR``, and any
+ * other group), and the strip then shows under the lanes in view.
+ */
+export function foldFooterFor(laneCount: number, groupCount: number): number {
+  return laneCount > RUN_LANES_FEED_YIELDS_FOR || groupCount > 1 ? LANE_FOLD_FOOTER_HEIGHT_PX : 0;
 }
 
 /** Space between a circle's right edge and its text. */

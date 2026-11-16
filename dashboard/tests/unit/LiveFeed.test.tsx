@@ -421,10 +421,31 @@ describe("LiveFeed linked to the per-agent modal's run lanes", () => {
     expect(link.get()).toEqual({ run: null, eventId: null });
   });
 
-  it("without a link (the Fleet page) lights nothing and sets nothing", () => {
+  it("without a link (the Fleet page) keeps its rows as they were: no run attributes, no light", () => {
     render(<LiveFeed events={twoRuns} onEventClick={() => {}} />);
-    fireEvent.mouseOver(rowOf("a1"));
-    expect(litRows()).toEqual([]);
+    const rows = screen.getAllByTestId("feed-row");
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row).not.toHaveAttribute("data-run-id");
+      expect(row).not.toHaveAttribute("data-feed-event-id");
+      expect(row).not.toHaveAttribute("data-linked");
+    }
+    fireEvent.mouseOver(rows[0]!);
+    expect(screen.getByTestId("feed-body")).not.toHaveAttribute("tabindex");
+  });
+
+  it("with a link, its rows are a focus target for script, not for Tab", () => {
+    render(<LiveFeed events={twoRuns} onEventClick={() => {}} runLink={createRunLink()} />);
+    expect(screen.getByTestId("feed-body")).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("says what it is given when it has no rows", () => {
+    const { rerender } = render(<LiveFeed events={[]} onEventClick={() => {}} />);
+    expect(screen.getByTestId("feed-empty")).toHaveTextContent("Waiting for events...");
+    rerender(
+      <LiveFeed events={[]} onEventClick={() => {}} emptyText="No events from run 1a2b3c4d in this window" />,
+    );
+    expect(screen.getByTestId("feed-empty")).toHaveTextContent("No events from run 1a2b3c4d in this window");
   });
 
   it("draws the header slot after the counts", () => {

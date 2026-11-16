@@ -186,7 +186,7 @@ describe("Timeline run lanes", () => {
       viewportHeight: 260, laneViewport: viewportOf(1024),
       onRunLaneSpace,
     });
-    expect(onRunLaneSpace).toHaveBeenLastCalledWith({ laneCount: 3, restPx: REST_PX });
+    expect(onRunLaneSpace).toHaveBeenLastCalledWith({ laneCount: 3, restPx: REST_PX, groupCount: 1 });
   });
 
   it("reports the first group's lanes, leaving out the groups below it", () => {
@@ -217,6 +217,7 @@ describe("Timeline run lanes", () => {
       laneCount: Number(groups[0]!.getAttribute("data-lane-count")),
       // REST_PX holds both headings; the second group's goes with it.
       restPx: REST_PX - RUN_LANE_HEADING_HEIGHT_PX,
+      groupCount: 2,
     });
     group.mockRestore();
   });

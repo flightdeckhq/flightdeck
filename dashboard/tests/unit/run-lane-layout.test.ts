@@ -12,11 +12,14 @@ import {
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
+  LANE_FOLD_CUE_HEIGHT_PX,
+  LANE_FOLD_FOOTER_HEIGHT_PX,
   LANE_IN_VIEW_TOLERANCE_PX,
   LANE_MODEL_SWITCH_LEAD,
   chooseLaneModel,
   lanesOutOfView,
   feedHeightCap,
+  foldFooterFor,
   modelCallCounts,
   markerText,
   markerTextWidth,
@@ -413,6 +416,31 @@ describe("feedHeightCap", () => {
 
   it("asks nothing with no lanes", () => {
     expect(feedHeightCap({ laneCount: 0, laneSpacePx: -10, feedHeightPx: 240 })).toBe(230);
+  });
+
+  it("keeps room for the footer strip under the lanes in view", () => {
+    // 3 × 40 + 24 = 144 needed, 87 left: the feed gives up 57 px.
+    expect(
+      feedHeightCap({ laneCount: 5, laneSpacePx: 87, feedHeightPx: 240, footerPx: LANE_FOLD_FOOTER_HEIGHT_PX }),
+    ).toBe(240 - (3 * 40 + LANE_FOLD_FOOTER_HEIGHT_PX - 87));
+  });
+});
+
+describe("foldFooterFor", () => {
+  it("keeps the strip's room when other lanes scroll past the first group's", () => {
+    // The first group's lanes past three scroll.
+    expect(foldFooterFor(4, 1)).toBe(LANE_FOLD_FOOTER_HEIGHT_PX);
+    // A sub-agent's group scrolls past the first group's lanes.
+    expect(foldFooterFor(2, 2)).toBe(LANE_FOLD_FOOTER_HEIGHT_PX);
+  });
+
+  it("keeps none when the first group's lanes are all there is", () => {
+    expect(foldFooterFor(3, 1)).toBe(0);
+    expect(foldFooterFor(1, 1)).toBe(0);
+  });
+
+  it("holds the cue with room above and below", () => {
+    expect(LANE_FOLD_FOOTER_HEIGHT_PX).toBeGreaterThan(LANE_FOLD_CUE_HEIGHT_PX);
   });
 });
 

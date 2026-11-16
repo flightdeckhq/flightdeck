@@ -14,7 +14,7 @@ import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useS
 import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
-import { feedHeightCap } from "@/lib/run-lane-layout";
+import { LANE_FOLD_FOOTER_HEIGHT_PX, feedHeightCap, foldFooterFor } from "@/lib/run-lane-layout";
 import { createLaneViewport } from "@/lib/lane-viewport";
 import { createRunLink } from "@/lib/run-link";
 import { truncateSessionId } from "@/lib/events";
@@ -42,6 +42,14 @@ const EMPTY_FEED: FeedEvent[] = [];
  *  swimlane's, without re-rendering the modal (and its Timeline)
  *  every second. */
 const FEED_WINDOW_TICK_MS = 5_000;
+
+/**
+ * How many runs' histories the modal fetches at once as it opens: a
+ * browser opens at most six connections to one origin over HTTP/1.1, so
+ * more would only queue inside it, and holding two back leaves the page's
+ * other requests (the KPI summary, the run drawer) a connection.
+ */
+export const SEED_FETCH_CONCURRENCY = 4;
 
 /** Scroll the swim viewport to its right edge, where the "now" pole
  *  sits. */
@@ -227,38 +235,48 @@ export function PerAgentSwimlaneModal({
   // effect doesn't re-run on every parent re-render.
   useEffect(() => {
     if (!agentId) return;
-    let cancelled = false;
+    // Aborted when the modal closes or the scope changes: requests in
+    // flight are cancelled, not only their answers dropped.
+    const controller = new AbortController();
     const sessionIds = scopedSessionIdsKey
       ? scopedSessionIdsKey.split(",")
       : [];
+    // A run the cache holds whole is read from it. One it holds part of
+    // (the Fleet page caches only its own window's events) is fetched,
+    // or the modal's wider ranges would miss its older events, on its
+    // lane and in the feed alike.
+    const loadRun = async (sid: string) => {
+      const cached = eventsCache.get(sid);
+      if (cached && cached.length > 0 && fullHistoryLoaded.has(sid)) return;
+      try {
+        const detail = await fetchSession(sid, undefined, controller.signal);
+        if (controller.signal.aborted) return;
+        // A fetch without a cap: the run's whole history. Merge, never
+        // replace: a live tick may have reached the cache while the
+        // fetch was in flight.
+        fullHistoryLoaded.add(sid);
+        mergeSessionEvents(sid, detail.events ?? []);
+      } catch {
+        // Aborted, or failed: the cache keeps what it has.
+      }
+    };
+    // ``SEED_FETCH_CONCURRENCY`` workers take the runs in turn.
+    let next = 0;
+    const worker = async () => {
+      while (next < sessionIds.length && !controller.signal.aborted) {
+        const sid = sessionIds[next]!;
+        next += 1;
+        await loadRun(sid);
+      }
+    };
     Promise.all(
-      sessionIds.map(async (sid) => {
-        // A run the cache holds whole is read from it. One it holds part
-        // of (the Fleet page caches only its own window's events) is
-        // fetched, or the modal's wider ranges would miss its older
-        // events, on its lane and in the feed alike.
-        const cached = eventsCache.get(sid);
-        if (cached && cached.length > 0 && fullHistoryLoaded.has(sid)) {
-          return { sid, events: cached };
-        }
-        try {
-          const detail = await fetchSession(sid);
-          // A fetch without a cap: the run's whole history. Merge, never
-          // replace: a live tick may have reached the cache while the
-          // fetch was in flight.
-          fullHistoryLoaded.add(sid);
-          mergeSessionEvents(sid, detail.events ?? []);
-        } catch {
-          // The cache keeps what it has.
-        }
-        return { sid, events: eventsCache.get(sid) ?? ([] as AgentEvent[]) };
-      }),
+      Array.from({ length: Math.min(SEED_FETCH_CONCURRENCY, sessionIds.length) }, worker),
     )
-      .then((perSession) => {
-        if (cancelled) return;
+      .then(() => {
+        if (controller.signal.aborted) return;
         const all: FeedEvent[] = [];
-        for (const { events } of perSession) {
-          for (const ev of events) {
+        for (const sid of sessionIds) {
+          for (const ev of eventsCache.get(sid) ?? []) {
             all.push({
               arrivedAt: new Date(ev.occurred_at).getTime(),
               event: ev,
@@ -272,18 +290,12 @@ export function PerAgentSwimlaneModal({
         setFeedAgentId(agentId);
         setFeedEvents(all.slice(0, FEED_MAX_EVENTS));
       })
-      // Inner per-session catches swallow fetch errors and
-      // return ``[]`` for that session, so ``Promise.all``
-      // itself doesn't reject under normal flow. A trailing
-      // ``.catch`` is still here to document intent and
-      // suppress any unexpected throw inside the synchronous
-      // ``.then`` body — the seed simply skips and the next
-      // scope change re-fires the effect.
-      .catch(() => {
-        /* unexpected; the next effect run will retry */
-      });
+      // Each run's load catches its own errors, so this is for an
+      // unexpected throw in the seed above: the next scope change
+      // seeds again.
+      .catch(() => {});
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [agentId, scopedSessionIdsKey]);
 
@@ -406,6 +418,10 @@ export function PerAgentSwimlaneModal({
   // drags its resize handle.
   const [laneSpace, setLaneSpace] = useState<RunLaneSpace | null>(null);
   const [feedCap, setFeedCap] = useState<number | undefined>(undefined);
+  // The lanes overflow the lane area (``LaneFoldCues`` reads it), and the
+  // footer strip under the viewport shows: its height belongs to the lane
+  // area, so the feed's cap reads the viewport and the strip together.
+  const [lanesOverflow, setLanesOverflow] = useState(false);
   const feedBodyRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const scrollEl = swimScrollRef.current;
@@ -413,11 +429,15 @@ export function PerAgentSwimlaneModal({
     if (!laneSpace || !scrollEl || !body) return;
     const cap = feedHeightCap({
       laneCount: laneSpace.laneCount,
-      laneSpacePx: scrollEl.clientHeight - laneSpace.restPx,
+      laneSpacePx:
+        scrollEl.clientHeight + (lanesOverflow ? LANE_FOLD_FOOTER_HEIGHT_PX : 0) - laneSpace.restPx,
       feedHeightPx: body.offsetHeight,
+      // The lanes in view sit above the footer strip once the others
+      // scroll past them.
+      footerPx: foldFooterFor(laneSpace.laneCount, laneSpace.groupCount),
     });
     setFeedCap((prev) => (prev === cap ? prev : cap));
-  }, [laneSpace, swimHeight]);
+  }, [laneSpace, swimHeight, lanesOverflow]);
   const open = agent !== null;
   // An event circle opens the event drawer; a run glyph (no event) opens
   // the run drawer. One stable handler, so a modal render leaves the
@@ -452,7 +472,20 @@ export function PerAgentSwimlaneModal({
   const toggleRunFilter = useCallback((sessionId: string) => {
     setRunFilter((prev) => (prev === sessionId ? null : sessionId));
   }, []);
-  const clearRunFilter = useCallback(() => setRunFilter(null), []);
+  // Clearing the filter from the chip or with Esc moves the focus first,
+  // so the chip's going does not drop it: to the run's lane label while
+  // its lane is drawn, otherwise to the feed's rows.
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  const clearRunFilter = useCallback(() => {
+    if (runFilter === null) return;
+    const lane = Array.from(
+      swimScrollRef.current?.querySelectorAll<HTMLElement>("[data-run-lane-row]") ?? [],
+    ).find((l) => l.getAttribute("data-run-id") === runFilter);
+    const label = lane?.querySelector<HTMLElement>('button[data-testid="swimlane-run-lane-label"]');
+    const target = label ?? feedRef.current?.querySelector<HTMLElement>('[data-testid="feed-body"]');
+    target?.focus();
+    setRunFilter(null);
+  }, [runFilter]);
   useLayoutEffect(() => {
     if (!open) return;
     const el = swimScrollRef.current;
@@ -475,7 +508,7 @@ export function PerAgentSwimlaneModal({
             setSelectedRunId(null);
           } else if (runFilter) {
             e.preventDefault();
-            setRunFilter(null);
+            clearRunFilter();
           }
         }}
         className="max-w-[80vw]!"
@@ -698,8 +731,9 @@ export function PerAgentSwimlaneModal({
                 flexDirection: "column",
               }}
             >
-              {/* The lane area: the scroll viewport and, over its edges,
-                  the cues for lanes out of view. */}
+              {/* The lane area: the scroll viewport, the "more above" cue
+                  in its axis row's label cell, and the footer strip under
+                  it while the lanes overflow. */}
               <div
                 style={{
                   flex: 1,
@@ -732,9 +766,14 @@ export function PerAgentSwimlaneModal({
                     onRunFilter={toggleRunFilter}
                   />
                 </div>
-                <LaneFoldCues scrollEl={swimScrollEl} lanesKey={laneSpace} />
+                <LaneFoldCues
+                  scrollEl={swimScrollEl}
+                  lanesKey={laneSpace}
+                  onOverflowChange={setLanesOverflow}
+                />
               </div>
               <div
+                ref={feedRef}
                 data-testid="per-agent-swimlane-modal-feed"
                 style={{
                   flexShrink: 0,
@@ -752,6 +791,14 @@ export function PerAgentSwimlaneModal({
                     runFilter ? (
                       <RunFilterChip runId={runFilter} onClear={clearRunFilter} />
                     ) : null
+                  }
+                  // A filter on a run with nothing in the window stays, so
+                  // the feed does not flood with every run while the run
+                  // is quiet; it says so, and the chip clears it.
+                  emptyText={
+                    runFilter
+                      ? `No events from run ${truncateSessionId(runFilter)} in this window`
+                      : undefined
                   }
                 />
               </div>
@@ -826,16 +873,19 @@ function RunFilterChip({ runId, onClear }: { runId: string; onClear: () => void 
       data-testid="feed-run-filter-chip"
       data-run-id={runId}
       aria-label={`Run ${id8}: clear the run filter`}
-      className="inline-flex cursor-pointer items-center gap-1 rounded-full font-mono text-[11px] hover:bg-surface-hover focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+      className="inline-flex cursor-pointer items-center gap-1 rounded-full font-mono text-[11px] focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
       style={{
         padding: "1px 6px 1px 8px",
         border: "1px solid var(--accent-border)",
         background: "color-mix(in srgb, var(--accent) 12%, transparent)",
-        color: "var(--accent)",
+        // Text in the page's text colour, as the runs chip's: the accent
+        // at 11 px falls short of 4.5:1 on its tint in the dark theme.
+        // The border and the icon carry the accent.
+        color: "var(--text)",
       }}
     >
       Run {id8}
-      <X size={12} aria-hidden="true" />
+      <X size={12} aria-hidden="true" style={{ color: "var(--accent)" }} />
     </button>
   );
 }

@@ -24,6 +24,7 @@ import { RunLanes } from "./RunLanes";
 import { RUN_LANE_MAX_HEIGHT_PX, runLaneHeights } from "@/lib/run-lane-layout";
 import type { LaneViewport } from "@/lib/lane-viewport";
 import type { RunLink } from "@/lib/run-link";
+import { isKeyboardFocus } from "@/lib/keyboard-focus";
 import {
   SubAgentConnector,
   centreWithin,
@@ -66,19 +67,6 @@ function runIdOf(target: EventTarget | null): string | null {
   return target.closest("[data-session-id]")?.getAttribute("data-session-id") ?? null;
 }
 
-/**
- * Whether focus on ``target`` came from the keyboard. A mouse click
- * focuses a run glyph's button too, and Chromium keeps that focus after
- * the pointer leaves, so only ``:focus-visible`` focus lights a run.
- */
-function isKeyboardFocus(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  try {
-    return target.matches(":focus-visible");
-  } catch {
-    return false;
-  }
-}
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -161,6 +149,8 @@ const RUN_LANE_GROUP_SELECTOR = '[data-run-lanes="true"]';
 export interface RunLaneSpace {
   laneCount: number;
   restPx: number;
+  /** The run-lane groups drawn: the first and its sub-agents'. */
+  groupCount: number;
 }
 
 export function Timeline({
@@ -512,8 +502,13 @@ export function Timeline({
     for (const lane of leadLanes) leadRestPx -= lane.offsetHeight;
     for (const group of groups.slice(1)) leadRestPx -= group.offsetHeight;
     const prev = reportedSpace.current;
-    if (!prev || prev.laneCount !== leadLanes.length || prev.restPx !== leadRestPx) {
-      reportedSpace.current = { laneCount: leadLanes.length, restPx: leadRestPx };
+    if (
+      !prev ||
+      prev.laneCount !== leadLanes.length ||
+      prev.restPx !== leadRestPx ||
+      prev.groupCount !== groups.length
+    ) {
+      reportedSpace.current = { laneCount: leadLanes.length, restPx: leadRestPx, groupCount: groups.length };
       onRunLaneSpace?.(reportedSpace.current);
     }
     if (lanes.length === 0) return;
@@ -1035,6 +1030,8 @@ export function Timeline({
               see the comment on the handle div below. */}
           <div
             className="shrink-0"
+            // The modal's "more above" cue sits in this empty cell.
+            data-timeline-axis-label="true"
             style={{
               width: leftPanelWidth,
               height: 28,

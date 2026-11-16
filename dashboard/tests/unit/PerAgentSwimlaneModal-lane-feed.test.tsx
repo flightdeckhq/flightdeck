@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
+import { PerAgentSwimlaneModal, SEED_FETCH_CONCURRENCY } from "@/components/agents/PerAgentSwimlaneModal";
 import { ClientType } from "@/lib/agent-identity";
 import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
 import { eventsCache, fullHistoryLoaded } from "@/hooks/useSessionEvents";
@@ -194,8 +194,7 @@ async function openModal(onClose = () => {}) {
 }
 
 const lane = (id: string) => screen.getByTestId(`swimlane-run-lane-${ID8(id)}`);
-const laneLabel = (id: string) =>
-  screen.getByRole("button", { name: `Show only run ${ID8(id)} in the Live feed` });
+const laneLabel = (id: string) => screen.getByRole("button", { name: `Run ${ID8(id)}` });
 const feedRows = () => screen.getAllByTestId("feed-row");
 const feedRow = (eventId: string) => feedRows().find((r) => r.getAttribute("data-feed-event-id") === eventId)!;
 const feedRuns = () => [...new Set(feedRows().map((r) => r.getAttribute("data-run-id")))].sort();
@@ -288,23 +287,31 @@ describe("PerAgentSwimlaneModal lanes and Live feed", () => {
     expect(feedRows()).toHaveLength(5);
   });
 
-  it("clears the filter from its chip", async () => {
+  it("clears the filter from its chip, moving the focus to the run's lane label", async () => {
     await openModal();
     fireEvent.click(laneLabel(P2));
-    fireEvent.click(screen.getByTestId("feed-run-filter-chip"));
+    const chip = screen.getByTestId("feed-run-filter-chip");
+    // The chip's text is in the page's text colour; the accent is on its
+    // border and icon.
+    expect(chip.style.color).toBe("var(--text)");
+    chip.focus();
+    fireEvent.click(chip);
     expect(screen.queryByTestId("feed-run-filter-chip")).toBeNull();
     expect(laneLabel(P2)).toHaveAttribute("aria-pressed", "false");
     expect(feedRows()).toHaveLength(5);
+    expect(document.activeElement).toBe(laneLabel(P2));
   });
 
   it("clears the filter on Esc before closing the modal", async () => {
     const onClose = vi.fn();
     await openModal(onClose);
     fireEvent.click(laneLabel(P1));
-    fireEvent.keyDown(laneLabel(P1), { key: "Escape" });
+    screen.getByTestId("feed-run-filter-chip").focus();
+    fireEvent.keyDown(screen.getByTestId("feed-run-filter-chip"), { key: "Escape" });
     expect(screen.queryByTestId("feed-run-filter-chip")).toBeNull();
     expect(feedRows()).toHaveLength(5);
     expect(onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(laneLabel(P1));
     fireEvent.keyDown(laneLabel(P1), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
@@ -313,7 +320,7 @@ describe("PerAgentSwimlaneModal lanes and Live feed", () => {
     await openModal();
     const child = screen.getByTestId("swimlane-agent-row-parent-agent/worker");
     expect(child).toHaveAttribute("data-run-lanes", "true");
-    fireEvent.click(within(child).getByRole("button", { name: `Show only run ${ID8(C1)} in the Live feed` }));
+    fireEvent.click(within(child).getByRole("button", { name: `Run ${ID8(C1)}` }));
     expect(feedRuns()).toEqual([C1]);
 
     fireEvent.click(screen.getByTestId("per-agent-swimlane-modal-show-sub-agents-input"));
@@ -328,7 +335,7 @@ describe("PerAgentSwimlaneModal lanes and Live feed", () => {
     serverEvents.set(P1, [toolCall("p1-a", P1, 30_000), toolCall("p1-b", P1, 20_000)]);
     eventsCache.set(P1, [toolCall("p1-b", P1, 20_000)]);
     await openModal();
-    expect(fetchSession).toHaveBeenCalledWith(P1);
+    expect(vi.mocked(fetchSession).mock.calls.some(([id]) => id === P1)).toBe(true);
     expect(
       feedRows()
         .filter((r) => r.getAttribute("data-run-id") === P1)
@@ -343,5 +350,122 @@ describe("PerAgentSwimlaneModal lanes and Live feed", () => {
     await openModal();
     expect(feedRows()).toHaveLength(5);
     expect(fetchSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the filter while its run has nothing in the window, says so, and focuses the feed on clearing", async () => {
+    // Real timers but a fake clock: the feed's window and the Timeline's
+    // "now" both read it.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(now);
+    // P1 ended 15 s ago: its lane leaves with its events once the clock
+    // moves two minutes on.
+    useFleetStore.setState({
+      flavors: [
+        flavor("agent-parent", "parent-agent", [
+          { ...session(P1, "agent-parent"), state: "closed", ended_at: new Date(now - 15_000).toISOString() },
+          session(P2, "agent-parent"),
+        ]),
+        flavor("agent-child", "parent-agent/worker", [session(C1, "agent-child", P1)]),
+      ],
+    });
+    await openModal();
+    fireEvent.click(laneLabel(P1));
+    expect(feedRuns()).toEqual([P1]);
+
+    vi.setSystemTime(now + 120_000);
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    await waitFor(() => expect(screen.queryByTestId(`swimlane-run-lane-${ID8(P1)}`)).toBeNull());
+    // The filter stays: no rows, a filter-aware empty state, the chip.
+    expect(screen.queryAllByTestId("feed-row")).toHaveLength(0);
+    expect(screen.getByTestId("feed-empty")).toHaveTextContent(`No events from run ${ID8(P1)} in this window`);
+    const chip = screen.getByTestId("feed-run-filter-chip");
+    chip.focus();
+    fireEvent.click(chip);
+    // Its lane is gone: the focus goes to the feed's rows.
+    expect(document.activeElement).toBe(screen.getByTestId("feed-body"));
+  });
+});
+
+describe("PerAgentSwimlaneModal seed fetches", () => {
+  const RUNS = Array.from({ length: 9 }, (_, i) => `s000000${i}-0000-4000-8000-000000000000`);
+  type Call = { id: string; signal?: AbortSignal; resolve: () => void; done: boolean };
+
+  function deferFetches(): Call[] {
+    const calls: Call[] = [];
+    vi.mocked(fetchSession).mockImplementation((id: string, _limit?: number, signal?: AbortSignal) => {
+      return new Promise<SessionDetail>((resolve) => {
+        const call: Call = { id, signal, done: false, resolve: () => {} };
+        call.resolve = () => {
+          call.done = true;
+          resolve({ events: [] } as unknown as SessionDetail);
+        };
+        calls.push(call);
+      });
+    });
+    return calls;
+  }
+
+  beforeEach(() => {
+    eventsCache.clear();
+    useFleetStore.setState({
+      flavors: [flavor("agent-parent", "parent-agent", RUNS.map((id) => session(id, "agent-parent")))],
+    });
+  });
+
+  // The modal's seed passes a signal; the lanes' own first fetch of a run
+  // does not.
+  const seedCalls = (calls: Call[]) => calls.filter((c) => c.signal !== undefined);
+  const inFlight = (calls: Call[]) => seedCalls(calls).filter((c) => !c.done && !c.signal!.aborted).length;
+
+  it(`fetches at most ${SEED_FETCH_CONCURRENCY} runs at once`, async () => {
+    const calls = deferFetches();
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={{ ...agent, topology: "lone" }} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+    expect(seedCalls(calls)).toHaveLength(SEED_FETCH_CONCURRENCY);
+    expect(inFlight(calls)).toBe(SEED_FETCH_CONCURRENCY);
+    // One answers: the next run's fetch starts, still no more at once.
+    await act(async () => {
+      seedCalls(calls)[0]!.resolve();
+    });
+    expect(seedCalls(calls)).toHaveLength(SEED_FETCH_CONCURRENCY + 1);
+    expect(inFlight(calls)).toBe(SEED_FETCH_CONCURRENCY);
+    // All answer in turn: every run is fetched once.
+    for (let i = 0; i < RUNS.length; i++) {
+      await act(async () => {
+        for (const c of seedCalls(calls)) if (!c.done) c.resolve();
+      });
+    }
+    expect(seedCalls(calls).map((c) => c.id).sort()).toEqual([...RUNS].sort());
+  });
+
+  it("aborts the fetches in flight when the modal closes", async () => {
+    const calls = deferFetches();
+    const { rerender } = render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={{ ...agent, topology: "lone" }} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+    const started = seedCalls(calls);
+    expect(started.length).toBeGreaterThan(0);
+    expect(started.every((c) => !c.signal!.aborted)).toBe(true);
+    rerender(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={null} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    expect(started.every((c) => c.signal!.aborted)).toBe(true);
+    // Nothing more starts after the close.
+    await act(async () => {
+      for (const c of started) c.resolve();
+    });
+    expect(seedCalls(calls)).toHaveLength(started.length);
   });
 });

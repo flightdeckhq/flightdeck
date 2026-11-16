@@ -211,8 +211,9 @@ class _NotData:
 
 
 def test_content_json_cannot_write_is_dropped_and_the_tokens_kept(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
     payload = _post_call({"messages": [], "tools": _NotData()})
     payload["incoming_message"] = {"has_content": True, "content_bytes": 9, "captured_at": "t"}
     with caplog.at_level(logging.WARNING):
@@ -227,8 +228,9 @@ def test_content_json_cannot_write_is_dropped_and_the_tokens_kept(
 
 
 def test_content_with_a_cycle_is_dropped_and_the_tokens_kept(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
     cycle: list[Any] = []
     cycle.append(cycle)
     with caplog.at_level(logging.WARNING):
@@ -243,3 +245,23 @@ def test_a_field_outside_the_content_json_cannot_write_still_raises() -> None:
     payload = {**_post_call(None), "model": _NotData()}
     with pytest.raises(TypeError):
         serialize_event(payload)
+
+
+def test_the_warning_for_content_json_cannot_write_is_logged_once_per_kind(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A framework that always hands over the same unencodable object gets
+    one warning per event type and object type; the rest go to debug."""
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
+    with caplog.at_level(logging.DEBUG, logger="flightdeck_sensor.transport.body_limit"):
+        for _ in range(3):
+            serialize_event(_post_call({"tools": _NotData()}))
+        serialize_event({**_post_call({"tools": _NotData()}), "event_type": "embeddings"})
+        serialize_event(_post_call({"tools": {1, 2}}))
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 3, warnings
+    assert any("post_call" in w and "_NotData" in w for w in warnings)
+    assert any("embeddings" in w and "_NotData" in w for w in warnings)
+    assert any("post_call" in w and "set" in w for w in warnings)
+    assert len(debugs) == 2

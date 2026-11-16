@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any
 
 _log = logging.getLogger("flightdeck_sensor.transport.body_limit")
@@ -96,6 +97,25 @@ def _without_content(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# The (event type, object type) pairs whose content has been sent without
+# its content once already: the warning is logged once per pair, and at
+# debug level after that, so a framework that always hands over the same
+# unencodable object does not fill the log. Events drain on one thread;
+# the lock covers a direct post_event from another.
+_warned_unencodable: set[tuple[Any, str]] = set()
+_warned_unencodable_lock = threading.Lock()
+
+
+def _first_time(event_type: Any, unencodable: str) -> bool:
+    """Whether this pair of event type and object type is new."""
+    key = (event_type, unencodable)
+    with _warned_unencodable_lock:
+        if key in _warned_unencodable:
+            return False
+        _warned_unencodable.add(key)
+        return True
+
+
 def _encode(payload: dict[str, Any]) -> tuple[bytes | None, str]:
     """``payload`` as JSON, or (None, what could not be encoded): the type
     name of the first object json cannot write, else the error's text (a
@@ -128,10 +148,12 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
             raise TypeError(f"event is not JSON serializable: {unencodable}")
         payload = _without_content(payload)
         body = json.dumps(payload).encode()
-        _log.warning(
+        event_type = payload.get("event_type")
+        log = _log.warning if _first_time(event_type, unencodable) else _log.debug
+        log(
             "%s event's captured content holds %s, which cannot be written as JSON; "
             "sent without its content",
-            payload.get("event_type"),
+            event_type,
             unencodable,
         )
     size = encoded_size(body)

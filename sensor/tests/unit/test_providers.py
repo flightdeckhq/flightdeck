@@ -563,8 +563,9 @@ def test_openai_content_stores_an_argument_left_out_as_not_given(call: str) -> N
             assert content is not None
             assert content.tools is None and content.system is None and content.input == "hi"
         else:
-            kwargs = {"model": "text-embedding-3-small", "input": "hi", "dimensions": sentinel}
+            # input is the field an embeddings call's content stores.
+            kwargs = {"model": "text-embedding-3-small", "input": sentinel}
             content = provider.extract_content(kwargs, {"data": []}, EventType.EMBEDDINGS)
             assert content is not None
-            assert content.input == "hi"
+            assert content.input is None
         json.dumps(dataclasses.asdict(content))

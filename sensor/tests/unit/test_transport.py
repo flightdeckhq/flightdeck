@@ -406,7 +406,7 @@ def test_parse_directive_unknown_action() -> None:
 
 
 def test_an_event_whose_content_json_cannot_write_arrives_without_it(
-    mock_control_plane: Any, caplog: pytest.LogCaptureFixture
+    mock_control_plane: Any, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through the real queue and client: a post_call whose captured content
     holds the SDK's "not given" sentinel (a capture that missed it) and one
@@ -414,6 +414,10 @@ def test_an_event_whose_content_json_cannot_write_arrives_without_it(
     the control plane with their tokens; the first without its content."""
     openai = pytest.importorskip("openai")
     from flightdeck_sensor.providers.openai import OpenAIProvider
+    from flightdeck_sensor.transport import body_limit
+
+    # The warning is once per kind; this test must see its own.
+    monkeypatch.setattr(body_limit, "_warned_unencodable", set())
 
     sentinel = getattr(openai, "omit", openai.NOT_GIVEN)
     content = OpenAIProvider(capture_prompts=True).extract_content(

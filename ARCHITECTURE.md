@@ -10738,10 +10738,12 @@ bearer token has full access — both reads and mutations.
 
 #### Install-time seed and boot-time idempotent retry
 
-The empty-blocklist global policy row is seeded by the
-`mcp_protection_policy_seed_global` migration. The
-seed SQL is an idempotent INSERT identical in shape to the boot
-hook below:
+The migrations seed the empty-blocklist global policy row: on
+Postgres the `mcp_protection_policy_seed_global` migration, with the
+idempotent INSERT below, and on SQLite the baseline, which inserts
+the row right after it creates the table. Once the migrations have
+run, `GET /v1/mcp-policies/global` finds the row, whichever of the
+API and the migrator started first.
 
 ```sql
 INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
@@ -10749,22 +10751,18 @@ SELECT 'global', NULL, 'blocklist', false
 WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global');
 ```
 
-The migrator is the single writer for this row. By the time the API
-can `SELECT` from `mcp_policies` the seed has already landed, so
-once the migrations have run `GET /v1/mcp-policies/global` finds
-the row, whichever of the API and the migrator started first: the
-endpoint does not depend on the API's own boot step to create it.
-
-`store.EnsureGlobalMCPPolicy(ctx)` also runs at API boot as a
-defensive idempotent retry — same SQL, same `WHERE NOT EXISTS`
-predicate, race-safe under read-committed because the unique
-index `(scope, COALESCE(scope_value, ''))` rejects a concurrent
-second insert; on `pgconn.PgError.Code = '23505'`
-(unique_violation) the caller treats it as "already created" and
-proceeds. On a migrated database the hook changes nothing (the
-migration owns the row); it is there for any install path that
-runs the API before the migrations. API startup logs `INFO ensure global mcp
-policy at boot complete` on success.
+`store.EnsureGlobalMCPPolicy(ctx)` runs the same INSERT at API boot,
+with the same `WHERE NOT EXISTS` predicate. It is race-safe under
+read-committed because the unique index
+`(scope, COALESCE(scope_value, ''))` rejects a concurrent second
+insert, and a unique violation (`storage.IsUniqueViolation`: Postgres
+`23505`, SQLite's unique-constraint error) is treated as "already
+created". On a migrated database it changes nothing; it adds the row
+where the table exists without it. On a database the migrations have
+not reached it fails: the API logs `WARN ensure global mcp policy at
+boot failed` and carries on, and the migrations seed the row later.
+API startup logs `INFO ensure global mcp policy at boot complete` on
+success.
 
 #### Policy templates
 

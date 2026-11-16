@@ -1,25 +1,34 @@
 """Integration tests for the /api/v1/stream WebSocket hub.
 
-Regression coverage for the NOTIFY->SELECT race that caused the Fleet
-Live Feed to drop post_call events when they were followed within
-~200 ms by a tool_call (the new normal after b63ef8e). The hub now
-carries the triggering event_id in the NOTIFY payload and fetches by
-primary key, so tight paired events both reach the WebSocket.
+Two events of one session committed close together, a post_call and
+then a tool_call, must each reach the stream as a broadcast of its own,
+carrying its own event. The worker's notification names the event it
+announces, and the hub fetches that event by its id: a hub that read the
+session's latest event instead would broadcast the tool_call for both,
+which is how the Fleet Live Feed would lose a post_call followed closely
+by a tool_call.
+
+Each test opens the stream and starts its run through ``start_run``
+before it posts the pair, so the socket is registered with the hub and
+neither of the pair's broadcasts can go out before it is listening.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 from websockets.asyncio.client import connect
 
-from .conftest import BASE_URL, TOKEN, exec_sql, make_event, post_event
+from ._ws import WS_URL, Update, session_updates, start_run
+from .conftest import exec_sql, make_event, post_event
+from .test_session_states import PROCESSING_SLACK_SECS
 
-WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
+if TYPE_CHECKING:
+    from websockets.asyncio.client import ClientConnection
 
 # Both tests listen on the stack-wide ``/v1/stream`` hub, which
 # broadcasts every event the stack ingests; the parallel phase's event
@@ -27,11 +36,13 @@ WS_URL = f"{BASE_URL.replace('http', 'ws', 1)}/api/v1/stream?token={TOKEN}"
 # a time after it.
 pytestmark = pytest.mark.exclusive
 
+PAIR_TYPES = ("post_call", "tool_call")
+
 
 def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:
     """Return the event ids for the given session in occurred_at order,
-    filtered to the given event_types. Used to pin down the DB-assigned
-    UUIDs so the WebSocket assertions can compare by id.
+    filtered to the given event_types. Used to pin down the stored ids so
+    the WebSocket assertions can compare by id.
 
     The event_types tuple is rendered as a comma-separated string and
     expanded server-side via string_to_array so the bind-variable form
@@ -52,171 +63,115 @@ def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
-async def _collect_ws_last_events(
-    session_id: str,
-    event_types: tuple[str, ...],
-    min_distinct: int,
-    timeout: float,
-) -> list[dict]:
-    """Open a WebSocket, collect every fleetUpdate for session_id whose
-    last_event.event_type is in event_types, return the list (in arrival
-    order) once we have at least min_distinct distinct event ids or
-    timeout fires. Filtering by event_type keeps the session_start
-    broadcast from consuming one of the min_distinct slots -- we only
-    care about the paired post_call / tool_call events for the race
-    test.
-    """
-    collected: list[dict] = []
+async def _collect_pair(ws: ClientConnection, session_id: str) -> list[Update]:
+    """Read ``ws`` and return the broadcasts for ``session_id`` whose
+    last_event is one of the pair's types, one per distinct event id, in
+    arrival order: once both ids have arrived, or with what arrived after
+    PROCESSING_SLACK_SECS, the worker's processing of a handful of events
+    on a loaded runner."""
+    collected: list[Update] = []
     seen_ids: set[str] = set()
-    async with connect(WS_URL) as ws:
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                break
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            except asyncio.TimeoutError:
-                break
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            sess = data.get("session") or {}
-            if sess.get("session_id") != session_id:
-                continue
-            last = data.get("last_event")
-            if not last:
-                continue
-            if last.get("event_type") not in event_types:
-                continue
-            eid = last.get("id")
-            if not eid:
-                continue
-            if eid in seen_ids:
-                continue
-            seen_ids.add(eid)
-            collected.append(last)
-            if len(seen_ids) >= min_distinct:
-                break
+    async for update in session_updates(ws, session_id, PROCESSING_SLACK_SECS):
+        last = update.get("last_event") or {}
+        eid = last.get("id")
+        if last.get("event_type") not in PAIR_TYPES or not eid or eid in seen_ids:
+            continue
+        seen_ids.add(eid)
+        collected.append(update)
+        if len(seen_ids) == len(PAIR_TYPES):
+            break
     return collected
 
 
 def test_ws_broadcasts_tightly_paired_post_call_and_tool_call() -> None:
-    """Guarded regression: the hub's GetSessionEvents + tail race caused
-    two NOTIFYs (post_call then tool_call, ~150 ms apart) to broadcast
-    the same LastEvent (tool_call) twice. Now the NOTIFY payload
-    carries event_id and the hub fetches that exact row, so both
-    events reach the WebSocket in distinct broadcasts.
+    """A post_call and a tool_call posted back to back reach the stream as
+    two broadcasts carrying the two stored event ids.
 
-    The assertion is by event_id, not count. A regressed run would still
-    see two broadcasts -- they would both carry the tool_call id, and
-    the test would fail on the id comparison.
+    The assertion is by event id, not count: a hub that broadcast the
+    session's latest event would still send two broadcasts, both carrying
+    the tool_call's id, and fail the comparison.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-ws-race-{uuid.uuid4().hex[:6]}"
 
-    # session_start first so the session row exists.
-    post_event(make_event(sid, flavor, "session_start"))
+    async def drive() -> list[Update]:
+        async with connect(WS_URL) as ws:
+            await start_run(ws, sid, flavor)
+            # Back to back: the closer the tool_call's commit follows the
+            # post_call's, the likelier a hub that read the session's
+            # latest event would broadcast the tool_call for both. POSTs
+            # are synchronous HTTP; ingestion publishes to NATS and
+            # returns, so the worker-side commits will be pipelined by the
+            # consumer pool.
+            post_call = make_event(sid, flavor, "post_call", tokens_total=500)
+            tool_call = make_event(sid, flavor, "tool_call", tool_name="Glob")
+            await asyncio.to_thread(post_event, post_call)
+            await asyncio.to_thread(post_event, tool_call)
+            return await _collect_pair(ws, sid)
 
-    async def drive() -> list[dict]:
-        # Start the WS listener BEFORE the paired posts so we don't
-        # miss broadcasts between connect and send.
-        task = asyncio.create_task(
-            _collect_ws_last_events(
-                sid,
-                event_types=("post_call", "tool_call"),
-                min_distinct=2,
-                timeout=10.0,
-            )
-        )
-        # Give the WS handshake a moment to land.
-        await asyncio.sleep(0.2)
-        # Queue the paired events close together to reproduce the
-        # race window. POSTs are synchronous HTTP; ingestion publishes
-        # to NATS and returns, so the worker-side commits will be
-        # pipelined by the consumer pool.
-        post_event(make_event(sid, flavor, "post_call", tokens_total=500))
-        time.sleep(0.05)
-        post_event(make_event(sid, flavor, "tool_call", tool_name="Glob"))
-        return await task
+    received = [u["last_event"] for u in asyncio.run(drive())]
 
-    received = asyncio.run(drive())
-
-    # Expected: the two DB-assigned event ids for post_call and
-    # tool_call on this session, in occurred_at order.
-    expected_ids = _get_event_ids(sid, ("post_call", "tool_call"))
+    # Expected: the two stored event ids for post_call and tool_call on
+    # this session, in occurred_at order.
+    expected_ids = _get_event_ids(sid, PAIR_TYPES)
     assert len(expected_ids) == 2, (
         f"expected two rows (post_call + tool_call) in DB for {sid}, got {expected_ids}"
     )
 
     received_ids = [e["id"] for e in received]
     assert sorted(received_ids) == sorted(expected_ids), (
-        "WebSocket broadcasts should carry both event ids (one per "
-        "paired event). regression shape: two broadcasts both carried the "
-        "tool_call id because the hub re-queried GetSessionEvents "
-        "and picked the tail. "
+        "WebSocket broadcasts should carry both event ids (one per paired "
+        "event); a hub that broadcast the session's latest event would send "
+        "the tool_call's id twice. "
         f"expected_ids={expected_ids} received_ids={received_ids} "
         f"received_last_events={received}"
     )
 
 
 def test_ws_broadcast_last_event_matches_notify_event() -> None:
-    """Tighter variant: assert each broadcast's last_event.id matches
-    the event that triggered its NOTIFY, in order. Pins down both the
-    set of ids AND the order, which is what prevents the earlier
-    test from accidentally passing even when ids happen to match by
-    set but not by ordering.
+    """Each of the pair's broadcasts carries the event its notification
+    named: the broadcast carrying the stored post_call's id says
+    post_call, and the one carrying the stored tool_call's id says
+    tool_call. The two are stamped a second apart so the stored order
+    (by occurred_at) tells them apart; arrival order is not asserted.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-ws-order-{uuid.uuid4().hex[:6]}"
 
-    post_event(make_event(sid, flavor, "session_start"))
-
-    async def drive() -> list[dict]:
-        task = asyncio.create_task(
-            _collect_ws_last_events(
-                sid,
-                event_types=("post_call", "tool_call"),
-                min_distinct=2,
-                timeout=10.0,
-            )
-        )
-        await asyncio.sleep(0.2)
-        # The fixture timestamps are whole seconds, so two events
-        # posted 50 ms apart usually tie on occurred_at and the DB
-        # order below would be arbitrary. Stamp them a second apart.
-        now = time.time()
-        post_event(
-            make_event(
+    async def drive() -> list[Update]:
+        async with connect(WS_URL) as ws:
+            await start_run(ws, sid, flavor)
+            # The fixture timestamps are whole seconds, so two events
+            # posted back to back usually tie on occurred_at and the DB
+            # order below would be arbitrary. Stamp them a second apart.
+            now = time.time()
+            post_call = make_event(
                 sid,
                 flavor,
                 "post_call",
                 tokens_total=750,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             )
-        )
-        time.sleep(0.05)
-        post_event(
-            make_event(
+            tool_call = make_event(
                 sid,
                 flavor,
                 "tool_call",
                 tool_name="Read",
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 1)),
             )
-        )
-        return await task
+            await asyncio.to_thread(post_event, post_call)
+            await asyncio.to_thread(post_event, tool_call)
+            return await _collect_pair(ws, sid)
 
-    received = asyncio.run(drive())
-    expected_ids = _get_event_ids(sid, ("post_call", "tool_call"))
+    received = [u["last_event"] for u in asyncio.run(drive())]
+    expected_ids = _get_event_ids(sid, PAIR_TYPES)
     assert len(expected_ids) == 2, f"DB rows missing: {expected_ids}"
 
     # Index received broadcasts by id for per-id assertions.
     by_id = {e["id"]: e for e in received}
-    # posted[0] is the post_call (earliest occurred_at), posted[1] is
-    # the tool_call. The Supervisor's spec asserts each broadcast
-    # carries the right event_id for its NOTIFY.
+    # expected_ids is in occurred_at order: the post_call, then the
+    # tool_call stamped a second later. Each must arrive, carrying its
+    # own type.
     assert expected_ids[0] in by_id, (
         f"post_call id {expected_ids[0]} missing from WS broadcasts; "
         f"received_ids={list(by_id.keys())}"

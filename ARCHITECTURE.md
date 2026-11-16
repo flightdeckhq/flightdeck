@@ -2473,8 +2473,12 @@ caches it), and an Anthropic raw or streaming view
 then. Frameworks touch them for you: a `ChatOpenAI` reads
 `client.chat.completions` when it is built, and a `ChatAnthropic` builds
 its raw view on its first call, so one built, or first called, between
-`teardown` and the next `patch` is never metered. Build or first use
-them while the sensor is patched.
+`teardown` and the next `patch` is never metered. A Google ADK `Runner`
+gets the sensor's plugin when it is built, so one built then opens no
+child sessions (its model calls are still metered by the provider
+patches); one built while patched keeps the plugin across `teardown`,
+and its runs report to the session active when each run starts. Build
+or first use them while the sensor is patched.
 
 A call is matched to a session when its request is sent. A sync call
 sends when it is made. An async call sends when its coroutine is
@@ -2490,6 +2494,22 @@ Anthropic's `messages.stream()`, sync or async, runs the pre-call (the
 policy check and `pre_call`) when it is called, so that call belongs to
 the session it was called in, as a stream still open at `teardown` does:
 it is settled when its session ends (see "Shutdown and signals").
+
+Deferring the session to the await changes nothing a caller can see at
+the call itself: every async entry point the sensor patches or proxies
+introspects and rejects arguments as the SDK's own method does.
+`inspect.iscoroutinefunction` answers for it as for the SDK's (a plain
+function where the SDK's is a synchronous wrapper returning its
+coroutine, as Anthropic's and OpenAI's `create` are; a callable
+`inspect` takes for a coroutine function, from the SDK function's code
+object, where the SDK's is an `async def`, as `parse` and
+`embeddings.create` are), and a missing or unknown argument raises the
+SDK's exception when the call is made: the sensor calls the SDK's method
+then, which checks the arguments and returns its coroutine unstarted,
+and closes that coroutine, so nothing is sent or built. Anthropic's async
+`stream()`, which hands back its manager at once, has its arguments bound
+against the SDK's signature instead. A raw view's method, which checks
+its arguments only once awaited, raises then, as the SDK's does.
 
 How each interceptor finds the session: the patched Anthropic resource
 methods and the litellm wrappers look it up at each call. The OpenAI

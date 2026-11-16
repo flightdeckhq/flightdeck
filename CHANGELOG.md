@@ -68,7 +68,9 @@ All notable changes to Flightdeck are documented here.
   longer keeps every ended session alive or grows a chain of signal
   handlers, and an `init()` that fails (`FLIGHTDECK_UNAVAILABLE_POLICY=halt`
   with the control plane down) closes what it opened, so it can be
-  retried (D281).
+  retried. A sensored async call looks like the SDK's own at the call
+  (`inspect.iscoroutinefunction` answers alike, and a missing or unknown
+  argument raises when the call is made, as the SDK's does) (D281).
 
 ## v0.11.0 — 2026-11-15
 

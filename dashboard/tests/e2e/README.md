@@ -97,7 +97,10 @@ names, flavors, role timeline offsets) and locator helpers:
 `findSwimlaneRow`, `bringSwimlaneRowIntoView`, `waitForFleetReady`,
 `waitForInvestigateReady`, `investigateParamsFromUrl`, and
 `agentIdByName` / `openPerAgentModal` (the modal through the agent
-drawer's "Open in swimlane").
+drawer's "Open in swimlane"), and `postFanoutWorkerToolCall`, which posts
+one `tool_call` with a given name into a fan-out worker run at a given
+age through ingestion (T168 and T172 read its marker text: the
+keep-alive's own calls land every cycle, at no fixed age).
 
 ## Running locally
 

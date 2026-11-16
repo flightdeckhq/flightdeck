@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Page, Locator } from "@playwright/test";
-import { API_URL } from "./_stack";
+import { API_URL, INGEST_URL } from "./_stack";
 
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
 // dataset seeded by tests/e2e-fixtures/seed.py (via canonical.json).
@@ -678,4 +678,58 @@ export async function openPerAgentModal(page: Page, agentName: string): Promise<
   const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
   await modal.waitFor();
   return modal;
+}
+
+/**
+ * Post one ``tool_call`` named ``toolName`` into the fan-out worker's run
+ * ``role``, ``agoMs`` before now, with the run's own identity (the
+ * payload seed.py's make_event builds). The specs that read marker text
+ * post their own call, so a text is there whatever the keep-alive's
+ * timing: its tool call lands every cycle, not at a fixed age.
+ */
+export async function postFanoutWorkerToolCall(
+  page: Page,
+  role: string,
+  toolName: string,
+  agoMs: number,
+): Promise<string> {
+  const sessionId = fixtureSessionId(FANOUT_FIXTURE.workerName, role);
+  const resp = await page.request.get(`${GENAI_API}/v1/sessions/${sessionId}`, { headers: GENAI_AUTH });
+  if (!resp.ok()) throw new Error(`session ${sessionId}: ${resp.status()}`);
+  const { session } = (await resp.json()) as {
+    session: { agent_id: string; parent_session_id: string | null; model: string | null };
+  };
+  const post = await page.request.post(`${INGEST_URL}/v1/events`, {
+    headers: GENAI_AUTH,
+    data: {
+      session_id: sessionId,
+      flavor: "e2e-fanout",
+      event_type: "tool_call",
+      host: "e2e-host-fanout",
+      framework: "claude-code",
+      model: session.model,
+      tokens_input: null,
+      tokens_output: null,
+      tokens_total: null,
+      tokens_used_session: 0,
+      token_limit_session: null,
+      latency_ms: 11,
+      tool_name: toolName,
+      tool_input: null,
+      tool_result: null,
+      has_content: false,
+      content: null,
+      timestamp: new Date(Date.now() - agoMs).toISOString(),
+      agent_id: session.agent_id,
+      agent_type: "coding",
+      client_type: "claude_code",
+      user: "e2e-runner",
+      hostname: "e2e-host-fanout",
+      agent_name: FANOUT_FIXTURE.workerName,
+      agent_role: "worker",
+      parent_session_id: session.parent_session_id,
+    },
+  });
+  if (!post.ok()) throw new Error(`post tool_call: ${post.status()} ${await post.text()}`);
+  return sessionId;
 }

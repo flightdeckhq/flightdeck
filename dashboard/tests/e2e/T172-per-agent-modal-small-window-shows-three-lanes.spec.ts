@@ -3,30 +3,36 @@
  * lanes show whole, and marker text stays in the visible part of them.
  *
  * Fixture: the fan-out worker (e2e-test-fanout@e2e-host-fanout/worker),
- * three runs still open, each with a keep-alive tool call
- * (``e2e_fanout_work``) every cycle. At 1280x720 the modal's scroll
+ * three runs still open; the spec posts one tool call 40 s ago on a run.
+ * At 1280x720 the modal's scroll
  * viewport above a 240 px Live feed holds under three 40 px lanes, so
  * the feed gives up height, down to no less than its column header and
  * three rows (114 px), until all three lanes show whole, none cut
  * through its label, and nothing scrolls vertically. The heading shows
- * the agent's whole name. The swimlane opens scrolled to "now"; scrolled
- * back to the window's start, the circles under the sticky label column
- * carry no text, and every text sits by a circle wholly right of that
- * column and ends left of the now line.
+ * the agent's whole name. The swimlane opens scrolled to "now", where the
+ * posted call's circle sits under the sticky label column and carries no
+ * text. Scrolled back to the window's start, every text that shows sits
+ * by a circle wholly right of that column and ends inside the view, left
+ * of the now line.
  *
  * Geometry and attributes, read in one browser evaluation per poll, so
  * both theme projects run it unchanged.
  */
 import { test, expect } from "@playwright/test";
-import { FANOUT_FIXTURE, openPerAgentModal } from "./_fixtures";
+import { FANOUT_FIXTURE, openPerAgentModal, postFanoutWorkerToolCall } from "./_fixtures";
 
 test.use({ viewport: { width: 1280, height: 720 } });
 
 const FEED_DEFAULT_HEIGHT_PX = 240;
 const FEED_MIN_HEIGHT_PX = 114;
+/** The tool name the spec posts, 40 s ago: in view only once the
+ *  swimlane is scrolled back towards the window's start. Unique to the
+ *  run, as a repeated run's earlier calls stay in the window. */
+const MARKER_PROBE = `t172_probe_${Math.random().toString(36).slice(2, 8)}`;
 
 test.describe("T172 — A small window keeps three lanes whole", () => {
 	test("the feed yields height to three lanes; marker text stays in view", async ({ page }) => {
+		await postFanoutWorkerToolCall(page, FANOUT_FIXTURE.workerRoles[1], MARKER_PROBE, 40_000);
 		const modal = await openPerAgentModal(page, FANOUT_FIXTURE.workerName);
 		const group = modal.locator(`[data-testid="swimlane-agent-row-${FANOUT_FIXTURE.workerName}"]`);
 		await expect(group).toHaveAttribute("data-lane-count", "3", { timeout: 10_000 });
@@ -60,11 +66,30 @@ test.describe("T172 — A small window keeps three lanes whole", () => {
 		const name = group.getByTestId("swimlane-run-lanes-heading").getByTestId("swimlane-agent-name-link");
 		expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 
-		// Back to the window's start: the tool calls of the last minute
-		// come into view, and those under the label column lose their text.
+		// Opened at "now": the posted call's circle is under the label
+		// column, so its name is not shown.
+		const probe = modal.locator('[data-testid="swimlane-marker-text"]').filter({ hasText: MARKER_PROBE });
+		await expect(probe).toHaveCount(0);
+		// Back to the window's start: its circle comes into view. Whether
+		// its name shows depends on the keep-alive's circles near it (T168
+		// shows a name); wherever names show, they keep to the view.
 		await scroll.evaluate((el) => {
 			el.scrollLeft = 0;
 		});
+		await expect
+			.poll(
+				() =>
+					scroll.evaluate((el) => {
+						const labelRight = el
+							.querySelector('[data-testid="swimlane-run-lane-label"]')!
+							.getBoundingClientRect().right;
+						return Array.from(el.querySelectorAll("[data-run-lane-row] [data-event-id]")).some(
+							(c) => c.getBoundingClientRect().left >= labelRight,
+						);
+					}),
+				{ timeout: 10_000 },
+			)
+			.toBe(true);
 		const texts = () =>
 			scroll.evaluate((el) => {
 				const now = el.querySelector('[data-testid="grid-line-now"]')!.getBoundingClientRect().left;
@@ -85,7 +110,6 @@ test.describe("T172 — A small window keeps three lanes whole", () => {
 					};
 				});
 			});
-		await expect.poll(async () => (await texts()).length, { timeout: 10_000 }).toBeGreaterThan(0);
 		for (const t of await texts()) {
 			expect(t.circleLeft).toBeGreaterThanOrEqual(t.labelRight - 0.5);
 			expect(t.left).toBeGreaterThanOrEqual(t.labelRight - 0.5);

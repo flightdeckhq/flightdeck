@@ -1191,18 +1191,19 @@ wrap opens one (a duplicate of the sensor's session); children for the
 workflow shells (no agent of their own); token counts from ADK's
 `after_model` callback (a second count beside the provider patches).
 
-## D283 -- The sensor reads a call's iterator arguments into lists for itself and hands the SDK a generator over the same items
+## D283 -- The sensor reads a call's iterator arguments into lists for itself and hands the SDK an iterator of its own over the same items
 
 **Date:** 2026-11-16
-**Decision:** with a session active, the sensor first reads every iterator
-in a call's arguments (at any depth in lists, tuples and dicts; a file
-excepted) into a list, and the SDK gets a fresh generator over those items
-in its place. Arguments with no iterator reach the SDK as the same objects.
+**Decision:** with a session active, the sensor first reads each iterator in
+a call's arguments (in lists, tuples and dicts, 64 levels deep; not a file)
+into a list. The SDK gets the sensor's iterator over those items, which
+records each pass; the content stores what the last pass yielded. One that
+raises goes to the SDK unmetered, replayed up to the failure.
 **Why:** the estimate (`count_tokens`, `token_counter`, tiktoken) exhausted
-a generator `messages`, and the provider received an empty list; the SDKs
-type these arguments `Iterable`.
-**Rejected alternative:** handing the SDK the sensor's list (a call the SDK
+a generator `messages`, so the provider received an empty list.
+**Rejected alternative:** handing the SDK the sensor's list (calls the SDK
 rejects without the sensor, a generator Responses `input` or any litellm
-call, would succeed, and `tools` the OpenAI SDK reads twice would be sent
-whole); `itertools.tee` (buffers every item all the same); reading only
-top-level arguments (`count_tokens` also consumes a message's `content`).
+call, would succeed); a generator over the items (cannot see the SDK's
+second read, so `parse()` content would hold tools never sent); `tee`
+(buffers it all the same); the sensor raising a failed read itself (the
+step varies: anthropic 0.86's `stream()` reads when called, 2.1 on entry).

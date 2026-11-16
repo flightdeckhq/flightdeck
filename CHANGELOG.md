@@ -104,10 +104,12 @@ All notable changes to Flightdeck are documented here.
   token estimate before the SDK read it, so the provider received an
   empty list. The SDKs type these arguments `Iterable`, and without the
   sensor the request arrived intact. The sensor now reads each iterator
-  once into a list for itself and hands the SDK a generator over the
-  same items. The request is the one the caller sent, the estimate and
-  the stored content count its items, and lists and other re-iterable
-  arguments are passed on as they are (D283).
+  once into a list for itself and hands the SDK an iterator over the
+  same items. The request is the one the caller sent, the estimate
+  counts its items, the stored content holds what the SDK sent (also
+  where it reads an argument twice, as the OpenAI SDK's chat `parse()`
+  does with `tools`), and an iterator that raises midway raises from the
+  SDK where it would without the sensor (D283).
 
 ## v0.11.0 — 2026-11-15
 

@@ -938,30 +938,58 @@ the arguments before the SDK does, for the token estimate (Anthropic's
 `count_tokens`, litellm's `token_counter`, the tiktoken count) and for
 content capture. So with a session active, before it reads anything, the
 sensor reads every iterator in the call's arguments into a list of its
-items, at any depth inside the lists, tuples and dicts the arguments are
-made of. The estimate and the stored content count those items. The SDK
-is handed a fresh generator over the same items in place of each
-iterator, inside copies of the containers on the path to it, so the
-caller's own arguments are not changed. A file is an iterator too and is
-passed on as it is. An ordinary call's arguments hold no iterator and
-are only walked, never copied: the lists, tuples, dicts and strings go
-to the SDK as the same objects.
+items, inside the lists, tuples and dicts the arguments are made of, down
+to 64 levels. A request nests far less than that, and the limit also stops
+the walk on arguments that hold themselves, which reach the SDK as they
+are and are rejected there. Should the walk still run out of stack, the
+arguments go to the SDK unread and the sensor logs it at debug level.
+A file is an iterator too and is passed on as it is.
 
-Handing the SDK a generator, not the sensor's list, keeps the call what
-it is without the sensor. An SDK that does not accept an iterator for an
-argument still raises: the OpenAI SDK fails to serialise one given as
-Responses `input`, and litellm fails to copy one given to any of its
-entry points. An SDK that reads one twice still sends what is left: the
-OpenAI SDK's chat `parse()` and `stream()` check `tools` before sending.
-The stored content then holds what the provider received when the SDK
-read the iterator first (`stream()` checks when it is called), and the
-items the iterator yielded when the sensor did (`parse()` checks inside
-the call). An iterator that raises while it is read raises the same
-exception at the step where the SDK raises it: the call itself, the
-await of an async call, or the entering of a stream manager
-(`messages.stream()`, `chat.completions.stream()`,
-`with_streaming_response`). It raises before the sensor has built any
-event. With no session active the arguments are not read.
+The SDK is handed, in place of each iterator, an iterator of the
+sensor's over the same items, inside copies of the containers on the
+path to it, so the caller's own arguments are not changed. It is an
+iterator and nothing more, its type bears the name of the caller's
+iterator's type, and copying it copies the items not yet read, or fails
+with the error copying the caller's iterator raises. So the SDK reads,
+rejects, copies or re-reads it as it would the caller's. An SDK that
+does not accept an iterator for an argument still raises: the OpenAI SDK
+fails to serialise one given as Responses `input`, and litellm fails to
+copy a generator given to any of its entry points. An SDK that reads one
+twice still sends what is left: the OpenAI SDK's chat `parse()` checks
+`tools` before it builds the request (openai 2.8 to 3.26), and its async
+`stream()` checks them when it is called (openai 2.8 and 2.54; 3.26 no
+longer does), before its request reaches the sensor. The sensor's
+iterator records each pass the SDK makes over it, and the stored content
+holds, for that argument, what the last pass yielded: what the SDK sent.
+One the SDK never read is stored as the items it held, as a list
+argument would be, since whatever the SDK did with it, such as copying
+it, carries those items. The estimate, made before the SDK has read
+anything, counts the items the sensor read; the provider's reported
+usage replaces it when the response arrives.
+
+An iterator that raises while it is read stops the reading, and the call
+goes to the SDK unmetered: the SDK gets an iterator over the items read
+before the failure, which then raises the same exception. So the SDK
+raises it where it reads that argument, as without the sensor, whichever
+release is installed: the call itself, the await of an async call, or
+the entering of a stream manager (`messages.stream()`,
+`chat.completions.stream()`, `with_streaming_response`). The sensor
+builds no event for that call. The sensor reads an Anthropic
+`messages.stream()` call's iterators when `stream()` is called, so that
+the estimate and the policy check run before the manager is returned.
+anthropic 0.86 reads them there too, but anthropic 2.1 reads them only
+when the manager is entered, so a lazy generator's own side effects run
+earlier than without the sensor. With no session active the arguments
+are not read.
+
+An ordinary call's arguments hold no iterator and are only walked, never
+copied: the lists, tuples, dicts and strings go to the SDK as the same
+objects. The walk takes about 7.7 µs for a request of 3 messages and 3
+tools and about 0.17 ms for one of 300 messages and 20 tools, against 34
+µs and 3.6 ms for the OpenAI estimate of the same requests, so about 22%
+and 5% of it (Python 3.13 on a developer machine, a session active, the
+tools carrying six-property JSON schemas). Content capture for such a
+call walks nothing more.
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that

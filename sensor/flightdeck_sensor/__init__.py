@@ -75,6 +75,8 @@ if TYPE_CHECKING:
     from flightdeck_sensor.interceptor.crewai import (
         unpatch_crewai_classes as unpatch_crewai_classes,
     )
+    from flightdeck_sensor.interceptor.google_adk import patch_google_adk as patch_google_adk
+    from flightdeck_sensor.interceptor.google_adk import unpatch_google_adk as unpatch_google_adk
     from flightdeck_sensor.interceptor.langgraph import (
         patch_langgraph_classes as patch_langgraph_classes,
     )
@@ -222,7 +224,9 @@ class _SDKTarget:
 # and the import of ``langgraph.graph`` imports it first, so its patch
 # imports nothing from ``langgraph.graph``. LlamaIndex is keyed on
 # ``llama_index.core`` for the same reason as LangGraph (``llama_index`` is
-# a namespace package).
+# a namespace package). Google ADK is keyed on ``google.adk.runners``, the
+# module of the runner it patches: ``google`` is a namespace package, and
+# ``google.adk`` loads its runner only when first asked for one.
 _SDK_TARGETS: tuple[_SDKTarget, ...] = (
     _SDKTarget(
         Provider.ANTHROPIC,
@@ -285,6 +289,13 @@ _SDK_TARGETS: tuple[_SDKTarget, ...] = (
         "openai_agents",
         "patch_openai_agents",
         "unpatch_openai_agents",
+    ),
+    _SDKTarget(
+        Provider.GOOGLE_ADK,
+        "google.adk.runners",
+        "google_adk",
+        "patch_google_adk",
+        "unpatch_google_adk",
     ),
 )
 
@@ -944,10 +955,13 @@ def patch(
             and ``CLAUDE_AGENT_SDK`` (wraps
             the SDK's ``query()`` path and ``ClaudeSDKClient`` so each
             Agent SDK run lands as its own ``claude_agent_sdk``
-            session) and ``OPENAI_AGENTS`` (wraps the OpenAI Agents SDK's
+            session), ``OPENAI_AGENTS`` (wraps the OpenAI Agents SDK's
             runner and guardrails so each agent, and each agent used as
             a tool, lands as a child session, with its hand-offs and
-            guardrail tripwires). Silent no-op when a target's
+            guardrail tripwires) and ``GOOGLE_ADK`` (a plugin in every
+            Google ADK runner and a wrap of its runs, so each sub-agent
+            run lands as a child session, with its hand-offs; the root
+            agent is the sensor's session). Silent no-op when a target's
             SDK is not installed; raw strings outside the canonical
             set are silently ignored to preserve backward compat.
 

@@ -1,4 +1,4 @@
-.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents playground-google-adk test-integration-google-adk
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -27,6 +27,11 @@ GENAI_ADK_PYTHON ?= $(HOME)/.cache/fd-genai-capture-adk-venv/bin/python
 # The OpenAI floor playground runs the sensor against the oldest openai
 # it supports, from a venv of its own (playground/README.md).
 OPENAI_FLOOR_PYTHON ?= $(HOME)/.cache/fd-openai-floor-venv/bin/python
+# The Google ADK wrap's playground and integration test run the sensor
+# with Google ADK from a venv of its own, the lock's google-adk group
+# (playground/README.md): ADK holds websockets and OpenTelemetry below
+# the releases the project venv resolves.
+SENSOR_ADK_PYTHON ?= $(HOME)/.cache/fd-sensor-adk-venv/bin/python
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -129,6 +134,10 @@ test-integration: ## Run the integration suite against the dev stack (starts it 
 # It never touches the `flightdeck` database. It also runs the Go tests
 # gated on TEST_NATS_URL against a NATS server the script starts for
 # the run. CI runs it in the integration job's Postgres legs.
+test-integration-google-adk: ## Run the Google ADK integration test against the dev stack from the sensor ADK venv (starts the stack when none runs)
+	@[ -n "$$FLIGHTDECK_TEST_BASE_URL" ] || scripts/dev-stack.sh up $(DB)
+	$(STACK_ENV); $(SENSOR_ADK_PYTHON) -m pytest tests/integration/test_google_adk.py -p no:respx -v
+
 test-go-db: ## Run the Go tests that need Postgres or NATS (requires the dev stack on Postgres)
 	$(STACK_ENV); ./scripts/go-db-tests.sh
 
@@ -274,6 +283,9 @@ playground-langgraph-runnable-nodes: ## Rule 40d playground: a hand-built LangGr
 playground-deepagents: ## Rule 40d playground: a Deep Agent delegating to one custom sub-agent through its task tool lands one child session named after the sub-agent, sync and streamed. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/42_deepagents.py
 
+playground-google-adk: ## Rule 40d playground: the sensor's Google ADK wrap (transfer, AgentTool, function tool) on real models through LiteLlm and ADK's Anthropic model; a Gemini section self-skips. Requires the sensor ADK venv + OPENAI_API_KEY or ANTHROPIC_API_KEY.
+	$(SENSOR_ADK_PYTHON) playground/38_google_adk.py
+
 # MCP Protection Policy demos. Demos 18-21 do
 # not require LLM API keys — the policy decision fires at call_tool
 # time against the in-tree reference MCP server. Demos 22 / 23 do
@@ -312,8 +324,8 @@ playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / for
 	$(PYTHON) playground/policy_demo_degrade.py
 	$(PYTHON) playground/policy_demo_forced_degrade.py
 
-playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL / missing GenAI or OpenAI floor venvs).
-	FD_GENAI_PYTHON=$(GENAI_PYTHON) FD_GENAI_ADK_PYTHON=$(GENAI_ADK_PYTHON) FD_OPENAI_FLOOR_PYTHON=$(OPENAI_FLOOR_PYTHON) $(PYTHON) playground/run_all.py
+playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL / missing GenAI, OpenAI floor or sensor ADK venvs).
+	FD_GENAI_PYTHON=$(GENAI_PYTHON) FD_GENAI_ADK_PYTHON=$(GENAI_ADK_PYTHON) FD_OPENAI_FLOOR_PYTHON=$(OPENAI_FLOOR_PYTHON) FD_SENSOR_ADK_PYTHON=$(SENSOR_ADK_PYTHON) $(PYTHON) playground/run_all.py
 
 # `test-e2e` is the Playwright browser-end-to-end suite;
 # `test-sensor-e2e` is the pytest respx suite. Two separate targets

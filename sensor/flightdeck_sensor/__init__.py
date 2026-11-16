@@ -817,7 +817,10 @@ def wrap(client: Any, quiet: bool = False) -> Any:
     ``AnthropicAWS``, ``AnthropicBedrockMantle`` and their async forms
     (everything deriving from ``anthropic._base_client.BaseClient``).
 
-    ``init()`` must be called first.
+    ``init()`` must be called first. The wrapped client reports each call
+    to the session active when the call is made, so it keeps working
+    across :func:`teardown` and a new ``init()``; with no session active
+    the call goes to the SDK untouched.
 
     If :func:`patch` has already been called, the Anthropic resource
     classes (or the OpenAI client class) are already intercepted -- in
@@ -834,13 +837,13 @@ def wrap(client: Any, quiet: bool = False) -> Any:
         # harmless (the proxy calls the original methods) but pointless.
         if anthropic_interceptor.is_patched():
             return client
-        return anthropic_interceptor.SensorAnthropic(client, session)
+        return anthropic_interceptor.SensorAnthropic(client, session, follow=True)
 
     # Detect OpenAI client
     if _is_openai(client):
         if hasattr(type(client), "_flightdeck_patched"):
             return client
-        return _interceptor("openai").SensorOpenAI(client, session)
+        return _interceptor("openai").SensorOpenAI(client, session, follow=True)
 
     if not quiet:
         _log.warning(
@@ -903,14 +906,21 @@ def patch(
     ``with_streaming_response`` view is the exception: that SDK's
     constructor builds the view over whatever ``client.chat`` returned
     at that moment, so a client built before ``patch()`` or with no
-    session active has an unmetered view, and a client built while a
-    session was active keeps a view bound to that session. Anthropic
+    session active has an unmetered view, while on a client built with a
+    session active the view reports to the session active at each call.
+    Anthropic
     clients built before ``patch()`` are intercepted from their next
     call on, because the patch lives on the resource class;
     the one exception is a raw or streaming view
     (``messages.with_raw_response`` / ``with_streaming_response``) first
     touched before ``patch()``, which binds the unpatched method when
     the SDK builds it and is not metered.
+
+    **Across sessions**: a client already intercepted keeps working after
+    :func:`teardown` and a new ``init()``: its calls go to the SDK
+    untouched while no session is active, and once ``init()`` and
+    ``patch()`` have run again they report to the new session, with its
+    capture setting. Nothing needs rebuilding.
 
     ``init()`` must be called first.
 
@@ -1019,11 +1029,11 @@ def unpatch() -> None:
     SDK: only the ones the application has imported can be patched.
 
     OpenAI instances that have already accessed ``.chat`` after
-    ``patch()`` was called keep the wrapped version cached in their
-    ``__dict__`` until the instance is garbage collected -- a known
-    limitation documented in :func:`unpatch_openai_classes`. Anthropic
-    resources revert at once, views built while patched included
-    (see :func:`unpatch_anthropic_classes`).
+    ``patch()`` was called keep the sensor's proxy in their ``__dict__``,
+    and it passes every call straight to the SDK while unpatched (see
+    :func:`unpatch_openai_classes`). Anthropic resources revert at once,
+    views built while patched included (see
+    :func:`unpatch_anthropic_classes`).
     """
     with _patch_lock:
         _import_hook.unwatch()
@@ -1045,7 +1055,11 @@ def get_status() -> StatusResponse:
 
 
 def teardown() -> None:
-    """End the session, close transport, and reset global state."""
+    """End the session, close transport, and reset global state.
+
+    ``init()`` may start a new session afterwards. Clients built before
+    pass their calls to the SDK untouched until then, and report to the
+    new session once ``init()`` (and ``patch()``) have run again."""
     global _session, _client
 
     with _lock:

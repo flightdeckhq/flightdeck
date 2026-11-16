@@ -758,7 +758,9 @@ def init(
 def wrap(client: Any, quiet: bool = False) -> Any:
     """Wrap a single Anthropic SDK client (any anthropic client class:
     first-party, Bedrock, Vertex, Foundry, AWS, Mantle; sync or async) or
-    OpenAI client. init must be called first."""
+    OpenAI client. init must be called first. The wrapped client reports
+    each call to the session active at that call, and with none passes
+    it to the SDK untouched."""
 
 def patch(
     quiet: bool = False,
@@ -783,7 +785,8 @@ def patch(
 
 def unpatch -> None:...  # also stops patching SDKs as they are imported
 def get_status -> StatusResponse:...
-def teardown -> None:...
+def teardown -> None:...  # ends the session and unpatches; init may follow
+                          # (see "A new session after teardown")
 
 def directive(
     name: str,
@@ -1012,12 +1015,17 @@ different levels:
   With no session active, or once the class has been unpatched, the
   patched methods pass straight through to the SDK, so nothing is ever
   cached in an unmetered state and a view built while patched stops
-  metering with `unpatch`.
+  metering with `unpatch`. Patching the class again installs the same
+  methods, so that view meters again (see "A new session after
+  teardown").
 - **OpenAI** — the `cached_property` descriptors `OpenAI.chat`,
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
   replaced with sensor descriptors that wrap the resource on first
-  access, and the `chat` `cached_property` of the SDK's beta resource
+  access (the proxy is kept in the instance `__dict__`, as the
+  `cached_property` keeps the resource, and reports each call to the
+  session active at that call, passing it through when there is none or
+  the class is unpatched), and the `chat` `cached_property` of the SDK's beta resource
   (`openai.resources.beta.Beta` / `AsyncBeta`, behind `client.beta`),
   replaced the same way so `client.beta.chat.completions.parse()` and
   `.stream()` -- the structured-output path on the SDK's beta resource
@@ -1106,9 +1114,9 @@ different levels:
   whatever `client.chat` (and its siblings) returned at that moment. On
   a client built before `patch`, or built with no session active, the
   view holds the SDK's own resources and is not metered. On a client
-  built while a session was active, the view holds proxies bound to that
-  session, so its calls are reported to that session even after another
-  one starts. A resource the
+  built while a session was active, the view holds the sensor's proxies,
+  which report each call to the session active at that call and pass it
+  through once the class is unpatched. A resource the
   client class has neither as a descriptor nor as an annotation
   (`responses` before 1.66)
   is left alone. CI's `openai floor` lane runs the OpenAI tests against
@@ -2301,6 +2309,39 @@ sensor a process-wide singleton. The second `init` call in any thread is
 a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
 are not supported in the current model.
+
+### A new session after teardown
+
+Sessions can follow one another in a process: `teardown` ends the
+session, closes its transport and unpatches every SDK, and `init` (with
+`patch` again) starts the next. A client or framework object built under
+one session, or before the first, carries over with no action from the
+application: every call reports to the session active when the call is
+made, with that session's capture setting, and with no session active,
+or with the SDK unpatched, the call goes to the SDK untouched: no event,
+no policy check, no error. So a client kept across `teardown` reports
+nothing while the sensor is down and reports to the new session once
+`init` and `patch` have run again.
+
+No sensor proxy keeps a session of its own. The patched Anthropic
+resource methods and the litellm wrappers look the session up at each
+call. The OpenAI resource proxies the class patch hands out, which a
+client keeps in its instance `__dict__` and a framework may keep for its
+lifetime (langchain-openai keeps `client.chat.completions`), and the
+proxies `wrap` returns look it up at each call too, passing the call
+through when there is none or, for the class patch's proxies, when the
+client class no longer carries the patch's sentinel; the provider, which
+carries the capture setting, is rebuilt only when the session changes,
+so the lookup costs one module-attribute read and one identity check per
+call. Re-patching an Anthropic resource class installs the very methods
+it installed before, so a raw or streaming view built while the class
+was patched, which holds those methods (langchain-anthropic sends every
+request through `messages.with_raw_response`), meters again. A stream
+still open at `teardown` is settled when its session ends (see
+"Shutdown and signals"). Outside this: an OpenAI client whose resource
+was first read before any `patch` (the pre-existing instance limitation
+in "SDK class patching"), and a `SensorLitellm`, which reports to the
+session it was built with.
 
 ### Shutdown and signals
 

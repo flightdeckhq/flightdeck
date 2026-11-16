@@ -223,6 +223,12 @@ delays the exit until it returns. A second signal is passed on at once
 and forces the exit. A signal your application ignores stays ignored, and
 the session carries on.
 
+After `teardown()`, `init()` (and `patch()`) can start another session in
+the same process. Clients and framework models built earlier keep
+working with nothing rebuilt: while no session is active their calls go to
+the provider untouched, and once the new session starts they report to
+it, with its `capture_prompts` setting.
+
 ## Framework support
 
 `flightdeck_sensor.patch()` installs seven interceptors process-wide:

@@ -4,6 +4,24 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **Sensor: a client kept across `teardown()` and a new `init()` reports
+  to the new session.** An application that ends a sensor session and
+  starts another in the same process, reusing its clients and models,
+  lost the second session's calls or sent them to the first. A
+  `ChatAnthropic` (and any Anthropic client's `with_raw_response` view,
+  which langchain-anthropic sends every request through) reported
+  nothing in the second session. An `OpenAI` client, a `ChatOpenAI`, a
+  client handed to litellm and a client returned by
+  `flightdeck_sensor.wrap()` kept reporting to the session that had
+  ended, so their calls never landed, and while the sensor was torn
+  down they were still policed by that session's policy and their
+  streamed chat requests still carried the sensor's `stream_options`.
+  Every call now reports to the session active when it is made, with
+  that session's capture setting, and with the sensor torn down it goes
+  to the provider untouched; nothing needs rebuilding (D281).
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

@@ -225,6 +225,17 @@ if _ANTHROPIC_AVAILABLE:
 # patched ones.
 _PATCHED_SENTINEL = "_flightdeck_patched"
 
+# The intercepting methods each resource class was last patched with,
+# with the originals they wrap: patching a class whose methods are still
+# those originals installs these same methods again. A raw or streaming
+# view built while the class was patched holds a bound intercepting method
+# (langchain-anthropic sends every request through
+# ``messages.with_raw_response``, built once per client), and a method
+# steps aside whenever the class no longer resolves to it, so fresh
+# methods on a re-patch would leave every such view unmetered for good
+# after ``teardown()`` and a new ``init()``.
+_INSTALLED: dict[type, tuple[dict[str, Callable[..., Any]], dict[str, Any]]] = {}
+
 # The resource methods that send an inference request. count_tokens,
 # batches and tool_runner are not patched: count_tokens is the sensor's
 # own estimator and makes no inference call, batches is asynchronous
@@ -292,13 +303,14 @@ def _is_sdk_stream(obj: Any) -> bool:
 # ----------------------------------------------------------------------
 
 
-class SensorMessages:
+class SensorMessages(base.SessionProxy):
     """Proxy for the ``messages`` resource on an Anthropic client.
 
     Intercepts ``create()``, ``stream()`` and ``parse()`` -- everything
     else passes through. Always calls the resource's *original* methods,
     so it meters exactly once whether or not the resource class is
-    patched.
+    patched. The proxy a ``wrap()``-built client hands out follows the
+    active session (see :class:`base.FollowSession`).
     """
 
     def __init__(
@@ -309,11 +321,9 @@ class SensorMessages:
         *,
         is_async: bool = False,
         originals: dict[str, Callable[..., Any]] | None = None,
+        follow: base.FollowSession | None = None,
     ) -> None:
-        self._real = real_messages
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
+        super().__init__(real_messages, session, provider, is_async=is_async, follow=follow)
         # The original methods of the patched class whose wrapper built
         # this proxy, so the call reaches the SDK's own method directly
         # even when the resource's class overrides it (an override that
@@ -342,7 +352,9 @@ class SensorMessages:
             break
         return _under_outer_mark(getattr(self._real, name))
 
-    def _deferred(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
+    def _deferred(
+        self, real_fn: Any, kwargs: dict[str, Any], session: Session, provider: AnthropicProvider
+    ) -> Any:
         """Send the request now, meter when the caller parses the response
         (see :class:`raw_views.DeferredResponse`). Pre-call policy runs
         before the request, as on every other path; a failing request
@@ -350,13 +362,15 @@ class SensorMessages:
         return raw_views.send_deferred(
             real_fn,
             kwargs,
-            self._session,
-            self._provider,
+            session,
+            provider,
             is_async=self._is_async,
             is_stream=_is_sdk_stream,
         )
 
-    def _async_raw_read(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
+    def _async_raw_read(
+        self, real_fn: Any, kwargs: dict[str, Any], session: Session, provider: AnthropicProvider
+    ) -> Any:
         """A call through an async client's raw view, metered like a plain
         call. From the 2.x SDKs the view returns an ``AsyncAPIResponse``
         whose ``parse()`` is a coroutine; its body is already read, so the
@@ -386,7 +400,7 @@ class SensorMessages:
             return raw_views.ParsedRawResponse(parsed, headers)
 
         async def _call() -> Any:
-            result = await base.call_async(_read, kwargs, self._session, self._provider)
+            result = await base.call_async(_read, kwargs, session, provider)
             return kept.get("response", result)
 
         return _call()
@@ -409,13 +423,16 @@ class SensorMessages:
         """
         real_fn = self._method("create")
         # An outer interceptor (litellm) making this call already meters
-        # it: hand the call to the SDK untouched (see base.outer_intercept).
-        if base.outer_intercept_active():
+        # it, and with no session to report to the call is not metered:
+        # either way the SDK gets it untouched (see base.outer_intercept).
+        target = None if base.outer_intercept_active() else self._target()
+        if target is None:
             return real_fn(**kwargs)
+        session, provider = target
         if raw_views.body_unread(kwargs):
-            return self._deferred(real_fn, kwargs)
+            return self._deferred(real_fn, kwargs, session, provider)
         if raw_views.raw_response_mode(kwargs) in raw_views.RAW_MODES_READ and self._is_async:
-            return self._async_raw_read(real_fn, kwargs)
+            return self._async_raw_read(real_fn, kwargs, session, provider)
         if kwargs.get("stream"):
             # Opened eagerly: the unguarded SDK sends the request inside
             # create(), so provider errors must surface here, not at the
@@ -423,14 +440,14 @@ class SensorMessages:
             if self._is_async:
 
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    guard = base.call_stream_async(real_fn, kwargs, session, provider)
                     return await guard.open()
 
                 return _async_stream_create()
-            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
+            return base.call_stream(real_fn, kwargs, session, provider).open()
         if self._is_async:
-            return base.call_async(real_fn, kwargs, self._session, self._provider)
-        return base.call(real_fn, kwargs, self._session, self._provider)
+            return base.call_async(real_fn, kwargs, session, provider)
+        return base.call(real_fn, kwargs, session, provider)
 
     def stream(self, **kwargs: Any) -> Any:
         """Intercept messages.stream() -- returns a guarded context manager.
@@ -443,13 +460,15 @@ class SensorMessages:
         caller decides which surface based on their client type.
         """
         real_fn = self._method("stream")
-        # An outer interceptor (litellm) making this call already meters
-        # it: hand the call to the SDK untouched (see base.outer_intercept).
-        if base.outer_intercept_active():
+        # As for create(): an outer interceptor's call, or no session to
+        # report to, goes to the SDK untouched.
+        target = None if base.outer_intercept_active() else self._target()
+        if target is None:
             return real_fn(**kwargs)
+        session, provider = target
         if self._is_async:
-            return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
-        return base.call_stream(real_fn, kwargs, self._session, self._provider)
+            return base.call_stream_async(real_fn, kwargs, session, provider)
+        return base.call_stream(real_fn, kwargs, session, provider)
 
     def parse(self, **kwargs: Any) -> Any:
         """Intercept messages.parse() (structured output): a plain call
@@ -457,18 +476,20 @@ class SensorMessages:
         and tool calls come out as for ``create()``. Through the
         streaming view it is deferred like ``create()``."""
         real_fn = self._method("parse")
-        # An outer interceptor (litellm) making this call already meters
-        # it: hand the call to the SDK untouched (see base.outer_intercept).
-        if base.outer_intercept_active():
+        # As for create(): an outer interceptor's call, or no session to
+        # report to, goes to the SDK untouched.
+        target = None if base.outer_intercept_active() else self._target()
+        if target is None:
             return real_fn(**kwargs)
+        session, provider = target
         raw_mode = raw_views.raw_response_mode(kwargs)
         if raw_mode == raw_views.RAW_MODE_STREAM:
-            return self._deferred(real_fn, kwargs)
+            return self._deferred(real_fn, kwargs, session, provider)
         if raw_mode in raw_views.RAW_MODES_READ and self._is_async:
-            return self._async_raw_read(real_fn, kwargs)
+            return self._async_raw_read(real_fn, kwargs, session, provider)
         if self._is_async:
-            return base.call_async(real_fn, kwargs, self._session, self._provider)
-        return base.call(real_fn, kwargs, self._session, self._provider)
+            return base.call_async(real_fn, kwargs, session, provider)
+        return base.call(real_fn, kwargs, session, provider)
 
     @property
     def with_raw_response(self) -> Any:
@@ -487,7 +508,7 @@ class SensorMessages:
         return getattr(self._real, name)
 
 
-class SensorBeta:
+class SensorBeta(base.SessionProxy):
     """Proxy for ``client.beta`` on any Anthropic client.
 
     Mirrors :class:`SensorMessages` for the beta path so ``wrap()``
@@ -501,19 +522,6 @@ class SensorBeta:
     LLM-inference entry point on the beta surface.
     """
 
-    def __init__(
-        self,
-        real_beta: Any,
-        session: Session,
-        provider: AnthropicProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_beta
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
-
     @property
     def messages(self) -> SensorMessages:
         """Return a :class:`SensorMessages` proxy for ``beta.messages``."""
@@ -522,6 +530,7 @@ class SensorBeta:
             self._session,
             self._provider,
             is_async=self._is_async,
+            follow=self._follow,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -562,13 +571,17 @@ class _SensorBetaView(_SensorClientView):
         return getattr(getattr(self._sensor_client._client, self._view).beta, name)
 
 
-class SensorAnthropic:
+class SensorAnthropic(base.SessionProxy):
     """Proxy for any Anthropic SDK client (``anthropic.Anthropic``,
     ``AsyncAnthropic``, ``AnthropicBedrock``, ``AnthropicVertex``, ...).
 
     ``.messages`` is a ``@property`` -- this is how interception works.
     ``__getattr__`` delegates everything else (api_key, base_url, etc.)
     to the wrapped client untracked.
+
+    With ``follow`` (what ``wrap()`` builds) each call reports to the
+    session active when it is made, and with none goes to the SDK
+    untouched (see :class:`base.FollowSession`).
     """
 
     def __init__(
@@ -576,11 +589,17 @@ class SensorAnthropic:
         client: Any,
         session: Session,
         provider: AnthropicProvider | None = None,
+        *,
+        follow: bool = False,
     ) -> None:
+        super().__init__(
+            client,
+            session,
+            provider or _provider_for(client, session),
+            is_async=_is_async_client(client),
+            follow=base.FollowSession(client, _provider_for) if follow else None,
+        )
         self._client = client
-        self._session = session
-        self._is_async = _is_async_client(client)
-        self._provider = provider or _provider_for(client, session)
 
     @property
     def messages(self) -> SensorMessages:
@@ -590,6 +609,7 @@ class SensorAnthropic:
             self._session,
             self._provider,
             is_async=self._is_async,
+            follow=self._follow,
         )
 
     @property
@@ -601,12 +621,15 @@ class SensorAnthropic:
             self._session,
             self._provider,
             is_async=self._is_async,
+            follow=self._follow,
         )
 
     def with_options(self, **kwargs: Any) -> SensorAnthropic:
         """Return a new SensorAnthropic wrapping a client with updated options."""
         new_client = self._client.with_options(**kwargs)
-        return SensorAnthropic(new_client, self._session, self._provider)
+        return SensorAnthropic(
+            new_client, self._session, self._provider, follow=self._follow is not None
+        )
 
     @property
     def with_raw_response(self) -> _SensorClientView:
@@ -787,9 +810,17 @@ def _patch_one_resource(cls: Any, *, is_async: bool, quiet: bool) -> None:
             continue
         originals[name] = original
 
+    installed = _INSTALLED.get(cls)
+    if installed is not None and installed[0] == originals:
+        originals, methods = installed
+    else:
+        methods = {
+            name: _intercepting_method(name, originals, is_async=is_async) for name in originals
+        }
+        _INSTALLED[cls] = (originals, methods)
     setattr(cls, _PATCHED_SENTINEL, originals)
-    for name in originals:
-        setattr(cls, name, _intercepting_method(name, originals, is_async=is_async))
+    for name, method in methods.items():
+        setattr(cls, name, method)
 
     if not quiet:
         _log.info("Patched %s.%s", cls.__name__, " / ".join(originals))
@@ -804,7 +835,8 @@ def unpatch_anthropic_classes() -> None:
     built while patched (``client.messages.with_raw_response``), which
     keeps a bound reference to the intercepting method, passes its
     calls straight through from then on: that method steps aside
-    whenever the class no longer resolves to it.
+    whenever the class no longer resolves to it. Patching the class again
+    installs the same methods, so that view meters again.
     """
     if not _ANTHROPIC_AVAILABLE:
         return

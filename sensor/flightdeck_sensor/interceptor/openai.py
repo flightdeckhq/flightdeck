@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import inspect
 import json
 import logging
@@ -106,6 +107,8 @@ from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from flightdeck_sensor.core.session import Session
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
@@ -519,7 +522,11 @@ class _HelperClient:
         completions = self._real.chat.completions
         if not isinstance(completions, SensorCompletions):
             completions = SensorCompletions(
-                completions, proxy._session, proxy._provider, is_async=proxy._is_async
+                completions,
+                proxy._session,
+                proxy._provider,
+                is_async=proxy._is_async,
+                follow=proxy._follow,
             )
         request = self._request
 
@@ -600,21 +607,8 @@ def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:
     return call_kwargs, (None if caller_asked_for_usage else _is_usage_only_chunk)
 
 
-class SensorCompletions:
+class SensorCompletions(base.SessionProxy):
     """Proxy for ``chat.completions`` -- intercepts ``create()``."""
-
-    def __init__(
-        self,
-        real_completions: Any,
-        session: Session,
-        provider: OpenAIProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_completions
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.create().
@@ -627,6 +621,10 @@ class SensorCompletions:
         guarded wrappers that measure TTFT, chunk count, and abort
         reasons.
         """
+        target = self._target()
+        if target is None:
+            return self._real.create(**kwargs)
+        session, provider = target
         if raw_views.body_unread(kwargs):
             # A streaming-view call, or a raw-view call with stream=True:
             # metered when the caller parses the response.
@@ -634,8 +632,8 @@ class SensorCompletions:
             return raw_views.send_deferred(
                 self._real.create,
                 call_kwargs,
-                self._session,
-                self._provider,
+                session,
+                provider,
                 is_async=self._is_async,
                 is_stream=_is_sdk_stream,
                 hide_chunk=hide_chunk,
@@ -656,8 +654,8 @@ class SensorCompletions:
                     guard = base.call_stream_async(
                         self._real.create,
                         call_kwargs,
-                        self._session,
-                        self._provider,
+                        session,
+                        provider,
                         hide_chunk=hide_chunk,
                     )
                     # Opened eagerly so provider errors surface at the
@@ -668,15 +666,15 @@ class SensorCompletions:
             return base.call_stream(
                 self._real.create,
                 call_kwargs,
-                self._session,
-                self._provider,
+                session,
+                provider,
                 hide_chunk=hide_chunk,
             ).open()
 
         real_fn = self._real.create
         if self._is_async:
-            return base.call_async(real_fn, kwargs, self._session, self._provider)
-        return base.call(real_fn, kwargs, self._session, self._provider)
+            return base.call_async(real_fn, kwargs, session, provider)
+        return base.call(real_fn, kwargs, session, provider)
 
     def parse(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.parse() (structured outputs).
@@ -689,9 +687,11 @@ class SensorCompletions:
         ``post_call`` followed by the ``llm_error``; see
         :func:`_call_parse`.
         """
-        return _view_aware_parse(
-            self._real, kwargs, self._session, self._provider, is_async=self._is_async
-        )
+        target = self._target()
+        if target is None:
+            return self._real.parse(**kwargs)
+        session, provider = target
+        return _view_aware_parse(self._real, kwargs, session, provider, is_async=self._is_async)
 
     def stream(self, **kwargs: Any) -> Any:
         """Intercept chat.completions.stream(): the SDK's own helper,
@@ -699,6 +699,8 @@ class SensorCompletions:
         so takes the stream guard. The caller gets the SDK's manager and
         ``ChatCompletionStream`` (its events, ``get_final_completion()``
         and ``current_completion_snapshot`` unchanged)."""
+        if self._target() is None:
+            return self._real.stream(**kwargs)
         return _helper_stream(self, self._real, kwargs)
 
     @property
@@ -737,6 +739,7 @@ class SensorCompletions:
             self._provider,
             is_async=self._is_async,
             chat=True,
+            follow=self._follow,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -769,7 +772,7 @@ def _view_aware_parse(
     return _parse_via_raw(real, kwargs, session, provider, is_async=is_async)
 
 
-class _SensorRawResponseWrapper:
+class _SensorRawResponseWrapper(base.SessionProxy):
     """Sensor proxy for the SDK's ``*WithRawResponse`` resource wrappers
     (``CompletionsWithRawResponse`` on the langchain-openai path,
     ``ResponsesWithRawResponse``, and their async counterparts).
@@ -797,11 +800,9 @@ class _SensorRawResponseWrapper:
         *,
         is_async: bool = False,
         chat: bool = False,
+        follow: base.FollowSession | None = None,
     ) -> None:
-        self._real = real_wrapper
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
+        super().__init__(real_wrapper, session, provider, is_async=is_async, follow=follow)
         # Chat streams need stream_options.include_usage to carry usage;
         # Responses streams carry it on their terminal event.
         self._chat = chat
@@ -816,20 +817,24 @@ class _SensorRawResponseWrapper:
         takes this path with ``include_response_headers=True``.
         """
         real_fn = self._real.create
+        target = self._target()
+        if target is None:
+            return real_fn(**kwargs)
+        session, provider = target
         if kwargs.get("stream"):
             call_kwargs, hide_chunk = _stream_options_for(kwargs) if self._chat else (kwargs, None)
             return raw_views.send_deferred(
                 real_fn,
                 call_kwargs,
-                self._session,
-                self._provider,
+                session,
+                provider,
                 is_async=self._is_async,
                 is_stream=_is_sdk_stream,
                 hide_chunk=hide_chunk,
             )
         if self._is_async:
-            return base.call_async(real_fn, kwargs, self._session, self._provider)
-        return base.call(real_fn, kwargs, self._session, self._provider)
+            return base.call_async(real_fn, kwargs, session, provider)
+        return base.call(real_fn, kwargs, session, provider)
 
     def parse(self, **kwargs: Any) -> Any:
         """Intercept the raw-response parse closure with the sensor pipeline.
@@ -838,34 +843,20 @@ class _SensorRawResponseWrapper:
         reported here rather than silently at the caller's ``.parse()``;
         see :func:`_call_parse`.
         """
+        target = self._target()
+        if target is None:
+            return self._real.parse(**kwargs)
+        session, provider = target
         return _call_parse(
-            self._real.parse,
-            kwargs,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
-            return_raw=True,
+            self._real.parse, kwargs, session, provider, is_async=self._is_async, return_raw=True
         )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
 
-class SensorChat:
+class SensorChat(base.SessionProxy):
     """Proxy for ``client.chat`` -- intercepts ``.completions``."""
-
-    def __init__(
-        self,
-        real_chat: Any,
-        session: Session,
-        provider: OpenAIProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_chat
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
 
     @property
     def completions(self) -> Any:
@@ -882,13 +873,14 @@ class SensorChat:
             self._session,
             self._provider,
             is_async=self._is_async,
+            follow=self._follow,
         )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
 
-class SensorResponses:
+class SensorResponses(base.SessionProxy):
     """Proxy for ``client.responses`` -- intercepts ``create()``, ``parse()``
     and ``with_raw_response``.
 
@@ -907,19 +899,6 @@ class SensorResponses:
     event per invocation.
     """
 
-    def __init__(
-        self,
-        real_responses: Any,
-        session: Session,
-        provider: OpenAIProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_responses
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
-
     def create(self, **kwargs: Any) -> Any:
         """Intercept responses.create() -- sync or async dispatch.
 
@@ -929,12 +908,16 @@ class SensorResponses:
         is needed on this API.
         """
         real_fn = self._real.create
+        target = self._target()
+        if target is None:
+            return real_fn(**kwargs)
+        session, provider = target
         if raw_views.body_unread(kwargs):
             return raw_views.send_deferred(
                 real_fn,
                 kwargs,
-                self._session,
-                self._provider,
+                session,
+                provider,
                 is_async=self._is_async,
                 is_stream=_is_sdk_stream,
             )
@@ -942,15 +925,15 @@ class SensorResponses:
             if self._is_async:
 
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    guard = base.call_stream_async(real_fn, kwargs, session, provider)
                     # Opened eagerly so provider errors surface at create().
                     return await guard.open()
 
                 return _async_stream_create()
-            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
+            return base.call_stream(real_fn, kwargs, session, provider).open()
         if self._is_async:
-            return base.call_async(real_fn, kwargs, self._session, self._provider)
-        return base.call(real_fn, kwargs, self._session, self._provider)
+            return base.call_async(real_fn, kwargs, session, provider)
+        return base.call(real_fn, kwargs, session, provider)
 
     def parse(self, **kwargs: Any) -> Any:
         """Intercept responses.parse() (structured outputs).
@@ -961,9 +944,11 @@ class SensorResponses:
         caller's ``text_format`` schema lands as a ``post_call`` followed
         by the ``llm_error``; see :func:`_call_parse`.
         """
-        return _view_aware_parse(
-            self._real, kwargs, self._session, self._provider, is_async=self._is_async
-        )
+        target = self._target()
+        if target is None:
+            return self._real.parse(**kwargs)
+        session, provider = target
+        return _view_aware_parse(self._real, kwargs, session, provider, is_async=self._is_async)
 
     def stream(self, **kwargs: Any) -> Any:
         """Intercept responses.stream(): the SDK's own helper, whose
@@ -971,6 +956,8 @@ class SensorResponses:
         ``stream=True`` and so takes the stream guard. Resuming a stored
         response (``stream(response_id=...)``) re-reads one that was
         already generated and passes through to the SDK's ``retrieve``."""
+        if self._target() is None:
+            return self._real.stream(**kwargs)
         return _helper_stream(self, self._real, kwargs)
 
     @property
@@ -993,6 +980,7 @@ class SensorResponses:
             self._session,
             self._provider,
             is_async=self._is_async,
+            follow=self._follow,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -1001,7 +989,7 @@ class SensorResponses:
         return getattr(self._real, name)
 
 
-class SensorEmbeddings:
+class SensorEmbeddings(base.SessionProxy):
     """Proxy for ``client.embeddings`` -- intercepts ``create()``.
 
     Embeddings are common in RAG-heavy agent pipelines and counting
@@ -1017,19 +1005,6 @@ class SensorEmbeddings:
     text.
     """
 
-    def __init__(
-        self,
-        real_embeddings: Any,
-        session: Session,
-        provider: OpenAIProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_embeddings
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
-
     def create(self, **kwargs: Any) -> Any:
         """Intercept embeddings.create() -- sync or async dispatch.
 
@@ -1044,32 +1019,26 @@ class SensorEmbeddings:
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return real_fn(**kwargs)
+        target = self._target()
+        if target is None:
+            return real_fn(**kwargs)
+        session, provider = target
         if raw_views.body_unread(kwargs):
             # The streaming view: metered when the caller parses it.
             return raw_views.send_deferred(
                 real_fn,
                 kwargs,
-                self._session,
-                self._provider,
+                session,
+                provider,
                 is_async=self._is_async,
                 is_stream=_is_sdk_stream,
                 event_type=EventType.EMBEDDINGS,
             )
         if self._is_async:
             return base.call_async(
-                real_fn,
-                kwargs,
-                self._session,
-                self._provider,
-                event_type=EventType.EMBEDDINGS,
+                real_fn, kwargs, session, provider, event_type=EventType.EMBEDDINGS
             )
-        return base.call(
-            real_fn,
-            kwargs,
-            self._session,
-            self._provider,
-            event_type=EventType.EMBEDDINGS,
-        )
+        return base.call(real_fn, kwargs, session, provider, event_type=EventType.EMBEDDINGS)
 
     @property
     def with_streaming_response(self) -> Any:
@@ -1088,23 +1057,10 @@ class SensorEmbeddings:
         return getattr(self._real, name)
 
 
-class SensorBeta:
+class SensorBeta(base.SessionProxy):
     """Proxy for ``client.beta`` on a ``wrap()``-built client --
     intercepts ``.chat`` (``beta.chat.completions.parse()`` /
     ``.stream()``); every other beta resource passes through."""
-
-    def __init__(
-        self,
-        real_beta: Any,
-        session: Session,
-        provider: OpenAIProvider,
-        *,
-        is_async: bool = False,
-    ) -> None:
-        self._real = real_beta
-        self._session = session
-        self._provider = provider
-        self._is_async = is_async
 
     @property
     def chat(self) -> Any:
@@ -1114,18 +1070,24 @@ class SensorBeta:
         real_chat = self._real.chat
         if isinstance(real_chat, SensorChat):
             return real_chat
-        return SensorChat(real_chat, self._session, self._provider, is_async=self._is_async)
+        return SensorChat(
+            real_chat, self._session, self._provider, is_async=self._is_async, follow=self._follow
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
 
-class SensorOpenAI:
+class SensorOpenAI(base.SessionProxy):
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
     ``.chat``, ``.responses`` and ``.embeddings`` are ``@property``
     hooks -- this is how per-instance interception works.
     ``__getattr__`` delegates everything else to the wrapped client.
+
+    With ``follow`` (what ``wrap()`` builds) each call reports to the
+    session active when it is made, and with none goes to the SDK
+    untouched (see :class:`base.FollowSession`).
     """
 
     def __init__(
@@ -1133,56 +1095,54 @@ class SensorOpenAI:
         client: Any,
         session: Session,
         provider: OpenAIProvider | None = None,
+        *,
+        follow: bool = False,
     ) -> None:
+        super().__init__(
+            client,
+            session,
+            provider or _provider_for(client, session),
+            is_async=_is_async_client(client),
+            follow=base.FollowSession(client, _provider_for) if follow else None,
+        )
         self._client = client
-        self._session = session
-        self._is_async = _is_async_client(client)
-        self._provider = provider or _provider_for(client, session)
+
+    def _resource(self, name: str, proxy_cls: type[base.SessionProxy]) -> Any:
+        """The client's ``name`` resource behind a ``proxy_cls`` proxy."""
+        return proxy_cls(
+            getattr(self._client, name),
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+            follow=self._follow,
+        )
 
     @property
-    def chat(self) -> SensorChat:
+    def chat(self) -> Any:
         """Return a :class:`SensorChat` proxy that intercepts completions."""
-        return SensorChat(
-            self._client.chat,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
-        )
+        return self._resource("chat", SensorChat)
 
     @property
-    def responses(self) -> SensorResponses:
+    def responses(self) -> Any:
         """Return a :class:`SensorResponses` proxy that intercepts create()."""
-        return SensorResponses(
-            self._client.responses,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
-        )
+        return self._resource("responses", SensorResponses)
 
     @property
-    def embeddings(self) -> SensorEmbeddings:
+    def embeddings(self) -> Any:
         """Return a :class:`SensorEmbeddings` proxy that intercepts create()."""
-        return SensorEmbeddings(
-            self._client.embeddings,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
-        )
+        return self._resource("embeddings", SensorEmbeddings)
 
     @property
-    def beta(self) -> SensorBeta:
+    def beta(self) -> Any:
         """Return a :class:`SensorBeta` proxy that intercepts ``beta.chat``."""
-        return SensorBeta(
-            self._client.beta,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
-        )
+        return self._resource("beta", SensorBeta)
 
     def with_options(self, **kwargs: Any) -> SensorOpenAI:
         """Return a new SensorOpenAI wrapping a client with updated options."""
         new_client = self._client.with_options(**kwargs)
-        return SensorOpenAI(new_client, self._session, self._provider)
+        return SensorOpenAI(
+            new_client, self._session, self._provider, follow=self._follow is not None
+        )
 
     @property
     def with_raw_response(self) -> Any:
@@ -1244,6 +1204,22 @@ def _current_session() -> Session | None:
     return flightdeck_sensor._session
 
 
+def _carries(cls: Any, sentinel_attr: str) -> bool:
+    """Whether ``cls`` still carries the class patch's ``sentinel_attr``."""
+    return sentinel_attr in cls.__dict__
+
+
+def _follow_for(client: Any, patched: Callable[[], bool] | None) -> base.FollowSession:
+    """How a proxy the class patch hands out for ``client`` finds its
+    session: the one active at each call, while ``patched`` (the class
+    still carrying the patch) holds. The proxy outlives the session it
+    was first built in -- in the client's ``__dict__``, or in a framework
+    that keeps ``client.chat.completions`` -- so after ``teardown()`` its
+    calls go to the SDK untouched, and after a new ``init()`` and
+    ``patch()`` they report to the new session."""
+    return base.FollowSession(client, _provider_for, patched)
+
+
 class _OpenAIChatDescriptor:
     """Replacement for the ``chat`` cached_property on OpenAI clients.
 
@@ -1251,9 +1227,12 @@ class _OpenAIChatDescriptor:
     ``interceptor/anthropic.py``). On first access on a given instance,
     obtains the raw ``Chat`` (or ``AsyncChat``) resource by invoking
     the original ``cached_property``'s underlying function, wraps it
-    in a :class:`SensorChat` proxy bound to the active session, and
-    stores the wrapped version in ``instance.__dict__[name]`` so
-    subsequent accesses bypass the descriptor.
+    in a :class:`SensorChat` proxy, and stores the wrapped version in
+    ``instance.__dict__[name]`` so subsequent accesses bypass the
+    descriptor. The proxy reports each call to the session active at
+    that call and passes it through when there is none or the class is
+    unpatched (see :func:`_follow_for`), so the client keeps working
+    across ``teardown()`` and a new ``init()``.
 
     If no flightdeck session is currently active the descriptor returns
     the raw resource without wrapping AND without populating the cache.
@@ -1267,6 +1246,9 @@ class _OpenAIChatDescriptor:
         self._original = original  # the original functools.cached_property
         self._is_async = is_async
         self._attr_name: str | None = None
+        # Whether the class still carries this patch; set by
+        # _patch_one_resource.
+        self._patched: Callable[[], bool] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1285,12 +1267,13 @@ class _OpenAIChatDescriptor:
         if session is None:
             return raw
 
-        provider = _provider_for(self._client_of(instance), session)
+        client = self._client_of(instance)
         wrapped = SensorChat(
             raw,
             session,
-            provider,
+            _provider_for(client, session),
             is_async=self._is_async,
+            follow=_follow_for(client, self._patched),
         )
 
         if self._attr_name is not None:
@@ -1315,7 +1298,7 @@ class _OpenAIResponsesDescriptor:
 
     Structurally identical to :class:`_OpenAIChatDescriptor`; wraps the
     raw ``Responses`` / ``AsyncResponses`` resource in a
-    :class:`SensorResponses` proxy bound to the active session.
+    :class:`SensorResponses` proxy that follows the active session.
     """
 
     def __init__(
@@ -1326,6 +1309,7 @@ class _OpenAIResponsesDescriptor:
         self._original = original
         self._is_async = is_async
         self._attr_name: str | None = None
+        self._patched: Callable[[], bool] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1340,12 +1324,12 @@ class _OpenAIResponsesDescriptor:
         if session is None:
             return raw
 
-        provider = _provider_for(instance, session)
         wrapped = SensorResponses(
             raw,
             session,
-            provider,
+            _provider_for(instance, session),
             is_async=self._is_async,
+            follow=_follow_for(instance, self._patched),
         )
 
         if self._attr_name is not None:
@@ -1370,6 +1354,7 @@ class _OpenAIEmbeddingsDescriptor:
         self._original = original
         self._is_async = is_async
         self._attr_name: str | None = None
+        self._patched: Callable[[], bool] | None = None
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1384,12 +1369,12 @@ class _OpenAIEmbeddingsDescriptor:
         if session is None:
             return raw
 
-        provider = _provider_for(instance, session)
         wrapped = SensorEmbeddings(
             raw,
             session,
-            provider,
+            _provider_for(instance, session),
             is_async=self._is_async,
+            follow=_follow_for(instance, self._patched),
         )
 
         if self._attr_name is not None:
@@ -1419,19 +1404,29 @@ class _OpenAIConstructedResourceDescriptor:
     (``wrapper_cls``) over it. The proxy is kept per instance and reused
     while the resource and the session are the ones it was built for, so
     ``client.chat is client.chat`` holds; with no session active the
-    resource itself is returned and nothing is kept. Because the resource
+    resource itself is returned and nothing is kept. A proxy handed out
+    earlier and kept elsewhere (the client-level raw view the constructor
+    builds) reports each call to the session active at that call. Because the resource
     always lives in the instance ``__dict__``, a client built before
     :func:`patch_openai_classes` is metered from its next access, and
     :func:`unpatch_openai_classes` (which deletes this descriptor) leaves
     every client with its own resource again.
     """
 
-    def __init__(self, wrapper_cls: type, *, is_async: bool, attr_name: str) -> None:
+    def __init__(
+        self,
+        wrapper_cls: type,
+        *,
+        is_async: bool,
+        attr_name: str,
+        patched: Callable[[], bool] | None = None,
+    ) -> None:
         self._wrapper_cls = wrapper_cls
         self._is_async = is_async
         # Set here as well as by ``__set_name__``, which Python does not
         # call for a descriptor assigned to a class after it is created.
         self._attr_name = attr_name
+        self._patched = patched
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
@@ -1466,6 +1461,7 @@ class _OpenAIConstructedResourceDescriptor:
             session,
             _provider_for(instance, session),
             is_async=self._is_async,
+            follow=_follow_for(instance, self._patched),
         )
         proxies[self._attr_name] = wrapped
         return wrapped
@@ -1622,7 +1618,10 @@ def _patch_one_resource(
     if orig_descriptor is None and wrapper_cls is not None:
         if _built_in_constructor(cls, attr_name):
             constructed = _OpenAIConstructedResourceDescriptor(
-                wrapper_cls, is_async=is_async, attr_name=attr_name
+                wrapper_cls,
+                is_async=is_async,
+                attr_name=attr_name,
+                patched=functools.partial(_carries, cls, sentinel_attr),
             )
             setattr(cls, sentinel_attr, _CONSTRUCTED_RESOURCE)
             setattr(cls, attr_name, constructed)
@@ -1646,6 +1645,7 @@ def _patch_one_resource(
         is_async=is_async,
     )
     new_descriptor._attr_name = attr_name
+    new_descriptor._patched = functools.partial(_carries, cls, sentinel_attr)
     setattr(cls, attr_name, new_descriptor)
 
     if not quiet:
@@ -1658,10 +1658,10 @@ def unpatch_openai_classes() -> None:
     Restores the original ``cached_property`` for each patched
     resource and removes the per-resource sentinel attributes.
 
-    Same pre-existing-instance limitation as
-    :func:`unpatch_anthropic_classes`: instances that have already
-    accessed a patched resource once retain the wrapped version in
-    their ``__dict__`` until garbage collected.
+    Instances that have already accessed a patched resource keep the
+    sensor's proxy in their ``__dict__``; it passes every call straight
+    to the SDK while the class is unpatched, and reports again once the
+    class is patched again with a session active.
     """
     if not _OPENAI_AVAILABLE:
         return

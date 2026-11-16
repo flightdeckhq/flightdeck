@@ -175,6 +175,95 @@ def outer_intercept_active() -> bool:
     return mark is not None and mark.active
 
 
+# ------------------------------------------------------------------
+# The session a proxy reports to
+# ------------------------------------------------------------------
+
+
+def active_session() -> Session | None:
+    """The session ``init()`` started and ``teardown()`` has not ended,
+    else ``None``. Imported lazily: ``flightdeck_sensor`` imports the
+    interceptor modules that import this one."""
+    import flightdeck_sensor
+
+    return flightdeck_sensor._session
+
+
+class FollowSession:
+    """How a sensor proxy that outlives a session finds the session to
+    report a call to: the one active at the call, so a client kept across
+    ``teardown()`` and a new ``init()`` reports to the new session, and
+    with none active, or once ``patched`` says the patch that handed the
+    proxy out is gone, the call goes to the SDK untouched. The proxies the
+    OpenAI class patch hands out and the ones ``wrap()`` returns carry
+    one, shared down their tree of resource proxies.
+
+    The provider carries the session's capture setting, so it is built by
+    ``make_provider(client, session)`` for each session, once: a call
+    costs one attribute read and one identity check."""
+
+    __slots__ = ("_client", "_make_provider", "_patched", "_bound")
+
+    def __init__(
+        self,
+        client: Any,
+        make_provider: Callable[[Any, Session], Any],
+        patched: Callable[[], bool] | None = None,
+    ) -> None:
+        self._client = client
+        self._make_provider = make_provider
+        self._patched = patched
+        # (session, provider) for the session the last call reported to;
+        # replaced whole, so a reader never sees one without the other.
+        self._bound: tuple[Session, Any] | None = None
+
+    def resolve(self) -> tuple[Session, Any] | None:
+        """``(session, provider)`` for a call made now, or ``None`` when
+        the call must go to the SDK untouched."""
+        if self._patched is not None and not self._patched():
+            return None
+        session = active_session()
+        if session is None:
+            return None
+        bound = self._bound
+        if bound is None or bound[0] is not session:
+            bound = (session, self._make_provider(self._client, session))
+            self._bound = bound
+        return bound
+
+
+class SessionProxy:
+    """What every sensor proxy over an SDK object holds: the object it
+    stands in for, and the session and provider its calls report to.
+    Those are the ones it was built with, unless it carries ``follow``,
+    as the proxies the OpenAI class patch hands out and the ones
+    ``wrap()`` returns do: then each call reports to the session active
+    at that call, and with none (or the class unpatched) goes to the SDK
+    untouched (see :class:`FollowSession`)."""
+
+    def __init__(
+        self,
+        real: Any,
+        session: Session,
+        provider: Any,
+        *,
+        is_async: bool = False,
+        follow: FollowSession | None = None,
+    ) -> None:
+        self._real = real
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+        self._follow = follow
+
+    def _target(self) -> tuple[Session, Any] | None:
+        """The session and provider a call made now reports to, or
+        ``None`` when it goes to the SDK untouched."""
+        if self._follow is None:
+            return self._session, self._provider
+        return self._follow.resolve()
+
+
 def drain_deferred_settles(session: Session) -> None:
     """Run the settles that guards' finalizers queued on ``session``
     (see _GuardCore._defer_settle); called at every intercept on that

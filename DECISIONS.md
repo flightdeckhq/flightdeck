@@ -1155,3 +1155,22 @@ server moved to 4100, and nothing said why no session arrived.
 **Rejected alternative:** scanning loopback ports (slow, finds foreign
 services); the address in `flightdeck.lock`, which outlives every stop
 by design; offering a public instance (it refuses the development token).
+
+## D281 -- A sensor proxy reports each call to the session active at that call, so a client outlives `teardown()`
+
+**Date:** 2026-11-16
+**Decision:** the OpenAI proxies the class patch hands out and the
+proxies `wrap()` returns hold no session: each call reports to
+`flightdeck_sensor._session` as it is at that call, with a provider
+rebuilt for that session's capture setting, and with no session (or the
+OpenAI class unpatched) goes to the SDK untouched. Re-patching an
+Anthropic resource class reinstalls the same methods, so views bound to
+them meter again. A client kept across `teardown()` and `init()` needs
+nothing from the application.
+**Why:** the proxies kept the session of their first use: after
+`teardown()` and `init()` a reused `ChatAnthropic` reported nothing and
+an `OpenAI` client or `ChatOpenAI` reported to the ended session, which
+also policed calls made with the sensor torn down.
+**Rejected alternative:** asking applications to rebuild clients after
+`init()` (frameworks cache clients out of reach); walking live objects
+to clear cached proxies (gc traversal, misses frameworks' references).

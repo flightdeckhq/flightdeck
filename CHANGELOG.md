@@ -10,10 +10,15 @@ All notable changes to Flightdeck are documented here.
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a
   lane's label filters the feed to that run, with a `Run <id8> ×` chip
-  (or `Esc`) to clear it. With **Show sub-agents** on, each sub-agent
-  gets its own group of run lanes under the parent's. When lanes are
-  out of view, a `2 more below` cue (and `1 more above` once scrolled)
-  counts them and scrolls to the next one.
+  (or `Esc`) to clear it; the filter holds while its run is quiet, and
+  the feed says so. With **Show sub-agents** on, each sub-agent gets its
+  own group of run lanes under the parent's. When lanes are out of view,
+  a `2 more below` cue (and `1 more above` once scrolled) counts them
+  and scrolls to the next one, in space of its own beside the lanes.
+- The per-agent modal fetches a run's whole history when the Fleet page
+  has cached only its newest events, so the modal's wider ranges show
+  the run's older events and start; it fetches at most four runs at
+  once and cancels them when it closes.
 - The per-agent swimlane modal draws one lane per run. An agent with
   several runs at once, such as a Claude Code sub-agent role the
   coordinator fans out, gets a lane for each run, sized to fill the

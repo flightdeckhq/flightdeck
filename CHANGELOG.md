@@ -138,9 +138,13 @@ All notable changes to Flightdeck are documented here.
   the request, so the stored content and the estimate hold the JSON that
   was sent, and the SDK still gets the caller's own objects. Nothing is
   stored as an object's string form. The request side of the content is
-  also copied when the call settles: the event is written later, and a
-  loop that appended the reply to the list it had sent made the earlier
-  call's stored content show messages it never sent (D285).
+  also copied when the call is handed to the SDK: the event is written
+  later, and a loop that appended the reply to the list it had sent, or
+  changed it while a stream was open, made the stored content show
+  messages that call never sent. OpenAI pre-call estimates for tool-use
+  loops rise to the real size of the conversation (a passed-back
+  `ChatCompletionMessage` counted as a bare message), so a pre-call
+  budget threshold can trip earlier than before (D285).
 
 ## v0.11.0 — 2026-11-15
 

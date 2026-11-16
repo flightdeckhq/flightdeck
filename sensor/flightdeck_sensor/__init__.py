@@ -774,7 +774,12 @@ def init(
             api_url=config.api_url,
             unavailable_policy=config.unavailable_policy,
         )
-        _session = Session(config=config, client=_client)
+        # Built and started before it is published as _session: a call
+        # on another thread looks _session up without the lock, and one
+        # that finds a session must find it started (session_start sent,
+        # policy prefetched). Until then such a call goes to the SDK
+        # untouched, as with no session at all.
+        session = Session(config=config, client=_client)
 
         # Best-effort runtime context collection. Never raises -- if
         # any collector fails the agent continues with no context
@@ -783,7 +788,7 @@ def init(
         runtime_ctx: dict[str, Any] = {}
         with contextlib.suppress(Exception):
             runtime_ctx = _collect_context()
-        _session.set_context(runtime_ctx)
+        session.set_context(runtime_ctx)
 
         # Derive the per-event ``framework`` field from the
         # FrameworkCollector's first detected entry. Without this
@@ -809,7 +814,7 @@ def init(
         if frameworks:
             bare = _framework_label(frameworks[0])
             if bare:
-                _session.record_framework(bare)
+                session.record_framework(bare)
 
         # Wire the LangGraph agent-node regex (if any) into the
         # langgraph interceptor's module state before patch_langgraph_classes
@@ -817,7 +822,23 @@ def init(
         # multi-test scenarios start clean.
         _set_langgraph_agent_node_pattern(langgraph_agent_node_pattern)
 
-        _session.start()
+        try:
+            session.start()
+        except BaseException:
+            # start() raises when the control plane is unreachable under
+            # FLIGHTDECK_UNAVAILABLE_POLICY=halt. Nothing is published, and
+            # what this init() set up is taken down, so a retried init()
+            # starts clean: the transport, the session's event queue and
+            # its threads, and anything start() registered with the
+            # process before it failed.
+            with contextlib.suppress(Exception):
+                session.release_process_hooks()
+            with contextlib.suppress(Exception):
+                session.event_queue.close()
+            _client.close()
+            _client = None
+            raise
+        _session = session
 
 
 def wrap(client: Any, quiet: bool = False) -> Any:
@@ -828,7 +849,10 @@ def wrap(client: Any, quiet: bool = False) -> Any:
     ``AnthropicAWS``, ``AnthropicBedrockMantle`` and their async forms
     (everything deriving from ``anthropic._base_client.BaseClient``).
 
-    ``init()`` must be called first.
+    ``init()`` must be called first. The wrapped client reports each call
+    to the session active when the call is made, so it keeps working
+    across :func:`teardown` and a new ``init()``; with no session active
+    the call goes to the SDK untouched.
 
     If :func:`patch` has already been called, the Anthropic resource
     classes (or the OpenAI client class) are already intercepted -- in
@@ -845,13 +869,13 @@ def wrap(client: Any, quiet: bool = False) -> Any:
         # harmless (the proxy calls the original methods) but pointless.
         if anthropic_interceptor.is_patched():
             return client
-        return anthropic_interceptor.SensorAnthropic(client, session)
+        return anthropic_interceptor.SensorAnthropic(client, session, follow=True)
 
     # Detect OpenAI client
     if _is_openai(client):
         if hasattr(type(client), "_flightdeck_patched"):
             return client
-        return _interceptor("openai").SensorOpenAI(client, session)
+        return _interceptor("openai").SensorOpenAI(client, session, follow=True)
 
     if not quiet:
         _log.warning(
@@ -914,14 +938,21 @@ def patch(
     ``with_streaming_response`` view is the exception: that SDK's
     constructor builds the view over whatever ``client.chat`` returned
     at that moment, so a client built before ``patch()`` or with no
-    session active has an unmetered view, and a client built while a
-    session was active keeps a view bound to that session. Anthropic
+    session active has an unmetered view, while on a client built with a
+    session active the view reports to the session active at each call.
+    Anthropic
     clients built before ``patch()`` are intercepted from their next
     call on, because the patch lives on the resource class;
     the one exception is a raw or streaming view
     (``messages.with_raw_response`` / ``with_streaming_response``) first
     touched before ``patch()``, which binds the unpatched method when
     the SDK builds it and is not metered.
+
+    **Across sessions**: a client already intercepted keeps working after
+    :func:`teardown` and a new ``init()``: its calls go to the SDK
+    untouched while no session is active, and once ``init()`` and
+    ``patch()`` have run again they report to the new session, with its
+    capture setting. Nothing needs rebuilding.
 
     ``init()`` must be called first.
 
@@ -1033,11 +1064,11 @@ def unpatch() -> None:
     SDK: only the ones the application has imported can be patched.
 
     OpenAI instances that have already accessed ``.chat`` after
-    ``patch()`` was called keep the wrapped version cached in their
-    ``__dict__`` until the instance is garbage collected -- a known
-    limitation documented in :func:`unpatch_openai_classes`. Anthropic
-    resources revert at once, views built while patched included
-    (see :func:`unpatch_anthropic_classes`).
+    ``patch()`` was called keep the sensor's proxy in their ``__dict__``,
+    and it passes every call straight to the SDK while unpatched (see
+    :func:`unpatch_openai_classes`). Anthropic resources revert at once,
+    views built while patched included (see
+    :func:`unpatch_anthropic_classes`).
     """
     with _patch_lock:
         _import_hook.unwatch()
@@ -1059,12 +1090,20 @@ def get_status() -> StatusResponse:
 
 
 def teardown() -> None:
-    """End the session, close transport, and reset global state."""
+    """End the session, close transport, and reset global state.
+
+    ``init()`` may start a new session afterwards. Clients built before
+    pass their calls to the SDK untouched until then, and report to the
+    new session once ``init()`` (and ``patch()``) have run again."""
     global _session, _client
 
     with _lock:
         if _session is not None:
             _session.end()
+            # Its atexit callback and signal handlers go too, so sessions
+            # started and ended in turn are not kept alive by the process
+            # (see Session.release_process_hooks).
+            _session.release_process_hooks()
             _session = None
         if _client is not None:
             _client.close()

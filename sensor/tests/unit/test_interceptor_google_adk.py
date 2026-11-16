@@ -866,6 +866,45 @@ def test_a_runner_reports_to_the_session_active_at_each_run(
     assert len([p for p in first_posts if p["event_type"] == "session_start"]) == 1
 
 
+def test_a_runner_kept_across_teardown_and_a_new_patch_reports_to_the_next_session(
+    adk: ADK, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``teardown()`` unpatches ``Runner`` and the next ``patch()`` installs
+    new run wrappers: a runner built in the first session keeps the
+    sensor's plugin, its run with the SDK unpatched is the SDK's own, and
+    its run after the new patch reports to the second session."""
+    first, first_client = _session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", first)
+    wrap.patch_google_adk(quiet=True)
+    transfer = _Call("transfer_to_agent", agent_name="b_agent")
+    b = adk.agent("b_agent", "from b", "from b", "from b")
+    root = adk.agent("root_agent", transfer, transfer, transfer, sub_agents=[b])
+    runner = adk.InMemoryRunner(agent=root, app_name=APP)
+    try:
+        asyncio.run(_consume(runner, adk))
+    finally:
+        wrap.unpatch_google_adk()
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    torn_down = asyncio.run(_consume(runner, adk))
+
+    second, second_client = _session(session_id=SECOND_ROOT)
+    monkeypatch.setattr(flightdeck_sensor, "_session", second)
+    wrap.patch_google_adk(quiet=True)
+    try:
+        asyncio.run(_consume(runner, adk))
+    finally:
+        wrap.unpatch_google_adk()
+
+    assert torn_down[-1].content.parts[0].text == "from b"
+    first_starts = [p for p in _posted(first, first_client) if p["event_type"] == "session_start"]
+    assert [p["parent_session_id"] for p in first_starts] == [ROOT]
+    second_posts = _posted(second, second_client)
+    starts = [p for p in second_posts if p["event_type"] == "session_start"]
+    assert [(p["agent_role"], p["parent_session_id"]) for p in starts] == [("b_agent", SECOND_ROOT)]
+    (handoff,) = _handoffs(second_posts)
+    assert handoff["session_id"] == SECOND_ROOT
+
+
 # ----------------------------------------------------------------------
 # Fail open
 # ----------------------------------------------------------------------

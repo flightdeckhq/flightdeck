@@ -14,8 +14,9 @@ LangGraph wrap, three runs:
    child under the delegate's child, and the inner node's child nests
    under the run's.
 3. **``create_agent``** doing run 1's work, under a second sensor
-   session: its model and tool nodes are the agent's own steps, so no
-   child session lands.
+   session, with the model run 1 used: its model and tool nodes are the
+   agent's own steps, so no child session lands, and the model kept
+   across ``teardown()`` reports its calls to the second session.
 
 Self-skips (exit 2) without ``ANTHROPIC_API_KEY`` or without
 ``langgraph`` / ``langchain-anthropic``.
@@ -232,9 +233,9 @@ def main() -> None:
     init_sensor(agent_root, flavor=FLAVOR)
     flightdeck_sensor.patch(providers=[Provider.LANGGRAPH, Provider.ANTHROPIC], quiet=True)
     print(f"[playground:41_langgraph_runnable_nodes] create_agent session_id={agent_root}")
-    # A model built under this session: the first one's client belongs to
-    # the session that teardown() ended.
-    agent = create_agent(ChatAnthropic(model=MODEL, max_tokens=MAX_TOKENS), [multiply])
+    # The model of runs 1 and 2, kept across teardown(): its calls report
+    # to this session.
+    agent = create_agent(llm, [multiply])
     t0 = time.monotonic()
     agent_result = agent.invoke({"messages": [{"role": "user", "content": question}]})
     print_result("create_agent run", True, int((time.monotonic() - t0) * 1000))

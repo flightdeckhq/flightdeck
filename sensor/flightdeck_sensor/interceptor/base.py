@@ -18,6 +18,7 @@ import collections
 import contextlib
 import contextvars
 import copy
+import functools
 import inspect
 import logging
 import sys
@@ -173,6 +174,333 @@ def outer_intercept_active() -> bool:
     the call to the SDK untouched."""
     mark = _OUTER_INTERCEPT.get()
     return mark is not None and mark.active
+
+
+# ------------------------------------------------------------------
+# The session a proxy reports to
+# ------------------------------------------------------------------
+
+# The package whose ``_session`` is the active session. Read from
+# ``sys.modules`` at each lookup rather than imported: an interceptor
+# module is imported through the package, so it is always there, and the
+# lookup is cheaper than an ``import`` statement on the call path.
+_SENSOR_MODULE = "flightdeck_sensor"
+
+
+class FollowSession:
+    """How a sensor proxy that outlives a session finds the session to
+    report a call to: the one active at the call, so a client kept across
+    ``teardown()`` and a new ``init()`` reports to the new session, and
+    with none active, or once the class named by ``patched_on`` no longer
+    carries the patch's sentinel attribute, the call goes to the SDK
+    untouched. The proxies the OpenAI class patch hands out and the ones
+    ``wrap()`` returns carry one, shared down their tree of resource
+    proxies.
+
+    The provider carries the session's capture setting, so it is built by
+    ``make_provider(client, session)`` once per session. A call costs two
+    method calls, a read of the sentinel attribute on the patched class,
+    a ``sys.modules`` lookup, an attribute read and an identity check:
+    about 0.2 microseconds on a developer machine, against 0.05 for a
+    proxy with a fixed session."""
+
+    __slots__ = ("_client", "_make_provider", "_patched_on", "_bound")
+
+    def __init__(
+        self,
+        client: Any,
+        make_provider: Callable[[Any, Session], Any],
+        patched_on: tuple[type, str] | None = None,
+    ) -> None:
+        self._client = client
+        self._make_provider = make_provider
+        # (class, sentinel attribute) of the patch that handed the proxy
+        # out; None for a proxy no patch handed out (wrap()).
+        self._patched_on = patched_on
+        # (session, provider) for the session the last call reported to;
+        # replaced whole, so a reader never sees one without the other.
+        self._bound: tuple[Session, Any] | None = None
+
+    def resolve(self) -> tuple[Session, Any] | None:
+        """``(session, provider)`` for a call made now, or ``None`` when
+        the call must go to the SDK untouched."""
+        patched_on = self._patched_on
+        # The class attribute read goes through the type's attribute
+        # cache; the patch sets and deletes the sentinel on that class.
+        if patched_on is not None and getattr(patched_on[0], patched_on[1], None) is None:
+            return None
+        sensor = sys.modules.get(_SENSOR_MODULE)
+        session: Session | None = None if sensor is None else sensor._session
+        if session is None:
+            return None
+        bound = self._bound
+        if bound is None or bound[0] is not session:
+            bound = (session, self._make_provider(self._client, session))
+            self._bound = bound
+        return bound
+
+
+class SessionProxy:
+    """What every sensor proxy over an SDK object holds: the object it
+    stands in for, and the session and provider its calls report to.
+    Those are the ones it was built with, unless it carries ``follow``,
+    as the proxies the OpenAI class patch hands out and the ones
+    ``wrap()`` returns do: then each call reports to the session active
+    at that call, and with none (or the class unpatched) goes to the SDK
+    untouched (see :class:`FollowSession`). A following proxy still holds
+    the session and provider it was built with, which it hands to the
+    proxies it builds and never reports to."""
+
+    def __init__(
+        self,
+        real: Any,
+        session: Session,
+        provider: Any,
+        *,
+        is_async: bool = False,
+        follow: FollowSession | None = None,
+    ) -> None:
+        self._real = real
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+        self._follow = follow
+
+    def _target(self) -> tuple[Session, Any] | None:
+        """The session and provider a call made now reports to, or
+        ``None`` when it goes to the SDK untouched."""
+        if self._follow is None:
+            return self._session, self._provider
+        return self._follow.resolve()
+
+    def _call(
+        self,
+        send: Callable[[dict[str, Any], tuple[Session, Any] | None], Any],
+        kwargs: dict[str, Any],
+        sdk_call: Callable[..., Any],
+    ) -> Any:
+        """``send(kwargs, target)`` for the target of this call;
+        ``sdk_call`` is the SDK method the call stands in for. On a
+        following async proxy the target is resolved when the call is
+        awaited, which is when an async SDK request goes out: a stream
+        manager awaits it on entry, not when it is built, so its request
+        reports to the session active on entry, and goes out untouched
+        with none. The SDK checks the arguments when the call is made, as
+        it does unsensored (see :func:`check_arguments`)."""
+        if self._is_async and self._follow is not None:
+            check_arguments(sdk_call, kwargs)
+
+            async def _awaited() -> Any:
+                return await send(kwargs, self._target())
+
+            return _awaited()
+        return send(kwargs, self._target())
+
+
+# ------------------------------------------------------------------
+# Parity with the SDK method a sensor callable stands in for
+# ------------------------------------------------------------------
+#
+# A sensored client behaves like an unsensored one, so a sensor callable
+# that stands in for an async SDK method looks like it to introspection
+# (frameworks tell sync from async with inspect.iscoroutinefunction) and
+# rejects bad arguments at the same moment: when the call is made, or for
+# an SDK method that checks them only once awaited (the raw views'
+# ``async def wrapped(*args, **kwargs)``), when it is awaited.
+
+
+# How many ``__wrapped__`` links _unwrapped() follows: an SDK method is
+# wrapped once or twice (``required_args``, a raw view's wrapper).
+_MAX_WRAPPED_DEPTH = 8
+
+
+def _function_of(method: Callable[..., Any]) -> Any:
+    """The function behind a bound method, or the callable itself."""
+    return getattr(method, "__func__", method)
+
+
+def _unwrapped(method: Callable[..., Any]) -> Any:
+    """The innermost function behind ``method``, along ``__wrapped__``
+    (``inspect.unwrap`` without its bookkeeping: this runs on every async
+    call)."""
+    function = _function_of(method)
+    for _ in range(_MAX_WRAPPED_DEPTH):
+        inner = getattr(function, "__wrapped__", None)
+        if inner is None:
+            break
+        function = _function_of(inner)
+    return function
+
+
+def _is_coroutine_function(method: Callable[..., Any]) -> bool:
+    """``inspect.iscoroutinefunction(method)``, read straight from the code
+    flags for a plain function or a method of one, the SDKs' case; any
+    other callable goes to ``inspect``."""
+    function = _function_of(method)
+    if type(function) is types.FunctionType:
+        return bool(function.__code__.co_flags & inspect.CO_COROUTINE)
+    return inspect.iscoroutinefunction(method)
+
+
+def check_arguments(sdk_call: Callable[..., Any], kwargs: dict[str, Any]) -> None:
+    """Have the SDK check the arguments of an async call now, as it does
+    when the call is made unsensored: its method validates them (a
+    missing or unknown one raises ``TypeError``) and returns its
+    coroutine without running it, and that coroutine is closed unawaited,
+    which sends nothing and warns of nothing. Only for a method whose
+    underlying function is a coroutine function, which returns an
+    unstarted coroutine; anything else is left to the call itself."""
+    if not _is_coroutine_function(_unwrapped(sdk_call)):
+        return
+    pending = sdk_call(**kwargs)
+    if inspect.iscoroutine(pending):
+        pending.close()
+
+
+# The signatures check_signature() binds against, one per SDK function
+# (never per bound method: a cache keyed on one would hold its resource,
+# and so its client, alive, and never hit for the next client's).
+_SIGNATURE_CACHE_SIZE = 64
+
+
+@functools.lru_cache(maxsize=_SIGNATURE_CACHE_SIZE)
+def _signature(function: Callable[..., Any]) -> inspect.Signature:
+    return inspect.signature(function)
+
+
+def check_signature(function: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Raise the ``TypeError`` calling ``function`` with these arguments
+    would raise on binding them, without calling it: for an SDK method
+    that hands back an object at once (``messages.stream()``'s manager)
+    while the sensor sends its request later. A bound method is checked
+    as its function with its ``self`` bound first."""
+    if inspect.ismethod(function):
+        _signature(function.__func__).bind(function.__self__, *args, **kwargs)
+        return
+    _signature(function).bind(*args, **kwargs)
+
+
+# The attributes of a function inspect reads to tell what kind of
+# callable an object is and what its signature is; a CoroutineFunctionLike
+# answers them for the SDK function it stands in for.
+_FUNCTION_ATTRIBUTES = frozenset(
+    {"__code__", "__name__", "__qualname__", "__defaults__", "__kwdefaults__", "__annotations__"}
+)
+
+
+class CoroutineFunctionLike:
+    """A synchronous callable that introspection takes for the SDK
+    coroutine function it stands in for.
+
+    A sensor callable standing in for an ``async def`` SDK method
+    (``AsyncMessages.parse``, ``AsyncEmbeddings.create``) must reject bad
+    arguments when it is called, as Python does for the SDK's, so it is a
+    plain callable returning a coroutine; yet ``inspect.iscoroutinefunction``
+    must answer for it as for the SDK's. ``inspect`` decides from a
+    function's code object and accepts any object carrying one with a
+    function's other attributes, so this one carries the SDK function's
+    (``like``): its code, name, qualified name, defaults and annotations,
+    and its docstring and module, so ``help()`` shows the SDK's own;
+    ``__wrapped__`` is ``like``, for the signature. ``inspect.isfunction``
+    is still false for it. Marking a plain function with
+    ``inspect.markcoroutinefunction`` would serve too, but that is not on
+    Python 3.11. As a class attribute it binds like a method."""
+
+    __slots__ = ("_call", "_like", "__dict__")
+
+    def __init__(self, call: Callable[..., Any], like: Callable[..., Any]) -> None:
+        self._call = call
+        self._like = like
+        # Class attributes, so read from the instance dict rather than
+        # through __getattr__.
+        function = _function_of(like)
+        self.__doc__ = getattr(function, "__doc__", None)
+        module = getattr(function, "__module__", None)
+        if isinstance(module, str):
+            self.__module__ = module
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call(*args, **kwargs)
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        return self if instance is None else types.MethodType(self, instance)
+
+    @property
+    def __wrapped__(self) -> Callable[..., Any]:
+        return self._like
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _FUNCTION_ATTRIBUTES:
+            return getattr(_function_of(self._like), name)
+        raise AttributeError(name)
+
+
+def _function_like(call: Callable[..., Any], like: Callable[..., Any]) -> Callable[..., Any]:
+    """``call`` as a plain function carrying ``like``'s name, qualified
+    name, docstring and module, with ``__wrapped__`` set to ``like`` for
+    the signature."""
+
+    def method(*args: Any, **kwargs: Any) -> Any:
+        return call(*args, **kwargs)
+
+    function = _function_of(like)
+    # Copied when present: a stand-in for the SDK's method (a test double)
+    # may lack some, and a missing one must never cost the call its
+    # interception.
+    for name in ("__name__", "__qualname__", "__doc__", "__module__"):
+        value = getattr(function, name, None)
+        if isinstance(value, str) or (name == "__doc__" and value is None):
+            setattr(method, name, value)
+    method.__wrapped__ = like  # type: ignore[attr-defined]
+    return method
+
+
+def like_sdk(sdk_function: Callable[..., Any], call: Callable[..., Any]) -> Any:
+    """``call`` standing in for ``sdk_function``: a :class:`CoroutineFunctionLike`
+    when that is a coroutine function, else ``call`` itself, which carries
+    ``sdk_function``'s name, docs and signature (``functools.wraps``)."""
+    if inspect.iscoroutinefunction(sdk_function):
+        return CoroutineFunctionLike(call, sdk_function)
+    return functools.wraps(sdk_function)(call)
+
+
+class SDKMethod:
+    """A :class:`SessionProxy` method that stands in for the method of the
+    same name on the SDK object the proxy wraps (``_real``). On a proxy
+    over an async resource the bound method is handed out shaped like the
+    SDK's: a :class:`CoroutineFunctionLike` of it when it is a coroutine
+    function, else a plain function carrying its name and docs, so the
+    two introspect alike. One proxy class serves sync and async
+    resources, whose methods differ in kind, so this is decided per
+    proxy; on a sync resource it is the plain bound method."""
+
+    def __init__(self, function: Callable[..., Any]) -> None:
+        self._function = function
+        self._name = function.__name__
+        self.__doc__ = function.__doc__
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self._function
+        bound = types.MethodType(self._function, instance)
+        if not instance._is_async:
+            return bound
+        # An AttributeError raised here would send the lookup to the
+        # proxy's __getattr__, the SDK's unsensored method: shaping is
+        # best effort, the bound method the fallback.
+        try:
+            sdk_method = getattr(instance._real, self._name, None)
+            if sdk_method is None:
+                return bound
+            if _is_coroutine_function(sdk_method):
+                return CoroutineFunctionLike(bound, sdk_method)
+            return _function_like(bound, sdk_method)
+        except Exception:
+            _log.debug("SDK method %s not shaped", self._name, exc_info=True)
+            return bound
 
 
 def drain_deferred_settles(session: Session) -> None:

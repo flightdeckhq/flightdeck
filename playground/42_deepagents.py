@@ -13,7 +13,9 @@ Deep Agents module), two runs, each under its own sensor session:
    one. The model calls and the ``task`` tool call stay on the sensor's
    session.
 2. **Async** (``astream``): the same delegation, streamed; the same one
-   child.
+   child. Both runs use one ``ChatAnthropic``, kept across
+   ``teardown()``, so the second run's model calls must land on the
+   second session.
 
 Self-skips (exit 2) without ``ANTHROPIC_API_KEY`` or without
 ``deepagents`` / ``langchain-anthropic``.
@@ -165,11 +167,13 @@ def main() -> None:
         """Look up the capital city of a country."""
         return {COUNTRY: CAPITAL}.get(country.strip().lower(), "unknown")
 
+    # One model for both runs, kept across teardown(): each run's calls
+    # report to the session active when it makes them.
+    model = ChatAnthropic(model=MODEL, max_tokens=MAX_TOKENS)
+
     def agent() -> Any:
-        # Built under the session that runs it: a model's client belongs
-        # to the session that was active when it was made.
         return create_deep_agent(
-            model=ChatAnthropic(model=MODEL, max_tokens=MAX_TOKENS),
+            model=model,
             tools=[],
             system_prompt=(
                 "You never answer from your own knowledge. You delegate every"

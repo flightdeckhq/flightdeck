@@ -1,6 +1,8 @@
 """Direct Anthropic SDK -- sync, async, streaming (sync + async), beta.messages,
-plus invalid-model and request-timeout error-classification demos and a
-check that the estimator's default count_tokens model is still served.
+plus invalid-model and request-timeout error-classification demos, a
+check that the estimator's default count_tokens model is still served,
+and one client kept across teardown() and a new init() that reports to
+each session in turn.
 
 A developer using the raw `anthropic` package copies this file, drops
 in their own prompts, and has Flightdeck telemetry on every call. The
@@ -40,6 +42,9 @@ MODEL = "claude-haiku-4-5-20251001"
 # get_final_message, raw create(stream=True); each must land one metered
 # post_call.
 EXPECTED_STREAMED_CALLS = 5
+# The calls the client kept across two sessions makes in each: a plain
+# create and one through the raw view it built in the first session.
+KEPT_CALLS = 2
 HI = [{"role": "user", "content": "hi"}]
 # Timeout shape for the timeout-classification probe. The connect budget
 # is generous because a tiny one surfaces as a connection error on some
@@ -340,7 +345,56 @@ def main() -> None:
     if len(tiered) != len(post_calls):
         raise AssertionError(f"post_call without service_tier: {post_calls!r}")
 
+    # One client kept across teardown() and a new init(): each call
+    # reports to the session active when it is made, and nothing while
+    # the sensor is down. Its raw view is built once, here, as
+    # langchain-anthropic builds it, so it holds the patched methods of
+    # this first patch.
+    kept = anthropic.Anthropic()
+    raw_view = kept.messages.with_raw_response
+
+    def _kept_calls() -> None:
+        kept.messages.create(model=MODEL, max_tokens=5, messages=HI)
+        raw_view.create(model=MODEL, max_tokens=5, messages=HI).parse()
+
+    _kept_calls()
     flightdeck_sensor.teardown()
+    first_posts = _post_calls_once_ended(session_id)
+
+    t0 = time.monotonic()
+    _kept_calls()
+    print_result("kept client with the sensor torn down", True, int((time.monotonic() - t0) * 1000))
+
+    second_id = str(uuid.uuid4())
+    init_sensor(second_id, flavor="playground-direct-anthropic")
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
+    print(f"[playground:01_direct_anthropic] second session_id={second_id}")
+    _kept_calls()
+    flightdeck_sensor.teardown()
+
+    second_posts = _post_calls_once_ended(second_id)
+    unchanged = _post_calls_once_ended(session_id)
+    ok = second_posts == KEPT_CALLS and unchanged == first_posts
+    print_result(
+        "kept client reports to the second session",
+        ok,
+        0,
+        f"second session post_calls={second_posts}, first session {first_posts} -> {unchanged}",
+    )
+    if not ok:
+        raise AssertionError(
+            f"kept client: second session has {second_posts} post_calls (want {KEPT_CALLS}); "
+            f"first session went from {first_posts} to {unchanged}"
+        )
+
+
+def _post_calls_once_ended(session_id: str) -> int:
+    """How many post_calls the session holds, read once its session_end
+    has landed (the sensor flushes its queue before posting it)."""
+    events = fetch_events_for_session(session_id, expect_event_types=["post_call", "session_end"])
+    if not any(e.get("event_type") == "session_end" for e in events):
+        raise AssertionError(f"session {session_id} never ended; events={events!r}")
+    return sum(1 for e in events if e.get("event_type") == "post_call")
 
 
 if __name__ == "__main__":

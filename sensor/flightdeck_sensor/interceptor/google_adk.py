@@ -55,10 +55,11 @@ run's agents and tools inherit it and the consumer's own code does not.
 The wrapper's ``finally`` closes what the run left open.
 
 Posting. The child's posts are queued on the event loop's executor and
-chained per child, so its start, its hand-off and its end arrive in that
-order; a callback waits for its post shielded, so the loop is never held
-and a cancellation never drops a post, and the session's ``end()`` waits
-for posts still running. The posts of a run's end are queued and not
+chained per child (``_child_posts``, shared with the LangGraph wrap), so
+its start, its hand-off and its end arrive in that order; a callback
+waits for its post shielded, so the loop is never held and a
+cancellation never drops a post, and the session's ``end()`` waits for
+posts still running. The posts of a run's end are queued and not
 waited for.
 
 Enforcement. A model call's ``pre_call`` raises ``DirectiveError`` or
@@ -75,7 +76,6 @@ unpatched run. With no sensor session the plugin does nothing.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextvars
 import dataclasses
 import functools
@@ -86,6 +86,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.session import (
     SUBAGENT_ERROR_TYPE_KEY,
     SUBAGENT_STATE_CLOSED,
@@ -95,8 +96,11 @@ from flightdeck_sensor.core.session import (
     subagent_error,
 )
 from flightdeck_sensor.core.types import SubagentMessage
+from flightdeck_sensor.interceptor._child_posts import queue_post as _queue
+from flightdeck_sensor.interceptor._child_posts import wait_post as _wait
 
 if TYPE_CHECKING:
+    import concurrent.futures
     from collections.abc import AsyncGenerator, Callable
 
     from flightdeck_sensor.core.types import SubagentScope
@@ -157,7 +161,6 @@ class _Child:
     outer_scope: SubagentScope | None
     output: Any = None
     has_output: bool = False
-    closed: bool = False
     # The child's last queued post; the next one is queued from its
     # completion, so the child's posts arrive in order (see _queue).
     last_post: concurrent.futures.Future[None] | None = None
@@ -213,61 +216,6 @@ def _handoff(session: Session, child: _Child | None, from_agent: str, to_agent: 
         session.emit_agent_handoff(from_agent=from_agent, to_agent=to_agent, **identity)
     except Exception:  # noqa: BLE001 - fail open: a halt policy's DirectiveError included
         _log.debug("Google ADK agent_handoff failed", exc_info=True)
-
-
-def _submit(loop: asyncio.AbstractEventLoop, run: Callable[[], None]) -> None:
-    """Run ``run`` on the loop's executor; in place when the executor no
-    longer takes work (the loop is shutting down)."""
-    try:
-        loop.run_in_executor(None, run)
-    except RuntimeError:
-        run()
-
-
-def _queue(child: _Child, post: Callable[..., None], *args: Any) -> concurrent.futures.Future[None]:
-    """Queue a post of ``child`` on the running loop's executor, apart
-    from any task, so cancelling the task that waits for it cannot drop
-    it; the session's ``end()`` waits for it. While the child's previous
-    post is still running, this one is queued from its completion instead,
-    in the thread that finishes it, so the child's posts arrive in order
-    and no thread waits. Posted in place when no loop runs here. The
-    posts never raise."""
-    done: concurrent.futures.Future[None] = concurrent.futures.Future()
-
-    def run() -> None:
-        try:
-            post(*args)
-        finally:
-            done.set_result(None)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        run()
-        return done
-    child.session.track_child_post(done)
-    previous, child.last_post = child.last_post, done
-    if previous is None or previous.done():
-        _submit(loop, run)
-        return done
-    loop_thread = threading.get_ident()
-
-    def after_previous(_: concurrent.futures.Future[None]) -> None:
-        # Called on the loop's thread when the previous post finished
-        # before the callback was added; the post must not run there.
-        if threading.get_ident() == loop_thread:
-            _submit(loop, run)
-        else:
-            run()
-
-    previous.add_done_callback(after_previous)
-    return done
-
-
-async def _wait(post: concurrent.futures.Future[None]) -> None:
-    """Wait for a queued post. A cancellation of the waiter propagates and
-    leaves the post running."""
-    await asyncio.shield(asyncio.wrap_future(post))
 
 
 # ----------------------------------------------------------------------
@@ -360,10 +308,7 @@ class _Run:
     def take(self, agent: Any) -> _Child | None:
         """Remove and return ``agent``'s open child."""
         with self._lock:
-            child = self.open.pop(_agent_name(agent), None)
-        if child is not None:
-            child.closed = True
-        return child
+            return self.open.pop(_agent_name(agent), None)
 
     def close_all(self, error: BaseException | None) -> None:
         """Queue the end of every child still open, in error when the run
@@ -376,7 +321,6 @@ class _Run:
             self.open.clear()
         block = _error_block(error) if error is not None else None
         for child in children:
-            child.closed = True
             _queue(child, _end, child, block)
 
 
@@ -440,7 +384,6 @@ async def _agent_started(agent: Any) -> None:
     child, incoming, previous = run.open_child(agent)
     if previous is not None:
         # The agent's earlier run ended without after_agent.
-        previous.closed = True
         _queue(previous, _end, previous, None)
     post = _queue(child, _start, child, incoming)
     Session.enter_subagent_scope(child.scope)
@@ -586,17 +529,47 @@ def _new_run(session: Session, runner: Any, kwargs: dict[str, Any]) -> _Run:
     )
 
 
+def _check_shutdown(session: Session) -> None:
+    """Raise the shutdown's ``DirectiveError`` before a run starts; any
+    other failure of the check leaves the run to run (fail open)."""
+    try:
+        session.raise_if_shutdown()
+    except DirectiveError:
+        raise
+    except Exception:  # noqa: BLE001 - fail open
+        _log.debug("Google ADK shutdown check failed", exc_info=True)
+
+
+def _scope_now(session: Session, fallback: SubagentScope | None) -> SubagentScope | None:
+    """The child scope active here, or ``fallback`` when it cannot be read."""
+    try:
+        return session.active_subagent_scope()
+    except Exception:  # noqa: BLE001 - fail open
+        _log.debug("Google ADK step scope not read", exc_info=True)
+        return fallback
+
+
 def _enter_step(run: _Run, scope: SubagentScope | None) -> tuple[Any, Any]:
-    return _RUN.set(run), Session.enter_subagent_scope(scope)
+    """Set the run and the child scope for one step of the run; a part
+    that cannot be set is left as it is (fail open)."""
+    tokens: list[Any] = [None, None]
+    try:
+        tokens[0] = _RUN.set(run)
+        tokens[1] = Session.enter_subagent_scope(scope)
+    except Exception:  # noqa: BLE001 - fail open
+        _log.debug("Google ADK step state not set", exc_info=True)
+    return tokens[0], tokens[1]
 
 
 def _exit_step(tokens: tuple[Any, Any]) -> None:
     run_token, scope_token = tokens
-    Session.exit_subagent_scope(scope_token)
     try:
-        _RUN.reset(run_token)
-    except (ValueError, RuntimeError):
-        _log.debug("Google ADK run step ended in another context", exc_info=True)
+        if scope_token is not None:
+            Session.exit_subagent_scope(scope_token)
+        if run_token is not None:
+            _RUN.reset(run_token)
+    except Exception:  # noqa: BLE001 - another context's token, or a failure: fail open
+        _log.debug("Google ADK run step state not reset", exc_info=True)
 
 
 def _close_run(run: _Run, error: BaseException | None) -> None:
@@ -632,7 +605,7 @@ def _wrap_run(original: Callable[..., Any]) -> Callable[..., Any]:
         scope = watched.parent
         error: BaseException | None = None
         try:
-            session.raise_if_shutdown()
+            _check_shutdown(session)
             while True:
                 tokens = _enter_step(watched, scope)
                 try:
@@ -642,7 +615,7 @@ def _wrap_run(original: Callable[..., Any]) -> Callable[..., Any]:
                 finally:
                     # The scope the run's own code left set (an agent of a
                     # workflow running on this task), resumed next step.
-                    scope = session.active_subagent_scope()
+                    scope = _scope_now(session, scope)
                     _exit_step(tokens)
                 yield event
         except GeneratorExit:

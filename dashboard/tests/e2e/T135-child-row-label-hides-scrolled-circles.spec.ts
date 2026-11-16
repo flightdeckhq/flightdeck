@@ -17,7 +17,8 @@ import {
 // (--bg in Fleet, --surface in the per-agent modal).
 //
 // The spec scrolls one of a child row's circles to the middle of the
-// row's label, in Fleet and in the per-agent modal, then checks that
+// row's label, in Fleet and in the per-agent modal (where the child is a
+// group of run lanes, the label of its run's lane), then checks that
 // the label's computed background colour (its bottom layer) is fully
 // opaque. Colours differ per theme, so it checks only alpha (rule
 // 40c.3).
@@ -48,15 +49,24 @@ function alphaOf(color: string): number {
   return parts.length >= 4 ? Number(parts[3]) : 1;
 }
 
+/** The sticky label cell: a Fleet row's label strip, or, in the
+ *  per-agent modal, where a row is a group of run lanes, a lane's label. */
+const ROW_LABEL = ".swimlane-row-label";
+const LANE_LABEL = '[data-testid="swimlane-run-lane-label"]';
+
 /** Scroll ``scroller`` to centre ``row``'s oldest circle under the
  *  row's label, or as close as the scroll range allows; then report
  *  whether a circle the panel does not clip has its centre inside the
  *  label, half a circle in from either edge. */
-async function scrollACircleUnderTheLabel(scroller: Locator, row: Locator): Promise<boolean> {
+async function scrollACircleUnderTheLabel(
+  scroller: Locator,
+  row: Locator,
+  labelSelector: string,
+): Promise<boolean> {
   const rowHandle = await row.elementHandle();
-  return scroller.evaluate((sc, r) => {
+  return scroller.evaluate((sc, [r, sel]) => {
     const rowEl = r as Element;
-    const labelBox = () => rowEl.querySelector(".swimlane-row-label")!.getBoundingClientRect();
+    const labelBox = () => rowEl.querySelector(sel as string)!.getBoundingClientRect();
     const panelBox = () =>
       rowEl.querySelector('[data-testid="swimlane-timeline-panel"]')!.getBoundingClientRect();
     // Circles the panel shows: one of them under the label is one the
@@ -80,22 +90,27 @@ async function scrollACircleUnderTheLabel(scroller: Locator, row: Locator): Prom
       const cx = b.left + b.width / 2;
       return cx > after.left + b.width / 2 && cx < after.right - b.width / 2;
     });
-  }, rowHandle);
+  }, [rowHandle, labelSelector] as const);
 }
 
-async function expectOpaqueLabel(row: Locator): Promise<void> {
-  const bg = await row.evaluate((r) => {
-    const cs = getComputedStyle(r.querySelector(".swimlane-row-label")!);
+async function expectOpaqueLabel(row: Locator, labelSelector: string): Promise<void> {
+  const bg = await row.evaluate((r, sel) => {
+    const cs = getComputedStyle(r.querySelector(sel)!);
     return { color: cs.backgroundColor, image: cs.backgroundImage };
-  });
+  }, labelSelector);
   expect(alphaOf(bg.color), `label background ${bg.color}`).toBe(1);
   expect(bg.image).toContain("linear-gradient");
 }
 
-async function circleUnderLabel(page: Page, scrollTestId: string, row: Locator): Promise<void> {
+async function circleUnderLabel(
+  page: Page,
+  scrollTestId: string,
+  row: Locator,
+  labelSelector: string,
+): Promise<void> {
   const scroller = page.getByTestId(scrollTestId);
   await expect
-    .poll(() => scrollACircleUnderTheLabel(scroller, row), {
+    .poll(() => scrollACircleUnderTheLabel(scroller, row, labelSelector), {
       timeout: 15_000,
       message: "one of the child row's circles must sit under its label",
     })
@@ -108,8 +123,8 @@ test.describe("T135 — a child row's label hides the circles scrolled under it"
     await waitForFleetReady(page);
     const row = await bringSwimlaneRowIntoView(page, CONNECTOR_FIXTURE.childName);
     await expect(row).toHaveAttribute("data-topology", "child");
-    await circleUnderLabel(page, "fleet-main-scroll", row);
-    await expectOpaqueLabel(row);
+    await circleUnderLabel(page, "fleet-main-scroll", row, ROW_LABEL);
+    await expectOpaqueLabel(row, ROW_LABEL);
   });
 
   test("in the per-agent swimlane modal", async ({ page }) => {
@@ -125,11 +140,15 @@ test.describe("T135 — a child row's label hides the circles scrolled under it"
     const modal = page.getByTestId("per-agent-swimlane-modal");
     await expect(modal).toBeVisible();
 
-    const row = modal.locator(
+    // In the modal the child is a group of run lanes; its run's lane
+    // label is the sticky cell circles scroll under.
+    const group = modal.locator(
       `[data-testid="swimlane-agent-row-${CONNECTOR_FIXTURE.childName}"]`,
     );
-    await expect(row).toHaveAttribute("data-topology", "child");
-    await circleUnderLabel(page, "per-agent-swimlane-modal-scroll", row);
-    await expectOpaqueLabel(row);
+    await expect(group).toHaveAttribute("data-topology", "child");
+    await expect(group).toHaveAttribute("data-run-lanes", "true");
+    const lane = group.locator("[data-run-lane-row]").first();
+    await circleUnderLabel(page, "per-agent-swimlane-modal-scroll", lane, LANE_LABEL);
+    await expectOpaqueLabel(lane, LANE_LABEL);
   });
 });

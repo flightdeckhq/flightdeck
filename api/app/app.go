@@ -229,8 +229,10 @@ func (a *App) Run(ctx context.Context) error {
 	// Write the price list into model_pricing for the cost queries. On
 	// a fresh database the migrator may not have created the table yet,
 	// so a failed first sync keeps retrying in the background; the
-	// table keeps its previous content until a sync succeeds.
-	if err := store.SyncPricingTable(runCtx, a.db); err != nil {
+	// table keeps its previous content until a sync succeeds. A sync
+	// the stop cuts short is not a failure: nothing is logged and
+	// nothing retries.
+	if err := store.SyncPricingTable(runCtx, a.db); err != nil && runCtx.Err() == nil {
 		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
 		spawn(func() { store.RetryPricingSync(runCtx, a.db) })
 	}
@@ -238,11 +240,14 @@ func (a *App) Run(ctx context.Context) error {
 	// traffic. Best-effort: a migration also seeds this row, so a
 	// failure here (for example on a database that has not been
 	// migrated yet) leaves nothing missing once the migrations have run.
+	// One the stop cuts short is not logged either.
 	if err := a.store.EnsureGlobalMCPPolicy(runCtx); err != nil {
-		slog.Warn("ensure global mcp policy at boot failed",
-			"err", err,
-			"note", "API will continue; the migration seeds the global policy",
-		)
+		if runCtx.Err() == nil {
+			slog.Warn("ensure global mcp policy at boot failed",
+				"err", err,
+				"note", "API will continue; the migration seeds the global policy",
+			)
+		}
 	} else {
 		slog.Info("ensure global mcp policy at boot complete")
 	}

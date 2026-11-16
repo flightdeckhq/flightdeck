@@ -4,6 +4,18 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A stop right after the start logs no error.** Stopping `flightdeck`
+  within a second or two of its start could log `ERROR clearing stale
+  session sequences failed … context canceled` from the workers, and
+  every such stop logged two warnings from the query API (`pricing table
+  sync at boot failed; retrying in the background` and `ensure global
+  mcp policy at boot failed`), though nothing had failed: the stop had
+  cut those start-up steps short. A step the stop cuts short now logs
+  nothing and the service stops; a step that fails while the server runs
+  is logged as before.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

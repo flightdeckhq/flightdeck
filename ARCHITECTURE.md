@@ -12812,7 +12812,9 @@ one incarnation of it. If an operator recreates the stream, numbering
 restarts at one and every stored value would outrank every new event,
 so the worker clears any stored sequence above the stream's last
 sequence when it starts (logging how many rows it touched; a failed
-sweep is logged and the worker consumes anyway) and those rows follow
+sweep is logged as an error and the worker consumes anyway, while a
+sweep that a stop cuts short is the stop, not an error, and the worker
+ends there without logging one) and those rows follow
 the plain state rules until their next `session_start` or
 `session_end`. A stale value at or below the new stream's last sequence
 survives that sweep and is compared as if it belonged to the new stream

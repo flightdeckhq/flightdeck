@@ -346,3 +346,33 @@ describe("LiveFeed — discovery hide", () => {
     expect(screen.queryByText("MCP TOOLS DISCOVERED")).not.toBeInTheDocument();
   });
 });
+
+describe("LiveFeed yielding height to the per-agent modal's lanes", () => {
+  beforeEach(() => localStorage.clear());
+  const frame = () => screen.getByTestId("feed-body-frame");
+
+  it("takes no more than the cap", () => {
+    const { rerender } = render(<LiveFeed events={[]} onEventClick={() => {}} maxBodyHeight={150} />);
+    // The default 240 px, capped.
+    expect(frame().style.height).toBe("150px");
+    // A cap above the operator's height leaves it as it is.
+    rerender(<LiveFeed events={[]} onEventClick={() => {}} maxBodyHeight={400} />);
+    expect(frame().style.height).toBe("240px");
+  });
+
+  it("keeps the operator's height once they drag the resize handle", () => {
+    render(<LiveFeed events={[]} onEventClick={() => {}} maxBodyHeight={150} />);
+    expect(frame().style.height).toBe("150px");
+    const handle = screen.getByTestId("feed-resize-handle");
+    fireEvent.mouseDown(handle, { clientY: 500 });
+    // Dragged 100 px up from the 150 px it showed.
+    fireEvent.mouseMove(document, { clientY: 400 });
+    fireEvent.mouseUp(document);
+    expect(frame().style.height).toBe("250px");
+  });
+
+  it("ignores no cap: the Fleet's feed keeps its own height", () => {
+    render(<LiveFeed events={[]} onEventClick={() => {}} />);
+    expect(frame().style.height).toBe("240px");
+  });
+});

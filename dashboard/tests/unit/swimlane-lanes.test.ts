@@ -1380,7 +1380,7 @@ describe("runLanesInView", () => {
     expect(lanes(after)).toEqual(["z", "y", "a"]);
   });
 
-  it("orders by the run's start, not its first segment in view, and ties by run id", () => {
+  it("orders by the start of the run's first segment in the window, ties by run id", () => {
     const resumed = {
       sessionId: "r",
       segments: [seg("r", NOW - 10 * MIN, NOW - 9 * MIN, "closed", 0, 2), seg("r", NOW - 10 * S, Infinity, "open", 1, 2)],
@@ -1394,9 +1394,36 @@ describe("runLanesInView", () => {
       d0,
       d1,
     );
-    expect(result.map((l) => l.sessionId)).toEqual(["r", "a", "b"]);
+    expect(result.map((l) => l.sessionId)).toEqual(["a", "b", "r"]);
     // Only the segment in view is carried.
-    expect(result[0]!.segments.map((s) => s.index)).toEqual([1]);
+    expect(result[2]!.segments.map((s) => s.index)).toEqual([1]);
+  });
+
+  it("opens an old run resumed while watching at the bottom, moving no lane", () => {
+    // r started long before the window and ended; a and b run.
+    const a = { sessionId: "a", segments: [seg("a", NOW - 40 * S, Infinity, "open")] };
+    const b = { sessionId: "b", segments: [seg("b", NOW - 30 * S, Infinity, "open")] };
+    const before = { sessionId: "r", segments: [seg("r", NOW - 30 * MIN, NOW - 20 * MIN)] };
+    expect(lanes([before, a, b])).toEqual(["a", "b"]);
+    // r resumes now under its old id, with its old started_at.
+    const resumed = {
+      sessionId: "r",
+      segments: [seg("r", NOW - 30 * MIN, NOW - 20 * MIN, "closed", 0, 2), seg("r", NOW - 1 * S, Infinity, "open", 1, 2)],
+    };
+    expect(lanes([resumed, a, b])).toEqual(["a", "b", "r"]);
+  });
+
+  it("keeps the lanes below a finished run in place until it leaves the window", () => {
+    const finished = { sessionId: "f", segments: [seg("f", NOW - 50 * S, NOW - 45 * S)] };
+    const a = { sessionId: "a", segments: [seg("a", NOW - 40 * S, Infinity, "open")] };
+    const b = { sessionId: "b", segments: [seg("b", NOW - 30 * S, Infinity, "open")] };
+    const at = (offsetMs: number) =>
+      runLanesInView([finished, a, b], d0 + offsetMs, d1 + offsetMs).map((l) => l.sessionId);
+    // While its end is in the window, f keeps the top lane.
+    expect(at(0)).toEqual(["f", "a", "b"]);
+    expect(at(14 * S)).toEqual(["f", "a", "b"]);
+    // Once its end leaves the window, its lane closes and a, b move up.
+    expect(at(16 * S)).toEqual(["a", "b"]);
   });
 
   it("leaves out runs with nothing in the window and runs with no segments", () => {
@@ -1406,5 +1433,40 @@ describe("runLanesInView", () => {
         { sessionId: "none", segments: [] },
       ]),
     ).toEqual([]);
+  });
+});
+
+/** The pairwise count the sweep replaced: at each segment's start, the
+ *  runs running then. */
+function pairwiseConcurrentRuns(segments: readonly RunSegment[], d0: number, d1: number, tol: number): number {
+  const clipped = segments
+    .map((seg) => ({ s: Math.max(seg.startMs, d0), e: Math.min(seg.endMs, d1), run: seg.sessionId }))
+    .filter((c) => c.e > c.s);
+  let best = 0;
+  for (const at of clipped) {
+    const runs = new Set([at.run]);
+    for (const other of clipped) if (other.s <= at.s && other.e > at.s + tol) runs.add(other.run);
+    best = Math.max(best, runs.size);
+  }
+  return best;
+}
+
+describe("maxConcurrentRuns sweep", () => {
+  it("counts what the pairwise scan counts, on random rows", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const rand = mulberry32(seed);
+      const w = scaleFor(5 * MIN);
+      const segments: RunSegment[] = Array.from({ length: 2 + Math.floor(rand() * 12) }, (_, i) => {
+        // Some segments starting together, some shorter than the
+        // tolerance, some open.
+        const start = rand() < 0.15 ? w.d0 + 30 * S : w.d0 - MIN + Math.floor(rand() * 6 * MIN);
+        const length = rand() < 0.2 ? Math.floor(rand() * 1_500) : Math.floor(rand() * 4 * MIN);
+        const open = rand() < 0.3;
+        return seg(`r${i}`, start, open ? Infinity : start + length, open ? "open" : "closed");
+      });
+      expect(maxConcurrentRuns(segments, w.d0, w.d1, OVERLAP_TOLERANCE_MS), `seed ${seed}`).toBe(
+        pairwiseConcurrentRuns(segments, w.d0, w.d1, OVERLAP_TOLERANCE_MS),
+      );
+    }
   });
 });

@@ -5,7 +5,8 @@
  * Fixture: the fan-out's wide sub-agent
  * (e2e-test-fanout@e2e-host-fanout/wide), five runs started together and
  * still open. At the default 1280x720 the modal's scroll viewport above
- * the 240 px Live feed holds well under five 40 px lanes, so all five
+ * the Live feed holds well under five 40 px lanes: the feed gives up
+ * height until three lanes show whole, then the lanes scroll. All five
  * lanes are 40 px, every run has its own lane (no overflow lane, unlike
  * the Fleet row's four), and the viewport scrolls vertically to the
  * last one.
@@ -41,6 +42,22 @@ test.describe("T170 — Many runs keep the minimum lane height and scroll", () =
 				{ timeout: 10_000 },
 			)
 			.toEqual(Array(5).fill(RUN_LANE_MIN_HEIGHT_PX));
+
+		// The feed gave up height: the first three lanes show whole
+		// before any scroll.
+		await expect
+			.poll(
+				() =>
+					scroll.evaluate((el) => {
+						const box = el.getBoundingClientRect();
+						const bottom = box.top + el.clientHeight;
+						return Array.from(el.querySelectorAll<HTMLElement>("[data-run-lane-row]"))
+							.slice(0, 3)
+							.every((l) => l.getBoundingClientRect().bottom <= bottom + 0.5);
+					}),
+				{ timeout: 10_000 },
+			)
+			.toBe(true);
 
 		// Scroll to the bottom in the same evaluation that reads the
 		// result, so nothing moves between the two.

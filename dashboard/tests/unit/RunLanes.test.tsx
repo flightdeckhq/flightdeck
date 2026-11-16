@@ -7,6 +7,7 @@ import { useFleetStore } from "@/store/fleet";
 import { RunLanes } from "@/components/timeline/RunLanes";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import {
+  MARKER_TEXT_STACKED_MIN_LANE_PX,
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_HEADING_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
@@ -96,7 +97,16 @@ function renderLanes(
   {
     laneHeight = 100,
     onSessionClick = () => {},
-  }: { laneHeight?: number; onSessionClick?: (id: string, eventId?: string, ev?: AgentEvent) => void } = {},
+    markerTextRange = { left: 0, right: 881 },
+    headingWidth = 1360,
+    topology = "root",
+  }: {
+    laneHeight?: number;
+    onSessionClick?: (id: string, eventId?: string, ev?: AgentEvent) => void;
+    markerTextRange?: { left: number; right: number };
+    headingWidth?: number;
+    topology?: "root" | "child";
+  } = {},
 ) {
   return render(
     <MemoryRouter>
@@ -110,6 +120,9 @@ function renderLanes(
         timelineWidth={900}
         leftPanelWidth={460}
         laneHeight={laneHeight}
+        markerTextRange={markerTextRange}
+        headingWidth={headingWidth}
+        topology={topology}
       />
     </MemoryRouter>,
   );
@@ -244,19 +257,78 @@ describe("RunLanes", () => {
     expect(onSessionClick).toHaveBeenCalledWith(run.session_id, call.id, call);
   });
 
-  it("writes a tool call's name beside its circle when it has room", () => {
+  it("writes a tool call's name beside its circle when it has room, naming it by data-marker-for", () => {
     const run = mkSession({ session_id: nextId("l") });
     const bash = mkEvent(run.session_id, "tool_call", -40 * S, { tool_name: "Bash" });
-    const llm = mkEvent(run.session_id, "post_call", -20 * S, { model: "claude-sonnet-4-5-20250929" });
+    const llm = mkEvent(run.session_id, "post_call", -20 * S, { model: "claude-haiku-4-5-20251001" });
     eventsCache.set(run.session_id, [bash, llm]);
-    renderLanes([run]);
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX });
     const texts = within(lanes()[0]!).getAllByTestId("swimlane-marker-text");
-    expect(texts.map((t) => [t.getAttribute("data-event-id"), t.textContent])).toEqual([
+    expect(texts.map((t) => [t.getAttribute("data-marker-for"), t.textContent])).toEqual([
       [bash.id, "Bash"],
-      [llm.id, "claude-sonnet-4-5"],
+      [llm.id, "claude-haiku-4-5"],
     ]);
+    expect(texts.every((t) => t.getAttribute("data-marker-row") === "beside")).toBe(true);
+    // The text does not carry the circle's attribute: one element per event id.
+    expect(texts.some((t) => t.hasAttribute("data-event-id"))).toBe(false);
+    expect(document.querySelectorAll(`[data-event-id="${bash.id}"]`)).toHaveLength(1);
     // The text takes no pointer input, so the circle under it keeps it.
     expect(texts[0]!.style.pointerEvents).toBe("none");
+  });
+
+  it("gives an LLM call on the run's own model no text: the lane label names it", () => {
+    const run = mkSession({ session_id: nextId("n"), model: "claude-sonnet-4-5-20250929" });
+    const llm = mkEvent(run.session_id, "post_call", -20 * S, { model: "claude-sonnet-4-5-20250929" });
+    eventsCache.set(run.session_id, [llm]);
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX });
+    expect(within(lanes()[0]!).queryAllByTestId("swimlane-marker-text")).toHaveLength(0);
+  });
+
+  it("stacks texts above and below the circles on a tall lane", () => {
+    const run = mkSession({ session_id: nextId("o") });
+    // Two seconds apart (about 29 px at 1m): no room beside the circles.
+    const first = mkEvent(run.session_id, "tool_call", -22 * S, { tool_name: "Read" });
+    const second = mkEvent(run.session_id, "tool_call", -20 * S, { tool_name: "Edit" });
+    eventsCache.set(run.session_id, [first, second]);
+    renderLanes([run], { laneHeight: MARKER_TEXT_STACKED_MIN_LANE_PX });
+    const texts = within(lanes()[0]!).getAllByTestId("swimlane-marker-text");
+    expect(texts.map((t) => [t.textContent, t.getAttribute("data-marker-row")])).toEqual([
+      ["Read", "above"],
+      ["Edit", "below"],
+    ]);
+  });
+
+  it("keeps no text for a circle under the label column or past the visible edge", () => {
+    const run = mkSession({ session_id: nextId("p") });
+    const early = mkEvent(run.session_id, "tool_call", -55 * S, { tool_name: "Bash" });
+    const middle = mkEvent(run.session_id, "tool_call", -30 * S, { tool_name: "Read" });
+    const late = mkEvent(run.session_id, "tool_call", -5 * S, { tool_name: "Edit" });
+    eventsCache.set(run.session_id, [early, middle, late]);
+    // Scrolled 200 px in, 400 px of panel showing: [200, 600].
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX, markerTextRange: { left: 200, right: 600 } });
+    const texts = within(lanes()[0]!).getAllByTestId("swimlane-marker-text");
+    expect(texts.map((t) => t.textContent)).toEqual(["Read"]);
+  });
+
+  it("spans the heading over the visible row with the badge after the pills", () => {
+    renderLanes([mkSession({ session_id: nextId("q") })], { headingWidth: 1024 });
+    const heading = within(group()).getByTestId("swimlane-run-lanes-heading");
+    const strip = heading.querySelector<HTMLElement>(".swimlane-row-label")!;
+    expect(strip.style.width).toBe("1024px");
+    // In the strip's flow, not pinned in the badge column.
+    expect(within(heading).queryByTestId("swimlane-badge-wrapper")).toBeNull();
+    expect(strip.lastElementChild).toHaveAttribute("data-testid", "swimlane-agent-status-badge");
+    // The spacer keeps the row as wide as the label column and panel.
+    expect((strip.nextElementSibling as HTMLElement).style.width).toBe(`${460 + 900 - 1024}px`);
+  });
+
+  it("indents each lane's label one step under its heading's text, root and child alike", () => {
+    const { unmount } = renderLanes([mkSession({ session_id: nextId("r") })]);
+    expect(within(lanes()[0]!).getByTestId("swimlane-run-lane-label").style.paddingLeft).toBe("24px");
+    unmount();
+    renderLanes([mkSession({ session_id: nextId("s") })], { topology: "child" });
+    // The child heading's text starts at 28 px; its lanes 12 px further in.
+    expect(within(lanes()[0]!).getByTestId("swimlane-run-lane-label").style.paddingLeft).toBe("40px");
   });
 
   it("drops the text of a marker that would collide, keeping the marker", () => {
@@ -265,7 +337,7 @@ describe("RunLanes", () => {
     const first = mkEvent(run.session_id, "tool_call", -21 * S, { tool_name: "Read" });
     const second = mkEvent(run.session_id, "tool_call", -20 * S, { tool_name: "Edit" });
     eventsCache.set(run.session_id, [first, second]);
-    renderLanes([run]);
+    renderLanes([run], { laneHeight: RUN_LANE_MIN_HEIGHT_PX });
     const lane = lanes()[0]!;
     expect(within(lane).getAllByTestId(`session-circle-${run.session_id}`)).toHaveLength(2);
     const texts = within(lane).queryAllByTestId("swimlane-marker-text");

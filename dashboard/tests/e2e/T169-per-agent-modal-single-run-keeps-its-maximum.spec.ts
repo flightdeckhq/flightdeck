@@ -50,15 +50,13 @@ test.describe("T169 — A single-run agent keeps a lane of the maximum height", 
 		}
 		await expect(modal.getByTestId("swimlane-runs-chip")).toHaveCount(0);
 
-		// Not the whole modal: room is left between the content and the feed.
-		const room = await modal.evaluate((m) => {
+		// Not the whole modal: the Timeline's content ends well above the
+		// feed, with room left in the scroll viewport.
+		const { content, viewport } = await modal.evaluate((m) => {
 			const scroll = m.querySelector<HTMLElement>('[data-testid="per-agent-swimlane-modal-scroll"]')!;
-			return scroll.clientHeight - scroll.scrollHeight;
+			const timeline = scroll.querySelector<HTMLElement>('[data-testid="timeline-scroll"]')!;
+			return { content: timeline.getBoundingClientRect().height, viewport: scroll.clientHeight };
 		});
-		expect(room).toBeGreaterThanOrEqual(0);
-		const viewport = await modal
-			.locator('[data-testid="per-agent-swimlane-modal-scroll"]')
-			.evaluate((el) => el.clientHeight);
-		expect(viewport).toBeGreaterThan(2 * RUN_LANE_MAX_HEIGHT_PX);
+		expect(viewport - content).toBeGreaterThan(RUN_LANE_MAX_HEIGHT_PX / 2);
 	});
 });

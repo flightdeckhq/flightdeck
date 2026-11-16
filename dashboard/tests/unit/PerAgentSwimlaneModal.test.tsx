@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
+import { PerAgentSwimlaneModal, usePerAgentModalTarget } from "@/components/agents/PerAgentSwimlaneModal";
 import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { ClientType } from "@/lib/agent-identity";
 import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
@@ -496,5 +496,43 @@ describe("PerAgentSwimlaneModal", () => {
     expect(screen.queryByTestId("swimlane-runs-chip")).toBeNull();
 
     useFleetStore.setState({ flavors: [] });
+  });
+
+  it("lets the keyboard reach the lanes' scroller, named for the agent", () => {
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    const scroller = screen.getByTestId("per-agent-swimlane-modal-scroll");
+    expect(scroller.tabIndex).toBe(0);
+    expect(scroller).toHaveAccessibleName("Run lanes of test-agent");
+  });
+});
+
+describe("usePerAgentModalTarget", () => {
+  it("opens on an agent of the roster and closes", () => {
+    const agents = [mkAgent({ agent_id: "a1" }), mkAgent({ agent_id: "a2" })];
+    const { result } = renderHook(() => usePerAgentModalTarget(agents));
+    expect(result.current.agent).toBeNull();
+    act(() => result.current.open("a2"));
+    expect(result.current.agent?.agent_id).toBe("a2");
+    act(() => result.current.close());
+    expect(result.current.agent).toBeNull();
+  });
+
+  it("closes for good when the agent leaves the roster: it does not reopen when it returns", () => {
+    const a1 = mkAgent({ agent_id: "a1" });
+    const { result, rerender } = renderHook(({ agents }) => usePerAgentModalTarget(agents), {
+      initialProps: { agents: [a1] },
+    });
+    act(() => result.current.open("a1"));
+    expect(result.current.agent?.agent_id).toBe("a1");
+    // A roster reload without it.
+    rerender({ agents: [] });
+    expect(result.current.agent).toBeNull();
+    // Back in the roster: the modal stays closed until the next click.
+    rerender({ agents: [a1] });
+    expect(result.current.agent).toBeNull();
   });
 });

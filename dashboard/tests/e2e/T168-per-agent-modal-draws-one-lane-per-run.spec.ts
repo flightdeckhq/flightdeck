@@ -10,9 +10,10 @@
  * heading and three lanes: one per open run, none for the lost run.
  * Each lane is labelled with its run's short id, state, model and
  * tokens; the lanes share the scroll viewport's height equally (between
- * the 40 px minimum and the 144 px maximum), so the gap between the last
- * lane and the Live feed is gone and nothing scrolls. Before, the modal
- * drew the Fleet's one 48 px row and left two thirds of it empty.
+ * the 40 px minimum and the 144 px maximum), so the last lane ends at the
+ * Live feed and nothing scrolls. The heading shows the agent's whole
+ * name, and every marker text sits by a circle wholly inside the panel's
+ * visible part, left of the now line.
  *
  * Geometry and attributes, read in one browser evaluation per poll, so
  * both theme projects run it unchanged.
@@ -107,6 +108,35 @@ test.describe("T168 — The per-agent modal draws one lane per run", () => {
 			expect(lane.state).toBe("active");
 			expect(lane.model).toBe("claude-sonnet-4-5");
 			expect(lane.tokens).toMatch(/^\d+(\.\d)?[kM]? tokens$/);
+		}
+
+		// The heading spans the row: the agent's name is not cut.
+		const name = group.getByTestId("swimlane-run-lanes-heading").getByTestId("swimlane-agent-name-link");
+		await expect(name).toHaveAttribute("title", FANOUT_FIXTURE.workerName);
+		expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+		// Each run's keep-alive tool call carries its name, by its circle,
+		// inside the visible panel and left of the now line.
+		await expect
+			.poll(() => modal.locator('[data-testid="swimlane-marker-text"]').count(), { timeout: 10_000 })
+			.toBeGreaterThan(0);
+		const texts = await modal.evaluate((m) => {
+			const now = m.querySelector('[data-testid="grid-line-now"]')!.getBoundingClientRect().left;
+			return Array.from(m.querySelectorAll<HTMLElement>('[data-testid="swimlane-marker-text"]')).map((t) => {
+				const lane = t.closest("[data-run-lane-row]")!;
+				const label = lane.querySelector('[data-testid="swimlane-run-lane-label"]')!.getBoundingClientRect();
+				const circle = lane
+					.querySelector(`[data-event-id="${t.getAttribute("data-marker-for")}"]`)!
+					.getBoundingClientRect();
+				const r = t.getBoundingClientRect();
+				return { text: t.textContent, labelRight: label.right, circleLeft: circle.left, left: r.left, right: r.right, now };
+			});
+		});
+		for (const t of texts) {
+			expect(t.text).toBe("e2e_fanout_work");
+			expect(t.circleLeft).toBeGreaterThanOrEqual(t.labelRight - 0.5);
+			expect(t.left).toBeGreaterThanOrEqual(t.labelRight - 0.5);
+			expect(t.right).toBeLessThanOrEqual(t.now + 0.5);
 		}
 
 		// The lost run, which left the window two hours ago, has no lane.

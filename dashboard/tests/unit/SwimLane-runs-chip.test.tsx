@@ -136,6 +136,34 @@ describe("SwimLane runs chip", () => {
     expect(within(row()).queryByTestId("swimlane-runs-chip")).toBeNull();
   });
 
+  it("is absent on a one-line row even when a run shorter than the tolerance starts with another", () => {
+    // b lasts half a second from a's start: within the 1 s tolerance the
+    // row stays one line, though a pairwise count would read two at once.
+    renderRow(
+      [
+        mkSession({ started_at: at(-30 * S) }),
+        mkSession({
+          state: "closed",
+          started_at: at(-30 * S),
+          ended_at: at(-29.5 * S),
+          last_seen_at: at(-29.5 * S),
+        }),
+      ],
+      () => {},
+    );
+    expect(row()).toHaveAttribute("data-lane-count", "1");
+    expect(within(row()).queryByTestId("swimlane-runs-chip")).toBeNull();
+  });
+
+  it("caps its label at 9+ past nine runs, with the full count in its tooltip and name", () => {
+    renderRow(Array.from({ length: 12 }, () => mkSession()), () => {});
+    const chip = within(row()).getByTestId("swimlane-runs-chip");
+    expect(chip).toHaveTextContent("9+ runs");
+    expect(chip).toHaveAttribute("data-run-count", "12");
+    expect(chip).toHaveAttribute("title", "12 runs at once: expand in swimlane");
+    expect(chip).toHaveAccessibleName("12 runs at once: expand in swimlane");
+  });
+
   it("is absent without a handler (the modal's own rows)", () => {
     renderRow([mkSession(), mkSession(), mkSession()]);
     expect(within(row()).queryByTestId("swimlane-runs-chip")).toBeNull();

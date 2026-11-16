@@ -280,27 +280,6 @@ def _raw_stream_classes() -> tuple[type, ...]:
         return ()
 
 
-def _jsonable(value: Any) -> Any:
-    """``value`` as plain JSON data: unchanged when it already is, else
-    with every SDK model in it dumped the way the session dumps framework
-    state (a Responses ``input`` often carries the previous response's
-    output items, which are SDK models). ``None`` when it cannot be
-    encoded at all."""
-    import json as _json
-
-    try:
-        _json.dumps(value)
-        return value
-    except (TypeError, ValueError):
-        pass
-    from flightdeck_sensor.core.session import _json_default
-
-    try:
-        return _json.loads(_json.dumps(value, default=_json_default))
-    except Exception:
-        return None
-
-
 # The platforms where the OpenAI SDK reaches OpenAI's own models.
 _OPENAI_PLATFORMS = frozenset({"openai", "azure"})
 
@@ -934,14 +913,14 @@ class OpenAIProvider:
                 return PromptContent(
                     system=instructions if isinstance(instructions, str) else None,
                     messages=[],
-                    tools=_jsonable(_given(request_kwargs.get("tools"))),
+                    tools=_given(request_kwargs.get("tools")),
                     response=resp_dict,
                     provider="openai",
                     model=model,
                     session_id="",
                     event_id="",
                     captured_at=now_iso,
-                    input=_jsonable(_given(request_kwargs.get("input"))),
+                    input=_given(request_kwargs.get("input")),
                 )
 
             return PromptContent(

@@ -33,6 +33,7 @@ from _helpers import (
     fetch_events_for_session,
     init_sensor,
     print_result,
+    stored_content_of,
     wait_for_streamed_post_calls,
 )
 
@@ -46,6 +47,16 @@ EXPECTED_STREAMED_CALLS = 5
 # create and one through the raw view it built in the first session.
 KEPT_CALLS = 2
 HI = [{"role": "user", "content": "hi"}]
+# The tool of the tool-use loop.
+WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": "Current weather for a city",
+    "input_schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    },
+}
 # Timeout shape for the timeout-classification probe. The connect budget
 # is generous because a tiny one surfaces as a connection error on some
 # stacks (WSL reports "network is unreachable" instead of a timeout); the
@@ -75,6 +86,48 @@ def main() -> None:
         int((time.monotonic() - t0) * 1000),
         f"{r.usage.output_tokens} output tokens",
     )
+
+    # A tool-use loop that passes the reply's content blocks back as the
+    # SDK returned them: the stored content holds the JSON the provider
+    # received for them, never their string form.
+    t0 = time.monotonic()
+    marker = f"tool-loop-{session_id[:8]}"
+    loop: list[dict[str, object]] = [
+        {"role": "user", "content": f"What is the weather in Paris? Use the tool. ({marker})"}
+    ]
+    first = anthropic.Anthropic().messages.create(
+        model=MODEL, max_tokens=128, tools=[WEATHER_TOOL], tool_choice={"type": "any"},
+        messages=loop,
+    )
+    loop.append({"role": "assistant", "content": first.content})
+    loop.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": block.id, "content": "Sunny, 21 C"}
+                for block in first.content
+                if block.type == "tool_use"
+            ],
+        }
+    )
+    anthropic.Anthropic().messages.create(
+        model=MODEL, max_tokens=64, tools=[WEATHER_TOOL], messages=loop
+    )
+    stored = stored_content_of(session_id, marker, "messages", least=len(loop))
+    sent_blocks = [
+        block.model_dump(mode="json", exclude_unset=True, by_alias=True) for block in first.content
+    ]
+    loop_ok = stored[1] == {"role": "assistant", "content": sent_blocks} and any(
+        block.type == "tool_use" for block in first.content
+    )
+    print_result(
+        "content blocks passed back are stored as the JSON sent",
+        loop_ok,
+        int((time.monotonic() - t0) * 1000),
+        f"{len(sent_blocks)} blocks",
+    )
+    if not loop_ok:
+        raise AssertionError(f"stored {stored[1]!r}, sent {sent_blocks!r}")
 
     # Each async section closes its client with ``async with`` while its
     # event loop is alive: the SDK's httpx wrapper otherwise schedules its

@@ -1190,3 +1190,19 @@ sensor's session, metered by the provider patches.
 wrap opens one (a duplicate of the sensor's session); children for the
 workflow shells (no agent of their own); token counts from ADK's
 `after_model` callback (a second count beside the provider patches).
+
+## D283 -- The sensor reads a call's iterator arguments into lists for itself and hands the SDK a generator over the same items
+
+**Date:** 2026-11-16
+**Decision:** with a session active, the sensor first reads every iterator
+in a call's arguments (at any depth in lists, tuples and dicts; a file
+excepted) into a list, and the SDK gets a fresh generator over those items
+in its place. Arguments with no iterator reach the SDK as the same objects.
+**Why:** the estimate (`count_tokens`, `token_counter`, tiktoken) exhausted
+a generator `messages`, and the provider received an empty list; the SDKs
+type these arguments `Iterable`.
+**Rejected alternative:** handing the SDK the sensor's list (a call the SDK
+rejects without the sensor, a generator Responses `input` or any litellm
+call, would succeed, and `tools` the OpenAI SDK reads twice would be sent
+whole); `itertools.tee` (buffers every item all the same); reading only
+top-level arguments (`count_tokens` also consumes a message's `content`).

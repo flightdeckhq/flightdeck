@@ -930,6 +930,39 @@ and an empty string for `model`. Wrappers pass them: Google ADK's
 `AnthropicLlm` gives `tools=NOT_GIVEN` for an agent with no tools, the
 OpenAI Agents SDK's `OpenAIChatCompletionsModel` `tools=omit`.
 
+An argument given as a one-shot iterable, an iterator such as a
+generator, can be read only once. The SDKs accept one wherever they type
+an argument `Iterable`: `messages`, `system` as blocks, `tools`, a
+Responses or embeddings `input`, a message's `content`. The sensor reads
+the arguments before the SDK does, for the token estimate (Anthropic's
+`count_tokens`, litellm's `token_counter`, the tiktoken count) and for
+content capture. So with a session active, before it reads anything, the
+sensor reads every iterator in the call's arguments into a list of its
+items, at any depth inside the lists, tuples and dicts the arguments are
+made of. The estimate and the stored content count those items. The SDK
+is handed a fresh generator over the same items in place of each
+iterator, inside copies of the containers on the path to it, so the
+caller's own arguments are not changed. A file is an iterator too and is
+passed on as it is. An ordinary call's arguments hold no iterator and
+are only walked, never copied: the lists, tuples, dicts and strings go
+to the SDK as the same objects.
+
+Handing the SDK a generator, not the sensor's list, keeps the call what
+it is without the sensor. An SDK that does not accept an iterator for an
+argument still raises: the OpenAI SDK fails to serialise one given as
+Responses `input`, and litellm fails to copy one given to any of its
+entry points. An SDK that reads one twice still sends what is left: the
+OpenAI SDK's chat `parse()` and `stream()` check `tools` before sending.
+The stored content then holds what the provider received when the SDK
+read the iterator first (`stream()` checks when it is called), and the
+items the iterator yielded when the sensor did (`parse()` checks inside
+the call). An iterator that raises while it is read raises the same
+exception at the step where the SDK raises it: the call itself, the
+await of an async call, or the entering of a stream manager
+(`messages.stream()`, `chat.completions.stream()`,
+`with_streaming_response`). It raises before the sensor has built any
+event. With no session active the arguments are not read.
+
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
 names no `model` is counted against `claude-sonnet-4-6`

@@ -72,7 +72,10 @@ All notable changes to Flightdeck are documented here.
   where it was a string, and the Prompts tab shows its blocks, a block
   that carries `cache_control` marked `cache_control · ephemeral`. An
   OpenTelemetry GenAI framework's system instructions are stored as
-  their list of parts the same way, rather than as JSON text.
+  their list of parts the same way, rather than as JSON text. Rows
+  stored before this change are not migrated: they keep returning their
+  system instructions as JSON text (plain-text instructions with their
+  quotes), and new rows return the list.
 
 - **A call given `NOT_GIVEN` or `omit` keeps its event under
   `capture_prompts`.** An Anthropic or OpenAI call with an argument set

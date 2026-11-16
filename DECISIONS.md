@@ -1195,15 +1195,15 @@ workflow shells (no agent of their own); token counts from ADK's
 
 **Date:** 2026-11-16
 **Decision:** a content's `system` is text, a list or null, by the JSON
-type its producer sent. Text stays in `event_content.system_prompt`; a
-list goes to a new nullable `system_blocks` (JSONB), a row holding at
-most one. Any other type is dropped alone, with a warning naming the
-type. `GET /v1/events/:id/content` returns the stored one as
-`system_prompt`: a string or the list. OpenTelemetry GenAI system
-instructions are passed as their list too.
-**Why:** an Anthropic call with `system` as blocks (the prompt-caching
-form) lost all its content: the worker's string field refused the array.
-**Rejected alternative:** the list as JSON text in `system_prompt` (a text
-prompt that reads as JSON would turn into blocks); flattening the blocks
-to one string (loses `cache_control` and block bounds); one `system
-JSONB` replacing the TEXT column (rewrites every stored prompt).
+type sent. Text stays in `event_content.system_prompt`; a list goes to a
+new nullable `system_blocks` (JSONB), at most one per row; any other type
+is dropped alone, with a warning. The content endpoint returns either as
+`system_prompt`. OpenTelemetry GenAI instructions go as their list (any
+other value as its JSON text).
+**Why:** an Anthropic call with `system` as blocks (prompt caching) lost
+all its content: the worker's string field refused the array.
+**Rejected alternative:** the list as JSON text in `system_prompt` (text
+that reads as JSON would turn into blocks); flattening to one string
+(loses `cache_control`); a `system JSONB` replacing the TEXT column
+(rewrites every prompt); a second API field, or a rename to `system` (a
+client that reads only `system_prompt` sees null for block-list calls).

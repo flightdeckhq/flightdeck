@@ -5097,9 +5097,14 @@ as the framework sent it, never converted to a provider's format, with
 `provider=otel_genai`. A `post_call` carries content when its call has
 input messages, output messages or system instructions (tool definitions
 alone describe the agent, not the call, so a call with only those
-carries none): `system` from `gen_ai.system_instructions` as the
-framework sent it (a list of parts in every recorded framework, stored
-in `system_blocks`; text in `system_prompt`), `messages` from the input messages and `response`
+carries none): `system` from `gen_ai.system_instructions`, as staged
+(a string that holds a JSON object or array is read as that JSON): a
+list, the conventions' list of parts that every recorded framework
+sends, is stored in `system_blocks` as the list; text in
+`system_prompt` as the text; any other value (an object, from such a
+string or a map attribute, a number or a boolean) in `system_prompt` as
+its JSON text, which the worker would otherwise drop, since it stores a
+`system` only as text or a list. `messages` from the input messages and `response`
 from the output messages (each `[]` when absent), `tools` from the tool
 definitions and `model` the requested model (empty when none). A Google
 ADK `post_call` takes its content from the log record with its span id,
@@ -6462,7 +6467,7 @@ never carries content inline.
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
 | `messages` | chat history (`[]` for Responses) | `[]` | `[]` | `[]` | `[]` | `[]` |
-| `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions` | NULL | NULL | NULL | NULL | NULL |
+| `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions`, OpenTelemetry GenAI system instructions given as text, or as an object, number or boolean (its JSON text) | NULL | NULL | NULL | NULL | NULL |
 | `system_blocks` | a `system` given as a list: Anthropic `system` blocks, OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
@@ -6809,7 +6814,7 @@ schema this history reaches at 000036.
 | 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
 | 000036 | `otlp_spans.assembled_in`: the assembly that marked a record, with a check that it is set exactly when `assembled` is (records marked before it get their trace's `assembly_count`); the down file drops the column |
 | 000037 | `session_start_receipts` and its `received_at` index: one row per attached `session_start` event id, so a resent copy is not attached again; the down file drops the table |
-| 000038 | `event_content.system_blocks` JSONB: a system prompt given as a list of content blocks, stored as the list, with a check that it is a list and that a row sets at most one of it and `system_prompt`; the down file drops the check and the column |
+| 000038 | `event_content.system_blocks` JSONB: a system prompt given as a list of content blocks, stored as the list, with a check (added `NOT VALID`, as every existing row holds NULL there) that it is a list and that a row sets at most one of it and `system_prompt`; the down file drops the check and the column, so a row that stored a list loses its system prompt (the row itself stays) |
 
 ---
 
@@ -8915,7 +8920,8 @@ provider's branch, under an `OpenTelemetry GenAI` header:
 
 - the system instructions, shown as the parts or blocks they hold (a
   stored list, or stored text that holds a JSON list or object, is
-  read the same way; other text is shown as written), each input
+  read as that value, an object as its fields; other text, a number's
+  or a boolean's JSON text included, is shown as written), each input
   message and each response message, in its own box with its role and
   `finish_reason`;
 - a message's `parts` (the GenAI conventions: `text`, `reasoning`,

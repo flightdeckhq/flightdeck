@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 
 const mockContent = {
@@ -421,6 +421,67 @@ describe("PromptViewer edge shapes", () => {
     expect(box).toHaveTextContent("Block one.");
     expect(box).toHaveTextContent("Block two.");
     expect(box).not.toHaveTextContent('"type"');
+  });
+
+  it("a text system shows as written, with no cache mark, and Raw is the string", async () => {
+    mockFetchResult = { ...mockContent };
+    render(<PromptViewer eventId="e-system-text" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    const box = screen.getByTestId("prompt-box-system");
+    expect(box.querySelectorAll('[data-testid="content-block-cache-control"]')).toHaveLength(0);
+    expect(box.querySelector('[data-testid="pretty-json"]')).toBeNull();
+    expect(within(box).getByText("You are a helpful assistant.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
+    expect(screen.getByTestId("prompt-box-system-raw-json")).toHaveTextContent('"You are a helpful assistant."');
+  });
+
+  it("an Anthropic system given as blocks shows each text, marks the cache breakpoint, and Raw keeps the list", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      system_prompt: [
+        { type: "text", text: "You are a terse geography assistant.", cache_control: { type: "ephemeral" } },
+        { type: "text", text: "Answer in one word." },
+        { type: "text", text: "Prefer capitals.", cache_control: { type: "ephemeral", ttl: "1h" } },
+      ],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-system-cached-blocks" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    const box = screen.getByTestId("prompt-box-system");
+    expect(box).toHaveTextContent("You are a terse geography assistant.");
+    expect(box).toHaveTextContent("Answer in one word.");
+    expect(box).toHaveTextContent("Prefer capitals.");
+    expect(box).not.toHaveTextContent('"type"');
+    // One mark per block that carries cache_control, under that block.
+    const marks = within(box).getAllByTestId("content-block-cache-control");
+    expect(marks.map((m) => m.textContent)).toEqual(["cache_control · ephemeral", "cache_control · ephemeral · 1h"]);
+    const cached = within(box).getAllByTestId("content-block-cached");
+    expect(cached).toHaveLength(2);
+    expect(cached[0]).toHaveTextContent("You are a terse geography assistant.");
+    expect(cached[1]).toHaveTextContent("Prefer capitals.");
+    expect(within(box).getByText("Answer in one word.").closest('[data-testid="content-block-cached"]')).toBeNull();
+    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
+    const raw = screen.getByTestId("prompt-box-system-raw-json");
+    expect(raw).toHaveTextContent('"cache_control"');
+    expect(raw).toHaveTextContent('"ttl": "1h"');
+    expect(within(box).queryAllByTestId("content-block-cache-control")).toHaveLength(0);
+  });
+
+  it("a system block of a type the viewer does not know shows as its JSON, not dropped", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      system_prompt: [
+        { type: "text", text: "Known block." },
+        { type: "citations_note", note: "an unknown block", cache_control: { type: "ephemeral" } },
+      ],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-system-unknown-block" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    const box = screen.getByTestId("prompt-box-system");
+    expect(box).toHaveTextContent("Known block.");
+    const json = box.querySelector('[data-testid="pretty-json"]');
+    expect(json?.textContent).toContain('"citations_note"');
+    expect(json?.textContent).toContain('"an unknown block"');
+    expect(within(box).getByTestId("content-block-cache-control")).toHaveTextContent("cache_control · ephemeral");
   });
 
   it("survives null messages and tools, null content and thinking blocks", async () => {

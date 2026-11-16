@@ -55,7 +55,8 @@ All notable changes to Flightdeck are documented here.
   content was recorded. The list is now stored as the provider received
   it (a new `event_content.system_blocks` column, migration 000038),
   `GET /v1/events/:id/content` returns it as `system_prompt`, a list
-  where it was a string, and the Prompts tab shows its blocks. An
+  where it was a string, and the Prompts tab shows its blocks, a block
+  that carries `cache_control` marked `cache_control · ephemeral`. An
   OpenTelemetry GenAI framework's system instructions are stored as
   their list of parts the same way, rather than as JSON text.
 

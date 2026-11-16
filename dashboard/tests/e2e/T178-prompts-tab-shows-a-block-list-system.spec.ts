@@ -8,9 +8,10 @@
  * list as its ``system``; the worker stores the list as it was sent and
  * the content endpoint serves it as ``system_prompt``. Opened in the
  * event drawer, the System box shows each block's text (not the blocks'
- * JSON) beside the call's messages, and Raw shows the list as stored,
- * ``cache_control`` included. A run whose ``system`` is text shows that
- * text as it always has.
+ * JSON) beside the call's messages, the block carrying ``cache_control``
+ * marked under it, and Raw shows the list as stored, ``cache_control``
+ * included. A run whose ``system`` is text shows that text as it always
+ * has, with no mark.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -78,6 +79,11 @@ test.describe("T178 — the Prompts tab shows a block-list system", () => {
     await expect(drawer.getByTestId("prompt-box-message-0")).toContainText("T178-USER");
     await expect(drawer.getByTestId("prompt-box-response")).toContainText("T178-RESPONSE");
     await expect(drawer.getByText("No content was recorded for this event")).toHaveCount(0);
+    // The block carrying cache_control is marked, and only that block.
+    const marks = system.getByTestId("content-block-cache-control");
+    await expect(marks).toHaveCount(1);
+    await expect(marks).toHaveText("cache_control · ephemeral");
+    await expect(system.getByTestId("content-block-cached")).toContainText(FIRST_BLOCK);
 
     await drawer.getByTestId("prompt-box-system-raw").click();
     const raw = drawer.getByTestId("prompt-box-system-raw-json");
@@ -96,6 +102,7 @@ test.describe("T178 — the Prompts tab shows a block-list system", () => {
     await drawer.getByTestId("detail-tab-prompts").click();
     const system = drawer.getByTestId("prompt-box-system");
     await expect(system).toHaveText(new RegExp(`${text}$`));
+    await expect(system.getByTestId("content-block-cache-control")).toHaveCount(0);
     await drawer.getByTestId("prompt-box-system-raw").click();
     await expect(drawer.getByTestId("prompt-box-system-raw-json")).toHaveText(`"${text}"`);
   });

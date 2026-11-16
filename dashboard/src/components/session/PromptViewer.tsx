@@ -248,7 +248,31 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Provider content blocks, each in the provider's own terms. */
+/** The mark under a content block that carries ``cache_control`` (an
+ *  Anthropic cache breakpoint: the provider caches the prompt up to and
+ *  including the block), in the provider's own terms: its type and,
+ *  when set, its ttl. */
+function CacheControlMark({ control }: { control: unknown }) {
+  const parts = ["cache_control"];
+  if (isPlainObject(control)) {
+    if (typeof control.type === "string") parts.push(control.type);
+    if (typeof control.ttl === "string") parts.push(control.ttl);
+  }
+  return (
+    <div data-testid="content-block-cache-control" className="mt-1 flex justify-end">
+      <span
+        className="font-mono text-[10px] tracking-[0.04em]"
+        style={{ color: "var(--text-muted)" }}
+        title="A cache breakpoint: the provider caches the prompt up to and including this block."
+      >
+        {parts.join(" · ")}
+      </span>
+    </div>
+  );
+}
+
+/** Provider content blocks, each in the provider's own terms; a block
+ *  that carries ``cache_control`` is marked under it. */
 function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   if (blocks.length === 0) {
     return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
@@ -256,63 +280,75 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   return (
     <div className="space-y-2">
       {blocks.map((raw, i) => {
-        if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
-        if (!isPlainObject(raw)) return <JsonBox key={i} data={raw} />;
-        const type = typeof raw.type === "string" ? raw.type : "";
-        if (type === "text" && typeof raw.text === "string") {
-          return <TextOrJson key={i} text={raw.text} />;
-        }
-        if (type === "thinking" || type === "redacted_thinking") {
-          const text = typeof raw.thinking === "string" ? raw.thinking : null;
-          return (
-            <div key={i} data-testid="content-block-thinking">
-              <BlockLabel>{type.replace("_", " ")}</BlockLabel>
-              {text != null ? (
-                <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
-              ) : (
-                <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
-              )}
-            </div>
-          );
-        }
-        if (type === "tool_use" || type === "server_tool_use") {
-          const name = typeof raw.name === "string" ? raw.name : "tool";
-          return (
-            <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-              <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
-              {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 ? (
-                <div className="mt-2">
-                  <KeyValueList data={raw.input} />
-                </div>
-              ) : raw.input != null && !isPlainObject(raw.input) ? (
-                <div className="mt-2">
-                  <BlockValue value={raw.input} />
-                </div>
-              ) : (
-                <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
-              )}
-            </div>
-          );
-        }
-        if (type === "tool_result") {
-          return (
-            <div key={i}>
-              <BlockLabel>tool result</BlockLabel>
-              <ToolResultBlock block={raw} />
-            </div>
-          );
-        }
-        if (type === "image" || type === "document") {
-          return (
-            <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
-              [{type}]
-            </div>
-          );
-        }
-        return <JsonBox key={i} data={raw} />;
+        const block = contentBlock(raw, i);
+        if (!isPlainObject(raw) || raw.cache_control == null) return block;
+        return (
+          <div key={i} data-testid="content-block-cached">
+            {block}
+            <CacheControlMark control={raw.cache_control} />
+          </div>
+        );
       })}
     </div>
   );
+}
+
+/** One provider content block. */
+function contentBlock(raw: unknown, i: number): React.ReactNode {
+  if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
+  if (!isPlainObject(raw)) return <JsonBox key={i} data={raw} />;
+  const type = typeof raw.type === "string" ? raw.type : "";
+  if (type === "text" && typeof raw.text === "string") {
+    return <TextOrJson key={i} text={raw.text} />;
+  }
+  if (type === "thinking" || type === "redacted_thinking") {
+    const text = typeof raw.thinking === "string" ? raw.thinking : null;
+    return (
+      <div key={i} data-testid="content-block-thinking">
+        <BlockLabel>{type.replace("_", " ")}</BlockLabel>
+        {text != null ? (
+          <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
+        ) : (
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
+        )}
+      </div>
+    );
+  }
+  if (type === "tool_use" || type === "server_tool_use") {
+    const name = typeof raw.name === "string" ? raw.name : "tool";
+    return (
+      <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+        <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+        {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 ? (
+          <div className="mt-2">
+            <KeyValueList data={raw.input} />
+          </div>
+        ) : raw.input != null && !isPlainObject(raw.input) ? (
+          <div className="mt-2">
+            <BlockValue value={raw.input} />
+          </div>
+        ) : (
+          <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
+        )}
+      </div>
+    );
+  }
+  if (type === "tool_result") {
+    return (
+      <div key={i}>
+        <BlockLabel>tool result</BlockLabel>
+        <ToolResultBlock block={raw} />
+      </div>
+    );
+  }
+  if (type === "image" || type === "document") {
+    return (
+      <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
+        [{type}]
+      </div>
+    );
+  }
+  return <JsonBox key={i} data={raw} />;
 }
 
 /* ---- Main component ---- */

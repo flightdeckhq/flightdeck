@@ -8770,7 +8770,10 @@ sessions display `messages` (system role included), `tools`, and
 `response`. A `system` given as a list of content blocks is shown block
 by block, as a message's content blocks are: a text block as its text,
 a block the viewer does not know as its JSON; Raw shows the list as
-stored. An OpenAI Responses call (the sensor's `responses` calls
+stored. A content block that carries `cache_control` (a cache
+breakpoint), in the system prompt or a message, is marked under it in
+the provider's terms, `cache_control · ephemeral` with its `ttl` when
+set. An OpenAI Responses call (the sensor's `responses` calls
 and litellm's) is shown in the Responses API's own terms: its stored
 `system` text under `instructions`, and its stored `input` under
 Input, a string as written and an input item list as one box per item:

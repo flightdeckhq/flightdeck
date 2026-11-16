@@ -464,3 +464,62 @@ def test_a_streamed_run_closes_its_child(flavor: str) -> None:
     assert streaming["final_outcome"] == "completed"
     assert isinstance(streaming["ttft_ms"], int)
     assert streaming["ttft_ms"] >= 0
+
+
+def _chat_completion(text: str) -> dict[str, Any]:
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": MODEL,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+    }
+
+
+def test_a_chat_completions_agent_with_no_tools_keeps_its_model_call(flavor: str) -> None:
+    """OpenAIChatCompletionsModel passes ``tools=omit`` for an agent with no
+    tools. With capture on, the call's post_call lands with its content, the
+    tools stored as not given."""
+    from agents import OpenAIChatCompletionsModel
+
+    root = str(uuid.uuid4())
+    _init(root)
+    model = OpenAIChatCompletionsModel(
+        model=MODEL, openai_client=openai.AsyncOpenAI(api_key="sk-test", max_retries=0)
+    )
+    plain = agents.Agent(name="plain_agent", instructions="You are plain_agent.", model=model)
+    with respx.mock(base_url=BASE_URL, assert_all_called=False) as router:
+        router.post("/chat/completions").mock(
+            return_value=httpx.Response(200, json=_chat_completion("hello"))
+        )
+        result = agents.Runner.run_sync(plain, "hi")
+    assert result.final_output == "hello"
+    flightdeck_sensor.teardown()
+
+    wait_until(
+        lambda: any(e["event_type"] == "post_call" for e in _events(flavor)),
+        timeout=STORED_TIMEOUT_SECS,
+        msg="the chat completion's post_call stored",
+    )
+    (post,) = [e for e in _events(flavor) if e["event_type"] == "post_call"]
+    assert post["session_id"] == root
+    assert post["has_content"] is True
+    wait_until(
+        lambda: _content_status(post["id"]) == CONTENT_FOUND,
+        timeout=STORED_TIMEOUT_SECS,
+        msg="the post_call's content stored",
+    )
+    req = urllib.request.Request(
+        f"{API_URL}/v1/events/{post['id']}/content", headers=auth_headers()
+    )
+    with urllib.request.urlopen(req, timeout=CONTENT_FETCH_TIMEOUT_SECS) as resp:
+        stored = json.loads(resp.read())
+    assert stored.get("tools") is None
+    assert stored["messages"]

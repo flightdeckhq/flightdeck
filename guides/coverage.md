@@ -26,7 +26,7 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 | LangGraph | yes | yes: a child session per run of each node of a graph you build (functions, Runnables and your own `ToolNode`s), and per graph run started inside another (a compiled graph used as a node, a graph invoked from a node or a tool), each nested under the child it runs in; not for `create_agent`'s steps, generator nodes or a top-level graph run | no |
 | CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; not on its Gemini, Azure or Bedrock providers | yes | no |
 | Claude Agent SDK (Python) | yes | its own session per run | no |
-| Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
+| Google ADK 2.13+ | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | yes: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with hand-offs; the root agent is the sensor's session. On Gemini the child sessions appear but their model calls are not metered | yes |
 | OpenAI Agents SDK 0.6+ | yes (not over its Responses WebSocket transport) | yes: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires (`pip install flightdeck-sensor[openai-agents]`) | yes |
 | Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
 | LlamaIndex | yes | yes on llama-index-core 0.14+: a child session per agent of an agent workflow run, with hand-offs (its calls stay on the sensor's session) | no |

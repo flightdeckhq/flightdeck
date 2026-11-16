@@ -14,6 +14,7 @@ from typing import Any
 from flightdeck_sensor.core.errors import REQUEST_ID_MAX_LEN
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import given as _given
 from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
@@ -850,7 +851,9 @@ class OpenAIProvider:
             from flightdeck_sensor.core.types import EventType
 
             now_iso = datetime.now(UTC).isoformat()
-            model = request_kwargs.get("model", "")
+            # An argument given as the SDK's NOT_GIVEN / omit was not sent
+            # to the provider, so it is stored as not given (_given).
+            model = _given(request_kwargs.get("model")) or ""
 
             if event_type == EventType.EMBEDDINGS:
                 # Capture both the input string/list and the raw
@@ -889,7 +892,7 @@ class OpenAIProvider:
                     session_id="",
                     event_id="",
                     captured_at=now_iso,
-                    input=request_kwargs.get("input"),
+                    input=_given(request_kwargs.get("input")),
                     embedding_output=vectors,
                 )
 
@@ -927,24 +930,24 @@ class OpenAIProvider:
                 # top-level system text, stored where Anthropic's
                 # ``system`` goes) and ``input`` (a string or a list of
                 # input items), stored verbatim under its own name.
-                instructions = request_kwargs.get("instructions")
+                instructions = _given(request_kwargs.get("instructions"))
                 return PromptContent(
                     system=instructions if isinstance(instructions, str) else None,
                     messages=[],
-                    tools=_jsonable(request_kwargs.get("tools")),
+                    tools=_jsonable(_given(request_kwargs.get("tools"))),
                     response=resp_dict,
                     provider="openai",
                     model=model,
                     session_id="",
                     event_id="",
                     captured_at=now_iso,
-                    input=_jsonable(request_kwargs.get("input")),
+                    input=_jsonable(_given(request_kwargs.get("input"))),
                 )
 
             return PromptContent(
                 system=None,  # OpenAI chat embeds system in messages
-                messages=request_kwargs.get("messages", []),
-                tools=request_kwargs.get("tools"),
+                messages=_given(request_kwargs.get("messages")) or [],
+                tools=_given(request_kwargs.get("tools")),
                 response=resp_dict,
                 provider="openai",
                 model=model,

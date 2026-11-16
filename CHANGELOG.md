@@ -4,7 +4,32 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Google ADK sub-agents as child sessions.** `patch()`
+  (`Provider.GOOGLE_ADK`) adds a plugin to every Google ADK runner: each
+  sub-agent run lands as a child session of the sensor's session (an
+  agent reached by `transfer_to_agent`, each sub-agent a
+  `SequentialAgent`, `ParallelAgent` or `LoopAgent` runs, an
+  `AgentTool`'s agent nested under the agent that called it), with an
+  `agent_handoff` signal for each transfer. The root agent is the
+  sensor's session, and the model calls stay on it, metered on `LiteLlm`
+  and ADK's Anthropic models. Gemini calls are not metered yet
+  ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); their
+  agents still appear as child sessions. Call `patch()` before building
+  runners and before the first `LiteLlm` call.
+
 ### Fixed
+
+- **A call given `NOT_GIVEN` or `omit` keeps its event under
+  `capture_prompts`.** An Anthropic or OpenAI call with an argument set
+  to the SDK's "not given" sentinel lost its whole `post_call`, tokens
+  included, because the sentinel could not be written as JSON: Google
+  ADK's `AnthropicLlm` passes `tools=NOT_GIVEN` for an agent with no
+  tools, and the OpenAI Agents SDK's `OpenAIChatCompletionsModel`
+  `tools=omit`. Such an argument is now stored as not given. And an event
+  whose captured content still cannot be written as JSON is sent without
+  its content, with a warning, instead of being dropped.
 
 - **A stop logs no error for the work it cuts short.** Stopping
   `flightdeck` within a second or two of its start could log `ERROR

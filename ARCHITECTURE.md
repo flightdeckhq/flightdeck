@@ -10794,7 +10794,7 @@ bearer token has full access — both reads and mutations.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by migration 000019; idempotently re-ensured at API boot) |
+| `GET` | `/v1/mcp-policies/global` | Fetch the global policy + entries. Always returns 200 (seeded by a migration; idempotently re-ensured at API boot) |
 | `GET` | `/v1/mcp-policies/:flavor` | Fetch the flavor policy + entries. 404 when no flavor policy exists |
 | `GET` | `/v1/mcp-policies/resolve` | Sensor / plugin preflight. Query params `flavor`, `server_url`, `server_name`; returns the resolved decision (`allow` / `warn` / `block`) and the `decision_path` that produced it (`flavor_entry` / `global_entry` / `mode_default`). GET-only — idempotent, safe, cacheable |
 | `GET` | `/v1/mcp-policies/global/audit-log` | Mutation history for the global policy. Query params `from` (ISO 8601), `to`, `event_type`, `limit`, `offset` |
@@ -10809,10 +10809,12 @@ bearer token has full access — both reads and mutations.
 
 #### Install-time seed and boot-time idempotent retry
 
-The empty-blocklist global policy row is seeded by migration
-`000019_mcp_protection_policy_seed_global.up.sql`. The
-seed SQL is an idempotent INSERT identical in shape to the boot
-hook below:
+The migrations seed the empty-blocklist global policy row: on
+Postgres the `mcp_protection_policy_seed_global` migration, with the
+idempotent INSERT below, and on SQLite the baseline, which inserts
+the row right after it creates the table. Once the migrations have
+run, `GET /v1/mcp-policies/global` finds the row, whichever of the
+API and the migrator started first.
 
 ```sql
 INSERT INTO mcp_policies (scope, scope_value, mode, block_on_uncertainty)
@@ -10820,23 +10822,18 @@ SELECT 'global', NULL, 'blocklist', false
 WHERE NOT EXISTS (SELECT 1 FROM mcp_policies WHERE scope = 'global');
 ```
 
-The migrator is the single writer for this row. By the time api
-can `SELECT` from `mcp_policies` the seed has already landed,
-which closes the cold-boot race where api raced workers to a
-fresh postgres and 500'd every `GET /v1/mcp-policies/global`
-until manual restart (context).
-
-`store.EnsureGlobalMCPPolicy(ctx)` still runs at API boot as a
-defensive idempotent retry — same SQL, same `WHERE NOT EXISTS`
-predicate, race-safe under read-committed because the unique
-index `(scope, COALESCE(scope_value, ''))` rejects a concurrent
-second insert; on `pgconn.PgError.Code = '23505'`
-(unique_violation) the caller treats it as "already created" and
-proceeds. this hook noops on every cold boot
-(migration owns the row); it remains for install paths that
-might run api before migrations (e.g. operator-managed Helm
-charts in the future). API startup logs `INFO ensure global mcp
-policy at boot complete` on success.
+`store.EnsureGlobalMCPPolicy(ctx)` runs the same INSERT at API boot,
+with the same `WHERE NOT EXISTS` predicate. It is race-safe under
+read-committed because the unique index
+`(scope, COALESCE(scope_value, ''))` rejects a concurrent second
+insert, and a unique violation (`storage.IsUniqueViolation`: Postgres
+`23505`, SQLite's unique-constraint error) is treated as "already
+created". On a migrated database it changes nothing; it adds the row
+where the table exists without it. On a database the migrations have
+not reached it fails: the API logs `WARN ensure global mcp policy at
+boot failed` and carries on, and the migrations seed the row later.
+API startup logs `INFO ensure global mcp policy at boot complete` on
+success.
 
 #### Policy templates
 
@@ -12883,7 +12880,9 @@ one incarnation of it. If an operator recreates the stream, numbering
 restarts at one and every stored value would outrank every new event,
 so the worker clears any stored sequence above the stream's last
 sequence when it starts (logging how many rows it touched; a failed
-sweep is logged and the worker consumes anyway) and those rows follow
+sweep is logged as an error and the worker consumes anyway, while a
+sweep that a stop cuts short is the stop, not an error, and the worker
+ends there without logging one) and those rows follow
 the plain state rules until their next `session_start` or
 `session_end`. A stale value at or below the new stream's last sequence
 survives that sweep and is compared as if it belonged to the new stream

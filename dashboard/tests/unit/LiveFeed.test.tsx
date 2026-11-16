@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
+import { createRunLink } from "@/lib/run-link";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
 
 function makeEvent(overrides: Partial<AgentEvent> & { id: string }): AgentEvent {
@@ -374,5 +375,84 @@ describe("LiveFeed yielding height to the per-agent modal's lanes", () => {
   it("ignores no cap: the Fleet's feed keeps its own height", () => {
     render(<LiveFeed events={[]} onEventClick={() => {}} />);
     expect(frame().style.height).toBe("240px");
+  });
+});
+
+describe("LiveFeed linked to the per-agent modal's run lanes", () => {
+  const twoRuns: FeedEvent[] = [
+    makeFeedEvent({ id: "a1", session_id: "run-a" }, 1000),
+    makeFeedEvent({ id: "a2", session_id: "run-a" }, 2000),
+    makeFeedEvent({ id: "b1", session_id: "run-b" }, 3000),
+  ];
+  const rowOf = (eventId: string) =>
+    screen.getAllByTestId("feed-row").find((r) => r.getAttribute("data-feed-event-id") === eventId)!;
+  const litRows = () =>
+    screen
+      .getAllByTestId("feed-row")
+      .filter((r) => r.getAttribute("data-linked") === "true")
+      .map((r) => r.getAttribute("data-feed-event-id"))
+      .sort();
+
+  it("lights the rows of the run the link names", () => {
+    const link = createRunLink();
+    render(<LiveFeed events={twoRuns} onEventClick={() => {}} runLink={link} />);
+    expect(litRows()).toEqual([]);
+    act(() => link.set("run-a"));
+    expect(litRows()).toEqual(["a1", "a2"]);
+    act(() => link.set(null));
+    expect(litRows()).toEqual([]);
+  });
+
+  it("puts the hovered row's run and event on the link, once per run move", () => {
+    const link = createRunLink();
+    const listener = vi.fn();
+    link.subscribe(listener);
+    render(<LiveFeed events={twoRuns} onEventClick={() => {}} runLink={link} />);
+
+    fireEvent.mouseOver(rowOf("a1"));
+    expect(link.get()).toEqual({ run: "run-a", eventId: "a1" });
+    // From one row of a run to the next: one change, the run stays lit.
+    fireEvent.mouseOver(rowOf("a2"));
+    expect(link.get()).toEqual({ run: "run-a", eventId: "a2" });
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(litRows()).toEqual(["a1", "a2"]);
+
+    fireEvent.mouseLeave(screen.getByTestId("feed-body"));
+    expect(link.get()).toEqual({ run: null, eventId: null });
+  });
+
+  it("without a link (the Fleet page) keeps its rows as they were: no run attributes, no light", () => {
+    render(<LiveFeed events={twoRuns} onEventClick={() => {}} />);
+    const rows = screen.getAllByTestId("feed-row");
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row).not.toHaveAttribute("data-run-id");
+      expect(row).not.toHaveAttribute("data-feed-event-id");
+      expect(row).not.toHaveAttribute("data-linked");
+    }
+    fireEvent.mouseOver(rows[0]!);
+    expect(screen.getByTestId("feed-body")).not.toHaveAttribute("tabindex");
+  });
+
+  it("with a link, its rows are a focus target for script, not for Tab", () => {
+    render(<LiveFeed events={twoRuns} onEventClick={() => {}} runLink={createRunLink()} />);
+    expect(screen.getByTestId("feed-body")).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("says what it is given when it has no rows", () => {
+    const { rerender } = render(<LiveFeed events={[]} onEventClick={() => {}} />);
+    expect(screen.getByTestId("feed-empty")).toHaveTextContent("Waiting for events...");
+    rerender(
+      <LiveFeed events={[]} onEventClick={() => {}} emptyText="No events from run 1a2b3c4d in this window" />,
+    );
+    expect(screen.getByTestId("feed-empty")).toHaveTextContent("No events from run 1a2b3c4d in this window");
+  });
+
+  it("draws the header slot after the counts", () => {
+    render(
+      <LiveFeed events={twoRuns} onEventClick={() => {}} headerExtra={<button type="button">Run chip</button>} />,
+    );
+    const chip = screen.getByRole("button", { name: "Run chip" });
+    expect(screen.getByTestId("feed-count").compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

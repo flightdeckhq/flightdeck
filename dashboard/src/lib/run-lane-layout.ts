@@ -89,26 +89,55 @@ export const FEED_MIN_HEIGHT_PX = FEED_COLUMN_HEADER_PX + 3 * FEED_ROW_PX;
  *  the modal to read. */
 export const RUN_LANES_FEED_YIELDS_FOR = 3;
 
+/** The height of a lane cue ("2 more below"): one 11 px line. */
+export const LANE_FOLD_CUE_HEIGHT_PX = 18;
+
+/**
+ * The height of the footer strip under the per-agent modal's lane
+ * viewport, which holds the "more below" cue while the lanes overflow:
+ * the 18 px cue with 3 px above and below. The strip is a row of its own
+ * between the viewport and the Live feed, so nothing scrolls under it;
+ * it takes its height from the viewport, and the feed's cap counts the
+ * two together.
+ */
+export const LANE_FOLD_FOOTER_HEIGHT_PX = LANE_FOLD_CUE_HEIGHT_PX + 6;
+
 /**
  * The most height the Live feed body may take so the lanes fit: when
  * ``laneCount`` lanes at the minimum do not fit in ``laneSpacePx`` (the
  * space left for them now, with the feed body at ``feedHeightPx``), the
  * feed gives up the shortfall, down to ``FEED_MIN_HEIGHT_PX``, until
- * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit; past that the lanes scroll.
- * With room to spare the cap rises above the feed, which then keeps its
- * own height.
+ * ``RUN_LANES_FEED_YIELDS_FOR`` of them fit with ``footerPx`` to spare
+ * (the footer strip's height, which the lane area gives the strip when
+ * other lanes will scroll past them; ``laneSpacePx`` then counts the
+ * strip with the viewport); past that the lanes scroll. With room to spare the cap rises above the feed, which then
+ * keeps its own height.
  */
 export function feedHeightCap({
   laneCount,
   laneSpacePx,
   feedHeightPx,
+  footerPx = 0,
 }: {
   laneCount: number;
   laneSpacePx: number;
   feedHeightPx: number;
+  footerPx?: number;
 }): number {
-  const need = Math.min(Math.max(0, laneCount), RUN_LANES_FEED_YIELDS_FOR) * RUN_LANE_MIN_HEIGHT_PX;
+  const need =
+    Math.min(Math.max(0, laneCount), RUN_LANES_FEED_YIELDS_FOR) * RUN_LANE_MIN_HEIGHT_PX + footerPx;
   return Math.max(FEED_MIN_HEIGHT_PX, feedHeightPx + laneSpacePx - need);
+}
+
+/**
+ * The footer strip's height ``feedHeightCap`` keeps to spare: when the
+ * feed gives up height to the first group's lanes, every other lane
+ * scrolls past them (the first group's past ``RUN_LANES_FEED_YIELDS_FOR``,
+ * and any other group), and the strip then shows under the viewport,
+ * below the lanes in view.
+ */
+export function foldFooterFor(laneCount: number, groupCount: number): number {
+  return laneCount > RUN_LANES_FEED_YIELDS_FOR || groupCount > 1 ? LANE_FOLD_FOOTER_HEIGHT_PX : 0;
 }
 
 /** Space between a circle's right edge and its text. */
@@ -411,4 +440,56 @@ export function placeMarkerLabels(
     lastTextRight = end;
   }
   return kept;
+}
+
+/** How far past the viewport's edge a lane may reach and still count as
+ *  fully in view: fractional layout rounds lane edges by up to a pixel. */
+export const LANE_IN_VIEW_TOLERANCE_PX = 1;
+
+/** The lanes not fully in a scroll viewport, by side, and how far to
+ *  scroll to bring the next one on each side fully into view (0 when
+ *  there is none). */
+export interface LanesOutOfView {
+  above: number;
+  below: number;
+  /** A negative scroll: the nearest lane above, its top at the view's top. */
+  scrollUpPx: number;
+  /** A positive scroll: the nearest lane below, its bottom at the view's
+   *  bottom (its top at the view's top when it is the taller). */
+  scrollDownPx: number;
+}
+
+/**
+ * Counts the lanes, given by their top and bottom edges, that are not
+ * fully between ``viewTop`` and ``viewBottom``: a lane reaching past the
+ * bottom counts below, one reaching past the top counts above (a lane
+ * taller than the view, past both, counts below).
+ */
+export function lanesOutOfView(
+  lanes: readonly { top: number; bottom: number }[],
+  viewTop: number,
+  viewBottom: number,
+): LanesOutOfView {
+  let above = 0;
+  let below = 0;
+  let nearestAbove: { top: number; bottom: number } | null = null;
+  let nearestBelow: { top: number; bottom: number } | null = null;
+  for (const lane of lanes) {
+    if (lane.bottom > viewBottom + LANE_IN_VIEW_TOLERANCE_PX) {
+      below += 1;
+      if (!nearestBelow || lane.top < nearestBelow.top) nearestBelow = lane;
+    } else if (lane.top < viewTop - LANE_IN_VIEW_TOLERANCE_PX) {
+      above += 1;
+      if (!nearestAbove || lane.top > nearestAbove.top) nearestAbove = lane;
+    }
+  }
+  let scrollDownPx = 0;
+  if (nearestBelow) {
+    const toBottom = nearestBelow.bottom - viewBottom;
+    // A lane taller than the view goes no further than its top.
+    scrollDownPx =
+      nearestBelow.top > viewTop ? Math.min(toBottom, nearestBelow.top - viewTop) : toBottom;
+  }
+  const scrollUpPx = nearestAbove ? nearestAbove.top - viewTop : 0;
+  return { above, below, scrollUpPx, scrollDownPx };
 }

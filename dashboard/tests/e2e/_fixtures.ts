@@ -696,6 +696,11 @@ export interface PrivateAgent {
   agentName: string;
   flavor: string;
   sessionIds: string[];
+  /** A sub-agent's role, on every event it posts. */
+  role?: string;
+  /** A sub-agent's parent run for each of its runs, by index: the
+   *  ``parent_session_id`` its ``session_start`` carries. */
+  parentSessionIds?: string[];
 }
 
 function privateEvent(
@@ -731,6 +736,7 @@ function privateEvent(
     client_type: "claude_code",
     user: "e2e-runner",
     hostname: PRIVATE_HOST,
+    ...(agent.role ? { agent_role: agent.role } : {}),
     ...extra,
   };
   if (eventType === "session_start") {
@@ -777,6 +783,28 @@ export function createPrivateAgent(label: string, runs: number): PrivateAgent {
 }
 
 /**
+ * A sub-agent of the private agent ``parent``, named
+ * ``<parent name>/<role>``, with one run under each of ``parentSessionIds``
+ * (runs of ``parent``), nothing posted yet. Start it with
+ * ``startPrivateAgent`` after its parent, and end it with
+ * ``endPrivateAgent``.
+ */
+export function createPrivateSubAgent(
+  parent: PrivateAgent,
+  role: string,
+  parentSessionIds: string[],
+): PrivateAgent {
+  return {
+    agentId: randomUUID(),
+    agentName: `${parent.agentName}/${role}`,
+    flavor: parent.flavor,
+    sessionIds: parentSessionIds.map(() => randomUUID()),
+    role,
+    parentSessionIds,
+  };
+}
+
+/**
  * Start every run of ``agent`` with a ``session_start`` dated
  * ``startedAgoMs`` before now, and wait until each is stored and active.
  * The date places the start's circle on the lanes; the worker dates the
@@ -788,8 +816,12 @@ export async function startPrivateAgent(
   { startedAgoMs = 0 }: { startedAgoMs?: number } = {},
 ): Promise<void> {
   const at = new Date(Date.now() - startedAgoMs);
-  for (const sessionId of agent.sessionIds) {
-    await postPrivateEvent(page, privateEvent(agent, sessionId, "session_start", at));
+  for (const [i, sessionId] of agent.sessionIds.entries()) {
+    const parent = agent.parentSessionIds?.[i];
+    await postPrivateEvent(
+      page,
+      privateEvent(agent, sessionId, "session_start", at, parent ? { parent_session_id: parent } : {}),
+    );
   }
   for (const sessionId of agent.sessionIds) {
     await expect

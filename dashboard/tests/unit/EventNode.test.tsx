@@ -206,4 +206,15 @@ describe("EventNode in run lanes", () => {
     expect(circle(container)).not.toHaveAttribute("data-run-lane");
     expect(circle(container).style.width).toBe("22px");
   });
+
+  it("rings the circle whose Live feed row is hovered, and the memo re-renders on it", () => {
+    const { container, rerender } = render(<EventNode {...baseProps} size={28} />);
+    expect(circle(container)).not.toHaveAttribute("data-linked");
+    expect(circle(container).style.boxShadow).toBe("");
+    rerender(<EventNode {...baseProps} size={28} linked />);
+    expect(circle(container)).toHaveAttribute("data-linked", "true");
+    expect(circle(container).style.boxShadow).toContain("var(--accent)");
+    rerender(<EventNode {...baseProps} size={28} />);
+    expect(circle(container)).not.toHaveAttribute("data-linked");
+  });
 });

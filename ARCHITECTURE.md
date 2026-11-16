@@ -8131,8 +8131,10 @@ header's **Open in swimlane** button, and the runs chip on a Fleet
 swimlane row whose agent has two or more runs at once (see SwimLane).
 It scopes the existing `Timeline` and `SwimLane` primitives to a single
 agent's flavor (plus its sub-agents when the **Show sub-agents** toggle
-is on), and draws the agent's own row as run lanes: one lane per run,
-sized to the space above the Live feed (see Run lanes below).
+is on), and draws each of those agents as a group of run lanes: one
+lane per run, sized to the space above the Live feed (see Run lanes
+below). The lanes and the Live feed are linked: hovering one lights the
+other, and a lane's label filters the feed to its run.
 
 Modal layout:
 
@@ -8157,12 +8159,13 @@ Modal layout:
   a re-fetch. Does not affect the `/agents` table sparklines.
 - **Show sub-agents toggle** — defaults ON for parents
   (`topology === "parent"`), DISABLED + off for lone agents.
-  When ON, the modal renders the parent's run lanes plus every
-  sub-agent row, a compact 48 px row as in the Fleet view, with the
-  existing `SubAgentConnector` overlay.
+  When ON, the modal renders the parent's group of run lanes and,
+  under it, each sub-agent's own group, indented as a child row is,
+  with the existing `SubAgentConnector` overlay; a connector ends on
+  the circle in its child run's lane.
 - **Swimlane body** — the existing `Timeline` filtered to the
-  agent's flavor set, with the agent's own row drawn as run lanes
-  (`Timeline`'s `expandedAgentIds`). The Timeline's natural
+  agent's flavor set, every row drawn as run lanes (`Timeline`'s
+  `expandedAgentIds`). The Timeline's natural
   inner width (`leftPanelWidth + TIMELINE_WIDTH_PX`) is typically
   wider than the 80 vw modal viewport, so a horizontal
   scrollbar appears on the swim wrapper. The modal snaps
@@ -8179,7 +8182,14 @@ Modal layout:
   the swimlane's `useSessionEvents` path so the lane and the
   feed read from one source of truth, including events older
   than any wall-clock window), merging each fetched run into the
-  cache by event id (`mergeIntoEventsCache`);
+  cache by event id (`mergeIntoEventsCache`). A run is fetched
+  unless the cache holds its whole history (`fullHistoryLoaded`):
+  the Fleet page caches only its own window's events of a run, which
+  the modal's wider ranges would otherwise miss. At most
+  `SEED_FETCH_CONCURRENCY` (4) fetches run at once (a browser opens
+  six connections to one origin; two stay free for the page's other
+  requests), and closing the modal or changing its scope aborts those
+  in flight;
   `useFleetStore.lastEvent` ticks every WS event into the feed
   dedup'd by `event.id` and merges it into `eventsCache` the same
   way, so the swimlane sees the same live tick. Both streams filter through
@@ -8223,8 +8233,10 @@ Modal layout:
   position; the URL gains no segments while the modal is
   open.
 
-**Run lanes.** In the modal the agent's row is a group: a 32 px
-heading (`RUN_LANE_HEADING_HEIGHT_PX`), then one lane per run
+**Run lanes.** In the modal each agent's row is a group: the agent's
+own first and, with **Show sub-agents**, each sub-agent's under it
+(same lane order, sizing and model rules in every group). A group is a
+32 px heading (`RUN_LANE_HEADING_HEIGHT_PX`), then one lane per run
 (`components/timeline/RunLanes.tsx`; the group carries
 `data-run-lanes="true"` and `data-lane-count`, each lane is
 `swimlane-run-lane-<id8>` with `data-run-id`; `data-session-id` stays on
@@ -8270,13 +8282,18 @@ lanes (see SwimLane).
   first (`feedHeightCap`): its body shrinks by the shortfall, down to
   `FEED_MIN_HEIGHT_PX` (114 px, its column header and three event rows,
   enough to read the newest events and see the feed move), until
-  min(N, 3) lanes fit. Past that the lanes stay at 40 px and the scroll
-  viewport scrolls vertically. The modal's Timeline reports the lanes
-  drawn and the height of the rest of its content (`onRunLaneSpace`),
-  which the feed's height does not change; the modal reads the feed's
+  min(N, 3) lanes of the first group (the agent's own) fit, with the
+  footer strip's height to spare when other lanes will scroll past them
+  (the first group's past three, or any sub-agent's group; see Lanes
+  below the fold). Past that the lanes stay at 40 px and the scroll
+  viewport scrolls vertically.
+  The modal's Timeline reports the first group's lane count and the
+  height of the rest of its content, less the other groups, which
+  scroll (`onRunLaneSpace`); the feed's height does not change it; the modal reads the feed's
   body (through `LiveFeed`'s `bodyRef`) and the scroll viewport from
   the page together, so their sum is fixed and the cap (`LiveFeed`'s
-  `maxBodyHeight`) holds once the feed takes it. With room to spare the feed grows back to the height the
+  `maxBodyHeight`) holds once the feed takes it; the footer strip,
+  while it shows, counts with the viewport. With room to spare the feed grows back to the height the
   operator chose. Once the operator drags the
   feed's resize handle, the feed keeps their height and the lanes
   scroll instead. The heading row and the AGENTS header stay.
@@ -8344,6 +8361,55 @@ lanes (see SwimLane).
 - **Keyboard.** The lanes' scroll viewport is in the tab order with
   the accessible name "Run lanes of <agent>", so the keyboard can
   scroll it.
+- **Lanes and the Live feed.** Hovering a lane (its label or its
+  panel) lights that run's rows in the modal's Live feed, and hovering
+  a feed row lights its run's lane and, when it is in view, that
+  event's circle (`data-linked="true"` on each; an accent tint, and on
+  the circle an accent ring; a lit lane's label and a lit row also draw
+  a 2 px accent bar at their left edge). The hovered run and event go to a small
+  store outside React state (`lib/run-link.ts`, one per modal, the
+  pattern of `lib/lane-viewport.ts`): each lane and each feed row reads
+  whether it is lit, so a pointer move re-renders only the lanes and
+  rows that light or go out, not the modal, the Timeline or the rest
+  of the feed; a lane that leaves under the pointer puts its light out
+  as it goes. A lane's label is a button (`aria-pressed`; pressed, it
+  draws a 3 px accent bar), named `Run <id8>` and described by its
+  state, model and tokens and by what it does: a click filters the Live
+  feed to that run, a click on another lane's label switches the
+  filter, and a click on the filtered lane's label clears it. While
+  filtered, the feed's header shows a chip, `Run <id8> ×` (text in
+  `--text`, the accent on its border and icon), a button that clears
+  the filter; `Esc` clears it too, after any open drawer and before the
+  modal. Clearing from the chip or with `Esc` moves the focus to that
+  run's lane label, or to the feed's rows when its lane is not drawn.
+  The filter stays while its run has nothing in the window (it went
+  quiet, or the range narrowed past it), so the feed does not fill with
+  every run: the feed then reads `No events from run <id8> in this
+  window`, and the run's label shows pressed again once its lane
+  returns. It clears when the modal points at another agent or the run
+  leaves the scope (Show sub-agents turned off). The feed's sort, its
+  resize handle and its counts apply to the filtered rows. The Fleet
+  page's Live feed has neither the link nor the run filter: its rows
+  carry no run attributes and read no store.
+- **Lanes below the fold.** When lanes are out of the scroll viewport,
+  cues count them: `2 more below` for the lanes not fully visible
+  below, and `1 more above` for those above once scrolled. Each has
+  space of its own that nothing scrolls under, at the label column's
+  right edge, so neither covers a circle, marker text, a lane label or
+  a heading: the top cue sits in the time axis row's label-column cell,
+  which is empty and sticky; the bottom cue sits on a footer strip
+  under the scroll viewport, above the Live feed
+  (`LANE_FOLD_FOOTER_HEIGHT_PX`, 24 px: the 18 px cue with 3 px above
+  and below), which shows while the lanes overflow and takes its height
+  from the viewport. Whether they overflow is read with the strip's
+  height given back, so the strip showing never decides whether it
+  shows. A click scrolls the next hidden lane into full view. The cues
+  update as the viewport scrolls or the lanes change and disappear at
+  either end, handing the focus to the scroll viewport when the focused
+  cue goes.
+  They are buttons named by their text, outside any live region, so a
+  screen reader is not told of every scroll; the scroll viewport keeps
+  its fixed name, "Run lanes of <agent>".
 
 ### Agent drawer
 

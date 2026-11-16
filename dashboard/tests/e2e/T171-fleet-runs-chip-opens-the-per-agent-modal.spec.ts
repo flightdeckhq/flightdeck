@@ -143,6 +143,14 @@ test.describe("T171 — The Fleet runs chip caps its label past nine runs", () =
 		await startPrivateAgent(page, agent);
 		await page.goto("/");
 		await waitForFleetReady(page);
+		// The row's runs reach the page in their own time; the chip counts
+		// all ten once they have.
+		const row = await bringSwimlaneRowIntoView(page, agent.agentName);
+		await expect(row.getByTestId("swimlane-runs-chip")).toHaveAttribute(
+			"title",
+			"10 runs at once: expand in swimlane",
+			{ timeout: 15_000 },
+		);
 		const g = await chipGeometry(page, agent.agentName);
 		expect(g.text).toBe("9+ runs");
 		expect(g.title).toBe("10 runs at once: expand in swimlane");

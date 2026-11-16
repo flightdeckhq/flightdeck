@@ -185,9 +185,9 @@ export function fetchAgentSummary(
  * Fleet-side callers continue to call without the arg and
  * receive the full history.
  */
-export function fetchSession(id: string, eventsLimit?: number): Promise<SessionDetail> {
+export function fetchSession(id: string, eventsLimit?: number, signal?: AbortSignal): Promise<SessionDetail> {
   const qs = eventsLimit ? `?events_limit=${eventsLimit}` : "";
-  return fetchJson<SessionDetail>(`/v1/sessions/${id}${qs}`);
+  return fetchJson<SessionDetail>(`/v1/sessions/${id}${qs}`, signal ? { signal } : undefined);
 }
 
 /**

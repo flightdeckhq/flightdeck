@@ -381,9 +381,8 @@ func (r *resolver) contentOf(n *node) map[string]any {
 // output messages, system instructions and tool definitions, as the
 // framework sent them; nil when it has no messages, response or
 // instructions (tool definitions alone describe the agent, not the
-// call). The system instructions keep their JSON type: the conventions'
-// list of parts (what every recorded framework sends) is stored as the
-// list, and text as text.
+// call). The system instructions go in a form the worker stores (see
+// systemValue).
 func (r *resolver) callContent(n *node, model string) map[string]any {
 	c := r.contentOf(n)
 	messages, response, system := c[contentInput], c[contentOutput], c[contentSystem]
@@ -393,12 +392,32 @@ func (r *resolver) callContent(n *node, model string) map[string]any {
 	return map[string]any{
 		"provider": ContentProvider,
 		"model":    model,
-		"system":   system,
+		"system":   systemValue(system),
 		"messages": orEmptyList(messages),
 		"tools":    c[contentTools],
 		"response": orEmptyList(response),
 		"input":    nil,
 	}
+}
+
+// systemValue is a call's system instructions as the worker stores them:
+// the conventions' list of parts (what every recorded framework sends)
+// and text as they are, which the worker keeps as the list and as text;
+// any other value as its JSON text, which the worker keeps as text and
+// the dashboard reads back as that value. Such a value is an object (a
+// string attribute that held a JSON object, as an older-conventions
+// system event's content can, or a map attribute), a number or a
+// boolean; the worker stores only text or a list, and would drop it.
+func systemValue(v any) any {
+	switch v.(type) {
+	case nil, string, []any:
+		return v
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return string(b)
 }
 
 // toolContent is a tool_call's content, in the tool-capture envelope:

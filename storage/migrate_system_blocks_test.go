@@ -113,6 +113,19 @@ func TestMigration_EventContentSystemBlocks_UpDownUp(t *testing.T) {
 				}
 			}
 
+			// On Postgres the check is added NOT VALID (no scan of the
+			// existing rows under the table's exclusive lock) and still
+			// checks every new row, which checks() shows.
+			notValidated := func(stage string) {
+				t.Helper()
+				if b != storage.Postgres {
+					return
+				}
+				if v := queryString(t, db, `SELECT CAST(convalidated AS TEXT) FROM pg_constraint WHERE conname = 'event_content_system_blocks_check'`); v != "false" {
+					t.Errorf("%s: event_content_system_blocks_check convalidated = %s, want false (NOT VALID)", stage, v)
+				}
+			}
+			notValidated("up")
 			checks("up", 10)
 			if err := insert(eventID(1), "be brief", nil); err != nil {
 				t.Fatalf("a text system: %v", err)
@@ -133,6 +146,7 @@ func TestMigration_EventContentSystemBlocks_UpDownUp(t *testing.T) {
 			if n := queryInt(t, db, `SELECT COUNT(*) FROM event_content WHERE system_blocks IS NULL`); n != 2 {
 				t.Errorf("%d rows with system_blocks NULL after up again, want 2", n)
 			}
+			notValidated("up again")
 			checks("up again", 20)
 		})
 	}

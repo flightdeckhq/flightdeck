@@ -329,29 +329,71 @@ func TestContentE7KeptOnce(t *testing.T) {
 	}
 }
 
-// A call's system instructions keep the JSON type they were staged with:
-// the conventions' list of parts is the list (the worker stores it in
-// system_blocks), and text that is no JSON list or object is that text,
-// never JSON-quoted (system_prompt). Neither is turned into the other.
-func TestCallContentKeepsTheSystemInstructionsType(t *testing.T) {
+// A call's system instructions go as the worker stores them: the
+// conventions' list of parts as the list (system_blocks) and text as
+// that text, never JSON-quoted (system_prompt); any other value as its
+// JSON text (system_prompt), so an object, a number or a boolean the
+// worker would drop is kept, and the dashboard reads it back.
+func TestCallContentSystemInstructionsInAFormTheWorkerStores(t *testing.T) {
 	id := [8]byte{0, 0, 0, 0, 0, 0, 0, 7}
 	n := &node{fact: &otlpstage.StagedFact{Fact: otlpstage.Fact{SpanID: id}}}
 	parts := []any{map[string]any{"type": "text", "content": "be brief"}}
 	for _, tc := range []struct {
-		name   string
-		system any
+		name         string
+		system, want any
 	}{
-		{"a list of parts", parts},
-		{"text", "be brief"},
-		{"text that reads as JSON", `[{"type":"text"}] is how parts look`},
+		{"a list of parts", parts, parts},
+		{"text", "be brief", "be brief"},
+		{"text that reads as JSON", `[{"type":"text"}] is how parts look`, `[{"type":"text"}] is how parts look`},
+		{"an object", map[string]any{"type": "text", "content": "be brief"}, `{"content":"be brief","type":"text"}`},
+		{"a number", json.Number("42"), "42"},
+		{"a boolean", true, "true"},
 	} {
 		r := &resolver{content: map[[8]byte]map[string]any{id: {contentSystem: tc.system}}}
 		c := r.callContent(n, "claude-haiku-4-5")
 		if c == nil {
 			t.Fatalf("%s: a call with only system instructions carries no content", tc.name)
 		}
-		if !reflect.DeepEqual(c["system"], tc.system) {
-			t.Errorf("%s: system = %#v, want %#v as staged", tc.name, c["system"], tc.system)
+		if !reflect.DeepEqual(c["system"], tc.want) {
+			t.Errorf("%s: system = %#v, want %#v", tc.name, c["system"], tc.want)
+		}
+	}
+}
+
+// From the span through staging to the post_call: a system instructions
+// attribute whose string holds a JSON object (read as that object when
+// staged), a map attribute, an int and a bool each reach the post_call's
+// content as JSON text, and the conventions' list stays a list.
+func TestSystemInstructionsOfEveryKindReachThePostCall(t *testing.T) {
+	kv := func(entries ...*commonpb.KeyValue) *commonpb.AnyValue {
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{KvlistValue: &commonpb.KeyValueList{Values: entries}}}
+	}
+	for _, tc := range []struct {
+		name  string
+		value *commonpb.AnyValue
+		want  any
+	}{
+		{"a JSON object string", str(`{"type":"text","content":"be brief"}`), `{"content":"be brief","type":"text"}`},
+		{"a map", kv(kvs("type", "text", "content", "be brief")...), `{"content":"be brief","type":"text"}`},
+		{"an int", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 42}}, "42"},
+		{"a bool", &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}, "true"},
+		{"a list", str(`[{"type":"text","content":"be brief"}]`), []any{map[string]any{"type": "text", "content": "be brief"}}},
+	} {
+		f, sp := contentSpan(t, "pydantic-ai", "chat", "", kvs(contentSystem, tc.value))
+		staged := SpanContent(f, sp)
+		if staged == nil {
+			t.Fatalf("%s: nothing staged", tc.name)
+		}
+		var m map[string]any
+		dec := json.NewDecoder(bytes.NewReader(staged))
+		dec.UseNumber()
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		r := &resolver{content: map[[8]byte]map[string]any{f.SpanID: m}}
+		c := r.callContent(&node{fact: &otlpstage.StagedFact{Fact: f}}, "m")
+		if c == nil || !reflect.DeepEqual(c["system"], tc.want) {
+			t.Errorf("%s: post_call system = %#v, want %#v", tc.name, c["system"], tc.want)
 		}
 	}
 }

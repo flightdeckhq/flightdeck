@@ -137,12 +137,14 @@ def _sensor_session(capture: bool) -> Session:
     return session
 
 
-def _enqueued(session: Session, event_type: str) -> list[dict[str, Any]]:
+def _all_enqueued(session: Session) -> list[dict[str, Any]]:
     queue = session.event_queue
     assert isinstance(queue, MagicMock)
-    return [
-        c.args[0] for c in queue.enqueue.call_args_list if c.args[0].get("event_type") == event_type
-    ]
+    return [c.args[0] for c in queue.enqueue.call_args_list]
+
+
+def _enqueued(session: Session, event_type: str) -> list[dict[str, Any]]:
+    return [e for e in _all_enqueued(session) if e.get("event_type") == event_type]
 
 
 @pytest.mark.parametrize("capture", [True, False])
@@ -190,9 +192,12 @@ def test_anthropic_call_with_a_block_list_system_sends_the_list(
     assert json.loads(route.calls.last.request.content)["system"] == SYSTEM_BLOCKS
     (post_call,) = _enqueued(session, "post_call")
     if not capture:
-        assert not post_call["has_content"]
-        assert post_call.get("content") is None
-        assert "SECRET-SYSTEM-BLOCK" not in json.dumps(post_call, default=str)
+        events = _all_enqueued(session)
+        assert events
+        for event in events:
+            assert not event.get("has_content"), event.get("event_type")
+            assert event.get("content") is None, event.get("event_type")
+        assert "SECRET-SYSTEM-BLOCK" not in json.dumps(events, default=str)
         return
     assert post_call["has_content"] is True
     assert post_call["content"]["system"] == SYSTEM_BLOCKS

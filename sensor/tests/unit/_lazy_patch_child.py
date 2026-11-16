@@ -49,6 +49,7 @@ PATCHABLE = (
     "llama_index.core",
     "claude_agent_sdk",
     "agents",
+    "google.adk.runners",
 )
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 # The host litellm downloads its price list from when it is imported.
@@ -189,7 +190,29 @@ def _use(sdk: str, server: str) -> bool:
         )
         Runner.run_sync(Agent(name="worker", model=model), "hi")
         return AgentRunner.__dict__.get("_flightdeck_openai_agents_patched", False) is True
+    if sdk == "google.adk.runners":
+        return asyncio.run(_run_adk_agent(server))
     raise ValueError(sdk)
+
+
+async def _run_adk_agent(server: str) -> bool:
+    """Run a Google ADK workflow agent whose one sub-agent makes one
+    LiteLlm call, and return whether ADK's runner is patched: the
+    sub-agent is a child session, the workflow agent the sensor's."""
+    _quiet_litellm_logging()
+    from google.adk.agents import LlmAgent, SequentialAgent
+    from google.adk.models.lite_llm import LiteLlm
+    from google.adk.runners import InMemoryRunner, Runner
+    from google.genai import types
+
+    model = LiteLlm(model="openai/gpt-4o-mini", api_base=f"{server}/v1", api_key="test-key")
+    root = SequentialAgent(name="pipeline", sub_agents=[LlmAgent(name="worker", model=model)])
+    runner = InMemoryRunner(agent=root, app_name="lazy_patch")
+    adk_session = await runner.session_service.create_session(app_name="lazy_patch", user_id="u")
+    message = types.Content(role="user", parts=[types.Part.from_text(text="hi")])
+    async for _ in runner.run_async(user_id="u", session_id=adk_session.id, new_message=message):
+        pass
+    return Runner.__dict__.get("_flightdeck_google_adk_patched", False) is True
 
 
 async def _run_llama_index_agent(server: str) -> bool:

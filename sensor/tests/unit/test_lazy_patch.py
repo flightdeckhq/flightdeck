@@ -46,6 +46,7 @@ SDK_MODULES = (
     "llama_index.core",
     "claude_agent_sdk",
     "agents",
+    "google.adk.runners",
 )
 # Bound for the in-process waits on another thread.
 THREAD_WAIT_SECS = 10.0
@@ -61,10 +62,18 @@ PATCH_HEAD_START_SECS = 0.2
 TIKTOKEN_ENCODINGS_HOST = "openaipublic.blob.core.windows.net"
 
 
+# The namespace package whose own subpackage is the distribution's.
+_NAMESPACE_PACKAGE = "google"
+
+
 def _installed(module: str) -> bool:
     """Whether ``module``'s distribution is installed, without importing
     the module (only its top-level package is looked up)."""
-    return importlib.util.find_spec(module.split(".")[0]) is not None
+    parts = module.split(".")
+    # ``google`` is a namespace package other distributions install too
+    # (google-genai, google-auth): Google ADK is ``google.adk``.
+    top = ".".join(parts[:2]) if parts[0] == _NAMESPACE_PACKAGE else parts[0]
+    return importlib.util.find_spec(top) is not None
 
 
 def _run_child(
@@ -106,7 +115,13 @@ def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> 
     elif sdk == "mcp":
         calls = [e for e in events if e["event_type"] == "mcp_tool_call"]
         assert [c["tool_name"] for c in calls] == ["echo"], events
-    elif sdk in ("langgraph.pregel", "langgraph.graph", "llama_index.core", "agents"):
+    elif sdk in (
+        "langgraph.pregel",
+        "langgraph.graph",
+        "llama_index.core",
+        "agents",
+        "google.adk.runners",
+    ):
         children = [
             e
             for e in events

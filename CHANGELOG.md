@@ -19,6 +19,14 @@ All notable changes to Flightdeck are documented here.
   agents still appear as child sessions. Call `patch()` before building
   runners and before the first `LiteLlm` call.
 
+### Fixed
+
+- **An Anthropic call given `NOT_GIVEN` keeps its event under
+  `capture_prompts`.** A call whose `tools` or `system` was the SDK's
+  `NOT_GIVEN` (Google ADK's `AnthropicLlm` passes it for an agent with no
+  tools) lost its `post_call`, tokens included, because the sentinel
+  could not be written as JSON; it is now stored as None.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

@@ -917,6 +917,11 @@ class PromptContent:
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
+An Anthropic argument passed as the SDK's sentinel for an argument left
+out (`NOT_GIVEN`, `omit`), as a wrapper such as Google ADK's
+`AnthropicLlm` passes `tools` for an agent with no tools, was not given:
+its field is stored as None, so the event stays JSON.
+
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
 names no `model` is counted against `claude-sonnet-4-6`
@@ -2103,7 +2108,9 @@ the same plugin callbacks.
   `McpToolset` uses the official `mcp` SDK), and stay on the sensor's own
   session. The plugin adds no `tool_call`: the model response's function
   calls (an `AgentTool`'s and `transfer_to_agent` included) are already
-  the `tool_call` events. The plugin reads no token counts.
+  the `tool_call` events. The plugin reads no token counts. `AnthropicLlm`
+  passes `NOT_GIVEN` for the `tools` of an agent with none, which the
+  captured content stores as None (see `PromptContent` dataclass).
 - **Enforcement** is per session. A model call's `pre_call` raises
   `DirectiveError` or `BudgetExceededError` through ADK unchanged, out of
   `run_async` (or `run`); once a shutdown directive has arrived, a run

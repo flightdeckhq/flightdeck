@@ -12,7 +12,9 @@ import {
 	RUN_LANE_HEADING_HEIGHT_PX,
 	RUN_LANE_ICON_SIZE_PX,
 	RUN_LANE_MIN_HEIGHT_PX,
+	dominantModel,
 } from "@/lib/run-lane-layout";
+import { useLaneViewport, type LaneViewport } from "@/lib/lane-viewport";
 import {
 	AgentLabelStrip,
 	AggregatedSessionEvents,
@@ -55,12 +57,13 @@ export interface RunLanesProps {
 	topology?: "root" | "child";
 	/** Each lane's height, which Timeline sizes to the space it has. */
 	laneHeight: number;
-	/** The part of a lane's panel the scroll viewport shows, up to
-	 *  "now": marker text is kept inside it. */
-	markerTextRange: { left: number; right: number };
-	/** The heading strip's width: the visible row, so the agent's name
-	 *  shows whole whenever it fits. */
-	headingWidth: number;
+	/** The scroll viewport's width and horizontal scroll: the heading
+	 *  spans the visible row, and marker text keeps to the part of each
+	 *  panel it shows. Read here, so a sideways scroll re-renders the
+	 *  lanes alone. */
+	laneViewport?: LaneViewport;
+	/** "Now" in panel coordinates: marker text never runs past it. */
+	nowX: number;
 }
 
 function RunLanesComponent({
@@ -80,8 +83,8 @@ function RunLanesComponent({
 	onScrollToAgent,
 	topology = "root",
 	laneHeight,
-	markerTextRange,
-	headingWidth,
+	laneViewport,
+	nowX,
 }: RunLanesProps) {
 	// One lane per run with a segment in the window, by run start. The
 	// cache epoch catches a run's history landing, which can move its
@@ -114,6 +117,15 @@ function RunLanesComponent({
 		(topology === "child" ? CHILD_ROW_LABEL_PADDING_PX : ROW_LABEL_PADDING_PX) +
 		RUN_LANE_LABEL_OFFSET_PX;
 	const rowWidth = leftPanelWidth + timelineWidth;
+	// The heading spans the visible row; marker text keeps to the part of
+	// each panel the viewport shows: from the sticky label column's edge,
+	// ``scrollLeft`` into the row, to the viewport's right edge, and never
+	// past "now".
+	const view = useLaneViewport(laneViewport);
+	const headingWidth = view ? Math.min(view.width, rowWidth) : rowWidth;
+	const textLeft = view?.scrollLeft ?? 0;
+	const textRight = view ? Math.min(view.scrollLeft + view.width - leftPanelWidth, nowX) : nowX;
+	const markerTextRange = useMemo(() => ({ left: textLeft, right: textRight }), [textLeft, textRight]);
 
 	return (
 		<div
@@ -198,6 +210,7 @@ function RunLanesComponent({
 							indent={indent}
 							height={laneHeight}
 							markerTextRange={markerTextRange}
+							cacheEpoch={cacheEpoch}
 						/>
 					) : null;
 				})
@@ -248,6 +261,7 @@ function RunLaneRow({
 	indent,
 	height,
 	markerTextRange,
+	cacheEpoch,
 }: {
 	lane: RunLane;
 	index: number;
@@ -266,6 +280,8 @@ function RunLaneRow({
 	indent: number;
 	height: number;
 	markerTextRange: { left: number; right: number };
+	/** The events cache's write count, which the run's model reads. */
+	cacheEpoch: number;
 }) {
 	// The run's own glyphs and line, laid out as a one-lane row that
 	// draws its line, then centred on the lane.
@@ -298,7 +314,16 @@ function RunLaneRow({
 		setPointerLit((prev) => (prev === onMark ? prev : onMark));
 	}, []);
 	const id8 = truncateSessionId(session.session_id);
-	const model = session.model ?? null;
+	// The run's model in the window (most of its LLM calls), else the
+	// session row's: steady while a run switches models now and then.
+	const sessionId = session.session_id;
+	const sessionModel = session.model ?? null;
+	const model = useMemo(
+		() => dominantModel(eventsCache.get(sessionId), d0, d1) ?? sessionModel,
+		// ``cacheEpoch`` stands for the eventsCache read.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[sessionId, sessionModel, d0, d1, cacheEpoch],
+	);
 
 	return (
 		<div
@@ -433,8 +458,8 @@ export const RunLanes = memo(RunLanesComponent, (prev, next) => {
 		"onScrollToAgent",
 		"topology",
 		"laneHeight",
-		"markerTextRange",
-		"headingWidth",
+		"laneViewport",
+		"nowX",
 	];
 	for (const key of keys) if (prev[key] !== next[key]) return false;
 	const [ps, pe] = prev.scale.domain();

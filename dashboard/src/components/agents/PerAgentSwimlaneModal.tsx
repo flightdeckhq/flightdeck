@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import {
-  Timeline,
-  type RunLaneSpace,
-  type TimelineViewport,
-} from "@/components/timeline/Timeline";
+import { Timeline, type RunLaneSpace } from "@/components/timeline/Timeline";
 import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
@@ -19,6 +15,7 @@ import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
 import { feedHeightCap } from "@/lib/run-lane-layout";
+import { createLaneViewport } from "@/lib/lane-viewport";
 import {
   formatLatencyMs,
   formatTokens,
@@ -339,34 +336,32 @@ export function PerAgentSwimlaneModal({
   // snaps when the element attaches, and the layout effect snaps
   // again when the range or the scope changes.
   //
-  // The same element is the viewport the run lanes size to (Timeline's
-  // ``viewport``): its height is the space the lanes share, and changes
-  // with the window, the Live feed's height and the header's wrap; its
-  // width and horizontal scroll decide which part of each lane shows,
-  // where marker text is kept. It is observed for size, and its scroll
-  // read at most once a frame.
+  // The same element is the viewport the run lanes size to: its height
+  // is the space the lanes share (the window, the Live feed's height and
+  // the header's wrap change it), kept in state; its width and horizontal
+  // scroll decide which part of each lane shows, where marker text is
+  // kept, and go to a store only the lanes read (``laneViewport``), so a
+  // sideways scroll re-renders the lanes and not the modal. It is
+  // observed for size, and its scroll read at most once a frame.
   const swimScrollRef = useRef<HTMLDivElement | null>(null);
-  const [swimViewport, setSwimViewport] = useState<TimelineViewport | undefined>(undefined);
+  const [swimHeight, setSwimHeight] = useState<number | undefined>(undefined);
+  const [laneViewport] = useState(createLaneViewport);
   const attachSwimScroll = useCallback((el: HTMLDivElement | null) => {
     swimScrollRef.current = el;
     if (!el) return;
     snapToNow(el);
-    const read = () =>
-      setSwimViewport((prev) =>
-        prev &&
-        prev.height === el.clientHeight &&
-        prev.width === el.clientWidth &&
-        prev.scrollLeft === el.scrollLeft
-          ? prev
-          : { height: el.clientHeight, width: el.clientWidth, scrollLeft: el.scrollLeft },
-      );
+    const readScroll = () => laneViewport.set({ width: el.clientWidth, scrollLeft: el.scrollLeft });
+    const read = () => {
+      setSwimHeight(el.clientHeight);
+      readScroll();
+    };
     read();
     let frame = 0;
     const onScroll = () => {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        read();
+        readScroll();
       });
     };
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -378,7 +373,7 @@ export function PerAgentSwimlaneModal({
       observer?.disconnect();
       swimScrollRef.current = null;
     };
-  }, []);
+  }, [laneViewport]);
 
   // When the lanes at their minimum do not fit above the Live feed, the
   // feed gives up height to them, down to its minimum, until three fit
@@ -389,10 +384,10 @@ export function PerAgentSwimlaneModal({
   // its resize handle.
   const [laneSpace, setLaneSpace] = useState<RunLaneSpace | null>(null);
   const [feedCap, setFeedCap] = useState<number | undefined>(undefined);
-  const feedRef = useRef<HTMLDivElement | null>(null);
+  const feedBodyRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const scrollEl = swimScrollRef.current;
-    const body = feedRef.current?.querySelector<HTMLElement>('[data-testid="feed-body-frame"]');
+    const body = feedBodyRef.current;
     if (!laneSpace || !scrollEl || !body) return;
     const cap = feedHeightCap({
       laneCount: laneSpace.laneCount,
@@ -400,8 +395,18 @@ export function PerAgentSwimlaneModal({
       feedHeightPx: body.offsetHeight,
     });
     setFeedCap((prev) => (prev === cap ? prev : cap));
-  }, [laneSpace, swimViewport]);
+  }, [laneSpace, swimHeight]);
   const open = agent !== null;
+  // An event circle opens the event drawer; a run glyph (no event) opens
+  // the run drawer. One stable handler, so a modal render leaves the
+  // swimlane's rows alone.
+  const openMark = useCallback(
+    (sessionId: string, _eventId?: string, event?: AgentEvent) => {
+      if (event) setSelectedEvent(event);
+      else setSelectedRunId(sessionId);
+    },
+    [],
+  );
   // The agent's own row draws as run lanes, one per run; its sub-agents
   // stay compact rows.
   const expandedAgentIds = useMemo(
@@ -663,18 +668,13 @@ export function PerAgentSwimlaneModal({
                   flavors={scopedFlavors}
                   timeRange={timeRange}
                   expandedAgentIds={expandedAgentIds}
-                  viewport={swimViewport}
+                  viewportHeight={swimHeight}
+                  laneViewport={laneViewport}
                   onRunLaneSpace={setLaneSpace}
-                  onNodeClick={(sessionId, _eventId, event) => {
-                    // An event circle opens the event drawer; a run
-                    // glyph (no event) opens the run drawer.
-                    if (event) setSelectedEvent(event);
-                    else setSelectedRunId(sessionId);
-                  }}
+                  onNodeClick={openMark}
                 />
               </div>
               <div
-                ref={feedRef}
                 data-testid="per-agent-swimlane-modal-feed"
                 style={{
                   flexShrink: 0,
@@ -684,8 +684,9 @@ export function PerAgentSwimlaneModal({
               >
                 <LiveFeed
                   maxBodyHeight={feedCap}
+                  bodyRef={feedBodyRef}
                   events={visibleFeedEvents}
-                  onEventClick={(event) => setSelectedEvent(event)}
+                  onEventClick={setSelectedEvent}
                 />
               </div>
             </div>

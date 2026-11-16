@@ -163,14 +163,18 @@ export const CHILD_ROW_LABEL_PADDING_PX = 28;
 const RUNS_CHIP_HEIGHT_PX = 16;
 // Space between the status badge and the runs chip under it.
 const RUNS_CHIP_GAP_PX = 2;
-// The chip's text and icon, the size of the row's other small labels
-// (the agent-type badge).
+// The chip's text, the size of the row's other small labels (the
+// agent-type badge), and its icon, a pixel smaller so the widest label
+// fits (below).
 const RUNS_CHIP_FONT_PX = 10;
-const RUNS_CHIP_ICON_PX = 10;
-// The chip's horizontal padding: the least that keeps its text off its
-// border, so "9+ runs" fits the 88 px badge column with the badge
-// column's own padding.
-const RUNS_CHIP_PADDING_X_PX = 4;
+const RUNS_CHIP_ICON_PX = 9;
+// The chip's horizontal padding and the space between its icon and its
+// text: the least that keeps them apart and off its border, so the
+// widest label, "9+ runs" (7 characters of 10 px GeistMono, about 45 px,
+// 63.5 px in all), fits the 88 px badge column with the column's 12 px
+// padding at each side.
+const RUNS_CHIP_PADDING_X_PX = 3;
+const RUNS_CHIP_ICON_GAP_PX = 2;
 // The 3 px corner radius of the dashboard's other small inline chips
 // (the time-range buttons, the Live feed's type pill).
 const RUNS_CHIP_RADIUS_PX = 3;
@@ -667,10 +671,11 @@ function RunsChip({ count, onClick }: { count: number; onClick: () => void }) {
 				e.stopPropagation();
 				onClick();
 			}}
-			className="inline-flex shrink-0 cursor-pointer items-center gap-[3px] border border-solid border-(--runs-chip-border) font-mono hover:border-(--accent) focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+			className="inline-flex shrink-0 cursor-pointer items-center border border-solid border-(--runs-chip-border) font-mono hover:border-(--accent) focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
 			style={
 				{
 					height: RUNS_CHIP_HEIGHT_PX,
+					gap: RUNS_CHIP_ICON_GAP_PX,
 					padding: `0 ${RUNS_CHIP_PADDING_X_PX}px`,
 					fontSize: RUNS_CHIP_FONT_PX,
 					lineHeight: 1,

@@ -22,6 +22,7 @@ import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 import { RunLanes } from "./RunLanes";
 import { RUN_LANE_MAX_HEIGHT_PX, runLaneHeights } from "@/lib/run-lane-layout";
+import type { LaneViewport } from "@/lib/lane-viewport";
 import {
   SubAgentConnector,
   centreWithin,
@@ -111,13 +112,18 @@ interface TimelineProps {
    */
   expandedAgentIds?: ReadonlySet<string>;
   /**
-   * The scroll viewport the Timeline sits in (the per-agent modal's):
-   * its client height and width and its horizontal scroll. With
-   * ``expandedAgentIds``, the lanes share what the rest of the Timeline
-   * leaves of its height (``runLaneHeights``), the lane headings span its
-   * width, and marker text is kept to the part of the panels it shows.
+   * The client height of the scroll viewport the Timeline sits in (the
+   * per-agent modal's). With ``expandedAgentIds``, the lanes share what
+   * the rest of the Timeline leaves of it (``runLaneHeights``).
    */
-  viewport?: TimelineViewport;
+  viewportHeight?: number;
+  /**
+   * The same viewport's width and horizontal scroll, which the run lanes
+   * read themselves (the headings span the width; marker text keeps to
+   * the visible part of each panel), so a sideways scroll re-renders the
+   * lanes and not the Timeline.
+   */
+  laneViewport?: LaneViewport;
   /**
    * Called with the lanes drawn and the height of the rest of the
    * content, whenever either changes: the modal gives its Live feed's
@@ -131,13 +137,6 @@ interface TimelineProps {
 
 /** Data attribute on each run lane, which the lane sizing counts. */
 const RUN_LANE_ROW_SELECTOR = "[data-run-lane-row]";
-
-/** The scroll viewport a Timeline with run lanes sits in. */
-export interface TimelineViewport {
-  height: number;
-  width: number;
-  scrollLeft: number;
-}
 
 /** The run lanes drawn, and the height of everything else the
  *  Timeline draws (axis, ALL row, headings, other rows), which the
@@ -159,7 +158,8 @@ export function Timeline({
   sessionVersions,
   matchingSessionIds = null,
   expandedAgentIds,
-  viewport,
+  viewportHeight,
+  laneViewport,
   onRunLaneSpace,
   onExpandRuns,
 }: TimelineProps) {
@@ -474,7 +474,7 @@ export function Timeline({
   // window can land without re-rendering the Timeline.
   const hasRunLanes = expandedAgentIds !== undefined && expandedAgentIds.size > 0;
   const [runLaneHeight, setRunLaneHeight] = useState(RUN_LANE_MAX_HEIGHT_PX);
-  const fillHeight = viewport?.height;
+  const fillHeight = viewportHeight;
   const reportedSpace = useRef<RunLaneSpace | null>(null);
   const measureRunLanes = useCallback(() => {
     const content = innerContentRef.current;
@@ -696,22 +696,8 @@ export function Timeline({
     connectorNonce,
   ]);
 
-  // The part of every lane's panel the viewport shows, in panel
-  // coordinates: from the sticky label column's edge (scrolled
-  // ``scrollLeft`` into the row) to the viewport's right edge, and never
-  // past "now". Marker text is kept inside it. The lane headings span the
-  // visible row.
-  const scrollLeft = viewport?.scrollLeft ?? 0;
-  const viewportWidth = viewport?.width;
+  // "Now" in a lane panel's coordinates: marker text never runs past it.
   const nowX = timelineWidth - TIMELINE_SCALE_INSET_PX;
-  const markerTextRight =
-    viewportWidth === undefined ? nowX : Math.min(scrollLeft + viewportWidth - leftPanelWidth, nowX);
-  const markerTextRange = useMemo(
-    () => ({ left: scrollLeft, right: markerTextRight }),
-    [scrollLeft, markerTextRight],
-  );
-  const rowWidth = leftPanelWidth + timelineWidth;
-  const headingWidth = viewportWidth === undefined ? rowWidth : Math.min(viewportWidth, rowWidth);
 
   // Bucket-divider rows interleaved with VirtualizedSwimLane rows.
   // Walks ``filteredFlavors`` once, tracking the previous ROOT
@@ -779,8 +765,8 @@ export function Timeline({
             topology={topologyByFlavor.get(f.flavor) ?? "root"}
             onScrollToAgent={scrollToAgentRow}
             laneHeight={runLaneHeight}
-            markerTextRange={markerTextRange}
-            headingWidth={headingWidth}
+            laneViewport={laneViewport}
+            nowX={nowX}
           />,
         );
         if (!isChild) prevBucket = b;
@@ -804,21 +790,13 @@ export function Timeline({
           matchingSessionIds={matchingSessionIds}
           topology={topologyByFlavor.get(f.flavor) ?? "root"}
           onExpandRuns={onExpandRuns}
-          onScrollToAgent={(agentId) => {
-            // Clicking the relationship pill jumps to another agent's
-            // swimlane row. We already stamp
-            // ``data-testid="swimlane-agent-row-<name>"`` on every
-            // collapsed header, but the robust selector for client-
-            // side scroll uses the agent_id itself; tag added on the
-            // SwimLane outermost wrapper for this lookup. Fallback
-            // to hash anchor when querySelector misses (e.g. the
-            // target agent isn't in the rendered viewport; the
-            // virtualizer hasn't materialized it). See
-            // lib/relationship.ts::scrollToAgentRow for the shared
-            // rationale on the intentional querySelector bypass of
-            // React refs.
-            scrollToAgentRow(agentId);
-          }}
+          // Clicking the relationship pill jumps to another agent's
+          // swimlane row by its agent_id (see
+          // lib/relationship.ts::scrollToAgentRow for the shared
+          // rationale on the intentional querySelector bypass of React
+          // refs). One stable function, so a Timeline render does not
+          // re-render every row for a new handler.
+          onScrollToAgent={scrollToAgentRow}
         />,
       );
       // Only update prevBucket on root rows. Children inherit their
@@ -844,8 +822,8 @@ export function Timeline({
     matchingSessionIds,
     expandedAgentIds,
     runLaneHeight,
-    markerTextRange,
-    headingWidth,
+    laneViewport,
+    nowX,
     onExpandRuns,
   ]);
 

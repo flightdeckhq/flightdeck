@@ -196,6 +196,45 @@ export function markerText(
   return null;
 }
 
+/**
+ * The run's model in the window ``[d0, d1]``: the model of most of its
+ * LLM calls there, ties going to the model called first; null with no
+ * LLM call in the window. The lane label shows it and marker text leaves
+ * it out. It holds while a run switches models now and then, where the
+ * model of the latest call (the session row's) would flip the label and
+ * every LLM call's text at each switch.
+ */
+export function dominantModel(
+  events: readonly { event_type: string; model?: string | null; occurred_at: string }[] | undefined,
+  d0: number,
+  d1: number,
+): string | null {
+  const counts = new Map<string, { calls: number; firstMs: number }>();
+  for (const event of events ?? []) {
+    if (!LLM_EVENT_TYPES.has(event.event_type) || !event.model) continue;
+    const t = Date.parse(event.occurred_at);
+    if (!(t >= d0 && t <= d1)) continue;
+    const seen = counts.get(event.model);
+    if (seen) {
+      seen.calls += 1;
+      seen.firstMs = Math.min(seen.firstMs, t);
+    } else {
+      counts.set(event.model, { calls: 1, firstMs: t });
+    }
+  }
+  let best: string | null = null;
+  let bestCalls = 0;
+  let bestFirst = Number.POSITIVE_INFINITY;
+  for (const [model, { calls, firstMs }] of counts) {
+    if (calls > bestCalls || (calls === bestCalls && firstMs < bestFirst)) {
+      best = model;
+      bestCalls = calls;
+      bestFirst = firstMs;
+    }
+  }
+  return best;
+}
+
 /** A circle on a lane, for ``placeMarkerLabels``. */
 export interface LaneMarker {
   id: string;

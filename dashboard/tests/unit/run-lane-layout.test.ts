@@ -12,8 +12,10 @@ import {
   RUN_LANE_CIRCLE_SIZE_PX,
   RUN_LANE_MAX_HEIGHT_PX,
   RUN_LANE_MIN_HEIGHT_PX,
-  dominantModel,
+  LANE_MODEL_SWITCH_LEAD,
+  chooseLaneModel,
   feedHeightCap,
+  modelCallCounts,
   markerText,
   markerTextWidth,
   measureMarkerText,
@@ -418,53 +420,73 @@ describe("measureMarkerText", () => {
   });
 });
 
-describe("dominantModel", () => {
+describe("lane model", () => {
   const T0 = Date.parse("2026-11-16T10:00:00Z");
   const call = (model: string | null, offsetS: number, eventType = "post_call") => ({
     event_type: eventType,
     model,
     occurred_at: new Date(T0 + offsetS * 1000).toISOString(),
   });
+  const counts = (entries: [string, number][]) => new Map(entries);
 
-  it("names the model of most of the run's LLM calls in the window", () => {
+  it("counts each model's calls in the window, a pre_call not again", () => {
     const events = [
-      call("claude-sonnet-4-5", 1),
-      call("claude-haiku-4-5", 2),
-      call("claude-sonnet-4-5", 3),
-      call("claude-haiku-4-5", 4),
-      call("claude-sonnet-4-5", 5),
+      call("a", 1, "pre_call"),
+      call("a", 2),
+      call("b", 3, "llm_error"),
+      call("b", 4, "embeddings"),
+      call("a", 5, "tool_call"),
+      call("a", -10),
+      call(null, 6),
     ];
-    expect(dominantModel(events, T0, T0 + 60_000)).toBe("claude-sonnet-4-5");
+    expect([...modelCallCounts(events, T0, T0 + 60_000)].sort()).toEqual([
+      ["a", 1],
+      ["b", 2],
+    ]);
   });
 
-  it("holds while an alternating run's latest call switches model", () => {
-    // Haiku, sonnet, haiku, sonnet...: the latest call flips the session
-    // row's model at every call; the dominant model does not move.
-    const events = Array.from({ length: 9 }, (_, i) =>
-      call(i % 2 === 0 ? "claude-haiku-4-5" : "claude-sonnet-4-5", i + 1),
+  it("first names the model of most calls, ties going to the session's model, then name order", () => {
+    expect(chooseLaneModel(null, counts([["a", 2], ["b", 3]]), "a")).toBe("b");
+    expect(chooseLaneModel(null, counts([["a", 2], ["b", 2]]), "b")).toBe("b");
+    expect(chooseLaneModel(null, counts([["b", 2], ["a", 2]]), "c")).toBe("a");
+    expect(chooseLaneModel(null, counts([]), "c")).toBe("c");
+    expect(chooseLaneModel(null, counts([]), null)).toBeNull();
+  });
+
+  it("holds its model until another one leads by the switch lead", () => {
+    expect(chooseLaneModel("a", counts([["a", 3], ["b", 4]]), "b")).toBe("a");
+    expect(chooseLaneModel("a", counts([["a", 3], ["b", 3 + LANE_MODEL_SWITCH_LEAD]]), "a")).toBe("b");
+    // Its model gone from the window: kept until another leads by two.
+    expect(chooseLaneModel("a", counts([["b", 1]]), "b")).toBe("a");
+    expect(chooseLaneModel("a", counts([["b", 2]]), "b")).toBe("b");
+  });
+
+  it("holds while the window slides over an alternating run", () => {
+    // haiku, sonnet, haiku, ... every 3 s for ten minutes; the window, a
+    // minute wide, slides a second at a time.
+    const events = Array.from({ length: 200 }, (_, i) =>
+      call(i % 2 === 0 ? "claude-haiku-4-5" : "claude-sonnet-4-5", i * 3),
     );
-    const answers = new Set<string | null>();
-    for (let n = 3; n <= events.length; n++) {
-      answers.add(dominantModel(events.slice(0, n), T0, T0 + 60_000));
+    let model: string | null = null;
+    const seen = new Set<string | null>();
+    for (let start = 0; start <= 480; start++) {
+      const d0 = T0 + start * 1000;
+      model = chooseLaneModel(model, modelCallCounts(events, d0, d0 + 60_000), "claude-haiku-4-5");
+      seen.add(model);
     }
-    expect([...answers]).toEqual(["claude-haiku-4-5"]);
+    expect([...seen]).toHaveLength(1);
   });
 
-  it("breaks a tie by the model called first", () => {
-    const events = [call("b-model", 5), call("a-model", 2), call("b-model", 9), call("a-model", 7)];
-    expect(dominantModel(events, T0, T0 + 60_000)).toBe("a-model");
-  });
-
-  it("counts LLM calls in the window only", () => {
+  it("follows a run that has moved to another model", () => {
     const events = [
-      call("old-model", -30),
-      call("old-model", -20),
-      call("tool-model", 2, "tool_call"),
-      call("new-model", 3),
-      call(null, 4),
+      ...Array.from({ length: 10 }, (_, i) => call("old", i * 5)),
+      ...Array.from({ length: 10 }, (_, i) => call("new", 50 + i * 5)),
     ];
-    expect(dominantModel(events, T0, T0 + 60_000)).toBe("new-model");
-    expect(dominantModel([], T0, T0 + 60_000)).toBeNull();
-    expect(dominantModel(undefined, T0, T0 + 60_000)).toBeNull();
+    let model: string | null = null;
+    for (let start = 0; start <= 100; start += 5) {
+      const d0 = T0 + start * 1000;
+      model = chooseLaneModel(model, modelCallCounts(events, d0, d0 + 60_000), "new");
+    }
+    expect(model).toBe("new");
   });
 });

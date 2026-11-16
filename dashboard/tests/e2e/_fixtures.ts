@@ -762,21 +762,34 @@ async function privateSession(
 }
 
 /**
- * Start an agent of this spec run's own, named ``e2e-test-<label>-<id>``,
- * with ``runs`` runs started together now, and wait until every run is
- * stored and active. End it with ``endPrivateAgent``.
+ * An agent of this spec run's own, named ``e2e-test-<label>-<id>``, with
+ * ``runs`` run ids, nothing posted yet. The spec keeps it before
+ * ``startPrivateAgent`` waits, so its ``afterEach`` can end whatever runs
+ * a failed start left open.
  */
-export async function startPrivateAgent(page: Page, label: string, runs: number): Promise<PrivateAgent> {
-  const tag = randomUUID().slice(0, 8);
-  const agent: PrivateAgent = {
+export function createPrivateAgent(label: string, runs: number): PrivateAgent {
+  return {
     agentId: randomUUID(),
-    agentName: `e2e-test-${label}-${tag}`,
+    agentName: `e2e-test-${label}-${randomUUID().slice(0, 8)}`,
     flavor: `e2e-${label}`,
     sessionIds: Array.from({ length: runs }, () => randomUUID()),
   };
-  const now = new Date();
+}
+
+/**
+ * Start every run of ``agent`` with a ``session_start`` dated
+ * ``startedAgoMs`` before now, and wait until each is stored and active.
+ * The date places the start's circle on the lanes; the worker dates the
+ * run itself when it takes the event. End it with ``endPrivateAgent``.
+ */
+export async function startPrivateAgent(
+  page: Page,
+  agent: PrivateAgent,
+  { startedAgoMs = 0 }: { startedAgoMs?: number } = {},
+): Promise<void> {
+  const at = new Date(Date.now() - startedAgoMs);
   for (const sessionId of agent.sessionIds) {
-    await postPrivateEvent(page, privateEvent(agent, sessionId, "session_start", now));
+    await postPrivateEvent(page, privateEvent(agent, sessionId, "session_start", at));
   }
   for (const sessionId of agent.sessionIds) {
     await expect
@@ -786,7 +799,6 @@ export async function startPrivateAgent(page: Page, label: string, runs: number)
       })
       .toBe("active");
   }
-  return agent;
 }
 
 /** Post one ``tool_call`` named ``toolName`` on the private run
@@ -819,9 +831,14 @@ export async function postPrivateToolCall(
   return eventId!;
 }
 
-/** End every run of a private agent, so none stays open after its spec. */
+/** End every run of a private agent, so none stays open after its spec:
+ *  each run's end is posted even when another's is refused (a run a
+ *  failed start never stored). */
 export async function endPrivateAgent(page: Page, agent: PrivateAgent): Promise<void> {
   for (const sessionId of agent.sessionIds) {
-    await postPrivateEvent(page, privateEvent(agent, sessionId, "session_end", new Date()));
+    await page.request.post(`${INGEST_URL}/v1/events`, {
+      headers: GENAI_AUTH,
+      data: privateEvent(agent, sessionId, "session_end", new Date()),
+    });
   }
 }

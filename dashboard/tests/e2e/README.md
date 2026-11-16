@@ -90,7 +90,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T169-per-agent-modal-single-run-keeps-its-maximum.spec.ts` | The coordinator's one run gets one 144 px lane (the maximum), not the whole modal; its sub-agents stay compact 48 px rows without a runs chip |
 | `T170-per-agent-modal-many-runs-scroll.spec.ts` | At 1280x720 the wide sub-agent's five runs draw five 40 px lanes (the minimum, no overflow lane); the Live feed gives up height until the first three show whole, and the viewport scrolls to the last one |
 | `T171-fleet-runs-chip-opens-the-per-agent-modal.spec.ts` | At 1700 px and 1280x720 the worker's and the wide row's runs chips read `3 runs` / `5 runs` with matching tooltip and accessible name, sit in the badge column under the status badge of a 48 px row; the one-run coordinator has none; Enter on the focused chip, and a click, open the agent's per-agent modal; an agent of its own with ten runs reads `9+ runs` (full count in its tooltip) and fits the 88 px badge column |
-| `T172-per-agent-modal-small-window-shows-three-lanes.spec.ts` | On an agent of its own with three runs at 1280x720, the Live feed gives up height (not below 114 px) so the three lanes show whole with nothing to scroll; the heading's name is whole; at "now" a 15 s old call names itself on its run's lane inside the view and a 38 s old call under the label column shows no name; scrolled back to the window's start, the 38 s call names itself inside the view |
+| `T172-per-agent-modal-small-window-shows-three-lanes.spec.ts` | On an agent of its own with three runs at 1280x720, the Live feed gives up height (not below 114 px) so the three lanes show whole with nothing to scroll; the heading's name is whole; at 5m (where both calls keep their places for over 100 s, whatever the spec's pace) a 60 s old call names itself on its run's lane inside the view and a 200 s old call under the label column shows no name; scrolled back to the window's start, the 200 s call names itself inside the view |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
@@ -98,10 +98,13 @@ names, flavors, role timeline offsets) and locator helpers:
 `waitForInvestigateReady`, `investigateParamsFromUrl`, and
 `agentIdByName` / `openPerAgentModal` (the modal through the agent
 drawer's "Open in swimlane"), and the private-agent helpers
-`startPrivateAgent` / `postPrivateToolCall` / `endPrivateAgent`: an
-agent of one spec run's own, named `e2e-test-<label>-<id>`, with runs
-started through ingestion, so its lanes draw only what the spec posts
-(T171's ten-run row, T172's marker text). On the seed's shared runs the
+`createPrivateAgent` / `startPrivateAgent` / `postPrivateToolCall` /
+`endPrivateAgent`: an agent of one spec run's own, named
+`e2e-test-<label>-<id>`, with runs started through ingestion (their
+`session_start` can be dated in the past), so its lanes draw only what
+the spec posts (T171's ten-run row, T172's marker text). The spec keeps
+the agent from `createPrivateAgent` before `startPrivateAgent` waits, so
+its `afterEach` ends the runs even when the start fails. On the seed's shared runs the
 seed's, the keep-alive's and other specs' calls decide which marker
 texts have room, so a spec asserts marker text only on runs of its own.
 

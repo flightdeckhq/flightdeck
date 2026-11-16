@@ -21,6 +21,7 @@ import { test, expect, type Page } from "@playwright/test";
 import {
 	FANOUT_FIXTURE,
 	bringSwimlaneRowIntoView,
+	createPrivateAgent,
 	endPrivateAgent,
 	startPrivateAgent,
 	waitForFleetReady,
@@ -138,7 +139,8 @@ test.describe("T171 — The Fleet runs chip caps its label past nine runs", () =
 	});
 
 	test("ten runs at once read 9+ runs and the chip fits the badge column", async ({ page }) => {
-		agent = await startPrivateAgent(page, "ten-runs", 10);
+		agent = createPrivateAgent("ten-runs", 10);
+		await startPrivateAgent(page, agent);
 		await page.goto("/");
 		await waitForFleetReady(page);
 		const g = await chipGeometry(page, agent.agentName);

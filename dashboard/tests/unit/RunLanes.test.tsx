@@ -85,39 +85,41 @@ function mkEvent(
   };
 }
 
-/** The Timeline's scale: a minute window on the 900 px panel, inset
- *  19 px at each end. */
-function minuteScale() {
+/** The Timeline's scale: a minute window ending ``endMs`` on the
+ *  900 px panel, inset 19 px at each end. */
+function minuteScale(endMs = NOW) {
   return scaleTime()
-    .domain([new Date(NOW - MIN), new Date(NOW)])
+    .domain([new Date(endMs - MIN), new Date(endMs)])
     .range([19, 881]);
 }
 
-function renderLanes(
+function lanesElement(
   sessions: Session[],
   {
     laneHeight = 100,
     onSessionClick = () => {},
     view,
     topology = "root",
+    endMs = NOW,
   }: {
     laneHeight?: number;
     onSessionClick?: (id: string, eventId?: string, ev?: AgentEvent) => void;
     /** The scroll viewport's width and scroll; none: the whole row shows. */
     view?: { width: number; scrollLeft: number };
     topology?: "root" | "child";
+    endMs?: number;
   } = {},
+  laneViewport = createLaneViewport(),
 ) {
-  const laneViewport = createLaneViewport();
   if (view) laneViewport.set(view);
-  return render(
+  return (
     <MemoryRouter>
       <RunLanes
         flavor="agent-1"
         agentName="worker"
         agentType="coding"
         sessions={sessions}
-        scale={minuteScale()}
+        scale={minuteScale(endMs)}
         onSessionClick={onSessionClick}
         timelineWidth={900}
         leftPanelWidth={460}
@@ -126,8 +128,12 @@ function renderLanes(
         nowX={881}
         topology={topology}
       />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderLanes(sessions: Session[], options: Parameters<typeof lanesElement>[1] = {}) {
+  return render(lanesElement(sessions, options));
 }
 
 function group() {
@@ -207,6 +213,33 @@ describe("RunLanes", () => {
     const texts = within(lane).queryAllByTestId("swimlane-marker-text").map((t) => t.textContent);
     expect(texts).not.toContain("claude-sonnet-4-5");
     expect(texts).toContain("claude-haiku-4-5");
+  });
+
+  it("holds the lane's model and the texts it drops while the window slides over an alternating run", () => {
+    // Haiku and sonnet calls alternate every 4 s from 3 minutes ago; the
+    // session row carries the latest call's model.
+    const run = mkSession({ session_id: nextId("u"), model: "claude-haiku-4-5", started_at: at(-4 * MIN) });
+    eventsCache.set(
+      run.session_id,
+      Array.from({ length: 60 }, (_, i) =>
+        mkEvent(run.session_id, "post_call", -180 * S + i * 4 * S, {
+          model: i % 2 === 0 ? "claude-sonnet-4-5" : "claude-haiku-4-5",
+        }),
+      ),
+    );
+    const viewport = createLaneViewport();
+    const options = { laneHeight: RUN_LANE_MIN_HEIGHT_PX };
+    const { rerender } = render(lanesElement([run], { ...options, endMs: NOW - 90 * S }, viewport));
+    const label = () => within(lanes()[0]!).getByTestId("swimlane-run-lane-model").textContent;
+    const first = label();
+    expect(["claude-sonnet-4-5", "claude-haiku-4-5"]).toContain(first);
+    // Slide a second at a time over a minute and a half.
+    for (let end = NOW - 89 * S; end <= NOW; end += S) {
+      rerender(lanesElement([run], { ...options, endMs: end }, viewport));
+      expect(label()).toBe(first);
+      const texts = within(lanes()[0]!).queryAllByTestId("swimlane-marker-text").map((t) => t.textContent);
+      expect(texts).not.toContain(first);
+    }
   });
 
   it("shows a dash for a run with no model yet", () => {

@@ -628,3 +628,130 @@ def test_a_list_the_caller_appends_to_after_the_call_is_stored_as_it_was_sent(
     assert (
         _stored(_on_the_wire(session), "messages") == sent == [{"role": "user", "content": PROMPT}]
     )
+
+
+def _changed(conversation: list[Any]) -> None:
+    """What a caller may do to its conversation while a stream is open:
+    edit a message in place and append another."""
+    conversation[0]["content"] = "CHANGED WHILE STREAMING"
+    conversation.append({"role": "user", "content": "APPENDED WHILE STREAMING"})
+
+
+def _drain(stream: Any) -> None:
+    for _ in stream:
+        pass
+
+
+async def _adrain(stream: Any) -> None:
+    async for _ in stream:
+        pass
+
+
+def _stream_paths() -> dict[str, tuple[str, str, Callable[[Any, list[Any]], None]]]:
+    """Streamed and deferred-view calls, each changing the conversation
+    after the request went out and before the caller reads the result:
+    path -> (sdk, route, the call)."""
+    oa = {"model": OPENAI_MODEL}
+    an = {"model": ANTHROPIC_MODEL, "max_tokens": 10}
+
+    def oa_stream(client: Any, conversation: list[Any]) -> None:
+        stream = client.chat.completions.create(**oa, messages=conversation, stream=True)
+        _changed(conversation)
+        _drain(stream)
+
+    def oa_raw_stream(client: Any, conversation: list[Any]) -> None:
+        raw = client.chat.completions.with_raw_response.create(
+            **oa, messages=conversation, stream=True
+        )
+        _changed(conversation)
+        _drain(raw.parse())
+
+    def oa_streaming_view(client: Any, conversation: list[Any]) -> None:
+        with client.chat.completions.with_streaming_response.create(
+            **oa, messages=conversation
+        ) as response:
+            _changed(conversation)
+            response.parse()
+
+    def an_stream(client: Any, conversation: list[Any]) -> None:
+        with client.messages.stream(**an, messages=conversation) as stream:
+            _changed(conversation)
+            _drain(stream)
+
+    def an_create_stream(client: Any, conversation: list[Any]) -> None:
+        stream = client.messages.create(**an, messages=conversation, stream=True)
+        _changed(conversation)
+        _drain(stream)
+
+    def oa_async_stream(client: Any, conversation: list[Any]) -> None:
+        async def run() -> None:
+            stream = await client.chat.completions.create(**oa, messages=conversation, stream=True)
+            _changed(conversation)
+            await _adrain(stream)
+
+        asyncio.run(run())
+
+    def oa_async_streaming_view(client: Any, conversation: list[Any]) -> None:
+        async def run() -> None:
+            async with client.chat.completions.with_streaming_response.create(
+                **oa, messages=conversation
+            ) as response:
+                _changed(conversation)
+                await response.parse()
+
+        asyncio.run(run())
+
+    def an_async_stream(client: Any, conversation: list[Any]) -> None:
+        async def run() -> None:
+            async with client.messages.stream(**an, messages=conversation) as stream:
+                _changed(conversation)
+                await _adrain(stream)
+
+        asyncio.run(run())
+
+    return {
+        "openai create(stream=True)": ("openai", "chat", oa_stream),
+        "openai with_raw_response.create(stream=True)": ("openai", "chat", oa_raw_stream),
+        "openai with_streaming_response.create": ("openai", "chat", oa_streaming_view),
+        "anthropic stream()": ("anthropic", "anthropic", an_stream),
+        "anthropic create(stream=True)": ("anthropic", "anthropic", an_create_stream),
+        "openai async create(stream=True)": ("openai", "chat", oa_async_stream),
+        "openai async with_streaming_response.create": ("openai", "chat", oa_async_streaming_view),
+        "anthropic async stream()": ("anthropic", "anthropic", an_async_stream),
+    }
+
+
+@pytest.mark.parametrize("path", sorted(_stream_paths()))
+def test_a_list_changed_while_a_stream_is_open_is_stored_as_it_was_sent(
+    provider: respx.MockRouter,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    """On a streamed or deferred-view call the caller has its conversation
+    back before the call settles; the stored content is the request the
+    provider received, copied when the call was handed to the SDK."""
+    sdk, route, call = _stream_paths()[path]
+    is_async = " async " in f" {path} "
+    session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
+    conversation: list[Any] = [{"role": "user", "content": PROMPT}]
+    call(client, conversation)
+    sent = _sent(provider, route)["messages"]
+    assert sent == [{"role": "user", "content": PROMPT}]
+    assert _stored(_on_the_wire(session), "messages") == sent
+
+
+def test_a_list_changed_before_a_stream_manager_is_entered_is_stored_as_sent(
+    provider: respx.MockRouter,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard calls the SDK's ``stream()`` when the manager is entered,
+    and the SDK builds the request then: a change made before entering is
+    in the request, and in the stored content."""
+    session, client = _sensored("patched", "anthropic", False, monkeypatch, capture=True)
+    conversation: list[Any] = [{"role": "user", "content": PROMPT}]
+    manager = client.messages.stream(model=ANTHROPIC_MODEL, max_tokens=10, messages=conversation)
+    conversation.append({"role": "assistant", "content": "before entering"})
+    with manager as stream:
+        _drain(stream)
+    sent = _sent(provider, "anthropic")["messages"]
+    assert _stored(_on_the_wire(session), "messages") == sent

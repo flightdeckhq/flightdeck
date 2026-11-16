@@ -980,20 +980,56 @@ def as_received(value: Any, depth: int = 0) -> Any:
 
 
 def _snapshot(value: Any, depth: int = 0) -> Any:
-    """``value`` with every list, tuple and dict in it copied, down to
-    :data:`_MAX_ARGUMENT_DEPTH`: the request side of the stored content,
-    taken when the call settles. The caller's conversation list is often
-    the very object a tool-use loop appends the reply to next, and the
-    event is written as JSON later, on the drain thread; the copy keeps
-    what was sent."""
+    """``value`` with every list, tuple and dict of the caller's in it
+    copied, down to :data:`_MAX_ARGUMENT_DEPTH`. The sensor's own
+    containers (:class:`_ReadIterator`, :class:`_Dumped`) are kept as they
+    are, so content capture still resolves them (see :func:`as_received`).
+    """
     kind = type(value)
     if kind in _PLAIN_TYPES or depth >= _MAX_ARGUMENT_DEPTH:
         return value
     if kind is list or kind is tuple:
         return [_snapshot(item, depth + 1) for item in value]
-    if isinstance(value, dict):
+    if kind is dict:
         return {key: _snapshot(item, depth + 1) for key, item in value.items()}
     return value
+
+
+def _sending(session: Session, call_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``call_kwargs`` as the call is handed to the SDK, which builds the
+    request from them now: with capture on, a :class:`_ReadArguments`
+    carrying a copy of the arguments content capture stores (see
+    :func:`_captured`), taken at this moment. The caller often changes
+    those lists next (a tool-use loop appends the reply to the very list
+    it sent, a stream's caller may do so before it reads the stream), and
+    the event is written later, on the drain thread. The SDK gets the same
+    objects either way; with capture off nothing is copied. Arguments
+    copied already are kept: a raw view's stream is guarded only when the
+    caller parses it, long after its request went out."""
+    if not session.config.capture_prompts or getattr(call_kwargs, "captured", None) is not None:
+        return call_kwargs
+    sending = _ReadArguments(call_kwargs)
+    sending.captured = {
+        name: _snapshot(value)
+        for name, value in call_kwargs.items()
+        if name in _READ_ARGUMENT_NAMES
+    }
+    return sending
+
+
+def _captured(call_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The arguments content capture stores for a call: those
+    :func:`_sending` copied when the call was handed to the SDK, the rest
+    as they are, resolved by :func:`as_received`."""
+    captured = getattr(call_kwargs, "captured", None)
+    if captured is not None:
+        merged = _ReadArguments(call_kwargs)
+        merged.update(captured)
+        call_kwargs = merged
+    if isinstance(call_kwargs, _ReadArguments):
+        received: dict[str, Any] = as_received(call_kwargs)
+        return received
+    return call_kwargs
 
 
 class _ReadArguments(dict):  # type: ignore[type-arg]
@@ -1001,7 +1037,9 @@ class _ReadArguments(dict):  # type: ignore[type-arg]
     :func:`materialise_iterators`). Content capture resolves only
     arguments of this type (see :func:`as_received`), so an ordinary
     call's capture walks nothing more; the copy the policy check makes on
-    a degrade keeps the type."""
+    a degrade keeps the type. ``captured`` is set by :func:`_sending`."""
+
+    captured: dict[str, Any] | None = None
 
 
 class Arguments(NamedTuple):
@@ -1125,7 +1163,7 @@ def call(
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    call_kwargs = _sending(session, _pre_call(session, provider, kwargs, estimated, estimated_via))
 
     t0 = time.monotonic()
     try:
@@ -1173,6 +1211,7 @@ async def call_async(
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
+    call_kwargs = _sending(session, call_kwargs)
     t0 = time.monotonic()
     try:
         response = await real_fn(**call_kwargs)
@@ -1839,6 +1878,9 @@ class GuardedStream(_GuardCore):
         self._entered = True
         self._t0 = time.monotonic()
         try:
+            # The SDK builds the request now, also for a stream manager
+            # (messages.stream()), which the guard calls only on entry.
+            self._kwargs = _sending(self._session, self._kwargs)
             self._ctx = self._real_fn(**self._kwargs)
             if hasattr(self._ctx, "__enter__"):
                 self._stream = self._ctx.__enter__()
@@ -2053,6 +2095,7 @@ class GuardedAsyncStream(_GuardCore):
         self._entered = True
         self._t0 = time.monotonic()
         try:
+            self._kwargs = _sending(self._session, self._kwargs)
             self._ctx = self._real_fn(**self._kwargs)
             # AsyncOpenAI.chat.completions.create(stream=True) returns a
             # coroutine resolving to the async stream; AsyncAnthropic's
@@ -2531,19 +2574,17 @@ def _post_call(
     has_content = False
     if session.config.capture_prompts and call_kwargs is not None:
         pc = provider.extract_content(
-            as_received(call_kwargs) if isinstance(call_kwargs, _ReadArguments) else call_kwargs,
+            _captured(call_kwargs),
             content_response if content_response is not None else response,
             event_type=event_type,
         )
         if pc is not None:
             pc.session_id = session.config.session_id
             has_content = True
-            # The request side is copied now, before the call returns to
-            # the caller, who may change those lists next (see _snapshot).
             content_dict = {
-                "system": _snapshot(pc.system),
-                "messages": _snapshot(pc.messages),
-                "tools": _snapshot(pc.tools),
+                "system": pc.system,
+                "messages": pc.messages,
+                "tools": pc.tools,
                 "response": pc.response,
                 "provider": pc.provider,
                 "model": pc.model,
@@ -2553,7 +2594,7 @@ def _post_call(
                 # ``input`` is populated only on embeddings events;
                 # chat events leave it None and the field drops via
                 # the dashboard's optional read.
-                "input": _snapshot(pc.input),
+                "input": pc.input,
                 # ``embedding_output`` carries the raw vectors from
                 # embeddings.create() responses when capture_prompts
                 # is on. None on chat events. Worker projects to

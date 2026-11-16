@@ -491,6 +491,8 @@ def send_deferred(
     if is_async:
 
         async def _async_deferred() -> Any:
+            nonlocal call_kwargs
+            call_kwargs = base._sending(session, call_kwargs)
             try:
                 response = await real_fn(**call_kwargs)
             except (BudgetExceededError, DirectiveError):
@@ -502,6 +504,7 @@ def send_deferred(
             return deferred_proxy(response, _call_for())
 
         return _async_deferred()
+    call_kwargs = base._sending(session, call_kwargs)
     try:
         response = real_fn(**call_kwargs)
     except (BudgetExceededError, DirectiveError):

@@ -850,7 +850,12 @@ def test_sensor_tool_use_loop_reply_objects_land_as_the_json_sent(
         "stop_reason": "tool_use",
         "content": [
             {"type": "text", "text": "Let me check", "citations": None},
-            {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}},
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "get_weather",
+                "input": {"city": "Paris"},
+            },
         ],
     }
     with respx.mock(assert_all_called=False) as rmock:

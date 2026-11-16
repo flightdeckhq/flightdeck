@@ -196,43 +196,80 @@ export function markerText(
   return null;
 }
 
-/**
- * The run's model in the window ``[d0, d1]``: the model of most of its
- * LLM calls there, ties going to the model called first; null with no
- * LLM call in the window. The lane label shows it and marker text leaves
- * it out. It holds while a run switches models now and then, where the
- * model of the latest call (the session row's) would flip the label and
- * every LLM call's text at each switch.
- */
-export function dominantModel(
+/** The events that count as one LLM call each. A ``pre_call`` is the
+ *  start of a call its ``post_call`` or ``llm_error`` ends, so it does
+ *  not count again. */
+const MODEL_CALL_EVENT_TYPES: ReadonlySet<string> = new Set(["post_call", "embeddings", "llm_error"]);
+
+/** Each model's LLM calls among ``events`` inside ``[d0, d1]``. */
+export function modelCallCounts(
   events: readonly { event_type: string; model?: string | null; occurred_at: string }[] | undefined,
   d0: number,
   d1: number,
-): string | null {
-  const counts = new Map<string, { calls: number; firstMs: number }>();
+): Map<string, number> {
+  const counts = new Map<string, number>();
   for (const event of events ?? []) {
-    if (!LLM_EVENT_TYPES.has(event.event_type) || !event.model) continue;
+    if (!MODEL_CALL_EVENT_TYPES.has(event.event_type) || !event.model) continue;
     const t = Date.parse(event.occurred_at);
     if (!(t >= d0 && t <= d1)) continue;
-    const seen = counts.get(event.model);
-    if (seen) {
-      seen.calls += 1;
-      seen.firstMs = Math.min(seen.firstMs, t);
-    } else {
-      counts.set(event.model, { calls: 1, firstMs: t });
+    counts.set(event.model, (counts.get(event.model) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * How many more calls in the window another model needs than the lane's
+ * model before the lane takes it: one call entering or leaving the
+ * window moves a count by one, so an evenly mixed run cannot flip the
+ * lane's model as the window slides, while a run that has moved to
+ * another model takes it within two calls.
+ */
+export const LANE_MODEL_SWITCH_LEAD = 2;
+
+/**
+ * The model a run's lane names, and leaves out of its marker text, given
+ * the model it names now (``current``, null on the lane's first render),
+ * each model's calls in the window and the session row's model.
+ *
+ * On the first render: the model of most calls, ties going to the
+ * session row's model, then to name order; with no call in the window,
+ * the session row's model. Afterwards the lane keeps its model until
+ * another one has ``LANE_MODEL_SWITCH_LEAD`` more calls in the window.
+ * Neither choice depends on which call is oldest in the window, so the
+ * window's sliding edge alone cannot change it.
+ */
+export function chooseLaneModel(
+  current: string | null,
+  counts: ReadonlyMap<string, number>,
+  sessionModel: string | null,
+): string | null {
+  if (current === null) {
+    // Most calls; a tie goes to the session row's model, then to name order.
+    const preferOnTie = (a: string, b: string) =>
+      a === sessionModel ? true : b === sessionModel ? false : a < b;
+    let best: string | null = null;
+    let bestCalls = 0;
+    for (const [model, calls] of counts) {
+      if (best === null || calls > bestCalls || (calls === bestCalls && preferOnTie(model, best))) {
+        best = model;
+        bestCalls = calls;
+      }
+    }
+    return best ?? sessionModel;
+  }
+  // The strongest other model, ties to name order, takes over only with
+  // the lead.
+  const held = counts.get(current) ?? 0;
+  let leader: string | null = null;
+  let leaderCalls = 0;
+  for (const [model, calls] of counts) {
+    if (model === current) continue;
+    if (leader === null || calls > leaderCalls || (calls === leaderCalls && model < leader)) {
+      leader = model;
+      leaderCalls = calls;
     }
   }
-  let best: string | null = null;
-  let bestCalls = 0;
-  let bestFirst = Number.POSITIVE_INFINITY;
-  for (const [model, { calls, firstMs }] of counts) {
-    if (calls > bestCalls || (calls === bestCalls && firstMs < bestFirst)) {
-      best = model;
-      bestCalls = calls;
-      bestFirst = firstMs;
-    }
-  }
-  return best;
+  return leader !== null && leaderCalls - held >= LANE_MODEL_SWITCH_LEAD ? leader : current;
 }
 
 /** A circle on a lane, for ``placeMarkerLabels``. */

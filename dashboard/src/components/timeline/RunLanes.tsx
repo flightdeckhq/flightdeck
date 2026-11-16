@@ -12,7 +12,8 @@ import {
 	RUN_LANE_HEADING_HEIGHT_PX,
 	RUN_LANE_ICON_SIZE_PX,
 	RUN_LANE_MIN_HEIGHT_PX,
-	dominantModel,
+	chooseLaneModel,
+	modelCallCounts,
 } from "@/lib/run-lane-layout";
 import { useLaneViewport, type LaneViewport } from "@/lib/lane-viewport";
 import {
@@ -314,16 +315,24 @@ function RunLaneRow({
 		setPointerLit((prev) => (prev === onMark ? prev : onMark));
 	}, []);
 	const id8 = truncateSessionId(session.session_id);
-	// The run's model in the window (most of its LLM calls), else the
-	// session row's: steady while a run switches models now and then.
+	// The model the lane names (and leaves out of its marker text): most
+	// of the run's calls in the window on the lane's first render, then
+	// held until another model leads by ``LANE_MODEL_SWITCH_LEAD`` calls
+	// (``chooseLaneModel``). The lane holds it in its own state, keyed by
+	// the run (the lane's React key), so only this lane re-renders when
+	// it changes.
 	const sessionId = session.session_id;
 	const sessionModel = session.model ?? null;
-	const model = useMemo(
-		() => dominantModel(eventsCache.get(sessionId), d0, d1) ?? sessionModel,
+	const counts = useMemo(
+		() => modelCallCounts(eventsCache.get(sessionId), d0, d1),
 		// ``cacheEpoch`` stands for the eventsCache read.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[sessionId, sessionModel, d0, d1, cacheEpoch],
+		[sessionId, d0, d1, cacheEpoch],
 	);
+	const [heldModel, setHeldModel] = useState<string | null>(null);
+	const model = chooseLaneModel(heldModel, counts, sessionModel);
+	// Adjusted during render: the next render holds the model chosen now.
+	if (model !== heldModel) setHeldModel(model);
 
 	return (
 		<div

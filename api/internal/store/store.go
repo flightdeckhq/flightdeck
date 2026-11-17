@@ -1319,15 +1319,18 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 // for embeddings). See migration
 // 000016_event_content_input.up.sql.
 type EventContent struct {
-	EventID      string  `json:"event_id"`
-	SessionID    string  `json:"session_id"`
-	Provider     string  `json:"provider"`
-	Model        string  `json:"model"`
-	SystemPrompt *string `json:"system_prompt"`
-	Messages     any     `json:"messages"`
-	Tools        any     `json:"tools"`
-	Response     any     `json:"response"`
-	Input        any     `json:"input,omitempty"`
+	EventID   string `json:"event_id"`
+	SessionID string `json:"session_id"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	// The call's system prompt as the provider received it: a string, a
+	// list of content blocks (an Anthropic system given as blocks, an
+	// OpenTelemetry GenAI framework's system instructions), or null.
+	SystemPrompt any `json:"system_prompt"`
+	Messages     any `json:"messages"`
+	Tools        any `json:"tools"`
+	Response     any `json:"response"`
+	Input        any `json:"input,omitempty"`
 	// tool_input + tool_output carry the
 	// captured arguments and result for mcp_tool_call / mcp_prompt_get
 	// / LLM-side tool_call events. The dashboard branches on event_type
@@ -1356,16 +1359,17 @@ func decodeJSON(raw []byte) any {
 // Returns nil, nil when the event has no captured content.
 func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventContent, error) {
 	var ec EventContent
-	var messagesRaw, toolsRaw, responseRaw, inputRaw, toolInputRaw, toolOutputRaw []byte
+	var systemText *string
+	var systemBlocksRaw, messagesRaw, toolsRaw, responseRaw, inputRaw, toolInputRaw, toolOutputRaw []byte
 	err := s.reader().QueryRowContext(ctx, `
 		SELECT CAST(event_id AS TEXT), CAST(session_id AS TEXT), provider, model, system_prompt,
-		       messages, tools, response, input, tool_input, tool_output,
+		       system_blocks, messages, tools, response, input, tool_input, tool_output,
 		       captured_at
 		FROM event_content
 		WHERE event_id = $1
 	`, uuidArg(eventID)).Scan(
-		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &ec.SystemPrompt,
-		&messagesRaw, &toolsRaw, &responseRaw, &inputRaw,
+		&ec.EventID, &ec.SessionID, &ec.Provider, &ec.Model, &systemText,
+		&systemBlocksRaw, &messagesRaw, &toolsRaw, &responseRaw, &inputRaw,
 		&toolInputRaw, &toolOutputRaw,
 		&ec.CapturedAt,
 	)
@@ -1376,6 +1380,13 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 		return nil, fmt.Errorf("get event content %s: %w", eventID, err)
 	}
 
+	// A row holds at most one of the two (a check on both backends): text
+	// as the string, a list of content blocks as the list.
+	if systemText != nil {
+		ec.SystemPrompt = *systemText
+	} else {
+		ec.SystemPrompt = decodeJSON(systemBlocksRaw)
+	}
 	ec.Messages = decodeJSON(messagesRaw)
 	ec.Tools = decodeJSON(toolsRaw)
 	ec.Response = decodeJSON(responseRaw)

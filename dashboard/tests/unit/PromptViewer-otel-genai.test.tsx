@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
 
@@ -90,6 +90,43 @@ describe("PromptViewer: OpenTelemetry GenAI content", () => {
     expect(box("prompt-box-tool-0")).toHaveTextContent("get_weather");
     expect(box("prompt-box-tool-0")).toHaveTextContent("The current weather in a city.");
     expect(box("prompt-box-tool-0")).toHaveTextContent(/city\s*·\s*string/);
+  });
+
+  it("system instructions stored as their list of parts render as the JSON-text form does", async () => {
+    const call = at(fixture("pydantic_ai").calls, 0);
+    const asText = call.system_prompt;
+    if (typeof asText !== "string") throw new Error("the fixture's instructions are not JSON text");
+    // The list the framework sent, as the content endpoint serves it.
+    const parts = JSON.parse(asText) as unknown[];
+    await renderContent({ ...call, event_id: `${call.event_id}-list`, system_prompt: parts });
+    const system = box("prompt-box-system");
+    expect(system).toHaveTextContent("Answer weather questions with the get_weather tool.");
+    expect(system).not.toHaveTextContent('"type"');
+    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
+    expect(screen.getByTestId("prompt-box-system-raw-json")).toHaveTextContent('"content"');
+  });
+
+  it("system instructions stored as an object's JSON text render as its fields, a number or a boolean as written", async () => {
+    const call = at(fixture("pydantic_ai").calls, 0);
+    // What the assembler stores for an object, a number and a boolean.
+    await renderContent({ ...call, event_id: `${call.event_id}-object`, system_prompt: '{"content":"Be brief.","type":"text"}' });
+    const system = box("prompt-box-system");
+    expect(within(system).getAllByTestId("kv-label").map((l) => l.textContent)).toEqual(["content:", "type:"]);
+    expect(system).toHaveTextContent("Be brief.");
+    expect(system).not.toHaveTextContent('"content"');
+    cleanup();
+    await renderContent({ ...call, event_id: `${call.event_id}-number`, system_prompt: "42" });
+    expect(box("prompt-box-system")).toHaveTextContent("42");
+    cleanup();
+    await renderContent({ ...call, event_id: `${call.event_id}-boolean`, system_prompt: "true" });
+    expect(box("prompt-box-system")).toHaveTextContent("true");
+  });
+
+  it("an empty list of system instructions shows no System section, as empty text does", async () => {
+    const call = at(fixture("pydantic_ai").calls, 0);
+    await renderContent({ ...call, event_id: `${call.event_id}-empty`, system_prompt: [] });
+    expect(screen.queryByTestId("prompt-box-system")).toBeNull();
+    expect(box("prompt-box-message-1")).toBeInTheDocument();
   });
 
   it("Pydantic AI: a tool's result inside the next call's messages", async () => {

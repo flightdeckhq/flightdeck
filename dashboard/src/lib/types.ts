@@ -1033,7 +1033,13 @@ export interface EventContent {
   session_id: string;
   provider: string;
   model: string;
-  system_prompt: string | null;
+  /**
+   * The call's system prompt as the provider received it: a string, a
+   * list of content blocks (an Anthropic ``system`` given as blocks, the
+   * form prompt caching uses; an OpenTelemetry GenAI framework's system
+   * instructions, a list of parts), or null.
+   */
+  system_prompt: string | unknown[] | null;
   // Provider-specific JSON structures (Anthropic vs OpenAI shapes
   // preserved verbatim per the prompt-capture rule that bans
   // normalization between provider terminologies). Typed as

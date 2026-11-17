@@ -1,9 +1,10 @@
 /**
- * A run that T14, T162, T163 and T165 post through ingestion in the sensor's
- * own wire shape (T166 in the Claude Code plugin's): a session_start
- * declaring the capture posture, then
+ * A run that T14, T162, T163, T165 and T178 post through ingestion in the
+ * sensor's own wire shape (T166 in the Claude Code plugin's): a
+ * session_start declaring the capture posture, then
  * calls whose captured content travels in the event_content envelope
- * (T165: OpenAI Responses and litellm text_completion post_calls; T14: an
+ * (T165: OpenAI Responses and litellm text_completion post_calls; T178:
+ * Anthropic post_calls whose system is a list of blocks; T14: an
  * embeddings call given token ids). T162 and T163 post tool
  * calls whose captured arguments and result travel in the event_content
  * envelope the sensor builds (interceptor/base.py and interceptor/mcp.py,
@@ -189,7 +190,8 @@ export const embeddingsCall = (run: Run, offsetSeconds: number, input: unknown, 
   });
 
 /** An Anthropic post_call the sensor reports, with the content envelope
- *  it stores (T166: a message's tool_result as the provider received it). */
+ *  it stores (T166: a message's tool_result as the provider received it;
+ *  T178: a ``system`` given as a list of content blocks). */
 export const anthropicPostCall = (run: Run, offsetSeconds: number, content: Record<string, unknown>) =>
   event(run, "post_call", offsetSeconds, {
     model: "claude-sonnet-4-5",

@@ -225,18 +225,33 @@ func (m *mockStore) GetSessionAttachments(_ context.Context, _ string) ([]time.T
 }
 
 func (m *mockStore) GetEventContent(_ context.Context, eventID string) (*store.EventContent, error) {
-	if eventID == "evt-with-content" {
-		sys := "You are a helpful assistant."
+	switch eventID {
+	case "evt-with-content":
 		return &store.EventContent{
 			EventID:      eventID,
 			SessionID:    "sess-001",
 			Provider:     "openai",
 			Model:        "gpt-4",
-			SystemPrompt: &sys,
+			SystemPrompt: "You are a helpful assistant.",
 			Messages:     []any{map[string]any{"role": "user", "content": "hello"}},
 			Tools:        nil,
 			Response:     map[string]any{"role": "assistant", "content": "hi"},
 			CapturedAt:   time.Now(),
+		}, nil
+	case "evt-with-system-blocks":
+		// As the store decodes a system_blocks column.
+		return &store.EventContent{
+			EventID:   eventID,
+			SessionID: "sess-001",
+			Provider:  "anthropic",
+			Model:     "claude-haiku-4-5",
+			SystemPrompt: []any{
+				map[string]any{"type": "text", "text": "You are terse.", "cache_control": map[string]any{"type": "ephemeral"}},
+				map[string]any{"type": "text", "text": "Answer in one word."},
+			},
+			Messages:   []any{map[string]any{"role": "user", "content": "hello"}},
+			Response:   map[string]any{"content": []any{}},
+			CapturedAt: time.Now(),
 		}, nil
 	}
 	return nil, nil
@@ -2221,6 +2236,30 @@ func TestContentHandler_ReturnsContent(t *testing.T) {
 	}
 	if resp["system_prompt"] != "You are a helpful assistant." {
 		t.Errorf("expected system_prompt, got %v", resp["system_prompt"])
+	}
+}
+
+// A system prompt stored as a list of content blocks is served as that
+// list, cache_control included, not as text.
+func TestContentHandler_ReturnsSystemBlocksAsAList(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.ContentHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events/evt-with-system-blocks/content", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		SystemPrompt json.RawMessage `json:"system_prompt"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"cache_control":{"type":"ephemeral"},"text":"You are terse.","type":"text"},{"text":"Answer in one word.","type":"text"}]`
+	if string(resp.SystemPrompt) != want {
+		t.Errorf("system_prompt = %s, want %s", resp.SystemPrompt, want)
 	}
 }
 

@@ -373,6 +373,64 @@ describe("EmbeddingsContentViewer -- token ids and other inputs", () => {
     );
   });
 
+  it("builds no items while a token-id list is closed, re-renders included", async () => {
+    // Each item counts the reads that building its row makes (the
+    // preview's ``slice``, the ids' ``join``); classifying the input
+    // reads neither.
+    let rowBuilds = 0;
+    const counted = (ids: number[]) =>
+      new Proxy(ids, {
+        get(target, prop, receiver) {
+          if (prop === "join" || prop === "slice") rowBuilds += 1;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+    const long = Array.from({ length: 40 }, (_, i) => 1000 + i);
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      makeContent([counted(long), counted([1, 2, 3])] as unknown as EventContent["input"]),
+    );
+    const view = render(<EmbeddingsContentViewer eventId="evt-closed" hasContent={true} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-state-list").textContent).toBe("2 inputs"),
+    );
+    view.rerender(<EmbeddingsContentViewer eventId="evt-closed" hasContent={true} />);
+    view.rerender(<EmbeddingsContentViewer eventId="evt-closed" hasContent={true} />);
+    expect(screen.queryByTestId("embeddings-content-expanded")).toBeNull();
+    expect(rowBuilds).toBe(0);
+    // Opening builds them.
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-1-ids").textContent).toBe("1, 2, 3"),
+    );
+    expect(rowBuilds).toBeGreaterThan(0);
+  });
+
+  it("reopens a token-id list on the cut items after ``Show full inputs`` and a close", async () => {
+    const long = Array.from({ length: 40 }, (_, i) => 1000 + i);
+    const cut = `${long.slice(0, TOKEN_IDS_PREVIEW).join(", ")}, …`;
+    await renderInput([long, [1, 2, 3]]);
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    fireEvent.click(await screen.findByTestId("embeddings-content-full-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe(
+        long.join(", "),
+      ),
+    );
+    // Close the list, then open it again.
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() => expect(screen.queryByTestId("embeddings-content-expanded")).toBeNull());
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe(cut),
+    );
+    expect(screen.getByTestId("embeddings-content-full-toggle").textContent).toBe(
+      "Show full inputs",
+    );
+    expect(
+      screen.getByTestId("embeddings-content-full-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
   it("singular ``1 input`` for a list holding one token-id list", async () => {
     await renderInput([[9, 8]]);
     expect(screen.getByTestId("embeddings-content-state-list").textContent).toBe("1 input");

@@ -387,20 +387,22 @@ function JsonInputView({ value }: { value: unknown }) {
  * A list input: an ``"<N> inputs"`` header that expands the list, one
  * numbered item per input, and what follows the list (``footer``) once
  * it is open. ``tokenIds`` adds the "Token ids" label to the header.
+ * ``renderItems`` builds the items and runs only while the list is open,
+ * so a closed list of a large batch costs nothing on a re-render.
  */
 function ListShell({
   count,
   tokenIds,
   expanded,
   onToggle,
-  children,
+  renderItems,
   footer,
 }: {
   count: number;
   tokenIds: boolean;
   expanded: boolean;
   onToggle: () => void;
-  children: ReactNode;
+  renderItems: () => ReactNode;
   footer?: ReactNode;
 }) {
   return (
@@ -436,7 +438,7 @@ function ListShell({
             className="mt-2 space-y-2 list-decimal list-inside"
             style={{ color: "var(--text)", fontSize: 12 }}
           >
-            {children}
+            {renderItems()}
           </ol>
           {footer}
         </>
@@ -469,13 +471,19 @@ function TextListView({
   onToggle: () => void;
 }) {
   return (
-    <ListShell count={items.length} tokenIds={false} expanded={expanded} onToggle={onToggle}>
-      {items.map((text, i) => (
-        <ListItem key={i} index={i}>
-          {text}
-        </ListItem>
-      ))}
-    </ListShell>
+    <ListShell
+      count={items.length}
+      tokenIds={false}
+      expanded={expanded}
+      onToggle={onToggle}
+      renderItems={() =>
+        items.map((text, i) => (
+          <ListItem key={i} index={i}>
+            {text}
+          </ListItem>
+        ))
+      }
+    />
   );
 }
 
@@ -496,12 +504,18 @@ function TokenListsView({
 }) {
   const [whole, setWhole] = useState(false);
   const anyCut = items.some((ids) => ids.length > TOKEN_IDS_PREVIEW_COUNT);
+  // Closing the list also cuts its items again, so it reopens on the
+  // previews rather than laying out every id.
+  const toggleList = () => {
+    if (expanded) setWhole(false);
+    onToggle();
+  };
   return (
     <ListShell
       count={items.length}
       tokenIds
       expanded={expanded}
-      onToggle={onToggle}
+      onToggle={toggleList}
       footer={
         anyCut && (
           <ExpandToggle
@@ -512,15 +526,16 @@ function TokenListsView({
           />
         )
       }
-    >
-      {items.map((ids, i) => (
-        <ListItem key={i} index={i}>
-          <span data-testid={`embeddings-content-list-item-${i}-count`} style={HEADER_NOTE_STYLE}>
-            Token ids ({tokenCount(ids.length)})
-          </span>
-          <div data-testid={`embeddings-content-list-item-${i}-ids`}>{tokenIdsText(ids, whole)}</div>
-        </ListItem>
-      ))}
-    </ListShell>
+      renderItems={() =>
+        items.map((ids, i) => (
+          <ListItem key={i} index={i}>
+            <span data-testid={`embeddings-content-list-item-${i}-count`} style={HEADER_NOTE_STYLE}>
+              Token ids ({tokenCount(ids.length)})
+            </span>
+            <div data-testid={`embeddings-content-list-item-${i}-ids`}>{tokenIdsText(ids, whole)}</div>
+          </ListItem>
+        ))
+      }
+    />
   );
 }

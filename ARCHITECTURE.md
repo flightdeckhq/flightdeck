@@ -1653,7 +1653,11 @@ outcomes:
 | any other 4xx / 5xx | `invalid_request` / `api_error` |
 
 `provider_error_code` is the status name, and `retry_after` the
-`RetryInfo` delay (`"13s"`). A 200 whose first candidate finished
+`RetryInfo` delay (`"13s"`), read from the error body. The SDK keeps
+that body as text (under `message`, with the HTTP reason phrase as the
+error's `status`) when the response does not declare JSON, as an async
+stream's error responses over aiohttp do; the text is parsed, so such a
+429 is classified as any other. A 200 whose first candidate finished
 `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` or one
 of their image counterparts, or whose prompt was blocked
 (`prompt_feedback.block_reason` `SAFETY`, `BLOCKLIST`,

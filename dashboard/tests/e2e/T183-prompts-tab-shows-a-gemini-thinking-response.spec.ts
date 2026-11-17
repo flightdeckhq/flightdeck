@@ -9,8 +9,9 @@
  * ``thoughtSignature``, with a system instruction and one user turn.
  * Opened in the event drawer, the system instruction shows under its own
  * name, the thought is marked ``thought`` apart from the answer, the
- * signature is a mark naming the field (its opaque value not in Pretty),
- * and Raw holds the signature as stored.
+ * signature is one mark naming the field (its opaque value not in
+ * Pretty), the token line counts the thoughts as output, and Raw holds
+ * the signature as stored.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -90,8 +91,12 @@ test.describe("T183 — the Prompts tab shows a Gemini thinking response", () =>
     const thought = response.getByTestId("gemini-part-thought");
     await expect(thought).toContainText("thought");
     await expect(thought).toContainText("T183-THOUGHT");
-    await expect(response.getByTestId("gemini-part-signed")).toContainText("391");
+    await expect(response).toContainText("391");
+    // One mark for the candidate's signed parts, the value not shown.
     await expect(response.getByTestId("gemini-thought-signature")).toHaveText("thoughtSignature · opaque bytes, in Raw");
+    // The token line every provider's response shows: the prompt, and
+    // the candidates with the thoughts.
+    await expect(response).toContainText("Tokens in: 17 · Tokens out: 123");
     await expect(response).not.toContainText(SIGNATURE);
     await expect(response.getByTestId("gemini-finish-reason")).toHaveCount(0);
 

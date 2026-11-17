@@ -1222,3 +1222,19 @@ content was dropped (or, for Responses input, dumped with unsent fields).
 `openapi_model_dump`: private, absent in some lane releases); recording
 the request body at the HTTP client (a new patch on every SDK client,
 blind to litellm's own transports); `str()` (not what was sent).
+
+## D286 -- An Anthropic `messages.stream()` call reaches the SDK when made, and the stored copy is the one the sent request holds
+
+**Date:** 2026-11-17
+**Decision:** the sensor calls the SDK's `stream()` when the caller does,
+after the estimate and the policy check, and enters the manager it
+returns. With capture on it copies the arguments at the call and on
+entry; when they differ, the request the stream answered picks: the
+call's copy if it holds what was sent for every changed argument, else
+the entry's. An argument holding no iterator reaches the SDK as the
+caller's own object.
+**Why:** anthropic 0.86 builds the request in `stream()`, 2.x on entry;
+calling the SDK on entry sent, on 0.86, a change made in between.
+**Rejected alternative:** reading the SDK's version to pick the moment
+(silently wrong on the first release that moves it); storing the request
+body read off the response (a second content source, for one path only).

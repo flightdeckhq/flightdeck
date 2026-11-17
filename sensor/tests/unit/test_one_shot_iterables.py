@@ -961,7 +961,7 @@ def test_lists_keep_their_identity_and_the_callers_arguments_are_not_changed() -
     messages = [message]
     kwargs = {"model": OPENAI_MODEL, "messages": messages, "tools": (TOOL_OPENAI,)}
     real_fn = MagicMock()
-    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True, {})
 
     iterator = _generator([{"type": "text", "text": PROMPT}])
     with_iterator = {"model": OPENAI_MODEL, "messages": [{"role": "user", "content": iterator}]}
@@ -982,7 +982,7 @@ def test_a_file_among_the_arguments_is_passed_on_as_it_is() -> None:
     upload = io.BytesIO(b"first line\nsecond line\n")
     kwargs = {"model": OPENAI_MODEL, "messages": [], "extra_body": {"file": upload}}
     real_fn = MagicMock()
-    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True, {})
     assert upload.tell() == 0
 
 
@@ -992,7 +992,7 @@ def test_arguments_that_hold_themselves_are_handed_on_as_they_are() -> None:
     messages.append(messages)
     kwargs = {"model": OPENAI_MODEL, "messages": messages}
     real_fn = MagicMock()
-    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True, {})
 
 
 def test_an_iterator_beside_arguments_that_hold_themselves_is_read() -> None:
@@ -1022,7 +1022,7 @@ def test_an_iterator_deeper_than_the_walk_goes_is_passed_on_unread() -> None:
         nested = [nested]
     kwargs = {"model": OPENAI_MODEL, "messages": nested}
     real_fn = MagicMock()
-    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True)
+    assert base.materialise_iterators(kwargs, real_fn) == (kwargs, real_fn, True, {})
     assert list(deep) == [1]
 
 
@@ -1050,7 +1050,7 @@ def test_arguments_the_walk_runs_out_of_stack_on_are_passed_on_unread(
         finally:
             sys.setrecursionlimit(limit)
 
-    assert at_depth(5) == (kwargs, real_fn, True)
+    assert at_depth(5) == (kwargs, real_fn, True, {})
     assert list(deep) == [PROMPT]
     assert "passed on as they are" in caplog.text
     assert PROMPT not in caplog.text

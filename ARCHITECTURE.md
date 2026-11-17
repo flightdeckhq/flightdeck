@@ -985,18 +985,17 @@ which then raises the same exception. So the SDK raises it where it reads
 that argument, as without the sensor, whichever release is installed:
 the call itself, the await of an async call, or the entering of a stream
 manager (`messages.stream()`, `chat.completions.stream()`,
-`with_streaming_response`). For a stream the sensor calls the SDK at
-once in that case, so anthropic 0.86, whose `stream()` reads its
-arguments when called, raises there. The call is reported as any call
+`with_streaming_response`): anthropic 0.86 raises it when `stream()` is
+called, 2.x when the manager is entered. The call is reported as any call
 the SDK rejects before sending: an `llm_error` after its `pre_call`. An
 SDK that never reads that argument sends the call, which is metered as
 any other. The sensor reads an Anthropic
 `messages.stream()` call's iterators when `stream()` is called, so that
 the estimate and the policy check run before the manager is returned.
-anthropic 0.86 reads them there too, but anthropic 2.1 reads them only
-when the manager is entered, so a lazy generator's own side effects run
-earlier than without the sensor. With no session active the arguments
-are not read.
+anthropic 0.86 reads them there too, but anthropic 2.x reads them only
+when the manager is entered, so on 2.x a lazy generator's own side
+effects run earlier than without the sensor. With no session active the
+arguments are not read.
 
 An ordinary call's arguments hold no iterator and are only walked, never
 copied: the lists, tuples, dicts and strings go to the SDK as the same
@@ -1018,7 +1017,14 @@ model's reply passed back in a tool-use loop, such as an OpenAI
 blocks) is read as the SDK writes it into the request, the JSON dump of
 its set fields without those the class marks `__api_exclude__` (by alias
 from anthropic 2.x), for the estimate and the stored content alike, while
-the SDK gets the caller's own object. A `NOT_GIVEN` or `omit` value inside
+the SDK gets the caller's own object. An argument that holds no iterator
+reaches the SDK as the caller's own object, its lists and dicts included,
+so a change the caller makes to it before the SDK builds the request (an
+Anthropic `messages.stream()` manager entered later on 2.x, see below)
+is sent, as without the sensor. An argument that holds an iterator
+reaches the SDK inside the sensor's copies of the containers on the path
+to that iterator, so a change made to those containers after the call is
+not sent. A `NOT_GIVEN` or `omit` value inside
 a message is dropped as the SDK drops it, litellm's stored input dumps
 models the OpenAI SDK's way. An object the sensor cannot write as what
 was sent is not dumped and leaves the whole event without its content
@@ -1034,12 +1040,23 @@ release.
 The request side of the stored content is copied when the call is
 handed to the SDK, which builds the request then: when a plain call is
 made (an async one when awaited), when `create(stream=True)` or a raw
-view is called (awaited), when a streaming view (`with_streaming_response`)
-or an Anthropic `messages.stream()` manager is entered, since the sensor
-calls the SDK's `stream()` only on entry. The event is written as JSON
-later, on the drain thread, and the caller often changes those lists
-before that: a tool-use loop appends the reply to the very list it sent,
-and a stream's caller holds its conversation while the stream is open.
+view is called (awaited), and when a streaming view
+(`with_streaming_response`) is entered. An Anthropic `messages.stream()`
+call reaches the SDK's own `stream()` when the caller makes it, and the
+SDK builds the request then (anthropic 0.86) or when the manager is
+entered (2.x). So the arguments are copied at both moments, the second
+time as the SDK holds them then, with each pydantic model in them read
+again. When the two copies differ (the caller changed its arguments in
+between), the copy taken at the call is stored if, for every argument
+that changed, it holds what the request the stream answered
+(`stream.response.request`) carried, and the copy taken on entry
+otherwise, also when that request cannot be read. No release number is
+read, so a release that moves the moment it builds the request is
+followed as it is. With capture off nothing is copied. The event is
+written as JSON later, on the drain thread, and the caller often changes
+those lists before that: a tool-use loop appends the reply to the very
+list it sent, and a stream's caller holds its conversation while the
+stream is open.
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
@@ -2602,9 +2619,13 @@ awaited in the next session reports to it, with its capture setting. The
 `.stream()` helpers of the OpenAI SDK send on entry, and a manager is
 matched to the session active when it is entered the same way.
 Anthropic's `messages.stream()`, sync or async, runs the pre-call (the
-policy check and `pre_call`) when it is called, so that call belongs to
-the session it was called in, as a stream still open at `teardown` does:
-it is settled when its session ends (see "Shutdown and signals").
+policy check and `pre_call`) and calls the SDK's own `stream()` when it
+is called, so the call belongs to the session it was called in. A stream
+still open at `teardown` is settled when its session ends (see "Shutdown
+and signals"). A manager entered after its session has ended (after
+`teardown`, or once the next session has started) sends its request and
+raises nothing; its `post_call` belongs to the ended session, whose
+event queue has closed, so it is not sent.
 
 Deferring the session to the await changes nothing a caller can see at
 the call itself. Every async entry point the sensor patches or proxies
@@ -2621,11 +2642,26 @@ function's code object; `inspect.isfunction` is false for it, where it
 is true for the SDK's function, which is the one difference. Arguments
 are checked when the call is made: the sensor calls the SDK's method
 then, which validates them and returns its coroutine unstarted, and
-closes that coroutine, so nothing is sent or built. Anthropic's async
-`stream()`, which hands back its manager at once, has its arguments
-bound against the SDK's signature instead (cached per SDK function,
-never per client). A raw view's method, which checks its arguments
-only once awaited, raises then, as the SDK's does.
+closes that coroutine, so nothing is sent or built. Anthropic's
+`stream()`, sync or async, which hands back its manager at once, has its
+arguments bound against the SDK's signature first (cached per SDK
+function, never per client), so an argument error comes before anything
+is read. A raw view's method, which checks its arguments only once
+awaited, raises then, as the SDK's does.
+
+Every sync entry point the sensor patches or proxies matches the SDK's
+own method in what `sensor/tests/unit/test_sync_parity.py` holds:
+`inspect.iscoroutinefunction`, `inspect.signature`, the name, qualified
+name, docstring and module, and the type and the moment of the
+exception a missing or an unknown argument raises, when the call is made
+or when what it returned is used (a stream manager or a streaming view
+entered, a raw response parsed). A sync method of a sensor proxy is
+handed out as a plain function carrying the SDK method's name and docs,
+with the SDK's method as its `__wrapped__` for the signature; making it
+takes about 0.6 µs per method lookup, against 0.13 µs for a bare bound
+method (Python 3.13 on a developer machine). A patched Anthropic
+resource method carries the SDK function's own name, docs and signature
+(`functools.wraps`).
 
 How each interceptor finds the session: the patched Anthropic resource
 methods and the litellm wrappers look it up at each call. The OpenAI
@@ -10092,10 +10128,10 @@ an event stream parsed from a raw or streaming view all take this path,
 with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
 `async for`. `create(stream=True)` sends the request inside the call, as the
-unguarded SDK does, so provider errors surface there; `messages.stream()`
-sends it when the context is entered, like the SDK's own manager, or on
-the first iteration or public-attribute read when no `with` block is
-used.
+unguarded SDK does, so provider errors surface there. `messages.stream()`
+calls the SDK's `stream()` inside the call and sends the request when the
+context is entered, like the SDK's own manager, or on the first iteration
+or public-attribute read when no `with` block is used.
 
 `chunk_count`, the inter-chunk timings and `partial_chunks` count the
 events the SDK yields to the caller. Protocol frames the SDK consumes

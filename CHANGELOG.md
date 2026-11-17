@@ -177,6 +177,25 @@ All notable changes to Flightdeck are documented here.
   `ChatCompletionMessage` counted as a bare message), so a pre-call
   budget threshold can trip earlier than before (D285).
 
+- **Sensor: Anthropic's `messages.stream()` sends and stores what the
+  SDK's own does, and a sensored sync method looks like the SDK's.** The
+  sensor called the SDK's `stream()` only when the manager was entered.
+  On anthropic 0.86, which builds the request when `stream()` is called,
+  a change made to `messages` in between was sent with the sensor and not
+  without it. On anthropic 2.x, which builds it on entry, a conversation
+  holding the SDK's reply objects (as a tool-use loop's does) reached the
+  SDK as the sensor's copy, so a message appended before entering the
+  manager was not sent, and a reply object changed in place was stored as
+  it was at the call. A sync `stream()` with a missing or unknown argument
+  raised when the manager was entered instead of at the call. The sensor
+  now calls the SDK's `stream()` when the caller does, after the estimate
+  and the policy check, hands the SDK the caller's own arguments unless
+  one holds an iterator, and stores the request the provider received on
+  every release. A sync method of a client from `wrap()`, and of an
+  OpenAI client under `patch()`, reported `(**kwargs)` as its signature,
+  with the sensor's docstring and module; it now introspects as the SDK's
+  (D286).
+
 - **An embeddings call given token ids shows them as one input.** The
   embeddings API takes one input as a list of token ids, and several as
   a list of token-id lists. In the run drawer, an expanded embeddings

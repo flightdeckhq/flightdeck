@@ -497,13 +497,16 @@ class SensorMessages(base.SessionProxy):
         if target is None:
             return real_fn(**kwargs)
         session, provider = target
+        # The arguments are bound against the SDK's signature first, so an
+        # argument error raises at the call before the sensor reads or
+        # estimates anything. The SDK's ``stream()`` is then called now, as
+        # the caller calls it, after the estimate and the policy check; it
+        # builds its request now or on entry, as its release does, and the
+        # guard enters the manager it returns (see base.call_stream).
+        base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
         if self._is_async:
-            # The SDK's async ``stream()`` binds its arguments when it is
-            # called; the sensor sends the request on entry, so it binds
-            # them now (see base.check_signature).
-            base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
-            return base.call_stream_async(real_fn, kwargs, session, provider)
-        return base.call_stream(real_fn, kwargs, session, provider)
+            return base.call_stream_async(real_fn, kwargs, session, provider, call_now=True)
+        return base.call_stream(real_fn, kwargs, session, provider, call_now=True)
 
     @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
@@ -794,7 +797,7 @@ def _intercepting_method(
                 or not _installed(type(resource), name, installed)
             ):
                 return await original(resource, **kwargs)
-            return await getattr(_proxy(resource, session), name)(**kwargs)
+            return await getattr(SensorMessages, name)(_proxy(resource, session), **kwargs)
 
         def awaited(self: Any, **kwargs: Any) -> Any:
             # The SDK checks the arguments now, when the call is made, as
@@ -821,12 +824,10 @@ def _intercepting_method(
             or not _installed(type(self), name, method)
         ):
             return original(self, **kwargs)
-        if is_async:
-            # The async ``stream()`` hands back its manager at once and
-            # sends on entry: its arguments are checked now, as the SDK's
-            # own binding does.
-            base.check_signature(original, self, **kwargs)
-        return getattr(_proxy(self, session), name)(**kwargs)
+        # The proxy is this call's own, so its method is called through the
+        # class, not shaped like the SDK's (see base.SDKMethod): the caller
+        # holds this method, which carries the SDK's own shape.
+        return getattr(SensorMessages, name)(_proxy(self, session), **kwargs)
 
     return method
 

@@ -23,6 +23,7 @@ import functools
 import importlib.util
 import inspect
 import io
+import json
 import logging
 import sys
 import time
@@ -65,7 +66,7 @@ def _safe_pct(used: int, limit: int | None) -> int:
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator
+    from collections.abc import AsyncIterator, Callable, Iterator, Mapping
     from types import TracebackType
 
     from flightdeck_sensor.core.session import Session
@@ -384,9 +385,10 @@ def _signature(function: Callable[..., Any]) -> inspect.Signature:
 def check_signature(function: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
     """Raise the ``TypeError`` calling ``function`` with these arguments
     would raise on binding them, without calling it: for an SDK method
-    that hands back an object at once (``messages.stream()``'s manager)
-    while the sensor sends its request later. A bound method is checked
-    as its function with its ``self`` bound first."""
+    that hands back an object at once (``messages.stream()``'s manager),
+    which the sensor calls only after its estimate and policy check, so a
+    bad call raises before the sensor reads or reports anything. A bound
+    method is checked as its function with its ``self`` bound first."""
     if inspect.ismethod(function):
         _signature(function.__func__).bind(function.__self__, *args, **kwargs)
         return
@@ -487,13 +489,14 @@ def like_sdk(sdk_function: Callable[..., Any], call: Callable[..., Any]) -> Any:
 
 class SDKMethod:
     """A :class:`SessionProxy` method that stands in for the method of the
-    same name on the SDK object the proxy wraps (``_real``). On a proxy
-    over an async resource the bound method is handed out shaped like the
-    SDK's: a :class:`CoroutineFunctionLike` of it when it is a coroutine
-    function, else a plain function carrying its name and docs, so the
-    two introspect alike. One proxy class serves sync and async
-    resources, whose methods differ in kind, so this is decided per
-    proxy; on a sync resource it is the plain bound method."""
+    same name on the SDK object the proxy wraps (``_real``). The bound
+    method is handed out shaped like the SDK's: a
+    :class:`CoroutineFunctionLike` of it when that is a coroutine function
+    (an async resource's ``async def``), else a plain function carrying
+    its name and docs with the SDK's method as ``__wrapped__``, so the two
+    introspect alike, signature included. One proxy class serves sync and
+    async resources, whose methods differ in kind, so this is decided per
+    proxy."""
 
     def __init__(self, function: Callable[..., Any]) -> None:
         self._function = function
@@ -511,12 +514,10 @@ class SDKMethod:
         # proxy's __getattr__, the SDK's unsensored method: shaping is
         # best effort, the bound method the fallback.
         try:
-            if not instance._is_async:
-                return bound
             sdk_method = getattr(instance._real, self._name, None)
             if sdk_method is None:
                 return bound
-            if _is_coroutine_function(sdk_method):
+            if instance._is_async and _is_coroutine_function(sdk_method):
                 return CoroutineFunctionLike(bound, sdk_method)
             return _function_like(bound, sdk_method)
         except Exception:
@@ -1031,19 +1032,33 @@ def as_received(value: Any, depth: int = 0) -> Any:
     return _rebuilt(value, as_received, depth)
 
 
-def _snapshot(value: Any, depth: int = 0) -> Any:
+def _snapshot(value: Any, depth: int = 0, dump: Callable[[Any], Any] | None = None) -> Any:
     """``value`` with every list, tuple and dict of the caller's in it
     copied, down to :data:`_MAX_ARGUMENT_DEPTH`. The sensor's own
     containers (:class:`_ReadIterator`, :class:`_Dumped`) are kept as they
     are, so content capture still resolves them (see :func:`as_received`).
-    """
+    With ``dump``, each pydantic model (the caller's own, or one the sensor
+    read, a :class:`_Dumped`) is read as ``dump`` writes it now, as the
+    caller may have changed it in place since; one ``dump`` fails on is
+    kept as it is. Nothing is read otherwise: an iterator stays unread,
+    for the SDK."""
     kind = type(value)
     if kind in _PLAIN_TYPES or depth >= _MAX_ARGUMENT_DEPTH:
         return value
     if kind is list or kind is tuple:
-        return [_snapshot(item, depth + 1) for item in value]
+        return [_snapshot(item, depth + 1, dump) for item in value]
     if kind is dict:
-        return {key: _snapshot(item, depth + 1) for key, item in value.items()}
+        return {key: _snapshot(item, depth + 1, dump) for key, item in value.items()}
+    if dump is not None:
+        original = value.original if kind is _Dumped else value
+        model = _model_class()
+        if model is not None and isinstance(original, model):
+            try:
+                dumped = _Dumped(dump(original))
+            except Exception:
+                return value
+            dumped.original = original
+            return dumped
     return value
 
 
@@ -1067,6 +1082,102 @@ def _sending(session: Session, call_kwargs: dict[str, Any]) -> dict[str, Any]:
         if name in _READ_ARGUMENT_NAMES
     }
     return sending
+
+
+def _entry_copy(
+    session: Session,
+    call_kwargs: dict[str, Any],
+    receiver: str,
+    given: Mapping[str, tuple[Any, Any]],
+) -> dict[str, Any] | None:
+    """A second copy of the arguments content capture stores, taken as a
+    stream manager the SDK made when the call was made is entered (see
+    :func:`_keep_the_copy_sent`), of the arguments as the SDK holds them
+    now: the caller's own object for one the SDK was handed as the caller
+    gave it (see :attr:`Arguments.given`), else the sensor's, with each
+    pydantic model read again as the SDK ``receiver`` (a provider's name)
+    writes it. None with capture off, when nothing was copied at the call
+    either, and when the copy fails: the stream is opening, and the copy
+    taken at the call stands."""
+    if getattr(call_kwargs, "captured", None) is None or not session.config.capture_prompts:
+        return None
+    dump = _request_dump(receiver)
+    copied: dict[str, Any] = {}
+    try:
+        for name, value in call_kwargs.items():
+            if name not in _READ_ARGUMENT_NAMES:
+                continue
+            handed = given.get(name)
+            copied[name] = _snapshot(
+                handed[1] if handed is not None and value is handed[0] else value, dump=dump
+            )
+    except Exception:
+        _log.debug("Could not copy a stream's arguments on entry")
+        return None
+    return copied
+
+
+def _unwritable(value: Any) -> Any:
+    """What a value JSON cannot write compares as (never stored)."""
+    return {"<unwritable>": type(value).__name__}
+
+
+def _sent_body(stream: Any) -> dict[str, Any] | None:
+    """The JSON body of the request a stream answered, as the SDK sent it
+    (``stream.response.request``), or None when it cannot be read."""
+    try:
+        body = json.loads(stream.response.request.content)
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _holds_as_sent(
+    call_kwargs: dict[str, Any], captured: dict[str, Any], names: list[str], sent: dict[str, Any]
+) -> bool:
+    """Whether the copy ``captured`` of a call's arguments, resolved as
+    content capture resolves it, holds for each of ``names`` what the
+    request ``sent`` carried."""
+    merged = _ReadArguments(call_kwargs)
+    merged.update(captured)
+    received = as_received(merged)
+    for name in names:
+        if name not in sent:
+            return False
+        as_json = json.loads(json.dumps(received.get(name), default=_unwritable))
+        if as_json != sent[name]:
+            return False
+    return True
+
+
+def _keep_the_copy_sent(
+    call_kwargs: dict[str, Any], at_entry: dict[str, Any] | None, stream: Any
+) -> None:
+    """For a stream manager the SDK made when the call was made, once it
+    has sent its request: keep, as what content capture stores, the copy
+    of the arguments taken at the moment the SDK built that request. A
+    release builds it when ``stream()`` is called (anthropic 0.86) or when
+    the manager is entered (anthropic 2.x), and no release number is
+    read: the two copies differ only when the caller changed its
+    arguments in between, and then the request the stream answered says
+    which one was sent. The copy taken at the call stands when it holds
+    what was sent for every argument that changed; otherwise the entry
+    copy does, also when that request cannot be read. Nothing here may
+    reach the caller, whose request has gone out: a failure keeps the
+    entry copy."""
+    at_call = getattr(call_kwargs, "captured", None)
+    if at_entry is None or at_call is None or not isinstance(call_kwargs, _ReadArguments):
+        return
+    try:
+        changed = [name for name, value in at_entry.items() if at_call.get(name) != value]
+        if not changed:
+            return
+        sent = _sent_body(stream)
+        if sent is not None and _holds_as_sent(call_kwargs, at_call, changed, sent):
+            return
+    except Exception:
+        _log.debug("Could not tell which copy of a stream's arguments was sent")
+    call_kwargs.captured = at_entry
 
 
 def _captured(call_kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -1094,6 +1205,10 @@ class _ReadArguments(dict):  # type: ignore[type-arg]
     captured: dict[str, Any] | None = None
 
 
+# No argument handed to the SDK as the caller gave it (see Arguments.given).
+_NONE_GIVEN: Mapping[str, tuple[Any, Any]] = types.MappingProxyType({})
+
+
 class Arguments(NamedTuple):
     """A call's arguments as the sensor reads them, and the SDK call to
     make with them (see :func:`materialise_iterators`)."""
@@ -1103,6 +1218,11 @@ class Arguments(NamedTuple):
     # False when reading an iterator among them raised (see
     # materialise_iterators); a stream intercept then calls the SDK at once.
     readable: bool
+    # The arguments the sensor reads in another form while the SDK gets
+    # them as the caller gave them: name -> (the sensor's value, the
+    # caller's object). A stream manager made at the call reads those
+    # again on entry (see _entry_copy).
+    given: Mapping[str, tuple[Any, Any]] = _NONE_GIVEN
 
 
 def materialise_iterators(
@@ -1115,8 +1235,10 @@ def materialise_iterators(
     ``real_fn`` themselves. Otherwise they are a copy in which each
     iterator is a list of its items and each pydantic model the JSON the
     SDK ``receiver`` (a provider's name) writes for it, and the SDK call
-    hands the SDK a :class:`_Replay` of those items in place of each
-    iterator and the caller's own models (see the comment above).
+    hands the SDK an argument holding no iterator as the caller's own
+    object, and one holding an iterator with a :class:`_Replay` of its
+    items in its place, inside copies of the containers on the path to
+    it, and the caller's own models (see the comment above).
 
     An iterator that raises while it is read stops the reading, and the
     arguments are not readable: the caller still runs the estimate (on
@@ -1141,6 +1263,17 @@ def materialise_iterators(
         dump = _request_dump(receiver)
         for name in names:
             read[name] = _materialised(kwargs[name], failure, 1, dump)
+        # An argument with no iterator in it (a pydantic model, a collection
+        # JSON cannot write) is read in another form for the sensor alone:
+        # the SDK gets the caller's own object, containers included, so a
+        # change the caller makes to it before the SDK builds its request
+        # (a stream manager entered later) reaches the SDK, as without the
+        # sensor. The policy check never replaces these values.
+        given = {
+            name: (read[name], kwargs[name])
+            for name in names
+            if not _holds_read_iterator(read[name])
+        }
     except RecursionError:
         # The caller's own stack is too deep for the walk: the SDK gets
         # the arguments as they are. The log line needs stack too.
@@ -1153,9 +1286,38 @@ def materialise_iterators(
     generators = receiver in _GENERATOR_RECEIVERS
 
     def send(**call_kwargs: Any) -> Any:
-        return real_fn(**_as_sent(call_kwargs, generators=generators))
+        handed_over: dict[str, Any] = {}
+        for name, value in call_kwargs.items():
+            handed = given.get(name)
+            if handed is not None and value is handed[0]:
+                handed_over[name] = handed[1]
+            elif type(value) in _PLAIN_TYPES:
+                handed_over[name] = value
+            else:
+                handed_over[name] = _as_sent(value, 1, generators)
+        return real_fn(**handed_over)
 
-    return Arguments(read, send, not failure)
+    return Arguments(read, send, not failure, given)
+
+
+def _holds_read_iterator(value: Any, depth: int = 1) -> bool:
+    """Whether a value :func:`_materialised` produced holds an iterator the
+    sensor read (a :class:`_ReadIterator`), inside the lists, tuples and
+    dicts it is made of."""
+    if isinstance(value, _ReadIterator):
+        return True
+    kind = type(value)
+    if depth >= _MAX_ARGUMENT_DEPTH:
+        return False
+    if kind is list or kind is tuple:
+        items: Any = value
+    elif kind is dict:
+        items = value.values()
+    else:
+        return False
+    return any(
+        _holds_read_iterator(item, depth + 1) for item in items if type(item) not in _PLAIN_TYPES
+    )
 
 
 def _returning(result: Any) -> Callable[..., Any]:
@@ -1171,11 +1333,13 @@ def _returning(result: Any) -> Callable[..., Any]:
 def _sent_at_once(
     session: Session, provider: Provider, real_fn: Any, call_kwargs: dict[str, Any]
 ) -> Callable[..., Any]:
-    """A stream call whose arguments are unreadable, made now, as the
-    caller made it: a release whose ``stream()`` reads its arguments when
-    called raises the iterator's exception here (reported as a failed
-    call), one that reads them on entry raises when the guard enters what
-    this returns."""
+    """A stream call made now, as the caller made it, for the guard to
+    enter what it returns: a stream manager's (``messages.stream()``),
+    and a call whose arguments are unreadable. A release whose
+    ``stream()`` reads its arguments when called builds its request here
+    and raises a failing iterator's exception here (reported as a failed
+    call); one that reads them on entry does both when the guard enters
+    what this returns."""
     t0 = time.monotonic()
     try:
         result = real_fn(**call_kwargs)
@@ -1302,6 +1466,7 @@ def call_stream(
     provider: Provider,
     *,
     hide_chunk: Callable[[Any], bool] | None = None,
+    call_now: bool = False,
 ) -> GuardedStream:
     """Streaming call intercept.
 
@@ -1310,14 +1475,18 @@ def call_stream(
     ``with`` block exits (including early exit).
 
     An iterator among the arguments is read into a list first (see
-    :func:`materialise_iterators`). When one raises midway, the SDK is
-    called at once, after the policy check (see :func:`_sent_at_once`).
+    :func:`materialise_iterators`). ``call_now`` (a stream manager, such
+    as Anthropic's ``messages.stream()``) has the SDK called at once,
+    after the policy check, as the caller calls it, and the guard enters
+    the manager it returns; so is a call with an iterator that raised
+    midway (see :func:`_sent_at_once`).
     """
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
-    if not arguments.readable:
+    if call_now or not arguments.readable:
+        call_kwargs = _sending(session, call_kwargs)
         real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedStream(
         real_fn,
@@ -1327,6 +1496,8 @@ def call_stream(
         estimated,
         estimated_via,
         hide_chunk=hide_chunk,
+        made_at_call=call_now,
+        given=arguments.given,
     )
 
 
@@ -1337,6 +1508,7 @@ def call_stream_async(
     provider: Provider,
     *,
     hide_chunk: Callable[[Any], bool] | None = None,
+    call_now: bool = False,
 ) -> GuardedAsyncStream:
     """Async streaming call intercept.
 
@@ -1344,13 +1516,14 @@ def call_stream_async(
     context-manager + async-iterator protocols. Pre-call policy check
     still runs synchronously before the context is returned so BLOCK is
     honoured before the first network byte. An iterator among the
-    arguments is read as in :func:`call_stream`.
+    arguments, and ``call_now``, are handled as in :func:`call_stream`.
     """
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
-    if not arguments.readable:
+    if call_now or not arguments.readable:
+        call_kwargs = _sending(session, call_kwargs)
         real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedAsyncStream(
         real_fn,
@@ -1360,6 +1533,8 @@ def call_stream_async(
         estimated,
         estimated_via,
         hide_chunk=hide_chunk,
+        made_at_call=call_now,
+        given=arguments.given,
     )
 
 
@@ -1537,9 +1712,17 @@ class _GuardCore:
         estimated: int,
         estimated_via: str = "none",
         hide_chunk: Callable[[Any], bool] | None = None,
+        made_at_call: bool = False,
+        given: Mapping[str, tuple[Any, Any]] = _NONE_GIVEN,
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
+        # A stream manager the SDK made when the call was made: the request
+        # is built then or on entry, depending on the release (see
+        # _keep_the_copy_sent), from the arguments the SDK holds, ``given``
+        # among them (see Arguments.given).
+        self._made_at_call = made_at_call
+        self._given = given
         self._session = session
         self._provider = provider
         self._estimated = estimated
@@ -1932,14 +2115,20 @@ class GuardedStream(_GuardCore):
         self._entered = True
         self._t0 = time.monotonic()
         try:
-            # The SDK builds the request now, also for a stream manager
-            # (messages.stream()), which the guard calls only on entry.
             self._kwargs = _sending(self._session, self._kwargs)
+            at_entry = (
+                _entry_copy(
+                    self._session, self._kwargs, _provider_name(self._provider), self._given
+                )
+                if self._made_at_call
+                else None
+            )
             self._ctx = self._real_fn(**self._kwargs)
             if hasattr(self._ctx, "__enter__"):
                 self._stream = self._ctx.__enter__()
             else:
                 self._stream = self._ctx
+            _keep_the_copy_sent(self._kwargs, at_entry, self._stream)
             self._register_open()
             self._attach_accumulator()
             self._opened_t = time.monotonic()
@@ -2150,6 +2339,13 @@ class GuardedAsyncStream(_GuardCore):
         self._t0 = time.monotonic()
         try:
             self._kwargs = _sending(self._session, self._kwargs)
+            at_entry = (
+                _entry_copy(
+                    self._session, self._kwargs, _provider_name(self._provider), self._given
+                )
+                if self._made_at_call
+                else None
+            )
             self._ctx = self._real_fn(**self._kwargs)
             # AsyncOpenAI.chat.completions.create(stream=True) returns a
             # coroutine resolving to the async stream; AsyncAnthropic's
@@ -2161,6 +2357,7 @@ class GuardedAsyncStream(_GuardCore):
                 self._stream = await self._ctx.__aenter__()
             else:
                 self._stream = self._ctx
+            _keep_the_copy_sent(self._kwargs, at_entry, self._stream)
             self._register_open()
             self._attach_accumulator()
             self._opened_t = time.monotonic()

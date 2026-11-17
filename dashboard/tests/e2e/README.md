@@ -22,7 +22,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T06-truncation-and-tooltip.spec.ts` | Narrow viewport: long fixture name gets `title` attribute via `<TruncatedText/>` |
 | `T10-wholedashboard-smoke.spec.ts` | Every top-level page mounts with no console errors |
 | `T12-agent-chip-resolves-name-from-agent-endpoint.spec.ts` | Agent chip renders human-readable name from `/v1/agents/{id}` |
-| `T14-embeddings-event-renders.spec.ts` | Embeddings event renders + drawer content tab works |
+| `T14-embeddings-event-renders.spec.ts` | Embeddings event renders + drawer content tab works; on capture-on runs of its own, a token-id input reads as one input labelled as token ids with its count (`3 tokens`), and two token-id lists as `2 inputs`, each with its own count, the one longer than the preview cut with `, …` until **Show full inputs** |
 | `T15-streaming-indicators.spec.ts` | In-flight streaming run shows streaming pill |
 | `T16-error-event-renders-and-filters.spec.ts` | llm_error events render; error_type facet filters |
 | `T17-policy-events-render-and-filter.spec.ts` | Policy events render; matched_entry_id facet filters |

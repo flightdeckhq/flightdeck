@@ -327,3 +327,14 @@ export const SWIM_KEYBOARD_SCROLL_FRACTION = 0.5;
  * via the directive's `grace_period_ms` field.
  */
 export const SHUTDOWN_GRACE_PERIOD_MS = 5000;
+
+/**
+ * How many token ids an embeddings input given as token ids shows
+ * before "Show full input" (or, for each input of a list, before the
+ * list's "Show full inputs") in the embeddings content viewer. A token
+ * id of the OpenAI encodings is at most six digits (the largest
+ * vocabulary, o200k, has about 200,000 entries), so with its ", "
+ * separator one id takes up to eight characters: 35 ids stay within the
+ * 280 characters a text input's preview shows.
+ */
+export const EMBEDDING_TOKEN_IDS_PREVIEW_COUNT = 35;

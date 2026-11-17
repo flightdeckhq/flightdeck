@@ -1,10 +1,11 @@
 /**
- * A run that T162, T163, T165 and T178 post through ingestion in the
+ * A run that T14, T162, T163, T165 and T178 post through ingestion in the
  * sensor's own wire shape (T166 in the Claude Code plugin's): a
  * session_start declaring the capture posture, then
  * calls whose captured content travels in the event_content envelope
  * (T165: OpenAI Responses and litellm text_completion post_calls; T178:
- * Anthropic post_calls whose system is a list of blocks). T162 and T163 post tool
+ * Anthropic post_calls whose system is a list of blocks; T14: an
+ * embeddings call given token ids). T162 and T163 post tool
  * calls whose captured arguments and result travel in the event_content
  * envelope the sensor builds (interceptor/base.py and interceptor/mcp.py,
  * ``_build_tool_capture_content``): ``tool_input`` / ``tool_output``,
@@ -162,6 +163,30 @@ export const contentPostCall = (run: Run, offsetSeconds: number, content: Record
     latency_ms: 900,
     has_content: true,
     content: { ...content, session_id: run.sessionId, event_id: "" },
+  });
+
+/** An embeddings call the sensor reports, with the content envelope it
+ *  stores: the request's ``input`` as sent, which the embeddings API
+ *  takes as a string, strings, token ids or token-id lists (T14). */
+export const embeddingsCall = (run: Run, offsetSeconds: number, input: unknown, tokensInput: number) =>
+  event(run, "embeddings", offsetSeconds, {
+    model: "text-embedding-3-small",
+    provider: "openai",
+    tokens_input: tokensInput,
+    latency_ms: 120,
+    has_content: true,
+    content: {
+      provider: "openai",
+      model: "text-embedding-3-small",
+      system: null,
+      messages: [],
+      tools: null,
+      response: {},
+      input,
+      session_id: run.sessionId,
+      event_id: "",
+      captured_at: new Date().toISOString(),
+    },
   });
 
 /** An Anthropic post_call the sensor reports, with the content envelope

@@ -698,6 +698,46 @@ def test_an_anthropic_stream_manager_entered_after_teardown_raises_nothing(
     assert {name for name, _ in events} <= {"s1"}
 
 
+def _enter_anthropic(manager: Any, replies: list[str], *, is_async: bool) -> Any:
+    """Enter an Anthropic stream manager and keep its reply in ``replies``;
+    for an async manager, the coroutine that does (``sensor.run`` awaits
+    it)."""
+    if is_async:
+
+        async def _entered() -> None:
+            async with manager as stream:
+                message = await stream.get_final_message()
+            replies.append(str(message.content[0].text))
+
+        return _entered()
+    with manager as stream:
+        replies.append(str(stream.get_final_message().content[0].text))
+    return None
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_an_anthropic_stream_manager_entered_in_the_next_session_stays_the_first_sessions(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+) -> None:
+    """``stream()`` called under the first session, which policed the call
+    and took its ``pre_call``, then entered once the next session has
+    started: the call stays the first session's, as the session it was
+    called in, and the next session reports none of it."""
+    sensor.start("s1")
+    client = (anthropic.AsyncAnthropic if is_async else anthropic.Anthropic)(
+        api_key="k", max_retries=0
+    )
+    managers: list[Any] = []
+    called = sensor.run(lambda: managers.append(client.messages.stream(**ANTHROPIC_REQUEST)))
+    assert called == [("s1", "pre_call")]
+    sensor.stop()
+    sensor.start("s2")
+    replies: list[str] = []
+    entered = sensor.run(lambda: _enter_anthropic(managers[0], replies, is_async=is_async))
+    assert replies == ["Hello"]
+    assert entered == [("s1", "post_call")]
+
+
 # ----- an async call created in one session and awaited later ---------------
 #
 # An async SDK call sends its request when its coroutine is awaited (an

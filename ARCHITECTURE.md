@@ -8977,7 +8977,32 @@ header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. A `system` given as a list of content blocks is shown block
+`response`. An OpenAI message's tool calls are shown as an Anthropic
+`tool_use` block is, in a box with the tool's name and then its
+arguments as labelled fields: each entry of an assistant message's
+`tool_calls` (a `function` call, whose `arguments` is a JSON string, or
+a `custom` tool's call, whose `input` is text) and a legacy
+`function_call`, one box per call in order, after the message's text
+when it has any; the response's message shows its calls the same way.
+An `arguments` string that holds a JSON object shows as labelled
+fields, as do `arguments` stored as an object; one that holds a JSON
+array shows as that JSON; any other string is shown as written: the
+model writes it, and a cut or malformed string is still what the
+provider received. A function call with no arguments says `(no
+arguments)`, the OpenAI field's name, and a custom tool's call with no
+input `(no input)`. A call of a type the viewer does not know is shown
+as its JSON, and a message with neither text nor a call shows
+`(empty)`. A tool's reply (a `tool` message, or a legacy `function`
+message) is labelled `tool result` and the tool it answers: the name of
+the call whose `id` its `tool_call_id` holds, looked up among the calls
+of the earlier assistant messages in the same list (the nearest one
+when an id repeats), else the reply's own `name` when it carries one
+(LangChain and some litellm paths send it), else that id, shortened,
+Raw showing it whole; a `function` message names its own `name`. The reply's content is shown
+as any message's content is. The lookup runs once per message list.
+These are read from the messages' shape, not the provider name, so a
+litellm call's OpenAI-format messages show the same way. A `system`
+given as a list of content blocks is shown block
 by block, as a message's content blocks are: a text block as its text,
 a block the viewer does not know as its JSON; Raw shows the list as
 stored. A content block that carries `cache_control` (a cache
@@ -8992,7 +9017,9 @@ a message item with its role and its content parts (`input_text` and
 `output_text` as text, `refusal` labelled, `input_image`, `input_file`
 and `input_audio` named by type), a `function_call` with its name,
 `call_id` and arguments, a `function_call_output` with its `call_id`
-and output, a `reasoning` item with its summary text, and any other
+and output, labelled `tool result` and, when the `function_call` it
+answers is earlier in the input (the nearest one when a `call_id`
+repeats), that call's name, a `reasoning` item with its summary text, and any other
 item type labelled by its `type` and shown as its JSON, never dropped.
 Its function tools, which the Responses API declares flat (`name`,
 `description`, `parameters`), show their parameters, and a hosted tool

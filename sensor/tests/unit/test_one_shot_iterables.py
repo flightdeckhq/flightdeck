@@ -604,10 +604,10 @@ class _Readers:
         self._sensor_reading = 0
         materialise = base.materialise_iterators
 
-        def spy(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -> base.Arguments:
+        def spy(kwargs: dict[str, Any], real_fn: Callable[..., Any], *rest: Any) -> base.Arguments:
             self._sensor_reading += 1
             try:
-                return materialise(kwargs, real_fn)
+                return materialise(kwargs, real_fn, *rest)
             finally:
                 self._sensor_reading -= 1
 

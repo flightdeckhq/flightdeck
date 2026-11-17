@@ -802,6 +802,133 @@ def test_sensor_generator_arguments_reach_the_provider_and_their_content_lands(
         assert not any(tool["function"]["name"] in row for row in stored)
 
 
+def _event_content(event_id: str) -> dict[str, Any]:
+    """GET /v1/events/:id/content, through the query API."""
+    req = urllib.request.Request(
+        f"{API_URL}/v1/events/{event_id}/content",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body: dict[str, Any] = json.loads(resp.read())
+    return body
+
+
+def test_sensor_tool_use_loop_reply_objects_land_as_the_json_sent(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """A tool-use loop appends the model's reply as the SDK returned it (an
+    OpenAI ChatCompletionMessage with its tool calls, Anthropic content
+    blocks), then the tool's result. The content the query API serves for
+    the second call holds those messages as the JSON the provider
+    received."""
+    flavor = unique_flavor
+    question = f"tool-loop-question-{flavor}"
+    openai_tool_reply = {
+        **OPENAI_RESPONSE,
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "refusal": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    anthropic_tool_reply = {
+        **ANTHROPIC_RESPONSE,
+        "stop_reason": "tool_use",
+        "content": [
+            {"type": "text", "text": "Let me check", "citations": None},
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "get_weather",
+                "input": {"city": "Paris"},
+            },
+        ],
+    }
+    with respx.mock(assert_all_called=False) as rmock:
+        openai_route = rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=openai_tool_reply),
+                httpx.Response(200, json=OPENAI_RESPONSE),
+            ]
+        )
+        anthropic_route = rmock.post("https://api.anthropic.com/v1/messages").mock(
+            side_effect=[
+                httpx.Response(200, json=anthropic_tool_reply),
+                httpx.Response(200, json=ANTHROPIC_RESPONSE),
+            ]
+        )
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN, capture_prompts=True)
+        openai_client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        anthropic_client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+
+        openai_messages: list[Any] = [{"role": "user", "content": f"openai {question}"}]
+        reply = openai_client.chat.completions.create(model="gpt-4o-mini", messages=openai_messages)
+        openai_messages.append(reply.choices[0].message)
+        openai_messages.append({"role": "tool", "tool_call_id": "call_1", "content": "sunny"})
+        openai_client.chat.completions.create(model="gpt-4o-mini", messages=openai_messages)
+        openai_sent = json.loads(openai_route.calls.last.request.content)["messages"]
+
+        anthropic_messages: list[Any] = [
+            {"role": "user", "content": f"anthropic {question}"}
+        ]
+        answer = anthropic_client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=100, messages=anthropic_messages
+        )
+        anthropic_messages.append({"role": "assistant", "content": answer.content})
+        anthropic_messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "sunny"}],
+            }
+        )
+        anthropic_client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=100, messages=anthropic_messages
+        )
+        anthropic_sent = json.loads(anthropic_route.calls.last.request.content)["messages"]
+
+    assert openai_sent[1]["tool_calls"][0]["id"] == "call_1"
+    assert anthropic_sent[1]["content"][1]["type"] == "tool_use"
+
+    def _four_post_calls() -> bool:
+        posts = [e for e in _query_events_for_flavor(flavor) if e.get("event_type") == "post_call"]
+        return len(posts) >= 4 and all(e.get("has_content") for e in posts)
+
+    wait_until(_four_post_calls, timeout=15, msg="four post_call events with content not in DB")
+    stored: list[list[Any]] = []
+
+    def _contents_fetchable() -> bool:
+        stored.clear()
+        for event in _query_events_for_flavor(flavor):
+            if event.get("event_type") != "post_call":
+                continue
+            try:
+                stored.append(_event_content(str(event["id"]))["messages"])
+            except urllib.error.HTTPError:
+                return False
+        return len(stored) >= 4
+
+    wait_until(_contents_fetchable, timeout=15, msg="the content endpoint did not serve them")
+    assert openai_sent in stored
+    assert anthropic_sent in stored
+    assert "ChatCompletionMessage(" not in json.dumps(stored)
+    assert "TextBlock(" not in json.dumps(stored)
+
+
 # ======================================================================
 # Test 4 -- Custom directive registered AND triggered end-to-end
 # ======================================================================

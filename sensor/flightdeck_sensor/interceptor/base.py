@@ -20,6 +20,7 @@ import contextlib
 import contextvars
 import copy
 import functools
+import importlib.util
 import inspect
 import io
 import logging
@@ -592,6 +593,16 @@ def settle_open_guards(session: Session, lock_wait: float | None = None) -> None
 # what the SDK's last read yielded: what it sent, when it reads an
 # argument twice. Only the arguments the sensor reads are looked at; an
 # iterator anywhere else is the SDK's alone and reaches it untouched.
+#
+# The same walk reads the other objects a caller may hand over in those
+# arguments as what the SDK sends for them. A pydantic model (the SDK's
+# reply passed back, as a tool-use loop does: an OpenAI
+# ChatCompletionMessage, Responses output items, Anthropic content blocks;
+# or the caller's own model) is read as the JSON the SDK writes for it
+# (see _request_dump), for the estimate and the stored content, while the
+# SDK gets the caller's own object. Nothing is stored as its string form:
+# an object the sensor cannot write as what was sent leaves the event
+# without its content (transport.body_limit).
 
 # Argument types that are never an iterator and hold none: most of a
 # request's values, so the common path is one type lookup each.
@@ -620,6 +631,52 @@ _LISTED_COLLECTIONS = (
     range,
 )
 
+# The class names of the SDKs' sentinels for a value left out
+# (``NOT_GIVEN``, ``omit``): the SDK drops such a value from the request,
+# so the stored content does too.
+_OMITTED_VALUE_TYPES = frozenset({"NotGiven", "Omit"})
+
+
+def _model_class() -> Any:
+    """pydantic's ``BaseModel`` when pydantic is loaded (every SDK the
+    sensor patches loads it), else None."""
+    return getattr(sys.modules.get("pydantic"), "BaseModel", None)
+
+
+@functools.cache
+def _anthropic_dumps_by_alias() -> bool:
+    """Whether the installed anthropic SDK writes a model into a request
+    by field alias: its 2.x request preparation (``_utils._prepare``) does,
+    the transform of earlier releases does not."""
+    try:
+        return importlib.util.find_spec("anthropic._utils._prepare") is not None
+    except Exception:
+        return False
+
+
+def _request_dump(receiver: str) -> Callable[[Any], Any]:
+    """How the SDK ``receiver`` (a provider's name) writes a pydantic model
+    it finds in a request: the model's JSON dump of the fields that were
+    set, without those its class marks ``__api_exclude__``, by alias for
+    anthropic 2.x. That is the OpenAI and Anthropic SDKs' own rule for a
+    request body (their transform, anthropic 2.x's ``openapi_model_dump``);
+    litellm, whose input the sensor stores, forwards it to the OpenAI SDK.
+    pydantic's serializer warnings stay off: the SDK dumps the model again
+    when it sends it."""
+    by_alias = receiver == "anthropic" and _anthropic_dumps_by_alias()
+
+    def dump(model: Any) -> Any:
+        return model.model_dump(
+            mode="json",
+            exclude_unset=True,
+            by_alias=by_alias,
+            exclude=getattr(model, "__api_exclude__", None),
+            warnings=False,
+        )
+
+    return dump
+
+
 # How deep the sensor looks into a call's arguments for an iterator. A
 # request nests a few levels (messages, a message, its content blocks, a
 # tool result's content, a tool's JSON schema), so 64 leaves room for any
@@ -637,10 +694,12 @@ def _is_one_shot(value: Any) -> bool:
 
 
 def _to_read(value: Any, depth: int = 0) -> bool:
-    """Whether an iterator, or a collection JSON cannot write (see
-    :data:`_LISTED_COLLECTIONS`), is anywhere in ``value``, inside the
-    lists, tuples and dicts it is made of, down to
-    :data:`_MAX_ARGUMENT_DEPTH`: a walk that copies nothing, the whole
+    """Whether anything the SDK sends in another form is anywhere in
+    ``value``, inside the lists, tuples and dicts it is made of, down to
+    :data:`_MAX_ARGUMENT_DEPTH`: an iterator, a collection JSON cannot
+    write (see :data:`_LISTED_COLLECTIONS`), a mapping that is not a dict,
+    a pydantic model or a left-out value (see
+    :data:`_OMITTED_VALUE_TYPES`). A walk that copies nothing, the whole
     cost of an ordinary call's arguments."""
     kind = type(value)
     if kind is dict:
@@ -648,8 +707,14 @@ def _to_read(value: Any, depth: int = 0) -> bool:
     elif kind is list or kind is tuple:
         items = value
     else:
-        return kind not in _PLAIN_TYPES and (
-            _is_one_shot(value) or isinstance(value, _LISTED_COLLECTIONS)
+        if kind in _PLAIN_TYPES:
+            return False
+        model = _model_class()
+        return (
+            _is_one_shot(value)
+            or isinstance(value, (*_LISTED_COLLECTIONS, collections.abc.Mapping))
+            or (model is not None and isinstance(value, model))
+            or kind.__name__ in _OMITTED_VALUE_TYPES
         )
     if depth >= _MAX_ARGUMENT_DEPTH:
         return False
@@ -747,11 +812,26 @@ def _replay_copy(kind: str, items: list[Any], error: Exception | None) -> _Repla
     return _replay_type(kind)(items, error, None)
 
 
-def _materialised(value: Any, failure: list[Exception], depth: int = 0) -> Any:
+class _Dumped(dict):  # type: ignore[type-arg]
+    """A pydantic model from a call's arguments, read as the JSON the SDK
+    writes for it (see :func:`_request_dump`); ``original`` is the
+    caller's object, which the SDK gets (see :func:`_as_sent`)."""
+
+    original: Any = None
+
+
+def _materialised(
+    value: Any,
+    failure: list[Exception],
+    depth: int = 0,
+    dump: Callable[[Any], Any] | None = None,
+) -> Any:
     """``value`` with every iterator in it read into a :class:`_ReadIterator`
-    of its items, inside the lists, tuples and dicts it is made of, down
-    to :data:`_MAX_ARGUMENT_DEPTH`. The very same object when it holds
-    none; otherwise a copy along the path to each iterator only, so the
+    of its items and every pydantic model read as ``dump`` writes it (a
+    :class:`_Dumped`; one ``dump`` fails on is left as it is), inside the
+    lists, tuples and dicts it is made of, down to
+    :data:`_MAX_ARGUMENT_DEPTH`. The very same object when it holds
+    neither; otherwise a copy along the path to each one only, so the
     caller's own containers are never changed. An iterator that raises
     keeps the items read before it did and the exception, which is also
     put in ``failure``; nothing after it is read."""
@@ -763,7 +843,7 @@ def _materialised(value: Any, failure: list[Exception], depth: int = 0) -> Any:
             return value
         items: list[Any] | None = None
         for index, item in enumerate(value):
-            read = _materialised(item, failure, depth + 1)
+            read = _materialised(item, failure, depth + 1, dump)
             if read is not item:
                 if items is None:
                     items = list(value)
@@ -776,18 +856,26 @@ def _materialised(value: Any, failure: list[Exception], depth: int = 0) -> Any:
             return value
         entries: dict[Any, Any] | None = None
         for key, item in value.items():
-            read = _materialised(item, failure, depth + 1)
+            read = _materialised(item, failure, depth + 1, dump)
             if read is not item:
                 if entries is None:
                     entries = dict(value)
                 entries[key] = read
         return value if entries is None else entries
+    model = _model_class()
+    if dump is not None and model is not None and isinstance(value, model):
+        try:
+            dumped = _Dumped(dump(value))
+        except Exception:
+            return value
+        dumped.original = value
+        return dumped
     if _is_one_shot(value):
         read_items = _ReadIterator()
         read_items.kind = type(value).__name__
         try:
             for item in value:
-                read_items.append(_materialised(item, failure, depth + 1))
+                read_items.append(_materialised(item, failure, depth + 1, dump))
                 if failure:
                     break
         except Exception as exc:
@@ -835,7 +923,10 @@ def _as_sent(value: Any, depth: int = 0) -> Any:
     a fresh :class:`_Replay` in place of each :class:`_ReadIterator`
     (linked to it as its ``replay``), its items sent the same way, inside
     new containers along the path to it; the sensor's own lists are left
-    as they are for content capture."""
+    as they are for content capture. The caller's own object in place of
+    each :class:`_Dumped`."""
+    if isinstance(value, _Dumped):
+        return value.original
     if isinstance(value, _ReadIterator):
         replay = _replay_type(value.kind)(
             [_as_sent(item, depth + 1) for item in value], value.error, value.pickling_error
@@ -856,9 +947,13 @@ def as_received(value: Any, depth: int = 0) -> Any:
     iterator the SDK never read (it passed the replay on, or copied it)
     is the items the caller's iterator held, as a list argument is. A
     collection JSON cannot write (see :data:`_LISTED_COLLECTIONS`) is the
-    list of its items in their own order, which is what the SDK sends.
-    The very same object, and nothing copied, for arguments that hold
-    neither."""
+    list of its items in their own order, and a mapping that is not a dict
+    a dict, which is what the SDK sends. A pydantic model is the JSON it
+    was read as (a :class:`_Dumped`), and a left-out value is dropped from
+    the dict holding it, as the SDK drops it. The very same object, and
+    nothing copied, for arguments that hold none of these."""
+    if isinstance(value, _Dumped):
+        return dict(value)
     if isinstance(value, _ReadIterator):
         replay = value.replay
         items: list[Any] = value
@@ -870,7 +965,71 @@ def as_received(value: Any, depth: int = 0) -> Any:
         return value
     if isinstance(value, _LISTED_COLLECTIONS):
         return [as_received(item, depth + 1) for item in value]
+    kind = type(value)
+    if (kind is dict or kind is _ReadArguments) and any(
+        type(item).__name__ in _OMITTED_VALUE_TYPES for item in value.values()
+    ):
+        value = {
+            key: item
+            for key, item in value.items()
+            if type(item).__name__ not in _OMITTED_VALUE_TYPES
+        }
+    elif kind is not dict and isinstance(value, collections.abc.Mapping):
+        value = dict(value)
     return _rebuilt(value, as_received, depth)
+
+
+def _snapshot(value: Any, depth: int = 0) -> Any:
+    """``value`` with every list, tuple and dict of the caller's in it
+    copied, down to :data:`_MAX_ARGUMENT_DEPTH`. The sensor's own
+    containers (:class:`_ReadIterator`, :class:`_Dumped`) are kept as they
+    are, so content capture still resolves them (see :func:`as_received`).
+    """
+    kind = type(value)
+    if kind in _PLAIN_TYPES or depth >= _MAX_ARGUMENT_DEPTH:
+        return value
+    if kind is list or kind is tuple:
+        return [_snapshot(item, depth + 1) for item in value]
+    if kind is dict:
+        return {key: _snapshot(item, depth + 1) for key, item in value.items()}
+    return value
+
+
+def _sending(session: Session, call_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``call_kwargs`` as the call is handed to the SDK, which builds the
+    request from them now: with capture on, a :class:`_ReadArguments`
+    carrying a copy of the arguments content capture stores (see
+    :func:`_captured`), taken at this moment. The caller often changes
+    those lists next (a tool-use loop appends the reply to the very list
+    it sent, a stream's caller may do so before it reads the stream), and
+    the event is written later, on the drain thread. The SDK gets the same
+    objects either way; with capture off nothing is copied. Arguments
+    copied already are kept: a raw view's stream is guarded only when the
+    caller parses it, long after its request went out."""
+    if not session.config.capture_prompts or getattr(call_kwargs, "captured", None) is not None:
+        return call_kwargs
+    sending = _ReadArguments(call_kwargs)
+    sending.captured = {
+        name: _snapshot(value)
+        for name, value in call_kwargs.items()
+        if name in _READ_ARGUMENT_NAMES
+    }
+    return sending
+
+
+def _captured(call_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The arguments content capture stores for a call: those
+    :func:`_sending` copied when the call was handed to the SDK, the rest
+    as they are, resolved by :func:`as_received`."""
+    captured = getattr(call_kwargs, "captured", None)
+    if captured is not None:
+        merged = _ReadArguments(call_kwargs)
+        merged.update(captured)
+        call_kwargs = merged
+    if isinstance(call_kwargs, _ReadArguments):
+        received: dict[str, Any] = as_received(call_kwargs)
+        return received
+    return call_kwargs
 
 
 class _ReadArguments(dict):  # type: ignore[type-arg]
@@ -878,7 +1037,9 @@ class _ReadArguments(dict):  # type: ignore[type-arg]
     :func:`materialise_iterators`). Content capture resolves only
     arguments of this type (see :func:`as_received`), so an ordinary
     call's capture walks nothing more; the copy the policy check makes on
-    a degrade keeps the type."""
+    a degrade keeps the type. ``captured`` is set by :func:`_sending`."""
+
+    captured: dict[str, Any] | None = None
 
 
 class Arguments(NamedTuple):
@@ -892,14 +1053,18 @@ class Arguments(NamedTuple):
     readable: bool
 
 
-def materialise_iterators(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -> Arguments:
+def materialise_iterators(
+    kwargs: dict[str, Any], real_fn: Callable[..., Any], receiver: str = ""
+) -> Arguments:
     """A call's arguments for the sensor to read and the SDK call to make
     with them. Only the arguments the sensor reads are looked at (see
-    :data:`_READ_ARGUMENT_NAMES`). With no iterator among them, the
-    arguments are ``kwargs`` and ``real_fn`` themselves. Otherwise they
-    are a copy in which each iterator is a list of its items, and the SDK
-    call hands the SDK a :class:`_Replay` of those items in its place (see
-    the comment above).
+    :data:`_READ_ARGUMENT_NAMES`). With nothing to read in another form
+    among them (see :func:`_to_read`), the arguments are ``kwargs`` and
+    ``real_fn`` themselves. Otherwise they are a copy in which each
+    iterator is a list of its items and each pydantic model the JSON the
+    SDK ``receiver`` (a provider's name) writes for it, and the SDK call
+    hands the SDK a :class:`_Replay` of those items in place of each
+    iterator and the caller's own models (see the comment above).
 
     An iterator that raises while it is read stops the reading, and the
     arguments are not readable: the caller still runs the estimate (on
@@ -921,8 +1086,9 @@ def materialise_iterators(kwargs: dict[str, Any], real_fn: Callable[..., Any]) -
             return Arguments(kwargs, real_fn, True)
         failure: list[Exception] = []
         read: dict[str, Any] = _ReadArguments(kwargs)
+        dump = _request_dump(receiver)
         for name in names:
-            read[name] = _materialised(kwargs[name], failure, 1)
+            read[name] = _materialised(kwargs[name], failure, 1, dump)
     except RecursionError:
         # The caller's own stack is too deep for the walk: the SDK gets
         # the arguments as they are. The log line needs stack too.
@@ -994,10 +1160,10 @@ def call(
     that raises midway raises from the SDK where it reads it (see
     :func:`materialise_iterators`).
     """
-    arguments = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    call_kwargs = _sending(session, _pre_call(session, provider, kwargs, estimated, estimated_via))
 
     t0 = time.monotonic()
     try:
@@ -1040,11 +1206,12 @@ async def call_async(
     event_type: EventType = EventType.POST_CALL,
 ) -> Any:
     """Asynchronous call intercept -- same logic as :func:`call`, awaited."""
-    arguments = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
 
+    call_kwargs = _sending(session, call_kwargs)
     t0 = time.monotonic()
     try:
         response = await real_fn(**call_kwargs)
@@ -1092,7 +1259,7 @@ def call_stream(
     :func:`materialise_iterators`). When one raises midway, the SDK is
     called at once, after the policy check (see :func:`_sent_at_once`).
     """
-    arguments = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
@@ -1125,7 +1292,7 @@ def call_stream_async(
     honoured before the first network byte. An iterator among the
     arguments is read as in :func:`call_stream`.
     """
-    arguments = materialise_iterators(kwargs, real_fn)
+    arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
@@ -1711,6 +1878,9 @@ class GuardedStream(_GuardCore):
         self._entered = True
         self._t0 = time.monotonic()
         try:
+            # The SDK builds the request now, also for a stream manager
+            # (messages.stream()), which the guard calls only on entry.
+            self._kwargs = _sending(self._session, self._kwargs)
             self._ctx = self._real_fn(**self._kwargs)
             if hasattr(self._ctx, "__enter__"):
                 self._stream = self._ctx.__enter__()
@@ -1925,6 +2095,7 @@ class GuardedAsyncStream(_GuardCore):
         self._entered = True
         self._t0 = time.monotonic()
         try:
+            self._kwargs = _sending(self._session, self._kwargs)
             self._ctx = self._real_fn(**self._kwargs)
             # AsyncOpenAI.chat.completions.create(stream=True) returns a
             # coroutine resolving to the async stream; AsyncAnthropic's
@@ -2403,7 +2574,7 @@ def _post_call(
     has_content = False
     if session.config.capture_prompts and call_kwargs is not None:
         pc = provider.extract_content(
-            as_received(call_kwargs) if isinstance(call_kwargs, _ReadArguments) else call_kwargs,
+            _captured(call_kwargs),
             content_response if content_response is not None else response,
             event_type=event_type,
         )

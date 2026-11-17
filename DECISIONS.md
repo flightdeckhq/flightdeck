@@ -1223,3 +1223,19 @@ that reads as JSON would turn into blocks); flattening to one string
 (loses `cache_control`); a `system JSONB` replacing the TEXT column
 (rewrites every prompt); a second API field, or a rename to `system` (a
 client that reads only `system_prompt` sees null for block-list calls).
+
+## D285 -- A pydantic model in a call's arguments is stored as the SDK's request dump of it, worked out by the sensor
+
+**Date:** 2026-11-16
+**Decision:** the sensor reads a pydantic model in the arguments it reads
+as `model_dump(mode="json", exclude_unset=True, exclude=__api_exclude__)`,
+by alias for anthropic 2.x: the rule both SDKs apply to a model in a
+request body. The parity tests compare it with the received request on
+every lane. An object it cannot write that way leaves the event without
+content; nothing is stored as a string.
+**Why:** a tool-use loop passes the SDK's reply objects back, and their
+content was dropped (or, for Responses input, dumped with unsent fields).
+**Rejected alternative:** calling the SDKs' own transforms (`maybe_transform`,
+`openapi_model_dump`: private, absent in some lane releases); recording
+the request body at the HTTP client (a new patch on every SDK client,
+blind to litellm's own transports); `str()` (not what was sent).

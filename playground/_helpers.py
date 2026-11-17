@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -327,6 +328,52 @@ def fetch_events_for_session(
             pass
         time.sleep(poll_s)
     return last
+
+
+# The worker writes an event's row before its event_content row, so a
+# capture-on event can be listed with has_content=true a moment before its
+# content is fetchable. Content trails the row by well under a second;
+# 10 s bounds the wait at an order of magnitude above that.
+CONTENT_LANDED_DEADLINE_S = 10.0
+CONTENT_POLL_S = 0.3
+
+
+def fetch_event_content(event_id: str) -> dict[str, Any]:
+    """GET /v1/events/{id}/content, the parsed body. Polls through 404 until
+    ``CONTENT_LANDED_DEADLINE_S``: with capture on a 404 means the content
+    row has not landed yet. The last 404 is raised."""
+    req = urllib.request.Request(
+        f"{API_URL}/v1/events/{event_id}/content",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+    )
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                body: dict[str, Any] = json.loads(r.read())
+                return body
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404 or time.monotonic() > deadline:
+                raise
+        time.sleep(CONTENT_POLL_S)
+
+
+def stored_content_of(session_id: str, marker: str, field: str, *, least: int) -> list[Any]:
+    """The stored ``field`` (``messages`` or ``input``) of the session's
+    post_call whose content holds ``marker`` and at least ``least`` items:
+    the call made after a tool-use loop's first call. Waits for it to land.
+    """
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
+    while time.monotonic() < deadline:
+        events = fetch_events_for_session(session_id, expect_event_types=["post_call"])
+        for event in reversed(events):
+            if event.get("event_type") != "post_call" or not event.get("has_content"):
+                continue
+            stored = fetch_event_content(event["id"]).get(field)
+            if isinstance(stored, list) and len(stored) >= least and marker in json.dumps(stored):
+                return stored
+        time.sleep(CONTENT_POLL_S)
+    raise AssertionError(f"no post_call content with {marker!r} and {least}+ {field}")
 
 
 def instant(stamp: str) -> datetime:

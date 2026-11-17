@@ -573,9 +573,11 @@ func checkContentShape(t *testing.T, ev Event) {
 	if c["messages"] == nil || c["response"] == nil {
 		t.Errorf("%s content without messages or response: %v", ev.EventType, c)
 	}
+	// Every recorded framework sends its system instructions as a list of
+	// parts, which the content carries as the list.
 	if sys, has := c["system"]; has && sys != nil {
-		if s, ok := sys.(string); !ok || !json.Valid([]byte(s)) {
-			t.Errorf("%s system = %v, want JSON text", ev.EventType, sys)
+		if _, ok := sys.([]any); !ok {
+			t.Errorf("%s system = %#v, want the list of parts the framework sent", ev.EventType, sys)
 		}
 	}
 }

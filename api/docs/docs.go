@@ -3371,7 +3371,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "system_prompt": {
-                    "type": "string"
+                    "description": "The call's system prompt as the provider received it: a string, a\nlist of content blocks (an Anthropic system given as blocks, an\nOpenTelemetry GenAI framework's system instructions), or null."
                 },
                 "tool_input": {
                     "description": "tool_input + tool_output carry the\ncaptured arguments and result for mcp_tool_call / mcp_prompt_get\n/ LLM-side tool_call events. The dashboard branches on event_type\nto render the appropriate viewer; without these fields landing\nin the response the operator-paid-for capture is silently lost\nat the read boundary."

@@ -565,6 +565,7 @@ func (w *Writer) InsertEventWithContent(ctx context.Context, row EventRow, conte
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit event transaction: %w", err)
 	}
+	warnDroppedSystem(c, row.EventType, row.SessionID)
 	return eventID, nil
 }
 
@@ -651,15 +652,19 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 	if err != nil {
 		return err
 	}
-	return insertEventContent(ctx, w.db, eventID, sessionID, c)
+	if err := insertEventContent(ctx, w.db, eventID, sessionID, c); err != nil {
+		return err
+	}
+	warnDroppedSystem(c, "", sessionID)
+	return nil
 }
 
 // eventContent is the parsed content blob, one field per event_content
-// column.
+// column; System fills system_prompt or system_blocks by its JSON type.
 type eventContent struct {
 	Provider        string          `json:"provider"`
 	Model           string          `json:"model"`
-	SystemPrompt    *string         `json:"system"`
+	System          contentSystem   `json:"system"`
 	Messages        json.RawMessage `json:"messages"`
 	Tools           json.RawMessage `json:"tools"`
 	Response        json.RawMessage `json:"response"`
@@ -686,10 +691,10 @@ func parseEventContent(content json.RawMessage) (eventContent, error) {
 
 func insertEventContent(ctx context.Context, q querier, eventID, sessionID string, c eventContent) error {
 	_, err := q.ExecContext(ctx, `
-		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output, embedding_output)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, system_blocks, messages, tools, response, input, tool_input, tool_output, embedding_output)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (event_id) DO NOTHING
-	`, canonicalUUID(eventID), canonicalUUID(sessionID), c.Provider, c.Model, c.SystemPrompt,
+	`, canonicalUUID(eventID), canonicalUUID(sessionID), c.Provider, c.Model, c.System.text, jsonArg(c.System.blocks),
 		jsonArg(c.Messages), jsonArg(c.Tools), jsonArg(c.Response), jsonArg(c.Input),
 		jsonArg(c.ToolInput), jsonArg(c.ToolOutput), jsonArg(c.EmbeddingOutput))
 	if err != nil {

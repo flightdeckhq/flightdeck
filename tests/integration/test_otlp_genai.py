@@ -880,3 +880,147 @@ def test_framework_without_content_stores_none_under_capture(
         assert not r["has_content"], r
         if r["event_type"] in ("post_call", "tool_call"):
             assert fetch_content(r["id"])[0] == 404, r
+
+
+# The system instructions of a chat span, each JSON kind a framework can
+# send under gen_ai.system_instructions, and what the post_call stores:
+# the conventions' list in system_blocks as that list; text, and the JSON
+# text of any other value, in system_prompt. A string attribute that holds
+# a JSON object is read as that object when staged.
+BRIEF_PART = {"type": "text", "content": "Be brief."}
+BRIEF_OBJECT_TEXT = '{"content":"Be brief.","type":"text"}'
+SYSTEM_KINDS: list[tuple[str, dict[str, Any], str | None, list[Any] | None]] = [
+    ("list", {"stringValue": json.dumps([BRIEF_PART])}, None, [BRIEF_PART]),
+    ("text", {"stringValue": "Be brief."}, "Be brief.", None),
+    ("object string", {"stringValue": json.dumps(BRIEF_PART)}, BRIEF_OBJECT_TEXT, None),
+    (
+        "map",
+        {
+            "kvlistValue": {
+                "values": [
+                    {"key": "type", "value": {"stringValue": "text"}},
+                    {"key": "content", "value": {"stringValue": "Be brief."}},
+                ]
+            }
+        },
+        BRIEF_OBJECT_TEXT,
+        None,
+    ),
+    ("int", {"intValue": "42"}, "42", None),
+    ("bool", {"boolValue": True}, "true", None),
+]
+
+# A chat call of the trace below runs for this long, inside its agent.
+SYSTEM_TRACE_CALL_NS = 800_000_000
+
+
+def _system_trace(flavor: str, trace_hex: str, system: dict[str, Any]) -> bytes:
+    """One Pydantic AI agent run, capture declared, with one chat call
+    whose gen_ai.system_instructions is ``system``; it ended a moment ago."""
+    end_ns = time.time_ns() - REPLAY_LEAD_NS
+    agent_id, chat_id = os.urandom(8).hex(), os.urandom(8).hex()
+
+    def attr(key: str, value: dict[str, Any]) -> dict[str, Any]:
+        return {"key": key, "value": value}
+
+    def text(key: str, value: str) -> dict[str, Any]:
+        return attr(key, {"stringValue": value})
+
+    user = [{"role": "user", "parts": [{"type": "text", "content": "Capital of France?"}]}]
+    answer = [{"role": "assistant", "parts": [{"type": "text", "content": "Paris."}]}]
+    chat = {
+        "traceId": trace_hex,
+        "spanId": chat_id,
+        "parentSpanId": agent_id,
+        "name": "chat claude-haiku-4-5",
+        "kind": 3,
+        "startTimeUnixNano": str(end_ns - SYSTEM_TRACE_CALL_NS - 100_000_000),
+        "endTimeUnixNano": str(end_ns - 100_000_000),
+        "status": {},
+        "attributes": [
+            text("gen_ai.operation.name", "chat"),
+            text("gen_ai.agent.name", "system_kinds_agent"),
+            text("gen_ai.provider.name", "anthropic"),
+            text("gen_ai.request.model", "claude-haiku-4-5"),
+            attr("gen_ai.system_instructions", system),
+            text("gen_ai.input.messages", json.dumps(user)),
+            text("gen_ai.output.messages", json.dumps(answer)),
+            attr("gen_ai.usage.input_tokens", {"intValue": "12"}),
+            attr("gen_ai.usage.output_tokens", {"intValue": "2"}),
+        ],
+    }
+    agent = {
+        "traceId": trace_hex,
+        "spanId": agent_id,
+        "name": "invoke_agent system_kinds_agent",
+        "kind": 1,
+        "startTimeUnixNano": str(end_ns - SYSTEM_TRACE_CALL_NS - 200_000_000),
+        "endTimeUnixNano": str(end_ns),
+        "status": {},
+        "attributes": [
+            text("gen_ai.operation.name", "invoke_agent"),
+            text("gen_ai.agent.name", "system_kinds_agent"),
+        ],
+    }
+    resource = [
+        text("service.name", flavor),
+        text("flightdeck.flavor", flavor),
+        text("flightdeck.agent_type", "coding"),
+        text("flightdeck.capture_prompts", "true"),
+    ]
+    doc = {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": resource},
+                "scopeSpans": [
+                    {"scope": {"name": "pydantic-ai", "version": "2.64.0"}, "spans": [chat, agent]}
+                ],
+            }
+        ]
+    }
+    return json.dumps(doc).encode()
+
+
+@pytest.mark.parametrize(
+    ("system", "want_text", "want_blocks"),
+    [(value, text, blocks) for _, value, text, blocks in SYSTEM_KINDS],
+    ids=[kind for kind, *_ in SYSTEM_KINDS],
+)
+def test_system_instructions_of_every_kind_are_stored_and_served(
+    system: dict[str, Any], want_text: str | None, want_blocks: list[Any] | None
+) -> None:
+    """Through the receiver, the assembler and the worker: the
+    conventions' list is stored in system_blocks and served as the list;
+    text, and an object, a number or a boolean as their JSON text, are
+    stored in system_prompt and served as that text. None is lost."""
+    flavor = f"test-otlp-genai-system-{uuid.uuid4().hex[:10]}"
+    trace_hex = os.urandom(16).hex()
+    try:
+        status, rejected, message = post(
+            "/v1/traces", JSON, _system_trace(flavor, trace_hex, system)
+        )
+        assert status == 200 and rejected == 0, (status, rejected, message)
+
+        def stored_call() -> dict[str, Any] | None:
+            calls = [r for r in stored_event_rows(flavor) if r["event_type"] == "post_call"]
+            return calls[0] if calls else None
+
+        wait_until(
+            lambda: stored_call() is not None,
+            timeout=ASSEMBLE_TIMEOUT_SECS,
+            interval=0.5,
+            msg=f"{flavor}: post_call assembled",
+        )
+        call = stored_call()
+        assert call is not None and call["has_content"], call
+        (row,) = query_rows(
+            "SELECT system_prompt, system_blocks FROM event_content WHERE event_id = :'eid'::uuid",
+            eid=call["id"],
+        )
+        assert row == {"system_prompt": want_text, "system_blocks": want_blocks}, row
+        code, body = fetch_content(call["id"])
+        assert code == 200 and body is not None, code
+        served = want_blocks if want_blocks is not None else want_text
+        assert body["system_prompt"] == served, body
+    finally:
+        delete_replay(flavor, {trace_hex})

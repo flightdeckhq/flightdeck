@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { isValidElement, useCallback, useEffect, useRef, useState } from "react";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
@@ -248,7 +248,30 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Provider content blocks, each in the provider's own terms. */
+/** The mark under a content block that carries ``cache_control`` (an
+ *  Anthropic cache breakpoint: the provider caches the prompt up to and
+ *  including the block), in the provider's own terms, as Raw shows them:
+ *  the field, its type and, when set, its ttl. The text is the whole
+ *  mark; nothing more hides behind a hover. */
+function CacheControlMark({ control }: { control: unknown }) {
+  const parts = ["cache_control"];
+  if (isPlainObject(control)) {
+    if (typeof control.type === "string") parts.push(control.type);
+    if (typeof control.ttl === "string") parts.push(control.ttl);
+  }
+  return (
+    <div data-testid="content-block-cache-control" className="mt-1 flex justify-end">
+      <span className="font-mono text-[10px] tracking-[0.04em]" style={{ color: "var(--text-secondary)" }}>
+        {parts.join(" · ")}
+      </span>
+    </div>
+  );
+}
+
+/** Provider content blocks, each in the provider's own terms; a block
+ *  that carries ``cache_control`` is marked under it, unless it is shown
+ *  as its JSON (a block type the viewer does not know), which already
+ *  shows the key. */
 function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   if (blocks.length === 0) {
     return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
@@ -256,63 +279,76 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   return (
     <div className="space-y-2">
       {blocks.map((raw, i) => {
-        if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
-        if (!isPlainObject(raw)) return <JsonBox key={i} data={raw} />;
-        const type = typeof raw.type === "string" ? raw.type : "";
-        if (type === "text" && typeof raw.text === "string") {
-          return <TextOrJson key={i} text={raw.text} />;
-        }
-        if (type === "thinking" || type === "redacted_thinking") {
-          const text = typeof raw.thinking === "string" ? raw.thinking : null;
-          return (
-            <div key={i} data-testid="content-block-thinking">
-              <BlockLabel>{type.replace("_", " ")}</BlockLabel>
-              {text != null ? (
-                <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
-              ) : (
-                <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
-              )}
-            </div>
-          );
-        }
-        if (type === "tool_use" || type === "server_tool_use") {
-          const name = typeof raw.name === "string" ? raw.name : "tool";
-          return (
-            <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-              <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
-              {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 ? (
-                <div className="mt-2">
-                  <KeyValueList data={raw.input} />
-                </div>
-              ) : raw.input != null && !isPlainObject(raw.input) ? (
-                <div className="mt-2">
-                  <BlockValue value={raw.input} />
-                </div>
-              ) : (
-                <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
-              )}
-            </div>
-          );
-        }
-        if (type === "tool_result") {
-          return (
-            <div key={i}>
-              <BlockLabel>tool result</BlockLabel>
-              <ToolResultBlock block={raw} />
-            </div>
-          );
-        }
-        if (type === "image" || type === "document") {
-          return (
-            <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
-              [{type}]
-            </div>
-          );
-        }
-        return <JsonBox key={i} data={raw} />;
+        const block = contentBlock(raw, i);
+        const shownAsJson = isValidElement(block) && block.type === JsonBox;
+        if (!isPlainObject(raw) || raw.cache_control == null || shownAsJson) return block;
+        return (
+          <div key={i} data-testid="content-block-cached">
+            {block}
+            <CacheControlMark control={raw.cache_control} />
+          </div>
+        );
       })}
     </div>
   );
+}
+
+/** One provider content block. */
+function contentBlock(raw: unknown, i: number): React.ReactNode {
+  if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
+  if (!isPlainObject(raw)) return <JsonBox key={i} data={raw} />;
+  const type = typeof raw.type === "string" ? raw.type : "";
+  if (type === "text" && typeof raw.text === "string") {
+    return <TextOrJson key={i} text={raw.text} />;
+  }
+  if (type === "thinking" || type === "redacted_thinking") {
+    const text = typeof raw.thinking === "string" ? raw.thinking : null;
+    return (
+      <div key={i} data-testid="content-block-thinking">
+        <BlockLabel>{type.replace("_", " ")}</BlockLabel>
+        {text != null ? (
+          <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
+        ) : (
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
+        )}
+      </div>
+    );
+  }
+  if (type === "tool_use" || type === "server_tool_use") {
+    const name = typeof raw.name === "string" ? raw.name : "tool";
+    return (
+      <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+        <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+        {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 ? (
+          <div className="mt-2">
+            <KeyValueList data={raw.input} />
+          </div>
+        ) : raw.input != null && !isPlainObject(raw.input) ? (
+          <div className="mt-2">
+            <BlockValue value={raw.input} />
+          </div>
+        ) : (
+          <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
+        )}
+      </div>
+    );
+  }
+  if (type === "tool_result") {
+    return (
+      <div key={i}>
+        <BlockLabel>tool result</BlockLabel>
+        <ToolResultBlock block={raw} />
+      </div>
+    );
+  }
+  if (type === "image" || type === "document") {
+    return (
+      <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
+        [{type}]
+      </div>
+    );
+  }
+  return <JsonBox key={i} data={raw} />;
 }
 
 /* ---- Main component ---- */
@@ -873,10 +909,12 @@ function genaiList(value: unknown): unknown[] {
   return value == null ? [] : [value];
 }
 
-/** The system instructions: ingestion keeps them as JSON in the text
- *  column, so a column that holds a JSON list or object is that JSON,
- *  and any other text is the instructions as sent. */
-function genaiSystem(systemPrompt: string | null): unknown {
+/** The system instructions: the list of parts the framework sent, as
+ *  stored; text that holds a JSON list or object (how such content is
+ *  also stored) is that JSON, and any other text is the instructions as
+ *  sent. */
+function genaiSystem(systemPrompt: string | unknown[] | null): unknown {
+  if (Array.isArray(systemPrompt)) return systemPrompt.length > 0 ? systemPrompt : undefined;
   if (systemPrompt == null || systemPrompt === "") return undefined;
   return parseJsonContainer(systemPrompt) ?? systemPrompt;
 }

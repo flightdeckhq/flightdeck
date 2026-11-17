@@ -23,7 +23,7 @@ describe("classifyEmbeddingInput", () => {
 
   it("a list of token-id lists is one input per list", () => {
     expect(classifyEmbeddingInput([[1, 2, 3], [4, 5, 6]])).toEqual({
-      kind: "list",
+      kind: "tokenLists",
       items: [[1, 2, 3], [4, 5, 6]],
     });
   });

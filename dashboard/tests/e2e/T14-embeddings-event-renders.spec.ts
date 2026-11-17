@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 import { API_URL } from "./_stack";
+import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW_COUNT } from "../../src/lib/constants";
 import {
   embeddingsCall,
   newRun,
@@ -99,6 +100,9 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
   });
 });
 
+/** A token-id input longer than the viewer's preview. */
+const LONG_TOKEN_IDS = Array.from({ length: TOKEN_IDS_PREVIEW_COUNT + 5 }, (_, i) => 100 + i);
+
 test.describe("T14 — Embeddings token-id inputs render as what they are", () => {
   let run: Run;
 
@@ -125,13 +129,13 @@ test.describe("T14 — Embeddings token-id inputs render as what they are", () =
     await expect(viewer.getByTestId("embeddings-content-state-list")).toHaveCount(0);
   });
 
-  test("two token-id lists read as two inputs, each with its token count", async ({
+  test("two token-id lists read as two inputs, each with its token count, a long one cut", async ({
     page,
     request,
   }) => {
     const events = await seedRun(request, run, [
       sessionStart(run, true),
-      embeddingsCall(run, 1, [[1, 2, 3], [4, 5, 6, 7]], 7),
+      embeddingsCall(run, 1, [[1, 2, 3], LONG_TOKEN_IDS], 3 + LONG_TOKEN_IDS.length),
     ]);
     const viewer = await openEmbeddingsViewer(page, run, storedEvent(events, "embeddings").id);
 
@@ -144,10 +148,15 @@ test.describe("T14 — Embeddings token-id inputs render as what they are", () =
     );
     await expect(viewer.getByTestId("embeddings-content-list-item-0-ids")).toHaveText("1, 2, 3");
     await expect(viewer.getByTestId("embeddings-content-list-item-1-count")).toHaveText(
-      "Token ids (4 tokens)",
+      `Token ids (${LONG_TOKEN_IDS.length} tokens)`,
     );
+    // The long list is cut to the preview, and shown whole on "Show full inputs".
     await expect(viewer.getByTestId("embeddings-content-list-item-1-ids")).toHaveText(
-      "4, 5, 6, 7",
+      `${LONG_TOKEN_IDS.slice(0, TOKEN_IDS_PREVIEW_COUNT).join(", ")}, …`,
+    );
+    await viewer.getByTestId("embeddings-content-full-toggle").click();
+    await expect(viewer.getByTestId("embeddings-content-list-item-1-ids")).toHaveText(
+      LONG_TOKEN_IDS.join(", "),
     );
   });
 });

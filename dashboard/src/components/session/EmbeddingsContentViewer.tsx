@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Database } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import type { EventContent } from "@/lib/types";
 import { SyntaxJson } from "@/components/ui/syntax-json";
+import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW_COUNT } from "@/lib/constants";
 
 /**
  * Embedding-shaped content viewer.
@@ -33,8 +34,10 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
  *     ``TOKEN_IDS_PREVIEW_COUNT`` ids with the same click-to-expand.
  *   - a list of strings, or a list of token-id lists: one input per
  *     item. Header reads ``"<N> inputs"`` with click-to-expand for the
- *     full list, each item rendered separately with its index; a
- *     token-id item is labelled as token ids with its own count.
+ *     full list, each item rendered separately with its index. A
+ *     token-id item is labelled as token ids with its own count and
+ *     truncated to ``TOKEN_IDS_PREVIEW_COUNT`` ids; one "Show full
+ *     inputs" under the list shows every item whole.
  *   - anything else (an empty list, a list mixing types, an object, a
  *     number): the stored value as its JSON, never cast to one of the
  *     shapes above.
@@ -42,17 +45,20 @@ import { SyntaxJson } from "@/components/ui/syntax-json";
  * Test ids:
  *   - ``embeddings-content-viewer`` on the root, whose ``data-state``
  *     names the branch: ``loading``, ``empty``, ``string``, ``tokens``,
- *     ``list`` or ``json``.
+ *     ``list`` (text or token-id lists) or ``json``.
  *   - ``embeddings-content-state-{loading,empty,string,tokens,list,json}``
  *     on the active branch's container so E2E can branch its assertion
  *     path on which state rendered without parsing visible text.
  *   - ``embeddings-content-token-count`` on a token-id input's count.
  *   - ``embeddings-content-list-kind`` on a token-id list's "token ids"
  *     header label.
- *   - ``embeddings-content-toggle`` on the expand button.
+ *   - ``embeddings-content-toggle`` on the expand button (a single
+ *     input's "Show full input", a list's header).
  *   - ``embeddings-content-expanded`` on the post-expand list, whose
  *     items carry ``embeddings-content-list-item-<i>``; a token-id
  *     item adds ``-count`` and ``-ids`` children.
+ *   - ``embeddings-content-full-toggle`` on a token-id list's "Show
+ *     full inputs".
  */
 
 interface EmbeddingsContentViewerProps {
@@ -67,28 +73,17 @@ interface EmbeddingsContentViewerProps {
 
 const DEFAULT_PREVIEW_CHARS = 280;
 
-/**
- * How many token ids a token-id input shows before "Show full input".
- * A token id of the OpenAI encodings is at most six digits (the
- * largest vocabulary, o200k, has about 200,000 entries), so with its
- * separator one id takes up to eight characters: 35 ids stay within
- * the ``DEFAULT_PREVIEW_CHARS`` a text input shows.
- */
-const TOKEN_IDS_PREVIEW_COUNT = 35;
-
 /** Between two token ids: a comma and a space, so the sequence reads
  *  as a list and wraps at the spaces. */
 const TOKEN_ID_SEPARATOR = ", ";
-
-/** One input of a list ``input``: its text, or its token ids. */
-export type EmbeddingListItem = string | number[];
 
 /** The shape of a stored embeddings ``input``, by its JSON type. */
 export type EmbeddingInputShape =
   | { kind: "absent" }
   | { kind: "string"; text: string }
   | { kind: "tokens"; ids: number[] }
-  | { kind: "list"; items: EmbeddingListItem[] }
+  | { kind: "list"; items: string[] }
+  | { kind: "tokenLists"; items: number[][] }
   | { kind: "json"; value: unknown };
 
 /** A token id: a non-negative integer. A fraction or a negative number
@@ -102,32 +97,44 @@ function isTokenIds(value: unknown): value is number[] {
   return Array.isArray(value) && value.length > 0 && value.every(isTokenId);
 }
 
+/** Several text inputs: a non-empty list of strings. */
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
+}
+
+/** Several token-id inputs: a non-empty list of token-id inputs. */
+function isTokenIdLists(value: unknown): value is number[][] {
+  return Array.isArray(value) && value.length > 0 && value.every(isTokenIds);
+}
+
 /**
  * Which of the embeddings API's input shapes a stored ``input`` is,
  * decided by the value's JSON type alone: a string; a non-empty list of
- * token ids (one input); a non-empty list of strings, or of token-id
- * lists (one input per item). Null and absent are ``absent``; any other
- * value (an empty list, a list mixing types, an object, a number) is
- * ``json``.
+ * token ids (one input); a non-empty list of strings (``list``) or of
+ * token-id lists (``tokenLists``), one input per item. Null and absent
+ * are ``absent``; any other value (an empty list, a list mixing types,
+ * an object, a number) is ``json``.
  */
 export function classifyEmbeddingInput(input: unknown): EmbeddingInputShape {
   if (input === null || input === undefined) return { kind: "absent" };
   if (typeof input === "string") return { kind: "string", text: input };
   if (isTokenIds(input)) return { kind: "tokens", ids: input };
-  if (Array.isArray(input) && input.length > 0) {
-    if (input.every((item) => typeof item === "string")) {
-      return { kind: "list", items: input as string[] };
-    }
-    if (input.every(isTokenIds)) {
-      return { kind: "list", items: input as number[][] };
-    }
-  }
+  if (isStringList(input)) return { kind: "list", items: input };
+  if (isTokenIdLists(input)) return { kind: "tokenLists", items: input };
   return { kind: "json", value: input };
 }
 
 /** ``"1 token"`` / ``"<n> tokens"``. */
 function tokenCount(n: number): string {
   return `${n} token${n === 1 ? "" : "s"}`;
+}
+
+/** Token ids as one comma-separated sequence: all of them when
+ *  ``whole``, else the first ``TOKEN_IDS_PREVIEW_COUNT`` followed by
+ *  ``", …"`` when there are more, so the last shown id reads whole. */
+function tokenIdsText(ids: number[], whole: boolean): string {
+  if (whole || ids.length <= TOKEN_IDS_PREVIEW_COUNT) return ids.join(TOKEN_ID_SEPARATOR);
+  return `${ids.slice(0, TOKEN_IDS_PREVIEW_COUNT).join(TOKEN_ID_SEPARATOR)}${TOKEN_ID_SEPARATOR}…`;
 }
 
 export function EmbeddingsContentViewer({
@@ -191,7 +198,9 @@ export function EmbeddingsContentViewer({
     case "tokens":
       return <TokenIdsInputView ids={shape.ids} expanded={expanded} onToggle={onToggle} />;
     case "list":
-      return <ListInputView items={shape.items} expanded={expanded} onToggle={onToggle} />;
+      return <TextListView items={shape.items} expanded={expanded} onToggle={onToggle} />;
+    case "tokenLists":
+      return <TokenListsView items={shape.items} expanded={expanded} onToggle={onToggle} />;
     case "json":
       return <JsonInputView value={shape.value} />;
     case "absent":
@@ -239,9 +248,13 @@ const HEADER_STYLE: CSSProperties = {
   color: "var(--text-secondary)",
 };
 
-/** A muted, mono, not-uppercased note beside a header label. */
+/** A mono, not-uppercased note beside a header label (a size or a
+ *  count). ``--text-secondary``, not ``--text-muted``: on the box's
+ *  ``--bg-elevated`` at 11-12 px the muted text measures about 3.9:1
+ *  in the dark theme and 2.3:1 in the light one; the secondary text
+ *  7.5:1 and 4.4:1, the same as the header labels it sits beside. */
 const HEADER_NOTE_STYLE: CSSProperties = {
-  color: "var(--text-muted)",
+  color: "var(--text-secondary)",
   fontWeight: 400,
   textTransform: "none",
   letterSpacing: 0,
@@ -267,16 +280,28 @@ function SingleInputHeader({ children }: { children: ReactNode }) {
   );
 }
 
-function ExpandToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+/** The button that shows what a preview cut, and hides it again. */
+function ExpandToggle({
+  expanded,
+  onToggle,
+  testId = "embeddings-content-toggle",
+  showLabel = "Show full input",
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  testId?: string;
+  showLabel?: string;
+}) {
   return (
     <button
       type="button"
-      data-testid="embeddings-content-toggle"
+      data-testid={testId}
       onClick={onToggle}
       className="mt-2 text-[11px]"
       style={{ color: "var(--accent)" }}
+      aria-expanded={expanded}
     >
-      {expanded ? "Show less" : "Show full input"}
+      {expanded ? "Show less" : showLabel}
     </button>
   );
 }
@@ -322,8 +347,7 @@ function TokenIdsInputView({
   onToggle: () => void;
 }) {
   const truncated = ids.length > TOKEN_IDS_PREVIEW_COUNT;
-  const shown = truncated && !expanded ? ids.slice(0, TOKEN_IDS_PREVIEW_COUNT) : ids;
-  const preview = shown.join(TOKEN_ID_SEPARATOR) + (truncated && !expanded ? "…" : "");
+  const preview = tokenIdsText(ids, expanded);
   return (
     <InputBox state="tokens">
       <SingleInputHeader>
@@ -359,17 +383,26 @@ function JsonInputView({ value }: { value: unknown }) {
   );
 }
 
-function ListInputView({
-  items,
+/**
+ * A list input: an ``"<N> inputs"`` header that expands the list, one
+ * numbered item per input, and what follows the list (``footer``) once
+ * it is open. ``tokenIds`` adds the "Token ids" label to the header.
+ */
+function ListShell({
+  count,
+  tokenIds,
   expanded,
   onToggle,
+  children,
+  footer,
 }: {
-  items: EmbeddingListItem[];
+  count: number;
+  tokenIds: boolean;
   expanded: boolean;
   onToggle: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
 }) {
-  // The classifier admits only lists of one kind: all text or all token ids.
-  const tokenIds = items.length > 0 && Array.isArray(items[0]);
   return (
     <InputBox state="list">
       <button
@@ -387,7 +420,7 @@ function ListInputView({
         )}
         <Database size={12} style={{ color: "var(--event-embeddings)" }} />
         <span data-testid="embeddings-content-state-list">
-          {items.length} input{items.length === 1 ? "" : "s"}
+          {count} input{count === 1 ? "" : "s"}
         </span>
         {tokenIds && (
           <>
@@ -397,38 +430,97 @@ function ListInputView({
         )}
       </button>
       {expanded && (
-        <ol
-          data-testid="embeddings-content-expanded"
-          className="mt-2 space-y-2 list-decimal list-inside"
-          style={{ color: "var(--text)", fontSize: 12 }}
-        >
-          {items.map((item, i) => (
-            <li
-              key={i}
-              data-testid={`embeddings-content-list-item-${i}`}
-              className="font-mono"
-              style={INPUT_TEXT_STYLE}
-            >
-              {typeof item === "string" ? item : <TokenIdsItem ids={item} index={i} />}
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol
+            data-testid="embeddings-content-expanded"
+            className="mt-2 space-y-2 list-decimal list-inside"
+            style={{ color: "var(--text)", fontSize: 12 }}
+          >
+            {children}
+          </ol>
+          {footer}
+        </>
       )}
     </InputBox>
   );
 }
 
-/** One token-id input of a list: its label and count on the item's
- *  first line, after the item's number, and the ids below. */
-function TokenIdsItem({ ids, index }: { ids: number[]; index: number }) {
+/** One numbered input of a list. */
+function ListItem({ index, children }: { index: number; children: ReactNode }) {
   return (
-    <>
-      <span data-testid={`embeddings-content-list-item-${index}-count`} style={HEADER_NOTE_STYLE}>
-        Token ids ({tokenCount(ids.length)})
-      </span>
-      <div data-testid={`embeddings-content-list-item-${index}-ids`}>
-        {ids.join(TOKEN_ID_SEPARATOR)}
-      </div>
-    </>
+    <li
+      data-testid={`embeddings-content-list-item-${index}`}
+      className="font-mono"
+      style={INPUT_TEXT_STYLE}
+    >
+      {children}
+    </li>
+  );
+}
+
+/** A list of text inputs: each item its text. */
+function TextListView({
+  items,
+  expanded,
+  onToggle,
+}: {
+  items: string[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <ListShell count={items.length} tokenIds={false} expanded={expanded} onToggle={onToggle}>
+      {items.map((text, i) => (
+        <ListItem key={i} index={i}>
+          {text}
+        </ListItem>
+      ))}
+    </ListShell>
+  );
+}
+
+/**
+ * A list of token-id inputs: each item labelled with its count and cut
+ * to its first ``TOKEN_IDS_PREVIEW_COUNT`` ids. One "Show full inputs"
+ * shows every item whole, so a large batch is only laid out whole when
+ * asked for.
+ */
+function TokenListsView({
+  items,
+  expanded,
+  onToggle,
+}: {
+  items: number[][];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const [whole, setWhole] = useState(false);
+  const anyCut = items.some((ids) => ids.length > TOKEN_IDS_PREVIEW_COUNT);
+  return (
+    <ListShell
+      count={items.length}
+      tokenIds
+      expanded={expanded}
+      onToggle={onToggle}
+      footer={
+        anyCut && (
+          <ExpandToggle
+            expanded={whole}
+            onToggle={() => setWhole((v) => !v)}
+            testId="embeddings-content-full-toggle"
+            showLabel="Show full inputs"
+          />
+        )
+      }
+    >
+      {items.map((ids, i) => (
+        <ListItem key={i} index={i}>
+          <span data-testid={`embeddings-content-list-item-${i}-count`} style={HEADER_NOTE_STYLE}>
+            Token ids ({tokenCount(ids.length)})
+          </span>
+          <div data-testid={`embeddings-content-list-item-${i}-ids`}>{tokenIdsText(ids, whole)}</div>
+        </ListItem>
+      ))}
+    </ListShell>
   );
 }

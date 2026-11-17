@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, screen, waitFor } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
 import { EmbeddingsContentViewer } from "@/components/session/EmbeddingsContentViewer";
+import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW } from "@/lib/constants";
 import { getEventDetail, getSummaryRows, getBadge } from "@/lib/events";
 import type { AgentEvent, EventContent } from "@/lib/types";
 import * as api from "@/lib/api";
@@ -294,18 +295,23 @@ describe("EmbeddingsContentViewer -- token ids and other inputs", () => {
     const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
     await renderInput(ids);
     expect(screen.getByTestId("embeddings-content-token-count").textContent).toBe("1000 tokens");
-    const preview = screen.getByTestId("embeddings-content-state-tokens").textContent ?? "";
-    expect(preview.endsWith("…")).toBe(true);
-    // Cut between two ids, never inside one.
-    expect(preview.slice(0, -1).split(", ").every((id) => ids.includes(Number(id)))).toBe(true);
-    expect(preview.length).toBeLessThan(ids.join(", ").length);
-    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    // The first ids, then ", …": the last shown id reads whole.
+    expect(screen.getByTestId("embeddings-content-state-tokens").textContent).toBe(
+      `${ids.slice(0, TOKEN_IDS_PREVIEW).join(", ")}, …`,
+    );
+    const toggle = screen.getByTestId("embeddings-content-toggle");
+    expect(toggle.textContent).toBe("Show full input");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
     await waitFor(() =>
       expect(screen.getByTestId("embeddings-content-state-tokens").textContent).toBe(
         ids.join(", "),
       ),
     );
     expect(screen.getByTestId("embeddings-content-toggle").textContent).toBe("Show less");
+    expect(screen.getByTestId("embeddings-content-toggle").getAttribute("aria-expanded")).toBe(
+      "true",
+    );
   });
 
   it("shows a list of token-id lists as one input per list, each with its own count", async () => {
@@ -326,6 +332,44 @@ describe("EmbeddingsContentViewer -- token ids and other inputs", () => {
     );
     expect(screen.getByTestId("embeddings-content-list-item-1-ids").textContent).toBe(
       "4, 5, 6, 7",
+    );
+    // Every item fits its preview: nothing to show in full.
+    expect(screen.queryByTestId("embeddings-content-full-toggle")).toBeNull();
+  });
+
+  it("cuts each long item of a token-id list, and shows them whole on ``Show full inputs``", async () => {
+    const long = Array.from({ length: 40 }, (_, i) => 1000 + i);
+    await renderInput([long, [1, 2, 3]]);
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-expanded")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-0-count").textContent).toBe(
+      "Token ids (40 tokens)",
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe(
+      `${long.slice(0, TOKEN_IDS_PREVIEW).join(", ")}, …`,
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-1-ids").textContent).toBe("1, 2, 3");
+    const full = screen.getByTestId("embeddings-content-full-toggle");
+    expect(full.textContent).toBe("Show full inputs");
+    expect(full.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(full);
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe(
+        long.join(", "),
+      ),
+    );
+    expect(screen.getByTestId("embeddings-content-full-toggle").textContent).toBe("Show less");
+    expect(
+      screen.getByTestId("embeddings-content-full-toggle").getAttribute("aria-expanded"),
+    ).toBe("true");
+    // Show less cuts the item again.
+    fireEvent.click(screen.getByTestId("embeddings-content-full-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe(
+        `${long.slice(0, TOKEN_IDS_PREVIEW).join(", ")}, …`,
+      ),
     );
   });
 

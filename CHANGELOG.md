@@ -171,9 +171,10 @@ All notable changes to Flightdeck are documented here.
   `123` and `456`. A token-id input now shows as one input labelled as
   token ids, with its count (`3 tokens`) and the ids as a
   comma-separated sequence (a long one cut, with **Show full input**); a
-  list of token-id lists as one input per list, each with its own count;
-  and a stored input of any other shape (an empty list, a list mixing
-  text and numbers, an object) as its JSON.
+  list of token-id lists as one input per list, each with its own count
+  and cut the same way, with one **Show full inputs** for the whole
+  list; and a stored input of any other shape (an empty list, a list
+  mixing text and numbers, an object) as its JSON.
 
 ## v0.11.0 — 2026-11-15
 

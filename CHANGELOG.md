@@ -69,11 +69,11 @@ All notable changes to Flightdeck are documented here.
   `tool_use` block does, after the message's text when it has some;
   arguments that are not valid JSON show as written, and several calls
   show one box each. A tool's reply is labelled `tool result` with the
-  name of the call it answers, or that call's id when the call is not
-  in the list, and a Responses `function_call_output` names the
-  `function_call` it answers. litellm calls in the OpenAI format show
-  the same way. Raw still shows each message as the provider received
-  it.
+  name of the call it answers; when the call is not in the list, the
+  name the reply carries, else the call's id. A Responses
+  `function_call_output` names the `function_call` it answers. litellm
+  calls in the OpenAI format show the same way. Raw still shows each
+  message as the provider received it.
 - **A call whose system prompt is a list of content blocks keeps its
   captured content.** An Anthropic call given `system` as a list of
   blocks, the form prompt caching uses

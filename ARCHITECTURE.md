@@ -891,8 +891,9 @@ class Provider(Protocol):
         message.
         For OpenAI: extracts messages array (all roles), tools list, response
         choice.
-        For EMBEDDINGS event_type: extracts request_kwargs["input"] (string
-        or list of strings).
+        For EMBEDDINGS event_type: extracts request_kwargs["input"] as
+        sent (a string, a list of strings, a list of token ids or a list
+        of token-id lists).
         Provider terminology is preserved exactly — no normalization between
         Anthropic and OpenAI shapes.
         """
@@ -10183,8 +10184,9 @@ fields described under `post_call` apply here too. Embeddings adds:
 
 When `capture_prompts=true`:
 
-- `payload.content.input` carries the request's `input` parameter
-  (string or list of strings) — round-trips into `event_content.input`.
+- `payload.content.input` carries the request's `input` parameter as
+  sent (a string, a list of strings, a list of token ids or a list of
+  token-id lists) — round-trips into `event_content.input`.
 - `payload.content.embedding_output` carries the raw vectors as
   `list[list[float]]` — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate

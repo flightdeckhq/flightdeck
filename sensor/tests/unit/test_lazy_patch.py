@@ -46,6 +46,7 @@ SDK_MODULES = (
     "llama_index.core",
     "claude_agent_sdk",
     "agents",
+    "google.genai.models",
     "google.adk.runners",
 )
 # Bound for the in-process waits on another thread.
@@ -114,7 +115,7 @@ def _run_child(
 def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> None:
     """The one call the child made through ``sdk`` reached the capture
     server as the sensor reports it."""
-    if sdk in ("openai", "anthropic", "litellm"):
+    if sdk in ("openai", "anthropic", "litellm", "google.genai.models"):
         post_calls = [e for e in events if e["event_type"] == "post_call"]
         assert len(post_calls) == 1, events
         assert (post_calls[0]["tokens_input"], post_calls[0]["tokens_output"]) == (7, 3)

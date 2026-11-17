@@ -55,6 +55,12 @@ class Provider(StrEnum):
       session per agent and per agent used as a tool, hand-offs and
       guardrail tripwires. Patched only when ``agents`` comes from the
       ``openai-agents`` distribution.
+    * ``Provider.GOOGLE_GENAI`` — class-level patch on the request methods
+      of ``google.genai.models.Models`` / ``AsyncModels``
+      (``_generate_content``, ``_generate_content_stream``,
+      ``_embed_content``), which every google-genai client, its chats and
+      Vertex AI mode send Gemini calls through; one event per request the
+      provider bills, each automatic-function-calling round included.
     * ``Provider.GOOGLE_ADK`` — a plugin the sensor puts first in every
       Google ADK runner (``google.adk.runners.Runner.__init__``) and a
       wrap around ``Runner.run_async`` / ``run_live``: a child session per
@@ -76,4 +82,5 @@ class Provider(StrEnum):
     LLAMA_INDEX = "llama_index"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
     OPENAI_AGENTS = "openai_agents"
+    GOOGLE_GENAI = "google_genai"
     GOOGLE_ADK = "google_adk"

@@ -337,6 +337,132 @@ def _override_from_status_and_code(
     return base
 
 
+# ---------------------------------------------------------------------------
+# google-genai. Its ``APIError`` (``ClientError`` for 4xx, ``ServerError``
+# for 5xx) carries the HTTP status as ``code``, the canonical gRPC status
+# name as ``status`` (``RESOURCE_EXHAUSTED``, ``INVALID_ARGUMENT``, ...)
+# and the response's error body as ``details``. The class names say only
+# client or server side, so the status decides the type, with the body's
+# ``google.rpc`` details where one status covers two outcomes.
+# ---------------------------------------------------------------------------
+
+# The module the SDK's exceptions live in.
+_GOOGLE_GENAI_MODULE = "google.genai"
+_GOOGLE_PROVIDER = "google"
+
+_GOOGLE_STATUS_TO_TYPE: dict[int, ErrorType] = {
+    400: ErrorType.INVALID_REQUEST,
+    401: ErrorType.AUTHENTICATION,
+    403: ErrorType.PERMISSION,
+    404: ErrorType.NOT_FOUND,
+    408: ErrorType.TIMEOUT,
+    409: ErrorType.INVALID_REQUEST,
+    413: ErrorType.REQUEST_TOO_LARGE,
+    429: ErrorType.RATE_LIMIT,
+    500: ErrorType.API_ERROR,
+    502: ErrorType.API_ERROR,
+    # UNAVAILABLE: "The model is overloaded" / "experiencing high demand".
+    503: ErrorType.OVERLOADED,
+    504: ErrorType.TIMEOUT,
+}
+_HTTP_CLIENT_ERRORS = range(400, 500)
+_HTTP_SERVER_ERRORS = range(500, 600)
+
+# A 429 the provider names a per-day quota for has run the quota out for
+# the day, which a retry within the minute cannot help; a per-minute one
+# is a rate limit. The quota id names the window
+# (``GenerateRequestsPerDayPerProjectPerModel-FreeTier``,
+# ``GenerateContentInputTokensPerModelPerMinute-FreeTier``).
+_GOOGLE_DAILY_QUOTA_MARKER = "perday"
+_GOOGLE_QUOTA_FAILURE = "google.rpc.QuotaFailure"
+_GOOGLE_RETRY_INFO = "google.rpc.RetryInfo"
+_GOOGLE_ERROR_INFO = "google.rpc.ErrorInfo"
+# The ErrorInfo reasons that mean the credential, not the request, is
+# wrong: the Gemini API answers a bad API key with 400 INVALID_ARGUMENT.
+_GOOGLE_AUTH_REASONS = frozenset({"API_KEY_INVALID", "API_KEY_EXPIRED"})
+
+
+def _is_google_error(exc: BaseException) -> bool:
+    return type(exc).__module__.startswith(_GOOGLE_GENAI_MODULE)
+
+
+def _google_error_details(exc: BaseException) -> list[dict[str, Any]]:
+    """The ``google.rpc`` detail objects of a google-genai error's body
+    (``{"error": {"details": [...]}}``, or the error object itself), each
+    a dict; empty when the body carries none."""
+    try:
+        body = getattr(exc, "details", None)
+        if isinstance(body, dict) and isinstance(body.get("error"), dict):
+            body = body["error"]
+        details = body.get("details") if isinstance(body, dict) else None
+        return [d for d in details if isinstance(d, dict)] if isinstance(details, list) else []
+    except Exception:
+        return []
+
+
+def _google_detail_kind(detail: dict[str, Any]) -> str:
+    kind = detail.get("@type")
+    return kind if isinstance(kind, str) else ""
+
+
+def _google_error_type(exc: BaseException, http_status: int | None) -> ErrorType:
+    """The taxonomy entry for a google-genai ``APIError`` by its status,
+    refined by the body's details: a per-day quota on a 429, a rejected
+    API key on a 400."""
+    details = _google_error_details(exc)
+    if http_status == 429:
+        for detail in details:
+            if not _google_detail_kind(detail).endswith(_GOOGLE_QUOTA_FAILURE):
+                continue
+            for violation in detail.get("violations") or ():
+                quota = violation.get("quotaId") if isinstance(violation, dict) else None
+                if isinstance(quota, str) and _GOOGLE_DAILY_QUOTA_MARKER in quota.lower():
+                    return ErrorType.QUOTA_EXCEEDED
+        return ErrorType.RATE_LIMIT
+    for detail in details:
+        if (
+            _google_detail_kind(detail).endswith(_GOOGLE_ERROR_INFO)
+            and detail.get("reason") in _GOOGLE_AUTH_REASONS
+        ):
+            return ErrorType.AUTHENTICATION
+    if http_status is None:
+        return ErrorType.API_ERROR
+    mapped = _GOOGLE_STATUS_TO_TYPE.get(http_status)
+    if mapped is not None:
+        return mapped
+    if http_status in _HTTP_CLIENT_ERRORS:
+        return ErrorType.INVALID_REQUEST
+    if http_status in _HTTP_SERVER_ERRORS:
+        return ErrorType.API_ERROR
+    return ErrorType.OTHER
+
+
+def _google_status(exc: BaseException) -> str | None:
+    """The canonical status name of a google-genai error (``status``)."""
+    status = getattr(exc, "status", None)
+    return status if isinstance(status, str) and status else None
+
+
+# A ``google.rpc.RetryInfo`` delay is a protobuf Duration in JSON:
+# seconds with an ``s`` suffix ("13s", "1.5s").
+_DURATION_SUFFIX = "s"
+
+
+def _google_retry_after(exc: BaseException) -> float | None:
+    """The retry delay a google-genai error's ``RetryInfo`` names, in
+    seconds."""
+    for detail in _google_error_details(exc):
+        if not _google_detail_kind(detail).endswith(_GOOGLE_RETRY_INFO):
+            continue
+        delay = detail.get("retryDelay")
+        if isinstance(delay, str) and delay.endswith(_DURATION_SUFFIX):
+            try:
+                return float(delay[: -len(_DURATION_SUFFIX)])
+            except ValueError:
+                return None
+    return None
+
+
 # Provider inference from exception module. Keeps ``provider`` field honest
 # without importing the SDKs.
 def _provider_from_module(module_name: str) -> str:
@@ -347,6 +473,8 @@ def _provider_from_module(module_name: str) -> str:
         return "openai"
     if m.startswith("litellm"):
         return "litellm"
+    if m.startswith(_GOOGLE_GENAI_MODULE):
+        return _GOOGLE_PROVIDER
     if m.startswith("voyageai") or m.startswith("voyage"):
         return "voyage"
     return "unknown"
@@ -398,9 +526,16 @@ def classify_exception(
                 provider_error_code = parse_failure[0]
         request_id = _extract_request_id(exc)
         retry_after = _extract_retry_after(exc)
+        google = _is_google_error(exc)
+        if google:
+            provider_error_code = provider_error_code or _google_status(exc)
+            if retry_after is None:
+                retry_after = _google_retry_after(exc)
 
         if is_stream_error:
             base = ErrorType.STREAM_ERROR
+        elif google:
+            base = _google_error_type(exc, http_status)
         else:
             base = ErrorType.OTHER
             for names, etype in (*_ANTHROPIC_CLASS_TO_TYPE, *_CLASS_TO_TYPE):
@@ -471,6 +606,23 @@ NON_SUCCESS_STOP_REASONS: dict[str, ErrorType] = {
     # OpenAI chat and litellm finish_reason, and the reason of an OpenAI
     # Responses call left incomplete by the content filter.
     "content_filter": ErrorType.CONTENT_FILTER,
+    # Gemini (google-genai) finish reasons of a candidate the safety
+    # filters stopped, and the block reasons of a prompt they blocked
+    # before any candidate (``prompt_feedback.block_reason``): safety
+    # categories, the terminology blocklist, prohibited content,
+    # recitation of a source, personal data (Vertex AI), and their image
+    # counterparts; ``JAILBREAK`` and ``MODEL_ARMOR`` are Vertex AI prompt
+    # blocks.
+    "SAFETY": ErrorType.CONTENT_FILTER,
+    "RECITATION": ErrorType.CONTENT_FILTER,
+    "BLOCKLIST": ErrorType.CONTENT_FILTER,
+    "PROHIBITED_CONTENT": ErrorType.CONTENT_FILTER,
+    "SPII": ErrorType.CONTENT_FILTER,
+    "IMAGE_SAFETY": ErrorType.CONTENT_FILTER,
+    "IMAGE_PROHIBITED_CONTENT": ErrorType.CONTENT_FILTER,
+    "IMAGE_RECITATION": ErrorType.CONTENT_FILTER,
+    "JAILBREAK": ErrorType.CONTENT_FILTER,
+    "MODEL_ARMOR": ErrorType.CONTENT_FILTER,
 }
 
 # The HTTP status recorded on a stop-reason classification. The provider

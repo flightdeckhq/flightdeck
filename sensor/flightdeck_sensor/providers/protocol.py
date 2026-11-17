@@ -16,7 +16,8 @@ class Provider(Protocol):
     may raise exceptions -- failures return zero/empty defaults.
     """
 
-    # The provider's wire name (``anthropic``, ``openai``, ``litellm``):
+    # The provider's wire name (``anthropic``, ``openai``, ``litellm``,
+    # ``google``):
     # the ``provider`` field of the error events the adapter's calls
     # produce, and part of the key of the per-provider retry counter.
     name: str
@@ -277,7 +278,11 @@ class PromptContent:
     ``instructions`` in ``system``; ``messages`` stays empty because the
     Responses API has no messages parameter. ``litellm.responses`` is
     stored the same way, and ``litellm.text_completion``, whose request
-    has no ``messages`` either, puts its ``prompt`` here verbatim.
+    has no ``messages`` either, puts its ``prompt`` here verbatim. A Gemini
+    call (google-genai) puts its ``contents`` here as the caller gave them
+    (a string, a ``Content`` or ``Part``, or a list of them), with its
+    config's ``system_instruction`` in ``system``; Gemini has no messages
+    parameter either.
     """
 
     system: str | list[Any] | None

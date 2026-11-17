@@ -44,9 +44,23 @@ if _sdk_uses_httpx2():
 from flightdeck_sensor.core.types import SensorConfig  # noqa: E402
 from flightdeck_sensor.providers.anthropic import AnthropicProvider  # noqa: E402
 from flightdeck_sensor.transport.client import ControlPlaneClient  # noqa: E402
+from tests.litellm_logging_worker import retire_litellm_logging_worker  # noqa: E402
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Iterator
+
+
+@pytest.fixture(autouse=True)
+def _litellm_logging_worker_retired() -> Iterator[None]:
+    """After each test, retire litellm's global logging worker if the test
+    left it bound to a closed event loop (a sync litellm call with
+    ``fallbacks`` does), so the coroutines it held are dropped inside that
+    test rather than in the next test to use litellm, which may be in a
+    module that turns ``RuntimeWarning`` into an error (see
+    ``tests/litellm_logging_worker.py``). Before litellm's worker module is
+    imported this is one dictionary lookup."""
+    yield
+    retire_litellm_logging_worker()
 
 
 # Hosts a unit test may connect to: the in-process control-plane stubs.

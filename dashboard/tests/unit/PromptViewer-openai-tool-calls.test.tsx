@@ -221,7 +221,7 @@ describe("PromptViewer: OpenAI chat tool-call shapes", () => {
     expect(within(box).queryAllByTestId("kv-label")).toHaveLength(0);
   });
 
-  it("empty, blank and list arguments show as an Anthropic tool_use input does", async () => {
+  it("empty, missing, blank and list arguments show in OpenAI's terms", async () => {
     await renderContent(
       chat([
         {
@@ -229,16 +229,24 @@ describe("PromptViewer: OpenAI chat tool-call shapes", () => {
           content: null,
           tool_calls: [
             fnCall("call_1", "list_files", "{}"),
-            fnCall("call_2", "ping", ""),
-            fnCall("call_3", "sum", "[1, 2, 3]"),
+            { id: "call_2", type: "function", function: { name: "now" } },
+            { id: "call_3", type: "function", function: { name: "today", arguments: null } },
+            fnCall("call_4", "ping", ""),
+            fnCall("call_5", "sum", "[1, 2, 3]"),
+            { id: "call_6", type: "custom", custom: { name: "run_sql" } },
           ],
         },
       ]),
     );
-    const [noArgs, blank, list] = toolBoxes(message(0));
-    expect(noArgs).toHaveTextContent("(no input)");
+    const [empty, missing, nulled, blank, list, custom] = toolBoxes(message(0));
+    // A function call's field is arguments; a custom tool's is input.
+    for (const box of [empty, missing, nulled]) {
+      expect(box).toHaveTextContent("(no arguments)");
+      expect(box).not.toHaveTextContent("(no input)");
+    }
     expect(blank).toHaveTextContent("(empty)");
     expect(within(list!).getByTestId("pretty-json")).toHaveTextContent("1");
+    expect(custom).toHaveTextContent("(no input)");
   });
 
   it("a custom tool's call shows its name and its input text", async () => {
@@ -317,6 +325,20 @@ describe("PromptViewer: which call an OpenAI tool reply answers", () => {
     expect(screen.getByTestId("prompt-box-message-0-raw-json")).toHaveTextContent(`"tool_call_id": "${id}"`);
   });
 
+  it("a reply whose call is not in the list but which names its tool shows that name", async () => {
+    await renderContent(
+      chat([{ role: "tool", tool_call_id: "call_9IQorB7WiLKDYNXtObQMBB75", name: "get_weather", content: "Sunny" }]),
+    );
+    const target = within(message(0)).getByTestId("tool-reply-target");
+    expect(target).toHaveAttribute("data-target", "name");
+    expect(target.textContent).toBe("get_weather");
+  });
+
+  it("the name in the label wraps rather than overflowing the box", async () => {
+    await renderContent(fixture("chat_tool_loop"));
+    expect(within(message(2)).getByTestId("tool-reply-target").style.overflowWrap).toBe("anywhere");
+  });
+
   it("a short id shows whole", async () => {
     await renderContent(chat([{ role: "tool", tool_call_id: "call_0", content: "Sunny" }]));
     expect(within(message(0)).getByTestId("tool-reply-target").textContent).toBe("call_0");
@@ -365,15 +387,21 @@ describe("PromptViewer: which call an OpenAI tool reply answers", () => {
       null,
       { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: {} }] },
       { role: "tool", tool_call_id: "c1", content: "again" },
+      { role: "tool", tool_call_id: "c8", name: "search", content: "found" },
+      { role: "tool", tool_call_id: "c2", name: "stale_name", content: "12:01" },
     ];
     const replies = chatToolReplies(messages);
-    expect([...replies.keys()]).toEqual([2, 3, 4, 5, 8]);
+    expect([...replies.keys()]).toEqual([2, 3, 4, 5, 8, 9, 10]);
     expect(replies.get(2)).toEqual({ name: "get_time", callId: "c2" });
     expect(replies.get(3)).toEqual({ name: "get_weather", callId: "c1" });
     expect(replies.get(4)).toEqual({ name: null, callId: "c9" });
     expect(replies.get(5)).toEqual({ name: "lookup", callId: null });
     // A later call that reuses the id and names no tool hides the earlier name.
     expect(replies.get(8)).toEqual({ name: null, callId: "c1" });
+    // The call not in view: the reply's own name.
+    expect(replies.get(9)).toEqual({ name: "search", callId: "c8" });
+    // The call in view names the tool before the reply's own name does.
+    expect(replies.get(10)).toEqual({ name: "get_time", callId: "c2" });
     expect(chatToolReplies(undefined).size).toBe(0);
     expect(chatToolReplies("not a list").size).toBe(0);
   });
@@ -389,9 +417,39 @@ describe("PromptViewer: OpenAI chat response calls", () => {
     expect(boxes[0]).toHaveTextContent("city:Paris");
   });
 
-  it("a response call with no arguments says so", async () => {
+  it("a response call with no arguments says so, in OpenAI's word", async () => {
     await renderContent(chatResponse({ role: "assistant", content: null, tool_calls: [fnCall("c1", "list_files", "{}")] }));
-    expect(toolBoxes(screen.getByTestId("prompt-box-response"))[0]).toHaveTextContent("(no input)");
+    const box = toolBoxes(screen.getByTestId("prompt-box-response"))[0]!;
+    expect(box).toHaveTextContent("(no arguments)");
+    expect(box).not.toHaveTextContent("(no input)");
+  });
+
+  it("response shapes the OpenAI API does not return still show, never dropped", async () => {
+    await renderContent(
+      chatResponse({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "c1", type: "function", function: { name: "get_weather", arguments: { city: "Paris" } } },
+          { id: "c2", type: "function", function: { name: "now" } },
+          { id: "c3", type: "function", function: { name: "", arguments: '{"q":"x"}' } },
+          { id: "c4", type: "mystery", mystery: { x: 1 } },
+          "not an object",
+        ],
+      }),
+    );
+    const response = screen.getByTestId("prompt-box-response");
+    const [objectArgs, missingArgs, unnamed] = toolBoxes(response);
+    expect(toolBoxes(response)).toHaveLength(3);
+    // Arguments stored as an object show as fields.
+    expect(objectArgs).toHaveTextContent("city:Paris");
+    expect(missingArgs).toHaveTextContent("(no arguments)");
+    expect(toolName(unnamed!)).toBe("tool");
+    // An unknown call type and a non-object entry show as their JSON.
+    const json = within(response).getAllByTestId("pretty-json").map((el) => el.textContent);
+    expect(json).toHaveLength(2);
+    expect(json[0]).toContain('"mystery"');
+    expect(json[1]).toContain('"not an object"');
   });
 
   it("a custom tool's call in the response shows its name and input", async () => {

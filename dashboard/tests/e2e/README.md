@@ -97,6 +97,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T176-per-agent-modal-sub-agents-get-lane-groups.spec.ts` | A coordinator of its own spawning a reviewer (one run) and a tester (two runs): with "Show sub-agents" on the coordinator's group comes first, then a child group per sub-agent with its runs' lanes; each connector ends on its child run's circle on that run's lane; at 1280x720 the coordinator's lanes show whole; off, its group alone |
 | `T177-per-agent-modal-cues-count-lanes-out-of-view.spec.ts` | At 1920x1080 and 1280x720, a coordinator of its own with eight runs and two sub-agents (twelve lanes, three headings): at the top, middle and bottom of the scroll the cues read the lanes out of view (`<n> more below` / `<n> more above`, each absent at its end), the top one in the axis row's label cell and the bottom one on the strip under the viewport, and neither's box meets a visible circle, marker text, lane label text or heading pill; a click on the bottom cue brings the next lane fully into view, one on the top cue scrolls back up; no live region |
 | `T180-prompts-tab-shows-openai-tool-calls.spec.ts` | On an agent of its own, an OpenAI chat `post_call` whose stored messages are a tool-use loop (user, assistant with `tool_calls` and `content: null`, `tool` reply): in the event drawer's Prompts tab the assistant's box shows the call (the tool's name, then `city:` and its value) instead of `(empty)`, the reply is labelled `tool result` with the name of the tool it answers, and Raw keeps the message as stored, `arguments` still a JSON string |
+| `T181-prompts-tab-names-the-call-a-responses-output-answers.spec.ts` | On an agent of its own, an OpenAI Responses `post_call` whose stored `input` is a tool-use loop (user message, `function_call`, `function_call_output`): the `function_call` item shows the function's name, its `call_id` and `city:` with its value, the output item is labelled `tool result` with the name of the function it answers, keeps its `call_id` line and shows its output, and Raw keeps the item as stored |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
@@ -110,7 +111,8 @@ own, named `e2e-test-<label>-<id>`, with runs started through ingestion
 (their `session_start` can be dated in the past), so its lanes draw
 only what the spec posts (T171's ten-run row, T172's marker text,
 T173-T177), and a run's content is only what the spec captured (T180's
-OpenAI `post_call`, posted with `postPrivatePostCall`).
+OpenAI chat and T181's Responses `post_call`, posted with
+`postPrivatePostCall`).
 `createPrivateSubAgent` makes a sub-agent of one, `<parent>/<role>`,
 each of its runs started under a run of the parent (T176). The spec keeps
 the agent from `createPrivateAgent` before `startPrivateAgent` waits, so

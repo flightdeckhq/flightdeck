@@ -293,6 +293,16 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   );
 }
 
+/** The name a tool call's box shows when the call names no tool. */
+const UNNAMED_TOOL = "tool";
+
+/** What a call with nothing in its ``input`` says: an Anthropic
+ *  ``tool_use`` block's field, and an OpenAI custom tool call's. */
+const NO_INPUT = "(no input)";
+
+/** What an OpenAI function call with nothing in its ``arguments`` says. */
+const NO_ARGUMENTS = "(no arguments)";
+
 /** One provider content block. */
 function contentBlock(raw: unknown, i: number): React.ReactNode {
   if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
@@ -315,7 +325,7 @@ function contentBlock(raw: unknown, i: number): React.ReactNode {
     );
   }
   if (type === "tool_use" || type === "server_tool_use") {
-    const name = typeof raw.name === "string" ? raw.name : "tool";
+    const name = typeof raw.name === "string" ? raw.name : UNNAMED_TOOL;
     return <ToolUseBox key={i} name={name} input={raw.input} />;
   }
   if (type === "tool_result") {
@@ -337,10 +347,19 @@ function contentBlock(raw: unknown, i: number): React.ReactNode {
 }
 
 /** A call the model made to a tool: the tool's name, then its input as
- *  labelled fields (an object), as written (any other value), or "(no
- *  input)". An Anthropic ``tool_use`` block and an OpenAI tool call
- *  both show in it. */
-function ToolUseBox({ name, input }: { name: string; input: unknown }) {
+ *  labelled fields (an object), as written (any other value), or
+ *  ``emptyText`` when it has none, in the provider's word for the field
+ *  (NO_INPUT for an Anthropic ``tool_use`` block's ``input``). An
+ *  Anthropic ``tool_use`` block and an OpenAI tool call both show in it. */
+function ToolUseBox({
+  name,
+  input,
+  emptyText = NO_INPUT,
+}: {
+  name: string;
+  input: unknown;
+  emptyText?: string;
+}) {
   return (
     <div data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
       <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
@@ -353,7 +372,7 @@ function ToolUseBox({ name, input }: { name: string; input: unknown }) {
           <BlockValue value={input} />
         </div>
       ) : (
-        <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
+        <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>{emptyText}</div>
       )}
     </div>
   );
@@ -371,9 +390,10 @@ function ToolUseBox({ name, input }: { name: string; input: unknown }) {
  * rewritten into another provider's shape (CLAUDE.md rule 20).
  */
 
-/** What a tool call box shows for one OpenAI call, or the call itself
- *  when its type is not one the viewer knows. */
-type ChatCall = { name: string; input: unknown } | { unknown: unknown };
+/** What a tool call box shows for one OpenAI call (its name, its input
+ *  and, in OpenAI's word for that field, what an empty one says), or the
+ *  call itself when its type is not one the viewer knows. */
+type ChatCall = { name: string; input: unknown; emptyText: string } | { unknown: unknown };
 
 /** The tool an OpenAI ``tool_calls`` entry calls, or null when it names none. */
 function chatToolCallName(call: Record<string, unknown>): string | null {
@@ -386,20 +406,29 @@ function chatToolCallName(call: Record<string, unknown>): string | null {
   return target && typeof target.name === "string" && target.name ? target.name : null;
 }
 
-/** A function call's arguments: the JSON object its string holds, else
- *  the value as stored. The model writes the string, so it can be cut
- *  short or malformed; it then shows as written. */
+/** A function call's arguments: the JSON object its string holds (shown
+ *  as fields), else the value as stored, which the box shows as JSON when
+ *  it is a JSON array and as written otherwise. The model writes the
+ *  string, so it can be cut short or malformed. */
 function functionArguments(args: unknown): unknown {
   if (typeof args !== "string") return args;
   const parsed = parseJsonContainer(args);
   return isPlainObject(parsed) ? parsed : args;
 }
 
+/** A function call (a ``tool_calls`` entry's ``function``, or a legacy
+ *  ``function_call``) as its box shows it. */
+function functionCall(fn: Record<string, unknown>, name: string | null): ChatCall {
+  return { name: name ?? UNNAMED_TOOL, input: functionArguments(fn.arguments), emptyText: NO_ARGUMENTS };
+}
+
 function chatToolCall(call: unknown): ChatCall {
   if (!isPlainObject(call)) return { unknown: call };
-  const name = chatToolCallName(call) ?? "tool";
-  if (call.type === "custom" && isPlainObject(call.custom)) return { name, input: call.custom.input };
-  if (isPlainObject(call.function)) return { name, input: functionArguments(call.function.arguments) };
+  const name = chatToolCallName(call);
+  if (call.type === "custom" && isPlainObject(call.custom)) {
+    return { name: name ?? UNNAMED_TOOL, input: call.custom.input, emptyText: NO_INPUT };
+  }
+  if (isPlainObject(call.function)) return functionCall(call.function, name);
   return { unknown: call };
 }
 
@@ -410,8 +439,7 @@ function chatCallsOf(msg: Record<string, unknown>): ChatCall[] {
   const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls.map(chatToolCall) : [];
   const legacy = msg.function_call;
   if (isPlainObject(legacy)) {
-    const name = typeof legacy.name === "string" && legacy.name ? legacy.name : "tool";
-    calls.push({ name, input: functionArguments(legacy.arguments) });
+    calls.push(functionCall(legacy, typeof legacy.name === "string" && legacy.name ? legacy.name : null));
   }
   return calls;
 }
@@ -420,7 +448,11 @@ function ChatCallBoxes({ calls }: { calls: ChatCall[] }) {
   return (
     <>
       {calls.map((call, i) =>
-        "name" in call ? <ToolUseBox key={i} name={call.name} input={call.input} /> : <JsonBox key={i} data={call.unknown} />,
+        "name" in call ? (
+          <ToolUseBox key={i} name={call.name} input={call.input} emptyText={call.emptyText} />
+        ) : (
+          <JsonBox key={i} data={call.unknown} />
+        ),
       )}
     </>
   );
@@ -436,8 +468,10 @@ export interface ToolReplyTarget {
 /** The call each tool reply in an OpenAI chat message list answers, by
  *  the reply's index: a ``tool`` message's ``tool_call_id`` is looked up
  *  among the calls of the assistant messages before it (the nearest one
- *  when an id repeats); a legacy ``function`` message names its own
- *  function. A message that is not a reply has no entry. */
+ *  when an id repeats), and when the call is not there the message's
+ *  own ``name`` (LangChain and some litellm paths send one) names the
+ *  tool; a legacy ``function`` message names its own function. A
+ *  message that is not a reply has no entry. */
 export function chatToolReplies(messages: unknown): Map<number, ToolReplyTarget> {
   const replies = new Map<number, ToolReplyTarget>();
   if (!Array.isArray(messages)) return replies;
@@ -454,12 +488,17 @@ export function chatToolReplies(messages: unknown): Map<number, ToolReplyTarget>
       }
     } else if (entry.role === "tool") {
       const callId = typeof entry.tool_call_id === "string" && entry.tool_call_id ? entry.tool_call_id : null;
-      replies.set(i, { name: callId ? (callNames.get(callId) ?? null) : null, callId });
+      replies.set(i, { name: (callId ? callNames.get(callId) : undefined) ?? ownName(entry), callId });
     } else if (entry.role === "function") {
-      replies.set(i, { name: typeof entry.name === "string" && entry.name ? entry.name : null, callId: null });
+      replies.set(i, { name: ownName(entry), callId: null });
     }
   });
   return replies;
+}
+
+/** The ``name`` a reply message carries itself, or null. */
+function ownName(entry: Record<string, unknown>): string | null {
+  return typeof entry.name === "string" && entry.name ? entry.name : null;
 }
 
 /** The most of a call id a reply's label shows, when the call it
@@ -475,7 +514,7 @@ function shortCallId(id: string): string {
 /** The end of a reply's ``tool result`` label: the tool's name, else
  *  the call's id, shortened; nothing when the reply names neither. In
  *  the label's monospace, not upper-cased, so it reads as the stored
- *  name or id. */
+ *  name or id; a long name wraps anywhere rather than past the box. */
 function ReplyTarget({ target }: { target: ToolReplyTarget }) {
   const text = target.name ?? (target.callId ? shortCallId(target.callId) : null);
   if (text === null) return null;
@@ -486,7 +525,7 @@ function ReplyTarget({ target }: { target: ToolReplyTarget }) {
         data-testid="tool-reply-target"
         data-target={target.name ? "name" : "call-id"}
         className="normal-case tracking-normal"
-        style={{ color: "var(--text-secondary)" }}
+        style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
       >
         {text}
       </span>

@@ -12,10 +12,15 @@ canonical model; the thinking call's reasoning tokens; the function call
 as a ``tool_call``; the stored content in Gemini's own terms; and the
 block raised before any request.
 
+The thinking call tries ``THINKING_MODELS`` in order and uses the first
+that answers: a model the API reports as overloaded (503) or out of
+quota (429), or that does not answer within ``THINKING_TIMEOUT_MS``, is
+skipped, its rejected call checked as an ``llm_error``; the script fails
+when none answers.
+
 Exits 2 (SKIP) without ``GEMINI_API_KEY`` (or ``GOOGLE_API_KEY``) or
 without google-genai installed. Live spend: a dozen short calls on
-``gemini-3.1-flash-lite`` and one thinking call on ``gemini-3.5-flash``,
-well under a cent.
+``gemini-3.1-flash-lite`` and one thinking call, well under a cent.
 """
 
 from __future__ import annotations
@@ -28,8 +33,9 @@ import uuid
 from typing import Any
 
 try:
+    import httpx
     from google import genai
-    from google.genai import types
+    from google.genai import errors, types
 except ImportError:
     print("SKIP: pip install google-genai to run this example")
     sys.exit(2)
@@ -48,8 +54,19 @@ from flightdeck_sensor.core.policy import PolicyCache
 
 FLAVOR = "playground-google-genai"
 MODEL = "gemini-3.1-flash-lite"
-# A model that thinks before it answers, so the call reports thoughts.
-THINKING_MODEL = "gemini-3.5-flash"
+# Models that think before they answer and report their thoughts with
+# this thinking config, tried in order: the larger model first, then the
+# script's own model, which also thinks when asked to. The catalogue
+# prices both on the Gemini API.
+THINKING_MODELS = ("gemini-3.5-flash", "gemini-3.1-flash-lite")
+# The statuses that mean a model is busy or out of quota for now, not
+# that the request is wrong: the next model is tried.
+UNAVAILABLE_STATUSES = frozenset({429, 503})
+# How long one thinking attempt may take before the next model is tried:
+# a thinking call answers in seconds when the model is not busy, and a
+# busy one has been seen to take minutes. Two attempts stay inside
+# run_all.py's 180 s budget for this script.
+THINKING_TIMEOUT_MS = 45_000
 EMBED_MODEL = "gemini-embedding-001"
 # Enough for a word or a sentence; the calls stay cheap.
 MAX_TOKENS = 40
@@ -79,6 +96,38 @@ def _check(label: str, ok: bool, detail: Any = "") -> None:
     print_result(label, ok, 0, "" if ok else str(detail)[:1500])
     if not ok:
         raise AssertionError(f"{label}: {detail}")
+
+
+def _think(client: genai.Client) -> tuple[str, Any, list[str]]:
+    """The thinking call on the first of ``THINKING_MODELS`` that answers:
+    that model, its response and the models skipped as unavailable (a 503
+    or 429, or no answer within ``THINKING_TIMEOUT_MS``). Raises the last
+    model's error when none answers."""
+    skipped: list[str] = []
+    for model in THINKING_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents="What is 17 * 23? Answer with the number only.",
+                config=types.GenerateContentConfig(
+                    max_output_tokens=THINKING_MAX_TOKENS,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=THINKING_BUDGET, include_thoughts=True
+                    ),
+                    http_options=types.HttpOptions(timeout=THINKING_TIMEOUT_MS),
+                ),
+            )
+        except (errors.APIError, httpx.TimeoutException) as exc:
+            code = exc.code if isinstance(exc, errors.APIError) else None
+            unavailable = code in UNAVAILABLE_STATUSES or code is None
+            if not unavailable or model == THINKING_MODELS[-1]:
+                raise
+            reason = f"{code} {exc.status}" if isinstance(exc, errors.APIError) else "timed out"
+            print(f"  note: {model} unavailable ({reason}); trying the next model")
+            skipped.append(model)
+            continue
+        return model, response, skipped
+    raise AssertionError("no thinking model to try")
 
 
 def _events(session_id: str, event_type: str, least: int) -> list[dict[str, Any]]:
@@ -152,22 +201,13 @@ def main() -> None:
         print_result("automatic function calling", rounds >= 3, _ms(t0), repr(weather.text))
 
         t0 = time.monotonic()
-        thought = client.models.generate_content(
-            model=THINKING_MODEL,
-            contents="What is 17 * 23? Answer with the number only.",
-            config=types.GenerateContentConfig(
-                max_output_tokens=THINKING_MAX_TOKENS,
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=THINKING_BUDGET, include_thoughts=True
-                ),
-            ),
-        )
+        thinking_model, thought, skipped = _think(client)
         usage = thought.usage_metadata
         print_result(
             "thinking model",
             "391" in (thought.text or ""),
             _ms(t0),
-            f"thoughts={usage.thoughts_token_count if usage else None}",
+            f"{thinking_model} answered; thoughts={usage.thoughts_token_count if usage else None}",
         )
 
         t0 = time.monotonic()
@@ -204,13 +244,32 @@ def main() -> None:
         [(p.get("model"), p.get("tokens_total")) for p in post_calls],
     )
     assert_token_cost_fields(session_id, provider="google", platform="gemini-api")
+    # The model that answered the thinking call can be another than the
+    # one asked for (gemini-3.5-flash is answered by gemini-3.6-flash).
     _check(
         "every post_call has tokens and a canonical model",
         all((p.get("tokens_total") or 0) > 0 for p in post_calls)
-        and {p.get("model") for p in post_calls} <= {MODEL, "gemini-3.6-flash", THINKING_MODEL},
+        and {p.get("model") for p in post_calls} <= {MODEL, thinking_model, thought.model_version},
         [(p.get("model"), p.get("tokens_total")) for p in post_calls],
     )
-    thinking = [p for p in post_calls if p.get("model_requested") == THINKING_MODEL]
+    if skipped:
+        errors_landed = _events(session_id, "llm_error", len(skipped))
+        _check(
+            "each unavailable thinking model is an llm_error",
+            sorted(e.get("model_requested") or e.get("model") for e in errors_landed)
+            == sorted(skipped)
+            and all(
+                (e.get("payload") or {}).get("error", {}).get("error_type")
+                in {"overloaded", "rate_limit", "quota_exceeded", "timeout"}
+                for e in errors_landed
+            ),
+            errors_landed,
+        )
+    thinking = [
+        p
+        for p in post_calls
+        if p.get("model_requested") == thinking_model and (p.get("tokens_reasoning") or 0) > 0
+    ]
     _check(
         "the thinking call reports its thoughts as reasoning tokens",
         len(thinking) == 1

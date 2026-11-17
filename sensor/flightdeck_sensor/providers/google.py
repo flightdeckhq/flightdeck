@@ -248,9 +248,10 @@ def _warn_once(kind: str) -> None:
 def _system_parts(value: Any) -> Any:
     """The request's ``systemInstruction`` as the content's ``system``,
     which event_content keeps as text or as a list: the instruction's
-    ``parts``, as sent. The Content around them carries only a ``role``,
-    which the SDK sets to ``user`` and the model reads nothing from;
-    None when the request has no system instruction."""
+    ``parts``, as sent. The Content around them, and with it its
+    ``role`` (``user`` when the SDK builds it, the caller's own when the
+    caller passes a Content), is not stored. None when the request has
+    no system instruction."""
     if isinstance(value, dict):
         parts = value.get(_PARTS)
         return parts if isinstance(parts, list) else None

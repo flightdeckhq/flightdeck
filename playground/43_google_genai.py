@@ -98,6 +98,14 @@ def _check(label: str, ok: bool, detail: Any = "") -> None:
         raise AssertionError(f"{label}: {detail}")
 
 
+def _ran(label: str, ok: bool, t0: float, detail: Any = "") -> None:
+    """A call's result line, with how long it took; a FAIL fails the run,
+    as every check does."""
+    print_result(label, ok, _ms(t0), str(detail))
+    if not ok:
+        raise AssertionError(f"{label}: {detail}")
+
+
 def _think(client: genai.Client) -> tuple[str, Any, list[str]]:
     """The thinking call on the first of ``THINKING_MODELS`` that answers:
     that model, its response and the models skipped as unavailable (a 503
@@ -155,7 +163,7 @@ def main() -> None:
     try:
         t0 = time.monotonic()
         r = client.models.generate_content(model=MODEL, contents="Say hi.", config=config)
-        print_result("models.generate_content", bool(r.text), _ms(t0), repr(r.text))
+        _ran("models.generate_content", bool(r.text), t0, repr(r.text))
 
         t0 = time.monotonic()
         chunks = list(
@@ -163,9 +171,7 @@ def main() -> None:
                 model=MODEL, contents="Count to three.", config=config
             )
         )
-        print_result(
-            "models.generate_content_stream", bool(chunks), _ms(t0), f"{len(chunks)} chunks"
-        )
+        _ran("models.generate_content_stream", bool(chunks), t0, f"{len(chunks)} chunks")
 
         async def _async_calls() -> tuple[str | None, int]:
             answer = await client.aio.models.generate_content(
@@ -181,15 +187,13 @@ def main() -> None:
 
         t0 = time.monotonic()
         text, count = asyncio.run(_async_calls())
-        print_result("aio.models.generate_content + _stream", bool(text) and count > 0, _ms(t0))
+        _ran("aio.models.generate_content + _stream", bool(text) and count > 0, t0)
 
         t0 = time.monotonic()
         chat = client.chats.create(model=MODEL, config=config)
         chat.send_message("My name is Ada.")
         reply = chat.send_message("What is my name?")
-        print_result(
-            "chats.send_message x2", "ada" in (reply.text or "").lower(), _ms(t0), repr(reply.text)
-        )
+        _ran("chats.send_message x2", "ada" in (reply.text or "").lower(), t0, repr(reply.text))
 
         t0 = time.monotonic()
         weather = client.models.generate_content(
@@ -198,21 +202,21 @@ def main() -> None:
             config=types.GenerateContentConfig(tools=[get_weather], max_output_tokens=MAX_TOKENS),
         )
         rounds = len(weather.automatic_function_calling_history or [])
-        print_result("automatic function calling", rounds >= 3, _ms(t0), repr(weather.text))
+        _ran("automatic function calling", rounds >= 3, t0, repr(weather.text))
 
         t0 = time.monotonic()
         thinking_model, thought, skipped = _think(client)
         usage = thought.usage_metadata
-        print_result(
+        _ran(
             "thinking model",
             "391" in (thought.text or ""),
-            _ms(t0),
+            t0,
             f"{thinking_model} answered; thoughts={usage.thoughts_token_count if usage else None}",
         )
 
         t0 = time.monotonic()
         embedded = client.models.embed_content(model=EMBED_MODEL, contents=["hello", "world"])
-        print_result("models.embed_content (batch)", len(embedded.embeddings or []) == 2, _ms(t0))
+        _ran("models.embed_content (batch)", len(embedded.embeddings or []) == 2, t0)
 
         # A policy block: the next call raises before any request. A
         # one-token budget stands in for a server policy (08_enforcement.py
@@ -232,8 +236,7 @@ def main() -> None:
             blocked = True
         finally:
             session.policy = policy
-        print_result("policy BLOCK raises BudgetExceededError", blocked, _ms(t0))
-        _check("policy BLOCK raised", blocked)
+        _ran("policy BLOCK raises BudgetExceededError", blocked, t0)
     finally:
         flightdeck_sensor.teardown()
 

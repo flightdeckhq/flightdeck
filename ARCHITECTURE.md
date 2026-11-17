@@ -1722,8 +1722,10 @@ pieces:
   `{"role", "parts"}`.
 - `system`: the body's `systemInstruction`'s `parts`. The content's
   `system` is text or a list (see `event_content`), so the Content
-  around the parts is not stored; it carries only a `role`, which the
-  SDK sets to `user` and the model reads nothing from.
+  around the parts is not stored, and with it its `role`: `user` when
+  the SDK builds the Content from text or parts, the caller's own (a
+  `model` role included, which google-genai 1.64 and 2.x send as given)
+  when the caller passes a Content.
 - `tools`: the body's `tools` (`functionDeclarations`, `googleSearch`,
   `codeExecution`, ...).
 - `response`: a non-streamed call's response body as received, parsed:

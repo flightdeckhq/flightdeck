@@ -32,9 +32,12 @@ All notable changes to Flightdeck are documented here.
   `codeExecution`) and its response's candidates. A function call shows
   its name and `args`, a function response is labelled with the
   function it answers, a thought is marked apart from the answer, inline
-  data is a placeholder with its type and size (never the bytes), and
-  code execution shows its code and result; a thought signature is a
-  mark, its value in Raw. A prompt the safety filters blocked says so.
+  data is a placeholder with its type and size (never the bytes; a
+  payload cut to fit the event size limit says so, with its full size),
+  and code execution shows its code and result; a turn's thought
+  signatures are one mark, their values in Raw. A prompt the safety
+  filters blocked says so, and the response shows the token line every
+  provider's does.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a

@@ -9348,38 +9348,50 @@ that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
 built from `response.created` on, and for litellm the latest response a
 `response.created` / `response.in_progress` event carried
 (`status: "in_progress"`, no output). An embeddings
-call's input stays with `EmbeddingsContentViewer`. A Gemini call (the
-sensor's google-genai `post_call`, stored under provider `google` with
-a response body) is shown in its request's own terms, read from the
+call's input stays with `EmbeddingsContentViewer`. A Gemini call (an
+event other than an embeddings call whose content is stored under
+provider `google`; the drawer passes the event's type, and an
+embeddings event keeps the view every embeddings event has, whatever
+its content holds) is shown in its request's own terms, read from the
 stored request and response bodies (see google-genai (Gemini),
-Content): System instruction (the `systemInstruction`'s parts),
-Contents (one box per turn with its `user` or `model` role badge),
-Tools and Response. A part shows by its kind: `text` as text, a
-`thought` part labelled `thought` in the secondary text colour, a
-`functionCall` in the box an Anthropic `tool_use` block shows in (the
-function's name, then its `args` as labelled fields, `(no args)` when
-it has none), a `functionResponse` labelled `function response` and
-the function it answers (its `name`, else the call its `id` names)
-with its `response` as fields, `inlineData` as a placeholder naming
-its MIME type and its size (`[image/png · 12.3 KB]`, read from the base64
-text's length: the bytes are never decoded or put in the page),
-`fileData` as its MIME type and URI, `executableCode` labelled with its
-language over the code, `codeExecutionResult` labelled with its
-outcome over the output, and any other part as its JSON. A part that
-carries a `thoughtSignature` (opaque bytes the model reads back) is
-marked `thoughtSignature · opaque bytes, in Raw` under it, the value
-itself only in Raw. Tools show one box per function declaration, by
-its name, with its description and its parameters' types as stored
+Content): System instruction (the `systemInstruction`'s parts, badge
+`system instruction`), Contents (one box per turn with its `user` or
+`model` role badge), Tools and Response (no Response box when the
+response was stored as nothing or `{}`). A part shows by its kind:
+`text` as text, a `thought` part labelled `thought` in the secondary
+text colour, a `functionCall` in the box an Anthropic `tool_use` block
+shows in (the function's name, then its `args` as labelled fields,
+`(no args)` when it has none), a `functionResponse` labelled
+`function response` and the function it answers (its `name`, else the
+call its `id` names) with its `response` as fields, `inlineData` as a
+boxed placeholder naming its MIME type and its size (`[image/png ·
+12.3 KB]`, read from the base64 text's length: the bytes are never
+decoded or put in the page; a payload the sensor cut to fit the event
+size limit ends in its marker, whose total gives the size, and the
+placeholder adds `cut to fit the event size limit`), `fileData` boxed
+as its MIME type and URI, `executableCode` labelled with its language
+over the code, `codeExecutionResult` labelled with its outcome over the
+output, and any other part as its JSON. A turn (or candidate) whose
+parts carry a `thoughtSignature` (opaque bytes the model reads back)
+shows one mark under them, `thoughtSignature · opaque bytes, in Raw`,
+the values only in Raw; a part that holds nothing but its signature
+shows nothing of its own. Tools show one box per function declaration,
+by its name, with its description and its parameters' types as stored
 (`string` in a JSON schema, `STRING` in Gemini's own schema), and one
 per built-in tool, named by its key (`googleSearch`, `codeExecution`,
 `urlContext`). The response shows each candidate's parts the same way
-(several labelled by their `index`), its `finishReason` when it is not
-`STOP`, and a prompt the filters blocked before any candidate as
-`The prompt was blocked (blockReason SAFETY): the model returned no
-candidates.` Every field is read under its REST API name and its
+(several labelled by their `index`; a candidate without `parts` says
+`(no parts)`), its `finishReason` when it is not `STOP` with its
+`finishMessage` when it has one, a prompt the filters blocked before
+any candidate as `The prompt was blocked (blockReason SAFETY): the
+model returned no candidates.`, and the token line every provider's
+response has, from `usageMetadata`: Tokens in the prompt with the
+tool-use prompt, Tokens out the candidates with the thoughts (the
+counts the event's `tokens_input` and `tokens_output` are made of). The
+rest of the usage, safety ratings, grounding and citation metadata are
+in Raw only. Every field is read under its REST API name and its
 snake_case one, since the body's spelling differs by SDK release and
-platform, and Raw shows each box's piece as stored. A Gemini
-embeddings call keeps the view every embeddings call has. A tool call's content (the sensor's `tool_call`,
+platform, and Raw shows each box's piece as stored. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written

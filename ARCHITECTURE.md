@@ -890,8 +890,9 @@ class Provider(Protocol):
         message.
         For OpenAI: extracts messages array (all roles), tools list, response
         choice.
-        For EMBEDDINGS event_type: extracts request_kwargs["input"] (string
-        or list of strings).
+        For EMBEDDINGS event_type: extracts request_kwargs["input"] as
+        sent (a string, a list of strings, a list of token ids or a list
+        of token-id lists).
         Provider terminology is preserved exactly — no normalization between
         Anthropic and OpenAI shapes.
         """
@@ -10255,8 +10256,9 @@ fields described under `post_call` apply here too. Embeddings adds:
 
 When `capture_prompts=true`:
 
-- `payload.content.input` carries the request's `input` parameter
-  (string or list of strings) — round-trips into `event_content.input`.
+- `payload.content.input` carries the request's `input` parameter as
+  sent (a string, a list of strings, a list of token ids or a list of
+  token-id lists) — round-trips into `event_content.input`.
 - `payload.content.embedding_output` carries the raw vectors as
   `list[list[float]]` — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate
@@ -11003,9 +11005,24 @@ Content (when captured) round-trips: sensor `PromptContent.input` →
 ingestion `payload.content` → worker `event_content.input` JSONB →
 `GET /v1/events/:id/content` → dashboard `<EmbeddingsContentViewer>`.
 
-The viewer carries three render branches: single string (`"text to
-embed"`), list (`["batch", "of", "strings"]`), and no-content
-(`capture_prompts=false`).
+The viewer picks its render branch by the stored input's JSON type:
+
+- `string`: a string (`"text to embed"`) is one input, its text, cut
+  at 280 characters behind **Show full input**.
+- `tokens`: a list of token ids (`[101, 202, 303]`, non-negative
+  integers) is one input, labelled as token ids with their count, the
+  ids as a comma-separated sequence cut at 35 ids behind **Show full
+  input**.
+- `list`: a list of strings (`["batch", "of", "strings"]`) or of
+  token-id lists (`[[1, 2, 3], [4, 5, 6]]`) is one input per item,
+  under an `N inputs` header that expands the list. A token-id item is
+  labelled with its own count and cut at 35 ids; the list's **Show
+  full inputs** shows every item whole.
+- `json`: any other value (an empty list, a list mixing types, an
+  object, a number) is shown as its JSON, never cast to one of the
+  shapes above.
+- `empty`: no captured content (`capture_prompts=false`), or content
+  without an input, shows "(content not captured)".
 
 ### `GET /v1/events/:id/content`
 

@@ -203,6 +203,8 @@ describe("EmbeddingsContentViewer", () => {
     expect(getByTestId("embeddings-content-state-list").textContent).toBe(
       "3 inputs",
     );
+    // Text inputs are not labelled as token ids.
+    expect(queryByTestId("embeddings-content-list-kind")).toBeNull();
     // Items hidden until expand clicked.
     expect(queryByTestId("embeddings-content-expanded")).toBeNull();
     fireEvent.click(getByTestId("embeddings-content-toggle"));
@@ -239,5 +241,115 @@ describe("EmbeddingsContentViewer", () => {
     await waitFor(() =>
       expect(getByTestId("embeddings-content-state-empty")).toBeDefined(),
     );
+  });
+});
+
+// -------------------------------------------------------------------
+// Token-id inputs and inputs of no known shape. The embeddings API
+// also takes one input as a list of token ids, and several inputs as a
+// list of token-id lists; the stored value is shown as what it is.
+// -------------------------------------------------------------------
+
+/** Render the viewer for a stored ``input`` and wait until it settled. */
+async function renderInput(input: unknown) {
+  vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+    makeContent(input as EventContent["input"]),
+  );
+  const view = render(<EmbeddingsContentViewer eventId="evt-tok" hasContent={true} />);
+  await waitFor(() =>
+    expect(screen.getByTestId("embeddings-content-viewer").getAttribute("data-state")).not.toBe(
+      "loading",
+    ),
+  );
+  return view;
+}
+
+describe("EmbeddingsContentViewer -- token ids and other inputs", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows a list of token ids as one input, labelled as token ids with their count", async () => {
+    await renderInput([101, 202, 303]);
+    const viewer = screen.getByTestId("embeddings-content-viewer");
+    expect(viewer.getAttribute("data-state")).toBe("tokens");
+    expect(viewer.textContent).toContain("Embedding input");
+    expect(viewer.textContent).toContain("Token ids");
+    expect(screen.getByTestId("embeddings-content-token-count").textContent).toBe("3 tokens");
+    expect(screen.getByTestId("embeddings-content-state-tokens").textContent).toBe(
+      "101, 202, 303",
+    );
+    // Not three inputs of one number each.
+    expect(screen.queryByTestId("embeddings-content-state-list")).toBeNull();
+    expect(screen.queryByTestId("embeddings-content-toggle")).toBeNull();
+  });
+
+  it("counts a single token id as ``1 token``", async () => {
+    await renderInput([7]);
+    expect(screen.getByTestId("embeddings-content-token-count").textContent).toBe("1 token");
+    expect(screen.getByTestId("embeddings-content-state-tokens").textContent).toBe("7");
+  });
+
+  it("truncates a long token-id input with the same expander as a long text", async () => {
+    const ids = Array.from({ length: 1000 }, (_, i) => i + 1);
+    await renderInput(ids);
+    expect(screen.getByTestId("embeddings-content-token-count").textContent).toBe("1000 tokens");
+    const preview = screen.getByTestId("embeddings-content-state-tokens").textContent ?? "";
+    expect(preview.endsWith("…")).toBe(true);
+    // Cut between two ids, never inside one.
+    expect(preview.slice(0, -1).split(", ").every((id) => ids.includes(Number(id)))).toBe(true);
+    expect(preview.length).toBeLessThan(ids.join(", ").length);
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-state-tokens").textContent).toBe(
+        ids.join(", "),
+      ),
+    );
+    expect(screen.getByTestId("embeddings-content-toggle").textContent).toBe("Show less");
+  });
+
+  it("shows a list of token-id lists as one input per list, each with its own count", async () => {
+    await renderInput([[1, 2, 3], [4, 5, 6, 7]]);
+    expect(screen.getByTestId("embeddings-content-viewer").getAttribute("data-state")).toBe("list");
+    expect(screen.getByTestId("embeddings-content-state-list").textContent).toBe("2 inputs");
+    expect(screen.getByTestId("embeddings-content-list-kind").textContent).toBe("Token ids");
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-expanded")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-0-count").textContent).toBe(
+      "Token ids (3 tokens)",
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe("1, 2, 3");
+    expect(screen.getByTestId("embeddings-content-list-item-1-count").textContent).toBe(
+      "Token ids (4 tokens)",
+    );
+    expect(screen.getByTestId("embeddings-content-list-item-1-ids").textContent).toBe(
+      "4, 5, 6, 7",
+    );
+  });
+
+  it("singular ``1 input`` for a list holding one token-id list", async () => {
+    await renderInput([[9, 8]]);
+    expect(screen.getByTestId("embeddings-content-state-list").textContent).toBe("1 input");
+    fireEvent.click(screen.getByTestId("embeddings-content-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-list-item-0-ids").textContent).toBe("9, 8"),
+    );
+  });
+
+  it.each([
+    ["an empty list", [], "[]"],
+    ["a list mixing text and token ids", ["alpha", 101], '"alpha"'],
+    ["a list mixing token ids and token-id lists", [1, [2, 3]], "1"],
+    ["an object", { text: "alpha", extra: true }, '"extra"'],
+    ["numbers that are not token ids", [0.25, 0.5], "0.25"],
+  ])("shows %s as its JSON", async (_name, input, expected) => {
+    await renderInput(input);
+    expect(screen.getByTestId("embeddings-content-viewer").getAttribute("data-state")).toBe("json");
+    const json = screen.getByTestId("embeddings-content-state-json");
+    expect(json.textContent).toContain(expected);
+    expect(JSON.parse(json.textContent ?? "")).toEqual(input);
+    expect(screen.queryByTestId("embeddings-content-state-list")).toBeNull();
   });
 });

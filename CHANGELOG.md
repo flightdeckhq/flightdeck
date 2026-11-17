@@ -146,6 +146,18 @@ All notable changes to Flightdeck are documented here.
   `ChatCompletionMessage` counted as a bare message), so a pre-call
   budget threshold can trip earlier than before (D285).
 
+- **An embeddings call given token ids shows them as one input.** The
+  embeddings API takes one input as a list of token ids, and several as
+  a list of token-id lists. In the run drawer, an expanded embeddings
+  row showed the token-id input `[101, 202, 303]` as three inputs of
+  one number each, and `[[1, 2, 3], [4, 5, 6]]` as two inputs reading
+  `123` and `456`. A token-id input now shows as one input labelled as
+  token ids, with its count (`3 tokens`) and the ids as a
+  comma-separated sequence (a long one cut, with **Show full input**); a
+  list of token-id lists as one input per list, each with its own count;
+  and a stored input of any other shape (an empty list, a list mixing
+  text and numbers, an object) as its JSON.
+
 ## v0.11.0 — 2026-11-15
 
 Choosing a port is one flag: `flightdeck --port 4100` serves on port

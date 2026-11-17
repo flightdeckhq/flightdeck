@@ -1047,15 +1047,17 @@ export interface EventContent {
   /**
    * Embedding-shaped content. Populated only on
    * ``event_type=embeddings`` events; absent on chat events. Carries
-   * the request's ``input`` parameter -- a string (single-input
-   * embed) or list of strings (batch embed) per the OpenAI / litellm
-   * / LangChain ``OpenAIEmbeddings`` API. Dashboard's
-   * ``EmbeddingsContentViewer`` branches on the type to render the
-   * single-input or batch-list view.
+   * the request's ``input`` parameter as sent -- a string or a list of
+   * token ids (one input), or a list of strings or of token-id lists
+   * (one input each) per the OpenAI / litellm / LangChain
+   * ``OpenAIEmbeddings`` API. Dashboard's ``EmbeddingsContentViewer``
+   * branches on the value's JSON type to render the single-input or
+   * batch-list view, and any other value as its JSON.
    */
   // ``input`` is overloaded across event-content sources:
-  //   * ``embeddings``: string (single-input embed) or string[]
-  //     (batch embed) — the OpenAI / litellm input parameter.
+  //   * ``embeddings``: a string, string[], number[] (token ids) or
+  //     number[][] (token-id lists) — the OpenAI / litellm input
+  //     parameter.
   //   * an OpenAI Responses ``post_call`` (OpenAI SDK or litellm):
   //     the request's ``input`` verbatim, a string or a list of input
   //     items; its ``instructions`` are in ``system_prompt``. The

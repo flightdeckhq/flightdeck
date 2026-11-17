@@ -2462,10 +2462,9 @@ the same plugin callbacks.
   (ADK's default `Gemini` model, one `aio.models` request per model
   turn), litellm (`LiteLlm`) and Anthropic SDK (`AnthropicLlm`,
   `Claude`) and the MCP patch (ADK's `McpToolset` uses the official
-  `mcp` SDK), and stay on the sensor's own session, each made in the
-  scope of the agent's child, so its function calls are recorded as that
-  child's. Each model call is reported once: ADK's model classes call
-  one provider SDK each. The plugin adds no `tool_call`: the model response's function
+  `mcp` SDK), and stay on the sensor's own session. Each model call is
+  reported once: ADK's model classes call one provider SDK each. The
+  plugin adds no `tool_call`: the model response's function
   calls (an `AgentTool`'s and `transfer_to_agent` included) are already
   the `tool_call` events. The plugin reads no token counts. `AnthropicLlm`
   passes `NOT_GIVEN` for the `tools` of an agent with none, which the

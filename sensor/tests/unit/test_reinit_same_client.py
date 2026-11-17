@@ -651,8 +651,11 @@ def test_an_openai_stream_manager_entered_in_the_next_session_reports_to_it(
 
 
 def test_an_openai_stream_manager_entered_after_a_teardown_on_another_thread(
-    sensor: _Sensor, provider: respx.MockRouter
+    sensor: _Sensor, provider: respx.MockRouter, signals_restored: dict[signal.Signals, Any]
 ) -> None:
+    """A teardown off the main thread cannot put the signal handlers back;
+    ``signals_restored`` does after the test, so the session's handler is
+    not left installed for the next test on this worker."""
     sensor.start("s1")
     manager = _openai_manager(openai.OpenAI(api_key="k"))
     stopper = threading.Thread(target=sensor.stop)

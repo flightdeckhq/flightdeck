@@ -365,12 +365,17 @@ class LitellmProvider:
         no separate system field -- system role (when present) is in
         the messages list, same as OpenAI. Never raises.
 
-        When ``event_type == EventType.EMBEDDINGS``
-        the request is ``litellm.embedding(model=..., input=<str |
-        list[str]>)``; capture the input parameter into
-        ``PromptContent.input`` and leave the chat-shaped slots
-        empty. Mirrors the OpenAI provider's embeddings branch --
-        the dashboard renders both via ``EmbeddingsContentViewer``.
+        When ``event_type == EventType.EMBEDDINGS`` the request is
+        ``litellm.embedding(model=..., input=...)``, its ``input`` a
+        string, a list of strings, a list of token ids or a list of
+        token-id lists; capture the ``input`` parameter as passed into
+        ``PromptContent.input`` and the ``embedding`` of each of the
+        response's ``data`` entries into
+        ``PromptContent.embedding_output`` (None when the response
+        carries none), and leave the chat-shaped slots empty
+        (``response`` is ``{}``). Mirrors the OpenAI provider's
+        embeddings branch -- the dashboard renders both via
+        ``EmbeddingsContentViewer``.
         """
         if not self._capture_prompts:
             return None

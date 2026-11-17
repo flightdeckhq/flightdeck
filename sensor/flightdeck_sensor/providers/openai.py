@@ -809,13 +809,16 @@ class OpenAIProvider:
         Returns ``None`` when capture_prompts is False. Never raises.
         OpenAI has no separate system field -- system role is in messages.
 
-        When ``event_type == EventType.EMBEDDINGS``
-        the request shape is ``{"input": <str | list[str]>, "model":
-        ...}`` -- there are no messages, system, tools, or generated
-        response content (the response is just an array of vectors,
-        which is opaque to operators and not stored). The captured
-        ``PromptContent`` carries the input string/list under
-        ``input`` and leaves the chat slots empty so the dashboard's
+        When ``event_type == EventType.EMBEDDINGS`` the request is
+        ``{"input": ..., "model": ...}``, its ``input`` a string, a list
+        of strings, a list of token ids or a list of token-id lists --
+        there are no messages, system, tools, or generated text. The
+        captured ``PromptContent`` carries the request's ``input`` as
+        sent (None when given as ``NOT_GIVEN`` / ``omit``) under
+        ``input``, and the ``embedding`` of each of the response's
+        ``data`` entries under ``embedding_output`` (None when the
+        response carries none). The chat slots stay empty
+        (``response`` is ``{}``) so the dashboard's
         ``EmbeddingsContentViewer`` can render it distinctly from a
         chat prompt.
         """

@@ -102,9 +102,18 @@ const PINNED: Record<string, EventContent> = {
   },
 };
 
-async function markup(content: EventContent): Promise<string> {
+/** The event type each content is opened under: an embeddings call's
+ *  is "embeddings", every other one a post_call. */
+const EVENT_TYPES: Record<string, string> = {
+  google_embeddings: "embeddings",
+  openai_embeddings: "embeddings",
+};
+
+async function markup(name: string, content: EventContent): Promise<string> {
   mockContent = content;
-  const { container, unmount } = render(<PromptViewer eventId={content.event_id} />);
+  const { container, unmount } = render(
+    <PromptViewer eventId={content.event_id} eventType={EVENT_TYPES[name] ?? "post_call"} />,
+  );
   await screen.findAllByText(content.provider === "otel_genai" ? "OpenTelemetry GenAI" : content.provider);
   const html = container.innerHTML;
   unmount();
@@ -115,7 +124,7 @@ describe("PromptViewer: content that is not a Gemini call renders as it did befo
   if (CAPTURE) {
     it("captures the markup", async () => {
       const captured: Record<string, string> = {};
-      for (const [name, content] of Object.entries(PINNED)) captured[name] = await markup(content);
+      for (const [name, content] of Object.entries(PINNED)) captured[name] = await markup(name, content);
       writeFileSync(PINNED_FILE, `${JSON.stringify(captured, null, 2)}\n`);
     });
     return;
@@ -123,7 +132,7 @@ describe("PromptViewer: content that is not a Gemini call renders as it did befo
   const expected = JSON.parse(readFileSync(PINNED_FILE, "utf8")) as Record<string, string>;
   for (const name of Object.keys(PINNED)) {
     it(name, async () => {
-      expect(await markup(PINNED[name]!)).toBe(expected[name]);
+      expect(await markup(name, PINNED[name]!)).toBe(expected[name]);
     });
   }
 });

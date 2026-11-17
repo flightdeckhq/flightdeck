@@ -1,5 +1,5 @@
 {
-  "_comment": "Gemini call contents as the content endpoint served them from a dev stack, captured from live google-genai 2.34 calls on the Gemini API (playground 43 and an inline-image / code-execution check). Each is the request body the SDK built and the response body as received.",
+  "_comment": "Gemini call contents as the content endpoint served them from a dev stack, captured from live google-genai 2.34 calls on the Gemini API (playground 43 and an inline-image / code-execution check), and the content the sensor stored for google-genai 1.64.0 calls (the SDK-floors lane) on the Gemini API and on Vertex AI against a fake endpoint (sdk164_*: the second round of an automatic-function-calling call with inline data). Each is the request body the SDK built and the response body as received.",
   "plain_call": {
     "event_id": "e-gemini-plain_call",
     "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
@@ -532,5 +532,210 @@
       }
     ],
     "captured_at": "2026-11-17T09:26:36.833Z"
+  },
+  "sdk164_gemini_api_round_2": {
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Describes the image the user sent.",
+            "name": "describe_image",
+            "parameters": {
+              "properties": {
+                "detail": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "detail"
+              ],
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "It is a red square."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 270,
+        "candidatesTokenCount": 7,
+        "totalTokenCount": 277
+      },
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "r-164"
+    },
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "session_id": "s",
+    "event_id": "e-gemini-sdk164-gemini_api-round-2",
+    "captured_at": "2026-11-17T10:35:43.467263+00:00",
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is in this image?"
+          },
+          {
+            "inlineData": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAA=",
+              "mimeType": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "call-1",
+              "args": {
+                "detail": "colour"
+              },
+              "name": "describe_image"
+            },
+            "thoughtSignature": "c2lnbmF0dXJl"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "describe_image",
+              "response": {
+                "result": "a red square (colour)"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system_prompt": [
+      {
+        "text": "Be brief."
+      }
+    ]
+  },
+  "sdk164_vertex_round_2": {
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Describes the image the user sent.",
+            "name": "describe_image",
+            "parameters": {
+              "properties": {
+                "detail": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "detail"
+              ],
+              "type": "OBJECT"
+            },
+            "response": {
+              "type": "STRING"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "It is a red square."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 270,
+        "candidatesTokenCount": 7,
+        "totalTokenCount": 277
+      },
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "r-164"
+    },
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "session_id": "s",
+    "event_id": "e-gemini-sdk164-vertex-round-2",
+    "captured_at": "2026-11-17T10:35:43.471699+00:00",
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is in this image?"
+          },
+          {
+            "inline_data": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAA=",
+              "mime_type": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "function_call": {
+              "id": "call-1",
+              "args": {
+                "detail": "colour"
+              },
+              "name": "describe_image"
+            },
+            "thought_signature": "c2lnbmF0dXJl"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "function_response": {
+              "name": "describe_image",
+              "response": {
+                "result": "a red square (colour)"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system_prompt": [
+      {
+        "text": "Be brief."
+      }
+    ]
   }
 }

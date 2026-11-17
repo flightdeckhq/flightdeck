@@ -25,6 +25,10 @@ interface PromptViewerProps {
    *  form (JSON text cut mid-way, then "…") is read up to the cut; any
    *  other row's text is shown as stored. */
   clientType?: string | null;
+  /** The event's type. A Gemini call's content gets the Gemini view;
+   *  a Gemini embeddings event's keeps the view every embeddings event
+   *  has (see isGeminiContent). */
+  eventType?: string | null;
 }
 
 /* ---- Role badge styles ----
@@ -93,8 +97,19 @@ function Section({
 
 /* ---- Role badge ---- */
 
-function RoleBadge({ role }: { role: string }) {
-  const style = roleBadgeStyles[role] ?? defaultRoleBadge;
+/** A role's badge: ``role`` picks its colours from ``styles`` (the shared
+ *  map unless a view passes its own) and ``label`` is its text (the role
+ *  itself unless a view names it otherwise). */
+function RoleBadge({
+  role,
+  styles = roleBadgeStyles,
+  label = role,
+}: {
+  role: string;
+  styles?: Record<string, { bg: string; color: string; border: string }>;
+  label?: string;
+}) {
+  const style = styles[role] ?? defaultRoleBadge;
   return (
     <span
       className="font-mono text-[10px] font-semibold uppercase"
@@ -106,7 +121,7 @@ function RoleBadge({ role }: { role: string }) {
         borderRadius: 4,
       }}
     >
-      {role}
+      {label}
     </span>
   );
 }
@@ -564,7 +579,7 @@ function ChatMessageBody({ msg, reply }: { msg: Record<string, unknown>; reply?:
 
 /* ---- Main component ---- */
 
-export function PromptViewer({ eventId, clientType }: PromptViewerProps) {
+export function PromptViewer({ eventId, clientType, eventType }: PromptViewerProps) {
   // fetchEventContent resolves null for any failed fetch: a 404 (capture
   // off for the session) or any other error. Either way the viewer shows
   // the capture-disabled message. Only this event's result is shown.
@@ -604,7 +619,7 @@ export function PromptViewer({ eventId, clientType }: PromptViewerProps) {
     return <OtelGenaiContent content={content} eventId={eventId} />;
   }
 
-  if (isGeminiContent(content)) {
+  if (isGeminiContent(content, eventType)) {
     return <GeminiContent content={content} eventId={eventId} />;
   }
 
@@ -1565,24 +1580,45 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
  * and its ``args``, ``functionResponse``, ``candidates``,
  * ``finishReason``) and nothing is rewritten into another provider's
  * shape (CLAUDE.md rule 20); each box's Raw is the stored piece as it
- * is. An embeddings event's content (``response`` stored as ``{}``)
- * keeps the view every provider's has.
+ * is. An embeddings event (its type, which the drawer passes) keeps the
+ * view every provider's embeddings have.
  */
 
 /** The provider name the sensor stores on a google-genai call. */
 export const GOOGLE_PROVIDER = "google";
 
+/** The event type of an embeddings call, which keeps the view every
+ *  provider's embeddings have. */
+const EMBEDDINGS_EVENT_TYPE = "embeddings";
+
 /** What a function call with nothing in its ``args`` says: Gemini's
  *  name for the field. */
 const NO_ARGS = "(no args)";
+
+/** What a candidate whose ``content`` carries no ``parts`` says. */
+const NO_PARTS = "(no parts)";
 
 /** The finish reason of a candidate that ended normally: shown only when
  *  a candidate stopped for another reason. */
 const GEMINI_FINISH_STOP = "STOP";
 
+/** The two spellings of a part's thought signature. */
+const SIGNATURE_FIELDS = ["thoughtSignature", "thought_signature"] as const;
+
 /** Bytes in a kilobyte and a megabyte, for an inline payload's size. */
 const BYTES_PER_KB = 1024;
 const BYTES_PER_MB = BYTES_PER_KB * 1024;
+
+/** The end the sensor gives a string it cut to keep an event under its
+ *  size limit: ``… [flightdeck: kept N of M bytes to fit the event size
+ *  limit]``, M the whole string's size in UTF-8 bytes. Its shape is the
+ *  sensor's ``truncation_marker`` (sensor/flightdeck_sensor/transport/
+ *  body_limit.py); the two must change together. An inline payload over
+ *  the cap (about half a megabyte of base64) is stored cut. */
+const SENSOR_CUT_MARKER = /… \[flightdeck: kept (\d+) of (\d+) bytes to fit the event size limit\]$/;
+
+/** What an inline payload the sensor cut says after its size. */
+const CUT_TO_FIT = "cut to fit the event size limit";
 
 /** The role badge colours of a Gemini turn, the Prompts tab's own: a
  *  ``user`` turn as any user message, a ``model`` turn as an assistant
@@ -1593,11 +1629,13 @@ const geminiRoleBadgeStyles: Record<string, { bg: string; color: string; border:
   model: roleChip("var(--accent)"),
 };
 
-/** Whether the content is a google-genai call's request and response:
- *  stored under ``provider`` ``google`` with a response body. */
-export function isGeminiContent(content: EventContent): boolean {
-  if (content.provider !== GOOGLE_PROVIDER) return false;
-  return !(isPlainObject(content.response) && Object.keys(content.response).length === 0);
+/** Whether the content is a google-genai call's request and response,
+ *  which the Gemini view shows: stored under ``provider`` ``google`` by
+ *  an event that is not an embeddings call. The event's type decides,
+ *  not the content's shape: a generate call whose response was stored
+ *  as ``{}`` or not at all is still one. */
+export function isGeminiContent(content: EventContent, eventType?: string | null): boolean {
+  return content.provider === GOOGLE_PROVIDER && eventType !== EMBEDDINGS_EVENT_TYPE;
 }
 
 /** A field of a Gemini body under either of its spellings: the REST
@@ -1611,28 +1649,34 @@ function geminiText(obj: Record<string, unknown>, camel: string, snake: string):
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
-function GeminiRoleBadge({ role }: { role: string }) {
-  const style = geminiRoleBadgeStyles[role] ?? defaultRoleBadge;
-  return (
-    <span
-      className="font-mono text-[10px] font-semibold uppercase"
-      style={{ background: style.bg, color: style.color, border: style.border, padding: "2px 8px", borderRadius: 4 }}
-    >
-      {role}
-    </span>
-  );
+function geminiCount(obj: Record<string, unknown>, camel: string, snake: string): number | undefined {
+  const v = geminiField(obj, camel, snake);
+  return typeof v === "number" ? v : undefined;
 }
 
-/** A line of stored detail the reader needs (an inline payload's type
- *  and size, a file's URI, why a candidate stopped), in the secondary
- *  text colour, which reads at 4.5:1 or better on the drawer in both
- *  themes. */
+/** A line of stored detail the reader needs (why a candidate stopped, a
+ *  prompt the filters blocked), in the secondary text colour, which reads
+ *  at 4.5:1 or better on the drawer in both themes. */
 function GeminiNote({ children, testId }: { children: React.ReactNode; testId: string }) {
   return (
     <div
       data-testid={testId}
       className="font-mono text-[12px]"
       style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** A part that stands for bytes or a file, in the box a call's part
+ *  shows in, its text in the primary colour. */
+function GeminiPlaceholder({ children, testId }: { children: React.ReactNode; testId: string }) {
+  return (
+    <div
+      data-testid={testId}
+      className="rounded-md p-2.5 font-mono text-[12px]"
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text)", overflowWrap: "anywhere" }}
     >
       {children}
     </div>
@@ -1646,15 +1690,41 @@ function base64Size(text: string): number {
   return Math.max(0, Math.floor((text.length * 3) / 4) - padding);
 }
 
+/** An inline payload's size, from its stored base64 text, and whether
+ *  the sensor cut that text to fit the event size limit: a cut text ends
+ *  in the sensor's marker (see SENSOR_CUT_MARKER), whose total names the
+ *  whole text's length, which the size is read from. A marker anywhere
+ *  but the end is data. */
+export function inlineDataSize(data: string): { bytes: number; cut: boolean } {
+  const marker = SENSOR_CUT_MARKER.exec(data);
+  if (marker) return { bytes: Math.floor((Number(marker[2]) * 3) / 4), cut: true };
+  return { bytes: base64Size(data), cut: false };
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < BYTES_PER_KB) return `${bytes} B`;
   if (bytes < BYTES_PER_MB) return `${(bytes / BYTES_PER_KB).toFixed(1)} KB`;
   return `${(bytes / BYTES_PER_MB).toFixed(1)} MB`;
 }
 
-/** The mark under a part that carries a thought signature: the field as
- *  stored and that its value, opaque bytes the model reads back, is in
- *  Raw. The value itself is never shown in Pretty. */
+/** The thought signature field a part carries, as stored, or null. */
+function signatureField(part: unknown): string | null {
+  if (!isPlainObject(part)) return null;
+  return SIGNATURE_FIELDS.find((field) => part[field] !== undefined) ?? null;
+}
+
+/** Whether a signed part holds nothing but its signature: no field
+ *  besides it but an empty ``text`` or a ``thought`` flag. */
+function isSignatureOnly(part: Record<string, unknown>): boolean {
+  return Object.entries(part).every(
+    ([key, value]) =>
+      (SIGNATURE_FIELDS as readonly string[]).includes(key) || key === "thought" || (key === "text" && value === ""),
+  );
+}
+
+/** The mark under a turn whose parts carry thought signatures: the field
+ *  as stored and that its values, opaque bytes the model reads back, are
+ *  in Raw. Shown once per turn; the values are never shown in Pretty. */
 function ThoughtSignatureMark({ field }: { field: string }) {
   return (
     <div data-testid="gemini-thought-signature" className="mt-1 flex justify-end">
@@ -1702,8 +1772,11 @@ function GeminiFunctionResponse({ reply, callNames }: { reply: Record<string, un
   );
 }
 
-/** One part, in Gemini's terms. */
-function GeminiPartBody({ part, callNames }: { part: Record<string, unknown>; callNames: Map<string, string> }) {
+/** One part, in Gemini's terms; its thought signature, if any, is the
+ *  turn's mark's to show. */
+function GeminiPart({ part, callNames }: { part: unknown; callNames: Map<string, string> }) {
+  if (typeof part === "string") return <TextOrJson text={part} />;
+  if (!isPlainObject(part)) return <JsonBox data={part} />;
   if (typeof part.text === "string") {
     if (part.thought === true) {
       return (
@@ -1728,16 +1801,18 @@ function GeminiPartBody({ part, callNames }: { part: Record<string, unknown>; ca
   if (isPlainObject(blob)) {
     const mime = geminiText(blob, "mimeType", "mime_type");
     const name = geminiText(blob, "displayName", "display_name");
-    const size = typeof blob.data === "string" ? formatBytes(base64Size(blob.data)) : null;
-    const detail = [mime ?? "inline data", size, name].filter((v): v is string => v !== null).join(" · ");
-    return <GeminiNote testId="gemini-part-inline-data">[{detail}]</GeminiNote>;
+    const size = typeof blob.data === "string" ? inlineDataSize(blob.data) : null;
+    const detail = [mime ?? "inline data", size ? formatBytes(size.bytes) : null, size?.cut ? CUT_TO_FIT : null, name]
+      .filter((v): v is string => v !== null)
+      .join(" · ");
+    return <GeminiPlaceholder testId="gemini-part-inline-data">[{detail}]</GeminiPlaceholder>;
   }
   const file = geminiField(part, "fileData", "file_data");
   if (isPlainObject(file)) {
     const detail = [geminiText(file, "mimeType", "mime_type"), geminiText(file, "fileUri", "file_uri")]
       .filter((v): v is string => v !== null)
       .join(" · ");
-    return <GeminiNote testId="gemini-part-file-data">[file{detail ? ` · ${detail}` : ""}]</GeminiNote>;
+    return <GeminiPlaceholder testId="gemini-part-file-data">[file{detail ? ` · ${detail}` : ""}]</GeminiPlaceholder>;
   }
   const code = geminiField(part, "executableCode", "executable_code");
   if (isPlainObject(code)) {
@@ -1762,31 +1837,21 @@ function GeminiPartBody({ part, callNames }: { part: Record<string, unknown>; ca
   return <JsonBox data={part} />;
 }
 
-/** A part and, when it carries one, the mark for its thought signature;
- *  a part that is nothing but a signature (an empty text the model sends
- *  to carry one) shows the mark alone. */
-function GeminiPart({ part, callNames }: { part: unknown; callNames: Map<string, string> }) {
-  if (typeof part === "string") return <TextOrJson text={part} />;
-  if (!isPlainObject(part)) return <JsonBox data={part} />;
-  const field = part.thoughtSignature !== undefined ? "thoughtSignature" : part.thought_signature !== undefined ? "thought_signature" : null;
-  if (field === null) return <GeminiPartBody part={part} callNames={callNames} />;
-  const signatureOnly = part.text === "" && Object.keys(part).length === 2;
-  return (
-    <div data-testid="gemini-part-signed">
-      {!signatureOnly && <GeminiPartBody part={part} callNames={callNames} />}
-      <ThoughtSignatureMark field={field} />
-    </div>
-  );
-}
-
+/** A turn's parts, then, when any carries a thought signature, one mark
+ *  for them all. A part that holds nothing but its signature shows
+ *  nothing of its own. */
 function GeminiParts({ parts, callNames }: { parts: unknown; callNames: Map<string, string> }) {
   if (!Array.isArray(parts)) return <JsonBox data={parts} />;
   if (parts.length === 0) return <Muted>(empty)</Muted>;
+  const field = parts.map(signatureField).find((f) => f !== null) ?? null;
   return (
     <div className="space-y-2">
-      {parts.map((part, i) => (
-        <GeminiPart key={i} part={part} callNames={callNames} />
-      ))}
+      {parts.map((part, i) =>
+        isPlainObject(part) && signatureField(part) !== null && isSignatureOnly(part) ? null : (
+          <GeminiPart key={i} part={part} callNames={callNames} />
+        ),
+      )}
+      {field !== null && <ThoughtSignatureMark field={field} />}
     </div>
   );
 }
@@ -1878,40 +1943,84 @@ function GeminiBuiltInTool({ value }: { value: unknown }) {
   );
 }
 
-/** The response body: each candidate's parts, why it stopped when it did
- *  not end normally, and a prompt the filters blocked before any
- *  candidate, said plainly. */
+/** The response's token counts for the token line every provider's
+ *  response shows: the ``usageMetadata`` counts the call's
+ *  ``tokens_input`` and ``tokens_output`` are made of (the prompt with
+ *  the tool-use prompt; the candidates with the thoughts, which Gemini
+ *  counts apart and the other providers' output counts include). */
+function geminiTokens(response: Record<string, unknown>): { tokensIn: number | undefined; tokensOut: number | undefined } {
+  const usage = geminiField(response, "usageMetadata", "usage_metadata");
+  if (!isPlainObject(usage)) return { tokensIn: undefined, tokensOut: undefined };
+  const prompt = geminiCount(usage, "promptTokenCount", "prompt_token_count");
+  const toolUse = geminiCount(usage, "toolUsePromptTokenCount", "tool_use_prompt_token_count");
+  const candidates = geminiCount(usage, "candidatesTokenCount", "candidates_token_count");
+  const thoughts = geminiCount(usage, "thoughtsTokenCount", "thoughts_token_count");
+  return {
+    tokensIn: prompt === undefined && toolUse === undefined ? undefined : (prompt ?? 0) + (toolUse ?? 0),
+    tokensOut: candidates === undefined && thoughts === undefined ? undefined : (candidates ?? 0) + (thoughts ?? 0),
+  };
+}
+
+/** A candidate: its parts, and why it stopped when it did not end
+ *  normally, with the model's message about it when it gave one. */
+function GeminiCandidate({ candidate, index, label, callNames }: { candidate: Record<string, unknown>; index: number; label: boolean; callNames: Map<string, string> }) {
+  const content = candidate.content;
+  const finish = geminiText(candidate, "finishReason", "finish_reason");
+  const message = geminiText(candidate, "finishMessage", "finish_message");
+  return (
+    <div data-testid="gemini-candidate" className="space-y-2">
+      {label && <BlockLabel>candidate {typeof candidate.index === "number" ? candidate.index : index}</BlockLabel>}
+      {isPlainObject(content) && Array.isArray(content.parts) ? (
+        <GeminiParts parts={content.parts} callNames={callNames} />
+      ) : (
+        <Muted>{NO_PARTS}</Muted>
+      )}
+      {finish !== null && finish !== GEMINI_FINISH_STOP && (
+        <GeminiNote testId="gemini-finish-reason">
+          finishReason · {finish}
+          {message ? ` · ${message}` : ""}
+        </GeminiNote>
+      )}
+    </div>
+  );
+}
+
+/** The response body: each candidate, a prompt the filters blocked
+ *  before any candidate said plainly, and the token line. */
 function GeminiResponse({ response, callNames }: { response: unknown; callNames: Map<string, string> }) {
   if (!isPlainObject(response)) return <JsonBox data={response} />;
   const candidates = Array.isArray(response.candidates) ? response.candidates : [];
   const feedback = geminiField(response, "promptFeedback", "prompt_feedback");
   const blocked = isPlainObject(feedback) ? geminiText(feedback, "blockReason", "block_reason") : null;
-  if (candidates.length === 0) {
-    if (blocked === null) return <JsonBox data={response} />;
+  const { tokensIn, tokensOut } = geminiTokens(response);
+  let body: React.ReactNode;
+  if (candidates.length > 0) {
+    body = (
+      <div className="space-y-3">
+        {candidates.map((candidate, i) =>
+          isPlainObject(candidate) ? (
+            <GeminiCandidate key={i} candidate={candidate} index={i} label={candidates.length > 1} callNames={callNames} />
+          ) : (
+            <JsonBox key={i} data={candidate} />
+          ),
+        )}
+      </div>
+    );
+  } else if (blocked !== null) {
     const message = isPlainObject(feedback) ? geminiText(feedback, "blockReasonMessage", "block_reason_message") : null;
-    return (
+    body = (
       <GeminiNote testId="gemini-prompt-blocked">
         The prompt was blocked (blockReason {blocked}): the model returned no candidates.
         {message ? ` ${message}` : ""}
       </GeminiNote>
     );
+  } else {
+    body = <JsonBox data={response} />;
   }
   return (
-    <div className="space-y-3">
-      {candidates.map((candidate, i) => {
-        if (!isPlainObject(candidate)) return <JsonBox key={i} data={candidate} />;
-        const content = candidate.content;
-        const finish = geminiText(candidate, "finishReason", "finish_reason");
-        return (
-          <div key={i} data-testid="gemini-candidate" className="space-y-2">
-            {candidates.length > 1 && <BlockLabel>candidate {typeof candidate.index === "number" ? candidate.index : i}</BlockLabel>}
-            {isPlainObject(content) ? <GeminiTurn entry={content} callNames={callNames} /> : <Muted>(no content)</Muted>}
-            {finish !== null && finish !== GEMINI_FINISH_STOP && (
-              <GeminiNote testId="gemini-finish-reason">finishReason · {finish}</GeminiNote>
-            )}
-          </div>
-        );
-      })}
+    <div>
+      {body}
+      <TokenLine tokensIn={tokensIn} tokensOut={tokensOut} />
     </div>
   );
 }
@@ -1923,6 +2032,9 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
   const callNames = useMemo(() => geminiCallNames(content.input), [content.input]);
   const tools = useMemo(() => geminiToolBoxes(content.tools), [content.tools]);
   const system = content.system_prompt;
+  // A response stored as nothing, or as {} (its dump failed), has no box.
+  const response = content.response;
+  const hasResponse = response != null && !(isPlainObject(response) && Object.keys(response).length === 0);
   return (
     <div data-testid="prompt-viewer-gemini" className="flex flex-col px-3 py-2">
       <div className="flex items-center gap-2 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -1938,7 +2050,13 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
 
       {system != null && (
         <Section title="System instruction">
-          <ViewBox key={`${eventId}-system`} raw={system} name="the system instruction" testId="prompt-box-system" label={<RoleBadge role="systemInstruction" />}>
+          <ViewBox
+            key={`${eventId}-system`}
+            raw={system}
+            name="the system instruction"
+            testId="prompt-box-system"
+            label={<RoleBadge role="systemInstruction" label="system instruction" />}
+          >
             {typeof system === "string" ? <TextOrJson text={system} /> : <GeminiParts parts={system} callNames={callNames} />}
           </ViewBox>
         </Section>
@@ -1955,7 +2073,7 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
                   raw={entry}
                   name={`content ${i + 1}${role ? ` (${role})` : ""}`}
                   testId={`prompt-box-content-${i}`}
-                  label={role ? <GeminiRoleBadge role={role} /> : undefined}
+                  label={role ? <RoleBadge role={role} styles={geminiRoleBadgeStyles} /> : undefined}
                 >
                   <GeminiTurn entry={entry} callNames={callNames} />
                 </ViewBox>
@@ -1990,10 +2108,10 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
         </Section>
       )}
 
-      {content.response != null && (
+      {hasResponse && (
         <Section title="Response">
-          <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
-            <GeminiResponse response={content.response} callNames={callNames} />
+          <ViewBox key={`${eventId}-response`} raw={response} name="the response" testId="prompt-box-response">
+            <GeminiResponse response={response} callNames={callNames} />
           </ViewBox>
         </Section>
       )}
@@ -2070,13 +2188,20 @@ function PrettyResponse({
   return (
     <div>
       {body ?? <JsonBox data={response} />}
-      {(tokensIn != null || tokensOut != null) && (
-        <div className="mt-2 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {tokensIn != null && <span>Tokens in: {tokensIn.toLocaleString()}</span>}
-          {tokensIn != null && tokensOut != null && <span> · </span>}
-          {tokensOut != null && <span>Tokens out: {tokensOut.toLocaleString()}</span>}
-        </div>
-      )}
+      <TokenLine tokensIn={tokensIn} tokensOut={tokensOut} />
+    </div>
+  );
+}
+
+/** The response's token counts, under its body: nothing when it reports
+ *  neither. */
+function TokenLine({ tokensIn, tokensOut }: { tokensIn: number | undefined; tokensOut: number | undefined }) {
+  if (tokensIn == null && tokensOut == null) return null;
+  return (
+    <div className="mt-2 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+      {tokensIn != null && <span>Tokens in: {tokensIn.toLocaleString()}</span>}
+      {tokensIn != null && tokensOut != null && <span> · </span>}
+      {tokensOut != null && <span>Tokens out: {tokensOut.toLocaleString()}</span>}
     </div>
   );
 }

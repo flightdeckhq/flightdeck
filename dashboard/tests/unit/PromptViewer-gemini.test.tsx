@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import {
   PromptViewer,
   geminiCallNames,
   geminiToolBoxes,
+  inlineDataSize,
   isGeminiContent,
 } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
@@ -39,9 +40,9 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-async function renderContent(content: EventContent): Promise<void> {
+async function renderContent(content: EventContent, eventType = "post_call"): Promise<void> {
   mockContent = content;
-  render(<PromptViewer eventId={content.event_id} />);
+  render(<PromptViewer eventId={content.event_id} eventType={eventType} />);
   await screen.findByText(content.provider);
 }
 
@@ -89,7 +90,10 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     for (const title of ["System instruction", "Contents", "Response"]) {
       expect(screen.getByRole("button", { name: new RegExp(`^${title}`) })).toBeInTheDocument();
     }
-    expect(screen.getByTestId("prompt-box-system")).toHaveTextContent("systemInstruction");
+    // The badge says it in words (CSS upper-cases it); Raw keeps the body.
+    expect(within(screen.getByTestId("prompt-box-system")).getByText("system instruction")).toBeInTheDocument();
+    // The response shows the token line every provider's does.
+    expect(response()).toHaveTextContent("Tokens in: 12 · Tokens out: 3");
     expect(screen.getByTestId("prompt-box-system")).toHaveTextContent("Answer in at most five words.");
     expect(within(content(0)).getByText("user")).toBeInTheDocument();
     expect(content(0)).toHaveTextContent("Say hi.");
@@ -188,11 +192,43 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     expect(response()).toHaveTextContent("129");
   });
 
-  it("an embeddings call keeps the view every provider's embeddings have", async () => {
-    await renderContent(fixture("embeddings"));
+  it("an embeddings event keeps the view every provider's embeddings have", async () => {
+    await renderContent(fixture("embeddings"), "embeddings");
     expect(screen.queryByTestId("prompt-viewer-gemini")).toBeNull();
-    expect(isGeminiContent(fixture("embeddings"))).toBe(false);
-    expect(isGeminiContent(fixture("plain_call"))).toBe(true);
+    expect(isGeminiContent(fixture("embeddings"), "embeddings")).toBe(false);
+    expect(isGeminiContent(fixture("plain_call"), "post_call")).toBe(true);
+  });
+
+  it("a generate call whose response was stored as {} or not at all keeps the Gemini view", async () => {
+    for (const stored of [{}, null]) {
+      const c = fixture("plain_call");
+      c.response = stored;
+      await renderContent(c);
+      expect(screen.getByTestId("prompt-viewer-gemini")).toBeInTheDocument();
+      expect(content(0)).toHaveTextContent("Say hi.");
+      expect(screen.queryByTestId("prompt-box-response")).toBeNull();
+      expect(screen.queryByText(/tool_0/)).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("google-genai 1.64 on the Gemini API: inlineData with mimeType, a parameters schema", async () => {
+    await renderContent(fixture("sdk164_gemini_api_round_2"));
+    expect(within(content(0)).getByTestId("gemini-part-inline-data")).toHaveTextContent(/^\[image\/png · \d+ B\]$/);
+    expect(within(content(1)).getByTestId("content-block-tool-use")).toHaveTextContent("describe_image");
+    expect(within(content(2)).getByTestId("gemini-function-response")).toHaveTextContent("a red square (colour)");
+    const tool = screen.getByTestId("prompt-box-tool-0");
+    expect(tool).toHaveTextContent("describe_image");
+    expect(tool).toHaveTextContent("STRING");
+  });
+
+  it("google-genai 1.64 on Vertex AI: the parts in snake_case", async () => {
+    await renderContent(fixture("sdk164_vertex_round_2"));
+    expect(within(content(0)).getByTestId("gemini-part-inline-data")).toHaveTextContent(/^\[image\/png · \d+ B\]$/);
+    expect(within(content(1)).getByTestId("content-block-tool-use")).toHaveTextContent("describe_image");
+    expect(within(content(1)).getByTestId("gemini-thought-signature")).toHaveTextContent("thought_signature");
+    expect(content(1)).not.toHaveTextContent("c2lnbmF0dXJl");
+    expect(within(content(2)).getByTestId("gemini-function-response")).toHaveTextContent("describe_image");
   });
 });
 
@@ -205,7 +241,11 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
           { parts: [{ function_call: { name: "lookup", args: { word: "cat" } } }], role: "model" },
           userTurn([{ function_response: { name: "lookup", response: { meaning: "a small feline" } } }]),
         ],
-        answered([{ text: "done", thought_signature: "c2ln" }], { finishReason: undefined, finish_reason: "MAX_TOKENS" }),
+        answered([{ text: "done", thought_signature: "c2ln" }], {
+          finishReason: undefined,
+          finish_reason: "MAX_TOKENS",
+          finish_message: "The answer reached max_output_tokens.",
+        }),
         {
           tools: [
             {
@@ -221,7 +261,9 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
     expect(within(content(1)).getByTestId("content-block-tool-use")).toHaveTextContent("lookup");
     expect(within(content(2)).getByTestId("gemini-function-response")).toHaveTextContent("a small feline");
     expect(within(response()).getByTestId("gemini-thought-signature")).toHaveTextContent("thought_signature");
-    expect(within(response()).getByTestId("gemini-finish-reason")).toHaveTextContent("finishReason · MAX_TOKENS");
+    expect(within(response()).getByTestId("gemini-finish-reason")).toHaveTextContent(
+      "finishReason · MAX_TOKENS · The answer reached max_output_tokens.",
+    );
     // The schema's own type names, as sent.
     expect(screen.getByTestId("prompt-box-tool-0")).toHaveTextContent("STRING");
   });
@@ -292,11 +334,62 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
     expect(within(content(0)).getByTestId("pretty-json")).toHaveTextContent('"videoMetadata"');
   });
 
-  it("a part that only carries a signature shows the mark alone", async () => {
-    await renderContent(gemini([userTurn([{ text: "x" }])], answered([{ text: "", thoughtSignature: "c2ln" }])));
-    const signed = within(response()).getByTestId("gemini-part-signed");
-    expect(signed.children).toHaveLength(1);
-    expect(signed).toHaveTextContent("thoughtSignature · opaque bytes, in Raw");
+  it("a part that only carries a signature shows the mark, never its value", async () => {
+    for (const part of [{ text: "", thoughtSignature: "c2lnLW9ubHk=" }, { thought_signature: "c2lnLW9ubHk=" }]) {
+      await renderContent(gemini([userTurn([{ text: "x" }])], answered([part])));
+      expect(within(response()).getByTestId("gemini-thought-signature")).toHaveTextContent("opaque bytes, in Raw");
+      expect(response()).not.toHaveTextContent("c2lnLW9ubHk=");
+      expect(within(response()).queryByTestId("pretty-json")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("a turn whose parts carry signatures shows one mark", async () => {
+    await renderContent(
+      gemini(
+        [
+          {
+            parts: [
+              { text: "a", thoughtSignature: "c2lnMQ==" },
+              { functionCall: { name: "f", args: {} }, thoughtSignature: "c2lnMg==" },
+              { text: "", thoughtSignature: "c2lnMw==" },
+            ],
+            role: "model",
+          },
+        ],
+        answered([{ text: "ok" }]),
+      ),
+    );
+    expect(within(content(0)).getAllByTestId("gemini-thought-signature")).toHaveLength(1);
+    expect(within(response()).queryByTestId("gemini-thought-signature")).toBeNull();
+  });
+
+  it("a candidate whose content has no parts says so", async () => {
+    await renderContent(
+      gemini([userTurn([{ text: "x" }])], { candidates: [{ content: { role: "model" }, finishReason: "MAX_TOKENS" }] }),
+    );
+    expect(response()).toHaveTextContent("(no parts)");
+    expect(within(response()).queryByTestId("pretty-json")).toBeNull();
+  });
+
+  it("the token line counts the prompt with the tool-use prompt, the candidates with the thoughts", async () => {
+    await renderContent(
+      gemini([userTurn([{ text: "x" }])], {
+        candidates: [{ content: { parts: [{ text: "ok" }], role: "model" }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 1000, toolUsePromptTokenCount: 24, candidatesTokenCount: 3, thoughtsTokenCount: 148 },
+      }),
+    );
+    expect(response()).toHaveTextContent("Tokens in: 1,024 · Tokens out: 151");
+  });
+
+  it("a cut inline payload is sized from the marker's total and says it was cut", async () => {
+    const kept = "A".repeat(786_000);
+    const data = `${kept}… [flightdeck: kept 786000 of 4000000 bytes to fit the event size limit]`;
+    await renderContent(gemini([userTurn([{ inlineData: { mimeType: "image/jpeg", data } }])], answered([{ text: "ok" }])));
+    expect(within(content(0)).getByTestId("gemini-part-inline-data")).toHaveTextContent(
+      "[image/jpeg · 2.9 MB · cut to fit the event size limit]",
+    );
+    expect(document.body.innerHTML).not.toContain("AAAAAAAAAAAAAAAA");
   });
 
   it("built-in tools are named as the body names them, each declaration by its name", async () => {
@@ -336,6 +429,16 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
 });
 
 describe("Gemini view helpers", () => {
+  it("inlineDataSize reads a cut payload's size from the sensor's marker, only at its end", () => {
+    expect(inlineDataSize("iVBORw==")).toEqual({ bytes: 4, cut: false });
+    expect(
+      inlineDataSize("AAAA… [flightdeck: kept 4 of 4000000 bytes to fit the event size limit]"),
+    ).toEqual({ bytes: 3_000_000, cut: true });
+    // The marker's shape in the middle of the data is data, not a cut.
+    const middle = "AAAA… [flightdeck: kept 4 of 4000000 bytes to fit the event size limit]AAAA";
+    expect(inlineDataSize(middle)).toEqual({ bytes: Math.floor((middle.length * 3) / 4), cut: false });
+  });
+
   it("geminiCallNames maps each call's id to its function", () => {
     expect([
       ...geminiCallNames([

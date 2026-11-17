@@ -30,6 +30,7 @@ Design rules baked in here:
 from __future__ import annotations
 
 import enum
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -386,15 +387,46 @@ def _is_google_error(exc: BaseException) -> bool:
     return type(exc).__module__.startswith(_GOOGLE_GENAI_MODULE)
 
 
+# The longest error body the classification parses out of the text the
+# SDK kept it as: a Gemini error body is a few kilobytes (its message, a
+# help link, the quota and retry details); anything far longer is not one.
+_GOOGLE_ERROR_TEXT_LIMIT = 64 * 1024
+
+
+def _google_error_body(exc: BaseException) -> dict[str, Any] | None:
+    """The error object of a google-genai error's body (``{"error":
+    {...}}``'s inner object, or the body itself). The SDK keeps the body
+    as text, under ``message`` with the HTTP reason phrase as ``status``,
+    when the response did not declare JSON (its async stream over
+    aiohttp, whose error responses come typed as an event stream): that
+    text is parsed."""
+    body = getattr(exc, "details", None)
+    if not isinstance(body, dict):
+        return None
+    text = body.get("message")
+    if (
+        "error" not in body
+        and isinstance(text, str)
+        and len(text) <= _GOOGLE_ERROR_TEXT_LIMIT
+        and text.lstrip().startswith("{")
+    ):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            body = parsed
+    inner = body.get("error")
+    return inner if isinstance(inner, dict) else body
+
+
 def _google_error_details(exc: BaseException) -> list[dict[str, Any]]:
     """The ``google.rpc`` detail objects of a google-genai error's body
-    (``{"error": {"details": [...]}}``, or the error object itself), each
-    a dict; empty when the body carries none."""
+    (see :func:`_google_error_body`), each a dict; empty when the body
+    carries none."""
     try:
-        body = getattr(exc, "details", None)
-        if isinstance(body, dict) and isinstance(body.get("error"), dict):
-            body = body["error"]
-        details = body.get("details") if isinstance(body, dict) else None
+        body = _google_error_body(exc)
+        details = body.get("details") if body is not None else None
         return [d for d in details if isinstance(d, dict)] if isinstance(details, list) else []
     except Exception:
         return []
@@ -438,8 +470,17 @@ def _google_error_type(exc: BaseException, http_status: int | None) -> ErrorType
 
 
 def _google_status(exc: BaseException) -> str | None:
-    """The canonical status name of a google-genai error (``status``)."""
-    status = getattr(exc, "status", None)
+    """The canonical status name of a google-genai error: its body's
+    ``status`` (``RESOURCE_EXHAUSTED``), else the error's own ``status``
+    (the HTTP reason phrase when the SDK kept the body as text it could
+    not parse)."""
+    try:
+        body = _google_error_body(exc)
+        status = body.get("status") if body is not None else None
+    except Exception:
+        status = None
+    if not isinstance(status, str) or not status:
+        status = getattr(exc, "status", None)
     return status if isinstance(status, str) and status else None
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import inspect
+import json
 from typing import Any
 
 import pytest
@@ -231,6 +232,54 @@ def test_api_errors_by_code(
     assert classification.retry_after == retry_after
     # Capture off: the provider's text never leaves (it can echo a prompt).
     assert classification.error_message == type(error).__name__
+
+
+@pytest.mark.parametrize(
+    ("quota_id", "error_type"),
+    [
+        ("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", ErrorType.RATE_LIMIT),
+        ("GenerateRequestsPerDayPerProjectPerModel-FreeTier", ErrorType.QUOTA_EXCEEDED),
+    ],
+)
+def test_an_error_body_the_sdk_kept_as_text_is_read(quota_id: str, error_type: ErrorType) -> None:
+    # google-genai's async stream over aiohttp gets its error responses
+    # typed as an event stream, so the SDK keeps the JSON body as text
+    # under "message", with the HTTP reason phrase as the status.
+    body = {
+        "error": {
+            "code": 429,
+            "message": "You exceeded your current quota",
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [_quota(quota_id), _RATE],
+        }
+    }
+    try:
+        errors.APIError.raise_error(
+            429, {"message": json.dumps(body, indent=2), "status": "Too Many Requests"}, None
+        )
+    except errors.APIError as exc:
+        error = exc
+    assert error.status == "Too Many Requests"
+    classification = classify_exception(error, provider_hint="google")
+    assert classification.error_type is error_type
+    assert classification.provider_error_code == "RESOURCE_EXHAUSTED"
+    assert classification.retry_after == 13.0
+    assert classification.http_status == 429
+
+
+def test_an_error_body_that_is_not_json_falls_back_to_the_status() -> None:
+    try:
+        errors.APIError.raise_error(
+            503,
+            {"message": "<html>Service Unavailable</html>", "status": "Service Unavailable"},
+            None,
+        )
+    except errors.APIError as exc:
+        error = exc
+    classification = classify_exception(error, provider_hint="google")
+    assert classification.error_type is ErrorType.OVERLOADED
+    assert classification.provider_error_code == "Service Unavailable"
+    assert classification.retry_after is None
 
 
 def test_the_provider_is_inferred_from_the_exception_module() -> None:

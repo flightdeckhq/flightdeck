@@ -1239,3 +1239,21 @@ content was dropped (or, for Responses input, dumped with unsent fields).
 `openapi_model_dump`: private, absent in some lane releases); recording
 the request body at the HTTP client (a new patch on every SDK client,
 blind to litellm's own transports); `str()` (not what was sent).
+
+## D286 -- Gemini is metered at google-genai's request methods, one event per billed request, thinking inside the output
+
+**Date:** 2026-11-17
+**Decision:** the sensor patches `_generate_content`,
+`_generate_content_stream` and `_embed_content` on `Models` /
+`AsyncModels` (google-genai 1.64+): each automatic-function-calling round
+and continuation hop is its own `post_call`. `provider=google`; platform
+`gemini-api` or `vertex`. `tokens_output` = candidates + thoughts,
+`tokens_reasoning` = thoughts, cached content a cache read inside the
+input, tool-use prompt tokens input. Content keeps Gemini's terms:
+`contents` in `input`, a `system_instruction` Content as its parts.
+**Why:** the public methods return only the last round's response, whose
+usage counts that round alone; reasoning is a subset of output for every
+other provider, and the cost formula assumes it.
+**Rejected alternative:** patching the public methods (undercounts every
+multi-round call); the httpx layer (blind to which call a request is);
+thoughts outside `tokens_output` (breaks the subset rule ingestion holds).

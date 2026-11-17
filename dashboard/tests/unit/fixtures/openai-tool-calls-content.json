@@ -1,0 +1,185 @@
+{
+  "_source": "Bodies GET /v1/events/:id/content served for the two calls of an OpenAI chat tool-use loop made through the sensor (openai 2.54.0, gpt-4o-mini, capture_prompts on; playground/02_direct_openai.py) against a dev stack on 2026-11-17: the first call, whose response message carries tool_calls, and the follow-up, whose messages carry the assistant message with its tool_calls (the SDK message passed back, dumped as the provider received it) and the tool reply.",
+  "chat_tool_call_response": {
+    "event_id": "03845e61-e468-4567-9889-5f616a74a2e9",
+    "session_id": "61a1cb00-fdc0-4b15-88a1-66fcf0ca1af8",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [
+      {
+        "content": "What is the weather in Paris? Use the tool. (tool-loop-61a1cb00)",
+        "role": "user"
+      }
+    ],
+    "tools": [
+      {
+        "function": {
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ],
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": [],
+            "audio": null,
+            "content": null,
+            "function_call": null,
+            "refusal": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"city\":\"Paris\"}",
+                  "name": "get_weather"
+                },
+                "id": "call_WQ8qSG2k17m77npWHcxO2enm",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1794891181,
+      "id": "chatcmpl-El5ThpeEPrPwtD6rmIJIAXXRgWJGx",
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "chat.completion",
+      "service_tier": "default",
+      "system_fingerprint": "fp_48eea167bf",
+      "usage": {
+        "completion_tokens": 14,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens": 64,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": null,
+          "cached_tokens": 0
+        },
+        "total_tokens": 78
+      }
+    },
+    "captured_at": "2026-11-17T04:53:01.724731Z"
+  },
+  "chat_tool_loop": {
+    "event_id": "507ec5e6-e274-4953-9b56-5dc513847b29",
+    "session_id": "61a1cb00-fdc0-4b15-88a1-66fcf0ca1af8",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [
+      {
+        "content": "What is the weather in Paris? Use the tool. (tool-loop-61a1cb00)",
+        "role": "user"
+      },
+      {
+        "annotations": [],
+        "content": null,
+        "refusal": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"city\":\"Paris\"}",
+              "name": "get_weather"
+            },
+            "id": "call_WQ8qSG2k17m77npWHcxO2enm",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "Sunny, 21 C",
+        "role": "tool",
+        "tool_call_id": "call_WQ8qSG2k17m77npWHcxO2enm"
+      }
+    ],
+    "tools": [
+      {
+        "function": {
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ],
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": [],
+            "audio": null,
+            "content": "The weather in Paris is sunny with a temperature of 21°C.",
+            "function_call": null,
+            "refusal": null,
+            "role": "assistant",
+            "tool_calls": null
+          }
+        }
+      ],
+      "created": 1794891182,
+      "id": "chatcmpl-El5TiIAyoVQMrh2Hk6DgkMyOg5Zj0",
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "chat.completion",
+      "service_tier": "default",
+      "system_fingerprint": "fp_48eea167bf",
+      "usage": {
+        "completion_tokens": 15,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens": 91,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": null,
+          "cached_tokens": 0
+        },
+        "total_tokens": 106
+      }
+    },
+    "captured_at": "2026-11-17T04:53:02.418741Z"
+  }
+}

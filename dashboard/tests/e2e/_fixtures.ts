@@ -756,13 +756,13 @@ async function postPrivateEvent(page: Page, payload: Record<string, unknown>): P
 async function privateSession(
   page: Page,
   sessionId: string,
-): Promise<{ state: string; events: { id: string; tool_name: string | null }[] } | null> {
+): Promise<{ state: string; events: { id: string; event_type: string; tool_name: string | null }[] } | null> {
   const resp = await page.request.get(`${GENAI_API}/v1/sessions/${sessionId}`, { headers: GENAI_AUTH });
   if (resp.status() === 404) return null;
   if (!resp.ok()) throw new Error(`session ${sessionId}: ${resp.status()}`);
   const body = (await resp.json()) as {
     session: { state: string };
-    events: { id: string; tool_name: string | null }[];
+    events: { id: string; event_type: string; tool_name: string | null }[];
   };
   return { state: body.session.state, events: body.events };
 }
@@ -858,6 +858,44 @@ export async function postPrivateToolCall(
         return eventId;
       },
       { timeout: PRIVATE_STORE_WAIT_MS, message: `${toolName} on ${sessionId} was not stored` },
+    )
+    .toBeDefined();
+  return eventId!;
+}
+
+/** Post one ``post_call`` on the private run ``sessionId``, now, with its
+ *  captured ``content`` (the event_content envelope: provider, model,
+ *  system, messages, tools, response) and ``fields`` over the run's own
+ *  (another client's identity, the call's model and provider); wait
+ *  until it is stored with its content, and return its event id. A run
+ *  takes one such call: the first stored ``post_call`` is the one. */
+export async function postPrivatePostCall(
+  page: Page,
+  agent: PrivateAgent,
+  sessionId: string,
+  content: Record<string, unknown>,
+  fields: Record<string, unknown> = {},
+): Promise<string> {
+  await postPrivateEvent(
+    page,
+    privateEvent(agent, sessionId, "post_call", new Date(), {
+      tokens_input: 90,
+      tokens_output: 15,
+      tokens_total: 105,
+      latency_ms: 700,
+      ...fields,
+      has_content: true,
+      content: { ...content, session_id: sessionId, event_id: "" },
+    }),
+  );
+  let eventId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        eventId = (await privateSession(page, sessionId))?.events.find((e) => e.event_type === "post_call")?.id;
+        return eventId;
+      },
+      { timeout: PRIVATE_STORE_WAIT_MS, message: `the post_call on ${sessionId} was not stored` },
     )
     .toBeDefined();
   return eventId!;

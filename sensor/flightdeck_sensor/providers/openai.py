@@ -815,9 +815,10 @@ class OpenAIProvider:
         there are no messages, system, tools, or generated text. The
         captured ``PromptContent`` carries the request's ``input`` as
         sent (None when given as ``NOT_GIVEN`` / ``omit``) under
-        ``input``, and the ``embedding`` of each of the response's
-        ``data`` entries under ``embedding_output`` (None when the
-        response carries none). The chat slots stay empty
+        ``input``, and under ``embedding_output`` the ``embedding`` of
+        each of the response's ``data`` entries that has one (an empty
+        list when none has; None when the response carries no ``data``
+        or reading it fails). The chat slots stay empty
         (``response`` is ``{}``) so the dashboard's
         ``EmbeddingsContentViewer`` can render it distinctly from a
         chat prompt.

@@ -369,10 +369,11 @@ class LitellmProvider:
         ``litellm.embedding(model=..., input=...)``, its ``input`` a
         string, a list of strings, a list of token ids or a list of
         token-id lists; capture the ``input`` parameter as passed into
-        ``PromptContent.input`` and the ``embedding`` of each of the
-        response's ``data`` entries into
-        ``PromptContent.embedding_output`` (None when the response
-        carries none), and leave the chat-shaped slots empty
+        ``PromptContent.input`` and into
+        ``PromptContent.embedding_output`` the ``embedding`` of each of
+        the response's ``data`` entries that has one (an empty list
+        when none has; None when the response carries no ``data`` or
+        reading it fails), and leave the chat-shaped slots empty
         (``response`` is ``{}``). Mirrors the OpenAI provider's
         embeddings branch -- the dashboard renders both via
         ``EmbeddingsContentViewer``.

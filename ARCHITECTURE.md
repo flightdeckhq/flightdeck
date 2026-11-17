@@ -1774,10 +1774,8 @@ An `embed_content` call stores in `input` the contents its request sent
 (each batched request's `content` on the Gemini API's
 `batchEmbedContents`, each instance's `content` on Vertex AI's
 `predict`, the request's own on its `embedContent`) and the vectors in
-`embedding_output`. The dashboard's Prompts tab has no Gemini renderer:
-it shows a Gemini call's system instruction, its tools (each labelled
-by its position, the declaration in its Raw view) and its response as
-JSON, and not the `contents`.
+`embedding_output`. The dashboard's Prompts tab shows a Gemini call in
+these terms (see Session drawer, the Prompts tab).
 
 **Not patched.** `count_tokens` and `compute_tokens` (no inference
 call; the sensor's estimate is local); the image, video and other
@@ -9350,7 +9348,38 @@ that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
 built from `response.created` on, and for litellm the latest response a
 `response.created` / `response.in_progress` event carried
 (`status: "in_progress"`, no output). An embeddings
-call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
+call's input stays with `EmbeddingsContentViewer`. A Gemini call (the
+sensor's google-genai `post_call`, stored under provider `google` with
+a response body) is shown in its request's own terms, read from the
+stored request and response bodies (see google-genai (Gemini),
+Content): System instruction (the `systemInstruction`'s parts),
+Contents (one box per turn with its `user` or `model` role badge),
+Tools and Response. A part shows by its kind: `text` as text, a
+`thought` part labelled `thought` in the secondary text colour, a
+`functionCall` in the box an Anthropic `tool_use` block shows in (the
+function's name, then its `args` as labelled fields, `(no args)` when
+it has none), a `functionResponse` labelled `function response` and
+the function it answers (its `name`, else the call its `id` names)
+with its `response` as fields, `inlineData` as a placeholder naming
+its MIME type and its size (`[image/png · 12.3 KB]`, read from the base64
+text's length: the bytes are never decoded or put in the page),
+`fileData` as its MIME type and URI, `executableCode` labelled with its
+language over the code, `codeExecutionResult` labelled with its
+outcome over the output, and any other part as its JSON. A part that
+carries a `thoughtSignature` (opaque bytes the model reads back) is
+marked `thoughtSignature · opaque bytes, in Raw` under it, the value
+itself only in Raw. Tools show one box per function declaration, by
+its name, with its description and its parameters' types as stored
+(`string` in a JSON schema, `STRING` in Gemini's own schema), and one
+per built-in tool, named by its key (`googleSearch`, `codeExecution`,
+`urlContext`). The response shows each candidate's parts the same way
+(several labelled by their `index`), its `finishReason` when it is not
+`STOP`, and a prompt the filters blocked before any candidate as
+`The prompt was blocked (blockReason SAFETY): the model returned no
+candidates.` Every field is read under its REST API name and its
+snake_case one, since the body's spelling differs by SDK release and
+platform, and Raw shows each box's piece as stored. A Gemini
+embeddings call keeps the view every embeddings call has. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written

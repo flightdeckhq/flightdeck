@@ -119,7 +119,8 @@ def main() -> int:
         # runs, about ten model calls; 41_langgraph_runnable_nodes three
         # graph runs, five or more; 42_deepagents two Deep Agent runs,
         # four or more model calls each; 38_google_adk two runs per
-        # provider, about eight model calls each.
+        # provider, about eight model calls each; 43_google_genai a dozen
+        # Gemini calls, one of them on a thinking model (up to 20s).
         if (
             "subagents" in name
             or "_genai_" in name
@@ -131,6 +132,7 @@ def main() -> int:
                 "40_openai_agents.py",
                 "41_langgraph_runnable_nodes.py",
                 "42_deepagents.py",
+                "43_google_genai.py",
             )
         ):
             timeout_s = 180

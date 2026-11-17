@@ -195,8 +195,10 @@ class Provider(Protocol):
         with callers that pre-date the event-type-aware extraction
         (treated as POST_CALL by every provider). When set to
         ``EventType.EMBEDDINGS`` the provider captures the embedding
-        ``input`` parameter (string or list of strings) into the new
-        ``PromptContent.input`` field instead of the chat-shaped
+        ``input`` parameter as sent (a string, a list of strings, a
+        list of token ids or a list of token-id lists) into
+        ``PromptContent.input``, and the response's vectors into
+        ``PromptContent.embedding_output``, instead of the chat-shaped
         ``messages`` / ``system`` slots.
 
         Returns None when capture is disabled or on any error.

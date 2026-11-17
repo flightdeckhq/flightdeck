@@ -1,6 +1,16 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 import { API_URL } from "./_stack";
+import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW_COUNT } from "../../src/lib/constants";
+import {
+  embeddingsCall,
+  newRun,
+  removeRun,
+  seedRun,
+  sessionStart,
+  storedEvent,
+  type Run,
+} from "./_tool-content-run";
 
 // T14 — embeddings event renders with rich
 // drawer fields. The fresh-active role on the coding agent is
@@ -12,6 +22,14 @@ import { API_URL } from "./_stack";
 //   - the row's badge is the EMBED label
 //   - the row's detail text shows the embeddings model and the
 //     ``tok in`` segment (no completion-token suffix)
+//
+// The embeddings API also takes one input as a list of token ids and
+// several inputs as a list of token-id lists. The second group posts an
+// embeddings call of each through ingestion, each on a capture-on run
+// of its own (removed afterwards), opens the run drawer and expands the
+// call's row: one token-id input reads as one input labelled as token
+// ids with its count, and two token-id lists as two inputs, each with
+// its own count.
 //
 // Theme-agnostic: assertions read structural attrs / textContent,
 // not computed colours. Runs under both neon-dark and clean-light.
@@ -81,6 +99,83 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
     ).toEqual(new Set(["empty", "string", "list"]));
   });
 });
+
+/** A token-id input longer than the viewer's preview. */
+const LONG_TOKEN_IDS = Array.from({ length: TOKEN_IDS_PREVIEW_COUNT + 5 }, (_, i) => 100 + i);
+
+test.describe("T14 — Embeddings token-id inputs render as what they are", () => {
+  let run: Run;
+
+  test.beforeEach(() => {
+    run = newRun("t14", test.info().project.name);
+  });
+
+  test.afterEach(() => {
+    removeRun(run);
+  });
+
+  test("one token-id input reads as one input with its token count", async ({ page, request }) => {
+    const events = await seedRun(request, run, [
+      sessionStart(run, true),
+      embeddingsCall(run, 1, [101, 202, 303], 3),
+    ]);
+    const viewer = await openEmbeddingsViewer(page, run, storedEvent(events, "embeddings").id);
+
+    await expect(viewer).toHaveAttribute("data-state", "tokens");
+    await expect(viewer).toContainText("Token ids");
+    await expect(viewer.getByTestId("embeddings-content-token-count")).toHaveText("3 tokens");
+    await expect(viewer.getByTestId("embeddings-content-state-tokens")).toHaveText("101, 202, 303");
+    // Not three inputs of one number each.
+    await expect(viewer.getByTestId("embeddings-content-state-list")).toHaveCount(0);
+  });
+
+  test("two token-id lists read as two inputs, each with its token count, a long one cut", async ({
+    page,
+    request,
+  }) => {
+    const events = await seedRun(request, run, [
+      sessionStart(run, true),
+      embeddingsCall(run, 1, [[1, 2, 3], LONG_TOKEN_IDS], 3 + LONG_TOKEN_IDS.length),
+    ]);
+    const viewer = await openEmbeddingsViewer(page, run, storedEvent(events, "embeddings").id);
+
+    await expect(viewer).toHaveAttribute("data-state", "list");
+    await expect(viewer.getByTestId("embeddings-content-state-list")).toHaveText("2 inputs");
+    await expect(viewer.getByTestId("embeddings-content-list-kind")).toHaveText("Token ids");
+    await viewer.getByTestId("embeddings-content-toggle").click();
+    await expect(viewer.getByTestId("embeddings-content-list-item-0-count")).toHaveText(
+      "Token ids (3 tokens)",
+    );
+    await expect(viewer.getByTestId("embeddings-content-list-item-0-ids")).toHaveText("1, 2, 3");
+    await expect(viewer.getByTestId("embeddings-content-list-item-1-count")).toHaveText(
+      `Token ids (${LONG_TOKEN_IDS.length} tokens)`,
+    );
+    // The long list is cut to the preview, and shown whole on "Show full inputs".
+    await expect(viewer.getByTestId("embeddings-content-list-item-1-ids")).toHaveText(
+      `${LONG_TOKEN_IDS.slice(0, TOKEN_IDS_PREVIEW_COUNT).join(", ")}, …`,
+    );
+    await viewer.getByTestId("embeddings-content-full-toggle").click();
+    await expect(viewer.getByTestId("embeddings-content-list-item-1-ids")).toHaveText(
+      LONG_TOKEN_IDS.join(", "),
+    );
+  });
+});
+
+/**
+ * Open the run drawer on ``run`` and expand the embeddings row
+ * ``eventId``; returns its settled content viewer.
+ */
+async function openEmbeddingsViewer(page: Page, run: Run, eventId: string): Promise<Locator> {
+  await page.goto(`/events?run=${run.sessionId}`);
+  const drawer = page.getByTestId("session-drawer");
+  const row = drawer.getByTestId(`embeddings-event-row-${eventId}`);
+  await expect(row).toBeVisible();
+  await row.click();
+  const viewer = drawer.getByTestId("embeddings-content-viewer");
+  await expect(viewer).toBeVisible();
+  await expect(viewer).not.toHaveAttribute("data-state", "loading");
+  return viewer;
+}
 
 /**
  * The ids of a session's embeddings events, from the same page of

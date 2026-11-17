@@ -17,6 +17,14 @@ The sensor's ``TokenUsage`` holds reasoning as a subset of the output, as
 every other provider reports it, so the output is the candidates plus the
 thoughts, the reasoning the thoughts, and the input the prompt plus the
 tool-use prompt, with the cached tokens as its cache read.
+
+Content. What is stored is what the provider received and returned, read
+from the request the SDK built (see :class:`SentRequest`), never rebuilt
+from the caller's arguments: the SDK turns them into the request its own
+way (a string into a ``user`` turn, Python functions into declarations,
+bytes into base64), with a spelling that depends on its release and on
+the platform (``inlineData`` beside ``mime_type``, ``functionDeclarations``
+beside ``parameters_json_schema``).
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import enum
+import json
 import logging
 from datetime import UTC
 from typing import Any
@@ -165,32 +174,115 @@ def _without_inline_data(value: Any, depth: int = 0) -> tuple[Any, int]:
     return value, 0
 
 
-def _system_instruction(value: Any) -> Any:
-    """The config's ``system_instruction`` as the content's ``system``,
-    which is text or a list (event_content keeps text in ``system_prompt``
-    and a list in ``system_blocks``): text as it is, a ``Content`` as its
-    parts (the instruction itself; a Content's role says nothing about
-    it), a ``Part`` as a list of the one part, a list item by item."""
-    if value is None or isinstance(value, str):
-        return value
-    dumped = _as_json(value)
-    if isinstance(dumped, dict):
-        parts = dumped.get("parts")
-        return parts if isinstance(parts, list) else [dumped]
-    return dumped
+# The position of the request in the arguments the SDK's request methods
+# hand their API client (``request(http_method, path, request_dict,
+# http_options)``, and the streamed and async forms), and its name when
+# passed by keyword.
+_REQUEST_DICT_POSITION = 2
+_REQUEST_DICT_NAME = "request_dict"
+# The SDK keeps the request's URL parts beside its body under keys that
+# start with this (``_url``, ``_query``); its API client drops them before
+# it sends the body.
+_SDK_KEY_PREFIX = "_"
+# The request body's fields content capture stores, as the request names
+# them: the conversation, the system instruction and the tools of a
+# ``generateContent`` request; the contents of an embeddings request,
+# one per request of a batch (``batchEmbedContents``), per instance
+# (Vertex AI's ``predict``) or the request's own (``embedContent``).
+_CONTENTS = "contents"
+_SYSTEM_INSTRUCTION = "systemInstruction"
+_TOOLS = "tools"
+_PARTS = "parts"
+_EMBED_CONTENT = "content"
+_EMBED_BATCH_KEYS = ("requests", "instances")
 
 
-def _dump_response(response: Any) -> dict[str, Any]:
+class SentRequest:
+    """What one call of a patched request method handed the SDK's API
+    client, recorded by the interceptor (see its ``_RecordingClient``)
+    when content capture is on: the request as the SDK built it, with the
+    URL keys the client drops before sending left out, so the body the
+    provider received; and, for a call that is not streamed, the response
+    body the client returned, as text. Both stay None when the SDK sent
+    nothing through the methods the interceptor records."""
+
+    __slots__ = ("body", "request")
+
+    def __init__(self) -> None:
+        self.request: dict[str, Any] | None = None
+        self.body: str | None = None
+
+    def keep(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        """Record the request of one API client call. The SDK builds a new
+        dict for each request (its converters' output), so a copy of its
+        top level is enough: what the client is handed is never the
+        caller's own object."""
+        if len(args) > _REQUEST_DICT_POSITION:
+            request = args[_REQUEST_DICT_POSITION]
+        else:
+            request = kwargs.get(_REQUEST_DICT_NAME)
+        if isinstance(request, dict):
+            self.request = {
+                key: value
+                for key, value in request.items()
+                if not (isinstance(key, str) and key.startswith(_SDK_KEY_PREFIX))
+            }
+
+
+# The kinds of content that could not be read, each warned of once per
+# process, by kind and never by value (the value is captured content).
+_WARNED: set[str] = set()
+
+
+def _warn_once(kind: str) -> None:
+    if kind in _WARNED:
+        return
+    _WARNED.add(kind)
+    _log.warning(
+        "google-genai %s could not be read as the provider received it; "
+        "the event is sent without its content",
+        kind,
+    )
+
+
+def _system_parts(value: Any) -> Any:
+    """The request's ``systemInstruction`` as the content's ``system``,
+    which event_content keeps as text or as a list: the instruction's
+    ``parts``, as sent. The Content around them carries only a ``role``,
+    which the SDK sets to ``user`` and the model reads nothing from;
+    None when the request has no system instruction."""
+    if isinstance(value, dict):
+        parts = value.get(_PARTS)
+        return parts if isinstance(parts, list) else None
+    return value if isinstance(value, (str, list)) else None
+
+
+def _embedding_inputs(request: dict[str, Any]) -> Any:
+    """An embeddings request's contents as sent: each batched request's or
+    instance's ``content``, in order, else the request's own."""
+    for key in _EMBED_BATCH_KEYS:
+        entries = request.get(key)
+        if isinstance(entries, list):
+            return [e.get(_EMBED_CONTENT) if isinstance(e, dict) else e for e in entries]
+    return request.get(_EMBED_CONTENT)
+
+
+def _dump_response(response: Any, *, by_alias: bool = False) -> dict[str, Any]:
     """A response object (or an assembled stream's dict) as the provider
     returned it: the JSON dump without the fields the SDK adds itself
-    (see :data:`_SDK_RESPONSE_FIELDS`)."""
+    (see :data:`_SDK_RESPONSE_FIELDS`), by field name for the sensor's own
+    reads, or by alias, the REST API's names, for the stored content."""
     if isinstance(response, dict):
         return {k: v for k, v in response.items() if k not in _SDK_RESPONSE_FIELDS}
     dump = getattr(response, "model_dump", None)
     if callable(dump):
         try:
             dumped = dump(
-                mode="json", exclude_none=True, exclude=set(_SDK_RESPONSE_FIELDS), warnings=False
+                mode="json",
+                by_alias=by_alias,
+                exclude_none=True,
+                exclude=set(_SDK_RESPONSE_FIELDS),
+                warnings=False,
             )
         except Exception:
             _log.debug("google response dump failed", exc_info=True)
@@ -300,6 +392,46 @@ def _append_part(parts: list[Any], part: Any) -> None:
     parts.append(part)
 
 
+def _assemble(chunks: list[Any], *, by_alias: bool) -> dict[str, Any]:
+    """The response a non-streamed call returns, as a dict, assembled from
+    a stream's chunks (see :class:`_StreamAccumulator`). The keys the
+    assembly reads (``candidates``, ``index``, ``content``, ``role``,
+    ``parts``, ``text``, ``thought``) are spelled the same by field name
+    and by alias."""
+    out: dict[str, Any] = {}
+    candidates: dict[Any, dict[str, Any]] = {}
+    for chunk in chunks:
+        dumped = _dump_response(chunk, by_alias=by_alias)
+        for key, value in dumped.items():
+            if key != "candidates":
+                out[key] = value
+        for position, candidate in enumerate(dumped.get("candidates") or ()):
+            if not isinstance(candidate, dict):
+                continue
+            merged = candidates.setdefault(candidate.get("index", position), {})
+            for key, value in candidate.items():
+                if key != "content" or not isinstance(value, dict):
+                    merged[key] = value
+                    continue
+                content = merged.setdefault("content", {})
+                if "role" in value:
+                    content["role"] = value["role"]
+                parts = content.setdefault("parts", [])
+                for part in value.get("parts") or ():
+                    _append_part(parts, part)
+    if candidates:
+        out["candidates"] = list(candidates.values())
+    return out
+
+
+class _Assembled(dict):  # type: ignore[type-arg]
+    """An assembled stream's response by field name, which the sensor's
+    own reads take, carrying the same response by alias for the stored
+    content when content capture asked for it."""
+
+    by_alias: dict[str, Any] | None = None
+
+
 class _StreamAccumulator:
     """Assembles a ``generate_content_stream`` response from its chunks,
     which the SDK does not do itself: each chunk is a
@@ -309,10 +441,13 @@ class _StreamAccumulator:
     (adjacent plain text joined), its last finish reason and safety
     ratings, and the last chunk's usage, model version and response id.
     Chunks are kept as they arrive and read only when the message is
-    asked for, once, when the stream settles."""
+    asked for, once, when the stream settles. With ``by_alias`` (content
+    capture on) the message also carries the response by alias, the
+    REST API's names, for the stored content."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, by_alias: bool = False) -> None:
         self._chunks: list[Any] = []
+        self._by_alias = by_alias
 
     def add(self, chunk: Any) -> None:
         self._chunks.append(chunk)
@@ -320,30 +455,10 @@ class _StreamAccumulator:
     def message(self) -> Any | None:
         if not self._chunks:
             return None
-        out: dict[str, Any] = {}
-        candidates: dict[Any, dict[str, Any]] = {}
-        for chunk in self._chunks:
-            dumped = _dump_response(chunk)
-            for key, value in dumped.items():
-                if key != "candidates":
-                    out[key] = value
-            for position, candidate in enumerate(dumped.get("candidates") or ()):
-                if not isinstance(candidate, dict):
-                    continue
-                merged = candidates.setdefault(candidate.get("index", position), {})
-                for key, value in candidate.items():
-                    if key != "content" or not isinstance(value, dict):
-                        merged[key] = value
-                        continue
-                    content = merged.setdefault("content", {})
-                    if "role" in value:
-                        content["role"] = value["role"]
-                    parts = content.setdefault("parts", [])
-                    for part in value.get("parts") or ():
-                        _append_part(parts, part)
-        if candidates:
-            out["candidates"] = list(candidates.values())
-        return out
+        message = _Assembled(_assemble(self._chunks, by_alias=False))
+        if self._by_alias:
+            message.by_alias = _assemble(self._chunks, by_alias=True)
+        return message
 
 
 class GoogleProvider:
@@ -362,7 +477,7 @@ class GoogleProvider:
         *,
         local: bool = False,
         inference_scope: str | None = None,
-        api_client: Any = None,
+        sent: SentRequest | None = None,
     ) -> None:
         self._capture_prompts = capture_prompts
         # gemini-api, vertex, or the host of whatever the client was
@@ -370,10 +485,10 @@ class GoogleProvider:
         self._platform = platform
         self._local = local
         self._inference_scope = inference_scope
-        # The SDK's API client of the call, which the SDK's own tool
-        # transform takes (it builds a function declaration from a Python
-        # function differently for Vertex AI).
-        self._api_client = api_client
+        # What this call's request method handed the SDK's API client,
+        # recorded by the interceptor with content capture on: the source
+        # of the stored content.
+        self._sent = sent
 
     @property
     def platform(self) -> str | None:
@@ -471,7 +586,7 @@ class GoogleProvider:
             offers_tools = False
         if not (self._capture_prompts or offers_tools):
             return None
-        return _StreamAccumulator()
+        return _StreamAccumulator(by_alias=self._capture_prompts)
 
     def text_from_stream_chunk(self, chunk: Any) -> str | None:
         """The SDK's streams have no ``text_stream``."""
@@ -563,26 +678,22 @@ class GoogleProvider:
 
     # -- content -------------------------------------------------------
 
-    def _tools_as_sent(self, tools: Any) -> Any:
-        """The config's ``tools`` as stored: each one as the caller gave
-        it (an SDK ``Tool`` as its dump, a dict as written), except a
-        Python function, which the SDK sends as the function declaration
-        its own tool transform builds from it (the tool the model is
-        offered under automatic function calling). A tool the transform
-        cannot read is left as it is."""
-        if not isinstance(tools, (list, tuple)):
-            return _as_json(tools)
-        out: list[Any] = []
-        for tool in tools:
-            if callable(tool) and not hasattr(tool, "model_dump"):
-                try:
-                    from google.genai import _transformers
-
-                    tool = _transformers.t_tool(self._api_client, tool)
-                except Exception:
-                    _log.debug("google tool transform failed", exc_info=True)
-            out.append(_as_json(tool))
-        return out
+    def _stored_response(self, response: Any) -> dict[str, Any]:
+        """The response as the provider returned it: the body the API
+        client returned, for a call that is not streamed; for a stream,
+        its chunks assembled (see :class:`_StreamAccumulator`), each as
+        the SDK's dump by alias with unset fields left out, since a
+        stream has no one body; else the response object's dump by
+        alias."""
+        body = self._sent.body if self._sent is not None else None
+        if isinstance(body, str) and body:
+            with contextlib.suppress(ValueError):
+                parsed = json.loads(body)
+                if isinstance(parsed, dict):
+                    return parsed
+        if isinstance(response, _Assembled) and response.by_alias is not None:
+            return response.by_alias
+        return _dump_response(response, by_alias=True)
 
     def extract_content(
         self,
@@ -590,16 +701,18 @@ class GoogleProvider:
         response: Any,
         event_type: Any = None,
     ) -> PromptContent | None:
-        """The request and response in Gemini's own terms. ``input`` holds
-        the request's ``contents`` as the caller gave them to the SDK (a
-        string, a ``Content`` or ``Part``, or a list of them, SDK objects
-        as their dump; an embeddings call on Vertex AI's single-content
-        API, its ``content``), ``system`` the config's
-        ``system_instruction`` (see :func:`_system_instruction`), ``tools`` its tools (see
-        :meth:`_tools_as_sent`), ``response`` the ``candidates``, usage
-        and model version as the provider returned them; ``messages``
-        stays empty, as Gemini has no messages parameter. Returns ``None``
-        when capture_prompts is off. Never raises."""
+        """The request and response as the provider received and returned
+        them, read from what the call's request method handed the SDK's
+        API client (see :class:`SentRequest`), in the request body's own
+        names and spelling: ``input`` the body's ``contents`` (an
+        embeddings call's contents, see :func:`_embedding_inputs`),
+        ``system`` its ``systemInstruction``'s parts (see
+        :func:`_system_parts`), ``tools`` its ``tools``, ``response`` the
+        response (see :meth:`_stored_response`); ``messages`` stays
+        empty, as Gemini has no messages parameter. A call whose request
+        was not recorded is stored without content, with a warning once,
+        rather than in another shape. Returns ``None`` when
+        capture_prompts is off. Never raises."""
         if not self._capture_prompts:
             return None
         try:
@@ -607,12 +720,12 @@ class GoogleProvider:
 
             from flightdeck_sensor.core.types import EventType
 
+            sent = self._sent.request if self._sent is not None else None
+            if sent is None:
+                _warn_once("request")
+                return None
             now = datetime.now(UTC).isoformat()
             model = self.get_model(request_kwargs)
-            contents = request_kwargs.get("contents")
-            if contents is None:
-                contents = request_kwargs.get("content")
-            config = request_kwargs.get("config")
             if event_type == EventType.EMBEDDINGS:
                 vectors: list[list[float]] | None = None
                 embeddings = _field(response, "embeddings")
@@ -632,21 +745,20 @@ class GoogleProvider:
                     session_id="",
                     event_id="",
                     captured_at=now,
-                    input=_as_json(contents),
+                    input=_embedding_inputs(sent),
                     embedding_output=vectors,
                 )
-            tools = _field(config, "tools")
             return PromptContent(
-                system=_system_instruction(_field(config, "system_instruction")),
+                system=_system_parts(sent.get(_SYSTEM_INSTRUCTION)),
                 messages=[],
-                tools=self._tools_as_sent(tools) if tools else None,
-                response=_dump_response(response),
+                tools=sent.get(_TOOLS),
+                response=self._stored_response(response),
                 provider=GOOGLE,
                 model=model,
                 session_id="",
                 event_id="",
                 captured_at=now,
-                input=_as_json(contents),
+                input=sent.get(_CONTENTS),
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)

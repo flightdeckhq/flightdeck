@@ -50,10 +50,10 @@ _SENSOR_ENV = (
 )
 
 
-def _answer(request: httpx.Request) -> httpx.Response:
-    body = json.loads(request.content)
-    if request.url.path.endswith(":batchEmbedContents"):
-        return httpx.Response(200, json={"embeddings": [{"values": [0.5]}] * len(body["requests"])})
+def _whole(body: dict[str, Any]) -> dict[str, Any]:
+    """The answer to a ``generateContent`` request: a function call while
+    the request offers tools and has not answered one, else text with a
+    thought signature."""
     last = (body.get("contents") or [{}])[-1]
     answered = any("functionResponse" in p for p in last.get("parts", []))
     if body.get("tools") and not answered:
@@ -62,11 +62,18 @@ def _answer(request: httpx.Request) -> httpx.Response:
         ]
     else:
         parts = [{"text": "Hello", "thoughtSignature": "c2ln"}]
-    whole = {
+    return {
         "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
         "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 2},
         "modelVersion": MODEL,
     }
+
+
+def _answer(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    if request.url.path.endswith(":batchEmbedContents"):
+        return httpx.Response(200, json={"embeddings": [{"values": [0.5]}] * len(body["requests"])})
+    whole = _whole(body)
     if request.url.path.endswith(":streamGenerateContent"):
         sse = f"data: {json.dumps(whole)}\n\n".encode()
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
@@ -444,47 +451,188 @@ def test_introspection_is_the_sdks(sensor: Sensor) -> None:
 
 
 # ----- stored content == what the provider received ---------------------------
+#
+# Each argument kind, made through each entry point, with content capture
+# on: every request the call sent (an automatic-function-calling run sends
+# two) is a post_call whose stored pieces equal that request body's own
+# (contents, the system instruction's parts, tools) and whose stored
+# response equals the fake endpoint's answer to it.
 
 
-def test_stored_content_is_what_the_provider_received(sensor: Sensor) -> None:
+def _pil_image() -> Any:
+    image_module = pytest.importorskip("PIL.Image", reason="pillow is not installed in this lane")
+    return image_module.new("RGB", (2, 2), (255, 0, 0))
+
+
+def _declared_tool() -> types.Tool:
+    return types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name="lookup",
+                description="Looks a word up.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={"word": types.Schema(type=types.Type.STRING)},
+                ),
+            )
+        ]
+    )
+
+
+# Each kind: (contents, config), built fresh for every call (a generator is
+# read once). ``None`` config sends none.
+KINDS: dict[str, Callable[[], tuple[Any, Any]]] = {
+    "string": lambda: ("hi", None),
+    "list of strings": lambda: (["a", "b"], None),
+    "dict contents": lambda: ([{"role": "user", "parts": [{"text": "hi"}]}], None),
+    "sdk objects with a thought signature": lambda: (_signed_history(), None),
+    "Part.from_bytes": lambda: (
+        [
+            types.Part.from_text(text="look"),
+            types.Part.from_bytes(data=b"\x89PNG\x00\xff\xfe", mime_type="image/png"),
+        ],
+        None,
+    ),
+    "PIL image": lambda: (["look", _pil_image()], None),
+    "a generator": lambda: (_contents_generator(), None),
+    "dict config, string system": lambda: (
+        "hi",
+        {"system_instruction": "Be brief", "temperature": 0.1, "max_output_tokens": 8},
+    ),
+    "config, Content system": lambda: (
+        "hi",
+        types.GenerateContentConfig(
+            system_instruction=types.Content(parts=[types.Part(text="Be brief")])
+        ),
+    ),
+    "config, Part system": lambda: (
+        "hi",
+        types.GenerateContentConfig(system_instruction=types.Part(text="Be brief")),
+    ),
+    "config, list system": lambda: (
+        "hi",
+        types.GenerateContentConfig(system_instruction=["Be brief.", "Be kind."]),
+    ),
+    "tool declarations": lambda: ("hi", types.GenerateContentConfig(tools=[_declared_tool()])),
+    "callables under automatic function calling": lambda: (
+        "weather?",
+        types.GenerateContentConfig(tools=[get_weather]),
+    ),
+}
+
+
+def _call(mode: str, client: genai.Client, contents: Any, config: Any) -> None:
+    if mode == "sync":
+        client.models.generate_content(model=MODEL, contents=contents, config=config)
+    elif mode == "async":
+        asyncio.run(
+            client.aio.models.generate_content(model=MODEL, contents=contents, config=config)
+        )
+    elif mode == "stream":
+        list(client.models.generate_content_stream(model=MODEL, contents=contents, config=config))
+    else:
+        asyncio.run(
+            _adrain(
+                client.aio.models.generate_content_stream(
+                    model=MODEL, contents=contents, config=config
+                )
+            )
+        )
+
+
+def _chat(mode: str, client: genai.Client) -> None:
+    history = _signed_history()
+    if mode == "sync":
+        client.chats.create(model=MODEL, history=history).send_message("again")
+    elif mode == "async":
+        asyncio.run(client.aio.chats.create(model=MODEL, history=history).send_message("again"))
+    elif mode == "stream":
+        list(client.chats.create(model=MODEL, history=history).send_message_stream("again"))
+    else:
+
+        async def _streamed() -> None:
+            chat = client.aio.chats.create(model=MODEL, history=history)
+            async for _ in await chat.send_message_stream("again"):
+                pass
+
+        asyncio.run(_streamed())
+
+
+MODES = ("sync", "async", "stream", "async stream")
+
+
+def _assert_stored_as_sent(sensor: Sensor, recorder: Recorder) -> None:
+    bodies = [json.loads(r.content) for r in recorder.requests]
+    stored = sensor.content()
+    assert bodies and len(stored) == len(bodies)
+    for content, body in zip(stored, bodies, strict=True):
+        assert content["input"] == body["contents"]
+        system = body.get("systemInstruction")
+        assert content["system"] == (system["parts"] if system is not None else None)
+        assert content["tools"] == body.get("tools")
+        assert content["response"] == _whole(body)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", list(KINDS))
+def test_the_stored_content_is_the_request_and_response_on_the_wire(
+    sensor: Sensor, kind: str, mode: str
+) -> None:
+    contents, config = KINDS[kind]()
+    unsensored = Recorder()
+    try:
+        _call(mode, unsensored.client, *KINDS[kind]())
+    except Exception as exc:  # noqa: BLE001 - the release rejects the case
+        pytest.skip(f"this google-genai release rejects it: {type(exc).__name__}")
+    sensor.start()
+    recorder = Recorder()
+    _call(mode, recorder.client, contents, config)
+    assert recorder.sent() == unsensored.sent()
+    _assert_stored_as_sent(sensor, recorder)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_chat_stores_its_history_as_sent(sensor: Sensor, mode: str) -> None:
+    sensor.start()
+    recorder = Recorder()
+    _chat(mode, recorder.client)
+    _assert_stored_as_sent(sensor, recorder)
+    # The history the chat sent, the model's thought signature included,
+    # in the encoding the SDK sent it with.
+    (content,) = sensor.content()
+    assert (
+        content["input"][1]["parts"][0]["thoughtSignature"]
+        == (json.loads(recorder.requests[0].content)["contents"][1]["parts"][0]["thoughtSignature"])
+    )
+
+
+def test_the_stored_content_is_copied_when_the_call_is_sent(sensor: Sensor) -> None:
     sensor.start()
     recorder = Recorder()
     history = _signed_history()
-    recorder.client.models.generate_content(
-        model=MODEL,
-        contents=history,
-        config=types.GenerateContentConfig(system_instruction="Be brief"),
-    )
+    recorder.client.models.generate_content(model=MODEL, contents=history)
     history.append(types.Content(role="user", parts=[types.Part(text="added after the call")]))
+    history[0].parts[0].text = "changed after the call"
     (content,) = sensor.content()
-    stored = content["input"]
-    # Copied when the call was handed to the SDK: a later change to the
-    # caller's list is not in it.
-    assert len(stored) == 3
-    # A field set to None is not sent, nor stored.
-    assert stored[0] == {"role": "user", "parts": [{"text": "hi"}]}
-    # Sending the stored contents sends the provider the same request.
-    sensor_free = Recorder()
-    flightdeck_sensor.teardown()
-    sensor_free.client.models.generate_content(
-        model=MODEL,
-        contents=[types.Content.model_validate_json(json.dumps(c)) for c in stored],
-        config=types.GenerateContentConfig(system_instruction=content["system"]),
-    )
-    assert sensor_free.sent() == recorder.sent()
-    # The thought signature is the bytes the SDK sent, in its encoding.
-    sent = json.loads(recorder.requests[0].content)
-    assert (
-        sent["contents"][1]["parts"][0]["thoughtSignature"]
-        == (stored[1]["parts"][0]["thought_signature"])
-    )
+    assert content["input"] == json.loads(recorder.requests[0].content)["contents"]
+    assert len(content["input"]) == 3
+    assert content["input"][0] == {"parts": [{"text": "hi"}], "role": "user"}
 
 
-def test_a_generator_is_stored_as_the_items_the_sdk_read(sensor: Sensor) -> None:
+def test_an_embeddings_call_stores_its_contents_as_sent(sensor: Sensor) -> None:
     sensor.start()
     recorder = Recorder()
-    recorder.client.models.generate_content(model=MODEL, contents=_contents_generator())
-    (content,) = sensor.content()
-    assert content["input"] == ["first", {"text": "second"}]
-    sent = json.loads(recorder.requests[0].content)
-    assert [p["text"] for p in sent["contents"][0]["parts"]] == ["first", "second"]
+    recorder.client.models.embed_content(model="m", contents=_contents_generator())
+    (content,) = sensor.content("embeddings")
+    body = json.loads(recorder.requests[0].content)
+    assert content["input"] == [r["content"] for r in body["requests"]]
+
+
+def test_capture_off_stores_nothing(sensor: Sensor) -> None:
+    sensor.start(capture=False)
+    recorder = Recorder()
+    _call("sync", recorder.client, "hi", types.GenerateContentConfig(system_instruction="S"))
+    calls = [p for p in sensor.built if p["event_type"] == "post_call"]
+    assert len(calls) == 1
+    assert calls[0].get("content") is None
+    assert calls[0].get("has_content") is False

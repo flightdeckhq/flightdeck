@@ -64,12 +64,9 @@ EXPECTED_COST = (200 * 0.25 + 800 * 0.025 + 151 * 1.5) / 1e6
 LANDED_S = 20.0
 
 
-def _answer(request: httpx.Request) -> httpx.Response:
-    body = json.loads(request.content)
-    if request.url.path.endswith(":batchEmbedContents"):
-        return httpx.Response(
-            200, json={"embeddings": [{"values": [0.1, 0.2]} for _ in body["requests"]]}
-        )
+def _answer_body(body: dict[str, Any]) -> dict[str, Any]:
+    """The mock's answer to a ``generateContent`` request body: a function
+    call while the request offers tools it has not answered, else text."""
     last = body["contents"][-1]
     answered = any("functionResponse" in p for p in last.get("parts", []))
     if body.get("tools") and not answered:
@@ -78,16 +75,28 @@ def _answer(request: httpx.Request) -> httpx.Response:
         ]
     else:
         parts = [{"text": "Hello from mock Gemini"}]
+    return {
+        "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
+        "usageMetadata": USAGE,
+        "modelVersion": MODEL,
+        "responseId": "resp-e2e",
+    }
+
+
+def _answer(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    if request.url.path.endswith(":batchEmbedContents"):
+        return httpx.Response(
+            200, json={"embeddings": [{"values": [0.1, 0.2]} for _ in body["requests"]]}
+        )
     return httpx.Response(
-        200,
-        headers={"x-gemini-service-tier": "standard"},
-        json={
-            "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
-            "usageMetadata": USAGE,
-            "modelVersion": MODEL,
-            "responseId": "resp-e2e",
-        },
+        200, headers={"x-gemini-service-tier": "standard"}, json=_answer_body(body)
     )
+
+
+def _sent(router: respx.MockRouter) -> list[dict[str, Any]]:
+    """The request bodies the mock Gemini API received, in order."""
+    return [json.loads(call.request.content) for call in router.calls]
 
 
 @pytest.fixture
@@ -197,11 +206,18 @@ def test_a_gemini_call_lands_with_its_tokens_cost_and_content(
     content = _content(str(post_call["id"]))
     assert content is not None
     assert content["provider"] == "google"
-    assert content["input"] == [{"role": "user", "parts": [{"text": PROMPT_MARKER}]}]
-    # A Content system instruction lands as its list of parts.
+    # The request body the SDK built, as the provider received it.
+    sent = _sent(gemini)[0]
+    assert content["input"] == sent["contents"]
+    assert content["input"] == [{"parts": [{"text": PROMPT_MARKER}], "role": "user"}]
+    # The system instruction's parts.
+    assert content["system_prompt"] == sent["systemInstruction"]["parts"]
     assert content["system_prompt"] == [{"text": SYSTEM_MARKER}]
+    # The response body as received.
+    assert content["response"] == _answer_body(sent)
     candidate = content["response"]["candidates"][0]
     assert candidate["content"]["parts"] == [{"text": "Hello from mock Gemini"}]
+    assert candidate["finishReason"] == "STOP"
     # The events row carries no content.
     assert PROMPT_MARKER not in json.dumps(payload)
 
@@ -234,8 +250,13 @@ def test_each_automatic_function_calling_round_lands_as_a_call(
     assert tool_call["tool_name"] == "get_weather"
     second = _content(str(post_calls[1]["id"]))
     assert second is not None
+    # Each round stores what that round sent.
+    sent = _sent(gemini)
+    assert second["input"] == sent[1]["contents"]
     roles = [c["role"] for c in second["input"]]
     assert roles == ["user", "model", "user"]
+    assert "functionResponse" in second["input"][2]["parts"][0]
+    assert second["tools"] == sent[1]["tools"]
 
 
 def test_an_embeddings_call_lands(gemini: respx.MockRouter, flavor: str) -> None:
@@ -246,4 +267,6 @@ def test_an_embeddings_call_lands(gemini: respx.MockRouter, flavor: str) -> None
     assert event["model"] == EMBED_MODEL
     content = _content(str(event["id"]))
     assert content is not None
-    assert content["input"] == ["a", "b"]
+    # Each batched request's content, as sent.
+    assert content["input"] == [r["content"] for r in _sent(gemini)[0]["requests"]]
+    assert content["input"][0] == {"parts": [{"text": "a"}], "role": "user"}

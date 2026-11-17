@@ -9,7 +9,6 @@ from objects the installed google-genai builds (``types`` and
 
 from __future__ import annotations
 
-import base64
 import inspect
 import json
 from typing import Any
@@ -26,7 +25,8 @@ from flightdeck_sensor.core.errors import (
     classify_stop_reason,
 )
 from flightdeck_sensor.core.types import EventType, TokenUsage
-from flightdeck_sensor.providers.google import GoogleProvider
+from flightdeck_sensor.providers import google
+from flightdeck_sensor.providers.google import GoogleProvider, SentRequest
 
 MODEL = "gemini-3.1-flash-lite"
 
@@ -428,108 +428,171 @@ def get_weather(city: str) -> str:
     return city
 
 
-class _GeminiApiClient:
-    """The one attribute of the SDK's API client its tool transform reads."""
+def _sent(request: dict[str, Any], body: dict[str, Any] | None = None) -> SentRequest:
+    """What the SDK handed its API client for one call (see SentRequest)."""
+    sent = SentRequest()
+    sent.keep(("post", "models/m:generateContent", {"_url": {"model": MODEL}, **request}), {})
+    if body is not None:
+        sent.body = json.dumps(body)
+    return sent
 
-    vertexai = False
+
+# A request body as google-genai 2.x builds it for the Gemini API: the
+# REST API's names for most fields, the SDK's own for some (a blob's
+# ``mime_type``, a declaration's ``parameters_json_schema``).
+WIRE_REQUEST: dict[str, Any] = {
+    "contents": [
+        {"parts": [{"text": "a plain string"}], "role": "user"},
+        {
+            "parts": [{"text": "hi", "thoughtSignature": "AP8gc2lnbmF0dXJl"}],
+            "role": "model",
+        },
+        {"parts": [{"inlineData": {"data": "iVBORw==", "mime_type": "image/png"}}], "role": "user"},
+    ],
+    "systemInstruction": {"parts": [{"text": "Be brief"}], "role": "user"},
+    "tools": [
+        {"functionDeclarations": [{"name": "get_weather", "parameters_json_schema": {}}]},
+        {"googleSearch": {}},
+    ],
+    "generationConfig": {"temperature": 0.1},
+}
+WIRE_RESPONSE: dict[str, Any] = {
+    "candidates": [
+        {
+            "content": {"role": "model", "parts": [{"text": "ok", "thoughtSignature": "+/8="}]},
+            "finishReason": "STOP",
+            "fieldTheSdkDoesNotModel": 1,
+        }
+    ],
+    "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1},
+    "modelVersion": MODEL,
+}
 
 
-def test_content_is_stored_in_geminis_own_terms() -> None:
+def test_content_is_the_request_and_response_as_sent_and_received() -> None:
     provider = GoogleProvider(
-        capture_prompts=True, platform="gemini-api", api_client=_GeminiApiClient()
+        capture_prompts=True, platform="gemini-api", sent=_sent(WIRE_REQUEST, WIRE_RESPONSE)
     )
-    signature = b"\x00\xff signature"
-    contents = [
-        "a plain string",
-        {"role": "user", "parts": [{"text": "a dict as written"}]},
-        types.Content(role="model", parts=[types.Part(text="hi", thought_signature=signature)]),
-        types.Part.from_bytes(data=b"\x89PNG", mime_type="image/png"),
-    ]
-    config = types.GenerateContentConfig(
-        system_instruction=types.Content(parts=[types.Part(text="Be brief")]),
-        tools=[get_weather, types.Tool(google_search=types.GoogleSearch())],
-    )
-    response = _response(
-        candidates=[
-            {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}
-        ],
-        modelVersion=MODEL,
-    )
-    response.sdk_http_response = types.HttpResponse(headers={"x-gemini-service-tier": "standard"})
+    # The caller's arguments are not read for content: the request is.
     content = provider.extract_content(
-        {"model": MODEL, "contents": contents, "config": config}, response
+        {"model": MODEL, "contents": "ignored", "config": None}, _response(modelVersion=MODEL)
     )
     assert content is not None
     assert content.provider == "google"
     assert content.messages == []
-    # A Content system instruction is stored as its parts: the content's
-    # system is text or a list.
+    assert content.input == WIRE_REQUEST["contents"]
+    # The system instruction's parts: the content's system is text or a list.
     assert content.system == [{"text": "Be brief"}]
-    assert content.input == [
-        "a plain string",
-        {"role": "user", "parts": [{"text": "a dict as written"}]},
-        {
-            "role": "model",
-            "parts": [
-                {
-                    "text": "hi",
-                    "thought_signature": base64.urlsafe_b64encode(signature).decode("ascii"),
-                }
+    assert content.tools == WIRE_REQUEST["tools"]
+    # The response body as received, once parsed: fields the SDK does not
+    # model and the wire's base64 alphabet included.
+    assert content.response == WIRE_RESPONSE
+
+
+def test_a_request_without_system_or_tools_stores_none_for_them() -> None:
+    sent = _sent({"contents": [{"parts": [{"text": "hi"}], "role": "user"}]}, WIRE_RESPONSE)
+    content = GoogleProvider(capture_prompts=True, sent=sent).extract_content(
+        {"model": MODEL}, _response()
+    )
+    assert content is not None
+    assert (content.system, content.tools) == (None, None)
+
+
+def test_a_stream_stores_its_chunks_assembled_by_alias() -> None:
+    sent = _sent({"contents": [{"parts": [{"text": "hi"}], "role": "user"}]})
+    provider = GoogleProvider(capture_prompts=True, sent=sent)
+    accumulator = provider.stream_accumulator(object(), {"model": MODEL})
+    assert accumulator is not None
+    accumulator.add(
+        _response(candidates=[{"content": {"role": "model", "parts": [{"text": "He"}]}}])
+    )
+    accumulator.add(
+        _response(
+            candidates=[
+                {"content": {"role": "model", "parts": [{"text": "llo"}]}, "finishReason": "STOP"}
             ],
-        },
-        {"inline_data": {"data": "iVBORw==", "mime_type": "image/png"}},
-    ]
-    # A Python function is offered as the declaration the SDK builds from it.
-    function_tool, search_tool = content.tools
-    declaration = function_tool["function_declarations"][0]
-    assert declaration["name"] == "get_weather"
-    assert declaration["description"] == "The weather in a city."
-    assert search_tool == {"google_search": {}}
-    # The response as the provider returned it, without what the SDK adds.
+            usageMetadata={"promptTokenCount": 3, "candidatesTokenCount": 2},
+        )
+    )
+    content = provider.extract_content({"model": MODEL}, accumulator.message())
+    assert content is not None
     assert content.response == {
         "candidates": [
-            {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finish_reason": "STOP"}
+            {"content": {"role": "model", "parts": [{"text": "Hello"}]}, "finishReason": "STOP"}
         ],
-        "model_version": MODEL,
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2},
     }
 
 
-def test_embeddings_content() -> None:
-    provider = GoogleProvider(capture_prompts=True)
+def test_a_call_whose_request_was_not_recorded_stores_no_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    google._WARNED.clear()
+    for sent in (None, SentRequest()):
+        content = GoogleProvider(capture_prompts=True, sent=sent).extract_content(
+            {"model": MODEL, "contents": "SECRET-CONTENTS"}, _response()
+        )
+        # Never another shape (the caller's arguments): no content at all.
+        assert content is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "without its content" in warnings[0]
+    assert "SECRET-CONTENTS" not in warnings[0]
+
+
+def test_the_record_drops_the_sdk_url_keys_and_keeps_the_body() -> None:
+    sent = SentRequest()
+    request = {"_url": {"model": "m"}, "_query": {"alt": "sse"}, "contents": []}
+    sent.keep((), {"request_dict": request})
+    assert sent.request == {"contents": []}
+    # The client drops the URL keys from its own dict afterwards.
+    del request["_url"]
+    assert sent.request == {"contents": []}
+    nothing = SentRequest()
+    nothing.keep(("post", "path"), {})
+    assert nothing.request is None
+
+
+@pytest.mark.parametrize(
+    ("request_body", "stored"),
+    [
+        # The Gemini API's batch: each request's content.
+        (
+            {
+                "requests": [
+                    {"content": {"parts": [{"text": "a"}], "role": "user"}, "model": "models/m"},
+                    {"content": {"parts": [{"text": "b"}], "role": "user"}, "model": "models/m"},
+                ]
+            },
+            [
+                {"parts": [{"text": "a"}], "role": "user"},
+                {"parts": [{"text": "b"}], "role": "user"},
+            ],
+        ),
+        # Vertex AI's predict: each instance's content.
+        ({"instances": [{"content": "a"}, {"content": "b"}]}, ["a", "b"]),
+        # Vertex AI's embedContent: the request's own content.
+        ({"content": {"parts": [{"text": "a"}]}}, {"parts": [{"text": "a"}]}),
+    ],
+    ids=["batch", "predict", "embedContent"],
+)
+def test_embeddings_content_is_the_contents_as_sent(
+    request_body: dict[str, Any], stored: Any
+) -> None:
+    provider = GoogleProvider(capture_prompts=True, sent=_sent(request_body))
     response = types.EmbedContentResponse(embeddings=[types.ContentEmbedding(values=[0.5, 0.25])])
     content = provider.extract_content(
-        {"model": "gemini-embedding-001", "contents": ["a", "b"]},
+        {"model": "gemini-embedding-001", "contents": ["ignored"]},
         response,
         event_type=EventType.EMBEDDINGS,
     )
     assert content is not None
-    assert (content.input, content.embedding_output) == (["a", "b"], [[0.5, 0.25]])
-    # Vertex AI's single-content embeddings API takes ``content``.
-    single = provider.extract_content(
-        {"model": "text-embedding-005", "contents": None, "content": types.Content(parts=[])},
-        response,
-        event_type=EventType.EMBEDDINGS,
-    )
-    assert single is not None
-    assert single.input == {"parts": []}
+    assert (content.input, content.embedding_output) == (stored, [[0.5, 0.25]])
 
 
 def test_capture_off_stores_nothing() -> None:
-    assert GoogleProvider().extract_content({"model": MODEL, "contents": "secret"}, None) is None
-
-
-def test_an_object_json_cannot_write_is_kept_as_it_is_never_its_string() -> None:
-    # A PIL image is encoded by the SDK itself; content capture keeps the
-    # object, so the event is sent without content (transport.body_limit).
-    class Image:
-        pass
-
-    image = Image()
-    content = GoogleProvider(capture_prompts=True).extract_content(
-        {"model": MODEL, "contents": ["describe", image]}, _response()
-    )
-    assert content is not None
-    assert content.input[1] is image
+    sent = _sent(WIRE_REQUEST, WIRE_RESPONSE)
+    assert GoogleProvider(sent=sent).extract_content({"model": MODEL}, None) is None
 
 
 def test_the_adapter_matches_the_provider_protocol() -> None:

@@ -371,15 +371,24 @@ def test_each_entry_point_reports_one_call(
         # The Gemini API reports no tokens for embeddings: the pre-call
         # estimate stands, as for any call whose response reports none.
         assert event["tokens_input"] == payloads[0]["tokens_input"]
-        assert event["content"]["input"] == [PROMPT, "b"]
+        # Stored as sent: each batched request's content.
+        sent = gemini.sent()[0]["requests"]
+        assert event["content"]["input"] == [r["content"] for r in sent]
+        assert event["content"]["input"][0] == {"parts": [{"text": PROMPT}], "role": "user"}
         return
     assert (event["model_requested"], event["model_served"]) == (MODEL, MODEL)
     assert (event["tokens_input"], event["tokens_output"]) == (12, 12)
     assert (event["tokens_reasoning"], event["tokens_cache_read"]) == (7, 4)
     assert event["service_tier"] == "standard"
     assert event["stop_reason"] == "STOP"
-    response = event["content"]["response"]
+    content = event["content"]
+    # The request as the provider received it, whatever the call's form.
+    assert content["input"] == gemini.sent()[0]["contents"]
+    response = content["response"]
     assert response["candidates"][0]["content"]["parts"] == [{"text": "Hello"}]
+    # The REST API's names: finishReason, usageMetadata.
+    assert response["candidates"][0]["finishReason"] == "STOP"
+    assert response["usageMetadata"]["promptTokenCount"] == 12
     if streamed:
         assert event["streaming"]["final_outcome"] == "completed"
         assert event["streaming"]["chunk_count"] == 2
@@ -420,14 +429,17 @@ def test_each_automatic_function_calling_round_is_a_call(
     assert tool_call["content"]["tool_input"] == {"city": TOOL_ARG}
     first, second = payloads[1], payloads[4]
     assert first["tokens_input"] == second["tokens_input"] == 12
-    # The second round's request holds the call and the SDK's answer.
+    # Each round stores what that round sent: the second holds the call
+    # and the SDK's answer to it.
+    sent = gemini.sent()
+    assert first["content"]["input"] == sent[0]["contents"]
+    assert second["content"]["input"] == sent[1]["contents"]
     assert [c["role"] for c in second["content"]["input"]] == ["user", "model", "user"]
-    function_response = second["content"]["input"][2]["parts"][0]["function_response"]
+    function_response = second["content"]["input"][2]["parts"][0]["functionResponse"]
     assert function_response["response"] == {"result": f"sunny in {TOOL_ARG}"}
     # The function is offered as the declaration the SDK sent.
-    declaration = first["content"]["tools"][0]["function_declarations"][0]
-    assert declaration["name"] == "get_weather"
-    assert gemini.sent()[0]["tools"][0]["functionDeclarations"][0]["name"] == "get_weather"
+    assert first["content"]["tools"] == sent[0]["tools"]
+    assert first["content"]["tools"][0]["functionDeclarations"][0]["name"] == "get_weather"
 
 
 def test_a_streamed_function_call_is_a_tool_call(sensor: Sensor, gemini: Gemini) -> None:

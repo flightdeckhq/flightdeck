@@ -281,9 +281,9 @@ class PromptContent:
     Responses API has no messages parameter. ``litellm.responses`` is
     stored the same way, and ``litellm.text_completion``, whose request
     has no ``messages`` either, puts its ``prompt`` here verbatim. A Gemini
-    call (google-genai) puts its ``contents`` here as the caller gave them
-    (a string, a ``Content`` or ``Part``, or a list of them), with its
-    config's ``system_instruction`` in ``system``; Gemini has no messages
+    call (google-genai) puts here the ``contents`` of the request body the
+    SDK built (always a list of turns), with that body's
+    ``systemInstruction`` parts in ``system``; Gemini has no messages
     parameter either.
     """
 

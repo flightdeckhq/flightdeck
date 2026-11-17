@@ -300,13 +300,17 @@ def main() -> None:
         len(embeddings) == 1 and embeddings[0].get("provider") == "google",
         embeddings,
     )
+    # The request body the SDK built from contents="Say hi." and a string
+    # system instruction, and the response body as received.
     first = fetch_event_content(post_calls[0]["id"])
+    candidates = (first.get("response") or {}).get("candidates") or [{}]
     _check(
-        "the stored content is in Gemini's own terms",
+        "the stored content is the request and response as sent and received",
         first.get("provider") == "google"
-        and first.get("input") == "Say hi."
-        and first.get("system_prompt") == SYSTEM
-        and "candidates" in (first.get("response") or {}),
+        and first.get("input") == [{"parts": [{"text": "Say hi."}], "role": "user"}]
+        and first.get("system_prompt") == [{"text": SYSTEM}]
+        and candidates[0].get("finishReason") == "STOP"
+        and "usageMetadata" in first["response"],
         first,
     )
     print(f"[playground:43_google_genai] sessions: {session_id}")

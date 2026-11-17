@@ -35,6 +35,14 @@ out (an async one when awaited), so a client kept across ``teardown()``
 and a new ``init()`` reports to the new session, and with no session the
 SDK gets the call untouched.
 
+With content capture on, the private method runs on a copy of its
+``Models`` object whose API client is a recording view of the real one
+(see :class:`_RecordingClient`): the request the method builds and hands
+the client, and a non-streamed call's response body, are kept for the
+call's stored content, then handed on unchanged. Nothing global changes:
+the copy is the call's own, and other calls on the same client are not
+seen.
+
 ``count_tokens``, ``compute_tokens``, the image and video methods and the
 ``interactions``, ``agents``, ``live``, ``batches`` and ``caches``
 surfaces are not patched.
@@ -42,6 +50,7 @@ surfaces are not patched.
 
 from __future__ import annotations
 
+import copy
 import functools
 import logging
 import types
@@ -54,7 +63,7 @@ from flightdeck_sensor.interceptor.platform import (
     PLATFORM_VERTEX,
     endpoint_of_url,
 )
-from flightdeck_sensor.providers.google import GoogleProvider
+from flightdeck_sensor.providers.google import GoogleProvider, SentRequest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -137,11 +146,12 @@ def _vertex_scope(api_client: Any) -> str | None:
     return "global" if location == "global" else "regional"
 
 
-def _provider_for(api_client: Any, session: Session) -> GoogleProvider:
+def _provider_for(api_client: Any, session: Session, sent: SentRequest | None) -> GoogleProvider:
     """The provider for a call through ``api_client`` (the resource's
-    ``_api_client``): the session's capture setting, and the endpoint its
+    ``_api_client``): the session's capture setting, the endpoint its
     base URL names (``gemini-api`` for the Gemini API's host, ``vertex``
-    for Vertex AI's, the host of a proxy or local server otherwise)."""
+    for Vertex AI's, the host of a proxy or local server otherwise), and
+    the record of what the call sends, with content capture on."""
     vertex = bool(getattr(api_client, "vertexai", False))
     http_options = getattr(api_client, "_http_options", None)
     endpoint = endpoint_of_url(
@@ -153,8 +163,67 @@ def _provider_for(api_client: Any, session: Session) -> GoogleProvider:
         platform=endpoint.platform,
         local=endpoint.local,
         inference_scope=_vertex_scope(api_client) if endpoint.platform == PLATFORM_VERTEX else None,
-        api_client=api_client,
+        sent=sent,
     )
+
+
+class _RecordingClient:
+    """The SDK's API client as one call of a patched request method sees
+    it: every request goes to the real client as it is, after
+    :meth:`SentRequest.keep` copies it, and a non-streamed response's body
+    is kept as the client returns it. Every other attribute, read or
+    written, is the real client's. The request methods are the four the
+    SDK's request methods call (google-genai 1.64 to 3.4); a release that
+    sends through another leaves the record empty, and the call is stored
+    without content (see GoogleProvider.extract_content)."""
+
+    def __init__(self, client: Any, sent: SentRequest) -> None:
+        object.__setattr__(self, "_fd_client", client)
+        object.__setattr__(self, "_fd_sent", sent)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._fd_client, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._fd_client, name, value)
+
+    def request(self, *args: Any, **kwargs: Any) -> Any:
+        self._fd_sent.keep(args, kwargs)
+        response = self._fd_client.request(*args, **kwargs)
+        self._fd_sent.body = getattr(response, "body", None)
+        return response
+
+    def request_streamed(self, *args: Any, **kwargs: Any) -> Any:
+        self._fd_sent.keep(args, kwargs)
+        return self._fd_client.request_streamed(*args, **kwargs)
+
+    async def async_request(self, *args: Any, **kwargs: Any) -> Any:
+        self._fd_sent.keep(args, kwargs)
+        response = await self._fd_client.async_request(*args, **kwargs)
+        self._fd_sent.body = getattr(response, "body", None)
+        return response
+
+    async def async_request_streamed(self, *args: Any, **kwargs: Any) -> Any:
+        self._fd_sent.keep(args, kwargs)
+        return await self._fd_client.async_request_streamed(*args, **kwargs)
+
+
+def _recording(module: Any, session: Session) -> tuple[Any, SentRequest | None]:
+    """The object a request method runs on, and the record of what it
+    sends: with content capture on, a copy of ``module`` (a ``Models`` or
+    ``AsyncModels``) whose ``_api_client`` is a :class:`_RecordingClient`;
+    otherwise, or when the copy cannot be made, ``module`` itself and no
+    record (the call is then stored without content)."""
+    if not session.config.capture_prompts:
+        return module, None
+    sent = SentRequest()
+    try:
+        view = copy.copy(module)
+        view._api_client = _RecordingClient(module._api_client, sent)
+    except Exception:
+        _log.debug("google-genai request recording unavailable", exc_info=True)
+        return module, sent
+    return view, sent
 
 
 def _installed(cls: type, name: str, method: Any) -> bool:
@@ -178,8 +247,9 @@ def _sync_method(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
             or not _installed(type(self), name, method)
         ):
             return original(self, **kwargs)
-        provider = _provider_for(getattr(self, "_api_client", None), session)
-        real = types.MethodType(original, self)
+        target, sent = _recording(self, session)
+        provider = _provider_for(getattr(self, "_api_client", None), session, sent)
+        real = types.MethodType(original, target)
         if name == _STREAM:
             # Not opened: the SDK's generator sends its request at its
             # first chunk, which the guard reads when the SDK iterates it.
@@ -202,8 +272,9 @@ def _async_method(name: str, original: Callable[..., Any]) -> Callable[..., Any]
             or not _installed(type(self), name, method)
         ):
             return await original(self, **kwargs)
-        provider = _provider_for(getattr(self, "_api_client", None), session)
-        real = types.MethodType(original, self)
+        target, sent = _recording(self, session)
+        provider = _provider_for(getattr(self, "_api_client", None), session, sent)
+        real = types.MethodType(original, target)
         if name == _STREAM:
             # The SDK's own awaits the request and hands back the stream.
             return await base.call_stream_async(real, kwargs, session, provider).open()

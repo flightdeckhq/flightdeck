@@ -167,6 +167,21 @@
    "scope": ""
   },
   {
+   "raw": "tunedModels/my-tuned-model-a1b2c3",
+   "model": "my-tuned-model-a1b2c3",
+   "scope": ""
+  },
+  {
+   "raw": "projects/my-project/locations/us-central1/endpoints/1234567890",
+   "model": "1234567890",
+   "scope": ""
+  },
+  {
+   "raw": "projects/my-project/locations/us-central1/models/9876543210",
+   "model": "9876543210",
+   "scope": ""
+  },
+  {
    "raw": "gemini-3.1-flash-lite-preview-03-2026",
    "model": "gemini-3.1-flash-lite-preview-03-2026",
    "scope": ""

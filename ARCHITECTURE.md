@@ -420,15 +420,14 @@ flightdeck/
 │   │   │   ├── failed_stream.go # A failed stream's delivered and billed tokens on its llm_error, counted like a post_call
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
 │   │   │   └── policy.go       # Threshold evaluation, directive emission
-│   │   ├── writer/
-│   │   │   ├── writer.go       # Upsert agents, sessions, events, event_content on storage.DB (shared SQL)
-│   │   │   ├── queries_postgres.go # The statements that differ per backend: jsonb operators, FOR UPDATE CTEs, xmax
-│   │   │   ├── queries_sqlite.go   # Their SQLite forms: json_* functions, IMMEDIATE transactions
-│   │   │   ├── db.go           # Database URL: Postgres lock timeout under the processing deadline
-│   │   │   ├── uuid.go         # Canonical lower-case ids on both backends
-│   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
-│   │   │   └── notify.go       # storage.Bus publish after each event write and session state change (real-time dashboard push)
-│   │   └── models/             # Go structs mirroring all Postgres tables
+│   │   └── writer/
+│   │       ├── writer.go       # Upsert agents, sessions, events, event_content on storage.DB (shared SQL)
+│   │       ├── queries_postgres.go # The statements that differ per backend: jsonb operators, FOR UPDATE CTEs, xmax
+│   │       ├── queries_sqlite.go   # Their SQLite forms: json_* functions, IMMEDIATE transactions
+│   │       ├── db.go           # Database URL: Postgres lock timeout under the processing deadline
+│   │       ├── uuid.go         # Canonical lower-case ids on both backends
+│   │       ├── backfill.go     # Batched model-id backfill of events stored with raw ids
+│   │       └── notify.go       # storage.Bus publish after each event write and session state change (real-time dashboard push)
 │   └── tests/
 │       ├── processor_test.go
 │       ├── build_event_extra_test.go           # events.payload projection: llm_error + streaming sub-objects, plugin tool_use_id / mcp_server / end_reason

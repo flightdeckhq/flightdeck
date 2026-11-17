@@ -891,11 +891,13 @@ class Provider(Protocol):
         message.
         For OpenAI: extracts messages array (all roles), tools list, response
         choice.
-        For Google (google-genai): extracts contents (as input), the
-        config's system_instruction and tools, the response's candidates.
+        For Google (google-genai): the request body the SDK built
+        (its contents as input, its systemInstruction's parts, its
+        tools) and the response body, not the caller's arguments.
         For EMBEDDINGS event_type: extracts request_kwargs["input"] as
         sent (a string, a list of strings, a list of token ids or a list
-        of token-id lists; a Gemini call's contents).
+        of token-id lists; a Gemini call's contents as its request sent
+        them).
         Provider terminology is preserved exactly — no normalization between
         the Anthropic, OpenAI and Gemini shapes.
         """
@@ -910,7 +912,7 @@ class Provider(Protocol):
 @dataclass
 class PromptContent:
     """Raw content extracted from a single LLM call or embeddings request."""
-    system: str | list | None       # Anthropic system (text or content blocks); OpenAI Responses instructions; Gemini system_instruction (text, or its parts)
+    system: str | list | None       # Anthropic system (text or content blocks); OpenAI Responses instructions; the parts of a Gemini request's systemInstruction
     messages: list[dict]            # Full messages array verbatim (empty for Responses and Gemini)
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
@@ -919,7 +921,7 @@ class PromptContent:
     session_id: str
     event_id: str
     captured_at: str                # ISO 8601 UTC
-    input: str | list | None = None                    # Embeddings or Responses input, Gemini contents (None for chat)
+    input: str | list | None = None                    # Embeddings or Responses input, a Gemini request's contents (None for chat)
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
@@ -1031,9 +1033,9 @@ its set fields without those the class marks `__api_exclude__` (by alias
 from anthropic 2.x), for the estimate and the stored content alike, while
 the SDK gets the caller's own object. A google-genai model (a `Content`
 or `Part` in `contents`, a chat's history, a reply's content passed back)
-is read as that SDK writes it: the JSON dump of its fields that are not
-None, by field name, bytes (a thought signature, a `Blob`'s data) as
-URL-safe base64, which is how the SDK encodes them on the wire. An
+is read for the estimate as the JSON dump of its fields that are not
+None; a google-genai call's stored content is the request body the SDK
+built, not its arguments (see google-genai (Gemini), Content). An
 argument that holds no iterator reaches the SDK as the caller's own
 object, its lists and dicts included, so a change the caller makes to it
 before the SDK builds the request (an Anthropic `messages.stream()`
@@ -1051,11 +1053,10 @@ object type. Such objects are a file the Anthropic SDK reads and
 base64-encodes itself, a `beta_tool` function, a `datetime` inside a
 message, which openai 2.54 and 3.26 send as an ISO string through their
 own JSON encoder and openai 2.8 rejects (what is sent depends on the
-release), and a PIL image in google-genai `contents`, which the SDK
-encodes as PNG or JPEG itself (encoding it a second time would cost the
-call that image's encode). A Python function among google-genai's tools
-is stored as the function declaration the SDK's own tool transform
-builds from it, which is what the request carries.
+release). A PIL image in google-genai `contents` is stored as the inline
+data the SDK encoded it into, and a Python function among its tools as
+the function declaration the SDK built from it: both are read from the
+request the SDK sent.
 
 The request side of the stored content is copied when the call is
 handed to the SDK, which builds the request then: when a plain call is
@@ -1608,8 +1609,9 @@ An embeddings call reports the per-embedding `statistics.token_count`
 Vertex AI returns, summed; the Gemini API's answer carries no count
 through the SDK (google-genai drops the `usageMetadata`
 `gemini-embedding-2` sends, and `gemini-embedding-001` sends none), so
-its `embeddings` event carries the pre-call estimate, as every call
-whose response reports no usage does.
+its `embeddings` event's `tokens_input` is the pre-call estimate, as for
+every call whose response reports no usage, and its estimated cost is
+priced from that estimate.
 
 **Model, provider, platform.** `provider` is `google`: every endpoint
 the SDK speaks serves Google's models. `model_requested` is the `model`
@@ -1663,7 +1665,16 @@ of their image counterparts, or whose prompt was blocked
 (`prompt_feedback.block_reason` `SAFETY`, `BLOCKLIST`,
 `PROHIBITED_CONTENT`, `IMAGE_SAFETY`, `JAILBREAK`, `MODEL_ARMOR`), files a
 `content_filter` `llm_error` beside its `post_call` (see `llm_error`); a
-prompt blocked for `OTHER` files none.
+prompt blocked for `OTHER` files none. That follows the rule every
+provider's stop reasons follow: a reason files an `llm_error` when the
+taxonomy has its outcome (a filter's refusal, a context overflow), and
+the other reasons are the `post_call`'s `stop_reason` alone, as
+Anthropic's `max_tokens` and OpenAI's `length` are. So `MAX_TOKENS`,
+`LANGUAGE`, `OTHER`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`,
+`TOO_MANY_TOOL_CALLS`, `NO_IMAGE`, `IMAGE_OTHER` and `CONTINUATION` file
+none: no other provider reports a model's malformed or unexpected tool
+call as a failure (OpenAI and Anthropic send such a call as an ordinary
+one), and the taxonomy has no entry for it.
 
 **Streaming.** The time to first token runs from the request to the
 first chunk, and the chunk that carries the finish reason (or a block
@@ -1680,58 +1691,106 @@ apart, a function call, inline data or a part carrying a thought
 signature kept whole), its last finish reason, and the last chunk's
 usage, model version and response id.
 
-**Content.** Stored in Gemini's own terms (CLAUDE.md rule 20), with the
-SDK's field names (snake case; the wire spells the same fields in camel
-case). `input` holds the request's `contents` as the caller gave them to
-the SDK: a string, a `Content` or `Part`, or a list of them, SDK models
-as the dump described under `PromptContent` dataclass, dicts as written,
-a generator as the items the SDK read. `system` holds the config's
-`system_instruction`: a string as it is, a `Content` as its list of
-parts (the instruction itself; the content's `system` is text or a list,
-see `event_content`), a `Part` as a list of that one part. `tools` holds
-the config's tools (a Python function as the declaration the SDK sends),
-and `response` the response without the fields the SDK sets on
-it itself (`sdk_http_response`, `automatic_function_calling_history`,
-`parsed`). `messages` stays empty: Gemini has no messages parameter. A
-round of a chat:
+**Content.** What is stored is what the provider received and returned
+(CLAUDE.md rule 20), piece by piece, in the request body's own structure
+and spelling, never rebuilt from the caller's arguments. The SDK turns
+the arguments into the request its own way: a string into a `user`
+turn, a list of strings into one turn of several parts, a Python
+function into a function declaration, a PIL image into inline data,
+bytes into URL-safe base64. Its spelling is the REST API's names for most
+fields and its own for some, and depends on its release and the
+platform: google-genai 2.x sends `inlineData` with `mime_type` inside it
+and a function's declaration as `parameters_json_schema`; 1.64 sends
+`mimeType` and a `parameters` schema (`"type": "STRING"`) on the Gemini
+API, `inline_data` and `mime_type` on Vertex AI. So the sensor reads
+the request the SDK built. With content capture on, the patched request
+method runs on a copy of its `Models` object whose API client is a
+recording view of the real one: the request the method hands the client
+(`request`, `request_streamed` and their async forms) is copied before
+the client sends it, without the `_url` and `_query` keys the client
+drops, and the response body a non-streamed call's client returns is
+kept as text. The copy is the call's own, so nothing global changes and
+other calls on the same client are not seen; the SDK builds a new
+structure for each request, so a change the caller makes to its
+arguments afterwards is not in it; each round of automatic function
+calling stores what that round sent, the history included; a one-shot
+iterable still reaches the SDK as the sensor's replay (see one-shot
+iterables) and the request holds the items the SDK read. The stored
+pieces:
+
+- `input`: the body's `contents`, always a list of turns, each
+  `{"role", "parts"}`.
+- `system`: the body's `systemInstruction`'s `parts`. The content's
+  `system` is text or a list (see `event_content`), so the Content
+  around the parts is not stored; it carries only a `role`, which the
+  SDK sets to `user` and the model reads nothing from.
+- `tools`: the body's `tools` (`functionDeclarations`, `googleSearch`,
+  `codeExecution`, ...).
+- `response`: a non-streamed call's response body as received, parsed:
+  every field, the ones the SDK does not model included, bytes in the
+  wire's own base64 alphabet. A stream has no one body: its stored
+  response is its chunks assembled (see Streaming), each chunk as the
+  SDK's dump by alias (the REST API's names) with unset fields left
+  out, so it holds only the fields the SDK models, and bytes (a
+  `thoughtSignature`) in the URL-safe base64 the SDK writes rather than
+  the standard alphabet the API sent.
+
+`messages` stays empty: Gemini has no messages parameter. A body's other
+fields (`generationConfig`, `toolConfig`, `safetySettings`,
+`cachedContent`) are not stored, as no other provider's are, and
+`http_options.extra_body`, which the client merges into the body after
+the copy, is not in it. When the request could not be read (a release
+whose request methods send through other client methods than these
+four, or a copy that fails), the event is sent without content, with a
+warning once per process naming no value: never in another shape. A
+round of a chat on the Gemini API:
 
 ```json
 {
   "provider": "google",
-  "system": "Answer in at most five words.",
+  "system": [{"text": "Answer in at most five words."}],
   "messages": [],
   "input": [
-    {"role": "user", "parts": [{"text": "My name is Ada."}]},
-    {"role": "model", "parts": [{"text": "Hello, Ada.", "thought_signature": "EpwB..."}]},
-    {"role": "user", "parts": [{"text": "What is my name?"}]}
+    {"parts": [{"text": "My name is Ada."}], "role": "user"},
+    {"parts": [{"text": "Hello, Ada.", "thoughtSignature": "EpwB..."}], "role": "model"},
+    {"parts": [{"text": "What is my name?"}], "role": "user"}
   ],
   "tools": null,
   "response": {
     "candidates": [{
-      "content": {"role": "model", "parts": [{"text": "Your name is Ada."}]},
-      "finish_reason": "STOP", "index": 0
+      "content": {"parts": [{"text": "Your name is Ada.", "thoughtSignature": "EpwB..."}],
+                  "role": "model"},
+      "finishReason": "STOP", "index": 0
     }],
-    "usage_metadata": {"prompt_token_count": 28, "candidates_token_count": 5,
-                       "total_token_count": 33},
-    "model_version": "gemini-3.1-flash-lite",
-    "response_id": "..."
+    "usageMetadata": {"promptTokenCount": 28, "candidatesTokenCount": 5,
+                      "totalTokenCount": 33},
+    "modelVersion": "gemini-3.1-flash-lite",
+    "responseId": "..."
   }
 }
 ```
 
-An `embed_content` call stores its `contents` (Vertex AI's
-single-content API: `content`) in `input` and the vectors in
+An `embed_content` call stores in `input` the contents its request sent
+(each batched request's `content` on the Gemini API's
+`batchEmbedContents`, each instance's `content` on Vertex AI's
+`predict`, the request's own on its `embedContent`) and the vectors in
 `embedding_output`. The dashboard's Prompts tab has no Gemini renderer:
 it shows a Gemini call's system instruction, its tools (each labelled
 by its position, the declaration in its Raw view) and its response as
 JSON, and not the `contents`.
 
 **Not patched.** `count_tokens` and `compute_tokens` (no inference
-call; the sensor's estimate is local), the image and video methods
-(`generate_images`, `edit_image`, `upscale_image`, `generate_videos`
-and the other image calls), `client.interactions` and `client.agents`,
-the Live API (`client.aio.live`, a WebSocket), `client.batches`,
-`client.caches` and `client.files`. `wrap()` takes no `genai.Client`:
+call; the sensor's estimate is local); the image, video and other
+generation methods of `client.models` (`generate_images`, `edit_image`,
+`upscale_image`, `recontext_image`, `segment_image`, `generate_videos`);
+`client.interactions`, `client.agents` and the rest of the next
+generation API the client exposes (`webhooks`, `triggers`,
+`environments`, `credentials`, `voices`); the Live API
+(`client.aio.live.connect`, a WebSocket) and Lyria's music sessions
+(`client.aio.live.music`); `client.batches` (batch generation, billed
+when the batch runs) and `client.tunings` (tuning jobs);
+`client.caches`, `client.file_search_stores` (which embeds what it
+imports) and `client.files`. `wrap()` takes no `genai.Client`:
 `patch()` covers every client. Vertex AI is covered by unit tests,
 through the SDK's own Vertex AI converters over a fake transport; no
 Vertex AI run has been recorded.
@@ -1750,7 +1809,7 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | Frameworks that call a provider over raw HTTP (httpx, requests) | No SDK class to patch. |
 | The OpenAI Agents SDK's Responses WebSocket transport (`use_responses_websocket`, `responses_websocket_session`) | Its model calls go over a WebSocket, not through `responses.create`, so they are not metered; the run's child sessions, hand-offs and guardrails are still reported. |
 | boto3 `bedrock-runtime` (Converse, ConverseStream) | Not supported yet. botocore's event system gives a seam for it ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)); until then, Strands on its default Bedrock model and any framework on Bedrock through boto3 are not metered. |
-| google-genai `count_tokens`, `compute_tokens`, the image and video methods, `interactions`, `agents`, the Live API, `batches`, `caches`, `files` | Token counting makes no inference call; the image, video and Live API surfaces bill by other units or over a WebSocket; `interactions` and `agents` are a separate API ([#276](https://github.com/flightdeckhq/flightdeck/issues/276) tracks them); batches, caches and files are offline work or storage. |
+| google-genai `count_tokens`, `compute_tokens`, the image and video methods, `interactions`, `agents` and the rest of the next generation API (`webhooks`, `triggers`, `environments`, `credentials`, `voices`), the Live API and its music sessions (`live.music`), `batches`, `tunings`, `caches`, `file_search_stores`, `files` | Token counting makes no inference call; the image, video, Live API and music surfaces bill by other units or over a WebSocket; `interactions`, `agents` and the next generation API are a separate API ([#276](https://github.com/flightdeckhq/flightdeck/issues/276) tracks them); batches, tuning jobs, caches, file search stores and files are offline work or storage. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
 in the OpenAI resource table, or one entry in `_resource_targets()` in the
@@ -6844,11 +6903,11 @@ never carries content inline.
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
 | `messages` | chat history (`[]` for Responses and Gemini) | `[]` | `[]` | `[]` | `[]` | `[]` |
-| `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions`, a Gemini `system_instruction` given as text, OpenTelemetry GenAI system instructions given as text, or as an object, number or boolean (its JSON text) | NULL | NULL | NULL | NULL | NULL |
-| `system_blocks` | a `system` given as a list: Anthropic `system` blocks, a Gemini `system_instruction` given as a `Content`, `Part` or list (its parts), OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
+| `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions`, OpenTelemetry GenAI system instructions given as text, or as an object, number or boolean (its JSON text) | NULL | NULL | NULL | NULL | NULL |
+| `system_blocks` | a `system` given as a list: Anthropic `system` blocks, the parts of a Gemini request's `systemInstruction`, OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
-| `input` | Responses `input`, Gemini `contents` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
+| `input` | Responses `input`, a Gemini request's `contents` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
@@ -7730,7 +7789,12 @@ organisation included. A Gemini resource name is its last path segment
 a Gemini `-latest` alias (`gemini-flash-lite-latest`) is kept: the
 catalogue prices the alias as itself, and a response names the model
 that answered it as `model_served`, which the canonical id comes from.
-Stripping a Bedrock
+A tuned model's id is its last path segment too
+(`tunedModels/my-tuned-model-a1b2c3` is `my-tuned-model-a1b2c3`, a
+Vertex AI endpoint's `projects/.../endpoints/1234567890` is
+`1234567890`), an id no catalogue row carries: such a call is priced
+only when its `model_served` names a catalogued model or a
+`pricing.yaml` override names the id. Stripping a Bedrock
 region prefix records its scope first: `global.` is
 `inference_scope=global`, any other region prefix `regional`. An id the
 rules do not recognise is stored as given (lower-cased, whitespace

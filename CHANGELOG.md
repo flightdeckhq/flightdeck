@@ -20,10 +20,11 @@ All notable changes to Flightdeck are documented here.
   model that answered, thinking tokens as reasoning (counted in the
   output), cached tokens and the service tier, and a 429 per-day quota,
   a rate limit, a rejected key, an overloaded model or a safety stop as
-  their own errors. With capture on, the content is stored in Gemini's
-  own terms (`contents`, `system_instruction`, `candidates`); the
-  Prompts tab shows its system instruction, tools and response, not yet
-  its contents. `playground/43_google_genai.py` exercises it against the
+  their own errors. With capture on, the content is what the provider
+  received and returned: the request body the SDK built (its
+  `contents`, `systemInstruction` and `tools`, in the body's own
+  spelling) and the response body; the Prompts tab shows its system
+  instruction, tools and response, not yet its contents. `playground/43_google_genai.py` exercises it against the
   real API.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a

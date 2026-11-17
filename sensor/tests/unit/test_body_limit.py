@@ -83,6 +83,29 @@ def test_every_long_string_gets_the_same_cap() -> None:
     assert kept(sent["content"]["system"]) == kept(sent["content"]["messages"][0]["content"])
 
 
+def test_a_system_given_as_blocks_is_cut_inside_its_blocks() -> None:
+    """An Anthropic ``system`` given as a list of content blocks stays a
+    list when the event is cut: each block keeps its type and
+    ``cache_control``, and only its long text is cut and marked."""
+    big = "d" * (2 * 1024 * 1024)
+    system = [
+        {"type": "text", "text": big, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "Answer in one word."},
+    ]
+    payload = _post_call({"provider": "anthropic", "system": system, "messages": []})
+    body = serialize_event(payload)
+    assert encoded_size(body) <= MAX_EVENT_BODY_BYTES
+    sent = json.loads(body)["content"]["system"]
+    assert isinstance(sent, list)
+    assert len(sent) == 2
+    assert sent[0]["type"] == "text"
+    assert sent[0]["cache_control"] == {"type": "ephemeral"}
+    match = _MARKER_RE.search(sent[0]["text"])
+    assert match, sent[0]["text"][-120:]
+    assert int(match.group(2)) == len(big)
+    assert sent[1] == system[1]
+
+
 def test_a_multibyte_character_is_never_split() -> None:
     payload = _post_call({"messages": [{"role": "user", "content": "\U0001f600" * 400_000}]})
     body = serialize_event(payload)

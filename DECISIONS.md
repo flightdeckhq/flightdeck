@@ -1207,6 +1207,23 @@ rejects without the sensor would succeed); a generator (blind to the SDK's
 second read: content held tools never sent); walking every argument (an
 iterator only the SDK reads must not change the call).
 
+## D284 -- A system prompt given as a list of content blocks is stored as that list, in a column of its own
+
+**Date:** 2026-11-16
+**Decision:** a content's `system` is text, a list or null, by the JSON
+type sent. Text stays in `event_content.system_prompt`; a list goes to a
+new nullable `system_blocks` (JSONB), at most one per row; any other type
+is dropped alone, with a warning. The content endpoint returns either as
+`system_prompt`. OpenTelemetry GenAI instructions go as their list (any
+other value as its JSON text).
+**Why:** an Anthropic call with `system` as blocks (prompt caching) lost
+all its content: the worker's string field refused the array.
+**Rejected alternative:** the list as JSON text in `system_prompt` (text
+that reads as JSON would turn into blocks); flattening to one string
+(loses `cache_control`); a `system JSONB` replacing the TEXT column
+(rewrites every prompt); a second API field, or a rename to `system` (a
+client that reads only `system_prompt` sees null for block-list calls).
+
 ## D285 -- A pydantic model in a call's arguments is stored as the SDK's request dump of it, worked out by the sensor
 
 **Date:** 2026-11-16

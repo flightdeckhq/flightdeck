@@ -907,7 +907,7 @@ class Provider(Protocol):
 @dataclass
 class PromptContent:
     """Raw content extracted from a single LLM call or embeddings request."""
-    system: str | None              # Anthropic system; OpenAI Responses instructions
+    system: str | list | None       # Anthropic system (text or content blocks); OpenAI Responses instructions
     messages: list[dict]            # Full messages array verbatim (empty for Responses)
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
@@ -919,6 +919,13 @@ class PromptContent:
     input: str | list | None = None                    # Embeddings or Responses input (None for chat)
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
+
+`system` holds what the provider received: an Anthropic `system` given
+as text is a string, and one given as a list of content blocks (the
+form prompt caching uses, `cache_control` on a block) is that list,
+never joined into one string. An OpenAI Responses call's `instructions`
+is the SDK's string. Chat calls of OpenAI and litellm carry their system
+prompt as a message in `messages`, so their `system` is None.
 
 An argument passed as the Anthropic or OpenAI SDK's sentinel for an
 argument left out (`NOT_GIVEN`, `omit`) was not given: the SDK does not
@@ -4068,7 +4075,17 @@ and `has_content` is forced false on the stored row. This prevents a forged
 event on the message bus from persisting prompt content for a
 capture-off session. When `capture_prompts=true` for the session, the
 `content` field contains a `PromptContent` object the worker stores in
-`event_content`, setting `has_content=true` on the event row. The event
+`event_content`, setting `has_content=true` on the event row. Its
+`system` is the call's system prompt as the provider received it, by
+JSON type: a string (an Anthropic `system` given as text, an OpenAI
+Responses `instructions`), a list (an Anthropic `system` given as
+content blocks, an OpenTelemetry GenAI framework's system instructions,
+a list of parts), or null (no system prompt, and every non-LLM event).
+The Claude Code plugin always sends null: its transcript does not hold
+Claude Code's system prompt. A `system` of any other JSON type is no
+system prompt a provider takes: the worker stores the rest of the
+content without it and logs a warning that names the JSON type, never
+the value. The event
 row and its `event_content` row are written in one transaction, so no
 reader sees an event that claims content before the content exists. If
 the content can never be stored (it does not parse, or Postgres rejects
@@ -5184,8 +5201,14 @@ as the framework sent it, never converted to a provider's format, with
 `provider=otel_genai`. A `post_call` carries content when its call has
 input messages, output messages or system instructions (tool definitions
 alone describe the agent, not the call, so a call with only those
-carries none): `system` from `gen_ai.system_instructions` (JSON-encoded
-into the text column), `messages` from the input messages and `response`
+carries none): `system` from `gen_ai.system_instructions`, as staged
+(a string that holds a JSON object or array is read as that JSON): a
+list, the conventions' list of parts that every recorded framework
+sends, is stored in `system_blocks` as the list; text in
+`system_prompt` as the text; any other value (an object, from such a
+string or a map attribute, a number or a boolean) in `system_prompt` as
+its JSON text, which the worker would otherwise drop, since it stores a
+`system` only as text or a list. `messages` from the input messages and `response`
 from the output messages (each `[]` when absent), `tools` from the tool
 definitions and `model` the requested model (empty when none). A Google
 ADK `post_call` takes its content from the log record with its span id,
@@ -6524,7 +6547,8 @@ CREATE TABLE event_content (
     session_id  UUID NOT NULL REFERENCES sessions(session_id),
     provider    TEXT NOT NULL,
     model       TEXT NOT NULL,
-    system_prompt TEXT, -- Anthropic system prompt
+    system_prompt TEXT, -- a system prompt given as text
+    system_blocks JSONB, -- a system prompt given as a list of content blocks; at most one of the two is set
     messages    JSONB,
     tools       JSONB,
     response    JSONB NOT NULL,
@@ -6547,13 +6571,24 @@ never carries content inline.
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
 | `messages` | chat history (`[]` for Responses) | `[]` | `[]` | `[]` | `[]` | `[]` |
-| `system` | Anthropic `system`, Responses `instructions` | NULL | NULL | NULL | NULL | NULL |
+| `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions`, OpenTelemetry GenAI system instructions given as text, or as an object, number or boolean (its JSON text) | NULL | NULL | NULL | NULL | NULL |
+| `system_blocks` | a `system` given as a list: Anthropic `system` blocks, OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
 | `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
+
+The JSON type of the content's `system` picks its column: a string is
+stored in `system_prompt` and a list in `system_blocks`, as the list,
+with its blocks' `cache_control` and every other key. A list is never
+written into `system_prompt` as JSON text, and text is never parsed to
+find a list, so a text prompt that happens to read as JSON stays text.
+A row holds at most one of the two (a check on both backends, which
+also holds `system_blocks` to a list). `GET /v1/events/:id/content`
+returns whichever is stored as `system_prompt`: a string, the list, or
+null.
 
 `tool_input` / `tool_output` are dedicated columns for
 tool-style request/response capture. Operators querying
@@ -6883,6 +6918,7 @@ schema this history reaches at 000036.
 | 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
 | 000036 | `otlp_spans.assembled_in`: the assembly that marked a record, with a check that it is set exactly when `assembled` is (records marked before it get their trace's `assembly_count`); the down file drops the column |
 | 000037 | `session_start_receipts` and its `received_at` index: one row per attached `session_start` event id, so a resent copy is not attached again; the down file drops the table |
+| 000038 | `event_content.system_blocks` JSONB: a system prompt given as a list of content blocks, stored as the list, with a check (added `NOT VALID`, as every existing row holds NULL there) that it is a list and that a row sets at most one of it and `system_prompt`; the down file drops the check and the column, so a row that stored a list loses its system prompt (the row itself stays) |
 
 ---
 
@@ -8906,7 +8942,14 @@ header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. An OpenAI Responses call (the sensor's `responses` calls
+`response`. A `system` given as a list of content blocks is shown block
+by block, as a message's content blocks are: a text block as its text,
+a block the viewer does not know as its JSON; Raw shows the list as
+stored. A content block that carries `cache_control` (a cache
+breakpoint), in the system prompt or a message, is marked under it in
+the provider's terms, `cache_control · ephemeral` with its `ttl` when
+set, unless it is shown as its JSON (a block type the viewer does not
+know), which already shows the key. An OpenAI Responses call (the sensor's `responses` calls
 and litellm's) is shown in the Responses API's own terms: its stored
 `system` text under `instructions`, and its stored `input` under
 Input, a string as written and an input item list as one box per item:
@@ -8980,9 +9023,12 @@ GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a
 provider's branch, under an `OpenTelemetry GenAI` header:
 
-- the system instructions (JSON in the text column, shown as the parts
-  or blocks they hold), each input message and each response message,
-  in its own box with its role and `finish_reason`;
+- the system instructions, shown as the parts or blocks they hold (a
+  stored list, or stored text that holds a JSON list or object, is
+  read as that value, an object as its fields; other text, a number's
+  or a boolean's JSON text included, is shown as written), each input
+  message and each response message, in its own box with its role and
+  `finish_reason`;
 - a message's `parts` (the GenAI conventions: `text`, `reasoning`,
   `tool_call` with its arguments, `tool_call_response` with its result
   or response, `uri`, `blob` and `file` named by type), else its
@@ -10939,6 +10985,10 @@ embed"`), list (`["batch", "of", "strings"]`), and no-content
 
 Returns 404 when capture is disabled for that session. Not 200 with
 empty data. Not 403. 404 — the resource does not exist.
+
+Its `system_prompt` is the system prompt as the provider received it: a
+string, a list of content blocks, or null (see Database >
+`event_content`).
 
 ---
 

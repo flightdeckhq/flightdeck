@@ -552,7 +552,10 @@ definitions:
       session_id:
         type: string
       system_prompt:
-        type: string
+        description: |-
+          The call's system prompt as the provider received it: a string, a
+          list of content blocks (an Anthropic system given as blocks, an
+          OpenTelemetry GenAI framework's system instructions), or null.
       tool_input:
         description: |-
           tool_input + tool_output carry the

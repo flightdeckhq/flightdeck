@@ -142,6 +142,42 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **An Anthropic stream manager reports exactly the requests it sends.**
+  `messages.stream()` / `beta.messages.stream()` emitted their
+  `pre_call` when `stream()` was called, so a manager never entered left
+  a `pre_call` with no `post_call` for a request that was never sent.
+  The policy check and the `pre_call` now run when the manager is
+  entered, where the request goes out: a BLOCK or the kill switch
+  refuses the entry before anything is sent. `BudgetExceededError` and
+  `DirectiveError` are now raised by the `with` / `async with`, not by
+  `stream()`, so code that catches them around `stream()` alone must
+  move the handler to the `with` (the kill switch moved too). The rest
+  of the request is decided at entry as well: a manager reports to the
+  session active when it is entered, so one kept across `teardown()` and
+  a new `init()` reports to the new session, and one entered with the
+  sensor torn down goes to the SDK untouched, where its `post_call` went
+  to the ended session and was lost; a DEGRADE applies when it is in
+  force at the entry, so one lifted between `stream()` and the entry no
+  longer sends the degraded model, and the `pre_call` names the model
+  the caller asked for, as a plain call's does. A stream helper called
+  with no session active (a wrapped client between `teardown()` and the
+  next `init()`, an Anthropic class patch, or an OpenAI resource the
+  class patch handed out under an earlier session) now returns the
+  sensor's manager too, so its entry is policed and reported under the
+  session active then; before, it returned the SDK's own manager, which
+  sent its request unpoliced and unreported under any session. Entering
+  a sync manager a second time (or its copy) sends a second request, as
+  the SDK's does, and the sensor reports it; before, the second entry
+  read an empty stream silently. A second entry of an async manager
+  raises the SDK's `RuntimeError`, as without the sensor, and reports
+  nothing. A copy of an Anthropic 2.x stream made before reading it now
+  raises `httpx.StreamConsumed` when read after the original, as the
+  SDK's copy does, instead of reading empty. litellm's stream no longer
+  answers `close()`, which litellm's own stream does not have. A litellm
+  call that asks to stream but gets a whole response back
+  (`responses(stream=True, mock_response=...)`) now hands back that
+  response, reported as the plain call it was, where it handed back a
+  stream guard.
 - **A stream helper's manager behaves as the SDK's.** The manager the
   sensor returns for OpenAI's `chat.completions.stream()` /
   `responses.stream()` answered both `with` and `async with`, so an

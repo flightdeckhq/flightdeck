@@ -310,12 +310,13 @@ def test_litellm_responses_stream_left_early_stores_the_in_progress_response(
         stream = litellm.responses(
             model="gpt-4o", input=PROMPT, stream=True, api_key="test-key"
         )
-        try:
-            for event in stream:
-                if event.type == "response.output_text.delta":
-                    break
-        finally:
-            stream.close()
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                break
+        # litellm's Responses streams have no close(), with the sensor as
+        # without it: the caller leaves the stream, and the session's end
+        # settles it.
+        assert not hasattr(stream, "close")
         post_call = _teardown_and_expect_one(flavor, "post_call")
     assert post_call["payload"]["streaming"]["final_outcome"] == "aborted"
     assert post_call["has_content"] is capture

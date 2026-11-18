@@ -271,7 +271,9 @@ RESPONSE: dict[str, Any] = {
 @pytest.fixture
 def provider() -> Iterator[respx.MockRouter]:
     with respx.mock(assert_all_called=False) as router:
-        router.post("https://api.anthropic.com/v1/messages").mock(side_effect=_anthropic_reply)
+        router.post("https://api.anthropic.com/v1/messages", name="anthropic").mock(
+            side_effect=_anthropic_reply
+        )
         router.post("https://api.openai.com/v1/chat/completions", name="chat").mock(
             side_effect=_openai_reply
         )
@@ -666,39 +668,16 @@ def test_an_openai_stream_manager_entered_after_a_teardown_on_another_thread(
     assert replies == ["Hello"]
 
 
-@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_an_anthropic_stream_manager_entered_after_teardown_raises_nothing(
-    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
-) -> None:
-    """Anthropic's ``stream()`` reads the session once, when it is
-    called: the call began under the first session, which was policed
-    then, and is reported to it, as a stream still open at teardown is.
-    Entering the manager after ``teardown()`` sends the request and
-    raises nothing."""
-    sensor.start("s1")
-    if is_async:
-        manager = anthropic.AsyncAnthropic(api_key="k").messages.stream(**ANTHROPIC_REQUEST)
-    else:
-        manager = anthropic.Anthropic(api_key="k").messages.stream(**ANTHROPIC_REQUEST)
-    sensor.stop()
-
-    async def _enter_async_stream() -> str:
-        async with manager as stream:
-            message = await stream.get_final_message()
-        return str(message.content[0].text)
-
-    def _enter_sync_stream() -> str:
-        with manager as stream:
-            return str(stream.get_final_message().content[0].text)
-
-    replies: list[str] = []
-
-    async def _entered() -> None:
-        replies.append(await _enter_async_stream())
-
-    events = sensor.run(_entered if is_async else lambda: replies.append(_enter_sync_stream()))
-    assert replies == ["Hello"]
-    assert {name for name, _ in events} <= {"s1"}
+def _anthropic_manager(how: str, is_async: bool) -> Any:
+    """``messages.stream()`` on a kept client: one the class patch meters
+    (``patched``), or one ``wrap()`` built under the active session
+    (``wrapped``, whose session starts without ``patch()``)."""
+    client: Any = (anthropic.AsyncAnthropic if is_async else anthropic.Anthropic)(
+        api_key="k", max_retries=0
+    )
+    if how == "wrapped":
+        client = flightdeck_sensor.wrap(client)
+    return client.messages.stream(**ANTHROPIC_REQUEST)
 
 
 def _enter_anthropic(manager: Any, replies: list[str], *, is_async: bool) -> Any:
@@ -718,27 +697,155 @@ def _enter_anthropic(manager: Any, replies: list[str], *, is_async: bool) -> Any
     return None
 
 
-@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_an_anthropic_stream_manager_entered_in_the_next_session_stays_the_first_sessions(
-    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+_KEPT_MANAGERS = pytest.mark.parametrize("how", ["patched", "wrapped"])
+_CLIENTS = pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+
+
+@_KEPT_MANAGERS
+@_CLIENTS
+def test_an_anthropic_stream_manager_entered_after_teardown_goes_to_the_sdk_untouched(
+    sensor: _Sensor, provider: respx.MockRouter, how: str, is_async: bool
 ) -> None:
-    """``stream()`` called under the first session, which policed the call
-    and took its ``pre_call``, then entered once the next session has
-    started: the call stays the first session's, as the session it was
-    called in, and the next session reports none of it."""
-    sensor.start("s1")
-    client = (anthropic.AsyncAnthropic if is_async else anthropic.Anthropic)(
-        api_key="k", max_retries=0
-    )
+    """Its request goes out on entry, so the entry is a call made after
+    ``teardown()``: the SDK's own, sending the request with no event, as
+    any call made then; the ended session's BLOCK policy is gone with it.
+    The manager reported nothing when it was made."""
+    sensor.start("s1", patch=how == "patched")
+    session = flightdeck_sensor._session
+    assert session is not None
     managers: list[Any] = []
-    called = sensor.run(lambda: managers.append(client.messages.stream(**ANTHROPIC_REQUEST)))
-    assert called == [("s1", "pre_call")]
+    assert sensor.run(lambda: managers.append(_anthropic_manager(how, is_async))) == []
+    session.policy = PolicyCache(token_limit=1, block_at_pct=1)
     sensor.stop()
-    sensor.start("s2")
+    route = provider.routes["anthropic"]
+    sent = route.call_count
+    replies: list[str] = []
+    assert sensor.run(lambda: _enter_anthropic(managers[0], replies, is_async=is_async)) == []
+    assert replies == ["Hello"]
+    assert route.call_count == sent + 1
+
+
+@_KEPT_MANAGERS
+@_CLIENTS
+def test_an_anthropic_stream_manager_entered_in_the_next_session_reports_to_it(
+    sensor: _Sensor, provider: respx.MockRouter, how: str, is_async: bool
+) -> None:
+    """``stream()`` called under the first session, entered once the next
+    has started: the request goes out on entry, so it is the next
+    session's, as any call made then; the first session reports none of
+    it."""
+    sensor.start("s1", patch=how == "patched")
+    managers: list[Any] = []
+    assert sensor.run(lambda: managers.append(_anthropic_manager(how, is_async))) == []
+    sensor.stop()
+    sensor.start("s2", patch=how == "patched")
     replies: list[str] = []
     entered = sensor.run(lambda: _enter_anthropic(managers[0], replies, is_async=is_async))
     assert replies == ["Hello"]
-    assert entered == [("s1", "post_call")]
+    assert entered == [("s2", "pre_call"), ("s2", "post_call")]
+
+
+@_CLIENTS
+def test_an_anthropic_stream_manager_entered_in_the_next_session_is_policed_by_it(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool
+) -> None:
+    """The next session's BLOCK refuses the entry, with nothing sent and
+    the refusal reported to that session."""
+    sensor.start("s1")
+    managers: list[Any] = []
+    sensor.run(lambda: managers.append(_anthropic_manager("patched", is_async)))
+    sensor.stop()
+    sensor.start("s2")
+    session = flightdeck_sensor._session
+    assert session is not None
+    session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+    route = provider.routes["anthropic"]
+    sent = route.call_count
+    before = len(sensor._built)
+    with pytest.raises(flightdeck_sensor.BudgetExceededError):
+        sensor.run(lambda: _enter_anthropic(managers[0], [], is_async=is_async))
+    assert route.call_count == sent
+    refused = [
+        (sensor.names.get(p["session_id"]), p["event_type"])
+        for p in sensor._built[before:]
+        if p["event_type"] in ("pre_call", "policy_block", "post_call", "llm_error")
+    ]
+    assert refused == [("s2", "pre_call"), ("s2", "policy_block")]
+
+
+@pytest.mark.parametrize("blocked", [False, True], ids=["reported", "refused"])
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+@_CLIENTS
+def test_a_wrapped_clients_stream_helper_called_while_torn_down_is_the_next_sessions(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool, sdk: str, blocked: bool
+) -> None:
+    """``stream()`` on a wrapped client between ``teardown()`` and the next
+    ``init()``: the request goes out on entry, so the next session
+    polices it (its BLOCK refuses the entry, with nothing sent) and
+    reports it, as any call made then."""
+    sensor.start("s1", patch=False)
+    raw = _anthropic_clients() if sdk == "anthropic" else _openai_clients()
+    wrapped = flightdeck_sensor.wrap(raw[1 if is_async else 0])
+    sensor.stop()
+    if sdk == "anthropic":
+        manager = wrapped.messages.stream(**ANTHROPIC_REQUEST)
+    else:
+        manager = _openai_manager(wrapped)
+    sensor.start("s2", patch=False)
+    session = flightdeck_sensor._session
+    assert session is not None
+    if blocked:
+        session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+    route = provider.routes["anthropic" if sdk == "anthropic" else "chat"]
+    sent = route.call_count
+
+    def enter() -> Any:
+        if sdk == "anthropic":
+            return _enter_anthropic(manager, [], is_async=is_async)
+        return _enter_async(manager) if is_async else _enter_sync(manager)
+
+    before = len(sensor._built)
+    if blocked:
+        with pytest.raises(flightdeck_sensor.BudgetExceededError):
+            sensor.run(enter)
+    else:
+        sensor.run(enter)
+    events = [
+        (sensor.names.get(p["session_id"]), p["event_type"])
+        for p in sensor._built[before:]
+        if p["event_type"] in ("pre_call", "policy_block", "post_call", "llm_error")
+    ]
+    if blocked:
+        assert route.call_count == sent
+        assert events == [("s2", "pre_call"), ("s2", "policy_block")]
+    else:
+        assert route.call_count == sent + 1
+        assert events == [("s2", "pre_call"), ("s2", "post_call")]
+
+
+@pytest.mark.parametrize(("first", "second"), [(False, True), (True, False)])
+@_CLIENTS
+def test_an_anthropic_stream_manager_takes_the_capture_setting_of_the_entry(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool, first: bool, second: bool
+) -> None:
+    """A manager made under one capture setting and entered under the
+    next session's: the content goes with the entry's setting, so a
+    session with capture off never carries the prompt."""
+    sensor.start("s1", capture=first)
+    managers: list[Any] = []
+    sensor.run(lambda: managers.append(_anthropic_manager("patched", is_async)))
+    sensor.stop()
+    sensor.start("s2", capture=second)
+    events = sensor.payloads(lambda: _enter_anthropic(managers[0], [], is_async=is_async))
+    assert {sensor.names[p["session_id"]] for p in events} == {"s2"}
+    (post_call,) = [p for p in events if p["event_type"] == "post_call"]
+    wire = json.dumps(events, default=str)
+    if second:
+        assert post_call.get("has_content")
+        assert PROMPT in wire
+    else:
+        assert not any(p.get("has_content") for p in events)
+        assert PROMPT not in wire
 
 
 # ----- an async call created in one session and awaited later ---------------

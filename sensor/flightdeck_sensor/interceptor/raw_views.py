@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.providers._access import UNREADABLE, ParsedRawResponse, response_message
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -74,34 +75,6 @@ def body_unread(kwargs: dict[str, Any]) -> bool:
     unread: every streaming-view call, and a raw-view call that streams."""
     mode = raw_response_mode(kwargs)
     return mode == RAW_MODE_STREAM or (mode in RAW_MODES_READ and bool(kwargs.get("stream")))
-
-
-class ParsedRawResponse:
-    """What the guard core sees once a deferred response has been parsed:
-    the parsed message for usage, model, content and tool calls, plus the
-    HTTP headers of the raw response for ``provider_metadata``. ``parsed``
-    is ``None`` when the caller never parsed the body, in which case
-    usage falls back to the pre-call estimate and no response content is
-    stored."""
-
-    def __init__(self, parsed: Any, headers: Any) -> None:
-        self._parsed = parsed
-        self.headers = headers
-
-    def parse(self) -> Any:
-        return self._parsed
-
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        dump = getattr(self._parsed, "model_dump", None)
-        if callable(dump):
-            result = dump(**kwargs)
-            return result if isinstance(result, dict) else {}
-        return {}
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self._parsed, name)
 
 
 def _is_async_stream(stream: Any) -> bool:
@@ -166,6 +139,11 @@ class DeferredCall:
     @property
     def guard(self) -> Any:
         return self._guard
+
+    @property
+    def streams(self) -> bool:
+        """Whether the request asked for an event stream."""
+        return bool(self._call_kwargs.get("stream"))
 
     def finish_guard(self) -> None:
         """Settle the stream guard as the view closes: a caller who left
@@ -342,6 +320,25 @@ def _body_already_read(response: Any) -> bool:
         return False
 
 
+def _asked_for_type(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    """Whether a ``parse()`` call named the type to parse into
+    (``parse(to=...)``), so what it returned is the caller's own type
+    rather than the SDK's message."""
+    to = args[0] if args else kwargs.get("to")
+    return to is not None
+
+
+def _typed_parse_read_body(response: Any, call: DeferredCall) -> bool:
+    """Whether a parse into the caller's own type left a body the sensor
+    may parse into the SDK's message now: read already, and not an event
+    stream. The SDK caches each parse per type, so that parse leaves the
+    caller's later ``parse()`` as it would be. A body the typed parse left
+    unread (``to=httpx.Response``) counts as read some other way: the call
+    stays owed, and settles at the view's close, the response's collection
+    or the session's end, as for any such read."""
+    return not call.streams and _body_already_read(response)
+
+
 class DeferredResponse:
     """Stands in for the SDK's response on a view whose body is unread
     (``APIResponse`` on the sync streaming view, ``LegacyAPIResponse`` on
@@ -367,7 +364,10 @@ class DeferredResponse:
         parsed = self._response.parse(*args, **kwargs)
         if self._call.is_stream(parsed):
             return self._call.guard_stream(parsed)
-        self._call.settle(parsed, self._response.headers)
+        if not _asked_for_type(args, kwargs):
+            self._call.settle(parsed, self._response.headers)
+        elif _typed_parse_read_body(self._response, self._call):
+            self._call.settle(response_message(self._response), self._response.headers)
         return parsed
 
     def close(self) -> None:
@@ -375,8 +375,7 @@ class DeferredResponse:
             parsed = None
             consumed = _body_already_read(self._response)
             if consumed:
-                with contextlib.suppress(Exception):
-                    parsed = self._response.parse()
+                parsed = response_message(self._response)
             self._call.settle(parsed, self._response.headers, body_consumed=consumed)
         self._response.close()
         self._call.finish_guard()
@@ -412,16 +411,26 @@ class DeferredAsyncResponse:
         parsed = await self._response.parse(*args, **kwargs)
         if self._call.is_stream(parsed):
             return self._call.guard_stream(parsed)
-        self._call.settle(parsed, self._response.headers)
+        if not _asked_for_type(args, kwargs):
+            self._call.settle(parsed, self._response.headers)
+        elif _typed_parse_read_body(self._response, self._call):
+            self._call.settle(await self._message(), self._response.headers)
         return parsed
+
+    async def _message(self) -> Any:
+        """The SDK's message from a body already read, or
+        :data:`UNREADABLE` when it does not parse."""
+        try:
+            return await self._response.parse()
+        except Exception:
+            return UNREADABLE
 
     async def close(self) -> None:
         if self._call.guard is None:
-            parsed = None
+            parsed: Any = None
             consumed = _body_already_read(self._response)
             if consumed:
-                with contextlib.suppress(Exception):
-                    parsed = await self._response.parse()
+                parsed = await self._message()
             self._call.settle(parsed, self._response.headers, body_consumed=consumed)
         await self._response.close()
         await self._call.finish_guard_async()

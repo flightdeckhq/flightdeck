@@ -376,6 +376,53 @@ def stored_content_of(session_id: str, marker: str, field: str, *, least: int) -
     raise AssertionError(f"no post_call content with {marker!r} and {least}+ {field}")
 
 
+# Instance attributes of the SDKs' raw-response wrappers; a stored
+# response holding any of them is the wrapper's state, not the reply.
+RAW_WRAPPER_ATTRIBUTES = frozenset({"_stream", "_stream_cls", "_is_sse_stream", "retries_taken"})
+
+
+def assert_reply_stored(session_id: str, label: str, reply_id: str, served_model: str) -> None:
+    """The session's post_call for the reply with id ``reply_id`` stores
+    that reply as its response and names ``served_model``, the model the
+    reply came from, as its ``model``: what a plain call with the same
+    reply reports, also for a call made through a raw view. Waits for the
+    call's content to land."""
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
+    # A landed event's content does not change, so each is fetched once.
+    stored: dict[str, Any] = {}
+    while True:
+        events = fetch_events_for_session(session_id, expect_event_types=["post_call"])
+        for event in events:
+            if event.get("event_type") != "post_call" or not event.get("has_content"):
+                continue
+            if event["id"] not in stored:
+                stored[event["id"]] = fetch_event_content(event["id"]).get("response")
+            response = stored[event["id"]]
+            if not isinstance(response, dict) or response.get("id") != reply_id:
+                continue
+            ok = (
+                event.get("model") == served_model
+                and response.get("model") == served_model
+                and not set(response) & RAW_WRAPPER_ATTRIBUTES
+            )
+            print_result(
+                f"{label} stores the reply and the served model",
+                ok,
+                0,
+                f"model={event.get('model')!r} stored id={response.get('id')!r}",
+            )
+            if not ok:
+                raise AssertionError(f"{label}: post_call {event!r} stored {response!r}")
+            return
+        if time.monotonic() > deadline:
+            keys = [sorted(r)[:6] if isinstance(r, dict) else r for r in stored.values()]
+            raise AssertionError(
+                f"{label}: no post_call stores the reply {reply_id!r}; the stored "
+                f"responses had the keys {keys!r}"
+            )
+        time.sleep(CONTENT_POLL_S)
+
+
 def instant(stamp: str) -> datetime:
     """The moment an API timestamp names, so two are compared as times,
     never as text: the API trims the fraction's trailing zeros, and

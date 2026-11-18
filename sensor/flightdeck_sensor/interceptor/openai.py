@@ -232,6 +232,15 @@ class _CarriedCompletion:
         return getattr(self._completion, name)
 
 
+class _AnsweredBody(types.SimpleNamespace):
+    """The JSON body of a raw response whose parse failed, read as the
+    message: its fields as attributes, the response ``headers`` beside
+    them, and the body itself as the stored content."""
+
+    def model_dump(self, **_kwargs: Any) -> dict[str, Any]:
+        return {key: value for key, value in vars(self).items() if key != "headers"}
+
+
 def _answered_body(raw: Any) -> Any | None:
     """The provider's answer behind a raw response whose parse failed, as
     a plain object the intercept can meter: the JSON body's fields
@@ -244,7 +253,7 @@ def _answered_body(raw: Any) -> Any | None:
         if not isinstance(body, dict):
             return None
         fields = {key: value for key, value in body.items() if key != "headers"}
-        return types.SimpleNamespace(**fields, headers=getattr(raw, "headers", None))
+        return _AnsweredBody(**fields, headers=getattr(raw, "headers", None))
     except Exception:
         return None
 

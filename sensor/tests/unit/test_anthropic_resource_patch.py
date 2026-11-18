@@ -389,7 +389,9 @@ async def _path_raw_response(client: Any, beta: bool, session: Session) -> Any:
     if inspect.isawaitable(raw):
         raw = await raw
     assert raw.headers["request-id"] == "req_test"
-    return raw.parse()
+    # A coroutine on the 2.x async client, a plain method elsewhere.
+    parsed = raw.parse()
+    return await parsed if inspect.isawaitable(parsed) else parsed
 
 
 async def _path_streaming_response(client: Any, beta: bool, session: Session) -> Any:

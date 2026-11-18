@@ -142,6 +142,29 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A call through an SDK's raw view stores the reply and the served
+  model.** With prompt capture on, a call made through
+  `with_raw_response` (OpenAI chat, Responses and their `.parse()`, and
+  Anthropic `messages` / `beta.messages`, sync, and async on anthropic
+  0.x) stored the SDK wrapper's own attributes as the response, such as
+  `{"_stream": false, "retries_taken": 0}`, so the Prompts tab showed
+  those instead of the model's reply, and the call's `model` was the
+  one requested rather than the one that served it. LangChain's
+  `ChatOpenAI` and `ChatAnthropic`, and LangGraph and Deep Agents
+  through them, and CrewAI's native OpenAI provider make their calls
+  this way. The sensor now reads the reply the wrapper holds, so the
+  call stores the same content and reports the same model, tokens,
+  stop reason and tool calls as a plain call with the same reply, and
+  the caller's own `parse()` is unchanged. A streaming-view response
+  parsed with `parse(to=...)` is reported from its reply the same way.
+  A raw response whose body does not parse is reported on the pre-call
+  estimate and sent without its content, with one warning; no response
+  is ever stored as an object's attributes or its string form.
+- **A plain Anthropic call reports its request id.** A
+  `messages.create()` call returned without its response headers had no
+  `provider_metadata.request_id`, while the same call through the raw
+  view had one. It now reports the request id the SDK stamps on the
+  message, as a plain OpenAI call does.
 - **Keyboard focus shows on the Policies page's tabs and on the Block on
   uncertainty switch.** Their focus ring used a colour token no theme
   defines, so it did not draw at all. It now draws in the accent, its

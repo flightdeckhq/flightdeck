@@ -13,9 +13,14 @@ from typing import Any
 
 from flightdeck_sensor.core.errors import REQUEST_ID_MAX_LEN
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
+from flightdeck_sensor.providers._access import (
+    UNREADABLE,
+    is_raw_stream,
+    response_message,
+    stored_response,
+)
 from flightdeck_sensor.providers._access import field as _field
 from flightdeck_sensor.providers._access import given as _given
-from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -280,6 +285,11 @@ def _raw_stream_classes() -> tuple[type, ...]:
         return ()
 
 
+def _is_raw_stream_object(obj: Any) -> bool:
+    """Whether ``obj`` is one of the SDK's raw event streams."""
+    return is_raw_stream(obj, _raw_stream_classes())
+
+
 # The platforms where the OpenAI SDK reaches OpenAI's own models.
 _OPENAI_PLATFORMS = frozenset({"openai", "azure"})
 
@@ -537,10 +547,7 @@ class OpenAIProvider:
         Best-effort: returns ``None`` when nothing useful is reachable.
         """
         try:
-            obj = response
-            with contextlib.suppress(Exception):
-                if hasattr(obj, "parse") and callable(obj.parse):
-                    obj = obj.parse()
+            obj = response_message(response)
             headers: Any = None
             for attr in ("headers", "_headers", "response_headers"):
                 headers = getattr(response, attr, None) or getattr(obj, attr, None)
@@ -584,10 +591,7 @@ class OpenAIProvider:
     def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
         """For embeddings.create() responses: return ``{count, dimension}``."""
         try:
-            obj = response
-            with contextlib.suppress(Exception):
-                if hasattr(obj, "parse") and callable(obj.parse):
-                    obj = obj.parse()
+            obj = response_message(response)
             data = getattr(obj, "data", None) or (
                 obj.get("data") if isinstance(obj, dict) else None
             )
@@ -627,12 +631,7 @@ class OpenAIProvider:
         Returns ``TokenUsage(0, 0)`` on any failure -- never raises.
         """
         try:
-            obj = response
-            # Handle raw response wrappers
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
-
+            obj = response_message(response)
             usage = getattr(obj, "usage", None)
             if usage is None:
                 return TokenUsage(input_tokens=0, output_tokens=0)
@@ -721,10 +720,7 @@ class OpenAIProvider:
         Responses ``Response`` or an embeddings response (or a raw
         wrapper around one)."""
         try:
-            obj = response
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
+            obj = response_message(response)
             return _openai_details(obj)
         except Exception:
             return None
@@ -847,11 +843,8 @@ class OpenAIProvider:
                 # the {count, dimension} summary so the dashboard can
                 # render the shape chip without fetching this body.
                 vectors: list[list[float]] | None = None
+                obj = response_message(response)
                 try:
-                    obj = response
-                    with contextlib.suppress(Exception):
-                        if hasattr(obj, "parse") and callable(obj.parse):
-                            obj = obj.parse()
                     data = getattr(obj, "data", None) or (
                         obj.get("data") if isinstance(obj, dict) else None
                     )
@@ -869,7 +862,9 @@ class OpenAIProvider:
                     system=None,
                     messages=[],
                     tools=None,
-                    response={},
+                    # A raw response that does not parse leaves the event
+                    # without its content, as on a chat call.
+                    response=obj if obj is UNREADABLE else {},
                     provider="openai",
                     model=model,
                     session_id="",
@@ -879,34 +874,9 @@ class OpenAIProvider:
                     embedding_output=vectors,
                 )
 
-            resp_dict: dict[str, Any] = {}
-            if hasattr(response, "model_dump"):
-                # ``warnings=False``: the SDK's generic ``Parsed*`` models
-                # (``parse()`` results) trip pydantic's serializer
-                # warnings on every dump, which would surface as
-                # UserWarnings in the agent's process.
-                try:
-                    resp_dict = response.model_dump(warnings=False)
-                except TypeError:
-                    resp_dict = response.model_dump()
-            elif hasattr(response, "__dict__"):
-                # Streaming responses surface a ``Stream`` /
-                # ``AsyncStream`` whose ``__dict__`` carries the
-                # underlying httpx response + async generator, neither
-                # JSON-serialisable. Drop any field that fails
-                # ``json.dumps`` so the wire payload stays valid for
-                # stream calls instead of being rejected by the drain.
-                import json as _json
-
-                resp_dict = {}
-                for k, v in dict(response.__dict__).items():
-                    try:
-                        _json.dumps(v)
-                    except (TypeError, ValueError):
-                        continue
-                    resp_dict[k] = v
-            else:
-                resp_dict = {"raw": str(response)}
+            # A raw stream that reaches this point assembled nothing (the
+            # guard hands over its assembled message when there is one).
+            resp_dict = stored_response(response_message(response), _is_raw_stream_object)
 
             if "messages" not in request_kwargs:
                 # A Responses call: its request is ``instructions`` (the
@@ -959,10 +929,7 @@ class OpenAIProvider:
         shape that carries neither. Raw-response wrappers are parsed
         first."""
         try:
-            obj = response
-            with contextlib.suppress(Exception):
-                if hasattr(obj, "parse") and callable(obj.parse):
-                    obj = obj.parse()
+            obj = response_message(response)
             if getattr(obj, "status", None) == _RESPONSES_STATUS_INCOMPLETE:
                 details = getattr(obj, "incomplete_details", None)
                 reason = getattr(details, "reason", None)
@@ -996,11 +963,7 @@ class OpenAIProvider:
         Returns an empty list on any failure. Never raises.
         """
         try:
-            obj = response
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
-
+            obj = response_message(response)
             choices = getattr(obj, "choices", None)
             if not choices:
                 output = getattr(obj, "output", None)

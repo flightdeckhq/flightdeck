@@ -49,6 +49,7 @@ from flightdeck_sensor import BudgetExceededError, Provider
 from flightdeck_sensor.core.policy import PolicyCache
 
 from _helpers import (
+    MS_PER_S,
     assert_token_cost_fields,
     fetch_event_content,
     fetch_events_for_session,
@@ -98,7 +99,6 @@ MIN_AFC_ROUNDS = 2
 # Time for the session's events to land through the stack.
 LANDED_S = 30.0
 POLL_S = 0.5
-MS_PER_S = 1000
 
 
 def get_weather(city: str) -> str:

@@ -28,10 +28,11 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
+
 from _helpers import (
+    assert_event_landed,
     assert_reply_stored,
     assert_token_cost_fields,
-    assert_event_landed,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -159,7 +160,10 @@ def main() -> None:
         {"role": "user", "content": f"What is the weather in Paris? Use the tool. ({marker})"}
     ]
     first = anthropic.Anthropic().messages.create(
-        model=MODEL, max_tokens=128, tools=[WEATHER_TOOL], tool_choice={"type": "any"},
+        model=MODEL,
+        max_tokens=128,
+        tools=[WEATHER_TOOL],
+        tool_choice={"type": "any"},
         messages=loop,
     )
     loop.append({"role": "assistant", "content": first.content})
@@ -202,21 +206,15 @@ def main() -> None:
 
     t0 = time.monotonic()
     asyncio.run(_async_call())
-    print_result(
-        "AsyncAnthropic().messages.create", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("AsyncAnthropic().messages.create", True, int((time.monotonic() - t0) * 1000))
 
     # Sync streaming: iterate chunks so GuardedStream's __next__ records
     # chunk timestamps for the streaming sub-object on post_call.
     t0 = time.monotonic()
-    with anthropic.Anthropic().messages.stream(
-        model=MODEL, max_tokens=5, messages=HI
-    ) as s:
+    with anthropic.Anthropic().messages.stream(model=MODEL, max_tokens=5, messages=HI) as s:
         for _ in s:
             pass
-    print_result(
-        "Anthropic().messages.stream", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("Anthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
     # Async streaming: must actually exercise the async iteration path
     # so GuardedAsyncStream's __anext__ fires per chunk and the
@@ -235,9 +233,7 @@ def main() -> None:
 
     t0 = time.monotonic()
     asyncio.run(_async_stream())
-    print_result(
-        "AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
     # Async helper consumed through text_stream only: the guard re-implements
     # text_stream on itself, so these reads are metered like event iteration.
@@ -305,9 +301,7 @@ def main() -> None:
     anthropic.Anthropic().beta.messages.create(
         model=MODEL, max_tokens=5, messages=HI, betas=["prompt-caching-2024-07-31"]
     )
-    print_result(
-        "Anthropic().beta.messages.create", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("Anthropic().beta.messages.create", True, int((time.monotonic() - t0) * 1000))
 
     assert_event_landed(session_id, "post_call", timeout=8)
 
@@ -315,9 +309,7 @@ def main() -> None:
     # whose streaming sub-object carries ttft_ms. The later streams flush
     # asynchronously, so wait for all of them rather than the first.
     events, streamed = wait_for_streamed_post_calls(session_id, EXPECTED_STREAMED_CALLS)
-    ttft_ok = any(
-        (e["payload"]["streaming"].get("ttft_ms") is not None) for e in streamed
-    )
+    ttft_ok = any((e["payload"]["streaming"].get("ttft_ms") is not None) for e in streamed)
     print_result(
         "streaming.ttft_ms populated on post_call",
         ttft_ok,
@@ -336,9 +328,7 @@ def main() -> None:
         for e in streamed
         if (e.get("tokens_output") or 0) > 0 and (e.get("tokens_input") or 0) > 0
     ]
-    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(
-        streamed
-    )
+    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(streamed)
     print_result(
         "streamed post_call events carry real token usage",
         metered_ok,
@@ -399,7 +389,9 @@ def main() -> None:
     probe_timeout = anthropic.Timeout(TIMEOUT_PROBE_CONNECT_S, read=TIMEOUT_PROBE_READ_S)
     try:
         anthropic.Anthropic(timeout=probe_timeout, max_retries=0).messages.create(
-            model=MODEL, max_tokens=5, messages=HI,
+            model=MODEL,
+            max_tokens=5,
+            messages=HI,
         )
     except anthropic.APITimeoutError:
         timeout_seen = True
@@ -411,17 +403,22 @@ def main() -> None:
     timeout_errors: list[dict] = []
     while not timeout_errors and time.monotonic() < deadline:
         events = fetch_events_for_session(
-            session_id, expect_event_types=["llm_error"], timeout_s=2.0,
+            session_id,
+            expect_event_types=["llm_error"],
+            timeout_s=2.0,
         )
         timeout_errors = [
-            e for e in events
+            e
+            for e in events
             if e.get("event_type") == "llm_error"
             and ((e.get("payload") or {}).get("error") or {}).get("error_type") == "timeout"
         ]
         if not timeout_errors:
             time.sleep(LLM_ERROR_POLL_S)
     print_result(
-        "timeout llm_error classified", bool(timeout_errors), 0,
+        "timeout llm_error classified",
+        bool(timeout_errors),
+        0,
         f"{len(timeout_errors)} timeout error(s) observed",
     )
     if not timeout_errors:
@@ -437,7 +434,9 @@ def main() -> None:
     estimate, source = AnthropicProvider().estimate_tokens({"messages": HI})
     served = source == "tiktoken" and estimate > 0
     print_result(
-        f"count_tokens default model {DEFAULT_COUNT_TOKENS_MODEL} is served", served, 0,
+        f"count_tokens default model {DEFAULT_COUNT_TOKENS_MODEL} is served",
+        served,
+        0,
         f"estimate={estimate} source={source}",
     )
     if not served:

@@ -39,6 +39,7 @@ from typing import Any
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     fetch_events_for_session,
     init_sensor,
     instant,
@@ -62,7 +63,6 @@ CHILDREN_LANDED_S = 25.0
 CHILDREN_POLL_S = 0.5
 EVENTS_LANDED_S = 15.0
 API_TIMEOUT_S = 5.0
-MS_PER_S = 1000
 # How much of a payload a failure message quotes.
 FAILURE_DUMP_CHARS = 2000
 # What the input guardrail looks for in the input: an arithmetic
@@ -228,8 +228,7 @@ def section_handoff(sdk: Any, settings: Any, model: str) -> None:
     weather_start = [e["occurred_at"] for e in weather_events if e["event_type"] == "session_start"]
     _check(
         "the triage child ended before the weather child started",
-        bool(triage_end and weather_start)
-        and instant(triage_end[0]) <= instant(weather_start[0]),
+        bool(triage_end and weather_start) and instant(triage_end[0]) <= instant(weather_start[0]),
         (triage_end, weather_start),
     )
     posts = _of_type(root, "post_call", 2)

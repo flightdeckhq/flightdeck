@@ -28,6 +28,7 @@ framework or key isn't available locally.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -44,7 +45,6 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-
 # Mirror of the threshold in sensor/flightdeck_sensor/core/session.py
 # and observe_cli.mjs. Setting the ``Writer`` incoming state body
 # above this drives the event_content overflow path; staying
@@ -56,8 +56,8 @@ def main() -> None:
     require_env("ANTHROPIC_API_KEY")
 
     try:
-        from langgraph.graph import END, START, StateGraph
         from langchain_anthropic import ChatAnthropic
+        from langgraph.graph import END, START, StateGraph
         from typing_extensions import TypedDict
     except ImportError:
         print("SKIP: pip install langgraph langchain-anthropic")
@@ -111,9 +111,7 @@ def main() -> None:
         result = llm.invoke(
             f"In one sentence under 25 words, describe {state['topic']}.",
         )
-        text = (
-            result.content if isinstance(result.content, str) else str(result.content)
-        )
+        text = result.content if isinstance(result.content, str) else str(result.content)
         return {
             "topic": state["topic"],
             "research": text,
@@ -125,9 +123,7 @@ def main() -> None:
         result = llm.invoke(
             f"Rewrite this in 15 words or fewer: {state['research']}",
         )
-        text = (
-            result.content if isinstance(result.content, str) else str(result.content)
-        )
+        text = result.content if isinstance(result.content, str) else str(result.content)
         return {
             "topic": state["topic"],
             "research": state["research"],
@@ -193,10 +189,8 @@ def main() -> None:
     for e in parent_post_calls:
         pl = e.get("payload") or {}
         t = pl.get("tokens_total") or 0
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             tokens_total += int(t)
-        except (TypeError, ValueError):
-            pass
     if tokens_total:
         print(
             f"[playground:17_subagents_langgraph] cumulative LLM tokens="
@@ -341,11 +335,7 @@ def main() -> None:
     # 8 KiB threshold and the body lands inline on
     # ``payload.outgoing_message.body`` directly (no content row).
     writer_end = next(
-        (
-            e
-            for e in child_ends
-            if (e.get("payload") or {}).get("agent_role") == "Writer"
-        ),
+        (e for e in child_ends if (e.get("payload") or {}).get("agent_role") == "Writer"),
         None,
     )
     if writer_end is None:
@@ -353,10 +343,7 @@ def main() -> None:
             f"no Writer session_end among {len(child_ends)} child ends",
         )
     writer_outgoing = (writer_end.get("payload") or {}).get("outgoing_message") or {}
-    inline_ok = (
-        not writer_outgoing.get("has_content")
-        and writer_outgoing.get("body") is not None
-    )
+    inline_ok = not writer_outgoing.get("has_content") and writer_outgoing.get("body") is not None
     print_result(
         "Writer outgoing_message inline (under 8 KiB threshold)",
         inline_ok,

@@ -32,6 +32,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+
 from _helpers import (
     API_TOKEN,
     API_URL,
@@ -68,7 +69,9 @@ def settled_post_calls(session_id: str) -> tuple[list[dict], list[dict]]:
     last = -1
     while stable < POST_CALL_SETTLE_POLLS and time.monotonic() < deadline:
         events = fetch_events_for_session(
-            session_id, expect_event_types=["post_call"], timeout_s=5.0,
+            session_id,
+            expect_event_types=["post_call"],
+            timeout_s=5.0,
         )
         post_calls = [e for e in events if e.get("event_type") == "post_call"]
         stable = stable + 1 if len(post_calls) == last else 0
@@ -183,7 +186,9 @@ def main() -> None:
         if not ((e.get("tokens_input") or 0) > 0 and (e.get("tokens_output") or 0) > 0):
             raise AssertionError(f"streamed post_call without in-stream usage: {e!r}")
     print_result(
-        "streamed post_calls carry in-stream usage", True, 0,
+        "streamed post_calls carry in-stream usage",
+        True,
+        0,
         ", ".join(
             f"{e.get('model')}: {e.get('tokens_input')}in/{e.get('tokens_output')}out "
             f"ttft={e['payload']['streaming'].get('ttft_ms')}ms"
@@ -208,7 +213,8 @@ def main() -> None:
             f"{[(e.get('model'), (e.get('payload') or {}).get('streaming')) for e in post_calls]!r}"
         )
     without_usage = [
-        e for e in post_calls
+        e
+        for e in post_calls
         if not ((e.get("tokens_input") or 0) > 0 and (e.get("tokens_output") or 0) > 0)
     ]
     print_result("every post_call carries provider usage", not without_usage, 0)
@@ -297,12 +303,16 @@ def main() -> None:
     for e in priced_calls:
         want_provider = "anthropic" if "claude" in (e.get("model") or "") else "openai"
         if e.get("provider") != want_provider or e.get("billing_mode") != "metered":
-            problems.append(f"{e['id']}: provider={e.get('provider')!r} billing={e.get('billing_mode')!r}")
+            problems.append(
+                f"{e['id']}: provider={e.get('provider')!r} billing={e.get('billing_mode')!r}"
+            )
         if not e.get("model_requested"):
             problems.append(f"{e['id']}: model_requested missing")
     costed = [
-        e for e in priced_calls
-        if e.get("cost_source") == "agent" and (e.get("cost_reported") or 0) > 0
+        e
+        for e in priced_calls
+        if e.get("cost_source") == "agent"
+        and (e.get("cost_reported") or 0) > 0
         and not (e.get("payload") or {}).get("streaming")
     ]
     non_streamed = [e for e in priced_calls if not (e.get("payload") or {}).get("streaming")]

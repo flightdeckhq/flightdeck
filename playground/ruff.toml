@@ -1,0 +1,11 @@
+# The playground's ruff settings: the sensor's (line length, rule set),
+# so `ruff check .` and `ruff format --check .` run from playground/
+# (the pre-push rule's commands) or from the repository root check the
+# scripts the same way. CI and `make lint` run both.
+extend = "../sensor/pyproject.toml"
+
+[lint.isort]
+# The scripts import their shared helpers as top-level modules from
+# this directory: first-party wherever ruff runs from, so import order
+# does not depend on the working directory.
+known-first-party = ["_genai", "_helpers", "_mcp_reference_server", "_secondary_mcp_server"]

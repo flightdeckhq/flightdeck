@@ -23,6 +23,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import DirectiveError, Provider
+
 from _helpers import print_result
 
 DEAD = "http://127.0.0.1:9999"

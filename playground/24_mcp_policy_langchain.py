@@ -49,10 +49,11 @@ try:
     from mcp.client.session import ClientSession
 except ImportError:
     print(
-        "SKIP: pip install langchain langchain-mcp-adapters langchain-anthropic "
-        "to run this example"
+        "SKIP: pip install langchain langchain-mcp-adapters langchain-anthropic to run this example"
     )
     sys.exit(2)
+
+import flightdeck_sensor
 
 from _helpers import (
     API_URL,
@@ -62,8 +63,6 @@ from _helpers import (
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:
@@ -117,9 +116,7 @@ async def _run_langchain_agent(prompt_text: str) -> None:
                     "enforcement. Call the tool the user asks for."
                 ),
             )
-            await agent.ainvoke(
-                {"messages": [{"role": "user", "content": prompt_text}]}
-            )
+            await agent.ainvoke({"messages": [{"role": "user", "content": prompt_text}]})
 
 
 async def _scenario_warn() -> str | None:
@@ -147,9 +144,7 @@ async def _scenario_warn() -> str | None:
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
     try:
-        await _run_langchain_agent(
-            "Call the echo tool with the text 'flightdeck-langchain-warn'."
-        )
+        await _run_langchain_agent("Call the echo tool with the text 'flightdeck-langchain-warn'.")
     finally:
         flightdeck_sensor.unpatch()
         flightdeck_sensor.teardown()
@@ -226,8 +221,7 @@ async def _scenario_block() -> str | None:
     payload = block_events[0].get("payload") or {}
     if payload.get("decision_path") not in ("flavor_entry",):
         return (
-            f"BLOCK scenario: decision_path={payload.get('decision_path')!r}, "
-            "expected flavor_entry"
+            f"BLOCK scenario: decision_path={payload.get('decision_path')!r}, expected flavor_entry"
         )
     return None
 
@@ -256,9 +250,7 @@ async def _scenario_allow() -> str | None:
     init_sensor(session_id, flavor=flavor)
     flightdeck_sensor.patch(quiet=True)
     try:
-        await _run_langchain_agent(
-            "Call the echo tool with the text 'flightdeck-langchain-allow'."
-        )
+        await _run_langchain_agent("Call the echo tool with the text 'flightdeck-langchain-allow'.")
     finally:
         flightdeck_sensor.unpatch()
         flightdeck_sensor.teardown()
@@ -271,9 +263,7 @@ async def _scenario_allow() -> str | None:
     if not tool_calls:
         return "ALLOW scenario: no mcp_tool_call event landed"
     policy_events = [
-        e
-        for e in events
-        if e.get("event_type") in ("policy_mcp_warn", "policy_mcp_block")
+        e for e in events if e.get("event_type") in ("policy_mcp_warn", "policy_mcp_block")
     ]
     if policy_events:
         return (

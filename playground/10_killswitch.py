@@ -27,6 +27,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import DirectiveError, Provider
+
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -63,9 +64,7 @@ def main():
         try:
             c.messages.create(model=MODEL, max_tokens=5, messages=HI)
         except DirectiveError as e:
-            print_result(
-                "subsequent call raises after shutdown", True, 0, f"DirectiveError: {e}"
-            )
+            print_result("subsequent call raises after shutdown", True, 0, f"DirectiveError: {e}")
             flightdeck_sensor.teardown()
             return
         time.sleep(1)

@@ -31,10 +31,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from _helpers import API_TOKEN, API_URL, INGESTION_URL, print_result
 
@@ -109,9 +111,7 @@ def skip_if_not_installed(exc: ImportError, packages: tuple[str, ...]) -> NoRetu
     (a missing dependency of its own, a name a release no longer has)
     is a broken venv, which must fail loudly rather than skip."""
     missing = (exc.name or "") if isinstance(exc, ModuleNotFoundError) else ""
-    if not missing or not any(
-        p == missing or p.startswith(missing + ".") for p in packages
-    ):
+    if not missing or not any(p == missing or p.startswith(missing + ".") for p in packages):
         raise exc
     print(
         f"SKIP: {missing} is not installed in this interpreter; run with the "
@@ -296,22 +296,18 @@ def _event_checks(
         total = sum(int(e.get("tokens_total") or 0) for e in calls)
         counts.append(f"{row['agent_name'].rsplit('/', 1)[-1]}={len(calls)}")
         if len(calls) != want:
-            count_problems.append(
-                f"{row['agent_name']}: {len(calls)} post_calls, want {want}"
-            )
+            count_problems.append(f"{row['agent_name']}: {len(calls)} post_calls, want {want}")
         if not calls:
             token_problems.append(f"{row['agent_name']}: no post_call")
         token_problems += [
             f"{row['agent_name']}: {e['id']} tokens {e.get('tokens_input')}/"
             f"{e.get('tokens_output')}"
             for e in calls
-            if not (e.get("tokens_input") or 0) > 0
-            or not (e.get("tokens_output") or 0) > 0
+            if not (e.get("tokens_input") or 0) > 0 or not (e.get("tokens_output") or 0) > 0
         ]
         if row.get("tokens_used", 0) <= 0 or row.get("tokens_used") != total:
             token_problems.append(
-                f"{row['agent_name']}: tokens_used={row.get('tokens_used')} "
-                f"post_call sum={total}"
+                f"{row['agent_name']}: tokens_used={row.get('tokens_used')} post_call sum={total}"
             )
         if not _of(events, "session_end"):
             token_problems.append(f"{row['agent_name']}: no session_end")
@@ -328,8 +324,7 @@ def _event_checks(
             not token_problems,
             "; ".join(token_problems)
             or ", ".join(
-                f"{r['agent_name'].rsplit('/', 1)[-1]}={r['tokens_used']}"
-                for r in (root, child)
+                f"{r['agent_name'].rsplit('/', 1)[-1]}={r['tokens_used']}" for r in (root, child)
             ),
         )
     )
@@ -360,11 +355,7 @@ def _content_checks(
     incoming message."""
     problems: list[str] = []
     fetched = 0
-    targets = [
-        e
-        for row in (root, child)
-        for e in _of(by_session[row["session_id"]], "post_call")
-    ]
+    targets = [e for row in (root, child) for e in _of(by_session[row["session_id"]], "post_call")]
     if run.tool_content:
         targets += [
             e
@@ -377,12 +368,10 @@ def _content_checks(
         if status != 200 or not body:
             problems.append(f"{e['event_type']} {e['id']}: {status}")
         elif e["event_type"] == "post_call" and not (
-            body.get("provider") == "otel_genai"
-            and (body.get("messages") or body.get("response"))
+            body.get("provider") == "otel_genai" and (body.get("messages") or body.get("response"))
         ):
             problems.append(
-                f"post_call {e['id']}: provider={body.get('provider')!r},"
-                " no messages or response"
+                f"post_call {e['id']}: provider={body.get('provider')!r}, no messages or response"
             )
         elif e["event_type"] == "tool_call" and body.get("tool_input") is None:
             problems.append(f"tool_call {e['id']}: no tool_input")

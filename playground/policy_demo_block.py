@@ -15,6 +15,7 @@ Run: ``python playground/policy_demo_block.py``
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -29,6 +30,7 @@ except ImportError:
     sys.exit(2)
 import flightdeck_sensor
 from flightdeck_sensor import BudgetExceededError, Provider
+
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -122,15 +124,14 @@ def main() -> None:
             "policy_block.token_limit=20",
             limit_ok,
             0,
-            f"token_limit={payload.get('token_limit')!r} tokens_used={payload.get('tokens_used')!r}",
+            f"token_limit={payload.get('token_limit')!r}"
+            f" tokens_used={payload.get('tokens_used')!r}",
         )
         if not (source_ok and intended_ok and limit_ok):
             raise AssertionError(f"policy_block payload mismatch: {payload!r}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             _api("DELETE", f"/v1/policies/{policy['id']}")
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

@@ -26,12 +26,14 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import (
     CONTENT_LANDED_DEADLINE_S,
     CONTENT_POLL_S,
+    MS_PER_S,
+    assert_event_landed,
     assert_reply_stored,
     assert_token_cost_fields,
-    assert_event_landed,
     fetch_event_content,
     fetch_events_for_session,
     init_sensor,
@@ -58,8 +60,6 @@ EXPECTED_EMBEDDINGS_EVENTS = 2
 # Leading characters of the session id that tag this run's inputs, enough
 # to tell one run's from another's.
 SESSION_ID_TAG_CHARS = 8
-# Milliseconds per second, for the durations print_result reports.
-MS_PER_S = 1000
 # Streamed calls this script makes: sync chat stream, async chat stream,
 # plain chat iteration, Responses stream; each must land one metered
 # post_call.
@@ -109,7 +109,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions.create",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{r.usage.total_tokens} tokens",
     )
 
@@ -124,7 +124,7 @@ def main() -> None:
     print_result(
         "AsyncOpenAI().chat.completions.create",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Sync streaming.
@@ -137,7 +137,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions (sync stream)",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Async streaming -- must actually exercise async iteration so
@@ -159,7 +159,7 @@ def main() -> None:
     print_result(
         "AsyncOpenAI().chat.completions (async stream)",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Chat stream iterated with no ``with`` block, the pattern in the
@@ -176,7 +176,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions (plain iteration)",
         plain_chunks > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{plain_chunks} chunks",
     )
 
@@ -193,13 +193,13 @@ def main() -> None:
     print_result(
         "OpenAI().responses.create(stream=True)",
         resp_events > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{resp_events} events",
     )
 
     t0 = time.monotonic()
     openai.OpenAI().responses.create(model=MODEL, input="hi", max_output_tokens=16)
-    print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * 1000))
+    print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * MS_PER_S))
 
     # Structured outputs: chat.completions.parse(). The parsed object
     # carries the request id the SDK stamps on it; the post_call reports
@@ -207,12 +207,16 @@ def main() -> None:
     question = [{"role": "user", "content": "Capital of France? Answer as JSON."}]
     t0 = time.monotonic()
     parsed = openai.OpenAI().chat.completions.parse(
-        model=MODEL, max_tokens=40, messages=question, response_format=CityAnswer,
+        model=MODEL,
+        max_tokens=40,
+        messages=question,
+        response_format=CityAnswer,
     )
     parse_rid = parsed._request_id
     print_result(
-        "OpenAI().chat.completions.parse", parsed.choices[0].message.parsed is not None,
-        int((time.monotonic() - t0) * 1000),
+        "OpenAI().chat.completions.parse",
+        parsed.choices[0].message.parsed is not None,
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{parsed.usage.total_tokens} tokens, request_id={parse_rid}",
     )
 
@@ -224,13 +228,18 @@ def main() -> None:
     length_raised = False
     try:
         openai.OpenAI().chat.completions.parse(
-            model=MODEL, max_tokens=5, messages=question, response_format=CityAnswer,
+            model=MODEL,
+            max_tokens=5,
+            messages=question,
+            response_format=CityAnswer,
         )
     except openai.LengthFinishReasonError:
         length_raised = True
     print_result(
-        "OpenAI().chat.completions.parse (max_tokens too small)", length_raised,
-        int((time.monotonic() - t0) * 1000), "LengthFinishReasonError raised",
+        "OpenAI().chat.completions.parse (max_tokens too small)",
+        length_raised,
+        int((time.monotonic() - t0) * MS_PER_S),
+        "LengthFinishReasonError raised",
     )
     if not length_raised:
         raise AssertionError("parse() with max_tokens=5 did not raise LengthFinishReasonError")
@@ -238,13 +247,16 @@ def main() -> None:
     # Structured outputs on the Responses API.
     t0 = time.monotonic()
     rparsed = openai.OpenAI().responses.parse(
-        model=MODEL, input="Capital of France? Answer as JSON.",
-        text_format=CityAnswer, max_output_tokens=40,
+        model=MODEL,
+        input="Capital of France? Answer as JSON.",
+        text_format=CityAnswer,
+        max_output_tokens=40,
     )
     rparse_rid = rparsed._request_id
     print_result(
-        "OpenAI().responses.parse", rparsed.output_parsed is not None,
-        int((time.monotonic() - t0) * 1000),
+        "OpenAI().responses.parse",
+        rparsed.output_parsed is not None,
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{rparsed.usage.total_tokens} tokens, request_id={rparse_rid}",
     )
 
@@ -252,14 +264,16 @@ def main() -> None:
     # .parse() still yields the Response.
     t0 = time.monotonic()
     raw = openai.OpenAI().responses.with_raw_response.create(
-        model=MODEL, input="hi", max_output_tokens=16,
+        model=MODEL,
+        input="hi",
+        max_output_tokens=16,
     )
     raw_rid = raw.headers.get("x-request-id")
     raw_body = raw.parse()
     print_result(
         "OpenAI().responses.with_raw_response.create",
         bool(raw_rid) and raw_body.usage.total_tokens > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{raw_body.usage.total_tokens} tokens, request_id={raw_rid}",
     )
 
@@ -267,14 +281,16 @@ def main() -> None:
     # takes.
     t0 = time.monotonic()
     raw_chat = openai.OpenAI().chat.completions.with_raw_response.create(
-        model=MODEL, messages=HI, max_tokens=8,
+        model=MODEL,
+        messages=HI,
+        max_tokens=8,
     )
     raw_chat_rid = raw_chat.headers.get("x-request-id")
     raw_chat_body = raw_chat.parse()
     print_result(
         "OpenAI().chat.completions.with_raw_response.create",
         bool(raw_chat_rid) and raw_chat_body.usage.total_tokens > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"served {raw_chat_body.model}, request_id={raw_chat_rid}",
     )
 
@@ -282,13 +298,18 @@ def main() -> None:
     # per function_call output item.
     t0 = time.monotonic()
     tool_resp = openai.OpenAI().responses.create(
-        model=MODEL, input="What is the weather in Paris? Use the tool.",
-        tools=[WEATHER_TOOL], tool_choice="required", max_output_tokens=64,
+        model=MODEL,
+        input="What is the weather in Paris? Use the tool.",
+        tools=[WEATHER_TOOL],
+        tool_choice="required",
+        max_output_tokens=64,
     )
     function_calls = [o for o in tool_resp.output if o.type == "function_call"]
     print_result(
-        "OpenAI().responses.create(tools=[function])", len(function_calls) > 0,
-        int((time.monotonic() - t0) * 1000), f"{len(function_calls)} function_call items",
+        "OpenAI().responses.create(tools=[function])",
+        len(function_calls) > 0,
+        int((time.monotonic() - t0) * MS_PER_S),
+        f"{len(function_calls)} function_call items",
     )
     if not function_calls:
         raise AssertionError(f"no function_call in output: {tool_resp.output!r}")
@@ -315,7 +336,7 @@ def main() -> None:
     print_result(
         "Responses output items passed back are stored as the JSON sent",
         responses_ok,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(sent_items)} items",
     )
     if not responses_ok:
@@ -353,7 +374,7 @@ def main() -> None:
     print_result(
         "ChatCompletionMessage passed back is stored as the JSON sent",
         chat_ok,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(reply.tool_calls or [])} tool calls",
     )
     if not chat_ok:
@@ -365,13 +386,16 @@ def main() -> None:
     search_resp = openai.OpenAI().responses.create(
         model=MODEL,
         input="Search the web: in what year was the Eiffel Tower completed? One sentence.",
-        tools=[{"type": "web_search_preview"}], tool_choice={"type": "web_search_preview"},
+        tools=[{"type": "web_search_preview"}],
+        tool_choice={"type": "web_search_preview"},
         max_output_tokens=80,
     )
     web_searches = [o for o in search_resp.output if o.type == "web_search_call"]
     print_result(
-        "OpenAI().responses.create(tools=[web_search_preview])", len(web_searches) > 0,
-        int((time.monotonic() - t0) * 1000), f"{len(web_searches)} web_search_call items",
+        "OpenAI().responses.create(tools=[web_search_preview])",
+        len(web_searches) > 0,
+        int((time.monotonic() - t0) * MS_PER_S),
+        f"{len(web_searches)} web_search_call items",
     )
     if not web_searches:
         raise AssertionError(f"no web_search_call in output: {search_resp.output!r}")
@@ -382,13 +406,17 @@ def main() -> None:
     openai.OpenAI().chat.completions.create(model=MODEL, max_tokens=5, messages=long_messages)
     t0 = time.monotonic()
     cached_call = openai.OpenAI().chat.completions.create(
-        model=MODEL, max_tokens=5, messages=long_messages,
+        model=MODEL,
+        max_tokens=5,
+        messages=long_messages,
     )
     cached_rid = cached_call._request_id
     details = cached_call.usage.prompt_tokens_details
     provider_cached = (details.cached_tokens if details else 0) or 0
     print_result(
-        "prompt cache usage reported by provider", True, int((time.monotonic() - t0) * 1000),
+        "prompt cache usage reported by provider",
+        True,
+        int((time.monotonic() - t0) * MS_PER_S),
         f"cached_tokens={provider_cached} of {cached_call.usage.prompt_tokens} prompt tokens",
     )
 
@@ -398,7 +426,7 @@ def main() -> None:
     t0 = time.monotonic()
     openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=single_payload)
     print_result(
-        "OpenAI().embeddings.create (single)", True, int((time.monotonic() - t0) * 1000)
+        "OpenAI().embeddings.create (single)", True, int((time.monotonic() - t0) * MS_PER_S)
     )
 
     # Embeddings: list of strings. Distinct shape so a single failure
@@ -406,18 +434,14 @@ def main() -> None:
     list_payload = ["item one", "item two", "item three"]
     t0 = time.monotonic()
     openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=list_payload)
-    print_result(
-        "OpenAI().embeddings.create (list)", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("OpenAI().embeddings.create (list)", True, int((time.monotonic() - t0) * MS_PER_S))
 
     assert_event_landed(session_id, "post_call", timeout=8)
 
     # Every streamed call must land a post_call with streaming.ttft_ms;
     # the later streams flush asynchronously, so wait for all of them.
     events, streamed = wait_for_streamed_post_calls(session_id, EXPECTED_STREAMED_CALLS)
-    ttft_ok = any(
-        (e["payload"]["streaming"].get("ttft_ms") is not None) for e in streamed
-    )
+    ttft_ok = any((e["payload"]["streaming"].get("ttft_ms") is not None) for e in streamed)
     print_result(
         "streaming.ttft_ms populated on post_call",
         ttft_ok,
@@ -425,9 +449,7 @@ def main() -> None:
         f"{len(streamed)} streamed post_call events observed",
     )
     if not ttft_ok:
-        raise AssertionError(
-            f"no post_call carried streaming.ttft_ms; events={events!r}"
-        )
+        raise AssertionError(f"no post_call carried streaming.ttft_ms; events={events!r}")
 
     # Every streamed post_call must carry the token counts the provider
     # sent inside the stream, not the pre-call estimate with zero output.
@@ -436,9 +458,7 @@ def main() -> None:
         for e in streamed
         if (e.get("tokens_output") or 0) > 0 and (e.get("tokens_input") or 0) > 0
     ]
-    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(
-        streamed
-    )
+    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(streamed)
     print_result(
         "streamed post_call events carry real token usage",
         metered_ok,
@@ -465,7 +485,9 @@ def main() -> None:
     tool_names: list[str] = []
     while True:
         events = fetch_events_for_session(
-            session_id, expect_event_types=["tool_call"], timeout_s=5.0,
+            session_id,
+            expect_event_types=["tool_call"],
+            timeout_s=5.0,
         )
         by_rid = {
             ((e.get("payload") or {}).get("provider_metadata") or {}).get("request_id"): e
@@ -486,10 +508,15 @@ def main() -> None:
         time.sleep(NEW_PATH_EVENTS_POLL_S)
     for label, rid in wanted.items():
         event = by_rid.get(rid)
-        metered = bool(event) and (event.get("tokens_input") or 0) > 0 \
+        metered = (
+            bool(event)
+            and (event.get("tokens_input") or 0) > 0
             and (event.get("tokens_output") or 0) > 0
+        )
         print_result(
-            f"post_call landed with tokens: {label}", metered, 0,
+            f"post_call landed with tokens: {label}",
+            metered,
+            0,
             f"request_id={rid} tokens_input={event.get('tokens_input') if event else None} "
             f"tokens_output={event.get('tokens_output') if event else None}",
         )
@@ -511,14 +538,18 @@ def main() -> None:
     cache_read = cache_event.get("tokens_cache_read")
     print_result(
         "tokens_cache_read matches the provider's cached_tokens",
-        cache_read == provider_cached, 0,
+        cache_read == provider_cached,
+        0,
         f"tokens_cache_read={cache_read} provider cached_tokens={provider_cached}",
     )
     if cache_read != provider_cached:
         raise AssertionError(f"tokens_cache_read={cache_read!r} != cached_tokens={provider_cached}")
     tools_ok = "get_weather" in tool_names and "web_search_call" in tool_names
     print_result(
-        "Responses tool_call events landed", tools_ok, 0, f"tool_name={sorted(tool_names)}",
+        "Responses tool_call events landed",
+        tools_ok,
+        0,
+        f"tool_name={sorted(tool_names)}",
     )
     if not tools_ok:
         raise AssertionError(f"missing Responses tool_call events; saw {tool_names!r}")
@@ -526,7 +557,8 @@ def main() -> None:
     # The billed-but-failed parse: an llm_error with http_status 200 and
     # provider_error_code "length", chained to a metered post_call.
     length_errors = [
-        e for e in events
+        e
+        for e in events
         if e.get("event_type") == "llm_error"
         and ((e.get("payload") or {}).get("error") or {}).get("provider_error_code") == "length"
     ]
@@ -543,7 +575,9 @@ def main() -> None:
         and (billed.get("tokens_output") or 0) > 0
     )
     print_result(
-        "billed-but-failed parse landed as post_call + llm_error", length_ok, 0,
+        "billed-but-failed parse landed as post_call + llm_error",
+        length_ok,
+        0,
         f"error={length_err.get('error')!r} "
         f"post_call tokens={(billed or {}).get('tokens_input')}/"
         f"{(billed or {}).get('tokens_output')}",
@@ -588,9 +622,7 @@ def main() -> None:
             raise AssertionError(f"embedding event missing has_content: {e!r}")
         body = fetch_event_content(e["id"])
         captured.append(body.get("input"))
-    print_result(
-        "embeddings capture round-trip", True, 0, f"captured {len(captured)} inputs"
-    )
+    print_result("embeddings capture round-trip", True, 0, f"captured {len(captured)} inputs")
     # First was single_payload, second was list_payload.
     if (
         single_payload not in (captured[0] if isinstance(captured[0], str) else "")
@@ -609,12 +641,12 @@ def main() -> None:
     base64_payload = f"playground base64 embedding {session_id[:SESSION_ID_TAG_CHARS]}"
     t0 = time.monotonic()
     encoded = openai.OpenAI().embeddings.create(
-        model=EMBEDDING_MODEL, input=base64_payload, encoding_format="base64",
+        model=EMBEDDING_MODEL,
+        input=base64_payload,
+        encoding_format="base64",
     )
     vector = encoded.data[0].embedding
-    decoded = (
-        len(base64.b64decode(vector)) // FLOAT32_BYTES if isinstance(vector, str) else None
-    )
+    decoded = len(base64.b64decode(vector)) // FLOAT32_BYTES if isinstance(vector, str) else None
     print_result(
         "OpenAI().embeddings.create(encoding_format=base64)",
         isinstance(vector, str),

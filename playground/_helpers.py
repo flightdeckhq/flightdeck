@@ -540,6 +540,11 @@ def llama_index_anthropic_incompatibility() -> str | None:
     )
 
 
+# Milliseconds in a second: a result line's duration is
+# ``int((time.monotonic() - t0) * MS_PER_S)``.
+MS_PER_S = 1000
+
+
 def print_result(label: str, passed: bool, duration_ms: int, details: str = "") -> None:
     """Standard result line: '  PASS  <label>  (1240ms)  <details>'."""
     tag = "PASS" if passed else "FAIL"
@@ -644,22 +649,30 @@ CHILD_SESSIONS_FETCH_TIMEOUT_S = 5.0
 
 def child_sessions(parent_id: str, least: int) -> list[dict[str, Any]]:
     """The sessions whose parent is ``parent_id`` once ``least`` of them
-    have ended, or those there at ``EVENTS_LANDED_DEADLINE_S``."""
+    have ended, or those there at ``EVENTS_LANDED_DEADLINE_S``. Only an
+    answer from the API counts: an API that never answers raises its
+    last error, so a caller expecting no children (``least=0``) cannot
+    pass on an unreachable API."""
     req = urllib.request.Request(
         f"{API_URL}/v1/sessions?parent_session_id={parent_id}&limit={CHILD_SESSIONS_PAGE}",
         headers={"Authorization": f"Bearer {API_TOKEN}"},
     )
     deadline = time.monotonic() + EVENTS_LANDED_DEADLINE_S
     while True:
+        rows: list[dict[str, Any]] | None = None
         try:
             with urllib.request.urlopen(req, timeout=CHILD_SESSIONS_FETCH_TIMEOUT_S) as r:
-                rows: list[dict[str, Any]] = json.loads(r.read()).get("sessions", [])
-        except (urllib.error.URLError, OSError, ValueError):
-            # Not answering yet: poll again until the deadline.
-            rows = []
-        ended = [c for c in rows if c.get("ended_at")]
-        if len(ended) >= least or time.monotonic() > deadline:
-            return rows
+                rows = json.loads(r.read()).get("sessions", [])
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # Not answering yet: poll again until the deadline, then raise.
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"the child sessions of {parent_id} could not be listed: {exc}"
+                ) from exc
+        if rows is not None:
+            ended = [c for c in rows if c.get("ended_at")]
+            if len(ended) >= least or time.monotonic() > deadline:
+                return rows
         time.sleep(EVENTS_POLL_S)
 
 

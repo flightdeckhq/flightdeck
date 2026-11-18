@@ -157,9 +157,7 @@ def main() -> None:
         lambda: openai.OpenAI().beta.chat.completions.parse(
             model=OPENAI_MODEL,
             max_tokens=PARSE_MAX_TOKENS,
-            messages=[
-                {"role": "user", "content": "Capital of France? Answer as JSON."}
-            ],
+            messages=[{"role": "user", "content": "Capital of France? Answer as JSON."}],
             response_format=CityAnswer,
         ),
         lambda r: f"parsed={r.choices[0].message.parsed!r}",
@@ -193,9 +191,7 @@ def main() -> None:
     # litellm's own Anthropic route, plain, streamed and async.
     timed(
         "litellm.text_completion (OpenAI, through the SDK)",
-        lambda: litellm.text_completion(
-            model=OPENAI_MODEL, prompt=PROMPT, max_tokens=MAX_TOKENS
-        ),
+        lambda: litellm.text_completion(model=OPENAI_MODEL, prompt=PROMPT, max_tokens=MAX_TOKENS),
         lambda r: f"text={r.choices[0].text!r}",
     )
     calls.record("text_completion openai")
@@ -221,9 +217,7 @@ def main() -> None:
     timed(
         "litellm.atext_completion (Anthropic)",
         lambda: asyncio.run(
-            litellm.atext_completion(
-                model=ANTHROPIC_MODEL, prompt=PROMPT, max_tokens=MAX_TOKENS
-            )
+            litellm.atext_completion(model=ANTHROPIC_MODEL, prompt=PROMPT, max_tokens=MAX_TOKENS)
         ),
         lambda r: f"text={r.choices[0].text!r}",
     )
@@ -257,9 +251,7 @@ def main() -> None:
         lambda k: f"last event={k[-1] if k else None}",
     )
     if "response.completed" not in kinds:
-        raise AssertionError(
-            f"aresponses stream ended without response.completed: {kinds!r}"
-        )
+        raise AssertionError(f"aresponses stream ended without response.completed: {kinds!r}")
     calls.record("aresponses openai stream")
 
     # 9. A streamed Responses call the caller leaves before its terminal
@@ -331,9 +323,7 @@ def main() -> None:
         f"{len(post_calls)} post_calls for {len(labels)} calls",
     )
     if not count_ok:
-        raise AssertionError(
-            f"expected {len(labels)} post_calls, got {len(post_calls)}"
-        )
+        raise AssertionError(f"expected {len(labels)} post_calls, got {len(post_calls)}")
 
     by_id = {e.get("id"): e for e in post_calls}
     paired = [by_id.get(event_id) for event_id in calls.event_ids]
@@ -353,13 +343,11 @@ def main() -> None:
         detail = f"model={event.get('model')} tokens={tokens[0]}/{tokens[1]}"
         if streaming:
             detail += (
-                f" streaming={streaming.get('final_outcome')}"
-                f"/{streaming.get('chunk_count')} chunks"
+                f" streaming={streaming.get('final_outcome')}/{streaming.get('chunk_count')} chunks"
             )
         if label == "completion fallback":
             detail += (
-                f" requested={event.get('model_requested')}"
-                f" served={event.get('model_served')}"
+                f" requested={event.get('model_requested')} served={event.get('model_served')}"
             )
             ok = (
                 (tokens[0] or 0) > 0
@@ -384,11 +372,7 @@ def main() -> None:
         else:
             ok = (tokens[0] or 0) > 0 and (tokens[1] or 0) > 0
             if label.endswith("stream"):
-                ok = (
-                    ok
-                    and streaming is not None
-                    and streaming.get("final_outcome") == "completed"
-                )
+                ok = ok and streaming is not None and streaming.get("final_outcome") == "completed"
         print_result(f"post_call: {label}", ok, 0, detail)
         if not ok:
             raise AssertionError(f"{label}: unexpected post_call {event!r}")
@@ -405,9 +389,7 @@ def main() -> None:
         f"status={status} input={stored_input!r}",
     )
     if not content_ok:
-        raise AssertionError(
-            f"content of the native responses call: {status} {content!r}"
-        )
+        raise AssertionError(f"content of the native responses call: {status} {content!r}")
     # The early-exit call stores the in-progress snapshot, which the
     # dashboard recognises as a Responses call by its ``object``.
     early_event = paired[labels.index("responses openai left early")]
@@ -423,13 +405,10 @@ def main() -> None:
         "early-exit responses content stored",
         early_ok,
         0,
-        f"status={status} object={stored.get('object')!r} "
-        f"response status={stored.get('status')!r}",
+        f"status={status} object={stored.get('object')!r} response status={stored.get('status')!r}",
     )
     if not early_ok:
-        raise AssertionError(
-            f"content of the early-exit responses call: {status} {content!r}"
-        )
+        raise AssertionError(f"content of the early-exit responses call: {status} {content!r}")
     print(
         f"[playground:30_parse_and_litellm_routes] native responses id={native.id} "
         f"event_id={native_event['id']}"

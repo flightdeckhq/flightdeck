@@ -30,6 +30,7 @@ from flightdeck_sensor import Provider
 from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
 
 from _helpers import (
+    MS_PER_S,
     assert_event_landed,
     assert_reply_stored,
     assert_token_cost_fields,
@@ -56,8 +57,6 @@ HI = [{"role": "user", "content": "hi"}]
 # How many times the manager lifecycle check enters one manager: twice, so
 # the second entry is the SDK's second request.
 MANAGER_ENTRIES = 2
-# Milliseconds per second, for the durations print_result reports.
-MS_PER_S = 1000
 # The tool of the tool-use loop.
 WEATHER_TOOL = {
     "name": "get_weather",
@@ -514,7 +513,9 @@ def _run_manager_lifecycle() -> None:
     """In a session of its own: a messages.stream() manager made and never
     entered sends nothing and reports nothing, and one entered twice sends
     two requests and reports two pre_call / post_call pairs, as the SDK's
-    manager sends them."""
+    manager sends them. A third manager, made in that session and entered
+    once the next has started, reports to the next one: its request goes
+    out on entry."""
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-direct-anthropic")
     flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
@@ -534,19 +535,47 @@ def _run_manager_lifecycle() -> None:
         int((time.monotonic() - t0) * MS_PER_S),
         f"{len(texts)} replies",
     )
+    kept = client.messages.stream(model=MODEL, max_tokens=5, messages=HI)
     flightdeck_sensor.teardown()
-    events = fetch_events_for_session(session_id, expect_event_types=["post_call", "session_end"])
-    kinds = [e.get("event_type") for e in events]
-    pre_calls, post_calls = kinds.count("pre_call"), kinds.count("post_call")
-    ok = pre_calls == MANAGER_ENTRIES and post_calls == MANAGER_ENTRIES
+    first = _call_events_once_ended(session_id)
+    ok = first == (MANAGER_ENTRIES, MANAGER_ENTRIES)
     print_result(
         "a manager never entered lands no event; one entered twice lands two pairs",
         ok,
         0,
-        f"pre_call={pre_calls} post_call={post_calls} (want {MANAGER_ENTRIES} each)",
+        f"pre_call={first[0]} post_call={first[1]} (want {MANAGER_ENTRIES} each)",
     )
     if not ok:
-        raise AssertionError(f"manager lifecycle events: {kinds!r}")
+        raise AssertionError(f"manager lifecycle events: {first!r}")
+
+    next_id = str(uuid.uuid4())
+    init_sensor(next_id, flavor="playground-direct-anthropic")
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
+    print(f"[playground:01_direct_anthropic] manager entered in the next session={next_id}")
+    with kept as stream:
+        reply = "".join(stream.text_stream)
+    flightdeck_sensor.teardown()
+    entered = _call_events_once_ended(next_id)
+    unchanged = _call_events_once_ended(session_id)
+    ok = bool(reply) and entered == (1, 1) and unchanged == first
+    print_result(
+        "a manager made in one session and entered in the next lands in the next",
+        ok,
+        0,
+        f"next session pre_call/post_call={entered} (want (1, 1)); first {first} -> {unchanged}",
+    )
+    if not ok:
+        raise AssertionError(f"manager entered in the next session: {entered!r}, {unchanged!r}")
+
+
+def _call_events_once_ended(session_id: str) -> tuple[int, int]:
+    """How many pre_calls and post_calls the session holds, read once its
+    session_end has landed."""
+    events = fetch_events_for_session(session_id, expect_event_types=["post_call", "session_end"])
+    if not any(e.get("event_type") == "session_end" for e in events):
+        raise AssertionError(f"session {session_id} never ended; events={events!r}")
+    kinds = [e.get("event_type") for e in events]
+    return kinds.count("pre_call"), kinds.count("post_call")
 
 
 def _post_calls_once_ended(session_id: str) -> int:

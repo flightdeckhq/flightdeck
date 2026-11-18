@@ -17,6 +17,7 @@ made; each entry is a request of its own.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import gc
 import json
@@ -683,31 +684,164 @@ def test_a_warn_is_reported_with_the_request_it_applies_to(
     assert kinds[:2] == ["pre_call", "policy_warn"]
 
 
-@pytest.mark.parametrize("when", ["at the call", "between the call and the entry"])
-@_CLIENTS
-def test_a_degrade_applies_to_the_request_made(
-    is_async: bool, when: str, router: respx.MockRouter, sensor: Callable[[bool], Session | None]
+def test_a_refused_second_entry_leaves_the_warning_to_the_next_request(
+    router: respx.MockRouter, sensor: Callable[[bool], Session | None]
 ) -> None:
-    """The model the SDK sends is the degrade target, whether the degrade
-    was in force when ``stream()`` was called or began before the entry."""
+    """An async manager's second entry is refused by the SDK before any
+    request is made, so it checks no policy: a warning first crossed then
+    is still given, with the next request that is made. (A sync manager's
+    second entry is a request of its own.)"""
+    is_async = True
     session = sensor(True)
     assert session is not None
-
-    def degrade() -> None:
-        session.policy = PolicyCache(token_limit=1000, block_at_pct=100)
-        session.policy.degrade_at_pct = 50
-        session.policy.degrade_to = "claude-haiku-4-5-degraded"
-        session._tokens_used = 600
-
-    if when == "at the call":
-        degrade()
     manager = _manager(is_async, beta=False)
-    if when != "at the call":
-        degrade()
     asyncio.run(_enter_and_read(manager, is_async))
-    sent = json.loads(router.routes["messages"].calls.last.request.content)
-    assert sent["model"] == "claude-haiku-4-5-degraded"
-    assert router.routes["messages"].call_count == 1
+    session.policy = PolicyCache(token_limit=100, warn_at_pct=10, block_at_pct=100)
+    session._tokens_used = 20
+    session.event_queue.enqueue.reset_mock()  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError):
+        asyncio.run(_enter_and_read(manager, is_async))
+    assert _events(session) == []
+
+    async def _plain() -> None:
+        await _read(await _anthropic(True).messages.create(**ANTHROPIC_KW, stream=True), True)
+
+    asyncio.run(_plain())
+    assert [e["event_type"] for e in _events(session)][:2] == ["pre_call", "policy_warn"]
+
+
+def test_a_failed_sync_entry_is_reported_whatever_it_raises(
+    router: respx.MockRouter,
+    sensor: Callable[[bool], Session | None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sync manager's every entry is a request attempted, so one that
+    fails is reported after its ``pre_call``, a ``RuntimeError`` as any
+    other exception: only an async manager's entry after its first is
+    the SDK's refusal, and that one never reaches the policy check."""
+    from anthropic.lib.streaming import MessageStreamManager
+
+    sdk_enter = MessageStreamManager.__enter__
+    entries: list[Any] = []
+
+    def _enter(manager: Any) -> Any:
+        entries.append(manager)
+        if len(entries) > 1:
+            raise RuntimeError("the second entry fails")
+        return sdk_enter(manager)
+
+    monkeypatch.setattr(MessageStreamManager, "__enter__", _enter)
+    session = sensor(True)
+    assert session is not None
+    manager = _manager(False, beta=False)
+    asyncio.run(_enter_and_read(manager, False))
+    session.event_queue.enqueue.reset_mock()  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError, match="the second entry fails"):
+        asyncio.run(_enter_and_read(manager, False))
+    assert [e["event_type"] for e in _events(session)] == ["pre_call", "llm_error"]
+
+
+@_CLIENTS
+def test_a_failed_entry_gives_the_warning_it_crossed(
+    is_async: bool, router: respx.MockRouter, sensor: Callable[[bool], Session | None]
+) -> None:
+    """An entry whose request fails is a request made: the warning its
+    policy check crossed is reported with it, before its error, and not
+    given again."""
+    failing = httpx.Response(500, json={"type": "error", "error": {"type": "api_error"}})
+    router.routes["messages"].mock(return_value=failing)
+    outcomes = []
+    for on in (False, True):
+        session = sensor(on)
+        if session is not None:
+            session.policy = PolicyCache(token_limit=100, warn_at_pct=10, block_at_pct=100)
+            session._tokens_used = 20
+        try:
+            asyncio.run(_enter_and_read(_manager(is_async, beta=False), is_async))
+        except Exception as exc:
+            outcomes.append(type(exc).__name__)
+    assert outcomes == ["InternalServerError", "InternalServerError"]
+    assert session is not None
+    assert [e["event_type"] for e in _events(session)] == ["pre_call", "policy_warn", "llm_error"]
+    session.event_queue.enqueue.reset_mock()  # type: ignore[attr-defined]
+    with contextlib.suppress(Exception):
+        asyncio.run(_enter_and_read(_manager(is_async, beta=False), is_async))
+    assert [e["event_type"] for e in _events(session)] == ["pre_call", "llm_error"]
+
+
+DEGRADE_TO = "claude-haiku-4-5-degraded"
+# The fields where a call's model and policy decision show, per event.
+_DECIDED = {
+    "pre_call": ("model", "policy_decision_pre"),
+    "post_call": ("model", "model_requested", "model_served", "policy_decision_post"),
+}
+
+
+def _degrade(session: Session, on: bool) -> None:
+    """A DEGRADE in force, or none; the same token count either way."""
+    if on:
+        session.policy = PolicyCache(
+            token_limit=1000, degrade_at_pct=50, block_at_pct=100, degrade_to=DEGRADE_TO
+        )
+    else:
+        session.policy = PolicyCache()
+    session._tokens_used = 600
+
+
+def _decided(session: Session, router: respx.MockRouter) -> tuple[str, list[Any]]:
+    """The model the provider received for the last request, and the
+    events since the queue was last reset with their decided fields."""
+    sent = json.loads(router.routes["messages"].calls.last.request.content)["model"]
+    events = [
+        (e["event_type"], {k: e.get(k) for k in _DECIDED.get(e["event_type"], ())})
+        for e in _events(session)
+    ]
+    session.event_queue.enqueue.reset_mock()  # type: ignore[attr-defined]
+    return sent, events
+
+
+@pytest.mark.parametrize(
+    ("at_call", "at_entry"),
+    [(True, True), (False, True), (True, False)],
+    ids=["in force at the call", "began between the call and the entry", "lifted before the entry"],
+)
+@_CLIENTS
+def test_a_degrade_is_decided_at_entry_as_for_a_plain_call(
+    is_async: bool,
+    at_call: bool,
+    at_entry: bool,
+    router: respx.MockRouter,
+    sensor: Callable[[bool], Session | None],
+) -> None:
+    """The policy in force at the entry decides the model, whatever was in
+    force when ``stream()`` was called: the provider receives the degrade
+    target only under a DEGRADE at entry, and the helper's events name
+    the models and the decision exactly as a ``create(stream=True)`` call
+    made under that policy does (its ``pre_call`` the model the caller
+    asked for, its ``post_call`` the model sent)."""
+    session = sensor(True)
+    assert session is not None
+    _degrade(session, at_call)
+    manager = _manager(is_async, beta=False)
+    _degrade(session, at_entry)
+    asyncio.run(_enter_and_read(manager, is_async))
+    helper = _decided(session, router)
+
+    async def _plain() -> None:
+        stream = await _resolve(_anthropic(is_async).messages.create(**ANTHROPIC_KW, stream=True))
+        await _read(stream, is_async)
+
+    _degrade(session, at_entry)
+    asyncio.run(_plain())
+    plain = _decided(session, router)
+    assert helper == plain
+    assert helper[0] == (DEGRADE_TO if at_entry else ANTHROPIC_KW["model"])
+    assert router.routes["messages"].call_count == 2
+    (pre_call,) = [fields for kind, fields in helper[1] if kind == "pre_call"]
+    assert pre_call["model"] == ANTHROPIC_KW["model"]
+    assert (pre_call["policy_decision_pre"] or {}).get("decision") == (
+        "degrade" if at_entry else None
+    )
 
 
 @_CLIENTS

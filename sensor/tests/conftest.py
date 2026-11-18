@@ -68,11 +68,56 @@ def _litellm_logging_worker_retired() -> Iterator[None]:
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
+def _host_text(host: object) -> str | None:
+    if isinstance(host, bytes):
+        return host.decode("ascii", errors="replace")
+    return host if isinstance(host, str) else None
+
+
+def _is_loopback_name(host: object) -> bool:
+    """``localhost`` (or a name under it) or a loopback address."""
+    import ipaddress
+
+    text = _host_text(host)
+    if text is None:
+        return False
+    lowered = text.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(lowered.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolves_without_dns(host: object) -> bool:
+    """Whether a forward lookup of ``host`` stays on the machine: no host
+    (a passive lookup for binding), a loopback name, or an address
+    literal, which the resolver returns without asking anyone (connecting
+    to it is refused separately unless it is loopback)."""
+    import ipaddress
+
+    if host is None or _is_loopback_name(host):
+        return True
+    text = _host_text(host)
+    if text is None:
+        return False
+    try:
+        ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
+
+
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse every connection that leaves the machine. A provider mock
-    that stops matching (an SDK moving to a new HTTP library, a changed
-    route) must fail the test, not send a request to the real API."""
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Refuse every connection that leaves the machine, and every name
+    lookup that would. A provider mock that stops matching (an SDK moving
+    to a new HTTP library, a changed route) must fail the test, not send a
+    request to the real API; and a lookup (a library fetching a tokenizer
+    or a price list) must not leave the machine either. A refused lookup
+    fails the test even when the code that made it catches the error and
+    carries on."""
     import socket
 
     real_connect = socket.socket.connect
@@ -87,6 +132,48 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
         return real_connect(self, address)
 
     monkeypatch.setattr(socket.socket, "connect", _connect)
+
+    refused: list[str] = []
+    real_getaddrinfo = socket.getaddrinfo
+    real_gethostbyname = socket.gethostbyname
+    real_gethostbyname_ex = socket.gethostbyname_ex
+    real_gethostbyaddr = socket.gethostbyaddr
+
+    def _refuse(host: object) -> None:
+        refused.append(repr(host))
+        raise socket.gaierror(socket.EAI_NONAME, f"unit tests may not resolve {host!r}")
+
+    def _getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if not _resolves_without_dns(host):
+            _refuse(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def _gethostbyname(host: Any) -> Any:
+        if not _resolves_without_dns(host):
+            _refuse(host)
+        return real_gethostbyname(host)
+
+    def _gethostbyname_ex(host: Any) -> Any:
+        if not _resolves_without_dns(host):
+            _refuse(host)
+        return real_gethostbyname_ex(host)
+
+    def _gethostbyaddr(host: Any) -> Any:
+        # A reverse lookup asks a name server even for an address literal.
+        if not _is_loopback_name(host):
+            _refuse(host)
+        return real_gethostbyaddr(host)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
+    monkeypatch.setattr(socket, "gethostbyname", _gethostbyname)
+    monkeypatch.setattr(socket, "gethostbyname_ex", _gethostbyname_ex)
+    monkeypatch.setattr(socket, "gethostbyaddr", _gethostbyaddr)
+    yield
+    if refused:
+        pytest.fail(
+            f"the test resolved names that leave the machine: {', '.join(sorted(set(refused)))}",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

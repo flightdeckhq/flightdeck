@@ -1299,6 +1299,21 @@ and borders across the app, where they are not text.
 themselves (changes every chart, badge and swimlane at once); per-theme
 colours chosen in components (components would branch on the theme).
 
+## D289 -- An Anthropic stream helper is policed and reported when its manager is entered, once per entry
+
+**Date:** 2026-11-18
+**Decision:** supersedes D286's "after the estimate and the policy
+check" and D281's "Anthropic's `stream()` when called". Each entry,
+where the request goes out, finds the session active then, checks the
+policy (BLOCK and the kill switch raise from the `with`; a DEGRADE has
+the SDK rebuild that request) and emits the `pre_call`. A sync
+re-entry is a second request; an async one is the SDK's `RuntimeError`.
+**Why:** the SDK sends nothing before an entry and every request passes
+one; an unentered manager left an orphan `pre_call`.
+**Rejected alternative:** enforcing at `stream()` (weaker: a manager made
+under budget could send later, a sync re-entry would skip the check);
+checking at both moments (a WARN reported twice, one call refused twice).
+
 ## D290 -- Usage is asked for where the request is final, never at a layer whose decision the caller observes
 
 **Date:** 2026-11-18

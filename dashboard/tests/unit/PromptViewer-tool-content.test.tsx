@@ -104,16 +104,16 @@ describe("PromptViewer — a tool call's arguments and result", () => {
     expect(screen.getByText("·")).toBeInTheDocument();
   });
 
-  it("Raw shows the arguments and the result exactly as stored", async () => {
+  it("JSON shows the arguments and the result exactly as stored", async () => {
     const content = fixture("mcp_tool_call");
     await renderContent(content);
-    fireEvent.click(screen.getByTestId("prompt-box-tool-output-raw"));
-    expect(screen.getByTestId("prompt-box-tool-output")).toHaveAttribute("data-view", "raw");
-    const raw = screen.getByTestId("prompt-box-tool-output-raw-json");
+    fireEvent.click(screen.getByTestId("prompt-box-tool-output-json"));
+    expect(screen.getByTestId("prompt-box-tool-output")).toHaveAttribute("data-view", "json");
+    const raw = screen.getByTestId("prompt-box-tool-output-json-view");
     expect(raw).toHaveTextContent('"type": "text"');
     expect(raw).toHaveTextContent('"text": "127.0.0.1 localhost"');
-    // The arguments box keeps its own Pretty view.
-    expect(screen.getByTestId("prompt-box-tool-input")).toHaveAttribute("data-view", "pretty");
+    // The arguments box keeps its own Rendered view.
+    expect(screen.getByTestId("prompt-box-tool-input")).toHaveAttribute("data-view", "rendered");
   });
 
   it("arguments that are text show as written", async () => {

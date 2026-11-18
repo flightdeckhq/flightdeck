@@ -112,7 +112,7 @@ test.describe("T185 — the Prompts tab shows a Responses reasoning response", (
     await expect(response.getByTestId("responses-status")).toHaveCount(0);
 
     // The JSON view keeps the encrypted content as stored.
-    await drawer.getByTestId("prompt-box-response-raw").click();
-    await expect(drawer.getByTestId("prompt-box-response-raw-json")).toContainText("gAAAAABT185");
+    await drawer.getByTestId("prompt-box-response-json").click();
+    await expect(drawer.getByTestId("prompt-box-response-json-view")).toContainText("gAAAAABT185");
   });
 });

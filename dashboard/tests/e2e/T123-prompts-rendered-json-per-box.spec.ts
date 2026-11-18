@@ -1,13 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { API_URL } from "./_stack";
 
-// T123 — every box in the Prompts panel has its own Pretty / Raw
+// T123 — every box in the Prompts panel has its own Rendered / JSON
 // toggle. The seed's prompt_content_post_call (on the sensor agent's
 // mcp-active session) is an Anthropic call shaped like a Claude Code
 // turn: a system prompt, a user message whose text is JSON, an
 // assistant message with text and tool_use blocks, a tool_result whose
-// content is a JSON string, a tool declaration and a response. Pretty
-// renders the blocks and pretty-prints the JSON; Raw shows the stored
+// content is a JSON string, a tool declaration and a response. Rendered
+// shows the blocks and pretty-prints the JSON; JSON shows the stored
 // value. The drawer is deep-linked by event id, read from the API.
 // Theme-agnostic per Rule 40c.3: assertions read test ids and text.
 
@@ -15,8 +15,8 @@ import { API_URL } from "./_stack";
 // seed.py).
 const MCP_ACTIVE_SESSION_ID = "f53c6626-fcdb-5452-9cf6-8472ef15dfca";
 
-test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
-  test("each box toggles on its own and Pretty pretty-prints JSON", async ({ page }) => {
+test.describe("T123 — Prompts panel Rendered / JSON per box", () => {
+  test("each box toggles on its own and Rendered pretty-prints JSON", async ({ page }) => {
     const resp = await page.request.get(
       `${API_URL}/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
@@ -37,11 +37,13 @@ test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
     const boxes = ["system", "message-0", "message-1", "message-2", "tool-0", "response"];
     for (const id of boxes) {
       const box = drawer.getByTestId(`prompt-box-${id}`);
-      await expect(box).toHaveAttribute("data-view", "pretty");
-      await expect(drawer.getByTestId(`prompt-box-${id}-raw`)).toBeVisible();
+      await expect(box).toHaveAttribute("data-view", "rendered");
+      // The tabs are named for what they show.
+      await expect(drawer.getByTestId(`prompt-box-${id}-rendered`)).toHaveText("Rendered");
+      await expect(drawer.getByTestId(`prompt-box-${id}-json`)).toHaveText("JSON");
     }
 
-    // A message whose text is JSON is indented in Pretty.
+    // A message whose text is JSON is indented in the Rendered view.
     const jsonMessage = drawer.getByTestId("prompt-box-message-0");
     await expect(jsonMessage.getByTestId("pretty-json")).toContainText('"task": "list the repo"');
 
@@ -55,19 +57,19 @@ test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
       "README.md",
     );
 
-    // Raw on one box shows the stored message and leaves the rest alone.
-    await drawer.getByTestId("prompt-box-message-1-raw").click();
-    await expect(drawer.getByTestId("prompt-box-message-1")).toHaveAttribute("data-view", "raw");
-    await expect(drawer.getByTestId("prompt-box-message-1-raw-json")).toContainText('"tool_use"');
-    await expect(drawer.getByTestId("prompt-box-message-0")).toHaveAttribute("data-view", "pretty");
-    await expect(drawer.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "pretty");
+    // The JSON view of one box shows the stored message and leaves the rest alone.
+    await drawer.getByTestId("prompt-box-message-1-json").click();
+    await expect(drawer.getByTestId("prompt-box-message-1")).toHaveAttribute("data-view", "json");
+    await expect(drawer.getByTestId("prompt-box-message-1-json-view")).toContainText('"tool_use"');
+    await expect(drawer.getByTestId("prompt-box-message-0")).toHaveAttribute("data-view", "rendered");
+    await expect(drawer.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "rendered");
 
-    // Raw wraps at the box's width instead of scrolling sideways. The
+    // The JSON view wraps at the box's width instead of scrolling sideways. The
     // tool_result's escaped JSON string (the seed makes it about twice
     // the box's width) is one long line: unwrapped it is wider than the
     // box, wrapped it fits.
-    await drawer.getByTestId("prompt-box-message-2-raw").click();
-    const widths = await drawer.getByTestId("prompt-box-message-2-raw-json").evaluate((el) => {
+    await drawer.getByTestId("prompt-box-message-2-json").click();
+    const widths = await drawer.getByTestId("prompt-box-message-2-json-view").evaluate((el) => {
       const pre = el.querySelector("pre")!;
       const wrapped = { scroll: pre.scrollWidth, client: pre.clientWidth };
       const saved = pre.style.cssText;
@@ -77,15 +79,15 @@ test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
       pre.style.cssText = saved;
       return { wrapped, unwrapped };
     });
-    expect(widths.unwrapped.scroll, "the raw line is long enough to overflow unwrapped").toBeGreaterThan(
+    expect(widths.unwrapped.scroll, "the JSON line is long enough to overflow unwrapped").toBeGreaterThan(
       widths.unwrapped.client,
     );
-    expect(widths.wrapped.scroll, "the raw view wraps instead of scrolling sideways").toBeLessThanOrEqual(
+    expect(widths.wrapped.scroll, "the JSON view wraps instead of scrolling sideways").toBeLessThanOrEqual(
       widths.wrapped.client,
     );
-    await drawer.getByTestId("prompt-box-message-2-pretty").click();
+    await drawer.getByTestId("prompt-box-message-2-rendered").click();
 
-    await drawer.getByTestId("prompt-box-message-1-pretty").click();
-    await expect(drawer.getByTestId("prompt-box-message-1")).toHaveAttribute("data-view", "pretty");
+    await drawer.getByTestId("prompt-box-message-1-rendered").click();
+    await expect(drawer.getByTestId("prompt-box-message-1")).toHaveAttribute("data-view", "rendered");
   });
 });

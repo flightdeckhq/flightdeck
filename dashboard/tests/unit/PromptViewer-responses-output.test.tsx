@@ -5,7 +5,7 @@ import { cleanup, render, screen, within, fireEvent } from "@testing-library/rea
 import { PromptViewer } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
 
-// The Prompts tab's Pretty view of an OpenAI Responses call's response:
+// The Prompts tab's Rendered view of an OpenAI Responses call's response:
 // its output items one by one, in the Responses API's terms, then its
 // status and error and the token line. The live fixtures are bodies the
 // pipeline served for real calls (fixtures/responses-output-content.json
@@ -66,7 +66,7 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
     expect(within(call).getByTestId("responses-call-id")).toHaveTextContent("call_9IQorB7WiLKDYNXtObQMBB75");
     expect(within(call).getByTestId("kv-label")).toHaveTextContent("city:");
     expect(call).toHaveTextContent("Paris");
-    // The response object's settings stay in Raw.
+    // The response object's settings stay in the JSON view.
     expect(responseBox()).not.toHaveTextContent("access_programs");
     expect(responseBox()).not.toHaveTextContent("billing");
     expect(within(responseBox()).queryByTestId("pretty-json")).toBeNull();
@@ -99,8 +99,8 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
       "encrypted_content · encrypted reasoning, in JSON",
     );
     expect(responseBox()).not.toHaveTextContent(encrypted.slice(0, 24));
-    fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
-    expect(screen.getByTestId("prompt-box-response-raw-json")).toHaveTextContent(encrypted.slice(0, 24));
+    fireEvent.click(screen.getByTestId("prompt-box-response-json"));
+    expect(screen.getByTestId("prompt-box-response-json-view")).toHaveTextContent(encrypted.slice(0, 24));
   });
 
   it("a reasoning item shows its summary text, then the answer", async () => {
@@ -281,10 +281,10 @@ describe("PromptViewer: a Responses call's response keeps what it had", () => {
     expect(within(responseBox()).queryByTestId("responses-error")).toBeNull();
   });
 
-  it("Raw keeps the whole response as stored", async () => {
+  it("the JSON view keeps the whole response as stored", async () => {
     await renderContent(fixture("responses_item_list"));
-    fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
-    const raw = screen.getByTestId("prompt-box-response-raw-json");
+    fireEvent.click(screen.getByTestId("prompt-box-response-json"));
+    const raw = screen.getByTestId("prompt-box-response-json-view");
     expect(raw).toHaveTextContent('"access_programs": null');
     expect(raw).toHaveTextContent('"type": "function_call"');
   });

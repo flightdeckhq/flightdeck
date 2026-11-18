@@ -90,7 +90,7 @@ function toolName(box: HTMLElement): string | null {
   return box.firstElementChild?.textContent ?? null;
 }
 
-/** A box's Pretty body: everything after its header row. */
+/** A box's Rendered body: everything after its header row. */
 function prettyBody(testId: string): string {
   const box = screen.getByTestId(testId);
   return Array.from(box.children)
@@ -126,18 +126,18 @@ describe("PromptViewer: an OpenAI chat tool-use loop, as stored", () => {
     expect(reply).toHaveTextContent("Sunny, 21 C");
   });
 
-  it("Raw shows each message exactly as stored", async () => {
+  it("JSON shows each message exactly as stored", async () => {
     await renderContent(fixture("chat_tool_loop"));
-    fireEvent.click(screen.getByTestId("prompt-box-message-1-raw"));
-    const raw = screen.getByTestId("prompt-box-message-1-raw-json");
+    fireEvent.click(screen.getByTestId("prompt-box-message-1-json"));
+    const raw = screen.getByTestId("prompt-box-message-1-json-view");
     expect(raw).toHaveTextContent('"content": null');
     expect(raw).toHaveTextContent('"arguments": "{\\"city\\":\\"Paris\\"}"');
     expect(raw).toHaveTextContent('"id": "call_WQ8qSG2k17m77npWHcxO2enm"');
     expect(raw).toHaveTextContent('"refusal": null');
     expect(raw).toHaveTextContent('"annotations": []');
     expect(within(message(1)).queryAllByTestId("content-block-tool-use")).toHaveLength(0);
-    fireEvent.click(screen.getByTestId("prompt-box-message-2-raw"));
-    expect(screen.getByTestId("prompt-box-message-2-raw-json")).toHaveTextContent(
+    fireEvent.click(screen.getByTestId("prompt-box-message-2-json"));
+    expect(screen.getByTestId("prompt-box-message-2-json-view")).toHaveTextContent(
       '"tool_call_id": "call_WQ8qSG2k17m77npWHcxO2enm"',
     );
     expect(within(message(2)).queryByTestId("chat-tool-reply")).toBeNull();
@@ -315,14 +315,14 @@ describe("PromptViewer: OpenAI chat tool-call shapes", () => {
 });
 
 describe("PromptViewer: which call an OpenAI tool reply answers", () => {
-  it("a reply whose call is not in the list shows the call's id, shortened; Raw keeps it whole", async () => {
+  it("a reply whose call is not in the list shows the call's id, shortened; JSON keeps it whole", async () => {
     const id = "call_9IQorB7WiLKDYNXtObQMBB75";
     await renderContent(chat([{ role: "tool", tool_call_id: id, content: "Sunny" }]));
     const target = within(message(0)).getByTestId("tool-reply-target");
     expect(target).toHaveAttribute("data-target", "call-id");
     expect(target.textContent).toBe("call_9IQorB7WiLK…");
-    fireEvent.click(screen.getByTestId("prompt-box-message-0-raw"));
-    expect(screen.getByTestId("prompt-box-message-0-raw-json")).toHaveTextContent(`"tool_call_id": "${id}"`);
+    fireEvent.click(screen.getByTestId("prompt-box-message-0-json"));
+    expect(screen.getByTestId("prompt-box-message-0-json-view")).toHaveTextContent(`"tool_call_id": "${id}"`);
   });
 
   it("a reply whose call is not in the list but which names its tool shows that name", async () => {

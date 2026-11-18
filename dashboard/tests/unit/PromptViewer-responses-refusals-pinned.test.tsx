@@ -8,7 +8,8 @@ import type { EventContent } from "@/lib/types";
 // What renders for content without a refusal stays as it was before the
 // Responses output view and the refusal block existed, every byte of
 // the Prompts tab's markup: the expected markup was captured by
-// rendering these contents with main's PromptViewer at 3f1a7618 into
+// rendering these contents with main's PromptViewer at 9343288b (the
+// Rendered | JSON toggle; first captured at 3f1a7618, before it) into
 // fixtures/prompts-pinned-before-responses-refusals.json. A Responses
 // call's response box is the one thing that changes for it, so its
 // request side is pinned with that box taken out. Set

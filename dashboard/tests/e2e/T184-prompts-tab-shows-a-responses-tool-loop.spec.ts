@@ -11,7 +11,7 @@
  * shows the call (the function's name, its ``call_id``, its arguments as
  * fields), not the response object, with the token line; the second
  * call's input shows the same item the same way, and its response shows
- * the answer's text. Raw keeps the response as stored.
+ * the answer's text. The JSON view keeps the response as stored.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -159,9 +159,9 @@ test.describe("T184 — the Prompts tab shows a Responses tool loop", () => {
     await expect(response).toContainText("Tokens in: 61 · Tokens out: 17");
     const responseCall = await call.innerHTML();
 
-    // Raw keeps the response as stored.
-    await drawer.getByTestId("prompt-box-response-raw").click();
-    const raw = drawer.getByTestId("prompt-box-response-raw-json");
+    // The JSON view keeps the response as stored.
+    await drawer.getByTestId("prompt-box-response-json").click();
+    const raw = drawer.getByTestId("prompt-box-response-json-view");
     await expect(raw).toContainText('"access_programs": null');
     await expect(raw).toContainText(`"call_id": "${callId}"`);
 

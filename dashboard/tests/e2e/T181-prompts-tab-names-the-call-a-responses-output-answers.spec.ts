@@ -12,7 +12,7 @@
  * event drawer, the ``function_call`` item shows the function's name, its
  * ``call_id`` and its arguments as fields; the output item is labelled
  * ``tool result`` with the name of the function it answers, keeps its
- * ``call_id`` line and shows its output; Raw keeps the item as stored.
+ * ``call_id`` line and shows its output; JSON keeps the item as stored.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -134,9 +134,9 @@ test.describe("T181 — the Prompts tab names the function a Responses output an
     await expect(drawer.getByTestId("prompt-box-instructions")).toContainText("You are a weather assistant.");
     await expect(drawer.getByTestId("responses-input-item-0")).toContainText("T181-USER");
 
-    // Raw keeps the output item as stored.
-    await drawer.getByTestId("prompt-box-input-2-raw").click();
-    const raw = drawer.getByTestId("prompt-box-input-2-raw-json");
+    // JSON keeps the output item as stored.
+    await drawer.getByTestId("prompt-box-input-2-json").click();
+    const raw = drawer.getByTestId("prompt-box-input-2-json-view");
     await expect(raw).toContainText('"type": "function_call_output"');
     await expect(raw).toContainText(`"call_id": "${callId}"`);
     await expect(output).toHaveCount(0);

@@ -126,15 +126,20 @@ function RoleBadge({
   );
 }
 
-/* ---- Pretty / Raw per box ----
+/* ---- Rendered / JSON per box ----
  *
  * Every box (system prompt, each message, each tool, the response)
- * carries its own toggle. Pretty renders content blocks for reading and
- * pretty-prints any JSON, including a string that holds JSON; Raw shows
- * the value exactly as the provider received or returned it.
+ * carries its own toggle. Rendered shows the content for reading
+ * (content blocks, tool cards, parts) and pretty-prints any JSON,
+ * including a string that holds JSON; JSON shows the value exactly as
+ * the provider received or returned it, as indented, highlighted JSON.
  */
 
-type ViewMode = "pretty" | "raw";
+type ViewMode = "rendered" | "json";
+
+/** The views, in the toggle's order, and the label each is written with. */
+const VIEW_MODES: readonly ViewMode[] = ["rendered", "json"];
+const VIEW_LABELS: Record<ViewMode, string> = { rendered: "Rendered", json: "JSON" };
 
 function ViewToggle({
   mode,
@@ -149,19 +154,19 @@ function ViewToggle({
 }) {
   return (
     <div className="flex gap-3" role="group" aria-label={`View for ${name}`} data-testid={`${testId}-toggle`}>
-      {(["pretty", "raw"] as const).map((m) => (
+      {VIEW_MODES.map((m) => (
         <button
           key={m}
           type="button"
           aria-pressed={mode === m}
           data-testid={`${testId}-${m}`}
-          className="px-1 py-0.5 text-[11px] capitalize"
+          className="px-1 py-0.5 text-[11px]"
           style={mode === m
             ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }
             : { color: "var(--text-muted)" }}
           onClick={() => onChange(m)}
         >
-          {m}
+          {VIEW_LABELS[m]}
         </button>
       ))}
     </div>
@@ -182,22 +187,22 @@ function ViewBox({
   testId: string;
   children: React.ReactNode;
 }) {
-  const [mode, setMode] = useState<ViewMode>("pretty");
+  const [mode, setMode] = useState<ViewMode>("rendered");
   return (
     <div data-testid={testId} data-view={mode}>
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <div className="min-w-0">{label}</div>
         <ViewToggle mode={mode} onChange={setMode} testId={testId} name={name} />
       </div>
-      {mode === "pretty" ? (
+      {mode === "rendered" ? (
         children
       ) : (
         <div
-          data-testid={`${testId}-raw-json`}
+          data-testid={`${testId}-json-view`}
           className="rounded-md p-2.5"
           style={{ background: "var(--bg-elevated)" }}
         >
-          {/* Raw wraps at the box's width rather than scrolling sideways. */}
+          {/* The JSON view wraps at the box's width rather than scrolling sideways. */}
           <SyntaxJson data={raw} wrap />
         </div>
       )}
@@ -265,7 +270,7 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
 
 /** The mark under a content block that carries ``cache_control`` (an
  *  Anthropic cache breakpoint: the provider caches the prompt up to and
- *  including the block), in the provider's own terms, as Raw shows them:
+ *  including the block), in the provider's own terms, as the JSON view shows them:
  *  the field, its type and, when set, its ttl. The text is the whole
  *  mark; nothing more hides behind a hover. */
 function CacheControlMark({ control }: { control: unknown }) {
@@ -519,7 +524,7 @@ function ownName(entry: Record<string, unknown>): string | null {
 /** The most of a call id a reply's label shows, when the call it
  *  answers is not in view: OpenAI's ids are ``call_`` and 24 more
  *  characters, and the first 16 tell a list's calls apart and fit
- *  beside the label in the narrowest drawer. Raw shows the whole id. */
+ *  beside the label in the narrowest drawer. The JSON view shows the whole id. */
 const REPLY_CALL_ID_SHOWN_CHARS = 16;
 
 function shortCallId(id: string): string {
@@ -724,7 +729,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
               const role = String(msg.role ?? `message_${i}`);
               return (
                 // Key is event-id-scoped so React doesn't re-use a longer
-                // event's DOM nodes (or a box's Pretty/Raw choice) when
+                // event's DOM nodes (or a box's Rendered/JSON choice) when
                 // switching to a shorter event's messages list.
                 <ViewBox key={`${eventId}-msg-${i}`} raw={entry} name={`message ${i + 1} (${role})`} testId={`prompt-box-message-${i}`} label={<RoleBadge role={role} />}>
                   <ChatMessageBody msg={msg} reply={toolReplies.get(i)} />
@@ -807,7 +812,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
       {content.response != null && !responseIsToolPlaceholder && (
         <Section title="Response">
           <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
-            <PrettyResponse
+            <RenderedResponse
               response={content.response}
               provider={provider}
               pluginRow={clientType === ClientType.ClaudeCode}
@@ -1183,7 +1188,7 @@ function CallId({ value }: { value: unknown }) {
  * other item as its JSON, never dropped. Then the response's ``status``
  * when it is not ``completed`` (with ``incomplete_details``' reason) and
  * its ``error``. The rest of the object (its settings, ``billing``,
- * ``usage`` beyond the token line, the text's ``annotations``) is in Raw.
+ * ``usage`` beyond the token line, the text's ``annotations``) is in the JSON view.
  */
 
 /** The ``status`` of a response that finished normally: shown only
@@ -1203,13 +1208,13 @@ const NO_DETAILS = "(no details)";
 
 /** The mark under a reasoning item whose ``encrypted_content`` the
  *  response carries (a caller that asked for it to pass reasoning back
- *  without storing it at OpenAI): the field and where it is. Pretty
+ *  without storing it at OpenAI): the field and where it is. The Rendered view
  *  never prints it. */
 const ENCRYPTED_REASONING_MARK = "encrypted_content · encrypted reasoning, in JSON";
 
 /** The fields that say what each hosted tool's call did, in the order
  *  they show; every other field (its ``id``, ``type`` and ``status``,
- *  which the label carries) is in Raw. An ``action`` object's own fields
+ *  which the label carries) is in the JSON view. An ``action`` object's own fields
  *  show in its place. */
 const RESPONSES_TOOL_ITEM_FIELDS: Record<string, readonly string[]> = {
   web_search_call: ["action"],
@@ -1819,7 +1824,7 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
  * terms (``contents``, ``parts``, ``user`` / ``model``, ``functionCall``
  * and its ``args``, ``functionResponse``, ``candidates``,
  * ``finishReason``) and nothing is rewritten into another provider's
- * shape (CLAUDE.md rule 20); each box's Raw is the stored piece as it
+ * shape (CLAUDE.md rule 20); each box's JSON view is the stored piece as it
  * is. An embeddings event (its type, which the drawer passes) keeps the
  * view every provider's embeddings have.
  */
@@ -1966,14 +1971,14 @@ function isSignatureOnly(part: Record<string, unknown>): boolean {
 
 /** The mark under a turn whose parts carry thought signatures: the field
  *  as stored and that its values, opaque bytes the model reads back, are
- *  in Raw. Shown once per turn; the values are never shown in Pretty. */
+ *  in the JSON view. Shown once per turn; the values are never rendered. */
 function ThoughtSignatureMark({ field }: { field: string }) {
-  return <RawOnlyMark testId="gemini-thought-signature" text={`${field} · opaque bytes, in Raw`} />;
+  return <RawOnlyMark testId="gemini-thought-signature" text={`${field} · opaque bytes, in JSON`} />;
 }
 
-/** The mark under a piece whose stored value Pretty does not show
- *  (opaque or encrypted bytes): the field as stored and where its value
- *  is, in the secondary text colour. */
+/** The mark under a piece whose stored value the Rendered view does not
+ *  show (opaque or encrypted bytes): the field as stored and where its
+ *  value is, in the secondary text colour. */
 function RawOnlyMark({ testId, text }: { testId: string; text: string }) {
   return (
     <div data-testid={testId} className="mt-1 flex justify-end">
@@ -2123,8 +2128,8 @@ interface GeminiToolBox {
 }
 
 /** The boxes of a body's ``tools``: each ``functionDeclarations`` entry
- *  (its Raw that declaration), and each other key of a tool, a built-in
- *  tool such as ``googleSearch`` or ``codeExecution`` (its Raw the tool
+ *  (its JSON view that declaration), and each other key of a tool, a built-in
+ *  tool such as ``googleSearch`` or ``codeExecution`` (its JSON view the tool
  *  entry it is in). A tool that is not an object is one box of its own. */
 export function geminiToolBoxes(tools: unknown): GeminiToolBox[] {
   if (!Array.isArray(tools)) return [];
@@ -2368,9 +2373,9 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
   );
 }
 
-/* ---- Pretty response renderer ---- */
+/* ---- Rendered response ---- */
 
-function PrettyResponse({
+function RenderedResponse({
   response,
   provider,
   pluginRow = false,
@@ -2574,7 +2579,7 @@ function ToolInputFields({ input, pointers }: { input: Record<string, unknown>; 
   return <KeyValueList data={input} cut={cut} />;
 }
 
-/* ---- Tool response block renderers (tool_call Pretty view) ---- */
+/* ---- Tool response block renderers (a tool_call's Rendered view) ---- */
 
 function ToolResponseBlocks({ blocks, pluginRow }: { blocks: unknown[]; pluginRow: boolean }) {
   return (
@@ -2596,7 +2601,7 @@ function ToolResponseBlocks({ blocks, pluginRow }: { blocks: unknown[]; pluginRo
  * it cut beside the content (lib/cut-json): the block's ``truncated``
  * lists the JSON Pointer of each cut value, and a cut string ends with
  * "…". Earlier plugin versions stored the JSON text cut mid-way and
- * followed by "…", with no list; such a text is read up to the cut. Raw
+ * followed by "…", with no list; such a text is read up to the cut. The JSON view
  * shows the block as stored either way. */
 
 function ToolResultBlock({

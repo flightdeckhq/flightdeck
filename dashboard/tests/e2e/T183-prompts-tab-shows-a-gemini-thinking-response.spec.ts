@@ -10,7 +10,7 @@
  * Opened in the event drawer, the system instruction shows under its own
  * name, the thought is marked ``thought`` apart from the answer, the
  * signature is one mark naming the field (its opaque value not in
- * Pretty), the token line counts the thoughts as output, and Raw holds
+ * Rendered), the token line counts the thoughts as output, and JSON holds
  * the signature as stored.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
@@ -71,7 +71,7 @@ test.describe("T183 — the Prompts tab shows a Gemini thinking response", () =>
     if (agent) await endPrivateAgent(page, agent);
   });
 
-  test("the thought apart from the answer, the signature a mark with its value in Raw", async ({ page }) => {
+  test("the thought apart from the answer, the signature a mark with its value in JSON", async ({ page }) => {
     agent = createPrivateAgent("t183-gemini-thinking", 1);
     await startPrivateAgent(page, agent);
     const sessionId = agent.sessionIds[0]!;
@@ -93,14 +93,14 @@ test.describe("T183 — the Prompts tab shows a Gemini thinking response", () =>
     await expect(thought).toContainText("T183-THOUGHT");
     await expect(response).toContainText("391");
     // One mark for the candidate's signed parts, the value not shown.
-    await expect(response.getByTestId("gemini-thought-signature")).toHaveText("thoughtSignature · opaque bytes, in Raw");
+    await expect(response.getByTestId("gemini-thought-signature")).toHaveText("thoughtSignature · opaque bytes, in JSON");
     // The token line every provider's response shows: the prompt, and
     // the candidates with the thoughts.
     await expect(response).toContainText("Tokens in: 17 · Tokens out: 123");
     await expect(response).not.toContainText(SIGNATURE);
     await expect(response.getByTestId("gemini-finish-reason")).toHaveCount(0);
 
-    await drawer.getByTestId("prompt-box-response-raw").click();
-    await expect(drawer.getByTestId("prompt-box-response-raw-json")).toContainText(`"thoughtSignature": "${SIGNATURE}"`);
+    await drawer.getByTestId("prompt-box-response-json").click();
+    await expect(drawer.getByTestId("prompt-box-response-json-view")).toContainText(`"thoughtSignature": "${SIGNATURE}"`);
   });
 });

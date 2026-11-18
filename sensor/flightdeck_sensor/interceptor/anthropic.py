@@ -103,7 +103,7 @@ from flightdeck_sensor.interceptor.platform import (
     PLATFORM_VERTEX,
     endpoint_of,
 )
-from flightdeck_sensor.providers._access import is_raw_stream
+from flightdeck_sensor.providers._access import UNREADABLE, ParsedRawResponse, is_raw_stream
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 
 if TYPE_CHECKING:
@@ -395,8 +395,9 @@ class SensorMessages(base.SessionProxy):
         sensor awaits that parse (no network, and the SDK caches the
         result for the caller's own ``parse()``), meters the parsed
         message and hands the caller the response itself. A body that
-        fails to parse is metered with the estimate and the caller's own
-        ``parse()`` raises, exactly as without the sensor. A response
+        fails to parse is metered with the estimate and without its
+        content, and the caller's own ``parse()`` raises, exactly as
+        without the sensor. A response
         with a synchronous ``parse()`` (the 0.x ``LegacyAPIResponse``) is
         metered as returned."""
         kept: dict[str, Any] = {}
@@ -414,8 +415,8 @@ class SensorMessages(base.SessionProxy):
                 # The caller's own parse() raises this, as it would without
                 # the sensor; the call itself succeeded and is metered with
                 # the estimate, as on the 0.x raw view.
-                return raw_views.ParsedRawResponse(None, headers)
-            return raw_views.ParsedRawResponse(parsed, headers)
+                return ParsedRawResponse(UNREADABLE, headers)
+            return ParsedRawResponse(parsed, headers)
 
         async def _call() -> Any:
             result = await base.call_async(_read, kwargs, session, provider)

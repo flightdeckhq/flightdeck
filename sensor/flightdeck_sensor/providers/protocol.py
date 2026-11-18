@@ -285,12 +285,17 @@ class PromptContent:
     SDK built (always a list of turns), with that body's
     ``systemInstruction`` parts in ``system``; Gemini has no messages
     parameter either.
+
+    ``response`` is the message the call returned, as its dump (a dict),
+    ``{}`` when there is none, or, for an object that is not a message,
+    the object itself: the transport sends it when JSON can write it and
+    otherwise sends the event without its content.
     """
 
     system: str | list[Any] | None
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] | None
-    response: dict[str, Any]
+    response: Any
     provider: str
     model: str
     session_id: str

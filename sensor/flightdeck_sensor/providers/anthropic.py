@@ -6,7 +6,6 @@ implementation with no dependency on tokencap.
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 import logging
 from datetime import UTC
@@ -15,7 +14,7 @@ from typing import Any
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers._access import field as _field
 from flightdeck_sensor.providers._access import given as _given
-from flightdeck_sensor.providers._access import is_raw_stream
+from flightdeck_sensor.providers._access import is_raw_stream, response_message, stored_response
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -104,6 +103,16 @@ def _raw_stream_classes() -> tuple[type, ...]:
         return (anthropic.Stream, anthropic.AsyncStream)
     except Exception:
         return ()
+
+
+def _is_stream_object(obj: Any) -> bool:
+    """Whether ``obj`` is one of the SDK's event streams: a raw stream, or a
+    ``messages.stream()`` helper (``MessageStream`` / ``AsyncMessageStream``
+    and their beta forms), which the class's ``current_message_snapshot``
+    property marks on every release."""
+    return is_raw_stream(obj, _raw_stream_classes()) or hasattr(
+        type(obj), "current_message_snapshot"
+    )
 
 
 def _request_headers_of(stream: Any) -> Any:
@@ -201,10 +210,7 @@ class AnthropicProvider:
         if self._platform:
             out["platform"] = self._platform
         try:
-            obj = response
-            with contextlib.suppress(Exception):
-                if hasattr(obj, "parse") and callable(obj.parse):
-                    obj = obj.parse()
+            obj = response_message(response)
             headers: Any = None
             for attr in ("headers", "_headers", "response_headers"):
                 headers = getattr(response, attr, None) or getattr(obj, attr, None)
@@ -253,12 +259,7 @@ class AnthropicProvider:
         economics are visible in analytics.
         """
         try:
-            obj = response
-            # Handle raw response wrappers
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
-
+            obj = response_message(response)
             usage = getattr(obj, "usage", None)
             if usage is None:
                 return TokenUsage()
@@ -325,10 +326,7 @@ class AnthropicProvider:
         """Served model, service tier, speed, data residency and server-tool
         counters from a ``Message`` (or a raw wrapper around one)."""
         try:
-            obj = response
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
+            obj = response_message(response)
             return _details(getattr(obj, "model", None), getattr(obj, "usage", None))
         except Exception:
             return None
@@ -437,10 +435,7 @@ class AnthropicProvider:
         accumulated snapshot carries it. ``None`` for a raw stream object
         and whenever the field is missing or not a string."""
         try:
-            obj = response
-            with contextlib.suppress(Exception):
-                if hasattr(obj, "parse") and callable(obj.parse):
-                    obj = obj.parse()
+            obj = response_message(response)
             snapshot = self._snapshot(obj)
             if snapshot is not None:
                 obj = snapshot
@@ -493,40 +488,11 @@ class AnthropicProvider:
             # message is complete. Capture the helper's accumulated
             # snapshot instead, which never reads further from the
             # network; ``get_final_message()`` would drain the rest of
-            # the stream and defeat the caller's early exit. The snapshot
-            # is also the only JSON-safe shape here, because the stream
-            # object's ``__dict__`` carries httpx state.
+            # the stream and defeat the caller's early exit. A helper
+            # with no snapshot yet, like a raw stream, assembled nothing.
             snapshot = self._snapshot(response)
-            if snapshot is not None:
-                response = snapshot
-            resp_dict: dict[str, Any] = {}
-            if hasattr(response, "model_dump"):
-                # ``warnings=False``: a structured-output ``ParsedMessage``
-                # carries ``ParsedTextBlock`` content under the SDK's
-                # content-block union, which pydantic's serializer flags
-                # with UserWarnings in the caller's process; the dump is
-                # fine for storage, so keep the caller's warning stream
-                # clean. Objects whose model_dump takes no such argument
-                # get the plain call.
-                try:
-                    resp_dict = response.model_dump(warnings=False)
-                except TypeError:
-                    resp_dict = response.model_dump()
-            elif hasattr(response, "__dict__"):
-                # Last-resort fallback: prune attributes whose values
-                # are not JSON-serialisable so the wire payload stays
-                # valid even on exotic response shapes.
-                import json
-
-                resp_dict = {}
-                for k, v in dict(response.__dict__).items():
-                    try:
-                        json.dumps(v)
-                    except (TypeError, ValueError):
-                        continue
-                    resp_dict[k] = v
-            else:
-                resp_dict = {"raw": str(response)}
+            message = snapshot if snapshot is not None else response_message(response)
+            resp_dict = stored_response(message, _is_stream_object)
 
             return PromptContent(
                 system=_given(request_kwargs.get("system")),
@@ -561,11 +527,7 @@ class AnthropicProvider:
         any failure. Never raises.
         """
         try:
-            obj = response
-            if hasattr(obj, "parse") and callable(obj.parse):
-                with contextlib.suppress(Exception):
-                    obj = obj.parse()
-
+            obj = response_message(response)
             content = getattr(obj, "content", None)
             if not content:
                 return []

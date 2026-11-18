@@ -52,6 +52,7 @@ from flightdeck_sensor.core.types import (
     PolicyDecisionSummary,
     TokenUsage,
 )
+from flightdeck_sensor.providers._access import DROPPED_STREAM, read_once
 
 
 def _safe_pct(used: int, limit: int | None) -> int:
@@ -1651,11 +1652,6 @@ _TRANSPORT_MODULES = frozenset(
 )
 
 
-# Stands in for a stream the finalizer dropped: it has no attributes, so
-# content capture stores an empty response rather than a placeholder.
-_DROPPED_STREAM = types.SimpleNamespace()
-
-
 def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> str:
     """``abort_reason`` of a failed stream: where it failed, or ``timeout``
     whatever the position when the exception is a timeout."""
@@ -2064,7 +2060,7 @@ class _GuardCore:
                 self._provider,
                 message
                 if message is not None
-                else (self._stream if self._stream is not None else _DROPPED_STREAM),
+                else (self._stream if self._stream is not None else DROPPED_STREAM),
                 self._estimated,
                 latency_ms,
                 self._kwargs,
@@ -2782,7 +2778,13 @@ def _post_call(
     ``content_response`` is what content capture stores in place of
     ``response`` (a raw stream's partially assembled message when the
     caller left early); every other read still uses ``response``.
+
+    A raw-response wrapper (``with_raw_response``) is read once, here, as
+    the message its ``parse()`` returns, and every read below takes that
+    message: the stored content, the served model, usage, stop reason,
+    tool calls, and the wrapper's headers for ``provider_metadata``.
     """
+    response = read_once(response)
     # ``usage_override`` carries the counts a stream guard read from the
     # provider's in-stream usage events; stream objects themselves expose
     # no usage, so without it every streamed call would fall back to the
@@ -2802,21 +2804,11 @@ def _post_call(
             estimated,
         )
 
-    # Default to the model from the request kwargs (if known) so the
-    # event is correctly labelled when the response object does not
-    # expose ``.model`` directly. This matters for callers that route
-    # through the SDK's raw-response wrapper -- e.g. langchain-openai
-    # uses ``client.with_raw_response.create(**payload)`` which returns
-    # a ``LegacyAPIResponse``; ``getattr(response, "model", "")`` then
-    # returns ``""`` because the raw-response object does not surface
-    # the parsed ``model`` field. The request kwargs always carry the
-    # model the caller asked for, which is the right value to report
-    # for those paths.
+    # The model the response names (the served one, which can differ from
+    # the requested alias), else the model the request asked for: a
+    # stream object, a raw response whose parse failed and a streaming
+    # view never parsed name none.
     resp_model = provider.get_model(call_kwargs or {})
-    # Try to get model from response object as an override -- this
-    # catches model substitutions (e.g. some providers may rewrite
-    # the requested model to a deployment alias) when the response
-    # object exposes ``.model`` as an attribute.
     with contextlib.suppress(Exception):
         resp_model = getattr(response, "model", "") or resp_model
 

@@ -2,10 +2,15 @@ import { test, expect } from "@playwright/test";
 import {
   CODING_AGENT,
   SENSOR_AGENT,
-  bringSwimlaneRowIntoView,
+  readSwimlaneRows,
   waitForFleetReady,
   waitForInvestigateReady,
 } from "./_fixtures";
+
+// How long the Fleet row gets to show its pill. A walk to a row below
+// the fold takes up to a few seconds under load; 10 s is several times
+// that and leaves the /events half of the test most of its 30 s budget.
+const FLEET_PILL_TIMEOUT_MS = 10_000;
 
 // T22 — S-LBL vocabulary parity. F1 originally shipped a parallel
 // shorthand (``CC`` / ``SDK``) on the /events AGENT facet pill
@@ -26,14 +31,26 @@ test.describe("T22 — client_type label parity Fleet ↔ Investigate", () => {
       page,
     }) => {
       // ---- Fleet swimlane pill ----
+      // The row is found and its pill read in one browser evaluation per
+      // attempt, retried until the pill reads the expected label: the
+      // Fleet keeps re-rendering and swapping rows out of view, so a
+      // row looked up in one round trip may be gone by the next.
       await page.goto("/");
       await waitForFleetReady(page);
-      const row = await bringSwimlaneRowIntoView(page, fixture.name);
-      await expect(row).toBeVisible();
-      const fleetPill = row
-        .locator('[data-testid="swimlane-client-type-pill"]')
-        .first();
-      const fleetText = (await fleetPill.textContent())?.trim().toUpperCase();
+      let fleetText: string | undefined;
+      await expect
+        .poll(
+          async () => {
+            const row = (await readSwimlaneRows(page, [fixture.name]))[fixture.name];
+            fleetText = row?.visible ? row.clientTypePill?.toUpperCase() : undefined;
+            return fleetText;
+          },
+          {
+            message: `Fleet swimlane pill for ${fixture.name} (received: undefined while the row is not found)`,
+            timeout: FLEET_PILL_TIMEOUT_MS,
+          },
+        )
+        .toBe(fixture.expected);
 
       // ---- /events AGENT facet pill (S-LBL ground truth) ----
       await page.goto("/events");

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router";
 import { Activity, ListTree } from "lucide-react";
@@ -16,10 +16,17 @@ import { getProvider } from "@/lib/models";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { useAgentRuns } from "@/hooks/useAgentRuns";
+import { useNow } from "@/hooks/useNow";
+import { eventsCache } from "@/hooks/useSessionEvents";
+import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
+import { layoutRowLanes, runsAtOnce, runsAtOnceShown } from "@/lib/swimlane-lanes";
+import { DEFAULT_TIME_RANGE, TIMELINE_RANGE_MS, TIMELINE_WIDTH_PX } from "@/lib/constants";
+import { RUNS_CHIP_BORDER, RUNS_CHIP_TINT, segmentsFor } from "@/components/timeline/SwimLane";
+import { TIMELINE_SCALE_INSET_PX } from "@/components/timeline/Timeline";
 import { AgentDrawerEventsTab } from "./AgentDrawerEventsTab";
 import { AgentDrawerRunsTab } from "./AgentDrawerRunsTab";
 import { PerAgentSwimlaneModal } from "./PerAgentSwimlaneModal";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, Session } from "@/lib/types";
 
 // Mirrors SessionDrawer's slide width. The agent drawer sits at
 // z-30 so the run drawer (SessionDrawer, z-40) and the event detail
@@ -32,6 +39,13 @@ const DRAWER_WIDTH = 520;
 const PANEL_RUNS = 50;
 
 type DrawerTab = "events" | "runs";
+
+/** How often the swimlane button re-reads the runs at once: the
+ *  swimlane's window ends at whole seconds, so this is its own step. */
+const RUN_COUNT_TICK_MS = 1_000;
+
+/** An agent with no runs in the fleet store, as one stable value. */
+const NO_SESSIONS: readonly Session[] = [];
 
 interface AgentDrawerProps {
   /** Agent whose drawer is open; null keeps it mounted-but-hidden so
@@ -75,6 +89,7 @@ export function AgentDrawer({
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [swimlaneOpen, setSwimlaneOpen] = useState(false);
+  const openSwimlane = useCallback(() => setSwimlaneOpen(true), []);
   const [openPanels, setOpenPanels] = useState({
     mcp: false,
     context: false,
@@ -314,16 +329,11 @@ export function AgentDrawer({
                   padding: "0 14px 10px",
                 }}
               >
-                <button
-                  type="button"
-                  data-testid="agent-drawer-open-swimlane"
-                  aria-label={`Open ${agent.agent_name} in swimlane`}
-                  onClick={() => setSwimlaneOpen(true)}
-                  style={drawerActionButtonStyle}
-                >
-                  <Activity size={12} aria-hidden="true" />
-                  Open in swimlane
-                </button>
+                <OpenInSwimlaneButton
+                  agentId={agent.agent_id}
+                  agentName={agent.agent_name}
+                  onOpen={openSwimlane}
+                />
                 <Link
                   to={`/events?agent_id=${encodeURIComponent(agent.agent_id)}`}
                   data-testid="agent-drawer-open-in-events"
@@ -529,6 +539,98 @@ const drawerActionButtonStyle: React.CSSProperties = {
   padding: "4px 9px",
   cursor: "pointer",
 };
+
+/**
+ * The runs at once of ``sessions`` in the window the per-agent modal
+ * opens with: ``DEFAULT_TIME_RANGE`` ending at the swimlane's
+ * whole-second now (the modal's Timeline floors its end to the second),
+ * laid out on the swimlane panel's own width, as the Fleet row's runs
+ * chip counts them (``runsAtOnce``). Null with one run at once or none.
+ */
+function runsAtOnceAsTheModalOpens(sessions: readonly Session[], windowEndMs: number): number | null {
+  const d1 = windowEndMs;
+  const d0 = d1 - TIMELINE_RANGE_MS[DEFAULT_TIME_RANGE];
+  const spanPx = TIMELINE_WIDTH_PX - 2 * TIMELINE_SCALE_INSET_PX;
+  const layout = layoutRowLanes({
+    segments: sessions.flatMap((s) => segmentsFor(s, eventsCache.get(s.session_id))),
+    d0,
+    d1,
+    toX: (ms) => TIMELINE_SCALE_INSET_PX + ((ms - d0) / (d1 - d0)) * spanPx,
+    visibleLeft: 0,
+    visibleRight: TIMELINE_WIDTH_PX,
+  });
+  return runsAtOnce(layout);
+}
+
+/**
+ * Row 3's ``Open in swimlane``. With two or more of the agent's runs at
+ * once in the window the per-agent modal opens with, it names them
+ * (``Open in swimlane · 3 runs``) in the Fleet runs chip's accent, and
+ * carries the number in ``data-run-count``; otherwise it is the plain
+ * button. It reads its agent's runs from the fleet store, the events
+ * cache's write count and a clock itself, and the drawer passes it
+ * stable props, so a run starting or ending, or a passing second,
+ * re-renders this button and not the drawer.
+ */
+const OpenInSwimlaneButton = memo(function OpenInSwimlaneButton({
+  agentId,
+  agentName,
+  onOpen,
+}: {
+  agentId: string;
+  agentName: string;
+  onOpen: () => void;
+}) {
+  const sessions = useFleetStore(
+    (s) => s.flavors.find((f) => f.flavor === agentId)?.sessions ?? NO_SESSIONS,
+  );
+  const cacheEpoch = useEventsCacheEpoch();
+  const now = useNow(RUN_COUNT_TICK_MS);
+  const windowEndMs = Math.floor(now / 1000) * 1000;
+  const count = useMemo(
+    () => runsAtOnceAsTheModalOpens(sessions, windowEndMs),
+    // ``cacheEpoch`` stands for the eventsCache reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessions, cacheEpoch, windowEndMs],
+  );
+
+  if (count === null) {
+    return (
+      <button
+        type="button"
+        data-testid="agent-drawer-open-swimlane"
+        aria-label={`Open ${agentName} in swimlane`}
+        onClick={onOpen}
+        style={drawerActionButtonStyle}
+      >
+        <Activity size={12} aria-hidden="true" />
+        Open in swimlane
+      </button>
+    );
+  }
+  const atOnce = `${count} runs at once`;
+  return (
+    <button
+      type="button"
+      data-testid="agent-drawer-open-swimlane"
+      data-run-count={count}
+      aria-label={`Open ${agentName} in swimlane, ${atOnce}`}
+      title={`${atOnce}: each gets its own lane`}
+      onClick={onOpen}
+      style={{
+        ...drawerActionButtonStyle,
+        // The runs chip's tint and border; the text stays in --text,
+        // which holds 4.5:1 on the tint in both themes, and the icon
+        // takes the accent.
+        border: `1px solid ${RUNS_CHIP_BORDER}`,
+        background: RUNS_CHIP_TINT,
+      }}
+    >
+      <Activity size={12} aria-hidden="true" style={{ color: "var(--topology-pill-fg)" }} />
+      Open in swimlane · {runsAtOnceShown(count)} runs
+    </button>
+  );
+});
 
 // Labelled wrapper around one row-4 linkage cluster. Two
 // sections (Parent / Sub-agents) stack vertically inside row 4

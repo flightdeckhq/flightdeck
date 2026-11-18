@@ -105,11 +105,12 @@ the swimlane↔table parity assertion). The current journeys:
 | `T185-prompts-tab-shows-a-responses-reasoning-response.spec.ts` | On an agent of its own, an OpenAI Responses `post_call` whose output is a `reasoning` item with a summary and `encrypted_content`, then the answer: the reasoning is labelled `reasoning` with its summary, the mark `encrypted_content · encrypted reasoning, in JSON` shows and the encrypted content does not (the JSON view keeps it), then the answer and the token line, with no status line for a completed response |
 | `T186-prompts-tab-shows-a-chat-refusal.spec.ts` | On an agent of its own, two OpenAI chat `post_call`s: a response whose message refused (`content` null, `refusal` set) shows the refusal labelled `refusal`, not the response object, and the next call's passed-back message shows it the same way, not `(empty)` |
 | `T187-prompts-tab-shows-a-responses-refusal.spec.ts` | On an agent of its own, two OpenAI Responses `post_call`s: a response whose message holds a `refusal` part shows it labelled `refusal`, not the response object, with the same markup the next call's input shows the passed-back part with |
+| `T190-agent-drawer-swimlane-button-names-runs-at-once.spec.ts` | On agents of its own: one with three runs at once, whose drawer's swimlane button reads `Open in swimlane · 3 runs`, named `Open <agent> in swimlane, 3 runs at once` with the tooltip `3 runs at once: each gets its own lane`, and opens the per-agent modal with three lanes; one with a single run, whose button is the plain `Open in swimlane` with no count or tooltip |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
-`findSwimlaneRow`, `bringSwimlaneRowIntoView`, `waitForFleetReady`,
-`waitForInvestigateReady`, `investigateParamsFromUrl`, and
+`findSwimlaneRow`, `bringSwimlaneRowIntoView`, `readSwimlaneRows`,
+`waitForFleetReady`, `waitForInvestigateReady`, `investigateParamsFromUrl`, and
 `agentIdByName` / `openPerAgentModal` (the modal through the agent
 drawer's "Open in swimlane"), and the private-agent helpers
 `createPrivateAgent` / `startPrivateAgent` / `postPrivateToolCall` /
@@ -332,6 +333,31 @@ leaves the pointer and its tooltip closes for good.
   fails whenever the shift lands between the two.
 - Compare positions read in one synchronous `evaluate`. Boxes read one
   `boundingBox()` at a time can be 9 px apart on the same lane.
+
+### A row moves or unmounts between round trips
+
+The Fleet's first render mounts every agent's row, including the rows
+far below the fold; a frame later the scroller jumps to its right
+edge, and a frame or two after that the IntersectionObserver swaps the
+rows out of view for placeholders. Later, rows shift with the divider
+above. So a row a spec found in one page round trip can be elsewhere,
+or gone, by the next, and every round trip costs: the trace records
+the page before and after it, up to a second or more on a busy page.
+A spec that looks a row up, then reads it in several more calls, spends
+its budget on a slow machine and reads rows that have moved.
+
+- Read a row's own content with `readSwimlaneRows(page, names)` inside
+  `expect.poll`: one evaluation per attempt finds each row (walking the
+  scroller to a row below the fold) and reads its client-type pill and
+  agent-type badge at the moment it is mounted, and the poll repeats the
+  whole lookup (T01, T22).
+- Scan the rows mounted right now with one `evaluateAll`, never a
+  `count()` followed by `nth(i)` calls (T21, T50), and read one row's
+  several fields in one `evaluate` (T49).
+- `bringSwimlaneRowIntoView` finds the row and scrolls it into view in
+  one evaluation, without waiting for it to hold still. Use it before
+  pointing at or clicking the row, and assert with web-first
+  assertions.
 
 ### A test that passed only on its retry
 

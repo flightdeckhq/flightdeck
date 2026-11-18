@@ -40,16 +40,22 @@ test.describe("T49 — Agent label strip ordering", () => {
 		// rendered subset must match.
 		const row = page.locator('[data-testid^="swimlane-agent-row-"]').first();
 		await expect(row).toBeVisible({ timeout: 8000 });
-		const positions: number[] = [];
-		const presentTestIds: string[] = [];
-		for (const testid of PILL_TESTIDS_IN_ORDER) {
-			const el = row.locator(`[data-testid="${testid}"]`).first();
-			if ((await el.count()) === 0) continue;
-			const box = await el.boundingBox();
-			if (!box) continue;
-			positions.push(box.x);
-			presentTestIds.push(testid);
-		}
+		// Every pill's left edge read in one browser evaluation, off the
+		// same row at the same moment: one locator call per pill would
+		// re-resolve "the first row" each time, and the Fleet re-sorts
+		// and re-renders its rows between page round trips.
+		const present = await row.evaluate((el, testids) => {
+			const found: { testid: string; x: number }[] = [];
+			for (const testid of testids) {
+				const pill = el.querySelector(`[data-testid="${testid}"]`);
+				const box = pill?.getBoundingClientRect();
+				if (!box || (box.width === 0 && box.height === 0)) continue;
+				found.push({ testid, x: box.x });
+			}
+			return found;
+		}, PILL_TESTIDS_IN_ORDER);
+		const positions = present.map((p) => p.x);
+		const presentTestIds = present.map((p) => p.testid);
 		// At minimum the AgentStatusBadge must render on every row.
 		expect(presentTestIds).toContain("swimlane-agent-status-badge");
 		// Positions must be monotonically increasing left → right.

@@ -15,6 +15,9 @@ import {
   laneGeometry,
   layoutRowLanes,
   maxConcurrentRuns,
+  RUNS_AT_ONCE_SHOWN_MAX,
+  runsAtOnce,
+  runsAtOnceShown,
   overlapsInWindow,
   packGlyphs,
   runLanesInView,
@@ -1468,5 +1471,23 @@ describe("maxConcurrentRuns sweep", () => {
         pairwiseConcurrentRuns(segments, w.d0, w.d1, OVERLAP_TOLERANCE_MS),
       );
     }
+  });
+});
+
+describe("runsAtOnce / runsAtOnceShown", () => {
+  it("counts the runs at once only on a row split into lanes, at least two there", () => {
+    expect(runsAtOnce({ laneCount: 1, concurrency: 1 })).toBeNull();
+    expect(runsAtOnce({ laneCount: 1, concurrency: 0 })).toBeNull();
+    expect(runsAtOnce({ laneCount: 3, concurrency: 3 })).toBe(3);
+    // Five at once on a row drawing its four lanes.
+    expect(runsAtOnce({ laneCount: 4, concurrency: 5 })).toBe(5);
+    expect(runsAtOnce({ laneCount: 2, concurrency: 1 })).toBe(2);
+  });
+
+  it("prints the count up to nine, then 9+", () => {
+    expect(runsAtOnceShown(2)).toBe("2");
+    expect(runsAtOnceShown(RUNS_AT_ONCE_SHOWN_MAX)).toBe("9");
+    expect(runsAtOnceShown(10)).toBe("9+");
+    expect(runsAtOnceShown(42)).toBe("9+");
   });
 });

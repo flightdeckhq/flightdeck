@@ -19,22 +19,32 @@ test.describe("T50 — Active status indicator", () => {
 	}) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		const badges = page.locator('[data-testid="swimlane-agent-status-badge"]');
-		const count = await badges.count();
-		expect(count).toBeGreaterThan(0);
-		// Scan every visible badge. For each, the inner dot must
-		// carry the active-ring class iff data-state="active".
-		for (let i = 0; i < count; i++) {
-			const badge = badges.nth(i);
-			const state = await badge.getAttribute("data-state");
-			const dot = badge.locator(
-				'[data-testid="swimlane-agent-status-dot"]',
+		// Every badge mounted right now, its state and its inner dot's
+		// classes read in one browser evaluation, at the same moment. A
+		// scan of one locator call per badge and field costs a page round
+		// trip each, and reads rows the Fleet keeps re-rendering (the
+		// first render mounts every row before the observer swaps those
+		// out of view for placeholders), so the badge counted first need
+		// not be there when its fields are read.
+		const badges = await page
+			.locator('[data-testid="swimlane-agent-status-badge"]')
+			.evaluateAll((els) =>
+				els.map((badge) => ({
+					state: badge.getAttribute("data-state"),
+					dotClass:
+						badge
+							.querySelector('[data-testid="swimlane-agent-status-dot"]')
+							?.getAttribute("class") ?? "",
+				})),
 			);
-			const cls = (await dot.getAttribute("class")) ?? "";
+		expect(badges.length).toBeGreaterThan(0);
+		// For each badge, the inner dot must carry the active-ring class
+		// iff data-state="active".
+		for (const { state, dotClass } of badges) {
 			if (state === "active") {
-				expect(cls).toContain("agent-status-active-ring");
+				expect(dotClass).toContain("agent-status-active-ring");
 			} else {
-				expect(cls).not.toContain("agent-status-active-ring");
+				expect(dotClass).not.toContain("agent-status-active-ring");
 			}
 		}
 	});

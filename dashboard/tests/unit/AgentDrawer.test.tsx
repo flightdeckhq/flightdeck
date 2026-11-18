@@ -14,6 +14,7 @@ import type {
   AgentSummary,
   FlavorSummary,
   Session,
+  SessionListItem,
   SessionsResponse,
 } from "@/lib/types";
 
@@ -71,7 +72,7 @@ function withContextSession(
         capture_enabled: false,
         parent_session_id: null,
         context,
-      } as unknown as Session,
+      } as unknown as SessionListItem,
     ],
     total: 1,
     limit: 50,

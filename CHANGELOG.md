@@ -6,6 +6,12 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- The agent drawer's **Open in swimlane** reads `Open in swimlane ·
+  3 runs`, in the accent of the Fleet row's runs chip, when the agent
+  has two or more runs at once in the window the swimlane opens on, so
+  an agent the swimlane splits into lanes stands out. The count is the
+  runs chip's and follows runs as they start and end; with one run the
+  button is unchanged.
 - The sensor meters and enforces Gemini calls made through the
   google-genai SDK (1.64 and later), on the Gemini API and on Vertex AI:
   `client.models` and `client.aio.models` (`generate_content`,

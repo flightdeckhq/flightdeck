@@ -20,8 +20,10 @@ oracle is the same call without the sensor, in the same environment.
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import json
+import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -441,6 +443,18 @@ _UNENTERED_ASYNC_MANAGER = [
 ]
 
 
+@pytest.fixture
+def unentered_managers_collected() -> Iterator[None]:
+    """Collect the managers a test made and never entered before it ends.
+    A manager held in a reference cycle (an exception's traceback) is
+    otherwise collected in a later test, whose own filter can turn the
+    "never awaited" RuntimeWarning of its coroutine into an error."""
+    yield
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        gc.collect()
+
+
 @pytest.mark.parametrize("misuse", sorted(_MISUSES))
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("name", _MANAGERS)
@@ -452,6 +466,7 @@ def test_a_misused_manager_raises_what_the_sdk_manager_raises_and_sends_nothing(
     misuse: str,
     router: respx.MockRouter,
     sensor: Callable[[bool], Session | None],
+    unentered_managers_collected: None,
 ) -> None:
     """``async with`` on a sync client's manager, ``with`` on an async
     one's, and iterating a manager before entering it raise the same
@@ -479,6 +494,7 @@ def test_block_refuses_every_form_of_a_stream_helper_before_any_request(
     misuse: str | None,
     router: respx.MockRouter,
     sensor: Callable[[bool], Session | None],
+    unentered_managers_collected: None,
 ) -> None:
     """A BLOCK decision stops a stream helper used the right way and
     every misuse of its manager with no request sent: at the call

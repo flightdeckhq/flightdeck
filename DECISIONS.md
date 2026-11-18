@@ -1298,3 +1298,25 @@ and borders across the app, where they are not text.
 **Rejected alternative:** darkening or lightening the hue tokens
 themselves (changes every chart, badge and swimlane at once); per-theme
 colours chosen in components (components would branch on the theme).
+
+## D289 -- A litellm stream shows the caller what litellm shows; usage is asked for only where the request is final
+
+**Date:** 2026-11-18
+**Decision:** the sensor never changes the `stream_options` litellm
+decides on and never hides a chunk litellm shows. Where litellm sends
+the request through the OpenAI SDK, the OpenAI interceptor, under the
+litellm call's mark, adds `include_usage` only when litellm's body lacks
+it, takes out the usage chunk and the `"usage": null` fields that causes
+before litellm reads the stream, and hands the counts to the litellm
+call. Elsewhere it asks for nothing: the usage litellm shows, or the
+estimate. The direct OpenAI guard clears the same `"usage": null` fields.
+**Why:** litellm decides what its caller sees (on OpenAI's own base it
+asks for usage itself), so hiding by the caller's options hid chunks
+litellm shows, changed every `text_completion` chunk's `usage`, and on
+litellm 1.104 made a sync stream read with `async for` raise. An addition
+can be undone exactly only at the layer that made it.
+**Rejected alternative:** asking litellm for usage and hiding the chunks
+it adds by their shape; reading the usage litellm keeps internally
+(`CustomStreamWrapper.chunks`), which differs by release and is missing
+for some streams; rewriting litellm's chunk objects back to their
+unsensored values.

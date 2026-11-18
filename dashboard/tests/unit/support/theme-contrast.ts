@@ -15,6 +15,12 @@ export const THEMES: readonly Theme[] = ["dark", "light"];
 /** WCAG 2's minimum ratio for normal-size text (AA). */
 export const AA_NORMAL_TEXT = 4.5;
 
+/** The ratio the Prompts tab's text is held to: AA's 4.5:1 and 0.1 to
+ *  spare, so that a browser's 8-bit compositing of a badge's tint, or a
+ *  small edit to a token, cannot take a text under AA. themes.css's
+ *  text-safe tokens are chosen to meet it on every surface they sit on. */
+export const TEXT_SAFE_FLOOR = 4.6;
+
 export interface Rgba {
   r: number;
   g: number;

@@ -5,9 +5,13 @@ import { render, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import { EmbeddingsContentViewer } from "@/components/session/EmbeddingsContentViewer";
 import { SyntaxJson, TEXT_SAFE_SYNTAX_COLORS } from "@/components/ui/syntax-json";
-import type { EventContent } from "@/lib/types";
+import { NoEventContent, NoEventContentForEvent, NoRunContent } from "@/components/session/NoEventContent";
+import { SignalPromptsPanel } from "@/components/session/SignalContentViewer";
+import { PromptsTab } from "@/components/session/SessionDrawer";
+import { TELEMETRY_OTLP } from "@/lib/agent-identity";
+import type { AgentEvent, EventContent, Session } from "@/lib/types";
 import {
-  AA_NORMAL_TEXT,
+  TEXT_SAFE_FLOOR,
   THEMES,
   contrastRatio,
   over,
@@ -19,25 +23,32 @@ import {
   type Theme,
 } from "./support/theme-contrast";
 
-// Every text in the Prompts tab reads at WCAG AA (4.5:1) in both themes.
-// The tab is rendered for every provider path (stored bodies from the
-// fixtures, and built shapes for the rest), in its Rendered view and in
-// every box's JSON view; each text node's colour and the backgrounds
-// behind it are read from the markup and resolved through themes.css as
-// it is, so a token or a component change that puts a text under 4.5:1
-// fails here. The embeddings viewer's states are checked the same way.
+// Every text in the Prompts tab reads at 4.6:1 or better (WCAG AA's
+// 4.5:1 with headroom; TEXT_SAFE_FLOOR) in both themes. The tab is
+// rendered for every provider path (stored bodies from the fixtures, and
+// built shapes for the rest), in its Rendered view and in every box's
+// JSON view, and for everything else either drawer's Prompts tab shows:
+// the no-content and capture-off states, a session_signal's panel, and
+// the run drawer's list of the run's calls. Each text node's colour and
+// the backgrounds behind it are read from the markup and resolved
+// through themes.css as it is, so a token or a component change that
+// puts a text under the floor fails here. The embeddings viewer's
+// states are checked the same way.
 
 const TOKENS = readThemeTokens();
 
 let mockContent: EventContent | null = null;
+let mockSession: Session | null = null;
 let pending = false;
 
 vi.mock("@/lib/api", () => ({
   fetchEventContent: vi.fn(() => (pending ? new Promise(() => {}) : Promise.resolve(mockContent))),
+  fetchSession: vi.fn(() => Promise.resolve({ session: mockSession, events: [] })),
 }));
 
 beforeEach(() => {
   mockContent = null;
+  mockSession = null;
   pending = false;
   vi.clearAllMocks();
 });
@@ -200,7 +211,7 @@ function failuresOf(where: string, paints: TextPaint[], baseBg = "var(--surface)
   for (const theme of THEMES) {
     for (const paint of paints) {
       const ratio = paintRatio(TOKENS[theme], paint, baseBg);
-      if (ratio < AA_NORMAL_TEXT) {
+      if (ratio < TEXT_SAFE_FLOOR) {
         out.push({
           theme,
           where,
@@ -231,7 +242,7 @@ async function promptsPaints(c: Case, i: number): Promise<TextPaint[]> {
   return paints;
 }
 
-describe("the Prompts tab's text reads at 4.5:1 or better in both themes", () => {
+describe("the Prompts tab's text reads at 4.6:1 or better in both themes", () => {
   it("every text node of every provider path, in the Rendered and the JSON views", async () => {
     const failures: Failure[] = [];
     let checked = 0;
@@ -281,6 +292,141 @@ describe("the Prompts tab's text reads at 4.5:1 or better in both themes", () =>
   });
 });
 
+describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", () => {
+  const session = (fields: Record<string, unknown> = {}): Session =>
+    ({
+      session_id: "s-other",
+      capture_prompts: true,
+      capture_enabled: true,
+      client_type: "flightdeck_sensor",
+      framework: null,
+      context: {},
+      ...fields,
+    }) as unknown as Session;
+  const captureOff = session({ capture_prompts: false, capture_enabled: false });
+  const genaiRun = session({ client_type: "otlp", framework: "pydantic_ai", context: { telemetry: TELEMETRY_OTLP } });
+  const event = (fields: Record<string, unknown> = {}): AgentEvent =>
+    ({
+      id: "ev-other",
+      session_id: "s-other",
+      event_type: "post_call",
+      occurred_at: "2026-11-18T08:00:00Z",
+      has_content: false,
+      model: "gpt-4o-mini",
+      tool_name: null,
+      payload: null,
+      ...fields,
+    }) as unknown as AgentEvent;
+
+  /** The text under ``root`` that the case is about, checked: the case
+   *  must show ``shows`` (so it cannot pass on an empty render). */
+  function failuresIn(where: string, root: Element, shows: RegExp, skip?: (p: TextPaint) => boolean): Failure[] {
+    expect(root.textContent, where).toMatch(shows);
+    const paints = textPaints(root).filter((p) => !skip?.(p));
+    expect(paints.length, where).toBeGreaterThan(0);
+    return failuresOf(where, paints);
+  }
+
+  it("an event or a run with no content: capture off, capture on, and a framework's reason", async () => {
+    const failures: Failure[] = [];
+    const cases: Array<[string, React.ReactElement, RegExp]> = [
+      ["event, capture off", <NoEventContent event={event()} session={captureOff} />, /Prompt capture is not enabled for this deployment\./],
+      ["event, capture on", <NoEventContent event={event()} session={session()} />, /No content was recorded for this event\./],
+      ["event, a framework's reason", <NoEventContent event={event()} session={genaiRun} />, /The framework sent no messages/],
+      ["run, capture off", <NoRunContent session={captureOff} />, /Prompt capture is not enabled for this deployment\./],
+      ["run, capture on", <NoRunContent session={session()} />, /No content was recorded for this run\./],
+      ["run, a framework's reason", <NoRunContent session={genaiRun} />, /the framework sent no content/],
+    ];
+    for (const [where, element, shows] of cases) {
+      const { container } = render(element);
+      failures.push(...failuresIn(where, container, shows));
+      cleanup();
+    }
+    // The event drawer's form, which reads the run itself.
+    mockSession = captureOff;
+    const { container } = render(<NoEventContentForEvent event={event()} />);
+    await waitFor(() => expect(container.textContent).toMatch(/Prompt capture is not enabled/));
+    failures.push(...failuresIn("event drawer, capture off", container, /Prompt capture is not enabled for this deployment\./));
+    cleanup();
+    expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
+  });
+
+  it("a session_signal's panel: its texts, nothing captured, capture off, loading", async () => {
+    const failures: Failure[] = [];
+    const signal = (fields: Record<string, unknown>) =>
+      event({ event_type: "session_signal", model: null, payload: { signal: "context_compacted" }, ...fields });
+    // No content: capture off for a signal whose text is always sent, a
+    // plain line for one that may carry none.
+    const off = render(<SignalPromptsPanel event={signal({})} />);
+    failures.push(...failuresIn("signal, capture off", off.container, /Prompt capture is not enabled for this deployment\./));
+    cleanup();
+    const none = render(<SignalPromptsPanel event={signal({ payload: { signal: "model_switch" } })} />);
+    failures.push(...failuresIn("signal, no text", none.container, /This event carries no captured text\./));
+    cleanup();
+    // Content: its texts under their headings, and the empty state.
+    mockContent = { ...base, event_id: "ev-signal", provider: "claude_code", model: "", response: { compact_summary: "Summary of the work so far.", custom_instructions: "Keep the plan." } } as EventContent;
+    const texts = render(<SignalPromptsPanel event={signal({ id: "ev-signal", has_content: true })} />);
+    await waitFor(() => expect(texts.container.textContent).toMatch(/Compaction summary/));
+    failures.push(...failuresIn("signal, its texts", texts.container, /Summary of the work so far\./));
+    cleanup();
+    mockContent = { ...base, event_id: "ev-signal-empty", provider: "claude_code", model: "", response: {} } as EventContent;
+    const empty = render(<SignalPromptsPanel event={signal({ id: "ev-signal-empty", has_content: true })} />);
+    await waitFor(() => expect(empty.container.textContent).toMatch(/no text captured/));
+    failures.push(...failuresIn("signal, empty", empty.container, /\(no text captured\)/));
+    cleanup();
+    pending = true;
+    const loading = render(<SignalPromptsPanel event={signal({ id: "ev-signal-loading", has_content: true })} />);
+    failures.push(...failuresIn("signal, loading", loading.container, /Loading…/));
+    cleanup();
+    expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
+  });
+
+  const listEvents = [
+    event({ id: "ev-l1", event_type: "post_call", has_content: true, model: "gpt-4o-mini" }),
+    event({ id: "ev-l2", event_type: "tool_call", has_content: true, model: null, tool_name: "get_weather" }),
+    event({ id: "ev-l3", event_type: "mcp_tool_call", has_content: true, model: null, tool_name: "read_file" }),
+    event({ id: "ev-l4", event_type: "mcp_prompt_get", has_content: true, model: null, tool_name: "greet" }),
+  ];
+  /** A list row's event-type badge: its type's hue as text on the hue's
+   *  tint, the look every event-type badge in the app shares. */
+  const BADGE_TEXT = new Set(["var(--event-llm)", "var(--event-tool)", "var(--event-mcp-tool)", "var(--event-mcp-prompt)"]);
+  const isBadge = (p: TextPaint) => BADGE_TEXT.has(p.color);
+
+  it("the run drawer's list of the run's calls: timestamps and names, focused or not, and an empty run", () => {
+    // A focused row scrolls itself into view; jsdom has no layout to scroll.
+    Element.prototype.scrollIntoView ??= vi.fn();
+    const failures: Failure[] = [];
+    for (const focused of [null, "ev-l2"]) {
+      const { container } = render(
+        <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={focused} onSelectEvent={() => {}} />,
+      );
+      failures.push(...failuresIn(`list, focused ${focused}`, container, /get_weather/, isBadge));
+      cleanup();
+    }
+    const emptyRun = render(
+      <PromptsTab session={genaiRun} events={[]} selectedEventId={null} focusedEventId={null} onSelectEvent={() => {}} />,
+    );
+    failures.push(...failuresIn("list, an empty run", emptyRun.container, /No content was recorded for this run\./));
+    cleanup();
+    expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
+  });
+
+  // The list rows' event-type badges draw their type's hue as text on the
+  // hue's own tint, as every event-type badge in the app does; that is
+  // under the floor in places (the LLM CALL badge in both themes, the
+  // TOOL and MCP badges in the light one). They are left as they are
+  // here; when they are given text-safe colours this case starts to fail
+  // and becomes a plain `it`.
+  it.fails("the list rows' event-type badges (left as they are)", () => {
+    const { container } = render(
+      <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={null} onSelectEvent={() => {}} />,
+    );
+    const badges = textPaints(container).filter(isBadge);
+    expect(badges).toHaveLength(listEvents.length);
+    expect(failuresOf("list badges", badges)).toEqual([]);
+  });
+});
+
 describe("the text-safe tokens on the surfaces they are used on", () => {
   const TEXT = ["--text", "--text-secondary", "--muted-text", "--accent-text", "--event-llm-text", "--event-tool-text", "--danger-text", "--success-text", "--warning-text"];
   const SURFACES = ["--surface", "--bg-elevated", "--bg"];
@@ -298,16 +444,19 @@ describe("the text-safe tokens on the surfaces they are used on", () => {
       for (const surface of SURFACES) {
         it(`${theme}: ${text} on ${surface}`, () => {
           const t = TOKENS[theme];
-          expect(contrastRatio(resolveColor(t, `var(${text})`), resolveColor(t, `var(${surface})`))).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+          expect(contrastRatio(resolveColor(t, `var(${text})`), resolveColor(t, `var(${surface})`))).toBeGreaterThanOrEqual(TEXT_SAFE_FLOOR);
         });
       }
     }
     for (const [hue, text] of BADGES) {
-      it(`${theme}: ${text} on a ${hue} badge's tint`, () => {
+      it(`${theme}: ${text} on a ${hue} badge's tint, exact and as the 8-bit colour a browser composites`, () => {
         const t = TOKENS[theme];
         const tintColor = { ...resolveColor(t, `var(${hue})`), a: BADGE_TINT };
-        const bg = over(tintColor, resolveColor(t, "var(--surface)"));
-        expect(contrastRatio(resolveColor(t, `var(${text})`), bg)).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+        const exact = over(tintColor, resolveColor(t, "var(--surface)"));
+        const eightBit = { r: Math.round(exact.r), g: Math.round(exact.g), b: Math.round(exact.b), a: 1 };
+        for (const bg of [exact, eightBit]) {
+          expect(contrastRatio(resolveColor(t, `var(${text})`), bg)).toBeGreaterThanOrEqual(TEXT_SAFE_FLOOR);
+        }
       });
     }
   }
@@ -337,7 +486,7 @@ describe("the Prompts tab's JSON highlighting", () => {
     for (const theme of THEMES) {
       const resolved = Object.entries(parts).map(([name, v]) => [name, resolveColor(TOKENS[theme], v)] as const);
       for (const [name, c] of resolved) {
-        expect(contrastRatio(c, resolveColor(TOKENS[theme], "var(--bg-elevated)")), `${theme} ${name}`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+        expect(contrastRatio(c, resolveColor(TOKENS[theme], "var(--bg-elevated)")), `${theme} ${name}`).toBeGreaterThanOrEqual(TEXT_SAFE_FLOOR);
       }
       for (let i = 0; i < resolved.length; i++) {
         for (let j = i + 1; j < resolved.length; j++) {

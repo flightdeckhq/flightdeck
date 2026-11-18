@@ -2211,7 +2211,7 @@ const PROMPTS_TAB_EVENT_TYPES: ReadonlySet<string> = new Set([
   "mcp_prompt_get",
 ]);
 
-interface PromptsTabProps {
+export interface PromptsTabProps {
   /** The run, whose capture posture picks the empty state. */
   session: SessionType | null;
   events: AgentEvent[];
@@ -2228,7 +2228,7 @@ interface PromptsTabProps {
   onSelectEvent: (id: string | null) => void;
 }
 
-function PromptsTab({
+export function PromptsTab({
   session,
   events,
   selectedEventId,
@@ -2310,7 +2310,7 @@ function PromptsTab({
               style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>
-            <span className="font-mono" style={{ color: "var(--text-muted)" }}>{new Date(event.occurred_at).toLocaleTimeString()}</span>
+            <span className="font-mono" style={{ color: "var(--muted-text)" }}>{new Date(event.occurred_at).toLocaleTimeString()}</span>
             <span style={{ color: "var(--text)" }}>{event.model || event.tool_name}</span>
           </button>
         );

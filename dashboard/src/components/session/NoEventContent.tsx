@@ -20,7 +20,7 @@ export function CaptureDisabled({ className }: { className?: string }) {
   return (
     <div
       data-testid="prompts-capture-disabled"
-      className={className ?? "px-4 py-8 text-center text-xs text-text-muted"}
+      className={className ?? "px-4 py-8 text-center text-xs text-[var(--muted-text)]"}
     >
       Prompt capture is not enabled for this deployment.
     </div>
@@ -45,7 +45,7 @@ export function NoRunContent({ session }: { session: Session | null }) {
     <div
       data-testid="prompts-no-content-for-run"
       className="space-y-1 px-4 py-8 text-center text-xs"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--muted-text)" }}
     >
       <div>No content was recorded for this run.</div>
       {session && isGenaiRun(session) && (
@@ -73,14 +73,14 @@ export function NoEventContent({
   session: Session | null;
 }) {
   if (!sessionCaptureOn(session)) {
-    return <CaptureDisabled className="px-4 py-6 text-[13px] text-text-muted" />;
+    return <CaptureDisabled className="px-4 py-6 text-[13px] text-[var(--muted-text)]" />;
   }
   const hint = session ? noContentReason(event, session) : null;
   return (
     <div
       data-testid="prompts-no-content-for-event"
       className="space-y-1 px-4 py-6 text-[13px]"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--muted-text)" }}
     >
       <div>No content was recorded for this event.</div>
       {hint && (

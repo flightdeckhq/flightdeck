@@ -44,11 +44,13 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import Counter
 from typing import Any
 
 from _helpers import (
     API_TOKEN,
     API_URL,
+    fetch_event_content,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -353,19 +355,31 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
     )
     if missing:
         # The sensor records a call whose response reports no usage with
-        # its pre-call estimate as the input tokens and no output tokens:
-        # the output tokens still add up exactly, the input tokens are at
-        # least the reported ones.
+        # its pre-call estimate as the input tokens and no output tokens.
+        # Those post_calls are the ones whose stored response holds no
+        # usage; each one's input must be a pre_call's estimate.
         print(
             f"  note: {missing} of {requests} model responses reported no usage; "
-            "their post_calls carry the sensor's estimate as input tokens, so the "
-            "input tokens are compared as at least the reported ones"
+            "their post_calls must carry a pre-call estimate as input tokens and no "
+            "output tokens"
         )
+        unreported = [
+            p for p in posts if not _reports_usage(fetch_event_content(p["id"]).get("response"))
+        ]
+        estimates = Counter(e.get("tokens_input") for e in _events(root, "pre_call", requests))
+        estimated = sum(p.get("tokens_input") or 0 for p in unreported)
         _check(
-            f"{label}: the post_calls' output tokens are the ones the model responses "
-            "reported, their input tokens at least those",
-            tokens[1] == reported[1] and tokens[0] >= reported[0],
-            (tokens, reported),
+            f"{label}: the post_calls' tokens are the ones the model responses reported, "
+            "plus the pre-call estimates of the calls that reported none",
+            len(unreported) == missing
+            and all(p.get("tokens_output") == 0 for p in unreported)
+            and not Counter(p.get("tokens_input") for p in unreported) - estimates
+            and tokens == (reported[0] + estimated, reported[1]),
+            (
+                tokens,
+                reported,
+                [(p.get("tokens_input"), p.get("tokens_output")) for p in unreported],
+            ),
         )
     else:
         _check(
@@ -383,6 +397,15 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         f"{label}: one tool_call per function call, none from the wrap",
         tools == calls and {"get_weather", EXPERT_NAME, "transfer_to_agent"} <= set(calls),
         (tools, calls),
+    )
+
+
+def _reports_usage(response: Any) -> bool:
+    """Whether a stored model response reports usage: Gemini's
+    ``usageMetadata``, or the ``usage`` of an OpenAI (litellm) or Anthropic
+    response."""
+    return isinstance(response, dict) and any(
+        isinstance(response.get(key), dict) for key in ("usageMetadata", "usage")
     )
 
 

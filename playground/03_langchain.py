@@ -32,9 +32,9 @@ one event pair per request the API billed, ``provider=google``, the model
 that answered, the tokens each response reported (thoughts as reasoning),
 each call's stored request and reply, and a ``tool_call`` per function the
 model asked for. It skips without ``GEMINI_API_KEY`` (or
-``GOOGLE_API_KEY``) or ``langchain-google-genai``. LangGraph and Deep
-Agents call the LangChain chat model they are given, so their Gemini path
-is this one.
+``GOOGLE_API_KEY``); with the key set, a missing
+``langchain-google-genai`` fails the run. ``04_langgraph.py`` and
+``42_deepagents.py`` run Gemini through their frameworks as well.
 """
 
 from __future__ import annotations
@@ -284,9 +284,12 @@ def _run_gemini() -> None:
     try:
         from langchain_core.messages import HumanMessage, ToolMessage
         from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        print("  SKIP  Gemini section: pip install langchain-google-genai")
-        return
+    except ImportError as exc:
+        # With the key set, a missing package is a broken venv, not a
+        # section to skip.
+        raise AssertionError(
+            f"GEMINI_API_KEY is set but the Gemini section cannot run: {exc}"
+        ) from exc
 
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-langchain")

@@ -25,7 +25,8 @@ checks one event pair per request the API billed, ``provider=google``,
 the model that answered, the tokens each response reported (thoughts as
 reasoning), each call's stored request and reply, and a ``tool_call`` per
 function the model asked for. It skips without ``GEMINI_API_KEY`` (or
-``GOOGLE_API_KEY``) or without google-genai, which the provider needs.
+``GOOGLE_API_KEY``); with the key set, a missing google-genai (which the
+provider needs) fails the run.
 """
 
 from __future__ import annotations
@@ -198,9 +199,12 @@ def _run_gemini() -> None:
         return
     try:
         from google.genai import types  # the native provider's client
-    except ImportError:
-        print("  SKIP  Gemini section: pip install google-genai")
-        return
+    except ImportError as exc:
+        # With the key set, a missing package is a broken venv, not a
+        # section to skip.
+        raise AssertionError(
+            f"GEMINI_API_KEY is set but the Gemini section cannot run: {exc}"
+        ) from exc
 
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-crewai")

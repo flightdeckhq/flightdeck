@@ -48,7 +48,7 @@ The sensor reaches a framework's LLM calls through the clients it builds:
 | Framework        | Chat | Embeddings |
 |------------------|------|------------|
 | LangChain        | `langchain-anthropic`, `langchain-openai`, `langchain-google-genai` (`ChatGoogleGenerativeAI`, through google-genai; verified live on 4.4 by `playground/03_langchain.py`) | `OpenAIEmbeddings.embed_*` |
-| LangGraph        | transitive via LangChain (any graph routing through `ChatAnthropic` or `ChatOpenAI`) | inherits |
+| LangGraph        | transitive via LangChain (any graph routing through `ChatAnthropic`, `ChatOpenAI` or `ChatGoogleGenerativeAI`; Gemini verified live by `playground/04_langgraph.py`) | inherits |
 | LlamaIndex       | `llama-index-llms-anthropic`, `llama-index-llms-openai` | inherits |
 | CrewAI 1.14+     | `LLM(model=...).call()` via native Anthropic / OpenAI / Gemini (`google.genai`; verified live on 1.15 by `playground/06_crewai.py`) provider classes | inherits |
 | bifrost          | multi-protocol LLM gateway (point the matching SDK at bifrost's `base_url`) | multi-protocol |

@@ -635,6 +635,34 @@ def events_landed(session_id: str, event_type: str, least: int) -> list[dict[str
         time.sleep(EVENTS_POLL_S)
 
 
+# A page of child sessions: more than any playground run opens.
+CHILD_SESSIONS_PAGE = 50
+# One sessions request never blocks longer than this, so the deadline
+# stays the only bound on the wait; a healthy API answers in ms.
+CHILD_SESSIONS_FETCH_TIMEOUT_S = 5.0
+
+
+def child_sessions(parent_id: str, least: int) -> list[dict[str, Any]]:
+    """The sessions whose parent is ``parent_id`` once ``least`` of them
+    have ended, or those there at ``EVENTS_LANDED_DEADLINE_S``."""
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions?parent_session_id={parent_id}&limit={CHILD_SESSIONS_PAGE}",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+    )
+    deadline = time.monotonic() + EVENTS_LANDED_DEADLINE_S
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=CHILD_SESSIONS_FETCH_TIMEOUT_S) as r:
+                rows: list[dict[str, Any]] = json.loads(r.read()).get("sessions", [])
+        except (urllib.error.URLError, OSError, ValueError):
+            # Not answering yet: poll again until the deadline.
+            rows = []
+        ended = [c for c in rows if c.get("ended_at")]
+        if len(ended) >= least or time.monotonic() > deadline:
+            return rows
+        time.sleep(EVENTS_POLL_S)
+
+
 def _gemini_check(label: str, ok: bool, detail: Any) -> None:
     print_result(label, ok, 0, "" if ok else str(detail)[:FAILURE_DETAIL_CHARS])
     if not ok:
@@ -709,7 +737,9 @@ def assert_gemini_calls(
             problems.append(("framework's model", served, sorted(served_models)))
         if reported is None or reported != (p.get("tokens_input"), p.get("tokens_output")):
             problems.append(("tokens", p.get("tokens_input"), p.get("tokens_output"), reported))
-        if thoughts and p.get("tokens_reasoning") != thoughts:
+        # Both ways: reasoning for a call that had no thoughts is as wrong
+        # as none for one that had them.
+        if (p.get("tokens_reasoning") or 0) != thoughts:
             problems.append(("reasoning", p.get("tokens_reasoning"), thoughts))
     _gemini_check(
         f"{label}: each post_call names the served model and the tokens its response "

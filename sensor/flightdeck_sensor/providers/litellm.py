@@ -27,6 +27,7 @@ from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import stored_vector, vector_dimension
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -250,9 +251,10 @@ class LitellmProvider:
             embedding = getattr(first, "embedding", None) or (
                 first.get("embedding") if isinstance(first, dict) else None
             )
-            if not embedding:
+            dimension = vector_dimension(embedding)
+            if dimension is None:
                 return None
-            return {"count": count, "dimension": len(embedding)}
+            return {"count": count, "dimension": dimension}
         except Exception:
             return None
 
@@ -389,7 +391,7 @@ class LitellmProvider:
             model = request_kwargs.get("model", "")
 
             if event_type == EventType.EMBEDDINGS:
-                vectors: list[list[float]] | None = None
+                vectors: list[Any] | None = None
                 try:
                     data = getattr(response, "data", None) or (
                         response.get("data") if isinstance(response, dict) else None
@@ -401,7 +403,7 @@ class LitellmProvider:
                                 entry.get("embedding") if isinstance(entry, dict) else None
                             )
                             if emb is not None:
-                                vectors.append(list(emb))
+                                vectors.append(stored_vector(emb))
                 except Exception:
                     vectors = None
                 return PromptContent(

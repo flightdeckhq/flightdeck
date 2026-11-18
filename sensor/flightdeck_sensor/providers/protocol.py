@@ -286,6 +286,10 @@ class PromptContent:
     ``systemInstruction`` parts in ``system``; Gemini has no messages
     parameter either.
 
+    ``embedding_output`` holds an embeddings call's vectors, each as the
+    provider returned it: a list of floats, or the base64 string of its
+    float32 values when the call asked for ``encoding_format="base64"``.
+
     ``response`` is the message the call returned, as its dump (a dict),
     ``{}`` when there is none, or, for an object that is not a message,
     the object itself: the transport sends it when JSON can write it and
@@ -302,7 +306,7 @@ class PromptContent:
     event_id: str
     captured_at: str
     input: str | list[Any] | None = None
-    embedding_output: list[list[float]] | None = None
+    embedding_output: list[Any] | None = None
 
 
 def finish_reason_of(obj: Any) -> str | None:

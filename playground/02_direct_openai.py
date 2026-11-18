@@ -12,6 +12,7 @@ counts via stream_options={include_usage: true} (sensor-injected).
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
 import time
 import uuid
@@ -581,6 +582,44 @@ def main() -> None:
         print(f"  note: single-string captured shape: {captured[0]!r}")
     if captured[1] != list_payload:
         print(f"  note: list captured shape: {captured[1]!r}")
+
+    # Embeddings with encoding_format="base64": the API returns each
+    # vector as the base64 string of its float32 values, and the event's
+    # output_dimensions names the decoded dimension, not the string's
+    # length. Matched to its event by an input of its own.
+    base64_payload = f"playground base64 embedding {session_id[:8]}"
+    t0 = time.monotonic()
+    encoded = openai.OpenAI().embeddings.create(
+        model="text-embedding-3-small", input=base64_payload, encoding_format="base64",
+    )
+    vector = encoded.data[0].embedding
+    decoded = len(base64.b64decode(vector)) // 4 if isinstance(vector, str) else None
+    print_result(
+        "OpenAI().embeddings.create(encoding_format=base64)",
+        isinstance(vector, str),
+        int((time.monotonic() - t0) * 1000),
+        f"{len(vector)}-character string, {decoded} float32 values",
+    )
+    reported = None
+    deadline = time.monotonic() + 10.0
+    while reported is None and time.monotonic() < deadline:
+        for e in fetch_events_for_session(session_id, expect_event_types=["embeddings"]):
+            if e.get("event_type") != "embeddings" or not e.get("has_content"):
+                continue
+            if fetch_event_content(e["id"]).get("input") == base64_payload:
+                reported = (e.get("payload") or {}).get("output_dimensions")
+                break
+        else:
+            time.sleep(0.3)
+    dimension_ok = reported == {"count": 1, "dimension": decoded} and decoded == 1536
+    print_result(
+        "base64 embeddings report the decoded dimension",
+        dimension_ok,
+        0,
+        f"output_dimensions={reported}",
+    )
+    if not dimension_ok:
+        raise AssertionError(f"base64 embeddings: output_dimensions={reported!r}, decoded {decoded}")
 
     # Auth-error classification: deliberately bogus key on a fresh
     # client, expect openai's AuthenticationError which the sensor's

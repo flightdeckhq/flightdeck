@@ -56,9 +56,7 @@ def main() -> None:
     model = AnthropicModel(
         MODEL,
         provider=AnthropicProvider(
-            anthropic_client=AsyncAnthropic(
-                timeout=MODEL_TIMEOUT_S, max_retries=MODEL_MAX_RETRIES
-            )
+            anthropic_client=AsyncAnthropic(timeout=MODEL_TIMEOUT_S, max_retries=MODEL_MAX_RETRIES)
         ),
     )
 
@@ -73,8 +71,7 @@ def main() -> None:
         model,
         name="assistant",
         instructions=(
-            "Delegate weather questions to the weather agent with the "
-            "ask_weather_agent tool."
+            "Delegate weather questions to the weather agent with the ask_weather_agent tool."
         ),
         model_settings=SETTINGS,
     )
@@ -87,8 +84,7 @@ def main() -> None:
 
     since = run_started()
     result = assistant.run_sync(
-        "Ask the weather agent for the weather in Paris, then answer in one "
-        "short sentence."
+        "Ask the weather agent for the weather in Paris, then answer in one short sentence."
     )
     flush()
     print_result("agent run", True, 0, repr(str(result.output)[:80]))

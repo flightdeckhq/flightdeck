@@ -63,9 +63,7 @@ def main():
         try:
             c.messages.create(model=MODEL, max_tokens=5, messages=HI)
         except DirectiveError as e:
-            print_result(
-                "subsequent call raises after shutdown", True, 0, f"DirectiveError: {e}"
-            )
+            print_result("subsequent call raises after shutdown", True, 0, f"DirectiveError: {e}")
             flightdeck_sensor.teardown()
             return
         time.sleep(1)

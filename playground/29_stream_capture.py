@@ -102,9 +102,7 @@ def _response_text(response: dict[str, Any]) -> str:
         if block.get("type") == "text":
             parts.append(block.get("text") or "")
         elif block.get("type") == "tool_use":
-            parts.append(
-                f"tool_use {block.get('name')}({json.dumps(block.get('input'))})"
-            )
+            parts.append(f"tool_use {block.get('name')}({json.dumps(block.get('input'))})")
     for choice in response.get("choices") or []:  # OpenAI chat
         message = choice.get("message") or {}
         if message.get("content"):
@@ -278,8 +276,7 @@ def main() -> None:
                 model=OPENAI_MODEL,
                 max_output_tokens=MAX_TOKENS,
                 input=(
-                    "Call read_wiki_structure for the repo openai/openai-python, "
-                    "then reply OK."
+                    "Call read_wiki_structure for the repo openai/openai-python, then reply OK."
                 ),
                 tools=[DEEPWIKI_MCP],
                 tool_choice="required",
@@ -297,17 +294,13 @@ def main() -> None:
             print_result(label, True, int((time.monotonic() - t0) * 1000), "streamed")
         except (anthropic.APIError, openai.APIError) as exc:
             failures.append(f"{label}: {type(exc).__name__}: {exc}")
-            print_result(
-                label, False, int((time.monotonic() - t0) * 1000), type(exc).__name__
-            )
+            print_result(label, False, int((time.monotonic() - t0) * 1000), type(exc).__name__)
 
     t0 = time.monotonic()
     try:
         responses_mcp()
         ran.append(("openai responses hosted MCP (stream=True)", True, "deepwiki"))
-        print_result(
-            "openai responses hosted MCP", True, int((time.monotonic() - t0) * 1000)
-        )
+        print_result("openai responses hosted MCP", True, int((time.monotonic() - t0) * 1000))
     except openai.APIError as exc:
         # The public MCP server being down is not a sensor failure.
         print(f"  SKIP  openai responses hosted MCP: {type(exc).__name__}: {exc}")
@@ -318,9 +311,7 @@ def main() -> None:
     deadline = time.monotonic() + EVENTS_DEADLINE_S
     events: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
-        events = fetch_events_for_session(
-            session_id, expect_event_types=["post_call"], timeout_s=5
-        )
+        events = fetch_events_for_session(session_id, expect_event_types=["post_call"], timeout_s=5)
         post_calls = [e for e in events if e.get("event_type") == "post_call"]
         tool_calls = [e for e in events if e.get("event_type") == "tool_call"]
         if len(post_calls) >= len(ran) and len(tool_calls) >= want_tools:
@@ -330,9 +321,7 @@ def main() -> None:
     post_calls = [e for e in events if e.get("event_type") == "post_call"]
     tool_calls = [e for e in events if e.get("event_type") == "tool_call"]
 
-    print(
-        f"\nsession {session_id}: {len(post_calls)} post_call, {len(tool_calls)} tool_call"
-    )
+    print(f"\nsession {session_id}: {len(post_calls)} post_call, {len(tool_calls)} tool_call")
     if len(post_calls) != len(ran):
         failures.append(f"expected {len(ran)} post_calls, got {len(post_calls)}")
     for (label, _, _), pc in zip(ran, post_calls):
@@ -373,9 +362,7 @@ def main() -> None:
 
     if failures:
         raise AssertionError("; ".join(failures))
-    print(
-        "\nPASS: every streaming path stored its response and reported its tool calls"
-    )
+    print("\nPASS: every streaming path stored its response and reported its tool calls")
 
 
 if __name__ == "__main__":

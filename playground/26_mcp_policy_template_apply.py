@@ -97,9 +97,7 @@ def fetch_global_policy() -> dict:
         return json.loads(resp.read())
 
 
-def put_global_policy(
-    mode: str, block_on_uncertainty: bool, entries: list[dict]
-) -> None:
+def put_global_policy(mode: str, block_on_uncertainty: bool, entries: list[dict]) -> None:
     body = json.dumps(
         {"mode": mode, "block_on_uncertainty": block_on_uncertainty, "entries": entries}
     ).encode()
@@ -117,9 +115,7 @@ def put_global_policy(
 def create_flavor_policy(flavor: str, block_on_uncertainty: bool = False) -> None:
     """Create an empty flavor policy. apply_template requires the flavor
     policy row to exist (returns 404 otherwise)."""
-    body = json.dumps(
-        {"block_on_uncertainty": block_on_uncertainty, "entries": []}
-    ).encode()
+    body = json.dumps({"block_on_uncertainty": block_on_uncertainty, "entries": []}).encode()
     req = urllib.request.Request(
         f"{API_URL}/v1/mcp-policies/{flavor}",
         data=body,
@@ -356,8 +352,7 @@ async def scenario_strict_with_common_allows() -> tuple[bool, str]:
                 f"expected 'flavor_entry' (flavor entry wins)"
             )
         return True, (
-            f"flavor={flavor}, 3 entries materialized, github URL resolves "
-            f"as flavor_entry/allow"
+            f"flavor={flavor}, 3 entries materialized, github URL resolves as flavor_entry/allow"
         )
     finally:
         delete_flavor_policy(flavor)

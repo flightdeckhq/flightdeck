@@ -116,9 +116,7 @@ async def run_demo() -> int:
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await load_mcp_tools(session)
-            llm = ChatAnthropic(model="claude-sonnet-4-5", max_tokens=400).bind_tools(
-                tools
-            )
+            llm = ChatAnthropic(model="claude-sonnet-4-5", max_tokens=400).bind_tools(tools)
 
             async def call_model(state: MessagesState) -> dict[str, list[object]]:
                 return {"messages": [await llm.ainvoke(state["messages"])]}

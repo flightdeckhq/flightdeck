@@ -111,9 +111,7 @@ def main() -> None:
         result = llm.invoke(
             f"In one sentence under 25 words, describe {state['topic']}.",
         )
-        text = (
-            result.content if isinstance(result.content, str) else str(result.content)
-        )
+        text = result.content if isinstance(result.content, str) else str(result.content)
         return {
             "topic": state["topic"],
             "research": text,
@@ -125,9 +123,7 @@ def main() -> None:
         result = llm.invoke(
             f"Rewrite this in 15 words or fewer: {state['research']}",
         )
-        text = (
-            result.content if isinstance(result.content, str) else str(result.content)
-        )
+        text = result.content if isinstance(result.content, str) else str(result.content)
         return {
             "topic": state["topic"],
             "research": state["research"],
@@ -341,11 +337,7 @@ def main() -> None:
     # 8 KiB threshold and the body lands inline on
     # ``payload.outgoing_message.body`` directly (no content row).
     writer_end = next(
-        (
-            e
-            for e in child_ends
-            if (e.get("payload") or {}).get("agent_role") == "Writer"
-        ),
+        (e for e in child_ends if (e.get("payload") or {}).get("agent_role") == "Writer"),
         None,
     )
     if writer_end is None:
@@ -353,10 +345,7 @@ def main() -> None:
             f"no Writer session_end among {len(child_ends)} child ends",
         )
     writer_outgoing = (writer_end.get("payload") or {}).get("outgoing_message") or {}
-    inline_ok = (
-        not writer_outgoing.get("has_content")
-        and writer_outgoing.get("body") is not None
-    )
+    inline_ok = not writer_outgoing.get("has_content") and writer_outgoing.get("body") is not None
     print_result(
         "Writer outgoing_message inline (under 8 KiB threshold)",
         inline_ok,

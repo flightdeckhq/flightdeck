@@ -135,9 +135,7 @@ def _check_session(
     if any(not c.get("tokens_input") for c in calls):
         problems.append("a post_call without input tokens")
     if not any(t.get("tool_name") == "Bash" for t in tools):
-        problems.append(
-            f"no Bash tool_call (tools: {[t.get('tool_name') for t in tools]})"
-        )
+        problems.append(f"no Bash tool_call (tools: {[t.get('tool_name') for t in tools]})")
     billing = {c.get("billing_mode") for c in calls}
     # The bare framework label, with the SDK's version in context.frameworks.
     row = _api("GET", f"/v1/sessions/{sdk_session}").get("session") or {}
@@ -333,9 +331,7 @@ def _check_mcp_block(sdk_session: str, denials: list[str], started: float) -> No
     payload = (blocks[0].get("payload") or {}) if blocks else {}
     problems = []
     if not blocks:
-        problems.append(
-            f"no policy_mcp_block (events: {[e['event_type'] for e in events]})"
-        )
+        problems.append(f"no policy_mcp_block (events: {[e['event_type'] for e in events]})")
     elif (
         payload.get("server_url") != MCP_SERVER_URL
         or payload.get("decision_path") != "flavor_entry"

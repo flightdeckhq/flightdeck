@@ -85,11 +85,7 @@ def _child_session_id(outer_session_id: str, correlator: str) -> str:
 
 
 PLUGIN_SCRIPT = (
-    Path(__file__).resolve().parents[1]
-    / "plugin"
-    / "hooks"
-    / "scripts"
-    / "observe_cli.mjs"
+    Path(__file__).resolve().parents[1] / "plugin" / "hooks" / "scripts" / "observe_cli.mjs"
 )
 
 
@@ -124,8 +120,7 @@ def _run_plugin(hook_event: dict, *, session_id: str) -> None:
     )
     if r.returncode != 0:
         raise AssertionError(
-            f"plugin exited non-zero: code={r.returncode} "
-            f"stdout={r.stdout!r} stderr={r.stderr!r}"
+            f"plugin exited non-zero: code={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
         )
 
 
@@ -160,9 +155,7 @@ def _demo_success() -> None:
     print(f"[playground:14_claude_code_plugin] success session_id={session_id}")
     t0 = time.monotonic()
     _run_plugin(hook_event, session_id=session_id)
-    print_result(
-        "observe_cli.mjs PostToolUse", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("observe_cli.mjs PostToolUse", True, int((time.monotonic() - t0) * 1000))
 
     event = _wait_for_event(session_id, "mcp_tool_call")
     payload = event.get("payload") or {}
@@ -197,9 +190,7 @@ def _demo_failure() -> None:
     print(f"[playground:14_claude_code_plugin] failure session_id={session_id}")
     t0 = time.monotonic()
     _run_plugin(hook_event, session_id=session_id)
-    print_result(
-        "observe_cli.mjs PostToolUseFailure", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("observe_cli.mjs PostToolUseFailure", True, int((time.monotonic() - t0) * 1000))
 
     event = _wait_for_event(session_id, "mcp_tool_call")
     err = (event.get("payload") or {}).get("error") or {}
@@ -292,8 +283,7 @@ def _demo_subagent() -> None:
         and end_payload.get("parent_session_id") == outer_session_id
     )
     role_ok = (
-        start_payload.get("agent_role") == "Explore"
-        and end_payload.get("agent_role") == "Explore"
+        start_payload.get("agent_role") == "Explore" and end_payload.get("agent_role") == "Explore"
     )
     same_child_ok = (
         start_landed.get("session_id") == child_session_id
@@ -315,15 +305,13 @@ def _demo_subagent() -> None:
         "subagent agent_role=Explore on both events",
         role_ok,
         0,
-        f"start={start_payload.get('agent_role')!r} "
-        f"end={end_payload.get('agent_role')!r}",
+        f"start={start_payload.get('agent_role')!r} end={end_payload.get('agent_role')!r}",
     )
     print_result(
         "subagent same child session_id on Start + Stop",
         same_child_ok,
         0,
-        f"start={start_landed.get('session_id')!r} "
-        f"end={end_landed.get('session_id')!r}",
+        f"start={start_landed.get('session_id')!r} end={end_landed.get('session_id')!r}",
     )
     print_result(
         "subagent incoming_message.body round-trip",

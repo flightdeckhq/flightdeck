@@ -156,8 +156,7 @@ def main() -> None:
     )
     if not parent_post_calls:
         raise AssertionError(
-            f"no post_call events landed for parent {parent_session_id}; "
-            f"events={events!r}",
+            f"no post_call events landed for parent {parent_session_id}; events={events!r}",
         )
 
     # Locate the children via the dedicated API filter. Polling the
@@ -293,8 +292,7 @@ def main() -> None:
     )
     if not incoming_ok:
         raise AssertionError(
-            f"Task description not preserved on incoming_message; "
-            f"bodies={incoming_bodies!r}",
+            f"Task description not preserved on incoming_message; bodies={incoming_bodies!r}",
         )
 
     # outgoing_message.body capture. The body is whatever the agent

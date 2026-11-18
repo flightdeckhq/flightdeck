@@ -64,9 +64,7 @@ def main() -> None:
     try:
         init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
-        print(
-            f"[playground:policy_forced_degrade] session_id={session_id} flavor={flavor}"
-        )
+        print(f"[playground:policy_forced_degrade] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
         N = 6
         for i in range(N):

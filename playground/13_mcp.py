@@ -224,9 +224,7 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     print_result("mcp_prompt_get.has_content=True", pg_has_content_ok, 0)
     print_result("mcp_prompt_get no inline arguments", pg_no_inline_args, 0)
     print_result("mcp_prompt_get no inline rendered", pg_no_inline_rendered, 0)
-    if not (
-        name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered
-    ):
+    if not (name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered):
         raise AssertionError(f"mcp_prompt_get payload mismatch: {pg!r}")
 
     # Per-event server_name + transport consistency on EVERY MCP event.

@@ -49,6 +49,7 @@ from typing import Any
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -74,7 +75,6 @@ RUNS = 3
 MIN_MODEL_CALLS = 7
 # How much of the fetched events a failure message quotes.
 FAILURE_DUMP_CHARS = 2000
-MS_PER_S = 1000
 SCRIPT = "[playground:39_llamaindex_agents]"
 
 

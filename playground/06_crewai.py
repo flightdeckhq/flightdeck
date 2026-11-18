@@ -47,6 +47,7 @@ import flightdeck_sensor
 from flightdeck_sensor import Provider
 
 from _helpers import (
+    MS_PER_S,
     assert_event_landed,
     assert_gemini_calls,
     fetch_events_for_session,
@@ -89,7 +90,6 @@ GEMINI_REQUESTS = 4
 GEMINI_THINKING_CALLS = 1
 # The class CrewAI's LLM factory returns for a native Gemini model.
 GEMINI_PROVIDER_CLASS = "GeminiCompletion"
-MS_PER_S = 1000
 
 # The functions the model asked CrewAI to run, by name, in order.
 asked: list[str] = []

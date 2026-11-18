@@ -42,6 +42,7 @@ except ImportError:
 import flightdeck_sensor
 
 from _helpers import (
+    MS_PER_S,
     assert_event_landed,
     assert_gemini_calls,
     child_sessions,
@@ -63,7 +64,6 @@ TOOL_ROUND_CONTENTS = 3
 # The graph's nodes, by name.
 MODEL_NODE = "model"
 TOOLS_NODE = "tools"
-MS_PER_S = 1000
 
 
 class State(TypedDict):

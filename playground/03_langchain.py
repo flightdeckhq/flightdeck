@@ -60,6 +60,7 @@ import flightdeck_sensor
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     assert_event_landed,
     assert_gemini_calls,
     assert_reply_stored,
@@ -91,7 +92,6 @@ GEMINI_THINKING_CALLS = 1
 # The tool round's second request passes back the question, the model's
 # call and the result: three contents.
 TOOL_ROUND_CONTENTS = 3
-MS_PER_S = 1000
 
 
 def get_weather(city: str) -> str:

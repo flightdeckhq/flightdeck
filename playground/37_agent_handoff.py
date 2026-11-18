@@ -36,6 +36,7 @@ from flightdeck_sensor.core.session import SIGNAL_AGENT_HANDOFF
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -56,7 +57,6 @@ CONTENT_ABSENT_STATUS = 404
 # How much of the fetched events a failure message quotes: enough to see
 # every event of this short run, short enough to read in a terminal.
 FAILURE_DUMP_CHARS = 2000
-MS_PER_S = 1000
 SESSION_SIGNAL = "session_signal"
 
 

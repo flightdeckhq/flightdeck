@@ -264,6 +264,35 @@ func TestCostRow_PriceLookupFallbacks(t *testing.T) {
 	})
 }
 
+// A Gemini call as the sensor reports it: the Gemini API's platform label
+// prices from the direct row and Vertex AI's from the vertex row; the
+// cached content is part of the input, and the thinking tokens are part
+// of the output, priced at the reasoning rate.
+func TestCostRow_GeminiCall(t *testing.T) {
+	eachStore(t, func(t *testing.T, s *Store) {
+		f := newCostFixture(t, s, "flightdeck_sensor")
+		flashLite := costRates{input: 0.25, output: 1.5, cacheRead: 0.025, reasoning: float(1.5)}
+		f.price("gemini", "direct", flashLite)
+		vertex := flashLite
+		vertex.input = 0.3
+		f.price("gemini", "vertex", vertex)
+		// 1,000 input of which 800 a cache read; 151 output of which 148
+		// thinking.
+		call := costEvent{
+			model: "gemini", billing: "metered", in: 1000, out: 151, cacheRead: 800,
+			reasoning: count(148),
+		}
+		want := (200*0.25 + 800*0.025 + 3*1.5 + 148*1.5) / 1e6
+		call.platform = "gemini-api"
+		assertCost(t, "gemini-api prices direct", f.cost(call), want)
+		call.platform = "vertex"
+		assertCost(t, "vertex prices vertex", f.cost(call), want+200*(0.3-0.25)/1e6)
+		call.platform = "gemini-api"
+		call.payload = map[string]any{"service_tier": "flex"}
+		assertCost(t, "flex is half", f.cost(call), want*0.5)
+	})
+}
+
 func TestCostAggregate_SumsOnlyLLMEvents(t *testing.T) {
 	for _, b := range []storage.Backend{storage.Postgres, storage.SQLite} {
 		agg := (&Store{d: storage.DialectFor(b), q: queriesFor(b)}).costAggregateSQL()

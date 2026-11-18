@@ -630,7 +630,8 @@ flightdeck/
 
 The sensor is a Python library that runs in-process inside the agent. `init`
 resolves configuration; `patch` installs sensor methods on the Anthropic
-SDK's `Messages` resource classes and sensor descriptors on the OpenAI
+SDK's `Messages` resource classes and on the request methods of the
+google-genai SDK's `Models` classes, and sensor descriptors on the OpenAI
 client classes, on each SDK as the application imports it (see "When
 patching happens"); every LLM call passes through the sensor synchronously.
 The event POST itself is offloaded onto a background queue drain thread
@@ -808,7 +809,7 @@ def directive(
 ```python
 class Provider(Protocol):
 
-    name: str   # wire name: "anthropic", "openai" or "litellm"
+    name: str   # wire name: "anthropic", "openai", "litellm" or "google"
 
     def estimate_tokens(self, request_kwargs: dict) -> tuple[int, str]:
         """Estimate tokens before the call; returns (tokens, source) where
@@ -890,11 +891,15 @@ class Provider(Protocol):
         message.
         For OpenAI: extracts messages array (all roles), tools list, response
         choice.
+        For Google (google-genai): the request body the SDK built
+        (its contents as input, its systemInstruction's parts, its
+        tools) and the response body, not the caller's arguments.
         For EMBEDDINGS event_type: extracts request_kwargs["input"] as
         sent (a string, a list of strings, a list of token ids or a list
-        of token-id lists).
+        of token-id lists; a Gemini call's contents as its request sent
+        them).
         Provider terminology is preserved exactly — no normalization between
-        Anthropic and OpenAI shapes.
+        the Anthropic, OpenAI and Gemini shapes.
         """
 
     def get_model(self, request_kwargs: dict) -> str:
@@ -907,16 +912,16 @@ class Provider(Protocol):
 @dataclass
 class PromptContent:
     """Raw content extracted from a single LLM call or embeddings request."""
-    system: str | list | None       # Anthropic system (text or content blocks); OpenAI Responses instructions
-    messages: list[dict]            # Full messages array verbatim (empty for Responses)
+    system: str | list | None       # Anthropic system (text or content blocks); OpenAI Responses instructions; the parts of a Gemini request's systemInstruction
+    messages: list[dict]            # Full messages array verbatim (empty for Responses and Gemini)
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
-    provider: str                   # "anthropic" or "openai"
+    provider: str                   # "anthropic", "openai", "litellm" or "google"
     model: str
     session_id: str
     event_id: str
     captured_at: str                # ISO 8601 UTC
-    input: str | list | None = None                    # Embeddings or Responses input (None for chat)
+    input: str | list | None = None                    # Embeddings or Responses input, a Gemini request's contents (None for chat)
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
@@ -945,9 +950,11 @@ the arguments before the SDK does, for the token estimate (Anthropic's
 `count_tokens`, litellm's `token_counter`, the tiktoken count) and for
 content capture. So with a session active, before it reads anything, the
 sensor reads every iterator in the arguments it reads (`messages`,
-`system`, `tools`, `input`, `instructions` and `prompt`) into a list of
-its items, inside the lists, tuples and dicts they are made of, down to
-64 levels. An iterator in any other argument (`extra_query`, `metadata`,
+`system`, `tools`, `input`, `instructions`, `prompt` and google-genai's
+`contents`) into a list of its items, inside the lists, tuples and dicts
+they are made of, down to 64 levels. google-genai's `config` is not
+among them: its public methods build the `GenerateContentConfig` (its
+lists read) before the request method the sensor patches is called. An iterator in any other argument (`extra_query`, `metadata`,
 `stop`, a client option) is never read by the sensor and reaches the SDK
 untouched. A request nests far less than 64 levels, and the limit also
 stops the walk on arguments that hold themselves, which reach the SDK as
@@ -961,7 +968,14 @@ path to it, so the caller's own arguments are not changed. It is an
 iterator and nothing more, its type bears the name of the caller's
 iterator's type, and copying it copies the items not yet read, or fails
 with the error copying the caller's iterator raises. So the SDK reads,
-rejects, copies or re-reads it as it would the caller's. An SDK that
+rejects, copies or re-reads it as it would the caller's. google-genai
+reads `contents` through a pydantic union of a list and a `Content`,
+which takes a generator or a builtin iterator (`iter(list)`, `map`) for
+the list and any other object for a `Content` built from its attributes
+(an empty one): it is handed a generator over the sensor's iterator in
+place of a caller's generator or builtin iterator, and the sensor's
+iterator itself in place of an iterator of the caller's own class, so
+it reads each as it reads the caller's. An SDK that
 does not accept an iterator for an argument still raises: the OpenAI SDK
 fails to serialise one given as Responses `input`, and litellm fails to
 copy a generator given to any of its entry points. An SDK that reads one
@@ -1017,14 +1031,18 @@ model's reply passed back in a tool-use loop, such as an OpenAI
 blocks) is read as the SDK writes it into the request, the JSON dump of
 its set fields without those the class marks `__api_exclude__` (by alias
 from anthropic 2.x), for the estimate and the stored content alike, while
-the SDK gets the caller's own object. An argument that holds no iterator
-reaches the SDK as the caller's own object, its lists and dicts included,
-so a change the caller makes to it before the SDK builds the request (an
-Anthropic `messages.stream()` manager entered later on 2.x, see below)
-is sent, as without the sensor. An argument that holds an iterator
-reaches the SDK inside the sensor's copies of the containers on the path
-to that iterator, so a change made to those containers after the call is
-not sent. A `NOT_GIVEN` or `omit` value inside
+the SDK gets the caller's own object. A google-genai model (a `Content`
+or `Part` in `contents`, a chat's history, a reply's content passed back)
+is read for the estimate as the JSON dump of its fields that are not
+None; a google-genai call's stored content is the request body the SDK
+built, not its arguments (see google-genai (Gemini), Content). An
+argument that holds no iterator reaches the SDK as the caller's own
+object, its lists and dicts included, so a change the caller makes to it
+before the SDK builds the request (an Anthropic `messages.stream()`
+manager entered later on 2.x, see below) is sent, as without the sensor.
+An argument that holds an iterator reaches the SDK inside the sensor's
+copies of the containers on the path to that iterator, so a change made
+to those containers after the call is not sent. A `NOT_GIVEN` or `omit` value inside
 a message is dropped as the SDK drops it, litellm's stored input dumps
 models the OpenAI SDK's way. An object the sensor cannot write as what
 was sent is not dumped and leaves the whole event without its content
@@ -1032,10 +1050,13 @@ was sent is not dumped and leaves the whole event without its content
 warning "post_call event's captured content holds <type>, which cannot be
 written as JSON; sent without its content", once per event type and
 object type. Such objects are a file the Anthropic SDK reads and
-base64-encodes itself, a `beta_tool` function, and a `datetime` inside a
+base64-encodes itself, a `beta_tool` function, a `datetime` inside a
 message, which openai 2.54 and 3.26 send as an ISO string through their
-own JSON encoder and openai 2.8 rejects: what is sent depends on the
-release.
+own JSON encoder and openai 2.8 rejects (what is sent depends on the
+release). A PIL image in google-genai `contents` is stored as the inline
+data the SDK encoded it into, and a Python function among its tools as
+the function declaration the SDK built from it: both are read from the
+request the SDK sent.
 
 The request side of the stored content is copied when the call is
 handed to the SDK, which builds the request then: when a plain call is
@@ -1075,7 +1096,13 @@ OpenAI call path gets a real pre-call estimate. An inline binary payload
 priced at a fixed allowance of 1,000 tokens each, the order of what the
 provider charges for an image input, so a multi-megabyte image cannot
 estimate as hundreds of thousands of tokens and trip a policy limit
-before the call. Token reconciliation in
+before the call. `GoogleProvider.estimate_tokens` counts the characters
+of `contents`, the config's `system_instruction` and its `tools` at
+`char // 4`, with each inline payload (a `Blob`'s data, a PIL image)
+priced at the same 1,000-token allowance instead of its bytes (Gemini
+bills an image at 258 tokens per 768x768 tile); its source is always
+`heuristic`, since Gemini's tokenizer is not local and the SDK's
+`count_tokens` is a network call. Token reconciliation in
 `_post_call` prefers provider-reported
 usage over the pre-call estimate: `extract_usage(response)` for a
 non-streamed call, the usage the stream guard read from the stream for a
@@ -1088,7 +1115,7 @@ tokens, is used only when neither reports any tokens.
 reaches them is intercepted, including code paths inside agent frameworks
 that build their own SDK clients internally, and captured references
 (`from anthropic import Anthropic` BEFORE `patch`) keep working because
-the class objects keep their identity. The two SDKs are patched at
+the class objects keep their identity. The three SDKs are patched at
 different levels:
 
 - **Anthropic** — the resource classes every client hands out: `create`,
@@ -1260,6 +1287,10 @@ different levels:
   is left alone. CI's `openai floor` lane runs the OpenAI tests against
   openai 1.26.0, the framework and SDK-majors lanes against the
   `cached_property` layout.
+- **google-genai** — the request methods of the `Models` and
+  `AsyncModels` resource classes in `google.genai.models`, which every
+  `genai.Client` hands out (`client.models`, `client.aio.models`, the
+  chats, Vertex AI mode): see google-genai (Gemini) below.
 
 Three descriptor types on the OpenAI side (`_OpenAIChatDescriptor`,
 `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`), driven by an
@@ -1300,9 +1331,11 @@ user code constructs a client.
 `patch` never imports an SDK. It patches at once each SDK the
 application has already imported, and the rest as the application
 imports them: `core/import_hook.py` puts a finder at the front of
-`sys.meta_path` that, for the seven modules `patch` covers (`anthropic`,
-`openai`, `litellm`, `mcp`, `crewai`, `langgraph.graph`,
-`claude_agent_sdk`), finds the module's spec through the finders after it
+`sys.meta_path` that, for the modules `patch` covers (`anthropic`,
+`openai`, `litellm`, `mcp`, `crewai`, `langgraph.pregel`,
+`langgraph.graph`, `llama_index.core`, `claude_agent_sdk`, `agents`,
+`google.genai.models`, `google.adk.runners`: one per target in
+`_SDK_TARGETS`), finds the module's spec through the finders after it
 and wraps its loader. The wrapper puts the module's own loader back on
 `__loader__` and `__spec__.loader`, executes the module with it, then
 patches the SDK, in the importing thread, before the `import` statement
@@ -1508,6 +1541,260 @@ response has) -- never the wrapper's own state, which carries the request
 messages again, `_hidden_params` with the caller's `api_base` verbatim and
 the provider's response headers.
 
+### google-genai (Gemini)
+
+`patch()` (`Provider.GOOGLE_GENAI`) patches google-genai 1.64 and later
+once `google.genai.models` is imported (which `import google.genai`
+does). CI's SDK-floors lane runs the unit suite against 1.64.0, the
+framework and Google ADK lanes against the release they resolve (2.34).
+
+**Interception points.** Every Gemini call the SDK makes goes through
+`google.genai.models.Models` (`client.models`) or `AsyncModels`
+(`client.aio.models`): a chat (`client.chats`, `client.aio.chats`) calls
+their `generate_content` / `generate_content_stream`, and a client built
+with `vertexai=True` runs the same methods with Vertex AI's converters.
+Frameworks that build their own client (Google ADK's `Gemini` model,
+`langchain-google-genai`, CrewAI's Gemini provider) reach the same
+classes. The public `generate_content`, `generate_content_stream` and
+`embed_content` send each HTTP request through a private method,
+`_generate_content`, `_generate_content_stream` and `_embed_content`,
+one request each, and the patch replaces those three on both classes
+(their originals kept on the class under `_flightdeck_patched`, which
+`unpatch` restores). The public methods stay the SDK's own objects, so
+their signatures, argument checks and introspection are the SDK's. An
+SDK without the three methods (before 1.64.0, which brought
+`_embed_content`) is reported once, when its interceptor module is
+imported, and left unpatched. The sync `_generate_content_stream` is a
+generator, which sends its request at its first chunk: the sensor's
+returns the stream guard, which the SDK iterates as it iterates its own
+generator. The async one awaits the request and returns an async
+generator: the sensor's awaits the guard open and returns it. Each call
+reads the session when its request goes out (an async one when awaited),
+and with no session, under an outer interceptor's mark or once
+unpatched, the SDK's own method runs untouched.
+
+**One event per request.** A public call can make several requests.
+Automatic function calling (a Python function among the config's
+`tools`, which the SDK runs itself and answers the model with, up to
+`automatic_function_calling.maximum_remote_calls`) and automatic
+continuation (a response the model stopped with `finish_reason`
+`CONTINUATION` and a `continuation_token`) call the request method once
+per round, and the public method returns only the last round's response,
+whose usage counts that round alone. Each round is therefore its own
+`pre_call`, policy check and `post_call`: a weather question answered
+through one function call lands two `post_call`s, with a `tool_call`
+for the call the model asked for, and the second round's stored content
+holds the call and the SDK's answer to it. A block, a degrade or the
+kill switch applies at the next round. The SDK's own retries
+(`http_options.retry_options`, off by default) happen inside one
+request method: they are one event, with the attempt that answered. A
+stream run with automatic function calling is one stream guard per
+round.
+
+**Tokens.** Gemini counts its thinking apart from its output, and the
+sensor reports reasoning as a subset of the output, as for every other
+provider:
+
+| Gemini `usage_metadata` | Event field |
+|---|---|
+| `prompt_token_count` + `tool_use_prompt_token_count` (the results of tools the API ran, read back as input) | `tokens_input` |
+| `cached_content_token_count` (part of `prompt_token_count`) | `tokens_cache_read` |
+| `candidates_token_count` + `thoughts_token_count` | `tokens_output` |
+| `thoughts_token_count` | `tokens_reasoning` |
+
+`tokens_cache_creation` is 0: a call reads cached content, and writing
+it is `caches.create`, which is not patched. Every streamed chunk
+carries the usage so far, and the guard keeps the largest of each count.
+An embeddings call reports the per-embedding `statistics.token_count`
+Vertex AI returns, summed; the Gemini API's answer carries no count
+through the SDK (google-genai drops the `usageMetadata`
+`gemini-embedding-2` sends, and `gemini-embedding-001` sends none), so
+its `embeddings` event's `tokens_input` is the pre-call estimate, as for
+every call whose response reports no usage, and its estimated cost is
+priced from that estimate.
+
+**Model, provider, platform.** `provider` is `google`: every endpoint
+the SDK speaks serves Google's models. `model_requested` is the `model`
+argument as given (`gemini-3.1-flash-lite`, `models/gemini-...`,
+`publishers/google/models/...`, a full Vertex AI resource name), and
+`model_served` the response's `model_version`, the model that answered,
+which differs from the request for an alias (`gemini-flash-lite-latest`
+answered by `gemini-3.5-flash-lite`) or a model the API answers with
+another (`gemini-3.5-flash` answered by `gemini-3.6-flash`); the
+canonical `model` drops the path (see Cost estimation, Model ids).
+`provider_metadata.platform` is `gemini-api` for the Gemini API's host
+(`generativelanguage.googleapis.com`), `vertex` for Vertex AI's, the
+host of any other base URL (a proxy), and `localhost`, with the `local`
+billing mode, for a loopback one. A Vertex AI client's location gives
+`inference_scope` (`global`, or `regional` for a region). `service_tier`
+is the `x-gemini-service-tier` response header (`standard`, `flex`,
+`priority`); the Gemini API sends it on a non-streamed response and not
+on a stream, so a streamed call reports none. `stop_reason` is the first
+candidate's `finish_reason` (`STOP`, `MAX_TOKENS`, `SAFETY`, ...) or, for
+a prompt the filters blocked before any candidate,
+`prompt_feedback.block_reason`.
+
+**Errors.** The SDK raises `errors.APIError` (`ClientError` for 4xx,
+`ServerError` for 5xx), carrying the HTTP status as `code`, the gRPC
+status name as `status` and the error body as `details`. The class names
+say only client or server side, so the status decides the `llm_error`
+type, with the body's `google.rpc` details where one status covers two
+outcomes:
+
+| Status | `error_type` |
+|---|---|
+| 400 `INVALID_ARGUMENT`, `FAILED_PRECONDITION` | `invalid_request`; `authentication` when the `ErrorInfo` reason is `API_KEY_INVALID` or `API_KEY_EXPIRED` (the Gemini API answers a bad key with 400) |
+| 401 `UNAUTHENTICATED` | `authentication` |
+| 403 `PERMISSION_DENIED` | `permission` |
+| 404 `NOT_FOUND` | `not_found` |
+| 408, 504 `DEADLINE_EXCEEDED` | `timeout` |
+| 413 | `request_too_large` |
+| 429 `RESOURCE_EXHAUSTED` | `quota_exceeded` when a `QuotaFailure` violation names a per-day quota (`...PerDay...`), else `rate_limit` (a per-minute quota: the message reads "You exceeded your current quota" for both) |
+| 500, 502 | `api_error` |
+| 503 `UNAVAILABLE` ("The model is overloaded", "experiencing high demand") | `overloaded` |
+| any other 4xx / 5xx | `invalid_request` / `api_error` |
+
+`provider_error_code` is the status name, and `retry_after` the
+`RetryInfo` delay (`"13s"`), read from the error body. The SDK keeps
+that body as text (under `message`, with the HTTP reason phrase as the
+error's `status`) when the response does not declare JSON, as an async
+stream's error responses over aiohttp do; the text is parsed, so such a
+429 is classified as any other. A 200 whose first candidate finished
+`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` or one
+of their image counterparts, or whose prompt was blocked
+(`prompt_feedback.block_reason` `SAFETY`, `BLOCKLIST`,
+`PROHIBITED_CONTENT`, `IMAGE_SAFETY`, `JAILBREAK`, `MODEL_ARMOR`), files a
+`content_filter` `llm_error` beside its `post_call` (see `llm_error`); a
+prompt blocked for `OTHER` files none. That follows the rule every
+provider's stop reasons follow: a reason files an `llm_error` when the
+taxonomy has its outcome (a filter's refusal, a context overflow), and
+the other reasons are the `post_call`'s `stop_reason` alone, as
+Anthropic's `max_tokens` and OpenAI's `length` are. So `MAX_TOKENS`,
+`LANGUAGE`, `OTHER`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`,
+`TOO_MANY_TOOL_CALLS`, `NO_IMAGE`, `IMAGE_OTHER` and `CONTINUATION` file
+none: no other provider reports a model's malformed or unexpected tool
+call as a failure (OpenAI and Anthropic send such a call as an ordinary
+one), and the taxonomy has no entry for it.
+
+**Streaming.** The time to first token runs from the request to the
+first chunk, and the chunk that carries the finish reason (or a block
+reason) is the last. A caller that leaves the stream early closes the
+SDK's generator, which lets go of the guard: the settle its collection
+queues reports an aborted `post_call` (`abort_reason=client_aborted`,
+the usage of the chunks read) at the session's next call or its end. A
+stream that fails after its first chunk is a `stream_error` `llm_error`
+with the partial tokens the chunks reported. The SDK assembles no
+stream; when content capture is on or the request offers tools, the
+provider assembles the response a non-streamed call returns: each
+candidate's parts in order (adjacent plain text joined, thought text
+apart, a function call, inline data or a part carrying a thought
+signature kept whole), its last finish reason, and the last chunk's
+usage, model version and response id.
+
+**Content.** What is stored is what the provider received and returned
+(CLAUDE.md rule 20), piece by piece, in the request body's own structure
+and spelling, never rebuilt from the caller's arguments. The SDK turns
+the arguments into the request its own way: a string into a `user`
+turn, a list of strings into one turn of several parts, a Python
+function into a function declaration, a PIL image into inline data,
+bytes into URL-safe base64. Its spelling is the REST API's names for most
+fields and its own for some, and depends on its release and the
+platform: google-genai 2.x sends `inlineData` with `mime_type` inside it
+and a function's declaration as `parameters_json_schema`; 1.64 sends
+`mimeType` and a `parameters` schema (`"type": "STRING"`) on the Gemini
+API, `inline_data` and `mime_type` on Vertex AI. So the sensor reads
+the request the SDK built. With content capture on, the patched request
+method runs on a copy of its `Models` object whose API client is a
+recording view of the real one: the request the method hands the client
+(`request`, `request_streamed` and their async forms) is copied before
+the client sends it, without the `_url` and `_query` keys the client
+drops, and the response body a non-streamed call's client returns is
+kept as text. The copy is the call's own, so nothing global changes and
+other calls on the same client are not seen; the SDK builds a new
+structure for each request, so a change the caller makes to its
+arguments afterwards is not in it; each round of automatic function
+calling stores what that round sent, the history included; a one-shot
+iterable still reaches the SDK as the sensor's replay (see one-shot
+iterables) and the request holds the items the SDK read. The stored
+pieces:
+
+- `input`: the body's `contents`, always a list of turns, each
+  `{"role", "parts"}`.
+- `system`: the body's `systemInstruction`'s `parts`. The content's
+  `system` is text or a list (see `event_content`), so the Content
+  around the parts is not stored, and with it its `role`: `user` when
+  the SDK builds the Content from text or parts, the caller's own (a
+  `model` role included, which google-genai 1.64 and 2.x send as given)
+  when the caller passes a Content.
+- `tools`: the body's `tools` (`functionDeclarations`, `googleSearch`,
+  `codeExecution`, ...).
+- `response`: a non-streamed call's response body as received, parsed:
+  every field, the ones the SDK does not model included, bytes in the
+  wire's own base64 alphabet. A stream has no one body: its stored
+  response is its chunks assembled (see Streaming), each chunk as the
+  SDK's dump by alias (the REST API's names) with unset fields left
+  out, so it holds only the fields the SDK models, and bytes (a
+  `thoughtSignature`) in the URL-safe base64 the SDK writes rather than
+  the standard alphabet the API sent.
+
+`messages` stays empty: Gemini has no messages parameter. A body's other
+fields (`generationConfig`, `toolConfig`, `safetySettings`,
+`cachedContent`) are not stored, as no other provider's are, and
+`http_options.extra_body`, which the client merges into the body after
+the copy, is not in it. When the request could not be read (a release
+whose request methods send through other client methods than these
+four, or a copy that fails), the event is sent without content, with a
+warning once per process naming no value: never in another shape. A
+round of a chat on the Gemini API:
+
+```json
+{
+  "provider": "google",
+  "system": [{"text": "Answer in at most five words."}],
+  "messages": [],
+  "input": [
+    {"parts": [{"text": "My name is Ada."}], "role": "user"},
+    {"parts": [{"text": "Hello, Ada.", "thoughtSignature": "EpwB..."}], "role": "model"},
+    {"parts": [{"text": "What is my name?"}], "role": "user"}
+  ],
+  "tools": null,
+  "response": {
+    "candidates": [{
+      "content": {"parts": [{"text": "Your name is Ada.", "thoughtSignature": "EpwB..."}],
+                  "role": "model"},
+      "finishReason": "STOP", "index": 0
+    }],
+    "usageMetadata": {"promptTokenCount": 28, "candidatesTokenCount": 5,
+                      "totalTokenCount": 33},
+    "modelVersion": "gemini-3.1-flash-lite",
+    "responseId": "..."
+  }
+}
+```
+
+An `embed_content` call stores in `input` the contents its request sent
+(each batched request's `content` on the Gemini API's
+`batchEmbedContents`, each instance's `content` on Vertex AI's
+`predict`, the request's own on its `embedContent`) and the vectors in
+`embedding_output`. The dashboard's Prompts tab shows a Gemini call in
+these terms (see Session drawer, the Prompts tab).
+
+**Not patched.** `count_tokens` and `compute_tokens` (no inference
+call; the sensor's estimate is local); the image, video and other
+generation methods of `client.models` (`generate_images`, `edit_image`,
+`upscale_image`, `recontext_image`, `segment_image`, `generate_videos`);
+`client.interactions`, `client.agents` and the rest of the next
+generation API the client exposes (`webhooks`, `triggers`,
+`environments`, `credentials`, `voices`); the Live API
+(`client.aio.live.connect`, a WebSocket) and Lyria's music sessions
+(`client.aio.live.music`); `client.batches` (batch generation, billed
+when the batch runs) and `client.tunings` (tuning jobs);
+`client.caches`, `client.file_search_stores` (which embeds what it
+imports) and `client.files`. `wrap()` takes no `genai.Client`:
+`patch()` covers every client. Vertex AI is covered by unit tests,
+through the SDK's own Vertex AI converters over a fake transport; no
+Vertex AI run has been recorded.
+
 ### Patch surface — out of scope
 
 The SDK class patches and the litellm patch deliberately do NOT intercept:
@@ -1522,18 +1809,19 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | Frameworks that call a provider over raw HTTP (httpx, requests) | No SDK class to patch. |
 | The OpenAI Agents SDK's Responses WebSocket transport (`use_responses_websocket`, `responses_websocket_session`) | Its model calls go over a WebSocket, not through `responses.create`, so they are not metered; the run's child sessions, hand-offs and guardrails are still reported. |
 | boto3 `bedrock-runtime` (Converse, ConverseStream) | Not supported yet. botocore's event system gives a seam for it ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)); until then, Strands on its default Bedrock model and any framework on Bedrock through boto3 are not metered. |
-| `google-genai` (Gemini API and Vertex AI) | Not supported yet. One class-level patch on its `Models` / `AsyncModels` would cover it ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); until then, Gemini calls, Google ADK's default model included, are not metered. |
+| google-genai `count_tokens`, `compute_tokens`, the image and video methods, `interactions`, `agents` and the rest of the next generation API (`webhooks`, `triggers`, `environments`, `credentials`, `voices`), the Live API and its music sessions (`live.music`), `batches`, `tunings`, `caches`, `file_search_stores`, `files` | Token counting makes no inference call; the image, video, Live API and music surfaces bill by other units or over a WebSocket; `interactions`, `agents` and the next generation API are a separate API ([#276](https://github.com/flightdeckhq/flightdeck/issues/276) tracks them); batches, tuning jobs, caches, file search stores and files are offline work or storage. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
 in the OpenAI resource table, or one entry in `_resource_targets()` in the
-Anthropic interceptor.
+Anthropic interceptor; a google-genai request method is one name in
+`_PATCHED_METHODS` in its interceptor.
 
 ### Framework support
 
 Flightdeck reaches an agent framework two ways.
 
 - **Native sensor** (`init` + `patch`). Every LLM call the framework
-  makes through a patched SDK (Anthropic, OpenAI, litellm) is metered
+  makes through a patched SDK (Anthropic, OpenAI, google-genai, litellm) is metered
   and enforced as it happens, with no per-framework setup. Where the
   sensor also wraps the framework, each sub-agent run opens a child
   session (see Sub-agent framework coverage). Enforcement (kill switch,
@@ -1568,15 +1856,15 @@ both (see Sub-agent framework coverage).
 |---|---|---|---|---|
 | LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
 | LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
-| CrewAI 1.14+ | yes on its OpenAI and Anthropic providers and the litellm fallback; no on its Gemini (`google.genai`), Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
+| CrewAI 1.14+ | yes on its OpenAI, Anthropic and Gemini (`google.genai`; verified live on 1.15) providers and the litellm fallback; no on its Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
-| Google ADK 2.13+ | yes on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK); no on its default Gemini model | yes | yes | Native: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with its hand-offs, enforced per session; the root agent is the sensor's session (see Google ADK). Its Gemini calls are not metered while Gemini is not supported (see Providers); the child sessions still appear. OTLP: agents, model calls and tool calls, observe only |
+| Google ADK 2.13+ | yes on its default `Gemini` model (google-genai), on `LiteLlm` and on its `Claude` / `AnthropicLlm` models (Anthropic SDK) | yes | yes | Native: a child session per sub-agent run (an agent reached by transfer, a workflow agent's sub-agent, an `AgentTool`'s agent), with its hand-offs, enforced per session; the root agent is the sensor's session (see Google ADK). OTLP: agents, model calls and tool calls, observe only |
 | OpenAI Agents SDK 0.6+ | yes (Responses tool items become `tool_call` events); not over the Responses WebSocket transport | yes | yes, through `opentelemetry-instrumentation-openai-agents-v2` | Native: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires, enforced per session (see Sub-agent framework coverage). OTLP: agents, hand-offs, model and tool calls, observe only |
 | Microsoft Agent Framework | yes through its OpenAI and Azure OpenAI chat clients (`agent-framework-openai`), its Foundry chat clients (`FoundryChatClient`, `FoundryAgentChatClient`, `AzureAIClient`, on the OpenAI client `azure-ai-projects` returns) and its Anthropic client (`agent-framework-anthropic`); not on `AzureAIAgentClient`, whose model calls the Azure AI Agent Service makes server-side, or on the `azure-ai-inference` embedding clients | planned | no: its GenAI spans are not mapped | Native (planned): a child session per agent run and workflow hand-off |
 | LlamaIndex | yes (`llama-index-llms-anthropic`, `llama-index-llms-openai`) | yes, on llama-index-core 0.14+ | no | Native: a child session per agent of an agent workflow run (`FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow`), role from the agent's name, with its hand-offs; its LLM and tool calls stay on the sensor's session, as for CrewAI and LangGraph (see LlamaIndex agent workflows) |
 | Deep Agents | yes through LangChain | yes | no | Native: a child session per sub-agent run its `task` tool starts (a declared sub-agent, a `CompiledSubAgent`, parallel calls included), named after the sub-agent, through the LangGraph wrap; the main agent is the sensor's session, as for any top-level `create_agent` run (see LangGraph graphs) |
-| Pydantic AI | yes on Anthropic and OpenAI models; no on `GoogleModel` or `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
-| Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; no on its default Bedrock model or on Gemini | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
+| Pydantic AI | yes on Anthropic and OpenAI models; `GoogleModel` calls through google-genai, not verified; no on `BedrockConverseModel` | no | yes | Native: metering and enforcement of its calls. OTLP: its agents, nested agents and tool calls, observe only |
+| Strands Agents | yes on its OpenAI, Anthropic and LiteLLM model providers; `GeminiModel` calls through google-genai, not verified; no on its default Bedrock model | no | yes | Native: metering and enforcement of those calls. OTLP: its agents, agents used as tools and tool calls, observe only |
 | Agno, Haystack, smolagents | yes when they call a model through the Anthropic or OpenAI SDK or litellm | no ([#278](https://github.com/flightdeckhq/flightdeck/issues/278)) | no | Native: the framework label and metering and enforcement of those calls; a multi-agent run is one session |
 | Semantic Kernel | yes when it calls a model through the Anthropic or OpenAI SDK | no | no | Native: the framework label and those calls |
 | AutoGen, AG2 | yes when they call a model through the Anthropic or OpenAI SDK | not planned | no | Native: the framework label and those calls; Microsoft Agent Framework is AutoGen's successor |
@@ -1589,7 +1877,7 @@ both (see Sub-agent framework coverage).
 | Anthropic (every client class, including Bedrock, Vertex AI and Foundry) | yes | only as a mapped framework's model calls |
 | OpenAI (including Azure OpenAI and any OpenAI-compatible endpoint the SDK is pointed at) | yes | only as a mapped framework's model calls |
 | litellm | yes | only as a mapped framework's model calls |
-| Google Gemini (`google-genai`, Gemini API and Vertex AI) | no: not supported ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); Gemini reached through litellm is metered as a litellm call | only as a mapped framework's model calls; no Gemini run has been recorded |
+| Google Gemini (`google-genai` 1.64+, Gemini API and Vertex AI) | yes (see google-genai (Gemini)); Vertex AI verified by unit tests only; Gemini reached through litellm is metered as a litellm call | only as a mapped framework's model calls; no Gemini run has been recorded |
 | boto3 `bedrock-runtime` (Converse, ConverseStream) | no: not supported ([#277](https://github.com/flightdeckhq/flightdeck/issues/277)) | only as a mapped framework's model calls; no Bedrock run has been recorded |
 | Voyage, Mistral, Cohere and other native SDKs | no, and not planned: their OpenAI-compatible endpoints go through the OpenAI SDK, and litellm reaches many of them | no |
 
@@ -1603,21 +1891,24 @@ user base on current SDK majors, for these:
 - CAMEL: its pins conflict with current SDK majors.
 - DSPy's default engine, until the callback adapter lands (above).
 
-Frameworks not listed whose calls go through the Anthropic or OpenAI SDK
-or litellm are metered and enforced, with `framework=null` unless a
-classifier names them (see Framework attribution).
+Frameworks not listed whose calls go through the Anthropic, OpenAI or
+google-genai SDK or litellm are metered and enforced, with
+`framework=null` unless a classifier names them (see Framework
+attribution).
 
 #### LLM call paths
 
-After `init` + `patch`, frameworks that build Anthropic or OpenAI
-clients internally are intercepted without user-side wrapping.
+After `init` + `patch`, frameworks that build Anthropic, OpenAI or
+google-genai clients internally are intercepted without user-side
+wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them. `ChatGoogleGenerativeAI.invoke` and `.stream` (langchain-google-genai 4.x, through google-genai; verified live on 4.4) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including tool loops built from a model node and `ToolNode`, and LangChain's `create_agent` (built on LangGraph) |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete`. llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so that pairing fails inside the SDK with or without the sensor |
-| CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
+| CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic, OpenAI and Gemini (`gemini/...`, `GeminiCompletion`, through google-genai) provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
+| Google ADK 2.13+ | The default `Gemini` model through google-genai's `aio.models.generate_content` / `generate_content_stream`, one call per model turn; `LiteLlm` and `AnthropicLlm` / `Claude` through the litellm and Anthropic patches |
 | litellm | `litellm.completion` / `acompletion`, `text_completion` / `atext_completion` and `responses` / `aresponses`, `stream=True` included (sync and async; chat and text streams metered from litellm's trailing usage chunk, Responses streams from the terminal event); each call is reported once, by the wrapper of the entry point used, also where litellm serves it through the OpenAI SDK or its own `completion`; `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
 | bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); on Anthropic calls the gateway's host is recorded as `provider_metadata.platform`, on OpenAI calls the gateway is not recorded |
@@ -2248,10 +2539,13 @@ the same plugin callbacks.
   message (its text) as `incoming_message`, and each child its agent's
   last final response (its text) as `outgoing_message`. With capture off
   neither is read.
-- **Model, tool and MCP calls** go through the patched litellm (`LiteLlm`)
-  and Anthropic SDK (`AnthropicLlm`, `Claude`) and the MCP patch (ADK's
-  `McpToolset` uses the official `mcp` SDK), and stay on the sensor's own
-  session. The plugin adds no `tool_call`: the model response's function
+- **Model, tool and MCP calls** go through the patched google-genai
+  (ADK's default `Gemini` model, one `aio.models` request per model
+  turn), litellm (`LiteLlm`) and Anthropic SDK (`AnthropicLlm`,
+  `Claude`) and the MCP patch (ADK's `McpToolset` uses the official
+  `mcp` SDK), and stay on the sensor's own session. Each model call is
+  reported once: ADK's model classes call one provider SDK each. The
+  plugin adds no `tool_call`: the model response's function
   calls (an `AgentTool`'s and `transfer_to_agent` included) are already
   the `tool_call` events. The plugin reads no token counts. `AnthropicLlm`
   passes `NOT_GIVEN` for the `tools` of an agent with none, which the
@@ -2290,10 +2584,10 @@ the unpatched run.
 
 Known limits:
 
-- **Gemini calls are not metered**: the sensor has no `google-genai`
-  interceptor ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)),
-  so an agent on ADK's default Gemini model reports no model calls or
-  tokens. Its child sessions and hand-offs still appear.
+- **ADK's interactions mode** (`Gemini(use_interactions_api=True)`)
+  calls google-genai's `client.interactions`, which is not patched (see
+  google-genai (Gemini)): such an agent reports no model calls or
+  tokens; its child sessions and hand-offs still appear.
 - **A runner built before `patch()`** has no plugin and its runs open no
   children; its model calls are still metered.
 - **A `LiteLlm` call made before `patch()`** leaves that process's
@@ -2310,7 +2604,8 @@ Known limits:
 - `run_live` is wrapped as `run_async` is, and is exercised with a
   scripted live connection (the same events patched and unpatched, the
   hand-off and the child, a timeout ending the open child in error), not
-  against the Gemini Live API, whose calls are not metered anyway.
+  against the Gemini Live API, whose calls (`client.aio.live`, a
+  WebSocket) the google-genai patch does not meter.
 - Nothing ties a child to ADK's own OpenTelemetry trace or invocation
   ids.
 
@@ -2612,8 +2907,8 @@ A call is matched to a session when its request is sent. A sync call
 sends when it is made. An async call sends when its coroutine is
 awaited, and an async streaming view when it is entered: on every async
 path (the patched Anthropic `create` and `parse`, their raw and
-streaming views, and every call through a following OpenAI or `wrap`
-proxy) the session is read then, so a coroutine created under one
+streaming views, google-genai's async request methods, and every call
+through a following OpenAI or `wrap` proxy) the session is read then, so a coroutine created under one
 session and awaited after `teardown` goes to the SDK untouched, and one
 awaited in the next session reports to it, with its capture setting. The
 `.stream()` helpers of the OpenAI SDK send on entry, and a manager is
@@ -2664,7 +2959,8 @@ resource method carries the SDK function's own name, docs and signature
 (`functools.wraps`).
 
 How each interceptor finds the session: the patched Anthropic resource
-methods and the litellm wrappers look it up at each call. The OpenAI
+methods, the patched google-genai request methods and the litellm
+wrappers look it up at each call. The OpenAI
 resource proxies the class patch hands out, which a client keeps in its
 instance `__dict__` and a framework may keep for its lifetime
 (langchain-openai keeps `client.chat.completions`), and the proxies `wrap`
@@ -6588,7 +6884,7 @@ CREATE TABLE event_content (
     messages    JSONB,
     tools       JSONB,
     response    JSONB NOT NULL,
-    "input" JSONB, -- embeddings input, or an OpenAI Responses request's input
+    "input" JSONB, -- embeddings input, an OpenAI Responses request's input, a Gemini request's contents
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
     embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
@@ -6606,12 +6902,12 @@ never carries content inline.
 
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
-| `messages` | chat history (`[]` for Responses) | `[]` | `[]` | `[]` | `[]` | `[]` |
+| `messages` | chat history (`[]` for Responses and Gemini) | `[]` | `[]` | `[]` | `[]` | `[]` |
 | `system_prompt` | a `system` given as text: Anthropic `system`, Responses `instructions`, OpenTelemetry GenAI system instructions given as text, or as an object, number or boolean (its JSON text) | NULL | NULL | NULL | NULL | NULL |
-| `system_blocks` | a `system` given as a list: Anthropic `system` blocks, OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
+| `system_blocks` | a `system` given as a list: Anthropic `system` blocks, the parts of a Gemini request's `systemInstruction`, OpenTelemetry GenAI system instructions | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
-| `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
+| `input` | Responses `input`, a Gemini request's `contents` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
@@ -7458,7 +7754,9 @@ A model id reaches Flightdeck in many spellings: a provider's API id
 `gpt-5.1-2025-11-13`), a Vertex AI id (`claude-sonnet-4-5@20250929`), a
 Bedrock id or inference profile (`anthropic.claude-sonnet-4-5-20250929-v1:0`,
 `us.anthropic.claude-...`), a gateway-prefixed id (`openrouter/anthropic/claude-sonnet-4.5`,
-`anthropic/claude-sonnet-4-5`, `bedrock/...`), a dotted version
+`anthropic/claude-sonnet-4-5`, `bedrock/...`), a Gemini resource name
+(`models/gemini-3.1-flash-lite`, `publishers/google/models/...`, a full
+Vertex AI `projects/.../models/...` name), a dotted version
 (`claude-sonnet-4.5`), an Azure deployment name, or a local tag
 (`llama3.1:8b`).
 
@@ -7486,8 +7784,17 @@ hyphenated form. A dated snapshot keeps its date. An OpenAI fine-tune
 (`ft:<base>:<org>:...`) becomes `ft:` plus its canonical base model, the
 form the catalogue prices it under, and a Hugging Face Hub model a local
 server pulled (`hf.co/<org>/<model>:<quant>`) is kept whole, host and
-organisation included.
-Stripping a Bedrock
+organisation included. A Gemini resource name is its last path segment
+(`publishers/google/models/gemini-2.5-flash` is `gemini-2.5-flash`), and
+a Gemini `-latest` alias (`gemini-flash-lite-latest`) is kept: the
+catalogue prices the alias as itself, and a response names the model
+that answered it as `model_served`, which the canonical id comes from.
+A tuned model's id is its last path segment too
+(`tunedModels/my-tuned-model-a1b2c3` is `my-tuned-model-a1b2c3`, a
+Vertex AI endpoint's `projects/.../endpoints/1234567890` is
+`1234567890`), an id no catalogue row carries: such a call is priced
+only when its `model_served` names a catalogued model or a
+`pricing.yaml` override names the id. Stripping a Bedrock
 region prefix records its scope first: `global.` is
 `inference_scope=global`, any other region prefix `regional`. An id the
 rules do not recognise is stored as given (lower-cased, whitespace
@@ -7529,8 +7836,9 @@ past events too:
 - `provider` (column) is the model's vendor: `anthropic`, `openai`,
   `google`, `xai`, `mistral`, `meta`, `deepseek` or `other`. The sensor
   stamps it only when the endpoint settles it: the Anthropic SDK's
-  clients (`anthropic`), and the OpenAI SDK against the `openai` or
-  `azure` platform (`openai`). An OpenAI-compatible client pointed
+  clients (`anthropic`), the google-genai SDK's (`google`, on the
+  Gemini API, Vertex AI or a proxy in front of either), and the OpenAI
+  SDK against the `openai` or `azure` platform (`openai`). An OpenAI-compatible client pointed
   anywhere else (xAI, DeepSeek, OpenRouter, a local server) leaves it
   out. The plugin stamps `anthropic`. For an event that carries none,
   the worker derives it from the canonical model id, and the analytics
@@ -7538,7 +7846,7 @@ past events too:
   `provider` is empty.
 - `platform` is the endpoint that served the call: `anthropic`,
   `openai`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `google-cloud`,
-  `foundry`, `azure`, the bare host of a gateway or local server, or
+  `gemini-api`, `foundry`, `azure`, the bare host of a gateway or local server, or
   `invalid-host`. Clients send it as `provider_metadata.platform` (see
   `post_call`; the plugin sets `bedrock`, `vertex` or `foundry` from the
   Claude Code provider variables, else `anthropic`, or the host of
@@ -7593,10 +7901,10 @@ for the model). A
 call on a platform with no row of its own is priced from the `direct`
 row. Platform labels map to a family: `bedrock` and `bedrock-mantle` to
 `bedrock`, `vertex` to `vertex`, `foundry` to `foundry`, `azure` to
-`azure`; `anthropic`, `openai`, `aws` (Claude Platform on AWS) and
-`google-cloud` (Claude Platform on Google Cloud), which bill at the
-provider's own prices, and every gateway host and `invalid-host` price
-from `direct`. The load replaces the table's contents in one transaction and is
+`azure`; `anthropic`, `openai`, `gemini-api` (Google's Gemini API),
+`aws` (Claude Platform on AWS) and `google-cloud` (Claude Platform on
+Google Cloud), which bill at the provider's own prices, and every
+gateway host and `invalid-host` price from `direct`. The load replaces the table's contents in one transaction and is
 skipped when the merged content's hash matches what the table holds, so
 several API replicas starting together write it at most once each.
 
@@ -7633,8 +7941,8 @@ Reasoning tokens are a subset of `tokens_output` on every provider. A
 client reporting a provider that counts reasoning apart from its output
 (Gemini's thinking tokens) must add it into `tokens_output` so the
 subset rule holds; litellm does so before the sensor reads its usage,
-and the sensor has no `google-genai` path of its own (see Sensor >
-Framework support). A provider that reports no
+and the sensor's google-genai path adds `thoughts_token_count` to the
+candidates' count (see Sensor > google-genai (Gemini)). A provider that reports no
 cache or reasoning split leaves those terms at 0 and the formula
 collapses to `t_in * input + t_out * output`.
 
@@ -8999,13 +9307,13 @@ the call whose `id` its `tool_call_id` holds, looked up among the calls
 of the earlier assistant messages in the same list (the nearest one
 when an id repeats), else the reply's own `name` when it carries one
 (LangChain and some litellm paths send it), else that id, shortened,
-Raw showing it whole; a `function` message names its own `name`. The reply's content is shown
+the JSON view showing it whole; a `function` message names its own `name`. The reply's content is shown
 as any message's content is. The lookup runs once per message list.
 These are read from the messages' shape, not the provider name, so a
 litellm call's OpenAI-format messages show the same way. A `system`
 given as a list of content blocks is shown block
 by block, as a message's content blocks are: a text block as its text,
-a block the viewer does not know as its JSON; Raw shows the list as
+a block the viewer does not know as its JSON; the JSON view shows the list as
 stored. A content block that carries `cache_control` (a cache
 breakpoint), in the system prompt or a message, is marked under it in
 the provider's terms, `cache_control · ephemeral` with its `ttl` when
@@ -9042,7 +9350,50 @@ that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
 built from `response.created` on, and for litellm the latest response a
 `response.created` / `response.in_progress` event carried
 (`status: "in_progress"`, no output). An embeddings
-call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
+call's input stays with `EmbeddingsContentViewer`. A Gemini call (an
+event other than an embeddings call whose content is stored under
+provider `google`; the drawer passes the event's type, and an
+embeddings event keeps the view every embeddings event has, whatever
+its content holds) is shown in its request's own terms, read from the
+stored request and response bodies (see google-genai (Gemini),
+Content): System instruction (the `systemInstruction`'s parts, badge
+`system instruction`), Contents (one box per turn with its `user` or
+`model` role badge), Tools and Response (no Response box when the
+response was stored as nothing or `{}`). A part shows by its kind:
+`text` as text, a `thought` part labelled `thought` in the secondary
+text colour, a `functionCall` in the box an Anthropic `tool_use` block
+shows in (the function's name, then its `args` as labelled fields,
+`(no args)` when it has none), a `functionResponse` labelled
+`function response` and the function it answers (its `name`, else the
+call its `id` names) with its `response` as fields, `inlineData` as a
+boxed placeholder naming its MIME type and its size (`[image/png ·
+12.3 KB]`, read from the base64 text's length: the bytes are never
+decoded or put in the page; a payload the sensor cut to fit the event
+size limit ends in its marker, whose total gives the size, and the
+placeholder adds `cut to fit the event size limit`), `fileData` boxed
+as its MIME type and URI, `executableCode` labelled with its language
+over the code, `codeExecutionResult` labelled with its outcome over the
+output, and any other part as its JSON. A turn (or candidate) whose
+parts carry a `thoughtSignature` (opaque bytes the model reads back)
+shows one mark under them, `thoughtSignature · opaque bytes, in JSON`,
+the values only in the JSON view; a part that holds nothing but its signature
+shows nothing of its own. Tools show one box per function declaration,
+by its name, with its description and its parameters' types as stored
+(`string` in a JSON schema, `STRING` in Gemini's own schema), and one
+per built-in tool, named by its key (`googleSearch`, `codeExecution`,
+`urlContext`). The response shows each candidate's parts the same way
+(several labelled by their `index`; a candidate without `parts` says
+`(no parts)`), its `finishReason` when it is not `STOP` with its
+`finishMessage` when it has one, a prompt the filters blocked before
+any candidate as `The prompt was blocked (blockReason SAFETY): the
+model returned no candidates.`, and the token line every provider's
+response has, from `usageMetadata`: Tokens in the prompt with the
+tool-use prompt, Tokens out the candidates with the thoughts (the
+counts the event's `tokens_input` and `tokens_output` are made of). The
+rest of the usage, safety ratings, grounding and citation metadata are
+in the JSON view only. Every field is read under its REST API name and its
+snake_case one, since the body's spelling differs by SDK release and
+platform, and the JSON view shows each box's piece as stored. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written
@@ -9104,8 +9455,12 @@ provider's branch, under an `OpenTelemetry GenAI` header:
 - a part or block it does not know as its JSON, and content with no
   messages, response or tool input and output as its stored fields.
 
-Every box keeps its Pretty / Raw toggle, Raw showing the value as
-stored.
+Every box has a toggle between two views, named for what they show:
+**Rendered** (the default) shows the content for reading: text as
+written, content blocks, tool cards, parts, and JSON held in a string
+pretty-printed; **JSON** shows the value exactly as stored, as indented,
+highlighted JSON that wraps at the box's width. Each box keeps its own
+choice, and a newly opened event starts every box on Rendered.
 
 The Prompts tab's empty states read the run's stored capture posture,
 `capture_prompts` on `GET /v1/sessions/:id` (the run drawer and the
@@ -10309,14 +10664,14 @@ Structured error event with a 14-entry taxonomy:
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
 | `quota_exceeded` | 402 / 429 / 400 | Billing problem (402); a spend limit, spend cap or exhausted credit balance reported under 429 or 400 | `quota_exceeded_error` | ❌ |
 | `context_overflow` | 400 / 200 | Input exceeded the model context window, or the response stopped with `model_context_window_exceeded` | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 / 200 | Provider content filter blocked the request, the response ended with `refusal` or `content_filter`, or the filter replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `chat.completions.parse()`: `http_status` 200, `provider_error_code` `content_filter`) | `content_filter_error` | ❌ |
+| `content_filter` | 400 / 200 | Provider content filter blocked the request, the response ended with `refusal` or `content_filter` (or a Gemini safety finish or block reason), or the filter replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `chat.completions.parse()`: `http_status` 200, `provider_error_code` `content_filter`) | `content_filter_error` | ❌ |
 | `invalid_request` | 400 / 200 | Other validation failure; also OpenAI's `LengthFinishReasonError` from `chat.completions.parse()`, when the output hit the caller's `max_tokens` before the structured output was complete (`http_status` 200, `provider_error_code` `length`, message that `max_tokens` is too small for the schema) | `invalid_request_error` | ❌ |
 | `authentication` | 401 | Missing / invalid credential; OpenAI's `AuthenticationError` and its `OAuthError` subclass (a rejected OAuth bearer token) | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
 | `not_found` | 404 | Resource (model, endpoint) not found | `not_found_error` | ❌ |
 | `request_too_large` | 413 | Request body too large | `request_too_large_error` | ❌ |
 | `api_error` | 500 | Provider internal error | `api_error` | ✅ |
-| `overloaded` | 529 / 503 | Anthropic 529, OpenAI engine overloaded | `overloaded_error` | ✅ |
+| `overloaded` | 529 / 503 | Anthropic 529, OpenAI engine overloaded, Gemini 503 `UNAVAILABLE` | `overloaded_error` | ✅ |
 | `timeout` | 504 / — | Gateway timeout (504), or a client-side timeout before a response | `timeout_error` | ✅ |
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
 | `other` | — / 200 | Fallback for unknown; also a `chat.completions.parse()` completion that fails the caller's schema (`http_status` 200, `provider_error_code` `schema`) | `other` | ❌ |
@@ -10371,7 +10726,9 @@ is `quota_exceeded` rather than `rate_limit` or `invalid_request`, since
 Anthropic reports its organisation spend cap as a 429
 `rate_limit_error` and a per-user spend limit or an exhausted credit
 balance as a 400 `invalid_request_error`, and only the message tells
-them apart. The match is a substring test over the first 2,048
+them apart. A google-genai error, whose class says only client or server
+side, is typed by its status and its body's `google.rpc` details instead
+(see Sensor > google-genai (Gemini)). The match is a substring test over the first 2,048
 characters of the lower-cased message; single words are not matched,
 because a 400 echoes caller-supplied identifiers (a schema named
 `monthly_report`, a tool `get_billing_info`) and a per-minute "quota
@@ -10394,9 +10751,14 @@ classifiers declined the request) or `model_context_window_exceeded`
 (the context window ran out mid-response), an OpenAI chat or litellm
 `finish_reason` of `content_filter` (which is also how litellm reports
 an Anthropic refusal routed through it), an OpenAI structured-output
-refusal (`message.refusal`, reported as `refusal`), or an OpenAI
+refusal (`message.refusal`, reported as `refusal`), an OpenAI
 Responses call left `incomplete` with `incomplete_details.reason`
-`content_filter`, the sensor emits an `llm_error` beside the
+`content_filter`, or a Gemini candidate that finished `SAFETY`,
+`RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`,
+`IMAGE_SAFETY`, `IMAGE_PROHIBITED_CONTENT` or `IMAGE_RECITATION` (or a
+prompt Gemini blocked with one of the block reasons `SAFETY`,
+`BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`, `JAILBREAK`,
+`MODEL_ARMOR`), the sensor emits an `llm_error` beside the
 `post_call`: `error.error_type` is `content_filter`, or
 `context_overflow` for the context-window overrun; `error.http_status`
 is 200; `error.provider_error_code` is the stop reason;
@@ -10420,7 +10782,8 @@ session's `has_terminal_error` flag like any other terminal
 a helper stream's accumulated snapshot) or, for a raw stream that has no
 final message object, from the streamed event that carries it
 (Anthropic `message_delta`, an OpenAI chat chunk with `finish_reason`,
-an OpenAI `response.incomplete` event) through
+an OpenAI `response.incomplete` event, the Gemini chunk whose candidate
+carries `finish_reason`) through
 `stop_reason_from_stream_chunk`, which the stream guard records as
 events pass. Only `post_call` events get this treatment; `embeddings`
 responses carry no stop reason.
@@ -13844,6 +14207,7 @@ on any box.
 |---|---|
 | `make playground-anthropic` | `playground/01_direct_anthropic.py` |
 | `make playground-openai` | `playground/02_direct_openai.py` |
+| `make playground-google-genai` | `playground/43_google_genai.py` |
 | `make playground-langchain` | `playground/03_langchain.py` |
 | `make playground-langgraph` | `playground/04_langgraph.py` |
 | `make playground-llamaindex` | `playground/05_llamaindex.py` |

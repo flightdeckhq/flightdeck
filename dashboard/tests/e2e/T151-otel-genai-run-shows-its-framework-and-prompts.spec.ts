@@ -87,9 +87,9 @@ test.describe("T151 — an OpenTelemetry GenAI run shows its framework and its p
     const call = viewer.getByTestId("prompt-box-response-0").getByTestId("genai-part-tool-call");
     await expect(call).toContainText("get_weather");
     await expect(call).toContainText("Paris");
-    // Raw shows the message as stored: GenAI parts, not a provider shape.
-    await viewer.getByTestId("prompt-box-message-1-raw").click();
-    await expect(viewer.getByTestId("prompt-box-message-1-raw-json")).toContainText('"parts"');
+    // JSON shows the message as stored: GenAI parts, not a provider shape.
+    await viewer.getByTestId("prompt-box-message-1-json").click();
+    await expect(viewer.getByTestId("prompt-box-message-1-json-view")).toContainText('"parts"');
 
     await drawer.getByRole("button", { name: "← Back to event list" }).click();
     viewer = await openPromptsRow(drawer, tool!.id);

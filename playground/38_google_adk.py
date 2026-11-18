@@ -7,10 +7,9 @@ through ``flightdeck_sensor``'s native wrap (``Provider.GOOGLE_ADK``):
   meters it), when ``OPENAI_API_KEY`` is set;
 * Anthropic ``claude-haiku-4-5`` through ADK's ``AnthropicLlm`` (the
   Anthropic patch meters it), when ``ANTHROPIC_API_KEY`` is set;
-* Gemini, ADK's default, when ``GOOGLE_API_KEY`` is set: its child
-  sessions land but its model calls are not metered (the sensor has no
-  google-genai interceptor), so only the structure is checked. Skipped
-  without the key.
+* Gemini ``gemini-3.1-flash-lite`` through ADK's default model class,
+  when ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY`` is set (the google-genai
+  patch meters it).
 
 In each session ``concierge_agent`` (the root, with a function tool
 ``get_weather``, ``expert_agent`` as an ``AgentTool`` and a sub-agent
@@ -20,7 +19,8 @@ transfer to the booking agent. Checked through the API:
 the expert's and the booking agent's child sessions under the sensor's
 session and none for the root agent, the ``agent_handoff`` signal from
 the concierge to the booking agent on the sensor's session with no
-content, and, for the metered providers, the model calls and one
+content, and the model calls (each once, with its provider: ADK's Gemini
+model makes one google-genai request per model turn) and one
 ``tool_call`` per function call on the sensor's session.
 
 Runs from the sensor ADK venv (playground/README.md). Exits 2 when ADK
@@ -54,7 +54,8 @@ APP = "playground_google_adk"
 USER = "playground"
 OPENAI_MODEL = "openai/gpt-4o-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5"
-GEMINI_MODEL = "gemini-2.5-flash"
+# A current, cheap model the Gemini API serves to a new key.
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 # Enough for a tool call or a one-sentence answer, and cheap.
 MAX_TOKENS = 300
 # The bound on a run's model calls (ADK's RunConfig.max_llm_calls): the
@@ -198,7 +199,7 @@ async def _run(root: Any) -> list[Any]:
     return events
 
 
-def section(label: str, make_model: Any, *, metered: bool) -> None:
+def section(label: str, make_model: Any, *, provider: str) -> None:
     import flightdeck_sensor
     from flightdeck_sensor import Provider
 
@@ -209,7 +210,13 @@ def section(label: str, make_model: Any, *, metered: bool) -> None:
     # runner built earlier has no plugin, and LiteLlm keeps the litellm
     # function it finds on its first call.
     flightdeck_sensor.patch(
-        providers=[Provider.LITELLM, Provider.ANTHROPIC, Provider.GOOGLE_ADK], quiet=True
+        providers=[
+            Provider.LITELLM,
+            Provider.ANTHROPIC,
+            Provider.GOOGLE_GENAI,
+            Provider.GOOGLE_ADK,
+        ],
+        quiet=True,
     )
     print(f"[playground:38_google_adk] {label}: session_id={root}")
     t0 = time.monotonic()
@@ -258,13 +265,16 @@ def section(label: str, make_model: Any, *, metered: bool) -> None:
         ),
         signals,
     )
-    if not metered:
-        return
     posts = _events(root, "post_call", 4)
     _check(
         f"{label}: the model calls are on the sensor's session with tokens",
         len(posts) >= 4 and all((p.get("tokens_total") or 0) > 0 for p in posts),
         [(p.get("model"), p.get("tokens_total")) for p in posts],
+    )
+    _check(
+        f"{label}: every model call's provider is {provider}",
+        {p.get("provider") for p in posts} == {provider},
+        [p.get("provider") for p in posts],
     )
     tools = sorted(e.get("tool_name") or "" for e in _events(root, "tool_call", len(calls)))
     _check(
@@ -299,20 +309,27 @@ def main() -> None:
         sys.exit(SKIP_RC)
     sections = []
     if os.environ.get("OPENAI_API_KEY"):
-        sections.append(("OpenAI through LiteLlm", _openai_model, True))
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        sections.append(("Anthropic through AnthropicLlm", _anthropic_model, True))
-    if not sections:
-        print("SKIP: this script requires OPENAI_API_KEY or ANTHROPIC_API_KEY", file=sys.stderr)
-        sys.exit(SKIP_RC)
-    if os.environ.get("GOOGLE_API_KEY"):
-        sections.append(("Gemini (not metered)", lambda: GEMINI_MODEL, False))
+        sections.append(("OpenAI through LiteLlm", _openai_model, "openai"))
     else:
-        print("  SKIP  Gemini section: GOOGLE_API_KEY is not set")
+        print("  SKIP  OpenAI section: OPENAI_API_KEY is not set")
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        sections.append(("Anthropic through AnthropicLlm", _anthropic_model, "anthropic"))
+    else:
+        print("  SKIP  Anthropic section: ANTHROPIC_API_KEY is not set")
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        sections.append(("Gemini through ADK's Gemini model", lambda: GEMINI_MODEL, "google"))
+    else:
+        print("  SKIP  Gemini section: GEMINI_API_KEY / GOOGLE_API_KEY is not set")
+    if not sections:
+        print(
+            "SKIP: this script requires OPENAI_API_KEY, ANTHROPIC_API_KEY or GEMINI_API_KEY",
+            file=sys.stderr,
+        )
+        sys.exit(SKIP_RC)
     wait_for_dev_stack()
     try:
-        for label, make_model, metered in sections:
-            section(label, make_model, metered=metered)
+        for label, make_model, provider in sections:
+            section(label, make_model, provider=provider)
     finally:
         print(f"[playground:38_google_adk] sessions: {' '.join(session_ids)}")
 

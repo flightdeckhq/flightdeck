@@ -609,14 +609,35 @@ def settle_open_guards(session: Session, lock_wait: float | None = None) -> None
 # request's values, so the common path is one type lookup each.
 _PLAIN_TYPES = frozenset({str, int, float, bool, type(None), bytes})
 
+# The module of Python's own iterator types (generators, ``list_iterator``,
+# ``map``, ``zip``...).
+_BUILTINS_MODULE = "builtins"
+
 # The arguments the sensor reads before the SDK does: the estimate's
 # (Anthropic's count_tokens takes messages, system and tools; the OpenAI
 # and litellm counts messages, a Responses input and instructions, a text
-# completion's prompt) and content capture's (the same, and tools). These
-# alone are walked for iterators: one in extra_query, metadata, stop or a
-# client option is never read by the sensor, so it goes to the SDK as it
-# is and can never keep the policy check from running.
-_READ_ARGUMENT_NAMES = frozenset({"messages", "system", "tools", "input", "instructions", "prompt"})
+# completion's prompt; the Gemini count a request's contents) and content
+# capture's (the same, and tools). These alone are walked for iterators:
+# one in extra_query, metadata, stop or a client option is never read by
+# the sensor, so it goes to the SDK as it is and can never keep the policy
+# check from running. google-genai's ``config`` is not among them: its
+# public methods build the config object (a ``GenerateContentConfig``,
+# its lists read) before the request method the sensor patches is
+# called.
+_READ_ARGUMENT_NAMES = frozenset(
+    {"messages", "system", "tools", "input", "instructions", "prompt", "contents"}
+)
+
+# The SDKs whose request models read a one-shot iterable argument through a
+# pydantic union of a list and a model: google-genai's ``contents`` is
+# ``list[Content | Part | ...] | Content | ...``, which reads a generator
+# or a builtin iterator (``iter(list)``, ``map``) as the list and any other
+# object as a ``Content`` built from its attributes, an empty one for the
+# sensor's own iterator. Such an SDK is handed a generator over the
+# sensor's iterator in place of a caller's generator or builtin iterator,
+# and the sensor's iterator itself in place of any other, so it reads each
+# as it reads the caller's (see _as_sent).
+_GENERATOR_RECEIVERS = frozenset({"google"})
 
 # Collections the SDKs accept for an ``Iterable`` argument and list before
 # they send it, but that JSON cannot write: content capture stores them as
@@ -655,6 +676,13 @@ def _anthropic_dumps_by_alias() -> bool:
         return False
 
 
+# The SDK whose request models are written without their unset (None)
+# fields under their own field names, by its ``convert_to_dict`` (bytes as
+# URL-safe base64, as pydantic's JSON mode writes them under the models'
+# ``ser_json_bytes="base64"``).
+_GOOGLE_RECEIVER = "google"
+
+
 def _request_dump(receiver: str) -> Callable[[Any], Any]:
     """How the SDK ``receiver`` (a provider's name) writes a pydantic model
     it finds in a request: the model's JSON dump of the fields that were
@@ -662,8 +690,15 @@ def _request_dump(receiver: str) -> Callable[[Any], Any]:
     anthropic 2.x. That is the OpenAI and Anthropic SDKs' own rule for a
     request body (their transform, anthropic 2.x's ``openapi_model_dump``);
     litellm, whose input the sensor stores, forwards it to the OpenAI SDK.
-    pydantic's serializer warnings stay off: the SDK dumps the model again
-    when it sends it."""
+    google-genai writes the fields that are not None, by field name (see
+    :data:`_GOOGLE_RECEIVER`). pydantic's serializer warnings stay off: the
+    SDK dumps the model again when it sends it."""
+    if receiver == _GOOGLE_RECEIVER:
+
+        def dump_google(model: Any) -> Any:
+            return model.model_dump(mode="json", exclude_none=True, warnings=False)
+
+        return dump_google
     by_alias = receiver == "anthropic" and _anthropic_dumps_by_alias()
 
     def dump(model: Any) -> Any:
@@ -751,6 +786,10 @@ class _ReadIterator(list):  # type: ignore[type-arg]
     # it raises (see _pickling_error).
     kind: str = "generator"
     pickling_error: str | None = None
+    # Whether the iterator's type is a builtin one (a generator,
+    # ``iter(list)``, ``map``) rather than a class of the caller's (see
+    # _GENERATOR_RECEIVERS).
+    builtin: bool = True
     # The _Replay last handed to the SDK in its place.
     replay: _Replay | None = None
 
@@ -874,6 +913,7 @@ def _materialised(
     if _is_one_shot(value):
         read_items = _ReadIterator()
         read_items.kind = type(value).__name__
+        read_items.builtin = type(value).__module__ == _BUILTINS_MODULE
         try:
             for item in value:
                 read_items.append(_materialised(item, failure, depth + 1, dump))
@@ -919,23 +959,35 @@ def _rebuilt(value: Any, convert: Callable[[Any, int], Any], depth: int) -> Any:
     return value
 
 
-def _as_sent(value: Any, depth: int = 0) -> Any:
+def _over(replay: _Replay) -> Iterator[Any]:
+    """A generator over ``replay``, which still records the SDK's pass and
+    raises the caller's iterator's exception after its items."""
+    yield from replay
+
+
+def _as_sent(value: Any, depth: int = 0, generators: bool = False) -> Any:
     """What the SDK is given for a value :func:`_materialised` produced:
     a fresh :class:`_Replay` in place of each :class:`_ReadIterator`
     (linked to it as its ``replay``), its items sent the same way, inside
     new containers along the path to it; the sensor's own lists are left
-    as they are for content capture. The caller's own object in place of
-    each :class:`_Dumped`."""
+    as they are for content capture. With ``generators`` (an SDK of
+    :data:`_GENERATOR_RECEIVERS`), a generator over that replay in place
+    of a caller's generator or builtin iterator. The caller's own object
+    in place of each :class:`_Dumped`."""
     if isinstance(value, _Dumped):
         return value.original
     if isinstance(value, _ReadIterator):
         replay = _replay_type(value.kind)(
-            [_as_sent(item, depth + 1) for item in value], value.error, value.pickling_error
+            [_as_sent(item, depth + 1, generators) for item in value],
+            value.error,
+            value.pickling_error,
         )
         value.replay = replay
-        return replay
+        return _over(replay) if generators and value.builtin else replay
     if depth >= _MAX_ARGUMENT_DEPTH:
         return value
+    if generators:
+        return _rebuilt(value, functools.partial(_as_sent, generators=True), depth)
     return _rebuilt(value, _as_sent, depth)
 
 
@@ -1231,6 +1283,8 @@ def materialise_iterators(
             )
         return Arguments(kwargs, real_fn, True)
 
+    generators = receiver in _GENERATOR_RECEIVERS
+
     def send(**call_kwargs: Any) -> Any:
         handed_over: dict[str, Any] = {}
         for name, value in call_kwargs.items():
@@ -1240,7 +1294,7 @@ def materialise_iterators(
             elif type(value) in _PLAIN_TYPES:
                 handed_over[name] = value
             else:
-                handed_over[name] = _as_sent(value, 1)
+                handed_over[name] = _as_sent(value, 1, generators)
         return real_fn(**handed_over)
 
     return Arguments(read, send, not failure, given)

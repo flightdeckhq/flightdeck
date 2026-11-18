@@ -1100,6 +1100,90 @@ def test_the_plugin_reports_no_tool_calls(adk: ADK, patched: Any) -> None:
 
 
 # ----------------------------------------------------------------------
+# ADK's default Gemini model, through the google-genai patch
+# ----------------------------------------------------------------------
+
+
+def test_adk_gemini_calls_are_metered_once_each_in_the_agents_scope(
+    adk: ADK, patched: tuple[Session, MagicMock]
+) -> None:
+    """ADK's ``Gemini`` model calls google-genai's ``aio.models``, which the
+    google-genai patch meters: one ``post_call`` per request, on the
+    sensor's session, made in the scope of the agent's child (an
+    ``AgentTool``'s agent here), with its function calls as tool calls."""
+    import json
+
+    import httpx
+    from google import genai
+    from google.adk.models.google_llm import Gemini
+
+    from flightdeck_sensor.interceptor import google_genai
+
+    session, client = patched
+    scopes: list[str | None] = []
+
+    def gemini_api(request: httpx.Request) -> httpx.Response:
+        scope = session.active_subagent_scope()
+        scopes.append(scope.agent_role if scope is not None else None)
+        body = json.loads(request.content)
+        names = [
+            d["name"] for t in body.get("tools", []) for d in t.get("functionDeclarations", [])
+        ]
+        last = body["contents"][-1]["parts"]
+        if "c_agent" in names and not any("functionResponse" in p for p in last):
+            parts: list[dict[str, Any]] = [
+                {"functionCall": {"id": "call-c", "name": "c_agent", "args": {"request": "q"}}}
+            ]
+        else:
+            parts = [{"text": "from c" if not names else "final"}]
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}
+                ],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2},
+                "modelVersion": "gemini-3.1-flash-lite",
+            },
+        )
+
+    transport = httpx.MockTransport(gemini_api)
+    genai_client = genai.Client(
+        api_key="test-key",
+        http_options=adk.types.HttpOptions(
+            httpx_async_client=httpx.AsyncClient(transport=transport)
+        ),
+    )
+
+    def model() -> Any:
+        return Gemini(model="gemini-3.1-flash-lite", client=genai_client)
+
+    c = adk.LlmAgent(name="c_agent", description="c_agent", model=model())
+    root = adk.LlmAgent(
+        name="root_agent", description="root", model=model(), tools=[adk.AgentTool(c)]
+    )
+    google_genai.patch_google_genai(quiet=True)
+    try:
+        _run(adk, root)
+    finally:
+        google_genai.unpatch_google_genai()
+
+    # Three requests: the root's call to the tool, the tool agent's answer,
+    # the root's answer to the tool's result; each metered once.
+    assert scopes == [None, "c_agent", None]
+    queue = session.event_queue
+    assert isinstance(queue, MagicMock)
+    queued = [c.args[0] for c in queue.enqueue.call_args_list]
+    post_calls = [p for p in queued if p["event_type"] == "post_call"]
+    assert [p["session_id"] for p in post_calls] == [ROOT] * 3
+    assert [p["provider"] for p in post_calls] == ["google"] * 3
+    assert [(p["tokens_input"], p["tokens_output"]) for p in post_calls] == [(10, 2)] * 3
+    assert [p["tool_name"] for p in queued if p["event_type"] == "tool_call"] == ["c_agent"]
+    child = _one(_children(_posted(session, client)), "c_agent")
+    assert child["parent"] == ROOT
+
+
+# ----------------------------------------------------------------------
 # Lazy import
 # ----------------------------------------------------------------------
 

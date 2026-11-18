@@ -1,12 +1,14 @@
 """Google ADK wrap: a child session per sub-agent run, and hand-offs.
 
-ADK's model calls go through the model class the agent names: ``LiteLlm``
-(litellm), ``AnthropicLlm`` and ``Claude`` (the Anthropic SDK), which the
-litellm and Anthropic patches already meter and enforce, or its default
-Gemini model (``google-genai``), which the sensor does not meter. Those
+ADK's model calls go through the model class the agent names: its default
+Gemini model (``google-genai``), ``LiteLlm`` (litellm), ``AnthropicLlm`` and
+``Claude`` (the Anthropic SDK), which the google-genai, litellm and
+Anthropic patches already meter and enforce, one event per request each
+(ADK's Gemini model makes one google-genai call per model turn). Those
 calls, and the tool and MCP events the other patches emit, stay on the
-sensor's own session, as the other framework wraps leave them. This wrap
-adds the run's structure around them.
+sensor's own session, as the other framework wraps leave them, made in the
+scope of the agent's child. This wrap adds the run's structure around
+them.
 
 What opens a child session. A child session is a sub-agent: every agent
 run except the root agent of a top-level run, which is the sensor's own

@@ -9,7 +9,7 @@
  * the content endpoint serves it as ``system_prompt``. Opened in the
  * event drawer, the System box shows each block's text (not the blocks'
  * JSON) beside the call's messages, the block carrying ``cache_control``
- * marked under it, and Raw shows the list as stored, ``cache_control``
+ * marked under it, and JSON shows the list as stored, ``cache_control``
  * included. A run whose ``system`` is text shows that text as it always
  * has, with no mark.
  *
@@ -61,7 +61,7 @@ test.describe("T178 — the Prompts tab shows a block-list system", () => {
     removeRun(run);
   });
 
-  test("each block's text shows under System, and Raw keeps the list", async ({ page, request }) => {
+  test("each block's text shows under System, and JSON keeps the list", async ({ page, request }) => {
     const events = await seedRun(request, run, [
       sessionStart(run, true),
       anthropicPostCall(run, 1, callContent(SYSTEM_BLOCKS)),
@@ -85,8 +85,8 @@ test.describe("T178 — the Prompts tab shows a block-list system", () => {
     await expect(marks).toHaveText("cache_control · ephemeral");
     await expect(system.getByTestId("content-block-cached")).toContainText(FIRST_BLOCK);
 
-    await drawer.getByTestId("prompt-box-system-raw").click();
-    const raw = drawer.getByTestId("prompt-box-system-raw-json");
+    await drawer.getByTestId("prompt-box-system-json").click();
+    const raw = drawer.getByTestId("prompt-box-system-json-view");
     await expect(raw).toContainText('"cache_control"');
     await expect(raw).toContainText('"ephemeral"');
     await expect(raw).toContainText("T178-SYSTEM-BLOCK-TWO");
@@ -103,7 +103,7 @@ test.describe("T178 — the Prompts tab shows a block-list system", () => {
     const system = drawer.getByTestId("prompt-box-system");
     await expect(system).toHaveText(new RegExp(`${text}$`));
     await expect(system.getByTestId("content-block-cache-control")).toHaveCount(0);
-    await drawer.getByTestId("prompt-box-system-raw").click();
-    await expect(drawer.getByTestId("prompt-box-system-raw-json")).toHaveText(`"${text}"`);
+    await drawer.getByTestId("prompt-box-system-json").click();
+    await expect(drawer.getByTestId("prompt-box-system-json-view")).toHaveText(`"${text}"`);
   });
 });

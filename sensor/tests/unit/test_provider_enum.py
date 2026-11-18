@@ -59,7 +59,7 @@ def _reset_sensor() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_provider_has_exactly_ten_members() -> None:
+def test_provider_has_exactly_eleven_members() -> None:
     """Adding a new interceptor target requires editing the enum AND
     its entry in ``_SDK_TARGETS``; this test ensures one doesn't drift
     without the other (the test in
@@ -69,9 +69,9 @@ def test_provider_has_exactly_ten_members() -> None:
     Sub-agent observability added three targets (CREWAI, LANGGRAPH,
     LLAMA_INDEX), the Claude Agent SDK one (CLAUDE_AGENT_SDK), the
     OpenAI Agents SDK one (OPENAI_AGENTS) and the Google ADK one
-    (GOOGLE_ADK). AutoGen is archived upstream
-    and not planned; its successor, Microsoft Agent Framework, is
-    roadmap issue #185.
+    (GOOGLE_ADK); the google-genai provider SDK added GOOGLE_GENAI.
+    AutoGen is archived upstream and not planned; its successor,
+    Microsoft Agent Framework, is roadmap issue #185.
     """
     assert set(Provider) == {
         Provider.ANTHROPIC,
@@ -83,9 +83,10 @@ def test_provider_has_exactly_ten_members() -> None:
         Provider.LLAMA_INDEX,
         Provider.CLAUDE_AGENT_SDK,
         Provider.OPENAI_AGENTS,
+        Provider.GOOGLE_GENAI,
         Provider.GOOGLE_ADK,
     }
-    assert len(Provider) == 10
+    assert len(Provider) == 11
 
 
 def test_provider_values_match_patch_branches() -> None:
@@ -97,6 +98,7 @@ def test_provider_values_match_patch_branches() -> None:
     assert Provider.OPENAI.value == "openai"
     assert Provider.LITELLM.value == "litellm"
     assert Provider.MCP.value == "mcp"
+    assert Provider.GOOGLE_GENAI.value == "google_genai"
     # Sub-agent targets.
     assert Provider.CREWAI.value == "crewai"
     assert Provider.LANGGRAPH.value == "langgraph"

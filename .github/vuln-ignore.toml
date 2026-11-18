@@ -23,5 +23,10 @@
 # package = "example-package"
 # reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
 # expires = 2027-02-01
-#
-# No advisory is excused today.
+
+[[ignore]]
+id = "GHSA-fc5q-39xc-vjpf"
+ecosystem = "npm"
+package = "picomatch"
+reason = "No fixed release: every picomatch release through 4.0.7, the latest, is affected. It runs only in the dashboard's build and test tooling (vite, vitest, tinyglobby, fdir), not in the shipped bundle, and compiles only globs from our own configs and source and the tools' defaults, none a repeated extglob, so no outside input supplies a pattern. Drop when a fixed picomatch ships and vite, vitest and tinyglobby accept it."
+expires = 2027-02-18

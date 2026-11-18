@@ -44,6 +44,11 @@ anthropic = ["anthropic>=0.86"]
 # for its usage chunk; the interceptor leaves an older SDK unpatched with
 # a warning. CI's OpenAI-floor lane runs the OpenAI tests against it.
 openai = ["openai>=1.26", "tiktoken>=0.5"]
+# google-genai has no extra here: an application on Gemini installs the
+# SDK itself, and the interceptor leaves a release older than its floor
+# (1.64, see the dev extra) unpatched with a warning. An extra would
+# also put google-genai, whose every release holds tenacity below 9.2,
+# into the LlamaIndex-floor lane's resolution and move that lane.
 # litellm is a framework-level router that aggregates multiple
 # underlying providers. Installing the extra pulls in litellm; the
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
@@ -107,6 +112,14 @@ dev = [
     "anthropic>=0.86",
     # Same floor as the openai extra.
     "openai>=1.26",
+    # Drives the google-genai interceptor tests and playground 43
+    # (deepagents' langchain-google-genai pulls it into this lane as
+    # well). Floor 1.64: the first release whose generate_content,
+    # generate_content_stream and embed_content all send their requests
+    # through the private request methods the interceptor patches
+    # (_embed_content arrived then); the interceptor's _MIN_SDK_VERSION
+    # and the sdk-floors group below hold the same floor.
+    "google-genai>=1.64",
     # Unit-test-time litellm so tests/unit/test_patch.py and
     # tests/unit/test_providers.py can import litellm and exercise the
     # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
@@ -215,6 +228,9 @@ openai-floor = [
 sdk-floors = [
     "anthropic==0.86.0",
     "openai==2.8.0",
+    # The oldest google-genai the interceptor patches (no extra; see the
+    # dev extra).
+    "google-genai==1.64.0",
     "litellm==1.83.0",
     "mcp==1.28.0",
     "openai-agents==0.6.0",

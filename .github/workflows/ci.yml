@@ -90,6 +90,14 @@ jobs:
       - name: ruff check
         run: ruff check flightdeck_sensor/
 
+      # The playground scripts, with the ruff the sensor pins:
+      # playground/ruff.toml extends the sensor's settings.
+      - name: ruff on the playground
+        working-directory: playground
+        run: |
+          ruff check .
+          ruff format --check .
+
       - name: Test with coverage
         run: |
           pytest tests/ -v \

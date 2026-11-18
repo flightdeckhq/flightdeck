@@ -1,4 +1,4 @@
-.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-google-genai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents playground-google-adk test-integration-google-adk
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck lint-playground test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-google-genai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents playground-google-adk test-integration-google-adk
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -73,6 +73,10 @@ run-flightdeck: ## Run the binary from source; pass flags with ARGS="--port 4100
 
 test-flightdeck: ## Tests of the root module: the binary's packages, and the real binary on SQLite (stop, restart, second instance)
 	go test $(GO_ROOT_PKGS)
+
+lint-playground: ## ruff check and ruff format --check on the playground scripts (playground/ruff.toml extends the sensor's settings)
+	$(PYTHON) -m ruff check playground
+	$(PYTHON) -m ruff format --check playground
 
 lint-flightdeck: ## gofmt and golangci-lint on the root module
 	@test -x "$(GOFMT)" || { echo "gofmt not found at $(GOFMT)"; exit 1; }
@@ -352,6 +356,7 @@ seed-e2e: ## Seed the canonical E2E fixture dataset into the running dev stack (
 
 lint: ## Lint all components
 	$(MAKE) -C sensor lint
+	$(MAKE) lint-playground
 	$(MAKE) -C storage lint
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint

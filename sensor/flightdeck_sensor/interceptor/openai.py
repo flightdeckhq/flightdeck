@@ -1421,6 +1421,15 @@ def _hand_over(mark: base.OuterCall, chunk: Any) -> None:
             mark.usage = found if mark.usage is None else base._merge_usage(mark.usage, found)
 
 
+def _keep_returned_usage(mark: base.OuterCall, chunk: Any) -> None:
+    """Keep the usage object of the chunk the hook takes out, as the
+    provider returned it, for the litellm call's stored response."""
+    with contextlib.suppress(Exception):
+        dumped = chunk.usage.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            mark.returned_usage = dumped
+
+
 def _undone(iterator: Any, added: bool, mark: base.OuterCall) -> Iterator[Any]:
     """The SDK stream's events as litellm reads them: the usage is handed
     over, and when the hook asked for it, the usage chunk is taken out and
@@ -1429,6 +1438,7 @@ def _undone(iterator: Any, added: bool, mark: base.OuterCall) -> Iterator[Any]:
         _hand_over(mark, chunk)
         if added:
             if _is_usage_only_chunk(chunk):
+                _keep_returned_usage(mark, chunk)
                 continue
             _forget_null_usage(chunk)
         yield chunk
@@ -1440,6 +1450,7 @@ async def _aundone(iterator: Any, added: bool, mark: base.OuterCall) -> AsyncIte
         _hand_over(mark, chunk)
         if added:
             if _is_usage_only_chunk(chunk):
+                _keep_returned_usage(mark, chunk)
                 continue
             _forget_null_usage(chunk)
         yield chunk

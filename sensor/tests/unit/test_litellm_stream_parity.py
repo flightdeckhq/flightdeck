@@ -37,7 +37,9 @@ turns its rows red rather than estimating silently.
 from __future__ import annotations
 
 import asyncio
+import gc
 import importlib.metadata
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -75,9 +77,23 @@ from ._stream_parity_fakes import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 litellm.suppress_debug_info = True
+
+
+@pytest.fixture(autouse=True)
+def _litellm_request_coroutines_collected() -> Iterator[None]:
+    """A row that reads an async-made Gemini stream with ``for`` makes
+    litellm create its request coroutine and never await it (it does so
+    without the sensor too). It is collected here, its "never awaited"
+    warning ignored, so that warning lands in this row rather than in a
+    later test that turns warnings into errors."""
+    yield
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        gc.collect()
+
 
 # The route's tier: where the sensor can ask for usage and where it reads it.
 OPENAI_SDK = "through the OpenAI SDK"

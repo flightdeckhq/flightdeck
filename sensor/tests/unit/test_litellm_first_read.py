@@ -17,7 +17,9 @@ OpenAI interceptor's hook acting only on litellm's own requests.
 from __future__ import annotations
 
 import asyncio
+import gc
 import types
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -50,6 +52,7 @@ from ._stream_parity_fakes import (  # noqa: E402
     OpenAIServer,
     events_of,
     make_session,
+    openai_usage_body,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +61,20 @@ if TYPE_CHECKING:
     from flightdeck_sensor.core.session import Session
 
 litellm.suppress_debug_info = True
+
+
+@pytest.fixture(autouse=True)
+def _litellm_request_coroutines_collected() -> Iterator[None]:
+    """A row that reads an async-made Gemini stream with ``for`` makes
+    litellm create its request coroutine and never await it (it does so
+    without the sensor too). It is collected here, its "never awaited"
+    warning ignored, so that warning lands in this row rather than in a
+    later test that turns warnings into errors."""
+    yield
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        gc.collect()
+
 
 # (entry, model, fake server, client kind, the counts it reports)
 ROUTES = {
@@ -297,3 +314,34 @@ def test_a_request_made_under_a_litellm_call_by_other_code_is_left_alone() -> No
         )
     assert "stream_options" not in server.bodies[-1]
     assert all(getattr(c, "usage", None) is None for c in chunks)
+
+
+@pytest.mark.usefixtures("patched")
+def test_the_stored_response_carries_the_usage_object_the_provider_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On an OpenAI-compatible base litellm does not ask for usage, so the
+    OpenAI hook asks and takes the usage chunk out before litellm reads
+    the stream: litellm's assembled response has no provider usage, and
+    the stored response carries the usage object the provider returned,
+    as it returned it."""
+    session = make_session(capture_prompts=True)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    server = OpenAIServer()
+    client = openai.OpenAI(
+        api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(server))
+    )
+    chunks = list(
+        litellm.completion(
+            model="openai/my-model",
+            api_base="https://llm.internal.example/v1",
+            api_key="test",
+            client=client,
+            messages=MESSAGES,
+            stream=True,
+        )
+    )
+    assert all(getattr(c, "usage", None) is None for c in chunks)
+    (post_call,) = events_of(session, "post_call")
+    returned = openai.types.CompletionUsage.model_validate(openai_usage_body())
+    assert post_call["content"]["response"]["usage"] == returned.model_dump(mode="json")

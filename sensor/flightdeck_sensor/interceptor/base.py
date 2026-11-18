@@ -150,13 +150,18 @@ class OuterCall:
     call) reads the call as over, not only the context that set it.
     ``usage`` is the provider's usage an SDK interceptor read from the
     outer call's request, handed to the outer interceptor, which reports
-    it in its own event (the SDK interceptor emits none)."""
+    it in its own event (the SDK interceptor emits none).
+    ``returned_usage`` is the provider's usage object as it returned it
+    (its JSON form), kept when the SDK interceptor took the usage chunk
+    out of the stream before the outer SDK could read it, so the outer
+    interceptor can store what the provider returned."""
 
-    __slots__ = ("active", "usage")
+    __slots__ = ("active", "returned_usage", "usage")
 
     def __init__(self) -> None:
         self.active = False
         self.usage: TokenUsage | None = None
+        self.returned_usage: dict[str, Any] | None = None
 
 
 _OUTER_INTERCEPT: contextvars.ContextVar[OuterCall | None] = contextvars.ContextVar(

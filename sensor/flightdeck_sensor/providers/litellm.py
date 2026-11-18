@@ -338,23 +338,14 @@ class LitellmProvider:
     def _with_handed_usage(self, response: dict[str, Any]) -> dict[str, Any]:
         """The stored response of a stream whose usage chunk litellm never
         saw (the OpenAI interceptor asked for it at the SDK and took it
-        out): litellm's assembled response, with the provider's counts in
-        its ``usage``, as when litellm assembles the usage chunk itself."""
-        handed = getattr(self.outer_call, "usage", None)
-        if not isinstance(handed, TokenUsage) or handed.total <= 0:
+        out): litellm's assembled response with, as its ``usage``, the
+        usage object the provider returned in that chunk, as the provider
+        returned it. What litellm assembled without the chunk (zeros, or
+        litellm 1.83's own count of the prompt) is not the provider's."""
+        returned = getattr(self.outer_call, "returned_usage", None)
+        if not isinstance(returned, dict):
             return response
-        # The provider's counts win over any litellm worked out itself
-        # without the usage chunk (litellm 1.83 counts the prompt then).
-        usage = response.get("usage")
-        return {
-            **response,
-            "usage": {
-                **(usage if isinstance(usage, dict) else {}),
-                "prompt_tokens": handed.input_tokens,
-                "completion_tokens": handed.output_tokens,
-                "total_tokens": handed.input_tokens + handed.output_tokens,
-            },
-        }
+        return {**response, "usage": returned}
 
     def kept_usage(self, stream: Any) -> TokenUsage | None:
         """The usage litellm keeps on its stream without showing it, read

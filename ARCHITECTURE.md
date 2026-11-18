@@ -10211,15 +10211,23 @@ each text's colour pair against `themes.css` in both themes.
 
 Every custom property the dashboard reads is defined. A `var()` of a
 name nothing defines is invalid at computed-value time, so the property
-takes its initial value (a background turns transparent) and neither the
-build nor the type check says so. A unit test
+takes its initial value (a background turns transparent, and a focus
+ring whose offset colour is undefined does not draw at all) and neither
+the build nor the type check says so. A unit test
 (`dashboard/tests/unit/theme-tokens-defined.test.ts`) reads `src/` for
-`var(--name)` and Tailwind's `bg-(--name)` shorthand and fails on any
-name `themes.css` or `globals.css` does not declare. Its allow-list gives
-a reason for each entry: a property the code sets inline and reads back,
-a Tailwind theme variable, and the references that wait on a design
-choice (`--background` in the shared switch and tabs, `--info` on the
-MCP policy table's interactive pill).
+`var(--name)`, Tailwind's `bg-(--name)` shorthand, and a string literal
+that is exactly a name (`"--chart-1"`, built into a `var()` or read with
+`getPropertyValue` at runtime), and fails on any name `themes.css` or
+`globals.css` does not declare. Its allow-list gives a reason for each
+entry: the properties the code sets inline and reads back
+(`--runs-chip-border`, `--swimlane-label-backdrop`) and a Tailwind theme
+variable (`--color-gray-200`).
+
+The shared tabs and switch draw their focus ring with its offset gap in
+the colour of the surface they sit on: a tab on its tab list
+(`--bg-elevated`), the switch on the panel it is used in (`--surface`;
+a switch on another surface passes its own `ring-offset` class). The
+active tab is `--surface` on the `--bg-elevated` list.
 
 ### Constants
 

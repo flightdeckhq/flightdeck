@@ -9,19 +9,30 @@ import { describe, expect, it } from "vitest";
  * transparent, and nothing in the build or the type check says so.
  *
  * The scan reads src/ (.ts, .tsx, .css) with comments removed, and takes
- * both ways the source reads a property: `var(--name)` and Tailwind's
+ * every way the source names a property: `var(--name)`, Tailwind's
  * shorthand `bg-(--name)` (any utility, with or without a type hint such
- * as `bg-(color:--name)`). A name counts as defined when themes.css or
- * globals.css declares it.
+ * as `bg-(color:--name)`), and a string literal that is exactly a name
+ * (`"--chart-1"`), which code turns into a var() or reads with
+ * getPropertyValue at runtime. A name counts as defined when themes.css
+ * or globals.css declares it.
  */
 
 const DASHBOARD = resolve(__dirname, "../..");
 const STYLESHEETS = ["src/styles/themes.css", "src/styles/globals.css"];
 
-/** Names the code sets itself and reads back, with where and why. */
-const SET_BY_CODE: Readonly<Record<string, string>> = {
-  "--runs-chip-border":
-    "SwimLane sets it in the runs chip's inline style (the colour follows the chip's state) and the chip's border-(--runs-chip-border) class reads it",
+/** Names the code sets itself and reads back: why, and the text in the
+ *  source that sets it. */
+const SET_BY_CODE: Readonly<Record<string, { reason: string; setter: string }>> = {
+  "--runs-chip-border": {
+    reason:
+      "SwimLane sets it in the runs chip's inline style (the colour follows the chip's state) and the chip's border-(--runs-chip-border) class reads it",
+    setter: '"--runs-chip-border":',
+  },
+  "--swimlane-label-backdrop": {
+    reason:
+      "the per-agent swimlane modal sets it to the colour its rows sit on, and a child row's label reads it, falling back to --bg on the fleet page",
+    setter: "[SWIMLANE_LABEL_BACKDROP_VAR]:",
+  },
 };
 
 /** Names defined outside the two stylesheets. */
@@ -31,22 +42,11 @@ const DEFINED_ELSEWHERE: Readonly<Record<string, string>> = {
 };
 
 /** References to names nothing defines that wait on a design choice, with
- *  the files they are known in. The same name in another file fails, and
- *  so does an entry no file needs any more. */
-const KNOWN_UNDEFINED: Readonly<Record<string, { files: readonly string[]; reason: string }>> = {
-  "--background": {
-    files: ["src/components/ui/switch.tsx", "src/components/ui/tabs.tsx"],
-    reason:
-      "shadcn's name for the page background, used for the active tab's background and the focus ring's offset colour; the themes have --bg (the page) and --surface (panels), and which one these take is a design choice",
-  },
-  "--info": {
-    files: ["src/components/policy/MCPPolicyEntryTable.tsx"],
-    reason:
-      "the Deny · interactive pill's colour, drawn through its #7c3aed fallback; the themes have no info token, so this needs a new token or a choice of an existing one",
-  },
-};
+ *  the files they are known in (none today). The same name in another
+ *  file fails, and so does an entry no file needs any more. */
+const KNOWN_UNDEFINED: Readonly<Record<string, { files: readonly string[]; reason: string }>> = {};
 
-const REFERENCE = /var\(\s*(--[A-Za-z0-9_-]+)|-\((?:[a-z-]+:)?(--[A-Za-z0-9_-]+)\)/g;
+const REFERENCE = /var\(\s*(--[A-Za-z0-9_-]+)|-\((?:[a-z-]+:)?(--[A-Za-z0-9_-]+)\)|(["'`])(--[A-Za-z0-9_-]+)\3/g;
 const DECLARATION = /(--[A-Za-z0-9_-]+)\s*:/g;
 
 /** ``text`` without its comments, line breaks kept so line numbers hold.
@@ -78,7 +78,7 @@ function references(): Reference[] {
     withoutComments(readFileSync(path, "utf8"))
       .split("\n")
       .forEach((text, i) => {
-        for (const m of text.matchAll(REFERENCE)) out.push({ name: (m[1] ?? m[2])!, file, line: i + 1 });
+        for (const m of text.matchAll(REFERENCE)) out.push({ name: (m[1] ?? m[2] ?? m[4])!, file, line: i + 1 });
       });
   }
   return out;
@@ -102,13 +102,17 @@ function allowed(ref: Reference): boolean {
 }
 
 describe("the CSS custom properties the dashboard reads", () => {
-  it("reads both forms across src/, so a broken scan cannot pass for a clean one", () => {
+  it("reads every form across src/, so a broken scan cannot pass for a clean one", () => {
     expect(DEFINED.has("--bg-elevated")).toBe(true);
     expect(REFS.length).toBeGreaterThan(500);
     const at = (file: string) => REFS.filter((r) => r.file === file).map((r) => r.name);
     // A var() in an inline style, and a Tailwind shorthand class.
     expect(at("src/components/policy/MCPPolicyAuditPanel.tsx")).toEqual(expect.arrayContaining(["--border", "--accent"]));
     expect(at("src/components/ui/tabs.tsx")).toContain("--text-muted");
+    // Names as string literals, built into a var() or read at runtime.
+    expect(at("src/components/analytics/StackedSeriesChart.tsx")).toContain("--chart-1");
+    expect(at("src/components/session/TokenUsageBar.tsx")).toContain("--color-warn");
+    expect(at("src/lib/run-lane-layout.ts")).toContain("--font-mono");
   });
 
   it("are each defined in themes.css or globals.css, or set by the code itself", () => {
@@ -128,6 +132,6 @@ describe("the CSS custom properties the dashboard reads", () => {
     }
     // The code still sets each name it is allowed to set.
     const setters = sourceFiles(join(DASHBOARD, "src")).map((p) => readFileSync(p, "utf8")).join("\n");
-    for (const name of Object.keys(SET_BY_CODE)) expect(setters).toContain(`"${name}":`);
+    for (const [name, { setter }] of Object.entries(SET_BY_CODE)) expect(setters, `nothing sets ${name}`).toContain(setter);
   });
 });

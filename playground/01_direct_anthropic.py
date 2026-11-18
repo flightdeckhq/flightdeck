@@ -14,6 +14,7 @@ events.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import time
 import uuid
@@ -28,6 +29,7 @@ import flightdeck_sensor
 from flightdeck_sensor import Provider
 from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
 from _helpers import (
+    assert_reply_stored,
     assert_token_cost_fields,
     assert_event_landed,
     fetch_events_for_session,
@@ -38,6 +40,9 @@ from _helpers import (
 )
 
 MODEL = "claude-haiku-4-5-20251001"
+# The alias of MODEL: the API serves it with MODEL, so a call asking for
+# it shows whether the post_call names the served model.
+MODEL_ALIAS = "claude-haiku-4-5"
 # Streamed calls this script makes: sync stream helper, async stream helper,
 # async helper read via text_stream, async helper settled via
 # get_final_message, raw create(stream=True); each must land one metered
@@ -86,6 +91,64 @@ def main() -> None:
         int((time.monotonic() - t0) * 1000),
         f"{r.usage.output_tokens} output tokens",
     )
+
+    # The raw view, sync and async: the post_call stores the reply the
+    # wrapper holds and names the served model, as a plain call with the
+    # same reply does. The plain call above reports the request id the SDK
+    # stamped on its message.
+    t0 = time.monotonic()
+    raw = anthropic.Anthropic().messages.with_raw_response.create(
+        model=MODEL_ALIAS, max_tokens=5, messages=HI
+    )
+    raw_message = raw.parse()
+    print_result(
+        "Anthropic().messages.with_raw_response.create",
+        raw_message.usage.output_tokens > 0,
+        int((time.monotonic() - t0) * 1000),
+        f"served {raw_message.model}, request_id={raw.headers.get('request-id')}",
+    )
+
+    async def _async_raw_call() -> anthropic.types.Message:
+        async with anthropic.AsyncAnthropic() as client:
+            raw = await client.messages.with_raw_response.create(
+                model=MODEL_ALIAS, max_tokens=5, messages=HI
+            )
+            # A coroutine on the 2.x SDKs, a plain method on 0.x.
+            parsed = raw.parse()
+            return await parsed if inspect.isawaitable(parsed) else parsed
+
+    t0 = time.monotonic()
+    async_raw_message = asyncio.run(_async_raw_call())
+    print_result(
+        "AsyncAnthropic().messages.with_raw_response.create",
+        async_raw_message.usage.output_tokens > 0,
+        int((time.monotonic() - t0) * 1000),
+    )
+    assert_reply_stored(
+        session_id, "messages.with_raw_response.create", raw_message.id, raw_message.model
+    )
+    assert_reply_stored(
+        session_id,
+        "async messages.with_raw_response.create",
+        async_raw_message.id,
+        async_raw_message.model,
+    )
+    if raw_message.model == MODEL_ALIAS:
+        raise AssertionError(f"the API served the alias itself: {raw_message.model!r}")
+    plain = [
+        e
+        for e in fetch_events_for_session(session_id, expect_event_types=["post_call"])
+        if ((e.get("payload") or {}).get("provider_metadata") or {}).get("request_id")
+        == r._request_id
+    ]
+    print_result(
+        "plain call reports the request id stamped on its message",
+        bool(r._request_id) and len(plain) == 1,
+        0,
+        f"request_id={r._request_id}",
+    )
+    if not (r._request_id and len(plain) == 1):
+        raise AssertionError(f"no post_call with request_id={r._request_id!r}")
 
     # A tool-use loop that passes the reply's content blocks back as the
     # SDK returned them: the stored content holds the JSON the provider

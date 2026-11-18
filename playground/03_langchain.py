@@ -45,6 +45,7 @@ from _helpers import (
     API_TOKEN,
     API_URL,
     assert_event_landed,
+    assert_reply_stored,
     fetch_events_for_session,
     init_sensor,
     mcp_server_params,
@@ -52,14 +53,26 @@ from _helpers import (
 )
 
 
-def _run_chat() -> None:
+def _run_chat(session_id: str) -> None:
+    """ChatAnthropic and ChatOpenAI send every non-streamed call through
+    the SDK's raw view (``with_raw_response``); each post_call stores the
+    reply and names the served model, as a plain SDK call does. Both ask
+    for a model alias the API serves with a dated model."""
     t0 = time.monotonic()
-    ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=5).invoke("hi")
+    anthropic_reply = ChatAnthropic(model="claude-haiku-4-5", max_tokens=5).invoke("hi")
     print_result("ChatAnthropic.invoke", True, int((time.monotonic() - t0) * 1000))
 
     t0 = time.monotonic()
-    ChatOpenAI(model="gpt-4o-mini", max_tokens=5).invoke("hi")
+    openai_reply = ChatOpenAI(model="gpt-4o-mini", max_tokens=5).invoke("hi")
     print_result("ChatOpenAI.invoke", True, int((time.monotonic() - t0) * 1000))
+
+    for label, reply in (
+        ("ChatAnthropic.invoke", anthropic_reply),
+        ("ChatOpenAI.invoke", openai_reply),
+    ):
+        meta = reply.response_metadata
+        served = meta.get("model_name") or meta.get("model")
+        assert_reply_stored(session_id, label, meta["id"], served)
 
 
 def _run_embeddings_and_attribution(session_id: str) -> None:
@@ -218,7 +231,7 @@ def main() -> None:
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:03_langchain] session_id={session_id}")
 
-    _run_chat()
+    _run_chat(session_id)
     assert_event_landed(session_id, "post_call", timeout=8)
 
     _run_embeddings_and_attribution(session_id)

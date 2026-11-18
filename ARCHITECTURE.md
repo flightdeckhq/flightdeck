@@ -922,7 +922,7 @@ class PromptContent:
     event_id: str
     captured_at: str                # ISO 8601 UTC
     input: str | list | None = None                    # Embeddings or Responses input, a Gemini request's contents (None for chat)
-    embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
+    embedding_output: list[Any] | None = None  # Embedding vectors when captured, as returned
 ```
 
 `system` holds what the provider received: an Anthropic `system` given
@@ -1094,8 +1094,10 @@ target type, so the caller's own `parse()` returns the same object and a
 nothing the sensor did. When the parse raises (a body that is not the
 JSON the SDK expects), the call returns as it would, the caller's own
 `parse()` raises the same exception, the event keeps the pre-call
-estimate as its usage and goes without its content, with the warning
-naming `UnreadableResponse` once per event type. An async `parse()` (a
+estimate as its usage and the requested model, and goes without its
+content, with a warning, once per event type, that names the event type
+and the provider and says the provider's response body did not parse
+(none of the body is in it). An async `parse()` (a
 coroutine function) is never called by a reader, since only the
 caller's await may run it: the anthropic 2.x async raw view is awaited
 by its own intercept instead (see "SDK class patching"). No response
@@ -1249,8 +1251,12 @@ different levels:
   their request by calling `self.create(..., stream=True)`, so the sensor
   runs the SDK's own helper with the sensor's resource proxy as `self`:
   the request takes the stream guard, the helper reads its raw events
-  through the guard, and the caller gets the SDK's own manager and
-  `ChatCompletionStream` / `ResponseStream`. The helper keeps the SDK's
+  through the guard, and the caller gets the SDK's own
+  `ChatCompletionStream` / `ResponseStream` from a manager that stands
+  for the SDK's: it has that manager's protocol and nothing more (`with`
+  on a sync client's, `async with` on an async client's) and carries its
+  class name and module, so an `async with` on a sync client's manager
+  raises the `TypeError` the SDK's manager raises, word for word. The helper keeps the SDK's
   stream state for the events it reads, so the guard takes the helper's
   assembly (a chat helper's `current_completion_snapshot`, a Responses
   helper's terminal `Response` or the snapshot its state folded) rather
@@ -2078,8 +2084,8 @@ stored in its JSON form: framework state that the json module cannot
 encode is converted first (pydantic models such as LangChain messages
 dumped in JSON mode, dataclasses as objects, sets and tuples as lists,
 dates as ISO strings, anything else as its string form); a body that
-still cannot be encoded is dropped with a warning while the session
-events go out.
+still cannot be encoded, or that holds a NaN or an infinity, is dropped
+with a warning while the session events go out.
 
 The LangGraph wrapper of a node function keeps its signature (through
 `__wrapped__`): LangGraph injects `config`, `runtime`, `store` and
@@ -10652,9 +10658,18 @@ with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
 `async for`. `create(stream=True)` sends the request inside the call, as the
 unguarded SDK does, so provider errors surface there. `messages.stream()`
-calls the SDK's `stream()` inside the call and sends the request when the
-context is entered, like the SDK's own manager, or on the first iteration
-or public-attribute read when no `with` block is used.
+calls the SDK's `stream()` inside the call and returns a manager that
+stands for the SDK's (`base.StreamManager`, or `AsyncStreamManager` on an
+async client): entering it sends the request, as the SDK's manager does,
+and gives the guard. Like the SDK's manager it is not iterable and has
+no other protocol, its public attributes are the SDK manager's, read
+without sending anything, and it carries the SDK class's name and
+module, so a misuse (iterating it before entering it, the other client
+kind's `with`) raises what the SDK's manager raises, word for word.
+Every other object the sensor hands back in place of an SDK object (a
+stream guard, a view's response proxy) has the protocol of the object it
+stands for: `with` / `async with`, iteration and async iteration, and
+`await`, on the object and on its class.
 
 `chunk_count`, the inter-chunk timings and `partial_chunks` count the
 events the SDK yields to the caller. Protocol frames the SDK consumes
@@ -10811,15 +10826,23 @@ fields described under `post_call` apply here too. Embeddings adds:
 
 - `output_dimensions`: `{count, dimension}` — small + observable
   summary so the dashboard renders the shape chip
-  (`<dim>-d × <count> vec`) without fetching `event_content`.
+  (`<dim>-d × <count> vec`) without fetching `event_content`. `count`
+  is the number of vectors returned and `dimension` the number of values
+  in the first: its length, or for a call that asked for
+  `encoding_format="base64"` (OpenAI and litellm; google-genai has no
+  such option), the number of float32 values its base64 string decodes
+  to, four bytes each, as the OpenAI SDK decodes it. A string that does
+  not decode to whole float32 values gives no dimension, and the event
+  then carries no `output_dimensions`.
 
 When `capture_prompts=true`:
 
 - `payload.content.input` carries the request's `input` parameter as
   sent (a string, a list of strings, a list of token ids or a list of
   token-id lists) — round-trips into `event_content.input`.
-- `payload.content.embedding_output` carries the raw vectors as
-  `list[list[float]]` — round-trips into
+- `payload.content.embedding_output` carries the raw vectors, each as
+  the provider returned it: a list of floats, or the base64 string of a
+  call that asked for `encoding_format="base64"` — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate
   protects this; there is no separate dial.
 
@@ -11510,12 +11533,22 @@ Plugin, Configuration, which describes the measure and the marker; the
 sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
 never cut. An event whose captured `content` cannot be written as JSON
-(an object the capture did not turn into data) is sent without its
-content (`has_content=false`, as an event over the limit is), with a
-warning naming the event type and the object's type (once per pair of
-the two; later ones at debug level), so its token counts
-and metadata still arrive; the content is never replaced by the object's
-string form, which the provider never received.
+(an object the capture did not turn into data, or a float that is not
+finite: NaN or an infinity) is sent without its content
+(`has_content=false`, as an event over the limit is), with a warning
+naming the event type and the object's type, or "a non-finite float
+(NaN or Infinity)" (once per pair of the two; later ones at debug
+level), so its token counts and metadata still arrive; the content is
+never replaced by the object's string form, or a float by `null` or a
+string, which the provider never sent. Python's json module would write
+such a float as `NaN` / `Infinity`, which is not JSON, and ingestion
+rejects the whole body. The SDKs' own encoders refuse one in a request,
+so it comes from a reply the SDK parsed leniently (an OpenAI-compatible
+server's `-Infinity` logprob, a `NaN` in a tool call's arguments or
+input), or from framework state handed to a sub-agent. A value outside
+`content` that JSON cannot write is never sent: the event raises on the
+drain thread, which logs it, rather than going out as a body ingestion
+rejects.
 
 When `capture_prompts=false`, every content field on every event type is
 zeroed: `has_content=false`, `content=null`. The event still ships, so

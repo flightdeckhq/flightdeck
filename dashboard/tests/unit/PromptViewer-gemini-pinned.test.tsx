@@ -7,12 +7,12 @@ import type { EventContent } from "@/lib/types";
 
 // What renders for content that is not a Gemini call's stays as it was
 // before the Gemini view existed, every byte of the Prompts tab's
-// markup: the expected markup was captured by rendering these contents
-// with the PromptViewer of the commit before the view
+// markup: fixtures/prompts-pinned-before-gemini.json holds these
+// contents' markup from the PromptViewer of the commit before the view
 // (feat/sensor-gemini 3d1c4ab9, whose PromptViewer is main's ad1b8b97),
-// into fixtures/prompts-pinned-before-gemini.json. Set
+// with each box's toggle naming its views Rendered and JSON. Set
 // CAPTURE_PINNED_MARKUP=1 to write that file again from the component in
-// place (only ever from that commit's component).
+// place, only for a change meant to alter this markup, and check its diff.
 
 const PINNED_FILE = resolve(__dirname, "fixtures/prompts-pinned-before-gemini.json");
 const CAPTURE = process.env.CAPTURE_PINNED_MARKUP === "1";

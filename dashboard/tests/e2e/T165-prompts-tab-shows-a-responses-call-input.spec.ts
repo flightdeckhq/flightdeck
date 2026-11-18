@@ -115,10 +115,10 @@ test.describe("T165 — the Prompts tab shows a Responses call's input", () => {
     await expect(output.getByTestId("responses-call-id")).toHaveText("call_9IQorB7WiLKDYNXtObQMBB75");
     await expect(output.getByTestId("pretty-json")).toContainText('"temp_c": 18');
 
-    // Raw on an item shows it as stored.
-    await drawer.getByTestId("prompt-box-input-2-raw").click();
-    await expect(drawer.getByTestId("prompt-box-input-2-raw-json")).toContainText('"type": "function_call"');
-    await expect(drawer.getByTestId("prompt-box-input-3")).toHaveAttribute("data-view", "pretty");
+    // The JSON view of an item shows it as stored.
+    await drawer.getByTestId("prompt-box-input-2-json").click();
+    await expect(drawer.getByTestId("prompt-box-input-2-json-view")).toContainText('"type": "function_call"');
+    await expect(drawer.getByTestId("prompt-box-input-3")).toHaveAttribute("data-view", "rendered");
 
     // The Responses tool shows its parameters.
     await expect(drawer.getByTestId("prompt-box-tool-0")).toContainText("city");

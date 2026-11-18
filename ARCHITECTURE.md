@@ -9326,13 +9326,13 @@ the call whose `id` its `tool_call_id` holds, looked up among the calls
 of the earlier assistant messages in the same list (the nearest one
 when an id repeats), else the reply's own `name` when it carries one
 (LangChain and some litellm paths send it), else that id, shortened,
-Raw showing it whole; a `function` message names its own `name`. The reply's content is shown
+the JSON view showing it whole; a `function` message names its own `name`. The reply's content is shown
 as any message's content is. The lookup runs once per message list.
 These are read from the messages' shape, not the provider name, so a
 litellm call's OpenAI-format messages show the same way. A `system`
 given as a list of content blocks is shown block
 by block, as a message's content blocks are: a text block as its text,
-a block the viewer does not know as its JSON; Raw shows the list as
+a block the viewer does not know as its JSON; the JSON view shows the list as
 stored. A content block that carries `cache_control` (a cache
 breakpoint), in the system prompt or a message, is marked under it in
 the provider's terms, `cache_control · ephemeral` with its `ttl` when
@@ -9394,8 +9394,8 @@ as its MIME type and URI, `executableCode` labelled with its language
 over the code, `codeExecutionResult` labelled with its outcome over the
 output, and any other part as its JSON. A turn (or candidate) whose
 parts carry a `thoughtSignature` (opaque bytes the model reads back)
-shows one mark under them, `thoughtSignature · opaque bytes, in Raw`,
-the values only in Raw; a part that holds nothing but its signature
+shows one mark under them, `thoughtSignature · opaque bytes, in JSON`,
+the values only in the JSON view; a part that holds nothing but its signature
 shows nothing of its own. Tools show one box per function declaration,
 by its name, with its description and its parameters' types as stored
 (`string` in a JSON schema, `STRING` in Gemini's own schema), and one
@@ -9410,9 +9410,9 @@ response has, from `usageMetadata`: Tokens in the prompt with the
 tool-use prompt, Tokens out the candidates with the thoughts (the
 counts the event's `tokens_input` and `tokens_output` are made of). The
 rest of the usage, safety ratings, grounding and citation metadata are
-in Raw only. Every field is read under its REST API name and its
+in the JSON view only. Every field is read under its REST API name and its
 snake_case one, since the body's spelling differs by SDK release and
-platform, and Raw shows each box's piece as stored. A tool call's content (the sensor's `tool_call`,
+platform, and the JSON view shows each box's piece as stored. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its
 `tool_output` as Result, an object as labelled fields, text as written
@@ -9474,8 +9474,12 @@ provider's branch, under an `OpenTelemetry GenAI` header:
 - a part or block it does not know as its JSON, and content with no
   messages, response or tool input and output as its stored fields.
 
-Every box keeps its Pretty / Raw toggle, Raw showing the value as
-stored.
+Every box has a toggle between two views, named for what they show:
+**Rendered** (the default) shows the content for reading: text as
+written, content blocks, tool cards, parts, and JSON held in a string
+pretty-printed; **JSON** shows the value exactly as stored, as indented,
+highlighted JSON that wraps at the box's width. Each box keeps its own
+choice, and a newly opened event starts every box on Rendered.
 
 The Prompts tab's empty states read the run's stored capture posture,
 `capture_prompts` on `GET /v1/sessions/:id` (the run drawer and the

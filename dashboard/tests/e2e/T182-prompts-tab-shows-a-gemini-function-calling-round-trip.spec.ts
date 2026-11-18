@@ -15,7 +15,7 @@
  * the call (the function's name, then ``city:`` and its value); round
  * two's turns carry their roles (``user``, ``model``, ``user``), the
  * model's turn shows the call, the user's reply is labelled ``function
- * response`` with the function it answers and its fields, and Raw keeps
+ * response`` with the function it answers and its fields, and JSON keeps
  * the turn as stored (``functionResponse``).
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
@@ -145,9 +145,9 @@ test.describe("T182 — the Prompts tab shows a Gemini function-calling round tr
     await expect(response).toContainText(RESULT);
     await expect(drawer.getByTestId("prompt-box-response")).toContainText(ANSWER);
 
-    // Raw keeps the turn as stored.
-    await drawer.getByTestId("prompt-box-content-2-raw").click();
-    const raw = drawer.getByTestId("prompt-box-content-2-raw-json");
+    // JSON keeps the turn as stored.
+    await drawer.getByTestId("prompt-box-content-2-json").click();
+    const raw = drawer.getByTestId("prompt-box-content-2-json-view");
     await expect(raw).toContainText('"functionResponse"');
     await expect(raw).toContainText(`"result": "${RESULT}"`);
     await expect(drawer.getByTestId("prompt-box-content-2").getByTestId("gemini-function-response")).toHaveCount(0);

@@ -102,8 +102,8 @@ describe("PromptViewer: OpenTelemetry GenAI content", () => {
     const system = box("prompt-box-system");
     expect(system).toHaveTextContent("Answer weather questions with the get_weather tool.");
     expect(system).not.toHaveTextContent('"type"');
-    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
-    expect(screen.getByTestId("prompt-box-system-raw-json")).toHaveTextContent('"content"');
+    fireEvent.click(screen.getByTestId("prompt-box-system-json"));
+    expect(screen.getByTestId("prompt-box-system-json-view")).toHaveTextContent('"content"');
   });
 
   it("system instructions stored as an object's JSON text render as its fields, a number or a boolean as written", async () => {
@@ -201,14 +201,14 @@ describe("PromptViewer: OpenTelemetry GenAI content", () => {
     expect(box("prompt-box-tool-0")).toHaveTextContent(/city\s*·\s*string/);
   });
 
-  it("Raw shows a message exactly as stored", async () => {
+  it("JSON shows a message exactly as stored", async () => {
     await renderContent(at(fixture("pydantic_ai").calls, 0));
-    fireEvent.click(screen.getByTestId("prompt-box-message-1-raw"));
-    const raw = screen.getByTestId("prompt-box-message-1-raw-json");
+    fireEvent.click(screen.getByTestId("prompt-box-message-1-json"));
+    const raw = screen.getByTestId("prompt-box-message-1-json-view");
     expect(raw).toHaveTextContent('"parts"');
     expect(raw).toHaveTextContent('"role"');
-    // The other boxes stay in Pretty.
-    expect(box("prompt-box-response-0")).toHaveAttribute("data-view", "pretty");
+    // The other boxes stay on Rendered.
+    expect(box("prompt-box-response-0")).toHaveAttribute("data-view", "rendered");
   });
 
   it("never renders through the Anthropic or OpenAI branches", async () => {

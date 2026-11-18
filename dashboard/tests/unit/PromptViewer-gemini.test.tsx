@@ -90,7 +90,7 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     for (const title of ["System instruction", "Contents", "Response"]) {
       expect(screen.getByRole("button", { name: new RegExp(`^${title}`) })).toBeInTheDocument();
     }
-    // The badge says it in words (CSS upper-cases it); Raw keeps the body.
+    // The badge says it in words (CSS upper-cases it); JSON keeps the body.
     expect(within(screen.getByTestId("prompt-box-system")).getByText("system instruction")).toBeInTheDocument();
     // The response shows the token line every provider's does.
     expect(response()).toHaveTextContent("Tokens in: 12 · Tokens out: 3");
@@ -104,16 +104,16 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     expect(screen.queryByTestId("prompt-box-message-0")).toBeNull();
   });
 
-  it("a thought signature is marked, never printed, and Raw has it", async () => {
+  it("a thought signature is marked, never printed, and JSON has it", async () => {
     const c = fixture("plain_call");
     await renderContent(c);
     const signature = ((c.response as { candidates: { content: { parts: { thoughtSignature: string }[] } }[] })
       .candidates[0]!.content.parts[0]!).thoughtSignature;
     const mark = within(response()).getByTestId("gemini-thought-signature");
-    expect(mark).toHaveTextContent("thoughtSignature · opaque bytes, in Raw");
+    expect(mark).toHaveTextContent("thoughtSignature · opaque bytes, in JSON");
     expect(document.body.textContent).not.toContain(signature.slice(0, 24));
-    fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
-    expect(screen.getByTestId("prompt-box-response-raw-json")).toHaveTextContent(signature.slice(0, 24));
+    fireEvent.click(screen.getByTestId("prompt-box-response-json"));
+    expect(screen.getByTestId("prompt-box-response-json-view")).toHaveTextContent(signature.slice(0, 24));
   });
 
   it("a chat's history shows each turn with its role, a model turn's signature marked", async () => {
@@ -139,9 +139,9 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     expect(call.firstElementChild).toHaveTextContent("get_weather");
     expect(within(call).getAllByTestId("kv-label").map((el) => el.textContent)).toEqual(["city:"]);
     expect(call).toHaveTextContent("Paris");
-    // Raw keeps the declaration as sent.
-    fireEvent.click(screen.getByTestId("prompt-box-tool-0-raw"));
-    expect(screen.getByTestId("prompt-box-tool-0-raw-json")).toHaveTextContent('"parameters_json_schema"');
+    // JSON keeps the declaration as sent.
+    fireEvent.click(screen.getByTestId("prompt-box-tool-0-json"));
+    expect(screen.getByTestId("prompt-box-tool-0-json-view")).toHaveTextContent('"parameters_json_schema"');
   });
 
   it("the second round: the model's call and the function's response, named", async () => {
@@ -165,7 +165,7 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     expect(parts.getByTestId("gemini-thought-signature")).toBeInTheDocument();
   });
 
-  it("inline data is a placeholder with its type and size, its bytes only in Raw", async () => {
+  it("inline data is a placeholder with its type and size, its bytes only in JSON", async () => {
     const c = fixture("inline_image");
     await renderContent(c);
     const data = ((c.input as { parts: { inlineData?: { data: string } }[] }[])[0]!.parts[1]!.inlineData!).data;
@@ -174,8 +174,8 @@ describe("PromptViewer: a Gemini call, in Gemini's terms", () => {
     expect(content(0)).toHaveTextContent("What colour is this image? One word.");
     expect(document.body.innerHTML).not.toContain(data.slice(0, 16));
     expect(document.querySelectorAll("img")).toHaveLength(0);
-    fireEvent.click(screen.getByTestId("prompt-box-content-0-raw"));
-    expect(screen.getByTestId("prompt-box-content-0-raw-json")).toHaveTextContent(data.slice(0, 16));
+    fireEvent.click(screen.getByTestId("prompt-box-content-0-json"));
+    expect(screen.getByTestId("prompt-box-content-0-json-view")).toHaveTextContent(data.slice(0, 16));
   });
 
   it("code execution: the built-in tool by its name, the code and its result", async () => {
@@ -337,7 +337,7 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
   it("a part that only carries a signature shows the mark, never its value", async () => {
     for (const part of [{ text: "", thoughtSignature: "c2lnLW9ubHk=" }, { thought_signature: "c2lnLW9ubHk=" }]) {
       await renderContent(gemini([userTurn([{ text: "x" }])], answered([part])));
-      expect(within(response()).getByTestId("gemini-thought-signature")).toHaveTextContent("opaque bytes, in Raw");
+      expect(within(response()).getByTestId("gemini-thought-signature")).toHaveTextContent("opaque bytes, in JSON");
       expect(response()).not.toHaveTextContent("c2lnLW9ubHk=");
       expect(within(response()).queryByTestId("pretty-json")).toBeNull();
       cleanup();
@@ -409,12 +409,12 @@ describe("PromptViewer: the shapes a Gemini body has across SDK releases and pla
     expect(names).toEqual(["googleSearch", "urlContext", "a", "b"]);
     expect(screen.getByRole("button", { name: /^Tools/ })).toHaveTextContent("(4)");
     expect(screen.getByTestId("prompt-box-tool-3")).toHaveTextContent("(no parameters)");
-    // Raw: a declaration as sent, a built-in tool as the tool entry.
-    fireEvent.click(screen.getByTestId("prompt-box-tool-2-raw"));
-    expect(screen.getByTestId("prompt-box-tool-2-raw-json")).toHaveTextContent('"description": "First."');
-    expect(screen.getByTestId("prompt-box-tool-2-raw-json")).not.toHaveTextContent('"b"');
-    fireEvent.click(screen.getByTestId("prompt-box-tool-0-raw"));
-    expect(screen.getByTestId("prompt-box-tool-0-raw-json")).toHaveTextContent('"googleSearch": {}');
+    // JSON: a declaration as sent, a built-in tool as the tool entry.
+    fireEvent.click(screen.getByTestId("prompt-box-tool-2-json"));
+    expect(screen.getByTestId("prompt-box-tool-2-json-view")).toHaveTextContent('"description": "First."');
+    expect(screen.getByTestId("prompt-box-tool-2-json-view")).not.toHaveTextContent('"b"');
+    fireEvent.click(screen.getByTestId("prompt-box-tool-0-json"));
+    expect(screen.getByTestId("prompt-box-tool-0-json-view")).toHaveTextContent('"googleSearch": {}');
   });
 
   it("a system instruction stored as text, and contents that are not a list, still render", async () => {

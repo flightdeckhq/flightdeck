@@ -3,13 +3,13 @@ import { act, cleanup, render, screen, within, fireEvent } from "@testing-librar
 import { PromptViewer } from "@/components/session/PromptViewer";
 import type { EventContent } from "@/lib/types";
 
-// The Pretty view of a Claude Code plugin tool_call's result: the
+// The Rendered view of a Claude Code plugin tool_call's result: the
 // tool_result block's content is the tool's response as stored, its
 // JSON text within 2000 characters. The plugin cuts inside the
 // structure, ends a cut string with "…", and names each cut value
 // beside the content, in the block's `truncated`, as a JSON Pointer
 // (nothing is added inside the response). Earlier plugin versions
-// stored the JSON text cut mid-way, with no list. Raw always shows the
+// stored the JSON text cut mid-way, with no list. JSON always shows the
 // stored block.
 
 let mockContent: EventContent | null = null;
@@ -66,7 +66,7 @@ async function renderResult(
 }
 
 
-describe("a structured tool result in Pretty", () => {
+describe("a structured tool result in the Rendered view", () => {
   it("shows stdout and stderr as terminal text with their line breaks, the flags compactly", async () => {
     const box = await renderResult(
       JSON.stringify({ stdout: "line one\nline two", stderr: "warning: slow", interrupted: false, isImage: false }),
@@ -466,13 +466,13 @@ describe("the earlier cut form is the plugin's only", () => {
   });
 });
 
-describe("Raw of a tool result", () => {
+describe("the JSON view of a tool result", () => {
   it("shows the stored block, its content as the stored string and its list beside it", async () => {
     const stored = JSON.stringify({ stdout: `ok${MARK}`, stderr: "" });
     const box = await renderResult(stored, undefined, { output: ["/stdout"] });
-    fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
-    expect(box).toHaveAttribute("data-view", "raw");
-    const raw = screen.getByTestId("prompt-box-response-raw-json");
+    fireEvent.click(screen.getByTestId("prompt-box-response-json"));
+    expect(box).toHaveAttribute("data-view", "json");
+    const raw = screen.getByTestId("prompt-box-response-json-view");
     expect(raw.textContent).toContain('"type": "tool_result"');
     expect(raw.textContent).toContain(`"content": ${JSON.stringify(stored)}`);
     expect(raw.textContent?.replace(/\s+/g, "")).toContain('"truncated":["/stdout"]');

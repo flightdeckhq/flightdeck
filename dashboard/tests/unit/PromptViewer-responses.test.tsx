@@ -70,9 +70,9 @@ describe("PromptViewer: an OpenAI Responses call", () => {
     expect(box).toHaveTextContent("Name the capital of France.");
     // There is no chat history to show.
     expect(screen.queryByRole("button", { name: /^Messages/ })).toBeNull();
-    // Raw shows the string as stored.
-    fireEvent.click(screen.getByTestId("prompt-box-input-raw"));
-    expect(screen.getByTestId("prompt-box-input-raw-json")).toHaveTextContent('"Name the capital of France."');
+    // JSON shows the string as stored.
+    fireEvent.click(screen.getByTestId("prompt-box-input-json"));
+    expect(screen.getByTestId("prompt-box-input-json-view")).toHaveTextContent('"Name the capital of France."');
   });
 
   it("shows each input item in its own box with the item count", async () => {
@@ -254,12 +254,12 @@ describe("PromptViewer: an OpenAI Responses call", () => {
     expect(within(item(4)).getByTestId("pretty-json")).toHaveTextContent("no role, no type");
   });
 
-  it("each item box keeps its own Pretty / Raw toggle", async () => {
+  it("each item box keeps its own Rendered / JSON toggle", async () => {
     await renderContent(fixture("responses_function_call_round_trip"));
-    fireEvent.click(screen.getByTestId("prompt-box-input-2-raw"));
-    expect(screen.getByTestId("prompt-box-input-2")).toHaveAttribute("data-view", "raw");
-    expect(screen.getByTestId("prompt-box-input-2-raw-json")).toHaveTextContent('"type": "function_call"');
-    expect(screen.getByTestId("prompt-box-input-3")).toHaveAttribute("data-view", "pretty");
+    fireEvent.click(screen.getByTestId("prompt-box-input-2-json"));
+    expect(screen.getByTestId("prompt-box-input-2")).toHaveAttribute("data-view", "json");
+    expect(screen.getByTestId("prompt-box-input-2-json-view")).toHaveTextContent('"type": "function_call"');
+    expect(screen.getByTestId("prompt-box-input-3")).toHaveAttribute("data-view", "rendered");
   });
 
   it("an empty item list says so", async () => {

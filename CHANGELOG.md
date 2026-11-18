@@ -41,7 +41,7 @@ All notable changes to Flightdeck are documented here.
   data is a placeholder with its type and size (never the bytes; a
   payload cut to fit the event size limit says so, with its full size),
   and code execution shows its code and result; a turn's thought
-  signatures are one mark, their values in Raw. A prompt the safety
+  signatures are one mark, their values in the JSON view. A prompt the safety
   filters blocked says so, and the response shows the token line every
   provider's does.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
@@ -96,9 +96,20 @@ All notable changes to Flightdeck are documented here.
   agents still appear as child sessions. Call `patch()` before building
   runners and before the first `LiteLlm` call.
 
+### Changed
+
+- **The Prompts tab's two views are named for what they show:
+  Rendered and JSON.** Each box's toggle read "Pretty | Raw", and the
+  tab called Raw was the one that showed indented, highlighted JSON. The
+  views are unchanged: Rendered (the default) shows the content for
+  reading (text, content blocks, tool cards, parts), and JSON shows the
+  value exactly as stored. Notes that pointed at the old name now say
+  JSON (a Gemini turn's mark reads `thoughtSignature · opaque bytes, in
+  JSON`).
+
 ### Fixed
 
-- **The Prompts tab shows an OpenAI call's tool calls.** In the Pretty
+- **The Prompts tab shows an OpenAI call's tool calls.** In the Rendered
   view an OpenAI chat assistant message that called a tool showed only
   `(empty)`: the tool's name and arguments were missing, and the `tool`
   message after it did not say which call it answered. Each call in
@@ -110,8 +121,8 @@ All notable changes to Flightdeck are documented here.
   name of the call it answers; when the call is not in the list, the
   name the reply carries, else the call's id. A Responses
   `function_call_output` names the `function_call` it answers. litellm
-  calls in the OpenAI format show the same way. Raw still shows each
-  message as the provider received it.
+  calls in the OpenAI format show the same way. The JSON view still shows
+  each message as the provider received it.
 - **A call whose system prompt is a list of content blocks keeps its
   captured content.** An Anthropic call given `system` as a list of
   blocks, the form prompt caching uses

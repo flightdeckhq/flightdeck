@@ -30,8 +30,10 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 try:
     import anthropic
@@ -325,7 +327,7 @@ def main() -> None:
     print(f"\nsession {session_id}: {len(post_calls)} post_call, {len(tool_calls)} tool_call")
     if len(post_calls) != len(ran):
         failures.append(f"expected {len(ran)} post_calls, got {len(post_calls)}")
-    for (label, _, _), pc in zip(ran, post_calls):
+    for (label, _, _), pc in zip(ran, post_calls, strict=False):
         streaming = (pc.get("payload") or {}).get("streaming") or {}
         status, content = _content(pc["id"])
         text = _response_text(content.get("response") or {}) if status == 200 else ""

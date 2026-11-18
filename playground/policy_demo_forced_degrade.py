@@ -11,6 +11,7 @@ Run: ``python playground/policy_demo_forced_degrade.py``
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -67,8 +68,8 @@ def main() -> None:
         flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
         print(f"[playground:policy_forced_degrade] session_id={session_id} flavor={flavor}")
         c = anthropic.Anthropic()
-        N = 6
-        for i in range(N):
+        calls = 6
+        for i in range(calls):
             t0 = time.monotonic()
             r = c.messages.create(
                 model=sonnet,
@@ -99,7 +100,7 @@ def main() -> None:
             "exactly one policy_degrade event across many calls",
             once_only,
             0,
-            f"got {len(degrades)} policy_degrade events from {N} calls",
+            f"got {len(degrades)} policy_degrade events from {calls} calls",
         )
         if not once_only:
             raise AssertionError(
@@ -122,10 +123,8 @@ def main() -> None:
                 f"models seen: {[pc.get('model') for pc in post_calls]!r}",
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             _api("DELETE", f"/v1/policies/{policy['id']}")
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

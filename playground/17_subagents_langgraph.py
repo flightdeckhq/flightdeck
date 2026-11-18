@@ -28,6 +28,7 @@ framework or key isn't available locally.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -188,10 +189,8 @@ def main() -> None:
     for e in parent_post_calls:
         pl = e.get("payload") or {}
         t = pl.get("tokens_total") or 0
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             tokens_total += int(t)
-        except (TypeError, ValueError):
-            pass
     if tokens_total:
         print(
             f"[playground:17_subagents_langgraph] cumulative LLM tokens="

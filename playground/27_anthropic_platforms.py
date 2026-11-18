@@ -259,7 +259,8 @@ def main() -> None:
         expected_platforms["bedrock"] = 1
     else:
         print(
-            "  SKIP  AnthropicBedrock (set AWS_REGION plus AWS credentials or AWS_BEARER_TOKEN_BEDROCK)"
+            "  SKIP  AnthropicBedrock (set AWS_REGION plus AWS credentials"
+            " or AWS_BEARER_TOKEN_BEDROCK)"
         )
 
     if _vertex_available():

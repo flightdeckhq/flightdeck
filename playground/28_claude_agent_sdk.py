@@ -34,6 +34,7 @@ SDK is not installed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import tempfile
@@ -257,7 +258,9 @@ async def _mcp_run(cwd: str) -> tuple[str, list[str]]:
         }
     }
     async for message in sdk.query(
-        prompt=f"Call the echo tool of the {MCP_SERVER_NAME} MCP server with the text hi, then stop.",
+        prompt=(
+            f"Call the echo tool of the {MCP_SERVER_NAME} MCP server with the text hi, then stop."
+        ),
         options=options,
     ):
         if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
@@ -290,10 +293,8 @@ def _provision_mcp_block() -> None:
 
 
 def _remove_mcp_policy() -> None:
-    try:
+    with contextlib.suppress(urllib.error.HTTPError):
         _api("DELETE", f"/v1/mcp-policies/{FLAVOR}")
-    except urllib.error.HTTPError:
-        pass
 
 
 def _check_stop(sdk_session: str, denials: list[str], started: float) -> None:

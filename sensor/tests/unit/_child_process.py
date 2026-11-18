@@ -13,12 +13,15 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 import flightdeck_sensor
+from tests import network_guard
 
 # A child that has not finished by then has hung; the tests' own bounds
 # are far below it, so reaching it is a failure, never a slow pass.
@@ -63,15 +66,67 @@ def child_env(**extra: str) -> dict[str, str]:
     return env
 
 
+def _network_log() -> str:
+    """A new, empty file for a child's network-guard refusals."""
+    handle, path = tempfile.mkstemp(prefix="child-network-", suffix=".log")
+    os.close(handle)
+    return path
+
+
+def _assert_no_network(path: str) -> None:
+    """Fail when the child's guard refused anything (the log is removed)."""
+    try:
+        with open(path, encoding="utf-8") as log:
+            refused = log.read().split("\n")
+    finally:
+        os.unlink(path)
+    refused = [line for line in refused if line]
+    assert not refused, f"the child process tried to leave the machine: {refused}"
+
+
+# The network-guard log of each child start_child started, until finish().
+_CHILD_LOGS: dict[subprocess.Popen[str], str] = {}
+
+
 def start_child(script: str, *args: str, env: dict[str, str]) -> subprocess.Popen[str]:
-    """Start ``script`` (a file next to this one) with the test's Python."""
-    return subprocess.Popen(
+    """Start ``script`` (a file next to this one) with the test's Python.
+    The script installs the network guard (``network_guard.install_in_child``)
+    first; what it refuses fails the test at :func:`finish`."""
+    log = _network_log()
+    proc = subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name(script)), *args],
-        env=env,
+        env={**env, network_guard.CHILD_LOG_ENV: log},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    _CHILD_LOGS[proc] = log
+    return proc
+
+
+# The first lines of an inline child: the network guard, before anything else.
+_GUARD_PRELUDE = "import tests.network_guard as _network_guard\n_network_guard.install_in_child()\n"
+
+
+def run_python(
+    code: str, *args: str, timeout: float, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run ``code`` (dedented) in a child Python with ``args``, under the
+    network guard, and fail when the guard refused anything. ``env`` is
+    the child's environment (``child_env()`` by default)."""
+    log = _network_log()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _GUARD_PRELUDE + textwrap.dedent(code), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**(env if env is not None else child_env()), network_guard.CHILD_LOG_ENV: log},
+            check=False,
+        )
+    finally:
+        _assert_no_network(log)
+    return result
 
 
 def read_until(proc: subprocess.Popen[str], marker: str) -> list[str]:
@@ -98,6 +153,10 @@ def finish(proc: subprocess.Popen[str]) -> tuple[int, str, str]:
         proc.kill()
         out, err = proc.communicate()
         raise AssertionError(f"child hung and was killed: {out} {err}") from None
+    finally:
+        log = _CHILD_LOGS.pop(proc, None)
+        if log is not None:
+            _assert_no_network(log)
     return proc.returncode, out, err
 
 

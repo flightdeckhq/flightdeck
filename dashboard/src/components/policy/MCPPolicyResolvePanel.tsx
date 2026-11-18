@@ -217,7 +217,7 @@ function FormField({
         className="h-8 w-full rounded-md border px-3 py-1 text-xs outline-hidden transition-colors focus:border-(--accent)"
         style={{
           borderColor: "var(--border)",
-          background: "var(--background-elevated)",
+          background: "var(--bg-elevated)",
           color: "var(--text)",
         }}
         data-testid={id}
@@ -275,7 +275,7 @@ function ResolveResultBlock({
       className="mt-3 rounded-md border px-3 py-3"
       style={{
         borderColor: "var(--border)",
-        background: "var(--background-elevated)",
+        background: "var(--bg-elevated)",
       }}
       data-testid={`mcp-policy-resolve-panel-result-${scopeKey}`}
     >

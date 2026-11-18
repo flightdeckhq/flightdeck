@@ -453,7 +453,7 @@ function PanelStatus({
         borderColor: isError ? "var(--danger)" : "var(--border)",
         background: isError
           ? "color-mix(in srgb, var(--danger) 10%, transparent)"
-          : "var(--background-elevated)",
+          : "var(--bg-elevated)",
         color: isError ? "var(--danger)" : "var(--text-muted)",
       }}
       data-testid={`mcp-panel-status-${tone}`}
@@ -672,7 +672,7 @@ function ScopePicker({
               className="block w-full rounded-sm border px-2 py-1 text-xs outline-hidden focus:border-(--accent)"
               style={{
                 borderColor: "var(--border)",
-                background: "var(--background-elevated)",
+                background: "var(--bg-elevated)",
                 color: "var(--text)",
               }}
               data-testid="mcp-policies-scope-search"
@@ -708,7 +708,7 @@ function ScopePicker({
                     className="flex w-full cursor-pointer items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm"
                     style={{
                       background: isHighlighted
-                        ? "var(--background-elevated)"
+                        ? "var(--bg-elevated)"
                         : "transparent",
                       color: isActive ? "var(--accent)" : "var(--text)",
                       fontWeight: isActive ? 600 : 400,

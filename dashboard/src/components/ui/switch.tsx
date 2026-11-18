@@ -30,9 +30,12 @@ export const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
         aria-label={label}
         disabled={disabled}
         onClick={() => onCheckedChange(!checked)}
+        // The focus ring's offset gap takes the colour of the panel the
+        // switch sits on, --surface; a switch on another surface passes
+        // its own ring-offset class.
         className={cn(
           "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
-          "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--accent) focus-visible:ring-offset-2 focus-visible:ring-offset-(--background)",
+          "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--accent) focus-visible:ring-offset-2 focus-visible:ring-offset-(--surface)",
           "disabled:cursor-not-allowed disabled:opacity-50",
           checked
             ? "bg-(--accent)"

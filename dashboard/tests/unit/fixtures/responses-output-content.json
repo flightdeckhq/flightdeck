@@ -1,0 +1,1418 @@
+{
+  "_source": "Bodies GET /v1/events/:id/content served from a dev stack on 2026-11-18 for OpenAI calls made through the sensor (openai 2.54.0, capture_prompts on): gpt-5-mini Responses calls (a tool loop's two rounds with their reasoning items, a reasoning summary with encrypted content, a call cut short by max_output_tokens, a streamed call, stored as the final response its response.completed event carried) and gpt-4o-mini Responses calls from playground 02 (a streamed call, a hosted web search). The refusal_* contents are built: gpt-4o-mini declined the request in its answer text rather than in the refusal field on every attempt, so each is a real stored chat or Responses body with that answer moved into the API's refusal field (chat: message.content null and message.refusal; Responses: a refusal content part), as the API documents it under Structured Outputs; the passed_back ones carry the refused answer in the next request. Their user prompt is the milder \"Explain how to get into a locked house.\" the E2E specs use, in place of the one those calls were made with.",
+  "reasoning_tool_round_1": {
+    "event_id": "55bd01e3-a372-4e5e-b329-dcca51299258",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "description": "Current weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981943,
+      "conversation": null,
+      "created_at": 1794981941,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_022f0c3fcb74f6c8006afd4035c3c487d2945dc862e847c1da",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": null,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-5-mini-2025-08-07",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [],
+          "encrypted_content": "gAAAAABq_UA4BGtatakQU78vKGkAjE9g82OpSvFYOs_9mnoBP08QArfnyHFEfV5H5MiSDR-OZqc7EwRSxLJvOA-cyj6tZCMoON89q2UviBtyH-1KEjKzejtPtERijA4hFHW7NCVQGPEMGlMf8hdR0NypiQc4k5zWWZtTnZ-1GBTDDT_gZRUd5sHe_4kALZwZqdgej1lmDAse1CD8fy1tqU7icbPvpXnaJ-e49_gx-YJAOGm1Xbx8kGcKyglz_88LUvzoQQfTyfWgQw9heZBEH63OTw7cAttzOASYQRPB1eA5nhddfUASMsxFrROdmHryvMzd_OJmwr8382JrX1JRkXHmZ-bOW9rdIg2cRac08k4GuRetyzo4PeHZYVywwOdfShDbzPWPJ6tE9K6U7ZWDHJGa39wpYNfcVcp7bgRc6i8JvYwG77tDVNifDBoe8CiKp78cuBnjR39a_VHbraWS7C80CEIx_Anvf-bLEKvKN3SsFuatNNhATDAj09RC33Ih_ULicvgsKboqDBjqJ3VhE54uwVsu7t7V0QAZjDru0NrmklZT_V5iDxFBPMrfnwwMn3p91ek7KfxUlFClWOFXqgf6Oiy_0ivvlML6W8ojSqjEzJ5wrS8iZgpHFbWY245jrvys3K2AUB60Gi_U-in4JzrrUFit9p6BUu6j3lYLtkpO43m4KiuVxfN14xdEh8B6MhxZyBlQIkjb37-sLZXZVegPIrZLy98bia66InbaccamcNtXuRD890QndasMY8qnGGmmcnc_eU2oVLqpoUuERJx5HkQH_LcRmGHA08jMlmVG04nz1yfAGuOeuS8Zj8SvqRZjJtBsmVUyGOjHexa4l9bMxf0-tfiHr7SabkVFJ-4qYx-K2x1Mkdfj59ofu_4ptK3-RntbK_zSdZSaAJaV_7zDptJ5zR2sU5Zk6Ijdds1jOWmAhAc2k2E1BRhCLBFLAFle9x3wfK6rYDjBkR_BjEdu8pcySwxW7Bc7rY2SD2QK9kSWbV8EyarM5x2RZwe3-g1bAWhygwmGadABzDv6JM6yEXvXFArzceGo1NgdHiaEh8tBxWSUOexN4KFW7DVsZFFoAj-O0CSvJGl7yGYCZAABOdHjTzx5WcoqUp9Uzi6lGp7s0MQeocKYtRY-nQOttoPcHPm57JP2dXCl99nIbk0KIT0V7t31Ty3HJL113GNvCR2bnb0VwkKc3WNbh79QJtAPrwDfK0rHj4-v7R6VaaGHSiHOgjCt2E-Y2YlM_Or_izxApro33UpjK4PMzt9aq_nOG7-DsYp8ic2QZHBGxMKCtdYED4wXpdrLuHloZ0KTSQBttuQGvyMAbjc85UIYk8nBzplyOkrL3x-q2W5xb52T9qCW-0sIRC5vDuypcD20fNoX7Kl87Axm-3ExvXtel9-sZvi07dbwTaKnV7M7Ztx-TI2YIAk1e24qi8XXRy4-vYxqcM3SZvnxoaw2Mm8OBpNQCR5IIi550HxEUhVmenN7XIAxs5Um44LX3THMLrqzkh5Jyz1Dgj3vAMOwCB_CsTfmwbsfKaiK25k7JnscDPuikGhFkpj_hqKJZ2DNcOCa0jfhtLQaVsfPhM2zDAcriKd0NL7aXUIvic-ZHVVrxDFdw7lOzFLxhDHrExmIUMRzraRax_beSZ5ZCeOI55K2RR8o9eBOB01V-080e4SKFswSKLWuLbuaHdclIIAFVKSB-3cZLuWIACM1z9AyIIzJs-vh6mrwb4Tm30pEJpREtSAQFU44vP_Z1-mC-goT75Ar8a63krLn27HVctpgSBQKsj1X6XdWyQAXaZ7jsRx3LY2r_RhKS3ZtH20ctlC0crfPkHgKBeEvUAXzj52kcsiA52R6owVOS2fx4t-OiMIxHnmQGnAV2ShwmcvQ0zUfdhW4AC0IrG0fw2dEbcPtLF0U_nALx8rJLo6wou5kFDi1vOwAfVZ0SIc_-9EZCrnQGnrBiCccXe2vEH46aArSao3Wif3lN5pu8VWThmduN-pItXtlNg6BNJUeXrol3x3YzNmkELteMjBzKCh5AkL14yOzJ7XVFE2VfuCpNh9OtK2I9CkVogxtUe0JftI-nh4lBmAHw8xM89GsN2YAZgT1nHTUxmCtlIDwcX3f66MEjpzQzsra4_CndjsHAjeY8r7ZCU-sUBHuRf7LfxjRh2x29-hfgoslAaUywSxbNaTAXJa_mQDhpfzrb02K0zbOQxXogU2J7XZiTlNIq11Of0TwxaPT10wY9h4qpbpRy8kjin4U-FIenpcYBSyz6U96klpF0EmYosV5-eIrGtgNkFFpGEYcbSOY1BITl3TBH4XtuZrfsyc-jplilCC_Ug==",
+          "id": "rs_022f0c3fcb74f6c8006afd4036147487d28a39303158c57741",
+          "status": null,
+          "summary": [],
+          "type": "reasoning"
+        },
+        {
+          "arguments": "{\"city\":\"Paris\"}",
+          "call_id": "call_K2fb7FMj063QkbXS7fJHejvj",
+          "caller": null,
+          "id": "fc_022f0c3fcb74f6c8006afd4037959087d2b415a102c964d316",
+          "name": "get_weather",
+          "namespace": null,
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "low",
+        "generate_summary": null,
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [
+        {
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "output_schema": null,
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "function"
+        }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 53,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 67,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 120
+      },
+      "user": null
+    },
+    "input": [
+      {
+        "content": "What is the weather in Paris? Use the tool.",
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-18T06:05:43.602Z"
+  },
+  "reasoning_tool_round_2": {
+    "event_id": "79fefee3-b241-4527-9105-e62b71c0af1f",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "description": "Current weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981945,
+      "conversation": null,
+      "created_at": 1794981944,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_022f0c3fcb74f6c8006afd4038739c87d286651d5850da9cbb",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": null,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-5-mini-2025-08-07",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Current weather in Paris: Sunny, 21°C.",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_022f0c3fcb74f6c8006afd4038bc9887d290f0811e8496bef8",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "low",
+        "generate_summary": null,
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [
+        {
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Current weather for a city",
+          "name": "get_weather",
+          "output_schema": null,
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "function"
+        }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 136,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 15,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 151
+      },
+      "user": null
+    },
+    "input": [
+      {
+        "content": "What is the weather in Paris? Use the tool.",
+        "role": "user"
+      },
+      {
+        "content": [],
+        "encrypted_content": "gAAAAABq_UA4BGtatakQU78vKGkAjE9g82OpSvFYOs_9mnoBP08QArfnyHFEfV5H5MiSDR-OZqc7EwRSxLJvOA-cyj6tZCMoON89q2UviBtyH-1KEjKzejtPtERijA4hFHW7NCVQGPEMGlMf8hdR0NypiQc4k5zWWZtTnZ-1GBTDDT_gZRUd5sHe_4kALZwZqdgej1lmDAse1CD8fy1tqU7icbPvpXnaJ-e49_gx-YJAOGm1Xbx8kGcKyglz_88LUvzoQQfTyfWgQw9heZBEH63OTw7cAttzOASYQRPB1eA5nhddfUASMsxFrROdmHryvMzd_OJmwr8382JrX1JRkXHmZ-bOW9rdIg2cRac08k4GuRetyzo4PeHZYVywwOdfShDbzPWPJ6tE9K6U7ZWDHJGa39wpYNfcVcp7bgRc6i8JvYwG77tDVNifDBoe8CiKp78cuBnjR39a_VHbraWS7C80CEIx_Anvf-bLEKvKN3SsFuatNNhATDAj09RC33Ih_ULicvgsKboqDBjqJ3VhE54uwVsu7t7V0QAZjDru0NrmklZT_V5iDxFBPMrfnwwMn3p91ek7KfxUlFClWOFXqgf6Oiy_0ivvlML6W8ojSqjEzJ5wrS8iZgpHFbWY245jrvys3K2AUB60Gi_U-in4JzrrUFit9p6BUu6j3lYLtkpO43m4KiuVxfN14xdEh8B6MhxZyBlQIkjb37-sLZXZVegPIrZLy98bia66InbaccamcNtXuRD890QndasMY8qnGGmmcnc_eU2oVLqpoUuERJx5HkQH_LcRmGHA08jMlmVG04nz1yfAGuOeuS8Zj8SvqRZjJtBsmVUyGOjHexa4l9bMxf0-tfiHr7SabkVFJ-4qYx-K2x1Mkdfj59ofu_4ptK3-RntbK_zSdZSaAJaV_7zDptJ5zR2sU5Zk6Ijdds1jOWmAhAc2k2E1BRhCLBFLAFle9x3wfK6rYDjBkR_BjEdu8pcySwxW7Bc7rY2SD2QK9kSWbV8EyarM5x2RZwe3-g1bAWhygwmGadABzDv6JM6yEXvXFArzceGo1NgdHiaEh8tBxWSUOexN4KFW7DVsZFFoAj-O0CSvJGl7yGYCZAABOdHjTzx5WcoqUp9Uzi6lGp7s0MQeocKYtRY-nQOttoPcHPm57JP2dXCl99nIbk0KIT0V7t31Ty3HJL113GNvCR2bnb0VwkKc3WNbh79QJtAPrwDfK0rHj4-v7R6VaaGHSiHOgjCt2E-Y2YlM_Or_izxApro33UpjK4PMzt9aq_nOG7-DsYp8ic2QZHBGxMKCtdYED4wXpdrLuHloZ0KTSQBttuQGvyMAbjc85UIYk8nBzplyOkrL3x-q2W5xb52T9qCW-0sIRC5vDuypcD20fNoX7Kl87Axm-3ExvXtel9-sZvi07dbwTaKnV7M7Ztx-TI2YIAk1e24qi8XXRy4-vYxqcM3SZvnxoaw2Mm8OBpNQCR5IIi550HxEUhVmenN7XIAxs5Um44LX3THMLrqzkh5Jyz1Dgj3vAMOwCB_CsTfmwbsfKaiK25k7JnscDPuikGhFkpj_hqKJZ2DNcOCa0jfhtLQaVsfPhM2zDAcriKd0NL7aXUIvic-ZHVVrxDFdw7lOzFLxhDHrExmIUMRzraRax_beSZ5ZCeOI55K2RR8o9eBOB01V-080e4SKFswSKLWuLbuaHdclIIAFVKSB-3cZLuWIACM1z9AyIIzJs-vh6mrwb4Tm30pEJpREtSAQFU44vP_Z1-mC-goT75Ar8a63krLn27HVctpgSBQKsj1X6XdWyQAXaZ7jsRx3LY2r_RhKS3ZtH20ctlC0crfPkHgKBeEvUAXzj52kcsiA52R6owVOS2fx4t-OiMIxHnmQGnAV2ShwmcvQ0zUfdhW4AC0IrG0fw2dEbcPtLF0U_nALx8rJLo6wou5kFDi1vOwAfVZ0SIc_-9EZCrnQGnrBiCccXe2vEH46aArSao3Wif3lN5pu8VWThmduN-pItXtlNg6BNJUeXrol3x3YzNmkELteMjBzKCh5AkL14yOzJ7XVFE2VfuCpNh9OtK2I9CkVogxtUe0JftI-nh4lBmAHw8xM89GsN2YAZgT1nHTUxmCtlIDwcX3f66MEjpzQzsra4_CndjsHAjeY8r7ZCU-sUBHuRf7LfxjRh2x29-hfgoslAaUywSxbNaTAXJa_mQDhpfzrb02K0zbOQxXogU2J7XZiTlNIq11Of0TwxaPT10wY9h4qpbpRy8kjin4U-FIenpcYBSyz6U96klpF0EmYosV5-eIrGtgNkFFpGEYcbSOY1BITl3TBH4XtuZrfsyc-jplilCC_Ug==",
+        "id": "rs_022f0c3fcb74f6c8006afd4036147487d28a39303158c57741",
+        "summary": [],
+        "type": "reasoning"
+      },
+      {
+        "arguments": "{\"city\":\"Paris\"}",
+        "call_id": "call_K2fb7FMj063QkbXS7fJHejvj",
+        "id": "fc_022f0c3fcb74f6c8006afd4037959087d2b415a102c964d316",
+        "name": "get_weather",
+        "status": "completed",
+        "type": "function_call"
+      },
+      {
+        "call_id": "call_K2fb7FMj063QkbXS7fJHejvj",
+        "output": "Sunny, 21 C",
+        "type": "function_call_output"
+      }
+    ],
+    "captured_at": "2026-11-18T06:05:44.977Z"
+  },
+  "reasoning_summary_encrypted": {
+    "event_id": "1866d2c7-3678-42c0-b555-20fecb3fea2a",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981947,
+      "conversation": null,
+      "created_at": 1794981945,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_009d20340185f99c016afd4039def487d29539a9ec7628ec4b",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": null,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-5-mini-2025-08-07",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [],
+          "encrypted_content": "gAAAAABq_UA7CxmEN54M9x9zqt1Saqe7nWFfSNk2-Rzf7jRSYyj9ltxUOBMDJyd41sq65gyHgHDFb-GwdUwyKgFspxxHtFGNgCs8Wf0CkH7Yh1LJSo17Bdl5d5iWLhreX2vZPQMlq6vQXMVWOpjZGhTP9JsEhhpo3kNzpqzLwvZ51CsEcaIS7gkle1yRhHrXdy5i_XZJdA7l6F40Q5fhvuSKC3giOQ9n5FDCxIc-P-yjcZAO5gjKjwT1nu8s8JKQAklbByiVr4clxjDj6YWkKuSyDhfDjmSp_QoeoSGSVKhD-0WZfPi9EPVkACSh1c1PnZDkC4PUkJaX-3OzeA1329gNkhh41SsvuK1cWMptWuz-Tuq71wL8LoTB75isAoHJMWQozkV021pDbbmEk9OJajJKvvj7W3pcGTE8NtqGkZyKhtlcHoMj10p9SlDHYgB_sxMcbw8D0wu6A7k7tQHNifabrS_7iNDpi3_xseZtpgMyBL8jJJsx3ieMrMCcYMS7UX6bAvH0ct0oQAAZ0nc1GAIIylGAYjgFgWxOMFRAN091M94IW-ANCRH76EZiontpJHAWKk_1FdjDoFEZItSA6EToGsTdo_t7KBH1Ll4JCLxH0CrgR_8YtWgYalKUpo5Gtceg8Gg7umeRBrVavhqNQXMYJZP-BBMi3y2kYEu8pNE8Md4epnRvbnYvp-gClQ_tQtIWfVfI-kXpWWlhWNdIRojMfeR4m0dGF2c6EvMoYXGDcLkN6FZd8Nw1DTRn32aWn284KQUezgSUfc1b7hmwnBtGCLCjn99_bwyZ9upOUw7KQ0-1Y5VncWFoM7QBkvU_nHjSp9A_ksWIlQUBrUWxktkTKbCwo6lVwXv1ggmuaLK4Jc00M0RpeTYmvPioMi_Ovz6wkYFUvwfAKIl8hCx_C9qi7ERsORl1Bw3TV0AbcojnfVjWCQd7oged6dYPlbMFrMGDhKKnp2Hf2pk2NQ85dLgUx2KEz2jjTPcbyK4fFfXYxkV5eJl4Gay7LKsXFS6lQSF3wKLsDeJ8P6NEx9rKETNaRDmIkzMARRWlHdf6k3czBbo8KEy4q-akXC6SLoF2bqI_xNSJAri3nVumjGOttgG3frf3x969ifUemA-rjvAhInELUcEmCQq_B57byQyRMSavOWK4Pigw-wP6W62H83xuuXfkUNrOz7nvlyQkPI8LfxBE-_PQDtZdLd1kVYpSOEkpH9cSZdlMOZSWgCBVzWQdTe2sDOB7WrgatvN_LTL-ISnnrzK8cCXkJh3NQiCNUQI0gusTQyf_rchojj0ehNw0zwU_LdET9bzbgC7qp6IVLm9ij_CSGoCW80lH-vnPiMA_OtX5u0YFdLtMomxVxxDhtgA_S6ITnmlUFJwcSj4CX-f34-clqkdReZlHrv8dNwm96MRu1AAGecsL3929uAkMUNP7sxS8zGxT13XmmtoByDJmEODRp7JRZmbvuB--lRygDsisqVuN3iyulfnCQgoPeJEhdVJpDW2VYfBi5BQFj4p8mMb4VPN9QY2eATVLNOhqKqzVOQ3a41nNhZsEGFcUL2mrIeZRU9XsO_mRDUscV3cFfgxYr7WC8evhPdTLSNYmE-mvLIr_BdzX0vUc8BTC8l65uIJuNF4cti8jVOQ1-CcLZl_thS_gkaHQf054q5tsd0mf-oIaN2AwNbQZA-HkF3REW8Z4tK68ovl0ILuXgDMJMr6KMgU4qe3kKf6XuMNDaDjZOEeT_FF8QqAadFHGaPFV_i9-BVdp10tL9iv22ZipQXjf0CQH0GdYntukuNEEM7rKKL_RMYEFO1jsNybKiJE0TH_9izVAEu3nOc_8ZA3xNz4zRC7-iVpUM98sB4NOkrxwT5CTlMcxq_HV82WMCb5HCvEY00K0xFQyIO0x-hdW5qWjx04dsf2P7eUv2zvACqv-SlGgrocvSRSkQhSNRAWGn9PUv3M8jT7L1QCZq91nRwanjTh-4l2Pqjl-B17R3bCO2P_23l3COd3VxJ2QEtir-jBxlAByyIG7n6VceIY8xgQkloGR_orUHGoB5wpeHaBPvP7Oun8pszjOIul7TfLBJwBzeE9z7VXYc5sNhz5r6iz3CWOZZU1J2ZvroPmcuAj4wV2Zn3-e6BovccfFLhmHotp5K6YRmL7RCtWrdj9S6MTp2KO4OpDoJoBFAF6A4F4AksHV9HxyKrjfMp9eBk_9GYYpYbeqyUXMaAKuB1JIXWXZHDMZbC5dUMlDWyy3q1DYEm-LISFv3VKelzpeW2JH7ei3azOEHh0QanqmMZVwngxPGqnwSY8nnsR4HH9YTDJnqjogM-SlH0Yf7qAnG0GNDjJqNw==",
+          "id": "rs_009d20340185f99c016afd403a299087d28e14006f8f7fcc40",
+          "status": null,
+          "summary": [
+            {
+              "text": "**Determining if 391 is prime**\n\nI need to check if 391 is a prime number. Oh, it turns out that 391 can be factored as 17 times 23, which means it's not prime. Since the user just wants a simple yes or no answer, I’ll respond with \"No.\" Keeping it minimal is key here!",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "No",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_009d20340185f99c016afd403ba2d087d28d0fd6147e9a5e0d",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "low",
+        "generate_summary": null,
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": false,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 18,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 66,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 84
+      },
+      "user": null
+    },
+    "input": "Is 391 a prime number? Answer yes or no.",
+    "captured_at": "2026-11-18T06:05:46.96Z"
+  },
+  "incomplete_max_output_tokens": {
+    "event_id": "b114479a-1138-4407-bee2-63370c257d72",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": null,
+      "conversation": null,
+      "created_at": 1794981947,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_00fe0ef6a52bc3b7006afd403bf5ac87d29d689adcd0f42e55",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": {
+        "reason": "max_output_tokens"
+      },
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": 16,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-5-mini-2025-08-07",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [],
+          "encrypted_content": "gAAAAABq_UA9o7AoDgDllATqgtjKScrzfHvxObHa7e1-S4lkwgKUTObqvrrtcRJaWXf-PM7lhg4lDzzMeyeLx3y8AXXd9shBA6wyOYNEuaa_3-eyoovaeQFyIXoB1AiJYoFKZCL4WB8rc2lmICbbn5wN-WNlu7L-4mRIONH4KVBh0a64aWqGGf_DgOrQFbcnuoboKkPL2iRL3ZIhZqYDZcNctu0lWRcQ7LWv60NeTqpIkfz9qwN-RI2wvZ5YNsjHpMe8YyKGmgkdndp5CWqPSBNutpnn1nMpSKLV_lBu-NGB0A8ebLvtOZj0IwszbwuxX0khNBEpusAgcvaGo75oyD_NmEcI408oa7L6zrKfJ1uX91T4-PKiEhrVZXRCVWTfeb7-w3OInQGKPDviSjEr7245ulVsWfgH3Fq1yVA55PbbYhyd0pZcB2k5NNdeLnhvebqdd7eO5Z-oSmPLde8QuBMxhVF2QDZJ4jyHo-9rl8z8UfOAxQJxzJeHxNicnBFhmYdP5Q3QykZEpSr7hPGZaQ0_bxjygbolQhtH-xup37Mvkg_GwnUKjqxMIE6ZinzjwlTg4MnRKLSLI8piTP5E1Ia1goBrWMykgT-B1j6kxu5q9S_87UfoNcBVcBPZgefeVumW0dCB_w4yYpyw9C0AJb3CEx9OfxQQLaib6Wi5JL7XNVC6XmT3LpN1XjjtvNBijKXnbYOgnPJtSkbUIeGMf6ux_lBTziCIeCw24IbGuiueDTJ45YP21VLMMRUcnEdY5j0paptz4hQrkQfSF9jhNC4osXH8tuetCp9tQMRU6BtQLfKqv3t7ONmDNqBADx5r9TBY6kGhT-lFeSwmJaZb4VYZ_UgkzOZ3C84u53ttRpCe3XAyeNnX6pOQtFZr6qmqTBmxkGTOPQ8SRfafX-S3eNkYU_cJUkQey-ff7gs_hNq1E2x9Qx_Khl3yY2Yfdhpp0HzMf3NTIEn2or8VfY-RqymJ-xssGO9Ia5batowM1Z6vskQSUN68Hyrf88JcxLNwTCKJrMvmsWwx-LkWpW6uAo4MMmine4rQ0v7iGZdX_HKcIIcbzR0ufMHb_XuoT9Al2bjJXf925m2xBy8bMoB2sDyWCYrlpB_srm78rWrFJ7LNV5b5sL_f1SCD5UkRj0Fmv6Zmf1bc_clXWiDPZLo8Zd7vqSUHuXkTZoS5tYUiNd1qrNcsBAYAn8UAUJBRPDsaDs8llaspvDDf-L_RbJW86uYY8Y5fmcUDV11IMH0GTY27ix3xa7WT_-8sJ8p3WGdENE0zcFc7cSz5CJ7WMoXsQ_s-h_qLISigYCkB3RoCprU36IzjmS_kf-qQpBCQ42R531ayTh7cMg8CHol2eLFhFmwF-y8H43sM6bdC0Qfndx9YMHIaxb5_IWzvLoStrf7Xqq4mD31ZcH7gZmnNhJUrNain6AN_S5hBlRhGQfGG2XQ58i242P0GFnI9YxrHm_sVRZXVcQw-hFLxwu1CGKmW7DP1UyQ0Yf5YVNrhIVg80ns7oj8CBLWOfhY=",
+          "id": "rs_00fe0ef6a52bc3b7006afd403c3e0487d29ad370ac73bddd70",
+          "status": null,
+          "summary": [],
+          "type": "reasoning"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "low",
+        "generate_summary": null,
+        "mode": "standard",
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "incomplete",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 16,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 16
+      },
+      "user": null
+    },
+    "input": "Write a 300-word story about a lighthouse.",
+    "captured_at": "2026-11-18T06:05:48.129Z"
+  },
+  "streamed_reasoning": {
+    "event_id": "c3d527d6-5581-47b0-a8e8-82655866adb7",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "completed_at": 1794981950,
+      "conversation": null,
+      "created_at": 1794981949,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_02603bb9a535d538006afd403d2ae087d28f7409ede82b8655",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": null,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-5-mini-2025-08-07",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [],
+          "encrypted_content": "gAAAAABq_UA-6c9GiaLObMhs_KJj91HX-7R7seZGFmFqZPQDTsG9V109RwFSS4v7oBmVUAM5jxUQkRsKNsSDbC2TEx4nA9P2S0dxnjWrdvZGRe_SWTtyUhlouKFxDjvPnIebfyEAg2PxqiFPTyH1WZuBRbHlUV657mvuoQ4TsmyvG1yk8cDvRc6DVgGouv1218bpnhJDdr7-8yMzLcC4s1dl49-GJ9E4xmT8xfu1gmzBO4rv0ISI26kW60c8uZiGXrJ2RUh5b4rFsQuZp3LpceS95TbKdr6RTQ0PrXj4S7-WjdaSHEP16-YBAoq5-L1Wl-dR10MYwg86uWCI_60g-fl9m4Kjzn_yx4B2kvzcQQoYzQOjCz8MWpHDy7MKR9GRnll-rxsZ9F-ARJUv56MdbrAoiVnmyM5F-V3CZKgKbyN0eOZ2ORZovCkAvjFqWxa9SuWjo7INIAQc5XT4G1rBC5dkUgfcbCD98V8sZ-WLmxzHMZ45Yb2f8wV3x7HYc2bF3Ykpu-Iop5PY52keMnI0qo7oK-VUYwmXQeO_XtKd-67GcsxszDDdohN77eoqpehTRkhJ0GU-ACd_KjIGlNVrTGr38-zHSCaq_0-63EzeawMgR6x5HtkZe8dOXSpqsVLsEcodXcyK1tQZUblwZUmBCgKXuX5p1Oh68lVr94d111sx-x8buDKs7opBR4-FAN1UKuVBrsC-PL2EpQyPReg8lvj_pOvxpd0m6MEI9c09nWPQN_uaOpQi9KtfBxYXRTI6sDIEMDIl9xeV3vhfP_SlsRqsjKf1AfZ45W30EQZ2ZpMpfqht3IImLDxADX6U2s_obE1xFEaQuxMZEoqKp-NtZeHmpusujPYTYsm61sAJ_ugumsZT6aNgfnoQ1HKY08uGgOI-jG2ofDxaTearTZ-7FrQ0yr9N5tdSKlBKBMgAGsLELbImDAXHLnsPp_Wg9-ahtgHhduVd2hwk8npFPK750Ce5d3E8qkHbLNIL3Qs9BPmq46paHksJaH6swidnB-DH0KqD_vPAHfwnZSCcwyfwajEnNA1yz3IacdP63nMxLyORa6drWqQzX9irWUb4udU3P7aReBScc7DZokGne5LaX_KyG0Bx5JewEOU8BuHgj34Hx7WNUsYmISNIOtT0zHlx17xt_DbkjrWaljzsryYscv1rYup9vy5HltHZ4vuPN0j5e8w6FaFXr3Y7w3vSVpGKB9BOkhboCCTY9Un7-VKYrcfh_EHGYHASUSMmtbzNNx_pJQ3MyaVpSiqhMrrh6PtoBNXGal9CEMH10-divL5gdnsDl_DTx7mlFL5HroIA2uvMxT8-RX3eg_O3Wylo0WTHt-Lf1JcgWIdD1nD74GB8xo9ITyUH0idpqAV2YRG9PJV9VFuatJ37tYTyTiJSGPxFbMVoF8oEekHDjOXP9YonxN5lRg9ZobuGBo_qiNbFxZhJk-yXlmhuAxOtk84Qfxdn-92cfTz9UsNDW8gNWE9kK-gP2NIgj62pkbw3jYpT8ZHIdUPyWZPDivRsJSOwyk5X6dSino_NkmAWB5ubmeGIk8UbxPrKMKxoOzL0udx3Fkbws7jXG5eqgusjHqSTXyhH0Zm7Kqdz95exfG27BWf8SsPuVOlYbK55OJjEfg5ayOYG90_K1S4sw6s5_QRKa_v_g1Dy7WD_ccsoI6IHchdMQb24yq-2U_l4UtNiM013MirD2pWIlZJjZtfyT7UYpCo1Au7DsMSSwXsM9ORwusRWAksOZmMGRKQ45eHmi9ID3d5kPDixiibxpqkz92DJadIs9T_IG1LIZaW2JpiiCxS3mPM3JbZkI-98GqHH2Kk4JbpjGCa3ivJo7rVupbZBo3a-dnjMMC_moRd6e6iw_elcOvUa268Vw7xAjpb161nIfaNOVDuo4xKdu5KegNycrICk30mhiC3uFAJZCZ1s74p9NC4niAaTPRpazgTM5scSZJq37qxdkDYeXH7m1ZB5UOg20-H__0Vv9vYbUyJ4Ol6qFj290ZpOnQMAWeIQqg89w8BpapywaNPrQwaPFLtxR7JpK5-c3AAnRwy27McrK5b87ZzUk9eebxhB-Sue16KM0m8iQTnkWRjntq__SukxaQ6OFEezdX9HvUjZYOq_Nx1WGGHrt8myzUCe5KEYPEMm_wR3bxGcnSu0wpCRh-psBydz1ypqFa09HaagTvUqaCem47ogT8U-7CmdTtOC8eSefnffvlhzmmllRUIcynFhLPFgP0hnjqC_mB6fFRcXKQ7abMXaJZbo7gkKGVfVOMWemEKatpNS9GANJps=",
+          "id": "rs_02603bb9a535d538006afd403d6f6887d2a0967378a1a44bae",
+          "status": null,
+          "summary": [
+            {
+              "text": "**Answering distinguishing prime numbers**\n\nI need to answer the question by naming one prime number between 20 and 30. The primes in this range are 23 and 29. Since the request is specific, I can just go with \"23\" and provide a brief confirmation. Keeping it concise seems like the best approach here! I'll make sure to confirm that as the answer.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "23",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_02603bb9a535d538006afd403edf4087d297bb8013debbcab4",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "low",
+        "generate_summary": null,
+        "mode": "standard",
+        "summary": "detailed"
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 17,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 59,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 76
+      },
+      "user": null
+    },
+    "input": "Name one prime number between 20 and 30.",
+    "captured_at": "2026-11-18T06:05:50.488Z"
+  },
+  "streamed_plain": {
+    "event_id": "20961782-e8fd-4794-bd3d-4bf68e228631",
+    "session_id": "32bb633f-51fc-4196-aa90-8d5dd5365f59",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "completed_at": 1794981979,
+      "conversation": null,
+      "created_at": 1794981979,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_09b51e92f3e669af006afd405b997087d2a85c5731ba6232de",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": 16,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Hello! How can I assist you today?",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_09b51e92f3e669af006afd405bdee887d2b778785c7ee8c901",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 8,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 10,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 18
+      },
+      "user": null
+    },
+    "input": "hi",
+    "captured_at": "2026-11-18T06:06:19.706Z"
+  },
+  "web_search": {
+    "event_id": "aa1278ff-d6c8-4346-9552-b05b0a0cb2df",
+    "session_id": "32bb633f-51fc-4196-aa90-8d5dd5365f59",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "type": "web_search_preview"
+      }
+    ],
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981992,
+      "conversation": null,
+      "created_at": 1794981991,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_0d4acc19cf23f4d3006afd4066fdf087d29757e5fad3770246",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": 80,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "action": {
+            "queries": [
+              "Search the web: in what year was the Eiffel Tower completed? One sentence."
+            ],
+            "query": "Search the web: in what year was the Eiffel Tower completed? One sentence.",
+            "sources": null,
+            "type": "search"
+          },
+          "id": "ws_0d4acc19cf23f4d3006afd4067258887d2be0690744d693b4b",
+          "status": "completed",
+          "type": "web_search_call"
+        },
+        {
+          "content": [
+            {
+              "annotations": [
+                {
+                  "end_index": 84,
+                  "start_index": 3,
+                  "title": "Eiffel Tower",
+                  "type": "url_citation",
+                  "url": "https://www.google.com/maps/search/Eiffel+Tower?utm_source=openai"
+                },
+                {
+                  "end_index": 230,
+                  "start_index": 138,
+                  "title": "Eiffel Tower history, architecture, design & construction",
+                  "type": "url_citation",
+                  "url": "https://www.toureiffel.paris/en/the-monument/history?utm_source=openai"
+                }
+              ],
+              "logprobs": [],
+              "text": "\n## [Eiffel Tower](https://www.google.com/maps/search/Eiffel+Tower?utm_source=openai)\n\n\nThe Eiffel Tower was completed on March 31, 1889. ([toureiffel.paris](https://www.toureiffel.paris/en/the-monument/history?utm_source=openai)) ",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_0d4acc19cf23f4d3006afd406874c887d2997aa0199c9d00d4",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "auto",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": {
+        "type": "web_search_preview"
+      },
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 1
+        }
+      },
+      "tools": [
+        {
+          "search_content_types": [
+            "text"
+          ],
+          "search_context_size": "medium",
+          "type": "web_search_preview",
+          "user_location": {
+            "city": null,
+            "country": "US",
+            "region": null,
+            "timezone": null,
+            "type": "approximate"
+          }
+        }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 325,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 65,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 390
+      },
+      "user": null
+    },
+    "input": "Search the web: in what year was the Eiffel Tower completed? One sentence.",
+    "captured_at": "2026-11-18T06:06:33.501Z"
+  },
+  "chat_refusal_response": {
+    "event_id": "e-chat-refusal-response",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [
+      {
+        "content": "Explain how to get into a locked house.",
+        "role": "user"
+      }
+    ],
+    "tools": null,
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": [],
+            "audio": null,
+            "content": null,
+            "function_call": null,
+            "refusal": "I'm sorry, but I can't assist with that.",
+            "role": "assistant",
+            "tool_calls": null
+          }
+        }
+      ],
+      "created": 1794981953,
+      "id": "chatcmpl-ElT5l8T3ZXJW9GHYUDkm299CmvH24",
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "chat.completion",
+      "service_tier": "default",
+      "system_fingerprint": "fp_9123aa2e8c",
+      "usage": {
+        "completion_tokens": 14,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens": 52,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": null,
+          "cached_tokens": 0
+        },
+        "total_tokens": 66
+      }
+    },
+    "captured_at": "2026-11-18T06:05:53.188Z"
+  },
+  "chat_refusal_passed_back": {
+    "event_id": "e-chat-refusal-passed-back",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [
+      {
+        "content": "Explain how to get into a locked house.",
+        "role": "user"
+      },
+      {
+        "annotations": [],
+        "audio": null,
+        "content": null,
+        "function_call": null,
+        "refusal": "I'm sorry, but I can't assist with that.",
+        "role": "assistant",
+        "tool_calls": null
+      },
+      {
+        "role": "user",
+        "content": "Fine. What is the capital of France? One word."
+      }
+    ],
+    "tools": null,
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "annotations": [],
+            "audio": null,
+            "content": "Paris.",
+            "function_call": null,
+            "refusal": null,
+            "role": "assistant",
+            "tool_calls": null
+          }
+        }
+      ],
+      "created": 1794981953,
+      "id": "chatcmpl-ElT5l8T3ZXJW9GHYUDkm299CmvH24",
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "chat.completion",
+      "service_tier": "default",
+      "system_fingerprint": "fp_9123aa2e8c",
+      "usage": {
+        "completion_tokens": 14,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "prompt_tokens": 52,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": null,
+          "cached_tokens": 0
+        },
+        "total_tokens": 66
+      }
+    },
+    "captured_at": "2026-11-18T06:05:53.188Z"
+  },
+  "responses_refusal_response": {
+    "event_id": "e-responses-refusal-response",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981958,
+      "conversation": null,
+      "created_at": 1794981957,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_0f65e48044f21dae006afd4045819887d2be220d9862fc6954",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": 200,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "refusal": "I'm sorry, but I can't assist with that.",
+              "type": "refusal"
+            }
+          ],
+          "id": "msg_0f65e48044f21dae006afd4045db9c87d28fe5257bb5784912",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "description": null,
+          "name": "answer",
+          "schema_": {
+            "additionalProperties": false,
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 46,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 15,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 61
+      },
+      "user": null
+    },
+    "input": "Explain how to get into a locked house.",
+    "captured_at": "2026-11-18T06:05:57.257Z"
+  },
+  "responses_refusal_passed_back": {
+    "event_id": "e-responses-refusal-passed-back",
+    "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "access_programs": null,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1794981958,
+      "conversation": null,
+      "created_at": 1794981957,
+      "error": null,
+      "frequency_penalty": 0,
+      "id": "resp_0f65e48044f21dae006afd4045819887d2be220d9862fc6954",
+      "image": {
+        "context_compression": "disabled"
+      },
+      "incomplete_details": null,
+      "input_transformations": [],
+      "instructions": null,
+      "max_output_tokens": 200,
+      "max_tool_calls": null,
+      "metadata": {},
+      "model": "gpt-4o-mini-2024-07-18",
+      "moderation": null,
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Paris.",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_0f65e48044f21dae006afd4045db9c87d28fe5257bb5784912",
+          "phase": null,
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "presence_penalty": 0,
+      "previous_response_id": null,
+      "prompt": null,
+      "prompt_cache_key": null,
+      "prompt_cache_options": null,
+      "prompt_cache_retention": "in_memory",
+      "reasoning": {
+        "context": null,
+        "effort": null,
+        "generate_summary": null,
+        "mode": null,
+        "summary": null
+      },
+      "safety_identifier": null,
+      "service_tier": "default",
+      "status": "completed",
+      "store": true,
+      "temperature": 1,
+      "text": {
+        "format": {
+          "description": null,
+          "name": "answer",
+          "schema_": {
+            "additionalProperties": false,
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        },
+        "verbosity": "medium"
+      },
+      "tool_choice": "auto",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "tools": [],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 46,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 0
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 15,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 61
+      },
+      "user": null
+    },
+    "input": [
+      {
+        "role": "user",
+        "content": "Explain how to get into a locked house."
+      },
+      {
+        "content": [
+          {
+            "refusal": "I'm sorry, but I can't assist with that.",
+            "type": "refusal"
+          }
+        ],
+        "id": "msg_0f65e48044f21dae006afd4045db9c87d28fe5257bb5784912",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      },
+      {
+        "role": "user",
+        "content": "Fine. What is the capital of France? One word."
+      }
+    ],
+    "captured_at": "2026-11-18T06:05:57.257Z"
+  }
+}

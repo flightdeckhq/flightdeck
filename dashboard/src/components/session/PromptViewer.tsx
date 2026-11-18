@@ -553,12 +553,49 @@ function ReplyTarget({ target }: { target: ToolReplyTarget }) {
   );
 }
 
+/** A model's refusal, labelled ``refusal`` (OpenAI's word for it) above
+ *  its text, apart from the answer text and never styled as an error:
+ *  the model declined, nothing failed. A chat message's ``refusal``
+ *  field and a Responses ``refusal`` content part both show in it. */
+function RefusalBlock({ text, testId }: { text: string; testId: string }) {
+  return (
+    <div data-testid={testId}>
+      <BlockLabel>refusal</BlockLabel>
+      <TextOrJson text={text} />
+    </div>
+  );
+}
+
+/** An OpenAI chat assistant message's ``refusal`` (the model's text when
+ *  it declines, given beside a null ``content``), or null when it has
+ *  none: an SDK message dumped whole carries ``refusal: null``. */
+function chatRefusal(msg: Record<string, unknown>): string | null {
+  return typeof msg.refusal === "string" && msg.refusal.length > 0 ? msg.refusal : null;
+}
+
+/** A chat assistant message that carries a refusal: its content when it
+ *  has any, the refusal, then its calls. */
+function ChatRefusalBody({ msg, refusal, calls }: { msg: Record<string, unknown>; refusal: string; calls: ChatCall[] }) {
+  return (
+    <div className="space-y-2">
+      {hasStoredValue(msg.content) && <MessageContent content={msg.content} />}
+      <RefusalBlock text={refusal} testId="chat-refusal" />
+      <ChatCallBoxes calls={calls} />
+    </div>
+  );
+}
+
 /** A chat message's content, and its tool activity when it has any: a
  *  reply is labelled ``tool result`` and the call it answers; calls
- *  show after the message's text, one box each. A message with neither
- *  shows its content alone, as any message does. */
+ *  show after the message's text, one box each. A message that carries
+ *  a refusal shows it labelled. A message with none of these shows its
+ *  content alone, as any message does. */
 function ChatMessageBody({ msg, reply }: { msg: Record<string, unknown>; reply?: ToolReplyTarget }) {
   const calls = chatCallsOf(msg);
+  const refusal = chatRefusal(msg);
+  // Only an assistant message refuses, and only a tool or function
+  // message is a reply, so a message is never both.
+  if (refusal !== null && !reply) return <ChatRefusalBody msg={msg} refusal={refusal} calls={calls} />;
   if (calls.length === 0 && !reply) return <MessageContent content={msg.content} />;
   const content = calls.length === 0 || hasStoredValue(msg.content) ? <MessageContent content={msg.content} /> : null;
   const body =
@@ -969,8 +1006,10 @@ function ResponsesInputItem({ item, index, reply }: { item: unknown; index: numb
     body = <ResponsesFunctionCall item={obj} />;
   } else if (type === "function_call_output") {
     body = <ResponsesFunctionCallOutput item={obj} reply={reply} />;
-  } else if (type === "reasoning" && Array.isArray(obj.summary) && obj.summary.length > 0) {
-    body = <ResponsesReasoning summary={obj.summary} />;
+  } else if (type === "reasoning") {
+    // The same view a response's reasoning item has: a reasoning item
+    // passed back carries the same encrypted content.
+    body = <ResponsesReasoningItem item={obj} labelled={false} />;
   } else {
     body = <JsonBox data={obj} />;
   }
@@ -1024,12 +1063,7 @@ function ResponsesContentPart({ part }: { part: unknown }) {
     return <TextOrJson text={part.text} />;
   }
   if (type === "refusal" && typeof part.refusal === "string") {
-    return (
-      <div data-testid="responses-part-refusal">
-        <BlockLabel>refusal</BlockLabel>
-        <TextOrJson text={part.refusal} />
-      </div>
-    );
+    return <RefusalBlock text={part.refusal} testId="responses-part-refusal" />;
   }
   if (type === "input_image" || type === "input_file" || type === "input_audio") {
     const audio = isPlainObject(part.input_audio) ? part.input_audio : null;
@@ -1139,6 +1173,233 @@ function CallId({ value }: { value: unknown }) {
     <span data-testid="responses-call-id" className="truncate font-mono text-[10px]" style={{ color: "var(--muted-text)" }} title={value}>
       {value}
     </span>
+  );
+}
+
+/* ---- OpenAI Responses response ----
+ *
+ * A Responses call's stored response is the API's response object (the
+ * sensor's ``model_dump``; for a streamed call the response its
+ * terminal ``response.completed`` / ``.incomplete`` / ``.failed`` event
+ * carried, or the snapshot of a stream left early). Its ``output`` is a
+ * list of output items, shown one by one in the API's terms with the
+ * request side's components: a ``message`` item's content parts, a
+ * ``function_call`` as an input ``function_call`` item shows, a
+ * ``reasoning`` item's summary, the hosted tools' calls in a box labelled
+ * by their ``type`` with the fields that say what they did, and any
+ * other item as its JSON, never dropped. Then the response's ``status``
+ * when it is not ``completed`` (with ``incomplete_details``' reason) and
+ * its ``error``. The rest of the object (its settings, ``billing``,
+ * ``usage`` beyond the token line, the text's ``annotations``) is in the JSON view.
+ */
+
+/** The ``status`` of a response that finished normally: shown only
+ *  when a response ended otherwise. */
+const RESPONSES_STATUS_COMPLETED = "completed";
+
+/** What a response with no output items says (a stream left before its
+ *  first item, a failed call). */
+const NO_OUTPUT = "(no output)";
+
+/** What a reasoning item with no summary (and no reasoning text) says:
+ *  the model reasoned, and returned no summary of it. */
+const NO_SUMMARY = "(no summary)";
+
+/** What a hosted tool's call with none of its fields stored says. */
+const NO_DETAILS = "(no details)";
+
+/** The mark under a reasoning item whose ``encrypted_content`` the
+ *  response carries (a caller that asked for it to pass reasoning back
+ *  without storing it at OpenAI): the field and where it is. The Rendered view
+ *  never prints it. */
+const ENCRYPTED_REASONING_MARK = "encrypted_content · encrypted reasoning, in JSON";
+
+/** The fields that say what each hosted tool's call did, in the order
+ *  they show; every other field (its ``id``, ``type`` and ``status``,
+ *  which the label carries) is in the JSON view. An ``action`` object's own fields
+ *  show in its place. */
+const RESPONSES_TOOL_ITEM_FIELDS: Record<string, readonly string[]> = {
+  web_search_call: ["action"],
+  file_search_call: ["queries", "results"],
+  code_interpreter_call: ["container_id", "code", "outputs"],
+  computer_call: ["call_id", "action", "pending_safety_checks"],
+  local_shell_call: ["call_id", "action"],
+  image_generation_call: ["revised_prompt", "size", "quality", "background", "output_format"],
+  mcp_call: ["server_label", "name", "arguments", "output", "error"],
+  mcp_list_tools: ["server_label", "tools", "error"],
+  mcp_approval_request: ["server_label", "name", "arguments"],
+  custom_tool_call: ["name", "call_id", "input"],
+};
+
+/** The item type whose ``result`` is the generated image's base64 bytes,
+ *  shown as a placeholder with its size, never the bytes. */
+const IMAGE_GENERATION_CALL = "image_generation_call";
+
+/** An ``action``'s fields as its call shows them: its ``type`` first,
+ *  then the rest as stored, skipping the ones not stored and a web
+ *  search's ``queries`` when it only repeats its ``query``. */
+function actionFields(action: Record<string, unknown>): Array<[string, unknown]> {
+  const entries = Object.entries(action).filter(([, value]) => value != null);
+  const repeatsQuery =
+    Array.isArray(action.queries) && action.queries.length === 1 && action.queries[0] === action.query;
+  return [
+    ...entries.filter(([key]) => key === "type"),
+    ...entries.filter(([key]) => key !== "type" && !(key === "queries" && repeatsQuery)),
+  ];
+}
+
+/** A code interpreter output as its call shows it: an ``image``
+ *  output's ``url`` by the request side's rule for a part's reference (a
+ *  data URL is named, never printed), any other output (its ``logs``) as
+ *  stored. */
+function codeInterpreterOutput(output: unknown): unknown {
+  if (!isPlainObject(output) || output.type !== "image" || typeof output.url !== "string") return output;
+  return { ...output, url: partReference(output.url) };
+}
+
+/** The fields a hosted tool's call shows, by its ``type``: those its
+ *  type lists (an ``action``'s own fields in its place, ``arguments``
+ *  parsed as a function call's are, an MCP tool list as its tools'
+ *  names, a code interpreter's image outputs by reference), skipping the
+ *  ones not stored. */
+function responsesToolFields(type: string, item: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const name of RESPONSES_TOOL_ITEM_FIELDS[type] ?? []) {
+    const value = item[name];
+    if (value == null) continue;
+    if (name === "action" && isPlainObject(value)) {
+      for (const [key, inner] of actionFields(value)) fields[key] = inner;
+    } else if (name === "arguments") {
+      fields[name] = functionArguments(value);
+    } else if (name === "outputs" && Array.isArray(value)) {
+      fields[name] = value.map(codeInterpreterOutput);
+    } else if (name === "tools" && Array.isArray(value)) {
+      fields[name] = value.map((tool) => (isPlainObject(tool) && typeof tool.name === "string" ? tool.name : tool));
+    } else {
+      fields[name] = value;
+    }
+  }
+  return fields;
+}
+
+function ResponsesOutput({ response, output }: { response: Record<string, unknown>; output: unknown[] }) {
+  return (
+    <div data-testid="responses-output" className="space-y-2">
+      {output.length === 0 ? (
+        <Muted testId="responses-no-output">{NO_OUTPUT}</Muted>
+      ) : (
+        output.map((item, i) => <ResponsesOutputItem key={i} item={item} index={i} />)
+      )}
+      <ResponsesStatus response={response} />
+    </div>
+  );
+}
+
+/** One output item, in the Responses API's terms. */
+function ResponsesOutputItem({ item, index }: { item: unknown; index: number }) {
+  const obj = isPlainObject(item) ? item : null;
+  const type = obj && typeof obj.type === "string" && obj.type ? obj.type : null;
+  let body: React.ReactNode;
+  if (!obj) {
+    body = <JsonBox data={item} />;
+  } else if (type === "message") {
+    body = <ResponsesMessageContent content={obj.content} />;
+  } else if (type === "function_call") {
+    body = <ResponsesFunctionCall item={obj} />;
+  } else if (type === "reasoning") {
+    body = <ResponsesReasoningItem item={obj} />;
+  } else if (type !== null && type in RESPONSES_TOOL_ITEM_FIELDS) {
+    body = <ResponsesToolItem type={type} item={obj} />;
+  } else {
+    body = (
+      <div>
+        <BlockLabel>{type ?? "item"}</BlockLabel>
+        <JsonBox data={obj} />
+      </div>
+    );
+  }
+  return (
+    <div data-testid={`responses-output-item-${index}`} data-item-type={type ?? "value"}>
+      {body}
+    </div>
+  );
+}
+
+/** A reasoning item, in a response's output or passed back in a
+ *  request's input: its summary text (else its reasoning text, else
+ *  NO_SUMMARY), and the mark for its encrypted content when it carries
+ *  one; the encrypted content is never printed in the Rendered view.
+ *  ``labelled`` puts ``reasoning`` over it, as a response's items are
+ *  labelled; an input item's box already carries its type's badge. */
+function ResponsesReasoningItem({ item, labelled = true }: { item: Record<string, unknown>; labelled?: boolean }) {
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const text = Array.isArray(item.content) ? item.content : [];
+  const shown = summary.length > 0 ? summary : text;
+  const encrypted = typeof item.encrypted_content === "string" && item.encrypted_content.length > 0;
+  return (
+    <div data-testid="responses-reasoning-item">
+      {labelled && <BlockLabel>reasoning</BlockLabel>}
+      {shown.length > 0 ? <ResponsesReasoning summary={shown} /> : <Muted>{NO_SUMMARY}</Muted>}
+      {encrypted && <JsonOnlyMark testId="responses-encrypted-reasoning" text={ENCRYPTED_REASONING_MARK} />}
+    </div>
+  );
+}
+
+/** A hosted tool's call: labelled by its ``type`` (and its ``status``
+ *  when it did not complete), then the fields that say what it did, in
+ *  the box a call shows in; an image generation's result as a
+ *  placeholder naming its format and size, and saying so when the
+ *  sensor cut the bytes to fit the event size limit (as a Gemini inline
+ *  payload's placeholder does). */
+function ResponsesToolItem({ type, item }: { type: string; item: Record<string, unknown> }) {
+  const fields = responsesToolFields(type, item);
+  const status = typeof item.status === "string" && item.status !== RESPONSES_STATUS_COMPLETED ? item.status : null;
+  const image = type === IMAGE_GENERATION_CALL && typeof item.result === "string" && item.result.length > 0 ? item.result : null;
+  const format = typeof item.output_format === "string" && item.output_format ? item.output_format : null;
+  const size = image !== null ? inlineDataSize(image) : null;
+  return (
+    <div data-testid="responses-tool-item">
+      <BlockLabel>
+        {type}
+        {status ? ` · ${status}` : ""}
+      </BlockLabel>
+      <div className="space-y-2 rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+        {Object.keys(fields).length > 0 ? <KeyValueList data={fields} /> : image === null && <Muted>{NO_DETAILS}</Muted>}
+        {size !== null && (
+          <BytesPlaceholder testId="responses-image-result">
+            [image{format ? `/${format}` : ""} · {formatBytes(size.bytes)}
+            {size.cut ? ` · ${CUT_TO_FIT}` : ""}]
+          </BytesPlaceholder>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The response's own outcome, under its items: its ``status`` when it
+ *  is not ``completed``, with ``incomplete_details``' reason, and its
+ *  ``error``'s code and message. */
+function ResponsesStatus({ response }: { response: Record<string, unknown> }) {
+  const status = typeof response.status === "string" ? response.status : null;
+  const details = isPlainObject(response.incomplete_details) ? response.incomplete_details : null;
+  const reason = details && typeof details.reason === "string" && details.reason ? details.reason : null;
+  const error = isPlainObject(response.error) ? response.error : null;
+  const errorText = error
+    ? [error.code, error.message].filter((v): v is string => typeof v === "string" && v.length > 0).join(" · ") ||
+      JSON.stringify(error)
+    : null;
+  const showStatus = (status !== null && status !== RESPONSES_STATUS_COMPLETED) || reason !== null;
+  if (!showStatus && errorText === null) return null;
+  return (
+    <>
+      {showStatus && (
+        <DetailNote testId="responses-status">
+          {status !== null ? `status · ${status}` : "incomplete_details"}
+          {reason ? ` · ${reason}` : ""}
+        </DetailNote>
+      )}
+      {errorText !== null && <DetailNote testId="responses-error">error · {errorText}</DetailNote>}
+    </>
   );
 }
 
@@ -1659,10 +1920,11 @@ function geminiCount(obj: Record<string, unknown>, camel: string, snake: string)
   return typeof v === "number" ? v : undefined;
 }
 
-/** A line of stored detail the reader needs (why a candidate stopped, a
- *  prompt the filters blocked), in the secondary text colour, which reads
- *  at 4.5:1 or better on the drawer in both themes. */
-function GeminiNote({ children, testId }: { children: React.ReactNode; testId: string }) {
+/** A line of stored detail the reader needs (why a Gemini candidate
+ *  stopped, a prompt the filters blocked, a Responses call's status), in
+ *  the secondary text colour, which reads at 4.5:1 or better on the
+ *  drawer in both themes. */
+function DetailNote({ children, testId }: { children: React.ReactNode; testId: string }) {
   return (
     <div
       data-testid={testId}
@@ -1674,9 +1936,10 @@ function GeminiNote({ children, testId }: { children: React.ReactNode; testId: s
   );
 }
 
-/** A part that stands for bytes or a file, in the box a call's part
- *  shows in, its text in the primary colour. */
-function GeminiPlaceholder({ children, testId }: { children: React.ReactNode; testId: string }) {
+/** A part that stands for bytes or a file (a Gemini inline payload or
+ *  file, a Responses image generation's result), in the box a call's
+ *  part shows in, its text in the primary colour. */
+function BytesPlaceholder({ children, testId }: { children: React.ReactNode; testId: string }) {
   return (
     <div
       data-testid={testId}
@@ -1731,10 +1994,17 @@ function isSignatureOnly(part: Record<string, unknown>): boolean {
  *  as stored and that its values, opaque bytes the model reads back, are
  *  in the JSON view. Shown once per turn; the values are never rendered. */
 function ThoughtSignatureMark({ field }: { field: string }) {
+  return <JsonOnlyMark testId="gemini-thought-signature" text={`${field} · opaque bytes, in JSON`} />;
+}
+
+/** The mark under a piece whose stored value the Rendered view does not
+ *  show (opaque or encrypted bytes): the field as stored and where its
+ *  value is, in the secondary text colour. */
+function JsonOnlyMark({ testId, text }: { testId: string; text: string }) {
   return (
-    <div data-testid="gemini-thought-signature" className="mt-1 flex justify-end">
+    <div data-testid={testId} className="mt-1 flex justify-end">
       <span className="font-mono text-[10px] tracking-[0.04em]" style={{ color: "var(--text-secondary)" }}>
-        {field} · opaque bytes, in JSON
+        {text}
       </span>
     </div>
   );
@@ -1810,14 +2080,14 @@ function GeminiPart({ part, callNames }: { part: unknown; callNames: Map<string,
     const detail = [mime ?? "inline data", size ? formatBytes(size.bytes) : null, size?.cut ? CUT_TO_FIT : null, name]
       .filter((v): v is string => v !== null)
       .join(" · ");
-    return <GeminiPlaceholder testId="gemini-part-inline-data">[{detail}]</GeminiPlaceholder>;
+    return <BytesPlaceholder testId="gemini-part-inline-data">[{detail}]</BytesPlaceholder>;
   }
   const file = geminiField(part, "fileData", "file_data");
   if (isPlainObject(file)) {
     const detail = [geminiText(file, "mimeType", "mime_type"), geminiText(file, "fileUri", "file_uri")]
       .filter((v): v is string => v !== null)
       .join(" · ");
-    return <GeminiPlaceholder testId="gemini-part-file-data">[file{detail ? ` · ${detail}` : ""}]</GeminiPlaceholder>;
+    return <BytesPlaceholder testId="gemini-part-file-data">[file{detail ? ` · ${detail}` : ""}]</BytesPlaceholder>;
   }
   const code = geminiField(part, "executableCode", "executable_code");
   if (isPlainObject(code)) {
@@ -1981,10 +2251,10 @@ function GeminiCandidate({ candidate, index, label, callNames }: { candidate: Re
         <Muted>{NO_PARTS}</Muted>
       )}
       {finish !== null && finish !== GEMINI_FINISH_STOP && (
-        <GeminiNote testId="gemini-finish-reason">
+        <DetailNote testId="gemini-finish-reason">
           finishReason · {finish}
           {message ? ` · ${message}` : ""}
-        </GeminiNote>
+        </DetailNote>
       )}
     </div>
   );
@@ -2014,10 +2284,10 @@ function GeminiResponse({ response, callNames }: { response: unknown; callNames:
   } else if (blocked !== null) {
     const message = isPlainObject(feedback) ? geminiText(feedback, "blockReasonMessage", "block_reason_message") : null;
     body = (
-      <GeminiNote testId="gemini-prompt-blocked">
+      <DetailNote testId="gemini-prompt-blocked">
         The prompt was blocked (blockReason {blocked}): the model returned no candidates.
         {message ? ` ${message}` : ""}
-      </GeminiNote>
+      </DetailNote>
     );
   } else {
     body = <JsonBox data={response} />;
@@ -2166,12 +2436,15 @@ function RenderedResponse({
   const tokensOut = usage?.output_tokens ?? usage?.completion_tokens;
 
   // Extract content in the provider's own shape: Anthropic returns
-  // content blocks; OpenAI returns choices[0].message with content and
-  // its calls (tool_calls, or the legacy function_call), shown as the
-  // request's messages show them.
+  // content blocks; OpenAI returns choices[0].message with content, its
+  // refusal and its calls (tool_calls, or the legacy function_call),
+  // shown as the request's messages show them; a Responses call (the
+  // sensor's and litellm's) returns its output items.
   let body: React.ReactNode = null;
 
-  if (provider === "anthropic") {
+  if (resp.object === RESPONSES_OBJECT && Array.isArray(resp.output)) {
+    body = <ResponsesOutput response={resp} output={resp.output} />;
+  } else if (provider === "anthropic") {
     if (Array.isArray(resp.content) && resp.content.length > 0) {
       body = <ContentBlocks blocks={resp.content} />;
     }
@@ -2180,10 +2453,12 @@ function RenderedResponse({
     const choice = Array.isArray(choices) ? choices[0] : undefined;
     const msg = isPlainObject(choice) && isPlainObject(choice.message) ? choice.message : undefined;
     const calls = msg ? chatCallsOf(msg) : [];
-    if (msg && (msg.content || calls.length > 0)) {
+    const refusal = msg ? chatRefusal(msg) : null;
+    if (msg && (msg.content || calls.length > 0 || refusal !== null)) {
       body = (
         <div className="space-y-2">
           {msg.content != null && msg.content !== "" && <MessageContent content={msg.content} />}
+          {refusal !== null && <RefusalBlock text={refusal} testId="chat-refusal" />}
           <ChatCallBoxes calls={calls} />
         </div>
       );

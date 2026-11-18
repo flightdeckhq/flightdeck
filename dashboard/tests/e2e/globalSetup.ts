@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LONG_RUN_FIXTURE } from "./_fixtures";
-import { clearPrivateFixtures } from "./_private-fixtures";
+import { clearPrivateFixtures, describeCleared } from "./_private-fixtures";
 import { BASE_URL, STACK_CONFIGURATION_ERROR } from "./_stack";
 
 // Playwright global setup hook. Seeds the canonical E2E fixture
@@ -158,14 +158,10 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // apart, and why it deletes only on an E2E stack), so this run starts
   // from the seeded fleet, as a CI run on its fresh database does. It
   // throws when it cannot finish, which stops the run.
-  const cleared = clearPrivateFixtures();
-  console.log(
-    cleared.foreignAgents > 0
-      ? `[playwright globalSetup] pre-flight deleted nothing: ${cleared.foreignAgents} agents ` +
-          "here are not named e2e-, so this is not an E2E stack"
-      : `[playwright globalSetup] pre-flight removed ${cleared.sessions} runs and ` +
-          `${cleared.agents} agents earlier runs' specs left`,
-  );
+  // It runs before the seed on purpose: the seed's agent it requires must
+  // come from an earlier run, and a database never seeded (CI's, at this
+  // point) holds no run to remove, so there it is a quiet no-op.
+  console.log(`[playwright globalSetup] ${describeCleared(clearPrivateFixtures())}`);
 
   const repoRoot = resolve(__dirname, "..", "..", "..");
   const seedScript = resolve(repoRoot, "tests", "e2e-fixtures", "seed.py");

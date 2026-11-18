@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { expect, type Page, type Locator } from "@playwright/test";
+import { FLIGHTDECK_NAMESPACE, uuid5 } from "./_identity";
 import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL } from "./_stack";
 
@@ -324,23 +325,6 @@ export const LANE_FIXTURES = {
  *  namespace (``_derive_session_id``). */
 export function fixtureSessionId(agentName: string, role: string): string {
   return uuid5(`flightdeck-e2e/${agentName}/${role}`, FLIGHTDECK_NAMESPACE);
-}
-
-const FLIGHTDECK_NAMESPACE = "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61";
-
-/** RFC 4122 version-5 UUID (SHA-1), as Python's ``uuid.uuid5``. */
-function uuid5(name: string, namespace: string): string {
-  const ns = Uint8Array.from(
-    namespace.replace(/-/g, "").match(/../g)!.map((h) => parseInt(h, 16)),
-  );
-  const bytes = createHash("sha1")
-    .update(Buffer.concat([Buffer.from(ns), Buffer.from(name, "utf8")]))
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Buffer.from(bytes).toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export const ALL_FIXTURE_AGENTS = [

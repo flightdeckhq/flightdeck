@@ -6,15 +6,27 @@ litellm logs a call's success through one worker per process,
 ``litellm.litellm_core_utils.logging_worker.GLOBAL_LOGGING_WORKER``. The
 call enqueues its ``Logging.async_success_handler`` coroutine, and the
 worker's ``start()`` creates a task running ``_worker_loop()`` on the loop
-that is running. A sync call that litellm runs on a loop of its own (a call
-with ``fallbacks``, through ``asyncify.run_in_new_loop``) closes that loop
-when the call returns, without cancelling the task. The worker then keeps a
-task that never ran, and a queue of coroutines, bound to a closed loop. The
-next async litellm call, on another loop, drops them (``_ensure_queue``),
-and Python reports each coroutine as never awaited there: inside another
-test, possibly in a module that turns ``RuntimeWarning`` into an error.
-litellm 1.83 and 1.104, the releases the CI lanes install, both behave so,
-with or without the sensor.
+that is running. Two kinds of call leave that state bound to a loop that
+has closed, with or without the sensor:
+
+- A sync call that litellm runs on a loop of its own (a call with
+  ``fallbacks``, through ``asyncify.run_in_new_loop``) closes that loop
+  when the call returns without cancelling the task, which never ran. The
+  worker keeps the task and the queued handler.
+- An async call run with ``asyncio.run`` closes its loop with the handler
+  still queued; ``asyncio.run`` cancels the worker's task, which is done.
+
+The next async litellm call, on another loop, resets the worker
+(``_ensure_queue``). There litellm 1.83, the SDK floors and SDK majors
+lanes' release, drops the never-run task and the queued handlers, and
+litellm 1.104, the dev and Google ADK lanes' release, drops the task only:
+it carries the handlers over to its new queue, where they run once a later
+loop lives long enough. Python reports each coroutine dropped as never
+awaited, inside whichever test made that next call, which may be in a
+module that turns ``RuntimeWarning`` into an error. Retiring the worker
+after the test that left it also drops, on 1.104, the handlers litellm
+would otherwise run in a later test: on purpose, so that no test's logging
+runs inside another test.
 """
 
 from __future__ import annotations

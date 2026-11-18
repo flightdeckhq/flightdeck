@@ -54,7 +54,8 @@ if TYPE_CHECKING:
 def _litellm_logging_worker_retired() -> Iterator[None]:
     """After each test, retire litellm's global logging worker if the test
     left it bound to a closed event loop (a sync litellm call with
-    ``fallbacks`` does), so the coroutines it held are dropped inside that
+    ``fallbacks`` does, and so does an async one run with ``asyncio.run``),
+    so the coroutines it held are dropped inside that
     test rather than in the next test to use litellm, which may be in a
     module that turns ``RuntimeWarning`` into an error (see
     ``tests/litellm_logging_worker.py``). Before litellm's worker module is

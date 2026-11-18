@@ -154,13 +154,17 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   );
 
   // Pre-flight: remove the runs and agents earlier runs' specs made
-  // outside the seed (_private-fixtures.ts says which, and how they are
-  // told apart), so this run starts from the seeded fleet, as a CI run
-  // on its fresh database does. It throws when it cannot finish, which
-  // stops the run.
+  // outside the seed (_private-fixtures.ts says which, how they are told
+  // apart, and why it deletes only on an E2E stack), so this run starts
+  // from the seeded fleet, as a CI run on its fresh database does. It
+  // throws when it cannot finish, which stops the run.
   const cleared = clearPrivateFixtures();
   console.log(
-    `[playwright globalSetup] pre-flight removed ${cleared.sessions} runs and ${cleared.agents} agents earlier runs' specs left`,
+    cleared.foreignAgents > 0
+      ? `[playwright globalSetup] pre-flight deleted nothing: ${cleared.foreignAgents} agents ` +
+          "here are not named e2e-, so this is not an E2E stack"
+      : `[playwright globalSetup] pre-flight removed ${cleared.sessions} runs and ` +
+          `${cleared.agents} agents earlier runs' specs left`,
   );
 
   const repoRoot = resolve(__dirname, "..", "..", "..");

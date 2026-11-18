@@ -107,6 +107,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T187-prompts-tab-shows-a-responses-refusal.spec.ts` | On an agent of its own, two OpenAI Responses `post_call`s: a response whose message holds a `refusal` part shows it labelled `refusal`, not the response object, with the same markup the next call's input shows the passed-back part with |
 | `T188-embeddings-event-opens-its-input-in-the-prompts-tab.spec.ts` | On an agent of its own, two runs with one `embeddings` call each and no other content (an OpenAI call with two texts, a google-genai `embed_content` call with the Gemini API's `Content` objects): the event drawer's Prompts tab, the run drawer's "View Prompts →" on the expanded row, and the run drawer's full detail of the row each show the input under the provider's name for it (`Input`, `Contents`), drawn as the expanded row draws it, its JSON view the stored input, and the event's `output_dimensions` as the response, never `{}` nor a vector |
 | `T190-agent-drawer-swimlane-button-names-runs-at-once.spec.ts` | On agents of its own: one with three runs at once, whose drawer's swimlane button reads `Open in swimlane · 3 runs`, named `Open <agent> in swimlane, 3 runs at once` with the tooltip `3 runs at once: each gets its own lane`, and opens the per-agent modal with three lanes; one with a single run, whose button is the plain `Open in swimlane` with no count or tooltip |
+| `T192-preflight-removes-only-private-runs.spec.ts` | Given a private agent's run, a look-alike (named as `createPrivateAgent` names agents, on the private host plus a suffix) and a seeded fixture's run, the E2E pre-flight limited to those three removes the private run and its agent only; on a stack that is not an E2E stack it removes nothing |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
@@ -196,6 +197,38 @@ subsequent runs. Fresh-active sessions get a fresh `tool_call`
 event every run so they stay visible in the default 1-minute
 swimlane window regardless of how long ago the previous seed ran.
 
+### The pre-flight: runs earlier runs left
+
+Before it seeds, `globalSetup` removes the runs earlier runs' specs
+made for themselves (`clearPrivateFixtures`, `_private-fixtures.ts`),
+so a local run starts from the seeded fleet as a CI run on its fresh
+database does, whatever an interrupted run left. It logs one line:
+how many runs and agents it removed.
+
+What it removes: the private runs, told apart by the host they send,
+one exact host per producer (`createPrivateAgent` and its
+`postPrivate*` calls, `createPrivateSubAgent`, `_tool-content-run.ts`'s
+`newRun`, T130, T149, T150, T164; the list is `PRIVATE_FIXTURE_HOSTS`),
+with an agent named `e2e-...`: the sessions, their events, content,
+directives and start receipts, and each agent they leave with no run.
+A helper or spec that makes runs of its own takes its host from that
+list.
+
+What it never removes: anything on another host, even one that only
+extends a private host (the match is exact); the seed's fixtures, whose
+hosts are not in the list; and nothing at all on a stack that is not an
+E2E stack. It tells an E2E stack by its data, since the address does
+not tell (CI's stack and a developer's own dev stack both answer on
+`http://localhost:4000`): every agent in the database is named
+`e2e-...`, as the seed's and the specs' are. One real Claude Code
+session, playground run or integration-suite agent makes it delete
+nothing and say so. A row on a private host that names any other agent
+fails the run, with nothing deleted. One transaction, through `psql` in
+the stack's Postgres container as `removeRun` does (the API deletes no
+run or agent): it removes every leftover or none, and a failure stops
+the run. One run per stack at a time: the pre-flight, like the seed,
+assumes no other run's specs are live on the stack.
+
 ### Accumulated dev-DB data and virtualization
 
 The Fleet swimlane uses `VirtualizedSwimLane`; off-screen rows
@@ -208,6 +241,9 @@ in the DOM.
 
 Remedies:
 
+- Run the suite on a stack of its own (a second dev stack, its own
+  port and Postgres): there the pre-flight above removes the private
+  runs of earlier runs at the start of every run.
 - `make dev-reset` deletes the dev database — the clean slate is
   what CI always sees, so this is the fastest way to make local
   behaviour match CI. It deletes every session in it, yours included.

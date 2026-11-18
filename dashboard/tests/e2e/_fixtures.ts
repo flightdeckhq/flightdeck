@@ -803,7 +803,6 @@ function privateEvent(
     session_id: sessionId,
     flavor: agent.flavor,
     event_type: eventType,
-    host: PRIVATE_HOST,
     framework: "claude-code",
     model: PRIVATE_MODEL,
     tokens_input: null,
@@ -819,14 +818,18 @@ function privateEvent(
     content: null,
     capture_prompts: true,
     timestamp: at.toISOString(),
-    agent_id: agent.agentId,
     agent_type: "coding",
-    agent_name: agent.agentName,
     client_type: "claude_code",
     user: "e2e-runner",
-    hostname: PRIVATE_HOST,
     ...(agent.role ? { agent_role: agent.role } : {}),
     ...extra,
+    // After ``extra``: the fields a caller passes (another client's
+    // identity, a call's model) never replace the agent or the host the
+    // pre-flight recognises a private run by (_private-fixtures.ts).
+    host: PRIVATE_HOST,
+    hostname: PRIVATE_HOST,
+    agent_id: agent.agentId,
+    agent_name: agent.agentName,
   };
   if (eventType === "session_start") {
     payload.sensor_version = "e2e-fixture/0.0.0";

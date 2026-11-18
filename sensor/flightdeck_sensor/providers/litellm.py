@@ -295,12 +295,25 @@ class LitellmProvider:
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def shown_usage_is_the_providers(self) -> bool:
+        """Whether usage litellm shows on its stream's chunks can be the
+        provider's. Not when the request went through the OpenAI SDK: the
+        OpenAI interceptor handed the provider's counts over on the call's
+        mark, and what litellm shows may be its own count of a stream whose
+        usage chunk it never saw. Not when the provider was not asked for
+        usage and sends none either: what litellm shows is then its own
+        count."""
+        mark = self.outer_call
+        return not (
+            getattr(mark, "sent_through_sdk", False) or getattr(mark, "usage_unasked", False)
+        )
+
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """Usage on litellm's trailing streaming chunk (present when the
-        request asked for ``stream_options.include_usage``, which the
-        litellm interceptor always does); same fields as a response."""
+        """Usage on litellm's trailing streaming chunk, when litellm shows
+        the provider's there (:meth:`shown_usage_is_the_providers`); same
+        fields as a response."""
         try:
-            if getattr(chunk, "usage", None) is None:
+            if getattr(chunk, "usage", None) is None or not self.shown_usage_is_the_providers():
                 return None
             result = self.extract_usage(chunk)
             return result if result.total > 0 else None
@@ -326,24 +339,34 @@ class LitellmProvider:
             return None
 
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
-        """The provider's usage for a stream that did not show it: the
-        counts the OpenAI interceptor read from the request litellm sent
-        through the OpenAI SDK (left on the call's mark), else those
-        litellm keeps on its stream (:func:`kept_usage`), else nothing."""
-        handed = getattr(self.outer_call, "usage", None)
-        if isinstance(handed, TokenUsage) and handed.total > 0:
-            return handed
+        """The provider's usage for a stream that did not show it. For a
+        request litellm sent through the OpenAI SDK, the counts the OpenAI
+        interceptor read from it (left on the call's mark) and nothing
+        else; for a provider not asked for usage, nothing; otherwise those
+        litellm keeps on its stream (:func:`kept_usage`), else nothing.
+        Nothing means the pre-call estimate."""
+        mark = self.outer_call
+        if getattr(mark, "sent_through_sdk", False):
+            handed = getattr(mark, "usage", None)
+            return handed if isinstance(handed, TokenUsage) and handed.total > 0 else None
+        if getattr(mark, "usage_unasked", False):
+            return None
         return self.kept_usage(stream)
 
     def _with_handed_usage(self, response: dict[str, Any]) -> dict[str, Any]:
-        """The stored response of a stream whose usage chunk litellm never
-        saw (the OpenAI interceptor asked for it at the SDK and took it
-        out): litellm's assembled response with, as its ``usage``, the
-        usage object the provider returned in that chunk, as the provider
-        returned it. What litellm assembled without the chunk (zeros, or
-        litellm 1.83's own count of the prompt) is not the provider's."""
-        returned = getattr(self.outer_call, "returned_usage", None)
-        if not isinstance(returned, dict):
+        """The stored response of a stream litellm sent through the OpenAI
+        SDK: litellm's assembled response, its ``usage`` the provider's
+        usage object (as the OpenAI interceptor kept it from the usage
+        chunk, with the fields the provider returned) where litellm's own
+        does not carry the provider's counts. That is where litellm never
+        saw the chunk (the interceptor asked for it and took it out) or did
+        not keep it (1.83 discards a usage chunk it does not show), and
+        assembled zeros or its own count of the prompt instead."""
+        mark = self.outer_call
+        returned = getattr(mark, "returned_usage", None)
+        if not getattr(mark, "sent_through_sdk", False) or not isinstance(returned, dict):
+            return response
+        if _same_counts(response.get("usage"), returned):
             return response
         return {**response, "usage": returned}
 
@@ -660,6 +683,17 @@ def _prompt_text(prompt: Any) -> str:
     return "" if prompt is None else str(prompt)
 
 
+_COUNT_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+
+def _same_counts(assembled: Any, returned: dict[str, Any]) -> bool:
+    """Whether litellm's assembled ``usage`` carries the counts the
+    provider returned."""
+    return isinstance(assembled, dict) and all(
+        assembled.get(name) == returned.get(name) for name in _COUNT_FIELDS
+    )
+
+
 def _larger(a: TokenUsage, b: TokenUsage) -> TokenUsage:
     """Field by field, the larger of two cumulative usage snapshots."""
     return TokenUsage(
@@ -909,8 +943,13 @@ class LitellmResponsesProvider(LitellmProvider):
             return TokenUsage(input_tokens=0, output_tokens=0)
 
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """The usage of the response a terminal event carries."""
+        """The usage of the response a terminal event carries, when it is
+        the provider's (:meth:`LitellmProvider.shown_usage_is_the_providers`:
+        a Responses stream litellm bridges through a chat request it sends
+        through the OpenAI SDK reports the counts handed over instead)."""
         try:
+            if not self.shown_usage_is_the_providers():
+                return None
             response = _field(chunk, "response")
             if response is None or _field(response, "usage") is None:
                 return None

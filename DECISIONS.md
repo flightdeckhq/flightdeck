@@ -1318,16 +1318,15 @@ checking at both moments (a WARN reported twice, one call refused twice).
 
 **Date:** 2026-11-18
 **Decision:** a litellm stream shows its caller exactly what litellm
-shows; the sensor never changes litellm's `stream_options` and never
-hides or rewrites a chunk. Through the OpenAI SDK it asks on litellm's
-final body and removes what that causes before litellm reads it (as the
-direct OpenAI guard does, `"usage": null` fields included); on litellm's
-OpenAI-shaped handlers it asks in the provider body only; elsewhere not
-at all. Counts: the provider's as asked, else what litellm shows, else
-litellm's kept record via a guarded fallback reader, else the estimate.
-**Why:** litellm decides what its caller sees (it asks OpenAI for usage
-itself), so hiding by the caller's options hid chunks litellm shows,
-changed `text_completion` chunks, and on litellm 1.104 made a sync stream
-read with `async for` raise.
+shows; the sensor never changes litellm's `stream_options` nor hides or
+rewrites a chunk. It asks on the body actually sent (`extra_body` merged
+over the arguments key by key): at the SDK on litellm's provider request
+only, removing what the ask causes before litellm reads it; in the body
+on litellm's OpenAI-shaped handlers; elsewhere not at all. An explicit
+`include_usage: false` is sent as `true`, its usage chunk removed before
+the caller's layer reads it. Counts: the provider's, or the estimate on
+a named list; never litellm's own.
+**Why:** litellm decides what its caller sees, so hiding by the caller's
+options hid chunks litellm shows and on 1.104 made `async for` raise.
 **Rejected alternative:** asking through litellm's `stream_options` and
 hiding what that adds by chunk shape; rewriting litellm's chunks.

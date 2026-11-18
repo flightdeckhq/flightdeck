@@ -96,16 +96,20 @@ either way of reading it is metered once. Its attributes are proxied.
 The caller reads exactly the chunks litellm shows without the sensor:
 the sensor never changes the ``stream_options`` litellm decides on and
 never hides or rewrites a chunk. It asks for usage only where the
-request is final. A request litellm sends through the OpenAI SDK is
-asked at the SDK (the OpenAI interceptor's litellm request hook), which
-takes out what its ask causes before litellm reads the stream and leaves
-the counts on the call's mark; a provider whose OpenAI-shaped request
+request is final, on the body actually sent (``extra_body`` merged over
+the arguments key by key, as the OpenAI SDK and litellm's handlers merge
+it), an explicit ``include_usage: false`` included. A request litellm
+sends through the OpenAI SDK is asked at the SDK (the OpenAI
+interceptor's litellm request hook), which takes out what its ask causes
+before litellm reads the stream and leaves the counts on the call's
+mark: the call's only counts. A provider whose OpenAI-shaped request
 litellm sends with its own handler is asked in the request body only
-(:func:`_asked_in_the_body`); every other provider is asked nothing. The
-counts are the usage litellm shows, else those handed over or those
-litellm keeps on its stream (``LitellmProvider.usage_from_finished_stream``),
-else the pre-call estimate. A Responses stream carries its usage on its
-terminal event.
+(:func:`_asked_in_the_body`); every other provider is asked nothing. Off
+the SDK the counts are the usage litellm shows when the provider was
+asked or reports usage itself, else those litellm keeps on its stream
+(``LitellmProvider.usage_from_finished_stream``), else the pre-call
+estimate; never a count litellm worked out itself. A Responses stream
+carries its usage on its terminal event.
 
 A stream whose request leaves at its first read (Gemini's routes, and
 ``text_completion`` on a legacy completions model;
@@ -141,6 +145,7 @@ import functools
 import inspect
 import logging
 import sys
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType
@@ -338,31 +343,38 @@ _OPENAI_SHAPED_OWN_HANDLER = frozenset(
 )
 
 
-def _stream_options_asked(kwargs: dict[str, Any]) -> bool:
-    """Whether the call's request asks for usage, in ``stream_options`` or
-    in the ``stream_options`` of its ``extra_body``."""
+def _asks_for_usage(options: Any) -> bool:
+    return isinstance(options, Mapping) and bool(options.get("include_usage"))
+
+
+def _sent_stream_options(kwargs: dict[str, Any]) -> Any:
+    """The ``stream_options`` of the body litellm's own handler sends:
+    ``extra_body`` is merged over litellm's body key by key, so its
+    ``stream_options``, when it has one, replaces the caller's argument
+    whole."""
     extra = kwargs.get("extra_body")
-    for options in (
-        kwargs.get("stream_options"),
-        extra.get("stream_options") if isinstance(extra, dict) else None,
-    ):
-        if isinstance(options, dict) and options.get("include_usage"):
-            return True
-    return False
+    if isinstance(extra, Mapping) and "stream_options" in extra:
+        return extra["stream_options"]
+    return kwargs.get("stream_options")
 
 
-def _asked_in_the_body(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _asked_in_the_body(kwargs: dict[str, Any], mark: base.OuterCall) -> dict[str, Any]:
     """The call as sent for a provider :data:`_OPENAI_SHAPED_OWN_HANDLER`
-    names whose caller did not ask for usage: ``include_usage`` added to
-    the ``stream_options`` of its ``extra_body`` (merged with the caller's
-    own), which litellm puts in the provider's request body and nowhere
-    else. litellm's own ``stream_options``, and so what its stream shows
-    the caller, are left as litellm decides them. Any other call is sent
-    as it is."""
-    if _stream_options_asked(kwargs):
-        return kwargs
-    extra = kwargs.get("extra_body")
-    if extra is not None and not isinstance(extra, dict):
+    names whose body (``extra_body`` merged over the caller's arguments,
+    as litellm merges it) does not ask for usage, an explicit
+    ``include_usage: false`` included: ``include_usage: true`` set in the
+    ``stream_options`` of its ``extra_body``, the other keys of the
+    ``stream_options`` the body would carry kept. litellm puts it in the
+    provider's request body and nowhere else, and litellm's own
+    ``stream_options``, which decide what its stream shows the caller, are
+    left as the caller passed them: litellm shows the usage chunk only to
+    a caller whose ``stream_options`` asks for usage. So the body is not
+    changed for a caller whose ``stream_options`` asks while its
+    ``extra_body`` refuses: litellm would show that caller the usage
+    chunk the ask causes. That provider is then asked nothing and sends
+    no usage, which the mark records (``usage_unasked``), so the call is
+    metered from the estimate. Any other call is sent as it is."""
+    if _asks_for_usage(_sent_stream_options(kwargs)):
         return kwargs
     try:
         _model, provider_name, _key, _base = _litellm_module.get_llm_provider(
@@ -374,14 +386,15 @@ def _asked_in_the_body(kwargs: dict[str, Any]) -> dict[str, Any]:
         return kwargs
     if provider_name not in _OPENAI_SHAPED_OWN_HANDLER:
         return kwargs
-    caller_options = kwargs.get("stream_options")
+    extra = kwargs.get("extra_body")
+    if _asks_for_usage(kwargs.get("stream_options")) or not (
+        extra is None or isinstance(extra, Mapping)
+    ):
+        mark.usage_unasked = True
+        return kwargs
+    sent = _sent_stream_options(kwargs)
     body = dict(extra or {})
-    body_options = body.get("stream_options")
-    body["stream_options"] = {
-        **(caller_options if isinstance(caller_options, dict) else {}),
-        **(body_options if isinstance(body_options, dict) else {}),
-        "include_usage": True,
-    }
+    body["stream_options"] = {**(sent if isinstance(sent, Mapping) else {}), "include_usage": True}
     return {**kwargs, "extra_body": body}
 
 
@@ -515,7 +528,7 @@ def _stream_call(
     is made with."""
     mark = base.OuterCall()
     provider.outer_call = mark
-    return mark, (_asked_in_the_body(kwargs) if ask else kwargs)
+    return mark, (_asked_in_the_body(kwargs, mark) if ask else kwargs)
 
 
 def _intercept_sync(

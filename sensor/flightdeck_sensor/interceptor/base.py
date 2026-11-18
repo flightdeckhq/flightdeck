@@ -152,16 +152,23 @@ class OuterCall:
     outer call's request, handed to the outer interceptor, which reports
     it in its own event (the SDK interceptor emits none).
     ``returned_usage`` is the provider's usage object as it returned it
-    (its JSON form), kept when the SDK interceptor took the usage chunk
-    out of the stream before the outer SDK could read it, so the outer
-    interceptor can store what the provider returned."""
+    (its JSON form), kept by the SDK interceptor from the request's usage
+    chunk, so the outer interceptor can store what the provider returned
+    where the outer SDK never saw that chunk or did not keep it.
+    ``sent_through_sdk`` is set when the SDK interceptor saw the outer
+    call's request: ``usage`` is then the call's only source of counts.
+    ``usage_unasked`` is set when the outer interceptor knows the
+    provider is not asked for usage and sends none, so any usage the
+    outer SDK shows is its own count, never the provider's."""
 
-    __slots__ = ("active", "returned_usage", "usage")
+    __slots__ = ("active", "returned_usage", "sent_through_sdk", "usage", "usage_unasked")
 
     def __init__(self) -> None:
         self.active = False
         self.usage: TokenUsage | None = None
         self.returned_usage: dict[str, Any] | None = None
+        self.sent_through_sdk = False
+        self.usage_unasked = False
 
 
 _OUTER_INTERCEPT: contextvars.ContextVar[OuterCall | None] = contextvars.ContextVar(

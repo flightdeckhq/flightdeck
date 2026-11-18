@@ -10,8 +10,7 @@ reports a request only when it is sent.
   read, which is the call: a blocking session refuses it with nothing
   sent, a session reports it, and with none it is litellm's own.
 
-Also here: the reader of the usage litellm keeps on its stream, and the
-OpenAI interceptor's hook acting only on litellm's own requests.
+Also here: the reader of the usage litellm keeps on its stream.
 """
 
 from __future__ import annotations
@@ -52,7 +51,6 @@ from ._stream_parity_fakes import (  # noqa: E402
     OpenAIServer,
     events_of,
     make_session,
-    openai_usage_body,
 )
 
 if TYPE_CHECKING:
@@ -295,53 +293,3 @@ def test_the_kept_usage_reader_never_raises() -> None:
 
     wrapper = _wrapper([_Raising()])
     assert LitellmProvider().kept_usage(wrapper) is None
-
-
-# ----- the OpenAI interceptor's hook acts on litellm's own requests only ----------
-
-
-@pytest.mark.usefixtures("patched")
-def test_a_request_made_under_a_litellm_call_by_other_code_is_left_alone() -> None:
-    """A litellm callback or guardrail calling the OpenAI SDK while a
-    litellm call is in flight sends its request as it wrote it."""
-    server = OpenAIServer()
-    client = openai.OpenAI(
-        api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(server))
-    )
-    with base.outer_intercept():
-        chunks = list(
-            client.chat.completions.create(model="gpt-4o-mini", messages=MESSAGES, stream=True)
-        )
-    assert "stream_options" not in server.bodies[-1]
-    assert all(getattr(c, "usage", None) is None for c in chunks)
-
-
-@pytest.mark.usefixtures("patched")
-def test_the_stored_response_carries_the_usage_object_the_provider_returned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On an OpenAI-compatible base litellm does not ask for usage, so the
-    OpenAI hook asks and takes the usage chunk out before litellm reads
-    the stream: litellm's assembled response has no provider usage, and
-    the stored response carries the usage object the provider returned,
-    as it returned it."""
-    session = make_session(capture_prompts=True)
-    monkeypatch.setattr(flightdeck_sensor, "_session", session)
-    server = OpenAIServer()
-    client = openai.OpenAI(
-        api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(server))
-    )
-    chunks = list(
-        litellm.completion(
-            model="openai/my-model",
-            api_base="https://llm.internal.example/v1",
-            api_key="test",
-            client=client,
-            messages=MESSAGES,
-            stream=True,
-        )
-    )
-    assert all(getattr(c, "usage", None) is None for c in chunks)
-    (post_call,) = events_of(session, "post_call")
-    returned = openai.types.CompletionUsage.model_validate(openai_usage_body())
-    assert post_call["content"]["response"]["usage"] == returned.model_dump(mode="json")

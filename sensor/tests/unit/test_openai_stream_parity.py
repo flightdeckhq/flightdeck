@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -136,3 +137,50 @@ def test_the_stored_streamed_response_carries_the_providers_usage(
     expected = openai.types.CompletionUsage.model_validate(openai_usage_body()).model_dump()
     assert response["usage"] == json.loads(json.dumps(expected))
     assert response["choices"][0]["message"]["content"] == "Hello"
+
+
+SECRET_PROMPT = "fd-direct-secret-prompt"
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("setting", list(STREAM_OPTIONS))
+def test_with_capture_off_a_streamed_call_stores_and_logs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    setting: str,
+    is_async: bool,
+) -> None:
+    """With capture off the call is metered from the provider's counts and
+    no event carries its prompt or response, nor does any sensor log line
+    (the SDK's own debug log is the SDK's)."""
+    session = make_session(capture_prompts=False)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    kwargs: dict[str, Any] = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": SECRET_PROMPT}],
+        "stream": True,
+    }
+    options = STREAM_OPTIONS[setting]
+    if options is not None:
+        kwargs["stream_options"] = dict(options)
+    patch_openai_classes(quiet=True)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="flightdeck_sensor"):
+            chunks = _read(OpenAIServer(), kwargs, is_async, with_block=False)
+    finally:
+        unpatch_openai_classes()
+
+    assert "".join(c.choices[0].delta.content or "" for c in chunks if c.choices) == "Hello"
+    (post_call,) = events_of(session, "post_call")
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == OPENAI_USAGE
+    assert post_call.get("content") is None
+    queue = session.event_queue
+    sent = json.dumps([c.args for c in queue.enqueue.call_args_list], default=repr)  # type: ignore[attr-defined]
+    logged = "\n".join(
+        f"{r.getMessage()} {r.exc_text or ''}"
+        for r in caplog.records
+        if r.name.startswith("flightdeck_sensor")
+    )
+    for text in (SECRET_PROMPT, "Hello"):
+        assert text not in sent
+        assert text not in logged

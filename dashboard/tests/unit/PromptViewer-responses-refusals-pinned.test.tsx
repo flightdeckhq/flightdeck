@@ -8,8 +8,9 @@ import type { EventContent } from "@/lib/types";
 // What renders for content without a refusal stays as it was before the
 // Responses output view and the refusal block existed, every byte of
 // the Prompts tab's markup: the expected markup was captured by
-// rendering these contents with main's PromptViewer at 9343288b (the
-// Rendered | JSON toggle; first captured at 3f1a7618, before it) into
+// rendering these contents with main's PromptViewer at e2541499 (the
+// Prompts tab's text-safe colours; first captured at 3f1a7618, then at
+// 9343288b for the Rendered | JSON toggle) into
 // fixtures/prompts-pinned-before-responses-refusals.json. Two entries
 // were captured again from this branch's viewer, on purpose:
 // openai_responses_request and litellm_responses_request, whose input

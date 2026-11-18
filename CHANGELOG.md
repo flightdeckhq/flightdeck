@@ -38,6 +38,26 @@ All notable changes to Flightdeck are documented here.
   signatures are one mark, their values in Raw. A prompt the safety
   filters blocked says so, and the response shows the token line every
   provider's does.
+- The Prompts tab shows an OpenAI Responses call's response in the
+  Responses API's terms instead of as the whole response object: its
+  output items in order, a message's text, a `function_call` as the
+  same call shows when it is passed back in the next request's input
+  (its name, `call_id` and arguments), a `reasoning` item's summary with
+  a mark when it carries encrypted content (never shown), a hosted
+  tool's call (`web_search_call`, `file_search_call`,
+  `code_interpreter_call`, `computer_call`, `image_generation_call`, the
+  MCP items, a custom tool's call) labelled by its type with the fields
+  that say what it did, an image generation's result as a placeholder
+  with its size, and any other item as its JSON. A response that did not
+  complete shows its `status` and reason, a failed one its `error`, and
+  the token line reads the Responses `usage`. This holds for the
+  sensor's Responses calls and litellm's, streamed ones included (the
+  stored response is the final one the stream carried).
+- The Prompts tab shows a model's refusal labelled `refusal`, apart from
+  its answer text: an OpenAI chat message's `refusal` field, in a
+  response (which showed the whole response object) and passed back in
+  a later request (which showed `(empty)`), as a Responses `refusal`
+  part already showed in a request, and that part in a response.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a

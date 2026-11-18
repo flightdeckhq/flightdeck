@@ -601,10 +601,7 @@ class OpenAIProvider:
                 return None
             count = len(data)
             first = data[0]
-            embedding = getattr(first, "embedding", None) or (
-                first.get("embedding") if isinstance(first, dict) else None
-            )
-            dimension = vector_dimension(embedding)
+            dimension = vector_dimension(_field(first, "embedding"))
             if dimension is None:
                 return None
             return {"count": count, "dimension": dimension}
@@ -854,9 +851,9 @@ class OpenAIProvider:
                     if data:
                         vectors = []
                         for entry in data:
-                            emb = getattr(entry, "embedding", None) or (
-                                entry.get("embedding") if isinstance(entry, dict) else None
-                            )
+                            # ``_field``, not ``or``: an empty string is a
+                            # vector as returned too.
+                            emb = _field(entry, "embedding")
                             if emb is not None:
                                 vectors.append(stored_vector(emb))
                 except Exception:

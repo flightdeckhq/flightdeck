@@ -14,8 +14,10 @@ respx; the vectors are float32 values, so the decoded dimension is exact.
 
 from __future__ import annotations
 
+import array
 import asyncio
 import base64
+import binascii
 import inspect
 import json
 import struct
@@ -238,6 +240,78 @@ def test_a_litellm_base64_call_reports_the_decoded_dimension_and_stores_the_stri
 )
 def test_vector_dimension(embedding: Any, dimension: int | None) -> None:
     assert vector_dimension(embedding) == dimension
+
+
+def _sdk_decoded(embedding: str) -> list[float] | None:
+    """What the OpenAI SDK makes of a base64 embedding without numpy
+    (``array.array("f", base64.b64decode(...))``, the same values
+    ``numpy.frombuffer(..., dtype="float32")`` gives), or ``None`` where
+    that raises."""
+    try:
+        return array.array("f", base64.b64decode(embedding)).tolist()
+    except (binascii.Error, ValueError):
+        return None
+
+
+_ENCODED = _encoded([0.5, 0.25, 0.125, 1.0])
+
+
+@pytest.mark.parametrize(
+    "embedding",
+    [
+        _ENCODED,
+        _ENCODED[:8] + "\n" + _ENCODED[8:],
+        " " + _ENCODED + " ",
+        _ENCODED + "!*",
+        _ENCODED.rstrip("="),
+        _ENCODED[:-2],
+        base64.b64encode(b"\x00" * 6).decode(),
+        "QUJD",
+        "",
+    ],
+    ids=[
+        "plain",
+        "a line break inside",
+        "spaces around",
+        "characters outside the alphabet",
+        "no padding needed",
+        "padding cut",
+        "partial float32",
+        "three bytes",
+        "empty",
+    ],
+)
+def test_the_dimension_is_what_the_sdks_own_decoding_gives(embedding: str) -> None:
+    """Decoded as the SDK decodes it: characters outside the base64
+    alphabet are skipped, bad padding raises; a string the SDK cannot
+    decode into whole float32 values has no dimension, and neither has one
+    that decodes to no values."""
+    decoded = _sdk_decoded(embedding)
+    assert vector_dimension(embedding) == (len(decoded) if decoded else None)
+
+
+def test_an_empty_vector_is_stored_as_returned(
+    router: respx.MockRouter, sensored: Callable[..., Session]
+) -> None:
+    """An empty string the provider returned for a vector is stored as
+    that string, not dropped; it has no dimension, so the event carries no
+    ``output_dimensions``."""
+    router.routes["embeddings"].mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "model": MODEL,
+                "data": [{"object": "embedding", "index": 0, "embedding": ""}],
+                "usage": {"prompt_tokens": 4, "total_tokens": 4},
+            },
+        )
+    )
+    session = sensored()
+    _openai(False, encoding_format="base64")
+    event = _embeddings_event(session)
+    assert event["content"]["embedding_output"] == [""]
+    assert "output_dimensions" not in event
 
 
 def test_google_genai_has_no_encoding_option() -> None:

@@ -192,7 +192,8 @@ def stored_response(message: Any, is_stream: Callable[[Any], bool]) -> Any:
 
 # Bytes per value of an embedding the API returns base64-encoded: the
 # vector's float32 values, little-endian, back to back (the OpenAI SDK
-# decodes it with ``numpy.frombuffer(..., dtype="float32")``).
+# decodes it with ``numpy.frombuffer(..., dtype="float32")``, or
+# ``array.array("f", ...)`` without numpy).
 _FLOAT32_BYTES = 4
 
 
@@ -200,16 +201,19 @@ def vector_dimension(embedding: Any) -> int | None:
     """The number of values in one returned embedding: the length of a
     list of floats, or for the base64 string a call with
     ``encoding_format="base64"`` gets, the number of float32 values it
-    decodes to. ``None`` when the string is not base64 of whole float32
-    values, or for any other shape. Never raises."""
+    decodes to, decoded as the OpenAI SDK decodes it (``b64decode``
+    without validation, so characters outside the alphabet are skipped
+    and bad padding raises). ``None`` where the SDK's own decoding would
+    raise (bad padding, a length that is not whole float32 values), for
+    no values at all, and for any other shape. Never raises."""
     if isinstance(embedding, str):
         try:
-            raw = base64.b64decode(embedding, validate=True)
+            raw = base64.b64decode(embedding)
         except (binascii.Error, ValueError):
             return None
-        if not raw or len(raw) % _FLOAT32_BYTES:
+        if len(raw) % _FLOAT32_BYTES:
             return None
-        return len(raw) // _FLOAT32_BYTES
+        return len(raw) // _FLOAT32_BYTES or None
     try:
         return len(embedding) if embedding else None
     except TypeError:

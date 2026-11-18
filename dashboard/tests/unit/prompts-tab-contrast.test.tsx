@@ -78,7 +78,10 @@ const bashResult = JSON.stringify({ stdout: "3 files\nok", stderr: "warning: dep
 
 /** Shapes the stored fixtures do not hold: every Anthropic block type
  *  the tab draws, an OpenAI chat's edge calls and replies, litellm, a
- *  legacy completion. */
+ *  legacy completion, every Responses output item kind with the
+ *  response's status and error lines (and reasoning passed back in the
+ *  input), a stream's empty snapshot, and a chat refusal beside text and
+ *  a call. */
 const BUILT: Case[] = [
   {
     name: "anthropic: every block type, a cache mark, a structured tool result",
@@ -172,6 +175,100 @@ const BUILT: Case[] = [
       response: { object: "text_completion", choices: [{ text: " Paris." }], usage: { prompt_tokens: 6, completion_tokens: 2 } },
     },
   },
+  {
+    name: "responses: every output item kind, a refusal part, a failed response, reasoning passed back",
+    content: {
+      ...base,
+      event_id: "c-responses-output",
+      provider: "openai",
+      model: "gpt-5-mini",
+      system_prompt: "Answer briefly.",
+      input: [
+        { role: "user", content: "Plot 17 * 23." },
+        { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Multiply, then plot." }], encrypted_content: "gAAAAB-in" },
+        { type: "reasoning", id: "rs_2", summary: [], encrypted_content: "gAAAAB-in-2" },
+      ],
+      response: {
+        object: "response",
+        status: "failed",
+        error: { code: "server_error", message: "The model failed to respond." },
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [
+          { type: "reasoning", id: "rs_3", summary: [], encrypted_content: "gAAAAB-out" },
+          { type: "reasoning", id: "rs_4", summary: [{ type: "summary_text", text: "The product is 391." }] },
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "391.", annotations: [] }, { type: "refusal", refusal: "I can't plot that." }] },
+          { type: "function_call", call_id: "call_1", name: "plot", arguments: '{"values":[391]}' },
+          { type: "function_call", call_id: "call_2", name: "noop", arguments: "" },
+          { type: "web_search_call", id: "ws_1", status: "failed", action: { type: "search", query: "391", sources: [{ type: "url", url: "https://example.com" }] } },
+          { type: "file_search_call", id: "fs_1", status: "completed", queries: ["policy"], results: [{ filename: "p.pdf", score: 0.9, text: "Refunds." }] },
+          {
+            type: "code_interpreter_call",
+            id: "ci_1",
+            status: "completed",
+            container_id: "cntr_1",
+            code: "print(17 * 23)\nplot()",
+            outputs: [{ type: "logs", logs: "391" }, { type: "image", url: "data:image/png;base64,iVBORw0KGgo" }, { type: "image", url: "https://files.example.com/p.png" }],
+          },
+          { type: "computer_call", id: "cu_1", call_id: "call_cu", status: "completed", action: { type: "click", button: "left", x: 1, y: 2 }, pending_safety_checks: [] },
+          { type: "local_shell_call", id: "ls_1", call_id: "call_ls", status: "completed", action: { type: "exec", command: ["ls"] } },
+          { type: "image_generation_call", id: "ig_1", status: "completed", output_format: "png", revised_prompt: "A plot", result: "iVBORw0KGgo".padEnd(400, "A") },
+          {
+            type: "image_generation_call",
+            id: "ig_2",
+            status: "completed",
+            output_format: "png",
+            result: `${"iVBORw0KGgo".padEnd(40, "A")}… [flightdeck: kept 40 of 3000000 bytes to fit the event size limit]`,
+          },
+          { type: "image_generation_call", id: "ig_3", status: "in_progress" },
+          { type: "mcp_call", id: "mc_1", server_label: "docs", name: "search", arguments: '{"q":"refunds"}', output: "Found 2 pages", error: "partial" },
+          { type: "mcp_list_tools", id: "ml_1", server_label: "docs", tools: [{ name: "search", input_schema: {} }] },
+          { type: "mcp_approval_request", id: "ma_1", server_label: "docs", name: "delete_page", arguments: '{"page":"x"}' },
+          { type: "custom_tool_call", id: "ct_1", call_id: "call_ct", name: "run_sql", input: "SELECT 1" },
+          { type: "shell_call", id: "sh_1", action: { commands: ["pwd"] } },
+          "a bare value",
+        ],
+        usage: { input_tokens: 40, output_tokens: 90 },
+      },
+    },
+  },
+  {
+    name: "responses: a stream left before its first item",
+    content: {
+      ...base,
+      event_id: "c-responses-empty",
+      provider: "litellm",
+      model: "gpt-4o-mini",
+      input: "Hi",
+      response: { object: "response", status: "in_progress", output: [], usage: null },
+    },
+  },
+  {
+    name: "openai chat: a refusal with text and a call, in a request and a response",
+    content: {
+      ...base,
+      event_id: "c-chat-refusal",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "user", content: "Explain how to get into a locked house." },
+        { role: "assistant", content: "Let me explain.", refusal: "I'm sorry, but I can't assist with that." },
+      ],
+      response: {
+        object: "chat.completion",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              refusal: "I'm sorry, but I can't assist with that.",
+              tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Paris"}' } }],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 52, completion_tokens: 14 },
+      },
+    },
+  },
   { name: "capture off", content: null },
 ];
 
@@ -187,7 +284,9 @@ const CASES: Case[] = [
         eventType: key === "embeddings" ? "embeddings" : "post_call",
       })),
     ),
-  ...(["otel-genai-content.json", "responses-content.json", "openai-tool-calls-content.json"] as const).flatMap((file) =>
+  ...(
+    ["otel-genai-content.json", "responses-content.json", "responses-output-content.json", "openai-tool-calls-content.json"] as const
+  ).flatMap((file) =>
     contentsOf(fixture(file)).map((content) => ({ name: `${file} ${content.event_id}`, content })),
   ),
   ...contentsOf(fixture("tool-content.json")).map((content) => ({

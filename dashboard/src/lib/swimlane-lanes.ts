@@ -433,6 +433,27 @@ export function maxConcurrentRuns(
   return best;
 }
 
+/**
+ * The runs at once a row's lane layout shows, which the Fleet row's runs
+ * chip and the agent drawer's "Open in swimlane" both print: the most
+ * runs that overlap at one instant in the window when the row splits
+ * into lanes (``concurrency``, at least 2 there), and null while it does
+ * not (one run at once or none).
+ */
+export function runsAtOnce(layout: Pick<RowLaneLayout, "laneCount" | "concurrency">): number | null {
+  return layout.laneCount > 1 ? Math.max(layout.concurrency, 2) : null;
+}
+
+/** The highest count the runs labels print; more read "9+", so the
+ *  Fleet row's runs chip fits its 88 px badge column. Their tooltips
+ *  and accessible names carry the full count. */
+export const RUNS_AT_ONCE_SHOWN_MAX = 9;
+
+/** ``count`` as the runs labels print it: "3", or "9+" past nine. */
+export function runsAtOnceShown(count: number): string {
+  return count > RUNS_AT_ONCE_SHOWN_MAX ? `${RUNS_AT_ONCE_SHOWN_MAX}+` : String(count);
+}
+
 /** One lane of the per-agent swimlane modal: a run and its segments in
  *  view. */
 export interface RunLane {

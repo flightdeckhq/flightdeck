@@ -52,6 +52,11 @@ EXPECTED_STREAMED_CALLS = 5
 # create and one through the raw view it built in the first session.
 KEPT_CALLS = 2
 HI = [{"role": "user", "content": "hi"}]
+# How many times the manager lifecycle check enters one manager: twice, so
+# the second entry is the SDK's second request.
+MANAGER_ENTRIES = 2
+# Milliseconds per second, for the durations print_result reports.
+MS_PER_S = 1000
 # The tool of the tool-use loop.
 WEATHER_TOOL = {
     "name": "get_weather",
@@ -502,6 +507,47 @@ def main() -> None:
             f"kept client: second session has {second_posts} post_calls (want {KEPT_CALLS}); "
             f"first session went from {first_posts} to {unchanged}"
         )
+
+    _run_manager_lifecycle()
+
+
+def _run_manager_lifecycle() -> None:
+    """In a session of its own: a messages.stream() manager made and never
+    entered sends nothing and reports nothing, and one entered twice sends
+    two requests and reports two pre_call / post_call pairs, as the SDK's
+    manager sends them."""
+    session_id = str(uuid.uuid4())
+    init_sensor(session_id, flavor="playground-direct-anthropic")
+    flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
+    print(f"[playground:01_direct_anthropic] manager lifecycle session_id={session_id}")
+    client = anthropic.Anthropic()
+    unused = client.messages.stream(model=MODEL, max_tokens=5, messages=HI)
+    del unused
+    t0 = time.monotonic()
+    twice = client.messages.stream(model=MODEL, max_tokens=5, messages=HI)
+    texts = []
+    for _ in range(MANAGER_ENTRIES):
+        with twice as stream:
+            texts.append("".join(stream.text_stream))
+    print_result(
+        "a messages.stream() manager entered twice reads twice",
+        len(texts) == MANAGER_ENTRIES and all(texts),
+        int((time.monotonic() - t0) * MS_PER_S),
+        f"{len(texts)} replies",
+    )
+    flightdeck_sensor.teardown()
+    events = fetch_events_for_session(session_id, expect_event_types=["post_call", "session_end"])
+    kinds = [e.get("event_type") for e in events]
+    pre_calls, post_calls = kinds.count("pre_call"), kinds.count("post_call")
+    ok = pre_calls == MANAGER_ENTRIES and post_calls == MANAGER_ENTRIES
+    print_result(
+        "a manager never entered lands no event; one entered twice lands two pairs",
+        ok,
+        0,
+        f"pre_call={pre_calls} post_call={post_calls} (want {MANAGER_ENTRIES} each)",
+    )
+    if not ok:
+        raise AssertionError(f"manager lifecycle events: {kinds!r}")
 
 
 def _post_calls_once_ended(session_id: str) -> int:

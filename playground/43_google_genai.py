@@ -10,7 +10,11 @@ automatic function calling included. Checked through the API: every call
 landed with ``provider=google``, the Gemini API platform, tokens and a
 canonical model; the thinking call's reasoning tokens; the function call
 as a ``tool_call``; the stored content in Gemini's own terms; and the
-block raised before any request.
+block raised before any request. The counts the model decides (how many
+rounds of automatic function calling it takes, which functions it asks
+for) are read from what it did, never fixed in the script; every call
+the sensor saw is paired (one ``pre_call``, one outcome), and each
+``post_call``'s tokens are what its stored response reports.
 
 The thinking call tries ``THINKING_MODELS`` in order and uses the first
 that answers: a model the API reports as overloaded (503) or out of
@@ -60,13 +64,16 @@ MODEL = "gemini-3.1-flash-lite"
 # prices both on the Gemini API.
 THINKING_MODELS = ("gemini-3.5-flash", "gemini-3.1-flash-lite")
 # The statuses that mean a model is busy or out of quota for now, not
-# that the request is wrong: the next model is tried.
-UNAVAILABLE_STATUSES = frozenset({429, 503})
+# that the request is wrong: the next model is tried. A 504
+# (DEADLINE_EXCEEDED) is the API giving up within the deadline the SDK
+# sends from the request's timeout: the model did not answer in time.
+UNAVAILABLE_STATUSES = frozenset({429, 503, 504})
 # How long one thinking attempt may take before the next model is tried:
-# a thinking call answers in seconds when the model is not busy, and a
-# busy one has been seen to take minutes. Two attempts stay inside
-# run_all.py's 180 s budget for this script.
-THINKING_TIMEOUT_MS = 45_000
+# a thinking call answers in seconds when the model is not busy, a busy
+# one has been seen to take 37 s to answer and minutes to fail, and both
+# models have answered 504 at a 45 s deadline. Two attempts and the rest
+# of the script (about 30 s) stay inside run_all.py's 180 s budget.
+THINKING_TIMEOUT_MS = 60_000
 EMBED_MODEL = "gemini-embedding-001"
 # Enough for a word or a sentence; the calls stay cheap.
 MAX_TOKENS = 40
@@ -74,9 +81,18 @@ MAX_TOKENS = 40
 THINKING_MAX_TOKENS = 600
 THINKING_BUDGET = 256
 SYSTEM = "Answer in at most five words."
-# The calls this script expects to land: generate, stream, async, async
-# stream, two chat turns, two automatic-function-calling rounds, thinking.
-EXPECTED_POST_CALLS = 9
+# The requests the script itself makes, one each whatever the model
+# answers: generate, stream, async, async stream and two chat turns. The
+# automatic-function-calling call adds one request per round the model
+# takes (see _afc_rounds), and the thinking call one more.
+FIXED_REQUESTS = 6
+# The two streamed requests (stream, async stream).
+STREAMED_REQUESTS = 2
+# The policy block raises before its request: a pre_call, no request.
+BLOCKED_CALLS = 1
+# The least a function-calling round trip takes: the round that asks for
+# the function and the round that answers with its result.
+MIN_AFC_ROUNDS = 2
 # Time for the session's events to land through the stack.
 LANDED_S = 30.0
 POLL_S = 0.5
@@ -104,6 +120,32 @@ def _ran(label: str, ok: bool, t0: float, detail: Any = "") -> None:
     print_result(label, ok, _ms(t0), str(detail))
     if not ok:
         raise AssertionError(f"{label}: {detail}")
+
+
+def _afc_rounds(response: Any) -> tuple[int, list[str]]:
+    """The requests an automatic-function-calling call made and the
+    functions the model asked for, from the call's own record: its history
+    holds every model turn that asked for functions (each one request),
+    and the response is the last request's answer (which asks for more
+    only when the SDK stopped at its call limit)."""
+    history = response.automatic_function_calling_history or []
+    turns = [c for c in history if c.role == "model"]
+    asked = [p.function_call.name for c in turns for p in (c.parts or []) if p.function_call]
+    asked += [c.name for c in response.function_calls or []]
+    return len(turns) + 1, asked
+
+
+def _usage_tokens(content: dict[str, Any]) -> tuple[int, int] | None:
+    """The input and output tokens a stored response body reports, as the
+    sensor counts them: the prompt with the tool-use prompt, the
+    candidates with the thoughts."""
+    usage = (content.get("response") or {}).get("usageMetadata")
+    if not isinstance(usage, dict):
+        return None
+    return (
+        usage.get("promptTokenCount", 0) + usage.get("toolUsePromptTokenCount", 0),
+        usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
+    )
 
 
 def _think(client: genai.Client) -> tuple[str, Any, list[str]]:
@@ -201,8 +243,13 @@ def main() -> None:
             contents="What is the weather in Paris? Use the tool.",
             config=types.GenerateContentConfig(tools=[get_weather], max_output_tokens=MAX_TOKENS),
         )
-        rounds = len(weather.automatic_function_calling_history or [])
-        _ran("automatic function calling", rounds >= 3, t0, repr(weather.text))
+        afc_rounds, asked = _afc_rounds(weather)
+        _ran(
+            "automatic function calling",
+            afc_rounds >= MIN_AFC_ROUNDS and "get_weather" in asked,
+            t0,
+            f"{afc_rounds} rounds, asked for {asked}: {weather.text!r}",
+        )
 
         t0 = time.monotonic()
         thinking_model, thought, skipped = _think(client)
@@ -240,10 +287,14 @@ def main() -> None:
     finally:
         flightdeck_sensor.teardown()
 
-    post_calls = _events(session_id, "post_call", EXPECTED_POST_CALLS)
+    # One post_call per request the provider billed: the script's own,
+    # each automatic-function-calling round the model took, and the
+    # thinking call on the model that answered.
+    billed = FIXED_REQUESTS + afc_rounds + 1
+    post_calls = _events(session_id, "post_call", billed)
     _check(
-        f"{EXPECTED_POST_CALLS} post_calls landed (each automatic-function-calling round one)",
-        len(post_calls) == EXPECTED_POST_CALLS,
+        f"one post_call per billed request ({billed}, {afc_rounds} function-calling rounds)",
+        len(post_calls) == billed,
         [(p.get("model"), p.get("tokens_total")) for p in post_calls],
     )
     assert_token_cost_fields(session_id, provider="google", platform="gemini-api")
@@ -268,22 +319,62 @@ def main() -> None:
             ),
             errors_landed,
         )
-    thinking = [
-        p
-        for p in post_calls
-        if p.get("model_requested") == thinking_model and (p.get("tokens_reasoning") or 0) > 0
+    # Every call the sensor saw opened with a pre_call and closed with one
+    # outcome: a post_call, the embeddings event, an llm_error or the block.
+    # The session's end lands after every call's events (teardown sends it
+    # last).
+    kinds = [
+        e.get("event_type")
+        for e in fetch_events_for_session(
+            session_id,
+            expect_event_types=["post_call", "embeddings", "policy_block", "session_end"],
+            timeout_s=LANDED_S,
+        )
     ]
+    outcomes = sum(kinds.count(k) for k in ("post_call", "embeddings", "llm_error", "policy_block"))
+    _check(
+        "one pre_call per call, each closed by one outcome",
+        kinds.count("pre_call") == outcomes and kinds.count("policy_block") == BLOCKED_CALLS,
+        {k: kinds.count(k) for k in sorted({str(k) for k in kinds})},
+    )
+    # Each post_call's tokens are what its stored response body reports,
+    # so the session's total is the responses' total.
+    contents = {p["id"]: fetch_event_content(p["id"]) for p in post_calls}
+    reported = {pid: _usage_tokens(c) for pid, c in contents.items()}
+    mismatched = [
+        (p.get("model"), p.get("tokens_input"), p.get("tokens_output"), reported[p["id"]])
+        for p in post_calls
+        if reported[p["id"]] != (p.get("tokens_input"), p.get("tokens_output"))
+    ]
+    total = sum(p.get("tokens_total") or 0 for p in post_calls)
+    _check(
+        "each post_call's tokens are what its response reported",
+        not mismatched and total == sum(sum(r) for r in reported.values() if r),
+        (mismatched, total),
+    )
+
+    def by_response(response: Any) -> dict[str, Any] | None:
+        """The post_call whose stored response is ``response``."""
+        for p in post_calls:
+            stored = contents[p["id"]].get("response") or {}
+            if stored.get("responseId") == response.response_id:
+                return p
+        return None
+
+    thinking = by_response(thought)
+    reasoning = usage.thoughts_token_count if usage else None
     _check(
         "the thinking call reports its thoughts as reasoning tokens",
-        len(thinking) == 1
-        and (thinking[0].get("tokens_reasoning") or 0) > 0
-        and thinking[0]["tokens_output"] >= thinking[0]["tokens_reasoning"],
-        thinking,
+        thinking is not None
+        and bool(reasoning)
+        and thinking.get("tokens_reasoning") == reasoning
+        and thinking["tokens_output"] >= reasoning,
+        (reasoning, thinking),
     )
     streamed = [p for p in post_calls if (p.get("payload") or {}).get("streaming")]
     _check(
         "the two streams report a completed outcome and a time to first token",
-        len(streamed) == 2
+        len(streamed) == STREAMED_REQUESTS
         and all(
             p["payload"]["streaming"]["final_outcome"] == "completed"
             and p["payload"]["streaming"]["ttft_ms"] is not None
@@ -291,11 +382,11 @@ def main() -> None:
         ),
         [p.get("payload") for p in streamed],
     )
-    tools = _events(session_id, "tool_call", 1)
+    tools = _events(session_id, "tool_call", len(asked))
     _check(
-        "the model's function call is a tool_call",
-        [t.get("tool_name") for t in tools] == ["get_weather"],
-        tools,
+        "one tool_call per function the model asked for",
+        sorted(t.get("tool_name") or "" for t in tools) == sorted(asked),
+        ([t.get("tool_name") for t in tools], asked),
     )
     embeddings = _events(session_id, "embeddings", 1)
     _check(
@@ -305,7 +396,8 @@ def main() -> None:
     )
     # The request body the SDK built from contents="Say hi." and a string
     # system instruction, and the response body as received.
-    first = fetch_event_content(post_calls[0]["id"])
+    hi = by_response(r)
+    first = contents[hi["id"]] if hi else {}
     candidates = (first.get("response") or {}).get("candidates") or [{}]
     _check(
         "the stored content is the request and response as sent and received",

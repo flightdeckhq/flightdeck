@@ -84,11 +84,11 @@ All notable changes to Flightdeck are documented here.
   `SequentialAgent`, `ParallelAgent` or `LoopAgent` runs, an
   `AgentTool`'s agent nested under the agent that called it), with an
   `agent_handoff` signal for each transfer. The root agent is the
-  sensor's session, and the model calls stay on it, metered on `LiteLlm`
-  and ADK's Anthropic models. Gemini calls are not metered yet
-  ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); their
-  agents still appear as child sessions. Call `patch()` before building
-  runners and before the first `LiteLlm` call.
+  sensor's session, and the model calls stay on it, metered on ADK's
+  default `Gemini` model (through the google-genai patch; not in its
+  interactions mode, `use_interactions_api`), on `LiteLlm` and on ADK's
+  Anthropic models. Call `patch()` before building runners and before
+  the first `LiteLlm` call.
 
 ### Fixed
 

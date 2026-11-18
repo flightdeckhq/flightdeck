@@ -21,12 +21,13 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "../../src/lib/constants";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
 const AUTH = { Authorization: "Bearer tok_dev" };
 const INGEST = `${INGEST_URL}/v1`;
 const API = `${API_URL}/v1`;
-const HOST = "e2e-t150-host";
+const HOST = PRIVATE_FIXTURE_HOSTS.t150;
 
 /** How long the setup waits for the worker to store a run's events. */
 const WORKER_WAIT_MS = 15_000;

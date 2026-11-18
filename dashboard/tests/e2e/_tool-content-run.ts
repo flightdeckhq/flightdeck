@@ -19,12 +19,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL, POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 
 export const AUTH = { Authorization: "Bearer tok_dev" };
 const INGEST = `${INGEST_URL}/v1`;
 export const API = `${API_URL}/v1`;
-const HOST = "e2e-tool-content-host";
+/** The host these runs send: the pre-flight's marker for them
+ *  (_private-fixtures.ts). */
+const HOST = PRIVATE_FIXTURE_HOSTS.toolContentRun;
 
 /** How long the setup waits for the worker to store a run's events. */
 const WORKER_WAIT_MS = 15_000;

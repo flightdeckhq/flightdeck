@@ -29,8 +29,9 @@ import {
   type Run,
 } from "./_tool-content-run";
 import { openAgentDrawerFromRow } from "./_fixtures";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 
-const HOST = "e2e-t164-host";
+const HOST = PRIVATE_FIXTURE_HOSTS.t164;
 /** How long the Agents row may take to show the run's agent. */
 const AGENT_ROW_WAIT_MS = 15_000;
 

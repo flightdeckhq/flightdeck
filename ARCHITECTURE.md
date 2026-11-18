@@ -1622,6 +1622,24 @@ none of this yields the provider's counts:
   not show.
 
 A stream left before its usage arrives reports the estimate.
+
+The sensor reports a litellm request when it is sent. Most litellm
+streams send their request at the call; two send it at their first read:
+Gemini's routes (litellm's `CustomStreamWrapper` makes its call then) and
+`text_completion` on a legacy completions model (litellm's generator
+sends it when started). For such a stream the policy check still runs at
+the call, before anything can be sent, so a BLOCK refuses the call
+there; its `pre_call` and `post_call` are reported when the request
+leaves, at the first read, and a stream never read reports nothing. One
+made while no session is active finds its session at that first read,
+which is the call: a blocking session refuses it with nothing sent, a
+session reports it, and with none it is litellm's own. The request
+leaves only through litellm's iteration, which goes through the guard
+(or, for a stream made with no session, the sensor's view of it), so
+neither path sends it unpoliced. Every read of a litellm stream runs
+under the litellm call's mark, so the request a first read sends through
+the OpenAI SDK is the call's, and its usage is asked for and handed over
+as at the call.
 `responses(stream=True)` returns the guard around litellm's
 Responses streaming iterator; the terminal event (`response.completed` /
 `.incomplete` / `.failed`) carries the whole response and its usage, so

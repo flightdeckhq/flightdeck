@@ -125,6 +125,27 @@
      would lag the toggle. */
   --topology-pill-fg: color-mix(in srgb, var(--accent) 55%, white);
 
+  /* Text-safe colours: the shade of a hue that reads at 4.6:1 or better
+     as text (WCAG AA asks 4.5:1) on every surface it is drawn on here:
+     --surface, --bg-elevated, --bg, a Prompts-list row hovered
+     (--surface-hover) or focused (--accent-glow over --surface), and a
+     badge's tint (15% of the badge's hue over --surface), each
+     composite taken both exactly and as the 8-bit colour a browser
+     draws. Used only for text; badges' tints and borders, charts,
+     swimlanes and icons keep the hue tokens above. Where the hue itself
+     reaches 4.6:1 it is aliased, so both themes define the same set.
+     Each comment names the text and its closest pair, the ratio cut
+     (not rounded) to three decimals.
+     tests/unit/prompts-tab-contrast.test.tsx checks every pair the
+     Prompts tab uses. */
+  --muted-text: #898989; /* labels, counts, notes, ids, timestamps; closest pair: a system badge's tint, 4.641:1 */
+  --accent-text: #9b69f1; /* the assistant and model badges, the embeddings toggle; closest pair: the assistant badge's tint, 4.604:1 */
+  --event-llm-text: #787bf3; /* the user badge, JSON keys; closest pair: the user badge's 8-bit tint, 4.608:1 */
+  --event-tool-text: var(--event-tool); /* tool names, tool badges; closest pair: the tool badge's 8-bit tint, 6.218:1 */
+  --danger-text: var(--danger); /* the stderr label; closest pair: --bg-elevated, 4.624:1 */
+  --success-text: var(--success); /* JSON strings; closest pair: --bg-elevated, 7.638:1 */
+  --warning-text: var(--warning); /* JSON numbers; closest pair: --bg-elevated, 9.075:1 */
+
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "GeistMono", ui-monospace, monospace;
@@ -146,7 +167,9 @@
   /* Text */
   --text: #09090b;
   --text-muted: #a1a1aa;
-  --text-secondary: #71717a;
+  /* Secondary text, on every page; reads at AA on each light surface:
+     --surface-hover 4.564:1, --bg-elevated 4.729:1, --surface 5.198:1. */
+  --text-secondary: #6c6c75;
   --text-disabled: #d4d4d8;
 
   /* Accent */
@@ -239,6 +262,15 @@
      sufficient contrast on the white surface so no lightening
      is needed. */
   --topology-pill-fg: var(--accent);
+
+  /* Text-safe colours: see the dark theme's block. */
+  --muted-text: #6b6b74; /* labels, counts, notes, ids, timestamps; a step darker than --text-secondary, for a hovered Prompts-list row; closest pair: --surface-hover, 4.632:1 */
+  --accent-text: #7b38ed; /* the assistant and model badges, the embeddings toggle; closest pair: the assistant badge's 8-bit tint, 4.601:1 */
+  --event-llm-text: #4e52ef; /* the user badge, JSON keys; closest pair: the user badge's tint, 4.602:1 */
+  --event-tool-text: #06728c; /* tool names, tool badges; closest pair: the tool badge's 8-bit tint, 4.614:1 */
+  --danger-text: #d62323; /* the stderr label; closest pair: --bg-elevated, 4.632:1 */
+  --success-text: #117f3a; /* JSON strings; closest pair: --bg-elevated, 4.636:1 */
+  --warning-text: #956503; /* JSON numbers; closest pair: --bg-elevated, 4.614:1 */
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

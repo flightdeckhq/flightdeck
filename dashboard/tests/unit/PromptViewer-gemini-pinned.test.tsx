@@ -10,7 +10,8 @@ import type { EventContent } from "@/lib/types";
 // markup: fixtures/prompts-pinned-before-gemini.json holds these
 // contents' markup from the PromptViewer of the commit before the view
 // (feat/sensor-gemini 3d1c4ab9, whose PromptViewer is main's ad1b8b97),
-// with each box's toggle naming its views Rendered and JSON. Set
+// with each box's toggle naming its views Rendered and JSON and the text
+// in its text-safe colours (themes.css's -text tokens). Set
 // CAPTURE_PINNED_MARKUP=1 to write that file again from the component in
 // place, only for a change meant to alter this markup, and check its diff.
 

@@ -10,7 +10,14 @@ import type { EventContent } from "@/lib/types";
 // the Prompts tab's markup: the expected markup was captured by
 // rendering these contents with main's PromptViewer at 9343288b (the
 // Rendered | JSON toggle; first captured at 3f1a7618, before it) into
-// fixtures/prompts-pinned-before-responses-refusals.json. A Responses
+// fixtures/prompts-pinned-before-responses-refusals.json. Two entries
+// were captured again from this branch's viewer, on purpose:
+// openai_responses_request and litellm_responses_request, whose input
+// passes back two reasoning items. A reasoning item in a request now has
+// the view a response's has (its summary, else "(no summary)", and a
+// mark in place of its encrypted content), so rs_1 gains that view's
+// wrapper and rs_2 shows "(no summary)" and the mark instead of its
+// JSON; every other byte of those two, and the other ten, are main's. A Responses
 // call's response box is the one thing that changes for it, so its
 // request side is pinned with that box taken out. Set
 // CAPTURE_PINNED_MARKUP=1 to write the file again from the component in

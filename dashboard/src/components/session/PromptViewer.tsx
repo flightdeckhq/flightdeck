@@ -1006,8 +1006,10 @@ function ResponsesInputItem({ item, index, reply }: { item: unknown; index: numb
     body = <ResponsesFunctionCall item={obj} />;
   } else if (type === "function_call_output") {
     body = <ResponsesFunctionCallOutput item={obj} reply={reply} />;
-  } else if (type === "reasoning" && Array.isArray(obj.summary) && obj.summary.length > 0) {
-    body = <ResponsesReasoning summary={obj.summary} />;
+  } else if (type === "reasoning") {
+    // The same view a response's reasoning item has: a reasoning item
+    // passed back carries the same encrypted content.
+    body = <ResponsesReasoningItem item={obj} labelled={false} />;
   } else {
     body = <JsonBox data={obj} />;
   }
@@ -1246,10 +1248,20 @@ function actionFields(action: Record<string, unknown>): Array<[string, unknown]>
   ];
 }
 
+/** A code interpreter output as its call shows it: an ``image``
+ *  output's ``url`` by the request side's rule for a part's reference (a
+ *  data URL is named, never printed), any other output (its ``logs``) as
+ *  stored. */
+function codeInterpreterOutput(output: unknown): unknown {
+  if (!isPlainObject(output) || output.type !== "image" || typeof output.url !== "string") return output;
+  return { ...output, url: partReference(output.url) };
+}
+
 /** The fields a hosted tool's call shows, by its ``type``: those its
  *  type lists (an ``action``'s own fields in its place, ``arguments``
  *  parsed as a function call's are, an MCP tool list as its tools'
- *  names), skipping the ones not stored. */
+ *  names, a code interpreter's image outputs by reference), skipping the
+ *  ones not stored. */
 function responsesToolFields(type: string, item: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   for (const name of RESPONSES_TOOL_ITEM_FIELDS[type] ?? []) {
@@ -1259,6 +1271,8 @@ function responsesToolFields(type: string, item: Record<string, unknown>): Recor
       for (const [key, inner] of actionFields(value)) fields[key] = inner;
     } else if (name === "arguments") {
       fields[name] = functionArguments(value);
+    } else if (name === "outputs" && Array.isArray(value)) {
+      fields[name] = value.map(codeInterpreterOutput);
     } else if (name === "tools" && Array.isArray(value)) {
       fields[name] = value.map((tool) => (isPlainObject(tool) && typeof tool.name === "string" ? tool.name : tool));
     } else {
@@ -1311,17 +1325,20 @@ function ResponsesOutputItem({ item, index }: { item: unknown; index: number }) 
   );
 }
 
-/** A reasoning item: labelled ``reasoning``, its summary text (else its
- *  reasoning text, else NO_SUMMARY), and the mark for its encrypted
- *  content when it carries one. */
-function ResponsesReasoningItem({ item }: { item: Record<string, unknown> }) {
+/** A reasoning item, in a response's output or passed back in a
+ *  request's input: its summary text (else its reasoning text, else
+ *  NO_SUMMARY), and the mark for its encrypted content when it carries
+ *  one; the encrypted content is never printed in the Rendered view.
+ *  ``labelled`` puts ``reasoning`` over it, as a response's items are
+ *  labelled; an input item's box already carries its type's badge. */
+function ResponsesReasoningItem({ item, labelled = true }: { item: Record<string, unknown>; labelled?: boolean }) {
   const summary = Array.isArray(item.summary) ? item.summary : [];
   const text = Array.isArray(item.content) ? item.content : [];
   const shown = summary.length > 0 ? summary : text;
   const encrypted = typeof item.encrypted_content === "string" && item.encrypted_content.length > 0;
   return (
-    <div data-testid="responses-output-reasoning">
-      <BlockLabel>reasoning</BlockLabel>
+    <div data-testid="responses-reasoning-item">
+      {labelled && <BlockLabel>reasoning</BlockLabel>}
       {shown.length > 0 ? <ResponsesReasoning summary={shown} /> : <Muted>{NO_SUMMARY}</Muted>}
       {encrypted && <JsonOnlyMark testId="responses-encrypted-reasoning" text={ENCRYPTED_REASONING_MARK} />}
     </div>
@@ -1331,12 +1348,15 @@ function ResponsesReasoningItem({ item }: { item: Record<string, unknown> }) {
 /** A hosted tool's call: labelled by its ``type`` (and its ``status``
  *  when it did not complete), then the fields that say what it did, in
  *  the box a call shows in; an image generation's result as a
- *  placeholder naming its format and size. */
+ *  placeholder naming its format and size, and saying so when the
+ *  sensor cut the bytes to fit the event size limit (as a Gemini inline
+ *  payload's placeholder does). */
 function ResponsesToolItem({ type, item }: { type: string; item: Record<string, unknown> }) {
   const fields = responsesToolFields(type, item);
   const status = typeof item.status === "string" && item.status !== RESPONSES_STATUS_COMPLETED ? item.status : null;
   const image = type === IMAGE_GENERATION_CALL && typeof item.result === "string" && item.result.length > 0 ? item.result : null;
   const format = typeof item.output_format === "string" && item.output_format ? item.output_format : null;
+  const size = image !== null ? inlineDataSize(image) : null;
   return (
     <div data-testid="responses-tool-item">
       <BlockLabel>
@@ -1345,9 +1365,10 @@ function ResponsesToolItem({ type, item }: { type: string; item: Record<string, 
       </BlockLabel>
       <div className="space-y-2 rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
         {Object.keys(fields).length > 0 ? <KeyValueList data={fields} /> : image === null && <Muted>{NO_DETAILS}</Muted>}
-        {image !== null && (
+        {size !== null && (
           <BytesPlaceholder testId="responses-image-result">
-            [image{format ? `/${format}` : ""} · {formatBytes(inlineDataSize(image).bytes)}]
+            [image{format ? `/${format}` : ""} · {formatBytes(size.bytes)}
+            {size.cut ? ` · ${CUT_TO_FIT}` : ""}]
           </BytesPlaceholder>
         )}
       </div>

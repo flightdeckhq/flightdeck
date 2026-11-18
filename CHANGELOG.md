@@ -49,12 +49,15 @@ All notable changes to Flightdeck are documented here.
   output items in order, a message's text, a `function_call` as the
   same call shows when it is passed back in the next request's input
   (its name, `call_id` and arguments), a `reasoning` item's summary with
-  a mark when it carries encrypted content (never shown), a hosted
-  tool's call (`web_search_call`, `file_search_call`,
+  a mark when it carries encrypted content (never shown, in a response
+  or when the item is passed back in a request, which showed it as
+  JSON), a hosted tool's call (`web_search_call`, `file_search_call`,
   `code_interpreter_call`, `computer_call`, `image_generation_call`, the
   MCP items, a custom tool's call) labelled by its type with the fields
-  that say what it did, an image generation's result as a placeholder
-  with its size, and any other item as its JSON. A response that did not
+  that say what it did (a code interpreter's image output as `data URL`
+  rather than its bytes), an image generation's result as a placeholder
+  with its size (saying so when the sensor cut it to fit the event size
+  limit), and any other item as its JSON. A response that did not
   complete shows its `status` and reason, a failed one its `error`, and
   the token line reads the Responses `usage`. This holds for the
   sensor's Responses calls and litellm's, streamed ones included (the

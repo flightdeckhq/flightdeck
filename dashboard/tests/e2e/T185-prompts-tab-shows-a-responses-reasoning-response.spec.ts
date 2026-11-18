@@ -98,7 +98,7 @@ test.describe("T185 — the Prompts tab shows a Responses reasoning response", (
     await drawer.getByTestId("detail-tab-prompts").click();
 
     const response = drawer.getByTestId("prompt-box-response");
-    const reasoning = response.getByTestId("responses-output-item-0").getByTestId("responses-output-reasoning");
+    const reasoning = response.getByTestId("responses-output-item-0").getByTestId("responses-reasoning-item");
     await expect(reasoning).toContainText("reasoning");
     await expect(reasoning.getByTestId("responses-reasoning")).toContainText(SUMMARY);
     await expect(reasoning.getByTestId("responses-encrypted-reasoning")).toHaveText(

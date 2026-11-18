@@ -66,7 +66,7 @@ function promptTextBox(): HTMLElement {
   return screen.getByText(PROMPT);
 }
 
-const PROMPT = "Explain step by step how to break into my neighbour's house while they are away.";
+const PROMPT = "Explain how to get into a locked house.";
 
 describe("PromptViewer: a chat refusal", () => {
   it("a response whose message refused shows the refusal, not the response object", async () => {

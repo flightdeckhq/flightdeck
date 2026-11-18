@@ -92,7 +92,7 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
     const content = fixture("reasoning_tool_round_1");
     const encrypted = ((content.response as { output: { encrypted_content: string }[] }).output[0]!).encrypted_content;
     await renderContent(content);
-    const reasoning = within(outputItem(0)).getByTestId("responses-output-reasoning");
+    const reasoning = within(outputItem(0)).getByTestId("responses-reasoning-item");
     expect(reasoning).toHaveTextContent("reasoning");
     expect(reasoning).toHaveTextContent("(no summary)");
     expect(within(reasoning).getByTestId("responses-encrypted-reasoning")).toHaveTextContent(
@@ -105,7 +105,7 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
 
   it("a reasoning item shows its summary text, then the answer", async () => {
     await renderContent(fixture("reasoning_summary_encrypted"));
-    const reasoning = within(outputItem(0)).getByTestId("responses-output-reasoning");
+    const reasoning = within(outputItem(0)).getByTestId("responses-reasoning-item");
     expect(within(reasoning).getByTestId("responses-reasoning")).toHaveTextContent("Determining if 391 is prime");
     expect(within(reasoning).getByTestId("responses-encrypted-reasoning")).toBeInTheDocument();
     expect(outputItem(1)).toHaveAttribute("data-item-type", "message");
@@ -243,6 +243,45 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
     expect(responseBox()).not.toHaveTextContent("iVBORw0KGgo");
   });
 
+  it("an image generation's result the sensor cut says so, with the full size from the cut marker", async () => {
+    // The sensor's marker (sensor/flightdeck_sensor/transport/body_limit.py)
+    // after the kept bytes: 3,000,000 base64 characters stood for 2.1 MB.
+    const cut = `${"iVBORw0KGgo".padEnd(2000, "A")}… [flightdeck: kept 2000 of 3000000 bytes to fit the event size limit]`;
+    await renderContent(withOutput([{ type: "image_generation_call", id: "ig_2", status: "completed", output_format: "png", result: cut }]));
+    expect(within(outputItem(0)).getByTestId("responses-image-result")).toHaveTextContent(
+      "[image/png · 2.1 MB · cut to fit the event size limit]",
+    );
+    expect(responseBox()).not.toHaveTextContent("iVBORw0KGgo");
+  });
+
+  it("a code interpreter's image output names a data URL rather than printing it, and keeps an https URL", async () => {
+    const dataUrl = `data:image/png;base64,${"iVBORw0KGgo".padEnd(400, "A")}`;
+    await renderContent(
+      withOutput([
+        {
+          type: "code_interpreter_call",
+          id: "ci_2",
+          status: "completed",
+          container_id: "cntr_2",
+          code: "plot()",
+          outputs: [
+            { type: "logs", logs: "plotted" },
+            { type: "image", url: dataUrl },
+            { type: "image", url: "https://files.example.com/plot.png" },
+          ],
+        },
+      ]),
+    );
+    const tool = within(outputItem(0)).getByTestId("responses-tool-item");
+    expect(tool).toHaveTextContent('"logs": "plotted"');
+    expect(tool).toHaveTextContent('"url": "data URL"');
+    expect(tool).toHaveTextContent('"url": "https://files.example.com/plot.png"');
+    expect(responseBox()).not.toHaveTextContent("base64");
+    expect(responseBox()).not.toHaveTextContent("iVBORw0KGgo");
+    fireEvent.click(screen.getByTestId("prompt-box-response-json"));
+    expect(screen.getByTestId("prompt-box-response-json-view")).toHaveTextContent("data:image/png;base64,iVBORw0KGgo");
+  });
+
   it("an item type it does not special-case is labelled by its type and shown as its JSON, never dropped", async () => {
     await renderContent(withOutput([{ type: "shell_call", id: "sh_1", call_id: "call_sh", action: { commands: ["pwd"] } }, "a bare value"]));
     expect(outputItem(0)).toHaveAttribute("data-item-type", "shell_call");
@@ -270,6 +309,66 @@ describe("PromptViewer: a Responses call's response shows its output items", () 
   });
 
 
+});
+
+// A reasoning item passed back in a request's input: the same view, so
+// its encrypted content is never in the Rendered view on either side.
+describe("PromptViewer: a reasoning item passed back in a request", () => {
+  function inputItem(index: number): HTMLElement {
+    return screen.getByTestId(`responses-input-item-${index}`);
+  }
+
+  it("with no summary: (no summary) and the mark, the encrypted content only in the JSON view (a real tool loop's second request)", async () => {
+    const content = fixture("reasoning_tool_round_2");
+    const passedBack = (content.input as Record<string, unknown>[])[1]!;
+    const encrypted = passedBack.encrypted_content as string;
+    expect(passedBack.type).toBe("reasoning");
+    expect(passedBack.summary).toEqual([]);
+    await renderContent(content);
+    const item = inputItem(1);
+    expect(item).toHaveAttribute("data-item-type", "reasoning");
+    const reasoning = within(item).getByTestId("responses-reasoning-item");
+    expect(reasoning).toHaveTextContent("(no summary)");
+    expect(within(reasoning).getByTestId("responses-encrypted-reasoning")).toHaveTextContent(
+      "encrypted_content · encrypted reasoning, in JSON",
+    );
+    expect(within(item).queryByTestId("pretty-json")).toBeNull();
+    expect(item).not.toHaveTextContent(encrypted.slice(0, 24));
+    fireEvent.click(screen.getByTestId("prompt-box-input-1-json"));
+    expect(screen.getByTestId("prompt-box-input-1-json-view")).toHaveTextContent(encrypted.slice(0, 24));
+  });
+
+  it("with a summary: the summary and the mark, the encrypted content only in the JSON view", async () => {
+    const content = fixture("responses_item_list");
+    content.input = [
+      { role: "user", content: "Is 391 prime?" },
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [{ type: "summary_text", text: "391 is 17 times 23." }],
+        encrypted_content: "gAAAAABpassedBackEncryptedReasoning",
+      },
+    ];
+    await renderContent(content);
+    const item = inputItem(1);
+    const reasoning = within(item).getByTestId("responses-reasoning-item");
+    expect(within(reasoning).getByTestId("responses-reasoning")).toHaveTextContent("391 is 17 times 23.");
+    expect(within(reasoning).getByTestId("responses-encrypted-reasoning")).toBeInTheDocument();
+    // The box's badge names the item; the view adds no label of its own.
+    expect(within(reasoning).queryByText("reasoning")).toBeNull();
+    expect(item).not.toHaveTextContent("gAAAAABpassedBack");
+    fireEvent.click(screen.getByTestId("prompt-box-input-1-json"));
+    expect(screen.getByTestId("prompt-box-input-1-json-view")).toHaveTextContent("gAAAAABpassedBackEncryptedReasoning");
+  });
+
+  it("without encrypted content: the summary and no mark", async () => {
+    const content = fixture("responses_item_list");
+    content.input = [{ type: "reasoning", id: "rs_3", summary: [{ type: "summary_text", text: "Thinking about it." }] }];
+    await renderContent(content);
+    const reasoning = within(inputItem(0)).getByTestId("responses-reasoning-item");
+    expect(reasoning).toHaveTextContent("Thinking about it.");
+    expect(within(reasoning).queryByTestId("responses-encrypted-reasoning")).toBeNull();
+  });
 });
 
 // Guards: what the response box showed before and still shows. These

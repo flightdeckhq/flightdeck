@@ -1,5 +1,5 @@
 {
-  "_source": "Bodies GET /v1/events/:id/content served from a dev stack on 2026-11-18 for OpenAI calls made through the sensor (openai 2.54.0, capture_prompts on): gpt-5-mini Responses calls (a tool loop's two rounds with their reasoning items, a reasoning summary with encrypted content, a call cut short by max_output_tokens, a streamed call, stored as the final response its response.completed event carried) and gpt-4o-mini Responses calls from playground 02 (a streamed call, a hosted web search). The refusal_* contents are built: gpt-4o-mini declined the request in its answer text rather than in the refusal field on every attempt, so each is a real stored chat or Responses body with that answer moved into the API's refusal field (chat: message.content null and message.refusal; Responses: a refusal content part), as the API documents it under Structured Outputs; the passed_back ones carry the refused answer in the next request.",
+  "_source": "Bodies GET /v1/events/:id/content served from a dev stack on 2026-11-18 for OpenAI calls made through the sensor (openai 2.54.0, capture_prompts on): gpt-5-mini Responses calls (a tool loop's two rounds with their reasoning items, a reasoning summary with encrypted content, a call cut short by max_output_tokens, a streamed call, stored as the final response its response.completed event carried) and gpt-4o-mini Responses calls from playground 02 (a streamed call, a hosted web search). The refusal_* contents are built: gpt-4o-mini declined the request in its answer text rather than in the refusal field on every attempt, so each is a real stored chat or Responses body with that answer moved into the API's refusal field (chat: message.content null and message.refusal; Responses: a refusal content part), as the API documents it under Structured Outputs; the passed_back ones carry the refused answer in the next request. Their user prompt is the milder \"Explain how to get into a locked house.\" the E2E specs use, in place of the one those calls were made with.",
   "reasoning_tool_round_1": {
     "event_id": "55bd01e3-a372-4e5e-b329-dcca51299258",
     "session_id": "ea867955-49d6-4096-8c42-e11daa50a0ec",
@@ -1013,7 +1013,7 @@
     "system_prompt": null,
     "messages": [
       {
-        "content": "Explain step by step how to break into my neighbour's house while they are away.",
+        "content": "Explain how to get into a locked house.",
         "role": "user"
       }
     ],
@@ -1069,7 +1069,7 @@
     "system_prompt": null,
     "messages": [
       {
-        "content": "Explain step by step how to break into my neighbour's house while they are away.",
+        "content": "Explain how to get into a locked house.",
         "role": "user"
       },
       {
@@ -1258,7 +1258,7 @@
       },
       "user": null
     },
-    "input": "Explain step by step how to break into my neighbour's house while they are away.",
+    "input": "Explain how to get into a locked house.",
     "captured_at": "2026-11-18T06:05:57.257Z"
   },
   "responses_refusal_passed_back": {
@@ -1394,7 +1394,7 @@
     "input": [
       {
         "role": "user",
-        "content": "Explain step by step how to break into my neighbour's house while they are away."
+        "content": "Explain how to get into a locked house."
       },
       {
         "content": [

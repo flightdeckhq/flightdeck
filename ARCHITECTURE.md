@@ -9353,8 +9353,11 @@ and `input_audio` named by type), a `function_call` with its name,
 `call_id` and arguments, a `function_call_output` with its `call_id`
 and output, labelled `tool result` and, when the `function_call` it
 answers is earlier in the input (the nearest one when a `call_id`
-repeats), that call's name, a `reasoning` item with its summary text, and any other
-item type labelled by its `type` and shown as its JSON, never dropped.
+repeats), that call's name, a `reasoning` item as a response's
+reasoning item shows (below, without its own label: the box's badge
+names it), so a reasoning item passed back with its `encrypted_content`
+shows the mark, never the content, and any other item type labelled by
+its `type` and shown as its JSON, never dropped.
 Its function tools, which the Responses API declares flat (`name`,
 `description`, `parameters`), show their parameters, and a hosted tool
 (`web_search_preview` and the like) is named by its `type`. Its stored
@@ -9375,9 +9378,13 @@ tool's call (`web_search_call`, `file_search_call`,
 `mcp_approval_request`, `custom_tool_call`) labelled by its `type`
 (and its `status` when it did not complete) over the fields that say
 what it did (an `action`'s own fields, an MCP call's `arguments` parsed
-as a function call's are, an MCP tool list's tool names; an image
+as a function call's are, an MCP tool list's tool names, a code
+interpreter's `image` output's `url` named `data URL` when it is one,
+as a request's image part is, its `logs` as stored; an image
 generation's `result`, base64 bytes, as a placeholder naming its format
-and size, never the bytes), and any other item labelled by its `type`
+and size, never the bytes, adding `cut to fit the event size limit`
+when the sensor cut them, as a Gemini inline payload's placeholder
+does), and any other item labelled by its `type`
 as its JSON, never dropped; an empty `output` says `(no output)`. Under
 the items, the response's `status` when it is not `completed`, with
 `incomplete_details`' reason, and its `error`'s code and message, then

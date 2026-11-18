@@ -1299,24 +1299,20 @@ and borders across the app, where they are not text.
 themselves (changes every chart, badge and swimlane at once); per-theme
 colours chosen in components (components would branch on the theme).
 
-## D289 -- A litellm stream shows the caller what litellm shows; usage is asked for only where the request is final
+## D289 -- Usage is asked for where the request is final, never at a layer whose decision the caller observes
 
 **Date:** 2026-11-18
-**Decision:** the sensor never changes the `stream_options` litellm
-decides on and never hides a chunk litellm shows. Where litellm sends
-the request through the OpenAI SDK, the OpenAI interceptor, under the
-litellm call's mark, adds `include_usage` only when litellm's body lacks
-it, takes out the usage chunk and the `"usage": null` fields that causes
-before litellm reads the stream, and hands the counts to the litellm
-call. Elsewhere it asks for nothing: the usage litellm shows, or the
-estimate. The direct OpenAI guard clears the same `"usage": null` fields.
-**Why:** litellm decides what its caller sees (on OpenAI's own base it
-asks for usage itself), so hiding by the caller's options hid chunks
-litellm shows, changed every `text_completion` chunk's `usage`, and on
-litellm 1.104 made a sync stream read with `async for` raise. An addition
-can be undone exactly only at the layer that made it.
-**Rejected alternative:** asking litellm for usage and hiding the chunks
-it adds by their shape; reading the usage litellm keeps internally
-(`CustomStreamWrapper.chunks`), which differs by release and is missing
-for some streams; rewriting litellm's chunk objects back to their
-unsensored values.
+**Decision:** a litellm stream shows its caller exactly what litellm
+shows; the sensor never changes litellm's `stream_options` and never
+hides or rewrites a chunk. Through the OpenAI SDK it asks on litellm's
+final body and removes what that causes before litellm reads it (as the
+direct OpenAI guard does, `"usage": null` fields included); on litellm's
+OpenAI-shaped handlers it asks in the provider body only; elsewhere not
+at all. Counts: the provider's as asked, else what litellm shows, else
+litellm's kept record via a guarded fallback reader, else the estimate.
+**Why:** litellm decides what its caller sees (it asks OpenAI for usage
+itself), so hiding by the caller's options hid chunks litellm shows,
+changed `text_completion` chunks, and on litellm 1.104 made a sync stream
+read with `async for` raise.
+**Rejected alternative:** asking through litellm's `stream_options` and
+hiding what that adds by chunk shape; rewriting litellm's chunks.

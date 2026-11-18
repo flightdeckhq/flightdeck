@@ -353,9 +353,9 @@ describe("PromptViewer Rendered / JSON per box", () => {
     // Indented, one field per line.
     expect(pre!.textContent).toContain('\n  "role": "assistant"');
     expect(pre!.textContent!.split("\n").length).toBeGreaterThan(10);
-    // Highlighted: keys and strings in their own colours.
-    expect(pre!.innerHTML).toContain('<span style="color:var(--event-llm)">"role"</span>');
-    expect(pre!.innerHTML).toContain('<span style="color:var(--status-active)">"assistant"</span>');
+    // Highlighted: keys and strings in their own colours, the text-safe shades.
+    expect(pre!.innerHTML).toContain('<span style="color:var(--event-llm-text)">"role"</span>');
+    expect(pre!.innerHTML).toContain('<span style="color:var(--success-text)">"assistant"</span>');
     // The rendered content is not shown while the JSON view is.
     expect(screen.getByTestId("prompt-box-message-1").querySelector('[data-testid="content-block-tool-use"]')).toBeNull();
   });

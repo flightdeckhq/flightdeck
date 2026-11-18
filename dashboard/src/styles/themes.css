@@ -125,6 +125,22 @@
      would lag the toggle. */
   --topology-pill-fg: color-mix(in srgb, var(--accent) 55%, white);
 
+  /* Text-safe colours: the shade of a hue that reads at 4.5:1 or better
+     (WCAG AA) as text on this theme's surfaces, used only for text;
+     badges' tints and borders, charts and swimlanes keep the hue tokens
+     above. Where the hue itself passes it is aliased, so both themes
+     define the same set. Each comment names the text and the surface of
+     its lowest ratio (a badge's tint is 15% of its hue over --surface).
+     tests/unit/prompts-tab-contrast.test.tsx checks every pair the
+     Prompts tab uses. */
+  --muted-text: #888888; /* labels, counts, notes, ids: 4.60:1 on a system badge's tint, 4.91:1 on --bg-elevated */
+  --accent-text: #9a68f1; /* the assistant and model badges, the embeddings toggle: 4.56:1 on their tint */
+  --event-llm-text: #777af3; /* the user badge, JSON keys: 4.56:1 on the user badge's tint, 4.86:1 on --bg-elevated */
+  --event-tool-text: var(--event-tool); /* tool names, tool badges: 6.22:1 on the tool badge's tint */
+  --danger-text: var(--danger); /* the stderr label: 4.62:1 on --bg-elevated */
+  --success-text: var(--success); /* JSON strings: 7.64:1 on --bg-elevated */
+  --warning-text: var(--warning); /* JSON numbers: 9.08:1 on --bg-elevated */
+
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
   --font-mono: "GeistMono", ui-monospace, monospace;
@@ -146,7 +162,9 @@
   /* Text */
   --text: #09090b;
   --text-muted: #a1a1aa;
-  --text-secondary: #71717a;
+  /* 4.73:1 on --bg-elevated and 4.61:1 on a system badge's tint (it is
+     also the light theme's --muted-text); 5.20:1 on --surface. */
+  --text-secondary: #6c6c75;
   --text-disabled: #d4d4d8;
 
   /* Accent */
@@ -239,6 +257,15 @@
      sufficient contrast on the white surface so no lightening
      is needed. */
   --topology-pill-fg: var(--accent);
+
+  /* Text-safe colours: see the dark theme's block. */
+  --muted-text: var(--text-secondary); /* labels, counts, notes, ids: no lighter grey reaches 4.5:1 on --bg-elevated; 4.61:1 on a system badge's tint */
+  --accent-text: var(--accent); /* the assistant and model badges, the embeddings toggle: 4.53:1 on their tint */
+  --event-llm-text: #4f53ef; /* the user badge, JSON keys: 4.56:1 on the user badge's tint, 5.01:1 on --bg-elevated */
+  --event-tool-text: #06738d; /* tool names, tool badges: 4.55:1 on the tool badge's tint, 4.97:1 on --bg-elevated */
+  --danger-text: #d82323; /* the stderr label: 4.57:1 on --bg-elevated */
+  --success-text: #11803a; /* JSON strings: 4.58:1 on --bg-elevated */
+  --warning-text: #966603; /* JSON numbers: 4.55:1 on --bg-elevated */
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

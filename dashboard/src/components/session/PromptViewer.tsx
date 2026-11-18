@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { SyntaxJson } from "@/components/ui/syntax-json";
+import { SyntaxJson, TEXT_SAFE_SYNTAX_COLORS } from "@/components/ui/syntax-json";
 import { ClientType } from "@/lib/agent-identity";
 import {
   CUT_MARK,
@@ -35,32 +35,32 @@ interface PromptViewerProps {
  *
  * Backgrounds resolve via `color-mix(in srgb, <theme token> 15%,
  * transparent)` so the chip background re-tints with the active
- * theme. The previous hardcoded `rgba(...)` literals rendered the
- * same colour in neon-dark and clean-light, defeating the palette
- * (Rule 14). Borders follow the same pattern at 30% mix. Text
- * colour resolves directly to the matching token.
+ * theme. Borders follow the same pattern at 30% mix. The text takes
+ * the hue's text-safe shade (themes.css's `-text` tokens), which reads
+ * at 4.5:1 or better on that tint in both themes; the hue token itself
+ * does not for every role.
  */
 
-function roleChip(token: string): { bg: string; color: string; border: string } {
+function roleChip(token: string, text: string): { bg: string; color: string; border: string } {
   return {
     bg: `color-mix(in srgb, ${token} 15%, transparent)`,
-    color: token,
+    color: text,
     border: `1px solid color-mix(in srgb, ${token} 30%, transparent)`,
   };
 }
 
 const roleBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
-  system: roleChip("var(--text-muted)"),
-  instructions: roleChip("var(--text-muted)"),
-  user: roleChip("var(--event-llm)"),
-  assistant: roleChip("var(--accent)"),
-  tool: roleChip("var(--event-tool)"),
-  tool_result: roleChip("var(--event-tool)"),
-  function_call: roleChip("var(--event-tool)"),
-  function_call_output: roleChip("var(--event-tool)"),
+  system: roleChip("var(--text-muted)", "var(--muted-text)"),
+  instructions: roleChip("var(--text-muted)", "var(--muted-text)"),
+  user: roleChip("var(--event-llm)", "var(--event-llm-text)"),
+  assistant: roleChip("var(--accent)", "var(--accent-text)"),
+  tool: roleChip("var(--event-tool)", "var(--event-tool-text)"),
+  tool_result: roleChip("var(--event-tool)", "var(--event-tool-text)"),
+  function_call: roleChip("var(--event-tool)", "var(--event-tool-text)"),
+  function_call_output: roleChip("var(--event-tool)", "var(--event-tool-text)"),
 };
 
-const defaultRoleBadge = roleChip("var(--text-muted)");
+const defaultRoleBadge = roleChip("var(--text-muted)", "var(--muted-text)");
 
 /* ---- Section header ---- */
 
@@ -88,7 +88,7 @@ function Section({
       >
         {open ? <ChevronDown size={14} style={{ color: "var(--text-muted)" }} /> : <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />}
         {title}
-        {count != null && <span className="text-xs font-normal" style={{ color: "var(--text-muted)" }}>({count})</span>}
+        {count != null && <span className="text-xs font-normal" style={{ color: "var(--muted-text)" }}>({count})</span>}
       </button>
       {open && <div className="mt-2 mb-3">{children}</div>}
     </div>
@@ -163,7 +163,7 @@ function ViewToggle({
           className="px-1 py-0.5 text-[11px]"
           style={mode === m
             ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }
-            : { color: "var(--text-muted)" }}
+            : { color: "var(--muted-text)" }}
           onClick={() => onChange(m)}
         >
           {VIEW_LABELS[m]}
@@ -203,7 +203,7 @@ function ViewBox({
           style={{ background: "var(--bg-elevated)" }}
         >
           {/* The JSON view wraps at the box's width rather than scrolling sideways. */}
-          <SyntaxJson data={raw} wrap />
+          <SyntaxJson data={raw} wrap colors={TEXT_SAFE_SYNTAX_COLORS} />
         </div>
       )}
     </div>
@@ -234,7 +234,7 @@ const textBoxStyle: React.CSSProperties = {
 function JsonBox({ data }: { data: unknown }) {
   return (
     <div data-testid="pretty-json" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
-      <SyntaxJson data={data} />
+      <SyntaxJson data={data} colors={TEXT_SAFE_SYNTAX_COLORS} />
     </div>
   );
 }
@@ -255,14 +255,14 @@ function MessageContent({ content }: { content: unknown }) {
   if (typeof content === "string") return <TextOrJson text={content} />;
   if (Array.isArray(content)) return <ContentBlocks blocks={content} />;
   if (content === null || content === undefined) {
-    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+    return <div className="text-xs" style={{ color: "var(--muted-text)" }}>(empty)</div>;
   }
   return <JsonBox data={content} />;
 }
 
 function BlockLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+    <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--muted-text)" }}>
       {children}
     </div>
   );
@@ -294,7 +294,7 @@ function CacheControlMark({ control }: { control: unknown }) {
  *  shows the key. */
 function ContentBlocks({ blocks }: { blocks: unknown[] }) {
   if (blocks.length === 0) {
-    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+    return <div className="text-xs" style={{ color: "var(--muted-text)" }}>(empty)</div>;
   }
   return (
     <div className="space-y-2">
@@ -339,7 +339,7 @@ function contentBlock(raw: unknown, i: number): React.ReactNode {
         {text != null ? (
           <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
         ) : (
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
+          <div className="text-xs" style={{ color: "var(--muted-text)" }}>(not shown)</div>
         )}
       </div>
     );
@@ -358,7 +358,7 @@ function contentBlock(raw: unknown, i: number): React.ReactNode {
   }
   if (type === "image" || type === "document") {
     return (
-      <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
+      <div key={i} className="text-xs" style={{ color: "var(--muted-text)" }}>
         [{type}]
       </div>
     );
@@ -382,7 +382,7 @@ function ToolUseBox({
 }) {
   return (
     <div data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-      <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+      <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>{name}</div>
       {isPlainObject(input) && Object.keys(input).length > 0 ? (
         <div className="mt-2">
           <KeyValueList data={input} />
@@ -392,7 +392,7 @@ function ToolUseBox({
           <BlockValue value={input} />
         </div>
       ) : (
-        <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>{emptyText}</div>
+        <div className="mt-1 text-xs" style={{ color: "var(--muted-text)" }}>{emptyText}</div>
       )}
     </div>
   );
@@ -612,7 +612,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
 
   if (notFound) {
     return (
-      <div className="px-4 py-8 text-center text-xs text-text-muted">
+      <div className="px-4 py-8 text-center text-xs text-[var(--muted-text)]">
         Prompt capture is not enabled for this deployment.
       </div>
     );
@@ -655,7 +655,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
         <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>{provider}</span>
         {model && (
           <>
-            <span style={{ color: "var(--text-muted)" }}>·</span>
+            <span style={{ color: "var(--muted-text)" }}>·</span>
             <span data-testid="prompt-viewer-model" className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
           </>
         )}
@@ -737,7 +737,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
                   raw={entry}
                   name={`tool ${name}`}
                   testId={`prompt-box-tool-${i}`}
-                  label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</span>}
+                  label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>{name}</span>}
                 >
                 <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   {input != null && Object.keys(input).length > 0 && (
@@ -748,20 +748,20 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
                   {desc && <div className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
                   {props && Object.keys(props).length > 0 && (
                     <>
-                      <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>Parameters</div>
+                      <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--muted-text)" }}>Parameters</div>
                       <div className="mt-1 space-y-0.5">
                         {Object.entries(props).map(([propName, propDef]) => (
                           <div key={propName} className="flex items-center gap-2 font-mono text-xs">
                             <span className="font-medium" style={{ color: "var(--text)" }}>{propName}</span>
-                            <span style={{ color: "var(--text-muted)" }}>·</span>
-                            <span style={{ color: "var(--text-muted)" }}>{(propDef as Record<string, unknown>).type as string ?? "any"}</span>
+                            <span style={{ color: "var(--muted-text)" }}>·</span>
+                            <span style={{ color: "var(--muted-text)" }}>{(propDef as Record<string, unknown>).type as string ?? "any"}</span>
                           </div>
                         ))}
                       </div>
                     </>
                   )}
                   {input == null && !desc && !(props && Object.keys(props).length > 0) && (
-                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
+                    <div className="text-xs" style={{ color: "var(--muted-text)" }}>(no input)</div>
                   )}
                 </div>
                 </ViewBox>
@@ -819,7 +819,7 @@ function hasStoredValue(value: unknown): boolean {
  *  other value as JSON. */
 function ToolValue({ value }: { value: unknown }) {
   if (!hasStoredValue(value)) {
-    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+    return <div className="text-xs" style={{ color: "var(--muted-text)" }}>(empty)</div>;
   }
   if (typeof value === "string") return <TextOrJson text={value} />;
   if (isPlainObject(value)) {
@@ -1049,7 +1049,7 @@ function ResponsesContentPart({ part }: { part: unknown }) {
       <div
         data-testid="responses-part-media"
         className="text-xs"
-        style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}
+        style={{ color: "var(--muted-text)", overflowWrap: "anywhere" }}
       >
         [{type}
         {detail ? ` · ${detail}` : ""}]
@@ -1071,7 +1071,7 @@ function ResponsesFunctionCall({ item }: { item: Record<string, unknown> }) {
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
     >
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>
           {typeof item.name === "string" && item.name ? item.name : "function"}
         </span>
         <CallId value={item.call_id} />
@@ -1136,7 +1136,7 @@ function ResponsesReasoning({ summary }: { summary: unknown[] }) {
 function CallId({ value }: { value: unknown }) {
   if (typeof value !== "string" || !value) return null;
   return (
-    <span data-testid="responses-call-id" className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={value}>
+    <span data-testid="responses-call-id" className="truncate font-mono text-[10px]" style={{ color: "var(--muted-text)" }} title={value}>
       {value}
     </span>
   );
@@ -1190,7 +1190,7 @@ function genaiSystem(systemPrompt: string | unknown[] | null): unknown {
 
 function Muted({ children, testId }: { children: React.ReactNode; testId?: string }) {
   return (
-    <div data-testid={testId} className="text-xs" style={{ color: "var(--text-muted)" }}>
+    <div data-testid={testId} className="text-xs" style={{ color: "var(--muted-text)" }}>
       {children}
     </div>
   );
@@ -1236,11 +1236,11 @@ function GenaiToolCall({ name, args, id }: { name: unknown; args: unknown; id: u
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
     >
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>
           {typeof name === "string" && name ? name : "tool"}
         </span>
         {typeof id === "string" && id && (
-          <span className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={id}>
+          <span className="truncate font-mono text-[10px]" style={{ color: "var(--muted-text)" }} title={id}>
             {id}
           </span>
         )}
@@ -1268,7 +1268,7 @@ function GenaiToolResponse({ name, value, id, status }: { name: unknown; value: 
         {typeof status === "string" && status ? ` · ${status}` : ""}
       </BlockLabel>
       {typeof id === "string" && id && (
-        <div className="mb-1 truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={id}>
+        <div className="mb-1 truncate font-mono text-[10px]" style={{ color: "var(--muted-text)" }} title={id}>
           {id}
         </div>
       )}
@@ -1384,7 +1384,7 @@ function GenaiMessageBox({
             <span
               data-testid="genai-finish-reason"
               className="font-mono text-[10px]"
-              style={{ color: "var(--text-muted)" }}
+              style={{ color: "var(--muted-text)" }}
               title="Why the model stopped"
             >
               {finish}
@@ -1423,7 +1423,7 @@ function GenaiToolDefinition({ entry, index, eventId }: { entry: unknown; index:
       name={`tool ${name}`}
       testId={`prompt-box-tool-${index}`}
       label={
-        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>
           {name}
         </span>
       }
@@ -1432,15 +1432,15 @@ function GenaiToolDefinition({ entry, index, eventId }: { entry: unknown; index:
         {desc && <div className="text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
         {props && Object.keys(props).length > 0 && (
           <>
-            <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+            <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--muted-text)" }}>
               Parameters
             </div>
             <div className="mt-1 space-y-0.5">
               {Object.entries(props).map(([propName, propDef]) => (
                 <div key={propName} className="flex items-center gap-2 font-mono text-xs">
                   <span className="font-medium" style={{ color: "var(--text)" }}>{propName}</span>
-                  <span style={{ color: "var(--text-muted)" }}>·</span>
-                  <span style={{ color: "var(--text-muted)" }}>
+                  <span style={{ color: "var(--muted-text)" }}>·</span>
+                  <span style={{ color: "var(--muted-text)" }}>
                     {isPlainObject(propDef) && typeof propDef.type === "string" ? propDef.type : "any"}
                   </span>
                 </div>
@@ -1485,7 +1485,7 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
         </span>
         {model && (
           <>
-            <span style={{ color: "var(--text-muted)" }}>·</span>
+            <span style={{ color: "var(--muted-text)" }}>·</span>
             <span className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
           </>
         )}
@@ -1630,8 +1630,8 @@ const CUT_TO_FIT = "cut to fit the event size limit";
  *  message. Kept apart from roleBadgeStyles, which other providers'
  *  views read. */
 const geminiRoleBadgeStyles: Record<string, { bg: string; color: string; border: string }> = {
-  user: roleChip("var(--event-llm)"),
-  model: roleChip("var(--accent)"),
+  user: roleChip("var(--event-llm)", "var(--event-llm-text)"),
+  model: roleChip("var(--accent)", "var(--accent-text)"),
 };
 
 /** Whether the content is a google-genai call's request and response,
@@ -1919,15 +1919,15 @@ function GeminiDeclaration({ declaration }: { declaration: Record<string, unknow
       {desc && <div className="text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
       {hasProps && (
         <>
-          <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+          <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--muted-text)" }}>
             Parameters
           </div>
           <div className="mt-1 space-y-0.5">
             {Object.entries(props).map(([propName, propDef]) => (
               <div key={propName} className="flex items-center gap-2 font-mono text-xs">
                 <span className="font-medium" style={{ color: "var(--text)" }}>{propName}</span>
-                <span style={{ color: "var(--text-muted)" }}>·</span>
-                <span style={{ color: "var(--text-muted)" }}>
+                <span style={{ color: "var(--muted-text)" }}>·</span>
+                <span style={{ color: "var(--muted-text)" }}>
                   {isPlainObject(propDef) && typeof propDef.type === "string" ? propDef.type : "any"}
                 </span>
               </div>
@@ -2047,7 +2047,7 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
         <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>{content.provider}</span>
         {model && (
           <>
-            <span style={{ color: "var(--text-muted)" }}>·</span>
+            <span style={{ color: "var(--muted-text)" }}>·</span>
             <span data-testid="prompt-viewer-model" className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
           </>
         )}
@@ -2104,7 +2104,7 @@ function GeminiContent({ content, eventId }: { content: EventContent; eventId: s
                 raw={tool.raw}
                 name={`tool ${tool.name}`}
                 testId={`prompt-box-tool-${i}`}
-                label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{tool.name}</span>}
+                label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool-text)" }}>{tool.name}</span>}
               >
                 {tool.declaration ? <GeminiDeclaration declaration={tool.declaration} /> : <GeminiBuiltInTool value={tool.builtIn} />}
               </ViewBox>
@@ -2137,7 +2137,7 @@ function RenderedResponse({
   pluginRow?: boolean;
 }) {
   if (!response) {
-    return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
+    return <pre className="text-xs text-[var(--muted-text)] whitespace-pre-wrap">{String(response)}</pre>;
   }
 
   // Plugin-captured tool_call shape: response is an array of content blocks
@@ -2145,7 +2145,7 @@ function RenderedResponse({
   // { type: "text", text: "..." } -- not an Anthropic/OpenAI response object.
   if (Array.isArray(response)) {
     if (response.length === 0) {
-      return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no response)</div>;
+      return <div className="text-xs" style={{ color: "var(--muted-text)" }}>(no response)</div>;
     }
     return <ToolResponseBlocks blocks={response} pluginRow={pluginRow} />;
   }
@@ -2155,7 +2155,7 @@ function RenderedResponse({
   }
 
   if (typeof response !== "object") {
-    return <pre className="text-xs text-text-muted whitespace-pre-wrap">{String(response)}</pre>;
+    return <pre className="text-xs text-[var(--muted-text)] whitespace-pre-wrap">{String(response)}</pre>;
   }
 
   const resp = response as Record<string, unknown>;
@@ -2203,7 +2203,7 @@ function RenderedResponse({
 function TokenLine({ tokensIn, tokensOut }: { tokensIn: number | undefined; tokensOut: number | undefined }) {
   if (tokensIn == null && tokensOut == null) return null;
   return (
-    <div className="mt-2 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+    <div className="mt-2 font-mono text-[11px]" style={{ color: "var(--muted-text)" }}>
       {tokensIn != null && <span>Tokens in: {tokensIn.toLocaleString()}</span>}
       {tokensIn != null && tokensOut != null && <span> · </span>}
       {tokensOut != null && <span>Tokens out: {tokensOut.toLocaleString()}</span>}
@@ -2225,11 +2225,11 @@ function needsMultiline(v: unknown): boolean {
 
 function InlineValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <span style={{ color: "var(--text-muted)" }}>(null)</span>;
+    return <span style={{ color: "var(--muted-text)" }}>(null)</span>;
   }
   if (typeof value === "string") {
     if (value.length === 0) {
-      return <span style={{ color: "var(--text-muted)" }}>(empty)</span>;
+      return <span style={{ color: "var(--muted-text)" }}>(empty)</span>;
     }
     return <span style={{ color: "var(--text)" }}>{value}</span>;
   }
@@ -2238,13 +2238,13 @@ function InlineValue({ value }: { value: unknown }) {
 
 function BlockValue({ value }: { value: unknown }) {
   if (typeof value === "string" && value.length === 0) {
-    return <span className="font-mono text-[12px]" style={{ color: "var(--text-muted)" }}>(empty)</span>;
+    return <span className="font-mono text-[12px]" style={{ color: "var(--muted-text)" }}>(empty)</span>;
   }
   const parsed = typeof value === "string" ? parseJsonContainer(value) : value;
   if (parsed !== null && typeof parsed === "object") {
     return (
       <div data-testid="pretty-json" className="rounded-md p-2" style={{ background: "var(--bg)" }}>
-        <SyntaxJson data={parsed} />
+        <SyntaxJson data={parsed} colors={TEXT_SAFE_SYNTAX_COLORS} />
       </div>
     );
   }
@@ -2279,7 +2279,7 @@ function KeyValueList({ data, cut }: { data: Record<string, unknown>; cut?: Read
               <span
                 data-testid="kv-label"
                 className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
-                style={{ color: "var(--text-muted)" }}
+                style={{ color: "var(--muted-text)" }}
               >
                 {key}
               </span>
@@ -2293,7 +2293,7 @@ function KeyValueList({ data, cut }: { data: Record<string, unknown>; cut?: Read
             <span
               data-testid="kv-label"
               className="font-medium"
-              style={{ color: "var(--text-muted)" }}
+              style={{ color: "var(--muted-text)" }}
             >
               {key}:
             </span>
@@ -2539,7 +2539,7 @@ function FieldLabel({ name, tone = "muted" }: { name: string; tone?: "muted" | "
     <span
       data-testid="kv-label"
       className="font-mono text-[10px] font-semibold uppercase tracking-[0.06em]"
-      style={{ color: tone === "error" ? "var(--danger)" : "var(--text-secondary)" }}
+      style={{ color: tone === "error" ? "var(--danger-text)" : "var(--text-secondary)" }}
     >
       {name}
     </span>
@@ -2676,8 +2676,8 @@ function isCompactValue(value: unknown): boolean {
 }
 
 function CompactValue({ value }: { value: unknown }) {
-  if (Array.isArray(value)) return <span style={{ color: "var(--text-muted)" }}>[]</span>;
-  if (isPlainObject(value)) return <span style={{ color: "var(--text-muted)" }}>{"{}"}</span>;
+  if (Array.isArray(value)) return <span style={{ color: "var(--muted-text)" }}>[]</span>;
+  if (isPlainObject(value)) return <span style={{ color: "var(--muted-text)" }}>{"{}"}</span>;
   return <InlineValue value={value} />;
 }
 

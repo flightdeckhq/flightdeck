@@ -113,11 +113,11 @@ All notable changes to Flightdeck are documented here.
   `SequentialAgent`, `ParallelAgent` or `LoopAgent` runs, an
   `AgentTool`'s agent nested under the agent that called it), with an
   `agent_handoff` signal for each transfer. The root agent is the
-  sensor's session, and the model calls stay on it, metered on `LiteLlm`
-  and ADK's Anthropic models. Gemini calls are not metered yet
-  ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); their
-  agents still appear as child sessions. Call `patch()` before building
-  runners and before the first `LiteLlm` call.
+  sensor's session, and the model calls stay on it, metered on ADK's
+  default `Gemini` model (through the google-genai patch; not in its
+  interactions mode, `use_interactions_api`), on `LiteLlm` and on ADK's
+  Anthropic models. Call `patch()` before building runners and before
+  the first `LiteLlm` call.
 
 ### Changed
 
@@ -132,6 +132,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The Prompts tab's text reads at WCAG AA (4.5:1) in both themes.**
+  Labels such as `tool result`, argument names, counts, `(empty)`
+  notes, call ids and the token line; tool names; the role badges
+  (`user`, `assistant`, `model`, `system`, `tool`); the `stderr` label;
+  and the keys, strings, numbers and `true` / `false` / `null` of every
+  JSON view measured as low as 2.3:1. They now use text-safe shades of
+  the same hues that read at 4.6:1 or better, so the tab looks the same,
+  and badges keep their tint and border. The light theme's secondary
+  text is a shade darker (`#6c6c75`), which raises it on every page.
+  The "No content was recorded" and "Prompt capture is not enabled for
+  this deployment." messages, a session signal's Prompts tab, the times
+  in a run's Prompts list, and the embeddings viewer's notes and "Show
+  full input" toggle read the same way. The event-type badges in a
+  run's Prompts list keep the look every event-type badge shares.
 - **The Prompts tab shows an OpenAI call's tool calls.** In the Rendered
   view an OpenAI chat assistant message that called a tool showed only
   `(empty)`: the tool's name and arguments were missing, and the `tool`

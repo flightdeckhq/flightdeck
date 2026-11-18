@@ -21,7 +21,13 @@ session and none for the root agent, the ``agent_handoff`` signal from
 the concierge to the booking agent on the sensor's session with no
 content, and the model calls (each once, with its provider: ADK's Gemini
 model makes one google-genai request per model turn) and one
-``tool_call`` per function call on the sensor's session.
+``tool_call`` per function call on the sensor's session. How many model
+calls, tool calls, expert questions and transfers the run takes is the
+models' choice: each count is read from what the run did (the agents'
+after-model callbacks see every model response, the events every
+function call), never fixed in the script; every model call the sensor
+saw is paired (one ``pre_call``, one outcome), and the tokens the
+``post_call``s carry are the tokens the model responses reported.
 
 Runs from the sensor ADK venv (playground/README.md). Exits 2 when ADK
 is not installed or no provider key is set. Prints every session id so
@@ -74,6 +80,11 @@ MS_PER_S = 1000
 FAILURE_DUMP_CHARS = 2000
 # The exit code run_all.py reads as SKIP.
 SKIP_RC = 2
+# The least the two requests take, whatever the models choose: the
+# root's turn that calls the tool and the expert and its answer (2), the
+# expert's answer (1), the root's transfer (1) and the booking agent's
+# answer (1).
+MIN_MODEL_REQUESTS = 5
 
 ROOT_NAME = "concierge_agent"
 EXPERT_NAME = "expert_agent"
@@ -144,7 +155,34 @@ def _check(label: str, ok: bool, detail: Any = "") -> None:
         raise AssertionError(f"{label}: {str(detail)[:FAILURE_DUMP_CHARS]}")
 
 
-def _agents(model: Any) -> Any:
+class _ModelResponses:
+    """The model responses a run's agents received, one per model request,
+    as their after-model callbacks see them: the root's, the booking
+    agent's and the expert's (which an ``AgentTool`` runs in a runner of
+    its own, so its events are not the run's)."""
+
+    def __init__(self) -> None:
+        self.responses: list[Any] = []
+
+    def after_model(self, callback_context: Any, llm_response: Any) -> None:
+        del callback_context
+        self.responses.append(llm_response)
+
+    def tokens(self) -> tuple[int, int]:
+        """The input and output tokens the responses reported, as the
+        sensor counts a call's: the prompt with the tool-use prompt, the
+        candidates with the thoughts."""
+        tokens_in = tokens_out = 0
+        for response in self.responses:
+            usage = response.usage_metadata
+            if usage is None:
+                continue
+            tokens_in += (usage.prompt_token_count or 0) + (usage.tool_use_prompt_token_count or 0)
+            tokens_out += (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
+        return tokens_in, tokens_out
+
+
+def _agents(model: Any, seen: _ModelResponses) -> Any:
     from google.adk.agents import LlmAgent
     from google.adk.tools.agent_tool import AgentTool
     from google.genai import types
@@ -156,6 +194,7 @@ def _agents(model: Any) -> Any:
         description="Answers questions about Paris in one sentence.",
         instruction="Answer in one short sentence.",
         generate_content_config=config,
+        after_model_callback=seen.after_model,
     )
     booking = LlmAgent(
         name=BOOKING_NAME,
@@ -166,6 +205,7 @@ def _agents(model: Any) -> Any:
         # It answers and the run ends: no transfer back to the concierge.
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
+        after_model_callback=seen.after_model,
     )
     return LlmAgent(
         name=ROOT_NAME,
@@ -174,6 +214,7 @@ def _agents(model: Any) -> Any:
         tools=[get_weather, AgentTool(expert)],
         sub_agents=[booking],
         generate_content_config=config,
+        after_model_callback=seen.after_model,
     )
 
 
@@ -220,8 +261,9 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
     )
     print(f"[playground:38_google_adk] {label}: session_id={root}")
     t0 = time.monotonic()
+    seen = _ModelResponses()
     try:
-        events = asyncio.run(_run(_agents(make_model())))
+        events = asyncio.run(_run(_agents(make_model(), seen)))
     finally:
         flightdeck_sensor.teardown()
     authors = [e.author for e in events]
@@ -233,11 +275,16 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
     )
     _check(f"{label}: the run reached {BOOKING_NAME}", BOOKING_NAME in authors, authors)
 
-    found = _children(root, 2)
+    # A child session per run of a sub-agent: one per question the root
+    # put to the expert, one per transfer to the booking agent.
+    transfers = calls_named(events, "transfer_to_agent")
+    children = calls_named(events, EXPERT_NAME) + transfers
+    found = _children(root, children)
     roles = {c["agent_role"] for c in found}
     _check(
-        f"{label}: {EXPERT_NAME} and {BOOKING_NAME} are child sessions, the root agent none",
-        roles == {EXPERT_NAME, BOOKING_NAME},
+        f"{label}: {EXPERT_NAME} and {BOOKING_NAME} are child sessions, one per run, "
+        "the root agent none",
+        roles == {EXPERT_NAME, BOOKING_NAME} and len(found) == children,
         [(c["agent_role"], c["state"]) for c in found],
     )
     _check(
@@ -250,7 +297,6 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         for e in _events(root, "session_signal", 1)
         if (e.get("payload") or {}).get("signal") == "agent_handoff"
     ]
-    transfers = calls_named(events, "transfer_to_agent")
     _check(
         f"{label}: one agent_handoff on the sensor's session per transfer",
         len(signals) == transfers >= 1,
@@ -265,11 +311,37 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         ),
         signals,
     )
-    posts = _events(root, "post_call", 4)
+    # One post_call per model request the agents made, at least the round
+    # trip each of the first request's tool and expert calls takes, the
+    # expert's answer, the transfer and the booking agent's answer.
+    requests = len(seen.responses)
+    posts = _events(root, "post_call", requests)
     _check(
-        f"{label}: the model calls are on the sensor's session with tokens",
-        len(posts) >= 4 and all((p.get("tokens_total") or 0) > 0 for p in posts),
+        f"{label}: one post_call per model request ({requests}), "
+        "on the sensor's session with tokens",
+        len(posts) == requests >= MIN_MODEL_REQUESTS
+        and all((p.get("tokens_total") or 0) > 0 for p in posts),
         [(p.get("model"), p.get("tokens_total")) for p in posts],
+    )
+    kinds = [
+        e.get("event_type")
+        for e in fetch_events_for_session(
+            root, expect_event_types=["post_call", "session_end"], timeout_s=LANDED_S
+        )
+    ]
+    _check(
+        f"{label}: one pre_call per model call, each closed by a post_call or an llm_error",
+        kinds.count("pre_call") == kinds.count("post_call") + kinds.count("llm_error"),
+        {k: kinds.count(k) for k in sorted({str(k) for k in kinds})},
+    )
+    tokens = (
+        sum(p.get("tokens_input") or 0 for p in posts),
+        sum(p.get("tokens_output") or 0 for p in posts),
+    )
+    _check(
+        f"{label}: the post_calls' tokens are the tokens the model responses reported",
+        tokens == seen.tokens(),
+        (tokens, seen.tokens()),
     )
     _check(
         f"{label}: every model call's provider is {provider}",

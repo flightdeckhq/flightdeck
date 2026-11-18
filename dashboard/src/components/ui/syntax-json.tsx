@@ -15,12 +15,50 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** The colours of a JSON value's keys, strings, numbers and literals
+ *  (``true``, ``false``, ``null``); punctuation is in the secondary text
+ *  colour. */
+export interface SyntaxColors {
+  key: string;
+  string: string;
+  number: string;
+  literal: string;
+}
+
+/** The colours every JSON view uses unless it passes its own. */
+const DEFAULT_SYNTAX_COLORS: SyntaxColors = {
+  key: "var(--event-llm)",
+  string: "var(--status-active)",
+  number: "var(--event-warn)",
+  literal: "var(--text-muted)",
+};
+
+/** The same hues in their text-safe shades (themes.css), each 4.5:1 or
+ *  better on ``--bg-elevated`` in both themes: the Prompts tab's JSON.
+ *  Literals take the primary text colour, which keeps them apart from
+ *  the secondary-coloured punctuation in the light theme, where no
+ *  second grey passes. */
+export const TEXT_SAFE_SYNTAX_COLORS: SyntaxColors = {
+  key: "var(--event-llm-text)",
+  string: "var(--success-text)",
+  number: "var(--warning-text)",
+  literal: "var(--text)",
+};
+
 /**
  * ``wrap`` breaks long lines at the container's width (indentation
  * kept, a long unbroken string split anywhere) instead of scrolling
- * sideways.
+ * sideways. ``colors`` picks the highlight colours.
  */
-export function SyntaxJson({ data, wrap = false }: { data: unknown; wrap?: boolean }) {
+export function SyntaxJson({
+  data,
+  wrap = false,
+  colors = DEFAULT_SYNTAX_COLORS,
+}: {
+  data: unknown;
+  wrap?: boolean;
+  colors?: SyntaxColors;
+}) {
   // 1. JSON.stringify
   // 2. HTML-escape so any user-controlled `<`, `>`, `&` cannot break
   //    out of the <pre> via dangerouslySetInnerHTML
@@ -33,19 +71,19 @@ export function SyntaxJson({ data, wrap = false }: { data: unknown; wrap?: boole
   const colored = escaped
     .replace(
       /(&quot;(?:\\.|[^&\\])*?&quot;)\s*:/g,
-      (_, key) => `<span style="color:var(--event-llm)">${key}</span>:`,
+      (_, key) => `<span style="color:${colors.key}">${key}</span>:`,
     )
     .replace(
       /:\s*(&quot;(?:\\.|[^&\\])*?&quot;)/g,
-      (match, val) => match.replace(val, () => `<span style="color:var(--status-active)">${val}</span>`),
+      (match, val) => match.replace(val, () => `<span style="color:${colors.string}">${val}</span>`),
     )
     .replace(
       /:\s*(\d+(?:\.\d+)?)/g,
-      (match, num) => match.replace(num, () => `<span style="color:var(--event-warn)">${num}</span>`),
+      (match, num) => match.replace(num, () => `<span style="color:${colors.number}">${num}</span>`),
     )
     .replace(
       /:\s*(true|false|null)/g,
-      (match, val) => match.replace(val, () => `<span style="color:var(--text-muted)">${val}</span>`),
+      (match, val) => match.replace(val, () => `<span style="color:${colors.literal}">${val}</span>`),
     );
 
   return (

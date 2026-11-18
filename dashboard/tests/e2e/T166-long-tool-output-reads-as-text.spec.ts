@@ -10,13 +10,13 @@
  * - the call the plugin builds now, made by the plugin's own
  *   buildToolCallPayload from a PostToolUse hook (the cut stdout ends
  *   with "…" and the tool_result block names it, `["/stdout"]`, beside
- *   the content; the cut command likewise on the tool_use block): Pretty
+ *   the content; the cut command likewise on the tool_use block): Rendered
  *   shows stdout as terminal text with its line breaks, scrolling in a
  *   focusable region, stderr and the other fields, and what was cut;
  * - in the form earlier plugin versions stored (the JSON text cut at
- *   2000 characters with "…" appended), Pretty reads the fields up to
+ *   2000 characters with "…" appended), Rendered reads the fields up to
  *   the cut and says where the stored text ends;
- * - Raw shows the stored tool_result in both: its content as the stored
+ * - JSON shows the stored tool_result in both: its content as the stored
  *   string, and the block's list beside it;
  * - only the plugin wrote that earlier form: a tool_result in an
  *   Anthropic call's messages, reported by the sensor, whose text
@@ -60,7 +60,7 @@ const LONG_COMMAND = `go test ./api/internal/store/... -run 'TestStoreEvents' -v
 async function openPrompts(page: import("@playwright/test").Page, run: Run, eventId: string): Promise<Locator> {
   const drawer = await openEventDrawer(page, run, eventId);
   await drawer.getByTestId("detail-tab-prompts").click();
-  await expect(drawer.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "pretty");
+  await expect(drawer.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "rendered");
   return drawer;
 }
 
@@ -85,7 +85,7 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     removeRun(run);
   });
 
-  test("the call the plugin builds now: stdout as text, the cut values named, Raw as stored", async ({
+  test("the call the plugin builds now: stdout as text, the cut values named, JSON as stored", async ({
     page,
     request,
   }) => {
@@ -129,11 +129,11 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(tool.getByTestId("cut-note")).toHaveText("cut at 200 characters");
     await expect(tool.getByTestId("kv-label")).toHaveText(["command"]);
 
-    // Raw is the stored tool_result: its content is the stored string,
+    // JSON is the stored tool_result: its content is the stored string,
     // and the list sits beside it on the block.
-    await drawer.getByTestId("prompt-box-response-raw").click();
-    await expect(response).toHaveAttribute("data-view", "raw");
-    const raw = drawer.getByTestId("prompt-box-response-raw-json");
+    await drawer.getByTestId("prompt-box-response-json").click();
+    await expect(response).toHaveAttribute("data-view", "json");
+    const raw = drawer.getByTestId("prompt-box-response-json-view");
     await expect(raw).toContainText('"type": "tool_result"');
     await expect(raw).toContainText('"content": "{\\"stdout\\":\\"=== RUN');
     await expect(raw).toContainText(/"truncated": \[\s*"\/stdout"\s*\]/);
@@ -141,7 +141,7 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     await expect(response.getByTestId("tool-result-parsed")).toHaveCount(0);
   });
 
-  test("an output an earlier plugin version stored cut mid-way: read up to the cut, Raw as stored", async ({
+  test("an output an earlier plugin version stored cut mid-way: read up to the cut, JSON as stored", async ({
     page,
     request,
   }) => {
@@ -164,8 +164,8 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     // An input with no cut list shows no cut note.
     await expect(drawer.getByTestId("prompt-box-tool-0").getByTestId("cut-note")).toHaveCount(0);
 
-    await drawer.getByTestId("prompt-box-response-raw").click();
-    const raw = drawer.getByTestId("prompt-box-response-raw-json");
+    await drawer.getByTestId("prompt-box-response-json").click();
+    const raw = drawer.getByTestId("prompt-box-response-json-view");
     await expect(raw).toContainText('"content": "{\\"stdout\\":\\"=== RUN');
     await expect(raw).toContainText(`${CUT_MARK}"`);
     await expect(response.getByTestId("tool-result-recovered")).toHaveCount(0);
@@ -190,7 +190,7 @@ test.describe("T166 — a long tool output reads as text in the Prompts tab", ()
     const drawer = await openEventDrawer(page, run, storedEvent(events, "post_call").id);
     await drawer.getByTestId("detail-tab-prompts").click();
     const message = drawer.getByTestId("prompt-box-message-1");
-    await expect(message).toHaveAttribute("data-view", "pretty");
+    await expect(message).toHaveAttribute("data-view", "rendered");
     await expect(message.getByTestId("tool-result-raw")).toContainText('{"stdout":"=== RUN');
     await expect(message.getByTestId("tool-result-recovered")).toHaveCount(0);
     await expect(message.getByText(/the stored output ends at/)).toHaveCount(0);

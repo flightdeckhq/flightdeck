@@ -11,7 +11,7 @@
  * id. Opened in the event drawer, the assistant's box shows the call (the
  * tool's name, then its arguments as labelled fields) instead of
  * ``(empty)``, the reply is labelled ``tool result`` with the name of the
- * tool it answers, and Raw keeps the message as stored, ``arguments``
+ * tool it answers, and JSON keeps the message as stored, ``arguments``
  * still a string.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
@@ -127,9 +127,9 @@ test.describe("T180 — the Prompts tab shows an OpenAI call's tool calls", () =
     await expect(drawer.getByTestId("prompt-box-message-0")).toContainText("T180-USER");
     await expect(drawer.getByTestId("prompt-box-response")).toContainText(ANSWER);
 
-    // Raw keeps the assistant message as stored: arguments a string.
-    await drawer.getByTestId("prompt-box-message-1-raw").click();
-    const raw = drawer.getByTestId("prompt-box-message-1-raw-json");
+    // JSON keeps the assistant message as stored: arguments a string.
+    await drawer.getByTestId("prompt-box-message-1-json").click();
+    const raw = drawer.getByTestId("prompt-box-message-1-json-view");
     await expect(raw).toContainText('"content": null');
     await expect(raw).toContainText(`"arguments": "{\\"city\\":\\"${CITY}\\"}"`);
     await expect(raw).toContainText(`"id": "${callId}"`);

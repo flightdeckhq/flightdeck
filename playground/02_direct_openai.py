@@ -30,6 +30,7 @@ from flightdeck_sensor import Provider
 from _helpers import (
     CONTENT_LANDED_DEADLINE_S,
     CONTENT_POLL_S,
+    MS_PER_S,
     assert_event_landed,
     assert_reply_stored,
     assert_token_cost_fields,
@@ -59,8 +60,6 @@ EXPECTED_EMBEDDINGS_EVENTS = 2
 # Leading characters of the session id that tag this run's inputs, enough
 # to tell one run's from another's.
 SESSION_ID_TAG_CHARS = 8
-# Milliseconds per second, for the durations print_result reports.
-MS_PER_S = 1000
 # Streamed calls this script makes: sync chat stream, async chat stream,
 # plain chat iteration, Responses stream; each must land one metered
 # post_call.
@@ -110,7 +109,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions.create",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{r.usage.total_tokens} tokens",
     )
 
@@ -125,7 +124,7 @@ def main() -> None:
     print_result(
         "AsyncOpenAI().chat.completions.create",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Sync streaming.
@@ -138,7 +137,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions (sync stream)",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Async streaming -- must actually exercise async iteration so
@@ -160,7 +159,7 @@ def main() -> None:
     print_result(
         "AsyncOpenAI().chat.completions (async stream)",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
     )
 
     # Chat stream iterated with no ``with`` block, the pattern in the
@@ -177,7 +176,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions (plain iteration)",
         plain_chunks > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{plain_chunks} chunks",
     )
 
@@ -194,13 +193,13 @@ def main() -> None:
     print_result(
         "OpenAI().responses.create(stream=True)",
         resp_events > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{resp_events} events",
     )
 
     t0 = time.monotonic()
     openai.OpenAI().responses.create(model=MODEL, input="hi", max_output_tokens=16)
-    print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * 1000))
+    print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * MS_PER_S))
 
     # Structured outputs: chat.completions.parse(). The parsed object
     # carries the request id the SDK stamps on it; the post_call reports
@@ -217,7 +216,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions.parse",
         parsed.choices[0].message.parsed is not None,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{parsed.usage.total_tokens} tokens, request_id={parse_rid}",
     )
 
@@ -239,7 +238,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions.parse (max_tokens too small)",
         length_raised,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         "LengthFinishReasonError raised",
     )
     if not length_raised:
@@ -257,7 +256,7 @@ def main() -> None:
     print_result(
         "OpenAI().responses.parse",
         rparsed.output_parsed is not None,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{rparsed.usage.total_tokens} tokens, request_id={rparse_rid}",
     )
 
@@ -274,7 +273,7 @@ def main() -> None:
     print_result(
         "OpenAI().responses.with_raw_response.create",
         bool(raw_rid) and raw_body.usage.total_tokens > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{raw_body.usage.total_tokens} tokens, request_id={raw_rid}",
     )
 
@@ -291,7 +290,7 @@ def main() -> None:
     print_result(
         "OpenAI().chat.completions.with_raw_response.create",
         bool(raw_chat_rid) and raw_chat_body.usage.total_tokens > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"served {raw_chat_body.model}, request_id={raw_chat_rid}",
     )
 
@@ -309,7 +308,7 @@ def main() -> None:
     print_result(
         "OpenAI().responses.create(tools=[function])",
         len(function_calls) > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(function_calls)} function_call items",
     )
     if not function_calls:
@@ -337,7 +336,7 @@ def main() -> None:
     print_result(
         "Responses output items passed back are stored as the JSON sent",
         responses_ok,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(sent_items)} items",
     )
     if not responses_ok:
@@ -375,7 +374,7 @@ def main() -> None:
     print_result(
         "ChatCompletionMessage passed back is stored as the JSON sent",
         chat_ok,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(reply.tool_calls or [])} tool calls",
     )
     if not chat_ok:
@@ -395,7 +394,7 @@ def main() -> None:
     print_result(
         "OpenAI().responses.create(tools=[web_search_preview])",
         len(web_searches) > 0,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"{len(web_searches)} web_search_call items",
     )
     if not web_searches:
@@ -417,7 +416,7 @@ def main() -> None:
     print_result(
         "prompt cache usage reported by provider",
         True,
-        int((time.monotonic() - t0) * 1000),
+        int((time.monotonic() - t0) * MS_PER_S),
         f"cached_tokens={provider_cached} of {cached_call.usage.prompt_tokens} prompt tokens",
     )
 
@@ -426,14 +425,16 @@ def main() -> None:
     single_payload = "playground single-string capture"
     t0 = time.monotonic()
     openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=single_payload)
-    print_result("OpenAI().embeddings.create (single)", True, int((time.monotonic() - t0) * 1000))
+    print_result(
+        "OpenAI().embeddings.create (single)", True, int((time.monotonic() - t0) * MS_PER_S)
+    )
 
     # Embeddings: list of strings. Distinct shape so a single failure
     # narrows to one input form.
     list_payload = ["item one", "item two", "item three"]
     t0 = time.monotonic()
     openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=list_payload)
-    print_result("OpenAI().embeddings.create (list)", True, int((time.monotonic() - t0) * 1000))
+    print_result("OpenAI().embeddings.create (list)", True, int((time.monotonic() - t0) * MS_PER_S))
 
     assert_event_landed(session_id, "post_call", timeout=8)
 

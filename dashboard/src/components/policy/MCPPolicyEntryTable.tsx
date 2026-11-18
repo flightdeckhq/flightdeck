@@ -308,35 +308,39 @@ function DecisionPill({ entry }: { entry: MCPPolicyEntry }) {
   //   allow → green
   //   deny + warn → amber
   //   deny + block → red
-  //   deny + interactive → purple/info
+  //   deny + interactive → violet (the accent)
   //   deny + no enforcement → red (treated as block by default)
+  // Each pill is its hue's 12% tint with a border in the hue; the text is
+  // the hue too, except the accent's, which takes its text-safe shade.
   let label: string;
   let bg: string;
+  let border: string;
   let fg: string;
 
   if (entry.entry_kind === "allow") {
     label = "Allow";
     bg = "color-mix(in srgb, var(--success, #16a34a) 12%, transparent)";
-    fg = "var(--success, #16a34a)";
+    border = fg = "var(--success, #16a34a)";
   } else if (entry.enforcement === "warn") {
     label = "Deny · warn";
     bg = "color-mix(in srgb, var(--warning, #d97706) 12%, transparent)";
-    fg = "var(--warning, #d97706)";
+    border = fg = "var(--warning, #d97706)";
   } else if (entry.enforcement === "interactive") {
     label = "Deny · interactive";
-    bg = "color-mix(in srgb, var(--info, #7c3aed) 12%, transparent)";
-    fg = "var(--info, #7c3aed)";
+    bg = "color-mix(in srgb, var(--accent) 12%, transparent)";
+    border = "var(--accent)";
+    fg = "var(--accent-text)";
   } else {
     label = "Deny · block";
     bg = "color-mix(in srgb, var(--danger) 12%, transparent)";
-    fg = "var(--danger)";
+    border = fg = "var(--danger)";
   }
 
   return (
     <span
       className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium"
       style={{
-        borderColor: fg,
+        borderColor: border,
         background: bg,
         color: fg,
       }}

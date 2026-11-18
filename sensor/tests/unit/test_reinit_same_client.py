@@ -773,6 +773,56 @@ def test_an_anthropic_stream_manager_entered_in_the_next_session_is_policed_by_i
     assert refused == [("s2", "pre_call"), ("s2", "policy_block")]
 
 
+@pytest.mark.parametrize("blocked", [False, True], ids=["reported", "refused"])
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+@_CLIENTS
+def test_a_wrapped_clients_stream_helper_called_while_torn_down_is_the_next_sessions(
+    sensor: _Sensor, provider: respx.MockRouter, is_async: bool, sdk: str, blocked: bool
+) -> None:
+    """``stream()`` on a wrapped client between ``teardown()`` and the next
+    ``init()``: the request goes out on entry, so the next session
+    polices it (its BLOCK refuses the entry, with nothing sent) and
+    reports it, as any call made then."""
+    sensor.start("s1", patch=False)
+    raw = _anthropic_clients() if sdk == "anthropic" else _openai_clients()
+    wrapped = flightdeck_sensor.wrap(raw[1 if is_async else 0])
+    sensor.stop()
+    if sdk == "anthropic":
+        manager = wrapped.messages.stream(**ANTHROPIC_REQUEST)
+    else:
+        manager = _openai_manager(wrapped)
+    sensor.start("s2", patch=False)
+    session = flightdeck_sensor._session
+    assert session is not None
+    if blocked:
+        session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+    route = provider.routes["anthropic" if sdk == "anthropic" else "chat"]
+    sent = route.call_count
+
+    def enter() -> Any:
+        if sdk == "anthropic":
+            return _enter_anthropic(manager, [], is_async=is_async)
+        return _enter_async(manager) if is_async else _enter_sync(manager)
+
+    before = len(sensor._built)
+    if blocked:
+        with pytest.raises(flightdeck_sensor.BudgetExceededError):
+            sensor.run(enter)
+    else:
+        sensor.run(enter)
+    events = [
+        (sensor.names.get(p["session_id"]), p["event_type"])
+        for p in sensor._built[before:]
+        if p["event_type"] in ("pre_call", "policy_block", "post_call", "llm_error")
+    ]
+    if blocked:
+        assert route.call_count == sent
+        assert events == [("s2", "pre_call"), ("s2", "policy_block")]
+    else:
+        assert route.call_count == sent + 1
+        assert events == [("s2", "pre_call"), ("s2", "post_call")]
+
+
 @pytest.mark.parametrize(("first", "second"), [(False, True), (True, False)])
 @_CLIENTS
 def test_an_anthropic_stream_manager_takes_the_capture_setting_of_the_entry(

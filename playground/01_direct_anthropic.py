@@ -513,11 +513,15 @@ def _run_manager_lifecycle() -> None:
     """In a session of its own: a messages.stream() manager made and never
     entered sends nothing and reports nothing, and one entered twice sends
     two requests and reports two pre_call / post_call pairs, as the SDK's
-    manager sends them. A third manager, made in that session and entered
-    once the next has started, reports to the next one: its request goes
-    out on entry."""
+    manager sends them. A third manager, made in that session, and a
+    fourth, made on a wrapped client while no session is active, both
+    entered once the next session has started, report to the next one:
+    their requests go out on entry."""
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-direct-anthropic")
+    # Wrapped before patch(): with the classes patched, wrap() hands the
+    # client back as it is.
+    wrapped = flightdeck_sensor.wrap(anthropic.Anthropic())
     flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:01_direct_anthropic] manager lifecycle session_id={session_id}")
     client = anthropic.Anthropic()
@@ -537,6 +541,7 @@ def _run_manager_lifecycle() -> None:
     )
     kept = client.messages.stream(model=MODEL, max_tokens=5, messages=HI)
     flightdeck_sensor.teardown()
+    made_torn_down = wrapped.messages.stream(model=MODEL, max_tokens=5, messages=HI)
     first = _call_events_once_ended(session_id)
     ok = first == (MANAGER_ENTRIES, MANAGER_ENTRIES)
     print_result(
@@ -552,17 +557,20 @@ def _run_manager_lifecycle() -> None:
     init_sensor(next_id, flavor="playground-direct-anthropic")
     flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
     print(f"[playground:01_direct_anthropic] manager entered in the next session={next_id}")
-    with kept as stream:
-        reply = "".join(stream.text_stream)
+    replies = []
+    for manager in (kept, made_torn_down):
+        with manager as stream:
+            replies.append("".join(stream.text_stream))
     flightdeck_sensor.teardown()
     entered = _call_events_once_ended(next_id)
     unchanged = _call_events_once_ended(session_id)
-    ok = bool(reply) and entered == (1, 1) and unchanged == first
+    want = (len(replies), len(replies))
+    ok = all(replies) and entered == want and unchanged == first
     print_result(
-        "a manager made in one session and entered in the next lands in the next",
+        "managers made in one session and while torn down, entered in the next, land in the next",
         ok,
         0,
-        f"next session pre_call/post_call={entered} (want (1, 1)); first {first} -> {unchanged}",
+        f"next session pre_call/post_call={entered} (want {want}); first {first} -> {unchanged}",
     )
     if not ok:
         raise AssertionError(f"manager entered in the next session: {entered!r}, {unchanged!r}")

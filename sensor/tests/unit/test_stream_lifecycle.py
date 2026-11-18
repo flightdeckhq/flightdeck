@@ -177,14 +177,28 @@ def _messages(request: httpx.Request) -> httpx.Response:
     )
 
 
+def _completions(request: httpx.Request) -> httpx.Response:
+    """OpenAI's legacy completions API, streamed (litellm.text_completion)."""
+    head = {"id": "t", "object": "text_completion", "created": 1, "model": "gpt-3.5-turbo-instruct"}
+    chunks = [
+        {**head, "choices": [{"index": 0, "text": "Hi", "finish_reason": None, "logprobs": None}]},
+        {**head, "choices": [{"index": 0, "text": "!", "finish_reason": None, "logprobs": None}]},
+        {**head, "choices": [{"index": 0, "text": "", "finish_reason": "stop", "logprobs": None}]},
+    ]
+    return _event_stream(_sse([(None, c) for c in chunks] + [(None, "[DONE]")]))
+
+
 class _Gemini:
-    """The Gemini API over httpx.MockTransport, counting its requests."""
+    """The Gemini API, and litellm's own Responses API route, over
+    httpx.MockTransport, counting their requests."""
 
     def __init__(self) -> None:
         self.requests = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
+        if request.url.path.endswith("/responses"):
+            return _responses(request)
         chunk = {
             "candidates": [
                 {"content": {"role": "model", "parts": [{"text": "Hi"}]}, "finishReason": "STOP"}
@@ -210,6 +224,9 @@ def router() -> Iterator[respx.MockRouter]:
         )
         mocked.post("https://api.anthropic.com/v1/messages", name="messages").mock(
             side_effect=_messages
+        )
+        mocked.post("https://api.openai.com/v1/completions", name="completions").mock(
+            side_effect=_completions
         )
         yield mocked
 
@@ -275,6 +292,19 @@ def _client(sdk: str, is_async: bool, gemini: _Gemini) -> Any:
             httpx_async_client=httpx.AsyncClient(transport=transport),
         )
         return genai.Client(api_key="k", http_options=options)
+    if sdk == "litellm-http":
+        # litellm's own HTTP client (its Responses API route): its async
+        # client is not httpx's by default.
+        from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+
+        transport = httpx.MockTransport(gemini)
+        if is_async:
+            handler: Any = AsyncHTTPHandler()
+            handler.client = httpx.AsyncClient(transport=transport)
+        else:
+            handler = HTTPHandler()
+            handler.client = httpx.Client(transport=transport)
+        return handler
     if sdk == "anthropic":
         cls: Any = anthropic.AsyncAnthropic if is_async else anthropic.Anthropic
     else:
@@ -287,6 +317,20 @@ def _litellm(client: Any, is_async: bool) -> Any:
 
     call = litellm.acompletion if is_async else litellm.completion
     return call(**CHAT_KW, stream=True, client=client, api_key="k")
+
+
+def _litellm_text(client: Any, is_async: bool) -> Any:
+    import litellm
+
+    call = litellm.atext_completion if is_async else litellm.text_completion
+    return call(model="gpt-3.5-turbo-instruct", prompt="hi", stream=True, api_key="k")
+
+
+def _litellm_responses(client: Any, is_async: bool) -> Any:
+    import litellm
+
+    call = litellm.aresponses if is_async else litellm.responses
+    return call(**RESPONSES_KW, stream=True, client=client, api_key="k")
 
 
 def _gemini_stream(client: Any, is_async: bool) -> Any:
@@ -344,8 +388,15 @@ OBJECTS: dict[str, tuple[str, Callable[[Any, bool], Any], str]] = {
         "raw",
     ),
     "litellm completion(stream=True)": ("litellm", _litellm, "stream"),
+    "litellm text_completion(stream=True)": ("litellm", _litellm_text, "stream"),
+    "litellm responses(stream=True)": ("litellm-http", _litellm_responses, "stream"),
     "google-genai generate_content_stream": ("google", _gemini_stream, "stream"),
 }
+# The uses that never read a stream: litellm's text_completion stream
+# sends no request for them.
+_TEXT_COMPLETION_UNREAD = frozenset(
+    {"created, never used", "entered twice", "exited, then iterated", "closed, then iterated"}
+)
 SCENARIOS = (
     "created, never used",
     "entered twice",
@@ -528,12 +579,24 @@ def test_a_stream_object_lives_as_the_sdks_and_its_events_match_its_requests(
     scenario: str,
     router: respx.MockRouter,
     sensor: Callable[[bool], Session | None],
+    request: pytest.FixtureRequest,
 ) -> None:
     sdk = OBJECTS[name][0]
-    if sdk == "litellm":
+    if sdk.startswith("litellm"):
         pytest.importorskip("litellm")
     if sdk == "google":
         pytest.importorskip("google.genai")
+    if name == "litellm text_completion(stream=True)" and scenario in _TEXT_COMPLETION_UNREAD:
+        request.applymarker(
+            pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "litellm's text_completion stream sends its request at its first "
+                    "read, and the sensor emits the pre_call at the call: a stream "
+                    "never read reports a call that was never made"
+                ),
+            )
+        )
     gemini = _Gemini()
 
     def requests() -> int:
@@ -842,6 +905,97 @@ def test_a_degrade_is_decided_at_entry_as_for_a_plain_call(
     assert (pre_call["policy_decision_pre"] or {}).get("decision") == (
         "degrade" if at_entry else None
     )
+
+
+_HELPERS_MADE_WITHOUT_SESSION = pytest.mark.parametrize(
+    "name",
+    [
+        "anthropic messages.stream()",
+        "anthropic beta.messages.stream()",
+        "openai chat.completions.stream()",
+        "openai responses.stream()",
+    ],
+)
+
+
+@pytest.mark.parametrize("at_entry", ["a blocking session", "a session", "no session"])
+@_HELPERS_MADE_WITHOUT_SESSION
+@_CLIENTS
+def test_a_stream_helper_called_with_no_session_finds_its_session_on_entry(
+    name: str,
+    is_async: bool,
+    at_entry: str,
+    router: respx.MockRouter,
+    sensor: Callable[[bool], Session | None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream helper called on a patched client while no session is
+    active (an OpenAI client keeps the resource it was handed under a
+    session) sends its request on entry, so the entry is a call made
+    then: refused by a blocking session with nothing sent, reported to a
+    session once, and the SDK's own, sent with no event, with none."""
+    sdk, make, _kind = OBJECTS[name]
+    session = sensor(True)
+    assert session is not None
+    client = _client(sdk, is_async, _Gemini())
+    for attr in ("chat", "responses"):
+        getattr(client, attr, None)
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    manager = make(client, is_async)
+    if at_entry != "no session":
+        monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    if at_entry == "a blocking session":
+        session.policy = PolicyCache(token_limit=1, block_at_pct=1)
+        session._tokens_used = 10
+    sent = sum(route.call_count for route in router.routes)
+
+    async def _enter() -> None:
+        if is_async:
+            async with manager as stream:
+                await _read(stream, True)
+        else:
+            with manager as stream:
+                await _read(stream, False)
+
+    if at_entry == "a blocking session":
+        with pytest.raises(BudgetExceededError):
+            asyncio.run(_enter())
+    else:
+        asyncio.run(_enter())
+    requests = sum(route.call_count for route in router.routes) - sent
+    kinds = [e["event_type"] for e in _events(session)]
+    if at_entry == "a blocking session":
+        assert (requests, kinds) == (0, ["pre_call", "policy_block"])
+    elif at_entry == "a session":
+        assert (requests, kinds) == (1, ["pre_call", "post_call"])
+    else:
+        assert (requests, kinds) == (1, [])
+
+
+@_CLIENTS
+def test_an_iterator_given_with_no_session_reaches_the_sdk_and_is_counted_on_entry(
+    is_async: bool,
+    router: respx.MockRouter,
+    sensor: Callable[[bool], Session | None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no session at the call, the sensor still reads an iterator
+    among a stream helper's arguments when ``stream()`` is called, as the
+    SDK may read it then (anthropic 0.86): the SDK sends its items, and
+    the entry's estimate counts them."""
+    session = sensor(True)
+    assert session is not None
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    given = iter([{"role": "user", "content": "a message long enough to be counted"}])
+    manager = _anthropic(is_async).messages.stream(
+        model=ANTHROPIC_KW["model"], max_tokens=8, messages=given
+    )
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    asyncio.run(_enter_and_read(manager, is_async))
+    sent = json.loads(router.routes["messages"].calls.last.request.content)
+    assert sent["messages"] == [{"role": "user", "content": "a message long enough to be counted"}]
+    (pre_call,) = [e for e in _events(session) if e["event_type"] == "pre_call"]
+    assert pre_call["tokens_input"] > 0
 
 
 @_CLIENTS

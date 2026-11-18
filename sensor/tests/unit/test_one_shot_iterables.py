@@ -1249,16 +1249,69 @@ def test_a_blocked_call_with_a_failing_iterator_sends_nothing(
     is_async: bool,
     where: str,
 ) -> None:
-    """The policy check runs before the SDK is touched, wherever the
-    failing iterator is: a BLOCK raises and no request goes out."""
+    """Wherever the failing iterator is, a BLOCK sends nothing. The policy
+    check runs before the request goes out, and on every entry point the
+    SDK reads the iterator no earlier than that, so the BLOCK raises
+    first, as for any call. One exception: Anthropic's
+    ``messages.stream()`` on a release whose ``stream()`` reads its
+    arguments (anthropic 0.86). That ``stream()`` raises the iterator's
+    error before any request is made, so nothing is sent or refused, and
+    the caller gets what it gets without the sensor at that moment: the
+    call is reported as one the SDK refused (``pre_call`` and
+    ``llm_error``, no policy check). A release that reads them on entry
+    (2.x) returns the manager, and the BLOCK refuses the entry."""
     sdk, route, call = POLICED_ENTRIES[name]
     routed = provider.routes[route]
+    refused_by_stream = name == "anthropic stream()" and _raises_at_the_call(
+        lambda: call(_client(sdk, is_async), where)
+    )
     session, client = _sensored("patched", sdk, is_async, monkeypatch, capture=True)
     _blocking(session)
     sent = routed.call_count
-    with pytest.raises(flightdeck_sensor.BudgetExceededError):
-        _finish(call(client, where), is_async)
+    if refused_by_stream:
+        with pytest.raises(_Midway):
+            call(client, where)
+        assert _call_events(session) == ["pre_call", "llm_error"]
+    else:
+        with pytest.raises(flightdeck_sensor.BudgetExceededError):
+            _finish(call(client, where), is_async)
+        kinds = [e["event_type"] for e in _events(session)]
+        assert kinds[-2:] == ["pre_call", "policy_block"]
     assert routed.call_count == sent
+
+
+def _raises_at_the_call(make: Callable[[], Any]) -> bool:
+    """Whether the call itself raises the iterator's exception, without
+    the sensor; what it returns otherwise is closed, never entered."""
+    try:
+        made = make()
+    except _Midway:
+        return True
+    base._discard(made)
+    return False
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_blocked_stream_helper_whose_iterator_reads_is_refused_at_entry(
+    provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, is_async: bool
+) -> None:
+    """An iterator ``messages.stream()`` reads without failing, when it is
+    called (anthropic 0.86) or on entry (2.x): ``stream()`` returns the
+    manager on either release, and the BLOCK refuses the entry before the
+    request goes out, reporting the refusal."""
+    routed = provider.routes["anthropic"]
+    session, client = _sensored("patched", "anthropic", is_async, monkeypatch, capture=True)
+    _blocking(session)
+    sent = routed.call_count
+    manager = client.messages.stream(
+        model=ANTHROPIC_MODEL, max_tokens=10, messages=iter([{"role": "user", "content": PROMPT}])
+    )
+    assert _events(session) == []
+    with pytest.raises(flightdeck_sensor.BudgetExceededError):
+        _finish(manager, is_async)
+    assert routed.call_count == sent
+    kinds = [e["event_type"] for e in _events(session)]
+    assert kinds == ["pre_call", "policy_block"]
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])

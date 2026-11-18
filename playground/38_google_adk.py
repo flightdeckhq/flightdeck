@@ -169,9 +169,9 @@ class _ModelResponses:
         self.responses.append(llm_response)
 
     def tokens(self) -> tuple[int, int]:
-        """The input and output tokens the responses reported, as the
-        sensor counts a call's: the prompt with the tool-use prompt, the
-        candidates with the thoughts."""
+        """The input and output tokens the responses that report usage
+        reported, as the sensor counts a call's: the prompt with the
+        tool-use prompt, the candidates with the thoughts."""
         tokens_in = tokens_out = 0
         for response in self.responses:
             usage = response.usage_metadata
@@ -180,6 +180,10 @@ class _ModelResponses:
             tokens_in += (usage.prompt_token_count or 0) + (usage.tool_use_prompt_token_count or 0)
             tokens_out += (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
         return tokens_in, tokens_out
+
+    def without_usage(self) -> int:
+        """How many responses reported no usage."""
+        return sum(response.usage_metadata is None for response in self.responses)
 
 
 def _agents(model: Any, seen: _ModelResponses) -> Any:
@@ -338,11 +342,37 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         sum(p.get("tokens_input") or 0 for p in posts),
         sum(p.get("tokens_output") or 0 for p in posts),
     )
+    reported = seen.tokens()
+    missing = seen.without_usage()
+    # A check over no reported usage would pass whatever the post_calls
+    # carry.
     _check(
-        f"{label}: the post_calls' tokens are the tokens the model responses reported",
-        tokens == seen.tokens(),
-        (tokens, seen.tokens()),
+        f"{label}: at least one model response reported usage",
+        missing < requests,
+        f"{missing} of {requests} reported none",
     )
+    if missing:
+        # The sensor records a call whose response reports no usage with
+        # its pre-call estimate as the input tokens and no output tokens:
+        # the output tokens still add up exactly, the input tokens are at
+        # least the reported ones.
+        print(
+            f"  note: {missing} of {requests} model responses reported no usage; "
+            "their post_calls carry the sensor's estimate as input tokens, so the "
+            "input tokens are compared as at least the reported ones"
+        )
+        _check(
+            f"{label}: the post_calls' output tokens are the ones the model responses "
+            "reported, their input tokens at least those",
+            tokens[1] == reported[1] and tokens[0] >= reported[0],
+            (tokens, reported),
+        )
+    else:
+        _check(
+            f"{label}: the post_calls' tokens are the tokens the model responses reported",
+            tokens == reported,
+            (tokens, reported),
+        )
     _check(
         f"{label}: every model call's provider is {provider}",
         {p.get("provider") for p in posts} == {provider},

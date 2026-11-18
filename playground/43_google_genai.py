@@ -45,16 +45,18 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+from flightdeck_sensor import BudgetExceededError, Provider
+from flightdeck_sensor.core.policy import PolicyCache
+
 from _helpers import (
     assert_token_cost_fields,
     fetch_event_content,
     fetch_events_for_session,
+    gemini_usage_tokens,
     init_sensor,
     print_result,
     wait_for_dev_stack,
 )
-from flightdeck_sensor import BudgetExceededError, Provider
-from flightdeck_sensor.core.policy import PolicyCache
 
 FLAVOR = "playground-google-genai"
 MODEL = "gemini-3.1-flash-lite"
@@ -133,19 +135,6 @@ def _afc_rounds(response: Any) -> tuple[int, list[str]]:
     asked = [p.function_call.name for c in turns for p in (c.parts or []) if p.function_call]
     asked += [c.name for c in response.function_calls or []]
     return len(turns) + 1, asked
-
-
-def _usage_tokens(content: dict[str, Any]) -> tuple[int, int] | None:
-    """The input and output tokens a stored response body reports, as the
-    sensor counts them: the prompt with the tool-use prompt, the
-    candidates with the thoughts."""
-    usage = (content.get("response") or {}).get("usageMetadata")
-    if not isinstance(usage, dict):
-        return None
-    return (
-        usage.get("promptTokenCount", 0) + usage.get("toolUsePromptTokenCount", 0),
-        usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
-    )
 
 
 def _think(client: genai.Client) -> tuple[str, Any, list[str]]:
@@ -340,7 +329,7 @@ def main() -> None:
     # Each post_call's tokens are what its stored response body reports,
     # so the session's total is the responses' total.
     contents = {p["id"]: fetch_event_content(p["id"]) for p in post_calls}
-    reported = {pid: _usage_tokens(c) for pid, c in contents.items()}
+    reported = {pid: gemini_usage_tokens(c.get("response") or {}) for pid, c in contents.items()}
     mismatched = [
         (p.get("model"), p.get("tokens_input"), p.get("tokens_output"), reported[p["id"]])
         for p in post_calls
@@ -354,7 +343,11 @@ def main() -> None:
     )
 
     def by_response(response: Any) -> dict[str, Any] | None:
-        """The post_call whose stored response is ``response``."""
+        """The post_call whose stored response is ``response``; None when
+        the response carries no id (a stored body without one would match
+        it otherwise)."""
+        if response.response_id is None:
+            return None
         for p in post_calls:
             stored = contents[p["id"]].get("response") or {}
             if stored.get("responseId") == response.response_id:

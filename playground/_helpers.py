@@ -19,7 +19,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------
 # Endpoints + auth — single source of truth for every playground script.
 # ---------------------------------------------------------------------
@@ -486,13 +485,12 @@ def mcp_server_params(module: str) -> Any:
     Imports the mcp SDK lazily so playground scripts that don't import
     mcp at all still load on a clean venv.
     """
-    from mcp import StdioServerParameters
     import sys
 
+    from mcp import StdioServerParameters
+
     server_env = dict(os.environ)
-    server_env["PYTHONPATH"] = (
-        _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
-    )
+    server_env["PYTHONPATH"] = _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", module],
@@ -579,9 +577,166 @@ def wait_for_streamed_post_calls(
         streamed = [
             e
             for e in events
-            if e.get("event_type") == "post_call"
-            and (e.get("payload") or {}).get("streaming")
+            if e.get("event_type") == "post_call" and (e.get("payload") or {}).get("streaming")
         ]
         if len(streamed) >= expected or time.monotonic() > deadline:
             return events, streamed
         time.sleep(STREAMED_POST_CALL_POLL_S)
+
+
+# ---------------------------------------------------------------------
+# Gemini calls a framework makes through google-genai.
+# ---------------------------------------------------------------------
+
+# How long a section waits for its session's events to land: the worker
+# writes within a second or two on an idle stack, and 30 s covers one
+# loaded by other runs.
+EVENTS_LANDED_DEADLINE_S = 30.0
+# Poll gap while waiting for them: prompt, without hammering the API.
+EVENTS_POLL_S = 0.5
+# The platform the sensor reports for a google-genai client on the
+# Gemini API (Vertex AI's is "vertex").
+GEMINI_API_PLATFORM = "gemini-api"
+# How much of what a failed check saw its FAIL line quotes: enough to
+# read the events or the stored bodies, short enough to scan.
+FAILURE_DETAIL_CHARS = 1500
+
+
+def gemini_usage_tokens(response: dict[str, Any]) -> tuple[int, int] | None:
+    """The input and output tokens a stored Gemini response body reports,
+    as the sensor counts a call's: the prompt with the tool-use prompt,
+    the candidates with the thoughts. None when it reports no usage."""
+    usage = response.get("usageMetadata")
+    if not isinstance(usage, dict):
+        return None
+    return (
+        usage.get("promptTokenCount", 0) + usage.get("toolUsePromptTokenCount", 0),
+        usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0),
+    )
+
+
+def gemini_reply_text(response: dict[str, Any]) -> str:
+    """The answer a stored Gemini response body holds: its first
+    candidate's text parts, its thoughts left out."""
+    candidates = response.get("candidates") or [{}]
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    return "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+
+
+def events_landed(session_id: str, event_type: str, least: int) -> list[dict[str, Any]]:
+    """The session's events of ``event_type`` once ``least`` of them have
+    landed, or those there at ``EVENTS_LANDED_DEADLINE_S``."""
+    deadline = time.monotonic() + EVENTS_LANDED_DEADLINE_S
+    while True:
+        events = fetch_events_for_session(session_id, expect_event_types=[event_type])
+        found = [e for e in events if e.get("event_type") == event_type]
+        if len(found) >= least or time.monotonic() > deadline:
+            return found
+        time.sleep(EVENTS_POLL_S)
+
+
+def _gemini_check(label: str, ok: bool, detail: Any) -> None:
+    print_result(label, ok, 0, "" if ok else str(detail)[:FAILURE_DETAIL_CHARS])
+    if not ok:
+        raise AssertionError(f"{label}: {detail}")
+
+
+def assert_gemini_calls(
+    session_id: str,
+    label: str,
+    *,
+    requests: int,
+    replies: dict[str, str],
+    asked: list[str],
+    thinking_calls: int,
+    served_models: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """What a framework's Gemini calls must leave on its session, which has
+    ended (the checks wait for its ``session_end``), in Gemini's terms:
+
+    * one ``post_call`` per request the provider billed (``requests``,
+      counted by the caller from what it did), each opened by one
+      ``pre_call``;
+    * ``provider=google`` on the Gemini API platform, with the requested
+      and the canonical model ids (``assert_token_cost_fields``);
+    * each ``post_call`` names the model that answered, its stored
+      response's ``modelVersion`` (one of ``served_models`` when the
+      framework reports it), and carries the tokens that response
+      reports, its thoughts as reasoning tokens, and at least
+      ``thinking_calls`` of them (the calls asked to think) report thoughts;
+    * for each prompt of ``replies`` (the text of a call's one user turn,
+      mapped to the text the framework returned), the stored request is
+      the body sent, that turn in the API's spelling, and the stored
+      response is the reply;
+    * one ``tool_call`` per function the model asked for (``asked``).
+
+    Returns the ``post_call`` events."""
+    posts = events_landed(session_id, "post_call", requests)
+    _gemini_check(
+        f"{label}: one post_call per billed request ({requests})",
+        len(posts) == requests,
+        [(p.get("model"), p.get("tokens_total")) for p in posts],
+    )
+    kinds = [
+        e.get("event_type")
+        for e in fetch_events_for_session(
+            session_id,
+            expect_event_types=["post_call", "session_end"],
+            timeout_s=EVENTS_LANDED_DEADLINE_S,
+        )
+    ]
+    _gemini_check(
+        f"{label}: one pre_call per call, each closed by a post_call",
+        kinds.count("pre_call") == kinds.count("post_call") == requests
+        and "llm_error" not in kinds,
+        {k: kinds.count(k) for k in sorted({str(k) for k in kinds})},
+    )
+    assert_token_cost_fields(session_id, provider="google", platform=GEMINI_API_PLATFORM)
+    contents = {p["id"]: fetch_event_content(p["id"]) for p in posts}
+    problems = []
+    thinking = 0
+    for p in posts:
+        stored = contents[p["id"]]
+        response = stored.get("response") or {}
+        served = response.get("modelVersion")
+        usage = response.get("usageMetadata") or {}
+        thoughts = usage.get("thoughtsTokenCount", 0)
+        thinking += bool(thoughts)
+        reported = gemini_usage_tokens(response)
+        if stored.get("provider") != "google" or p.get("model") != served:
+            problems.append(("model", p.get("model"), stored.get("provider"), served))
+        if served_models is not None and served not in served_models:
+            problems.append(("framework's model", served, sorted(served_models)))
+        if reported is None or reported != (p.get("tokens_input"), p.get("tokens_output")):
+            problems.append(("tokens", p.get("tokens_input"), p.get("tokens_output"), reported))
+        if thoughts and p.get("tokens_reasoning") != thoughts:
+            problems.append(("reasoning", p.get("tokens_reasoning"), thoughts))
+    _gemini_check(
+        f"{label}: each post_call names the served model and the tokens its response "
+        "reported, thoughts as reasoning",
+        not problems,
+        problems,
+    )
+    # Without a call that thought, the reasoning half of the check above
+    # held over nothing.
+    _gemini_check(
+        f"{label}: the calls asked to think report their thoughts ({thinking_calls})",
+        thinking >= thinking_calls,
+        [(p.get("model"), p.get("tokens_reasoning")) for p in posts],
+    )
+    for prompt, reply in replies.items():
+        sent = [{"parts": [{"text": prompt}], "role": "user"}]
+        match = [c for c in contents.values() if c.get("input") == sent]
+        stored_reply = gemini_reply_text(match[0].get("response") or {}) if match else None
+        _gemini_check(
+            f"{label}: {prompt!r} is stored as sent, and its reply as received",
+            len(match) == 1 and (stored_reply or "").strip() == reply.strip(),
+            (len(match), stored_reply, reply),
+        )
+    tools = events_landed(session_id, "tool_call", len(asked))
+    _gemini_check(
+        f"{label}: one tool_call per function the model asked for ({len(asked)})",
+        sorted(t.get("tool_name") or "" for t in tools) == sorted(asked),
+        ([t.get("tool_name") for t in tools], asked),
+    )
+    return posts

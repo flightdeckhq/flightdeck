@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import ModuleType
 
+    from tests.conftest import ControlPlaneRequests
+
 # The server values the sensor, the Claude Code plugin and the
 # playground resolve alike.
 _SERVER_URL_CASES = Path(__file__).resolve().parents[3] / "contracts" / "server_urls.json"
@@ -311,13 +313,22 @@ def test_without_userinfo_reads_the_authority_only(server: str, stripped: str) -
     assert flightdeck_sensor._without_userinfo(server) == stripped
 
 
-def test_an_at_sign_after_the_host_is_not_credentials(caplog: pytest.LogCaptureFixture) -> None:
+def test_an_at_sign_after_the_host_is_not_credentials(
+    caplog: pytest.LogCaptureFixture, control_plane_requests: ControlPlaneRequests
+) -> None:
     with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
         flightdeck_sensor.init(server="https://good.example#@evil.example", token="tok", quiet=True)
     cfg = _config()
     assert cfg.server == "https://good.example/ingest"
     assert cfg.api_url == "https://good.example/api"
     assert not any("carries credentials" in r.getMessage() for r in caplog.records)
+    preflight = control_plane_requests.preflight_policy().url
+    assert (preflight.scheme, preflight.netloc, preflight.path) == (
+        "https",
+        "good.example",
+        "/api/v1/policy",
+    )
+    assert {r.url.netloc for r in control_plane_requests.sent} == {"good.example"}
 
 
 @pytest.mark.parametrize(
@@ -339,7 +350,7 @@ def test_resolve_server_urls_leaves_a_value_it_cannot_use(server: str, resolved:
 
 
 def test_credentials_in_the_server_url_are_dropped_with_a_warning(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, control_plane_requests: ControlPlaneRequests
 ) -> None:
     with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
         flightdeck_sensor.init(
@@ -351,6 +362,14 @@ def test_credentials_in_the_server_url_are_dropped_with_a_warning(
     messages = [r.getMessage() for r in caplog.records]
     assert any("carries credentials; they are ignored" in m for m in messages)
     assert not any("hunter2" in m for m in messages)
+    # The requests carry the token, never the URL's credentials.
+    preflight = control_plane_requests.preflight_policy()
+    assert (preflight.url.netloc, preflight.url.path) == (
+        "flightdeck.example.com",
+        "/api/v1/policy",
+    )
+    assert preflight.headers["Authorization"] == "Bearer tok"
+    assert not any("hunter2" in repr(r) for r in control_plane_requests.sent)
 
 
 def test_a_missing_token_error_does_not_repeat_the_url_credentials() -> None:
@@ -361,7 +380,7 @@ def test_a_missing_token_error_does_not_repeat_the_url_credentials() -> None:
 
 
 def test_the_override_warning_does_not_repeat_url_credentials(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, control_plane_requests: ControlPlaneRequests
 ) -> None:
     with _clean_env(), caplog.at_level(logging.WARNING, logger="flightdeck_sensor"):
         os.environ["FLIGHTDECK_SERVER"] = "https://env:hunter2@a.example.com"
@@ -370,6 +389,9 @@ def test_the_override_warning_does_not_repeat_url_credentials(
     assert "overrides the server=" in messages
     assert "hunter2" not in messages and "swordfish" not in messages
     assert _config().server == "https://a.example.com/ingest"
+    # Every request goes to the environment's server, without its credentials.
+    control_plane_requests.preflight_policy()
+    assert {r.url.netloc for r in control_plane_requests.sent} == {"a.example.com"}
 
 
 def test_a_blank_server_is_still_an_error() -> None:
@@ -386,15 +408,27 @@ def test_a_blank_server_is_still_an_error() -> None:
         "https://flightdeck.example.com/ingest",
     ],
 )
-def test_base_and_ingestion_forms_reach_the_same_endpoints(server: str) -> None:
+def test_base_and_ingestion_forms_reach_the_same_endpoints(
+    server: str, control_plane_requests: ControlPlaneRequests
+) -> None:
     with _clean_env():
         flightdeck_sensor.init(server=server, token="tok", quiet=True)
     cfg = _config()
     assert cfg.server == "https://flightdeck.example.com/ingest"
     assert cfg.api_url == "https://flightdeck.example.com/api"
+    preflight = control_plane_requests.preflight_policy().url
+    assert (preflight.netloc, preflight.path) == ("flightdeck.example.com", "/api/v1/policy")
+    # The session's events (each refused post is retried once).
+    events = control_plane_requests.to("POST", "/v1/events")
+    assert events
+    assert {(e.url.netloc, e.url.path) for e in events} == {
+        ("flightdeck.example.com", "/ingest/v1/events")
+    }
 
 
-def test_a_host_named_ingest_keeps_its_api_on_that_host() -> None:
+def test_a_host_named_ingest_keeps_its_api_on_that_host(
+    control_plane_requests: ControlPlaneRequests,
+) -> None:
     """``https://ingest.example.com`` used to be read as an ingestion URL
     (its ``//ingest`` matched the path check): no ``/ingest`` was added,
     and the API URL became ``https://api.example.com``, another host,
@@ -406,13 +440,21 @@ def test_a_host_named_ingest_keeps_its_api_on_that_host() -> None:
     cfg = _config()
     assert cfg.server == "https://ingest.example.com/ingest"
     assert cfg.api_url == "https://ingest.example.com/api"
+    # The access token goes to that host and no other.
+    preflight = control_plane_requests.preflight_policy()
+    assert (preflight.url.netloc, preflight.url.path) == ("ingest.example.com", "/api/v1/policy")
+    assert {r.url.netloc for r in control_plane_requests.sent} == {"ingest.example.com"}
 
 
-def test_api_url_override_still_wins_over_the_derived_one() -> None:
+def test_api_url_override_still_wins_over_the_derived_one(
+    control_plane_requests: ControlPlaneRequests,
+) -> None:
     with _clean_env():
         os.environ["FLIGHTDECK_API_URL"] = "https://api.internal.example.com"
         flightdeck_sensor.init(server="https://flightdeck.example.com", token="tok", quiet=True)
     assert _config().api_url == "https://api.internal.example.com"
+    preflight = control_plane_requests.preflight_policy().url
+    assert (preflight.netloc, preflight.path) == ("api.internal.example.com", "/v1/policy")
 
 
 # ---------------------------------------------------------------------

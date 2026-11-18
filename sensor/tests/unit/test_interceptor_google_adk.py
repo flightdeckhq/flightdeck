@@ -16,9 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import subprocess
-import sys
-import textwrap
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -31,8 +28,10 @@ from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.interceptor import google_adk as wrap
 from flightdeck_sensor.transport.client import ControlPlaneClient
+from tests.unit._child_process import run_python
 
 if TYPE_CHECKING:
+    import subprocess
     from collections.abc import Iterator
 
 ROOT = "22222222-2222-4222-8222-222222222222"
@@ -1189,13 +1188,8 @@ def test_adk_gemini_calls_are_metered_once_each_in_the_agents_scope(
 
 
 def _python(code: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-        check=False,
-    )
+    """``code`` in a fresh interpreter, under the network guard."""
+    return run_python(code, timeout=SUBPROCESS_TIMEOUT_S)
 
 
 def test_importing_the_sensor_imports_no_adk() -> None:

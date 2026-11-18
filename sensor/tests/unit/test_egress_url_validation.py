@@ -22,6 +22,8 @@ from flightdeck_sensor.core.types import SensorConfig, validate_egress_url
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from tests.conftest import ControlPlaneRequests
+
 
 @contextmanager
 def _clean_env() -> Iterator[None]:
@@ -174,12 +176,8 @@ def test_init_rejects_non_local_http() -> None:
         )
 
 
-def test_init_env_flag_enables_insecure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_env_flag_enables_insecure(control_plane_requests: ControlPlaneRequests) -> None:
     with _clean_env(), _no_session():
-        monkeypatch.setattr(
-            "flightdeck_sensor.core.session.Session.start",
-            lambda self: None,
-        )
         os.environ["FLIGHTDECK_ALLOW_INSECURE_TRANSPORT"] = "true"
         flightdeck_sensor.init(
             server="http://stack.internal/ingest",
@@ -188,6 +186,13 @@ def test_init_env_flag_enables_insecure(monkeypatch: pytest.MonkeyPatch) -> None
         )
         assert flightdeck_sensor._session is not None
         assert flightdeck_sensor._session.config.allow_insecure_transport is True
+    # With the flag, init() reaches the non-local server over plain http.
+    preflight = control_plane_requests.preflight_policy().url
+    assert (preflight.scheme, preflight.netloc, preflight.path) == (
+        "http",
+        "stack.internal",
+        "/api/v1/policy",
+    )
 
 
 def test_init_warns_on_env_server_override(

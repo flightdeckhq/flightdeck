@@ -5,7 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import signal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +14,9 @@ from flightdeck_sensor.core.exceptions import ConfigurationError
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import Directive, DirectiveAction, SensorConfig
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from tests.conftest import ControlPlaneRequests
 
 
 def _make_session(
@@ -405,8 +408,23 @@ def test_post_event_attached_logs_info_once(
 # these tests lock that behaviour in.
 
 
+def _assert_sent_to_stack_internal(requests: ControlPlaneRequests) -> None:
+    """The preflight goes to the API on the server's host, and the session's
+    events to its ingestion URL."""
+    preflight = requests.preflight_policy().url
+    assert (preflight.scheme, preflight.netloc, preflight.path) == (
+        "http",
+        "stack.internal",
+        "/api/v1/policy",
+    )
+    # session_start and session_end (each refused post is retried once).
+    events = requests.to("POST", "/v1/events")
+    assert events
+    assert {(e.url.netloc, e.url.path) for e in events} == {("stack.internal", "/ingest/v1/events")}
+
+
 def test_init_appends_ingest_suffix_when_missing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, control_plane_requests: ControlPlaneRequests
 ) -> None:
     """Server URL without /ingest gets the suffix appended.
 
@@ -430,10 +448,11 @@ def test_init_appends_ingest_suffix_when_missing(
         assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()
+    _assert_sent_to_stack_internal(control_plane_requests)
 
 
 def test_init_preserves_ingest_suffix_when_present(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, control_plane_requests: ControlPlaneRequests
 ) -> None:
     """Server URL that already ends with /ingest is left unchanged.
 
@@ -456,10 +475,11 @@ def test_init_preserves_ingest_suffix_when_present(
         assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()
+    _assert_sent_to_stack_internal(control_plane_requests)
 
 
 def test_init_drops_the_trailing_slash_after_ingest(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, control_plane_requests: ControlPlaneRequests
 ) -> None:
     """Server URL with /ingest/ (trailing slash) is the ingestion URL.
 
@@ -484,3 +504,4 @@ def test_init_drops_the_trailing_slash_after_ingest(
         assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
     finally:
         flightdeck_sensor.teardown()
+    _assert_sent_to_stack_internal(control_plane_requests)

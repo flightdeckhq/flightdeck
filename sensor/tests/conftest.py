@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import errno
+import importlib.util
 import json
 import os
+import sys
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -41,13 +48,19 @@ if _sdk_uses_httpx2():
 
     httpx2.alias_httpx()
 
+import flightdeck_sensor  # noqa: E402
+from flightdeck_sensor.core.session import Session  # noqa: E402
 from flightdeck_sensor.core.types import SensorConfig  # noqa: E402
 from flightdeck_sensor.providers.anthropic import AnthropicProvider  # noqa: E402
 from flightdeck_sensor.transport.client import ControlPlaneClient  # noqa: E402
+from tests import network_guard  # noqa: E402
 from tests.litellm_logging_worker import retire_litellm_logging_worker  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
+
+# The session's own start, kept before any test module stubs it.
+_REAL_SESSION_START = Session.start
 
 
 @pytest.fixture(autouse=True)
@@ -64,116 +77,80 @@ def _litellm_logging_worker_retired() -> Iterator[None]:
     retire_litellm_logging_worker()
 
 
-# Hosts a unit test may connect to: the in-process control-plane stubs.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# The running test's refused lookups while a test runs: the audit hook
+# below, installed once for the whole process, reports into it.
+_RUNNING_TEST_LOOKUPS: list[str] | None = None
 
 
-def _host_text(host: object) -> str | None:
-    if isinstance(host, bytes):
-        return host.decode("ascii", errors="replace")
-    return host if isinstance(host, str) else None
+def _record_for_the_running_test(kind: str, host: object) -> None:
+    if kind == network_guard.LOOKUP and _RUNNING_TEST_LOOKUPS is not None:
+        _RUNNING_TEST_LOOKUPS.append(repr(host))
 
 
-def _is_loopback_name(host: object) -> bool:
-    """``localhost`` (or a name under it) or a loopback address."""
-    import ipaddress
-
-    text = _host_text(host)
-    if text is None:
-        return False
-    lowered = text.lower().rstrip(".")
-    if lowered == "localhost" or lowered.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(lowered.split("%", 1)[0]).is_loopback
-    except ValueError:
-        return False
-
-
-def _resolves_without_dns(host: object) -> bool:
-    """Whether a forward lookup of ``host`` stays on the machine: no host
-    (a passive lookup for binding), a loopback name, or an address
-    literal, which the resolver returns without asking anyone (connecting
-    to it is refused separately unless it is loopback)."""
-    import ipaddress
-
-    if host is None or _is_loopback_name(host):
-        return True
-    text = _host_text(host)
-    if text is None:
-        return False
-    try:
-        ipaddress.ip_address(text.split("%", 1)[0])
-    except ValueError:
-        return False
-    return True
+sys.addaudithook(
+    network_guard.audit_hook(
+        _record_for_the_running_test, enabled=lambda: _RUNNING_TEST_LOOKUPS is not None
+    )
+)
 
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Refuse every connection that leaves the machine, and every name
-    lookup that would. A provider mock that stops matching (an SDK moving
-    to a new HTTP library, a changed route) must fail the test, not send a
-    request to the real API; and a lookup (a library fetching a tokenizer
-    or a price list) must not leave the machine either. A refused lookup
-    fails the test even when the code that made it catches the error and
-    carries on."""
-    import socket
-
-    real_connect = socket.socket.connect
-
-    def _connect(self: socket.socket, address: Any) -> Any:
-        # Only internet sockets leave the machine; a Unix socket's address
-        # is a path.
-        if self.family in (socket.AF_INET, socket.AF_INET6):
-            host = address[0] if isinstance(address, tuple) else address
-            if host not in _LOOPBACK_HOSTS:
-                raise ConnectionRefusedError(f"unit tests may not connect to {address!r}")
-        return real_connect(self, address)
-
-    monkeypatch.setattr(socket.socket, "connect", _connect)
-
+    """The network guard (``tests/network_guard.py``) for each test:
+    connections and datagrams only to loopback addresses, and name lookups
+    only where they cannot leave the machine. A provider mock that stops
+    matching (an SDK moving to a new HTTP library, a changed route) must
+    fail the test, not send a request to the real API, and a lookup (a
+    library fetching a tokenizer or a price list) must not leave the
+    machine either. A refused lookup fails the test at its teardown, naming
+    the host, even when the code that made it caught the error and carried
+    on; a connection to an address off the machine is refused, as an
+    unreachable server refuses it."""
+    global _RUNNING_TEST_LOOKUPS
     refused: list[str] = []
-    real_getaddrinfo = socket.getaddrinfo
-    real_gethostbyname = socket.gethostbyname
-    real_gethostbyname_ex = socket.gethostbyname_ex
-    real_gethostbyaddr = socket.gethostbyaddr
 
-    def _refuse(host: object) -> None:
-        refused.append(repr(host))
-        raise socket.gaierror(socket.EAI_NONAME, f"unit tests may not resolve {host!r}")
+    def _record(kind: str, host: object) -> None:
+        if kind == network_guard.LOOKUP:
+            refused.append(repr(host))
 
-    def _getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
-        if not _resolves_without_dns(host):
-            _refuse(host)
-        return real_getaddrinfo(host, *args, **kwargs)
-
-    def _gethostbyname(host: Any) -> Any:
-        if not _resolves_without_dns(host):
-            _refuse(host)
-        return real_gethostbyname(host)
-
-    def _gethostbyname_ex(host: Any) -> Any:
-        if not _resolves_without_dns(host):
-            _refuse(host)
-        return real_gethostbyname_ex(host)
-
-    def _gethostbyaddr(host: Any) -> Any:
-        # A reverse lookup asks a name server even for an address literal.
-        if not _is_loopback_name(host):
-            _refuse(host)
-        return real_gethostbyaddr(host)
-
-    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
-    monkeypatch.setattr(socket, "gethostbyname", _gethostbyname)
-    monkeypatch.setattr(socket, "gethostbyname_ex", _gethostbyname_ex)
-    monkeypatch.setattr(socket, "gethostbyaddr", _gethostbyaddr)
-    yield
+    for owner, name, replacement in network_guard.replacements(_record):
+        monkeypatch.setattr(owner, name, replacement)
+    _RUNNING_TEST_LOOKUPS = refused
+    try:
+        yield
+    finally:
+        _RUNNING_TEST_LOOKUPS = None
     if refused:
         pytest.fail(
             f"the test resolved names that leave the machine: {', '.join(sorted(set(refused)))}",
             pytrace=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _tiktoken_downloads_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tiktoken downloads an encoding's data on first use
+    (``tiktoken.load.read_file``, with ``requests``) and caches it; a
+    machine without the cache, a CI runner, would resolve the download
+    host on every run. The download is refused here as a refused
+    connection fails it, with ``requests``'s ``ConnectionError``, before a
+    name is resolved: tiktoken fails and the sensor falls back to its
+    character estimate, as it does on a machine without the data. Data
+    already cached is read as before."""
+    if importlib.util.find_spec("tiktoken") is None:
+        return
+    import tiktoken.load
+
+    real_read_file = tiktoken.load.read_file
+
+    def _read_file(blobpath: str) -> bytes:
+        if blobpath.startswith(("http://", "https://")):
+            import requests  # as tiktoken does: without it, the same ImportError
+
+            raise requests.exceptions.ConnectionError(f"unit tests do not download {blobpath}")
+        return real_read_file(blobpath)
+
+    monkeypatch.setattr(tiktoken.load, "read_file", _read_file)
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +179,65 @@ def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     refusing = MagicMock()
     refusing.messages.count_tokens.side_effect = _refuse
     monkeypatch.setattr(AnthropicProvider, "_client", refusing)
+
+
+@dataclass(frozen=True)
+class SentRequest:
+    """One request urllib would have sent."""
+
+    method: str
+    url: urllib.parse.SplitResult
+    headers: dict[str, str]
+
+
+class ControlPlaneRequests:
+    """The requests the sensor would have sent to its control plane, in
+    the order it made them."""
+
+    def __init__(self) -> None:
+        self.sent: list[SentRequest] = []
+
+    def to(self, method: str, path_end: str) -> list[SentRequest]:
+        """The requests made with ``method`` whose path ends with ``path_end``."""
+        return [r for r in self.sent if r.method == method and r.url.path.endswith(path_end)]
+
+    def preflight_policy(self) -> SentRequest:
+        """The policy fetch ``init()`` makes before the session starts:
+        made at least once, and every attempt (a retry included) to the
+        same URL with the same headers."""
+        attempts = self.to("GET", "/v1/policy")
+        assert attempts, f"no policy fetch among {[r.url.geturl() for r in self.sent]}"
+        assert all(a == attempts[0] for a in attempts), attempts
+        return attempts[0]
+
+
+@pytest.fixture
+def control_plane_requests(monkeypatch: pytest.MonkeyPatch) -> Iterator[ControlPlaneRequests]:
+    """The sensor's control-plane traffic, stubbed at urllib's HTTP and
+    HTTPS handlers, the layer below the request urllib builds: every
+    request is recorded (method, URL, headers) and refused as an
+    unreachable control plane refuses it, so the sensor fails open as it
+    does then, and nothing is resolved or sent. The session's real start
+    runs, its preflight requests included (a test module that stubs
+    ``Session.start`` gets it back here), and the session is ended while
+    the stub is in place, so its ``session_end`` is recorded too."""
+    recorder = ControlPlaneRequests()
+
+    def _refused(_handler: object, request: urllib.request.Request) -> Any:
+        recorder.sent.append(
+            SentRequest(
+                request.get_method(),
+                urllib.parse.urlsplit(request.full_url),
+                dict(request.header_items()),
+            )
+        )
+        raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "stubbed"))
+
+    monkeypatch.setattr(urllib.request.HTTPHandler, "http_open", _refused)
+    monkeypatch.setattr(urllib.request.HTTPSHandler, "https_open", _refused)
+    monkeypatch.setattr(Session, "start", _REAL_SESSION_START)
+    yield recorder
+    flightdeck_sensor.teardown()
 
 
 class _MockHandler(BaseHTTPRequestHandler):

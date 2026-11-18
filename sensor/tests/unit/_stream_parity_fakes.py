@@ -45,6 +45,23 @@ SSE_HEADERS = {"content-type": "text/event-stream"}
 VOLATILE_FIELDS = frozenset({"created"})
 
 
+def openai_usage_body() -> dict[str, Any]:
+    """The ``usage`` OpenAI's last chunk carries when usage is asked for."""
+    prompt, completion = OPENAI_USAGE
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+        "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        },
+    }
+
+
 def _sse(events: list[dict[str, Any]], *, done: bool, sep: str = "\n\n") -> bytes:
     body = "".join(f"data: {json.dumps(event)}{sep}" for event in events)
     return (body + ("data: [DONE]\n\n" if done else "")).encode()
@@ -98,25 +115,7 @@ class OpenAIServer:
                 event["usage"] = None
             events.append(event)
         if usage_on:
-            prompt, completion = OPENAI_USAGE
-            events.append(
-                {
-                    **head,
-                    "choices": [],
-                    "usage": {
-                        "prompt_tokens": prompt,
-                        "completion_tokens": completion,
-                        "total_tokens": prompt + completion,
-                        "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
-                        "completion_tokens_details": {
-                            "reasoning_tokens": 0,
-                            "audio_tokens": 0,
-                            "accepted_prediction_tokens": 0,
-                            "rejected_prediction_tokens": 0,
-                        },
-                    },
-                }
-            )
+            events.append({**head, "choices": [], "usage": openai_usage_body()})
         return httpx.Response(200, content=_sse(events, done=True), headers=SSE_HEADERS)
 
 
@@ -227,7 +226,7 @@ class GeminiServer:
         )
 
 
-def make_session() -> Session:
+def make_session(*, capture_prompts: bool = False) -> Session:
     """A session with a recording queue and no token limit."""
     config = SensorConfig(
         server="http://localhost:9999",
@@ -235,7 +234,7 @@ def make_session() -> Session:
         agent_flavor="test",
         agent_type="production",
         quiet=True,
-        capture_prompts=False,
+        capture_prompts=capture_prompts,
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = (None, False)

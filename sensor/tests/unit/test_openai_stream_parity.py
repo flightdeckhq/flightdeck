@@ -21,6 +21,7 @@ Each SDK lane runs the table against its openai release.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -37,6 +38,7 @@ from ._stream_parity_fakes import (
     events_of,
     full_dump,
     make_session,
+    openai_usage_body,
     set_dump,
 )
 
@@ -109,3 +111,28 @@ def test_an_openai_chat_stream_shows_the_caller_what_it_shows_without_the_sensor
 
     (post_call,) = events_of(session, "post_call")
     assert (post_call["tokens_input"], post_call["tokens_output"]) == OPENAI_USAGE
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("setting", list(STREAM_OPTIONS))
+def test_the_stored_streamed_response_carries_the_providers_usage(
+    monkeypatch: pytest.MonkeyPatch, setting: str, is_async: bool
+) -> None:
+    """With capture on, the response stored for a streamed call is the
+    assembled completion with the usage the provider reported, whether the
+    caller or the sensor asked for it."""
+    session = make_session(capture_prompts=True)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    patch_openai_classes(quiet=True)
+    try:
+        _observe(setting, is_async, with_block=False)
+    finally:
+        unpatch_openai_classes()
+
+    (post_call,) = events_of(session, "post_call")
+    response = post_call["content"]["response"]
+    # The SDK's own dump of the usage chunk's counts, defaults included, as
+    # the assembled completion holds it.
+    expected = openai.types.CompletionUsage.model_validate(openai_usage_body()).model_dump()
+    assert response["usage"] == json.loads(json.dumps(expected))
+    assert response["choices"][0]["message"]["content"] == "Hello"

@@ -30,6 +30,7 @@ import uuid
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import (
     assert_event_landed,
     init_sensor,

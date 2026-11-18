@@ -25,11 +25,12 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+
 from _helpers import (
-    llama_index_anthropic_incompatibility,
     assert_event_landed,
     fetch_events_for_session,
     init_sensor,
+    llama_index_anthropic_incompatibility,
     mcp_server_params,
     print_result,
 )
@@ -62,11 +63,11 @@ def _run_mcp(session_id: str) -> None:
     FunctionTools. Skipped cleanly when ``llama-index-tools-mcp`` is
     not installed."""
     try:
+        import mcp  # noqa: F401  -- presence check
         from llama_index.tools.mcp import (  # type: ignore[import-untyped]
             BasicMCPClient,
             McpToolSpec,
         )
-        import mcp  # noqa: F401  -- presence check
     except ImportError:
         print("SKIP MCP section: pip install mcp llama-index-tools-mcp")
         return

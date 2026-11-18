@@ -46,6 +46,7 @@ from typing import Any
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     assert_gemini_calls,
     child_sessions,
     fetch_events_for_session,
@@ -82,7 +83,6 @@ SESSIONS_PAGE_LIMIT = 50
 # key, asked something it answers in one call, without a tool.
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 GEMINI_PROMPT = "Name a colour. Answer in one word."
-MS_PER_S = 1000
 
 
 def _children(parent_id: str, want: int) -> list[dict[str, Any]]:

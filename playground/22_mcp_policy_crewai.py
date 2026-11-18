@@ -42,6 +42,8 @@ for _modname in ("crewai", "mcpadapt.core", "mcpadapt.crewai_adapter"):
         print("SKIP: pip install crewai mcpadapt to run this example")
         sys.exit(2)
 
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
+
 from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
     API_URL,
     fetch_events_for_session,
@@ -50,8 +52,6 @@ from _helpers import (  # noqa: E402  (after the optional-dependency guard above
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:
@@ -153,9 +153,7 @@ def run_demo() -> int:
         expect_event_types=["session_start", "policy_mcp_warn"],
     )
     warn_events = [e for e in events if e.get("event_type") == "policy_mcp_warn"]
-    assert warn_events, (
-        "no policy_mcp_warn event landed; CrewAI may not have invoked the MCP tool"
-    )
+    assert warn_events, "no policy_mcp_warn event landed; CrewAI may not have invoked the MCP tool"
     return 0
 
 

@@ -178,9 +178,8 @@ def main() -> int:
     for name, rc, dt, reason in rows:
         tag = _tag(rc)
         if tag == "FAIL":
-            note = f" ({reason or f'exit {rc}'})"
-        else:
-            note = f" ({reason})" if reason else ""
+            reason = reason or f"exit {rc}"
+        note = f" ({reason})" if reason else ""
         print(f"  {name:<28} {tag}   {dt:>4.1f}s{note}")
         passes += tag == "PASS"
         skips += tag == "SKIP"

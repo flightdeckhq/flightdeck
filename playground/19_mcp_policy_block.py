@@ -32,6 +32,8 @@ except ImportError:
     print("SKIP: pip install mcp to run this example")
     sys.exit(2)
 
+import flightdeck_sensor
+
 from _helpers import (
     API_URL,
     fetch_events_for_session,
@@ -40,8 +42,6 @@ from _helpers import (
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:

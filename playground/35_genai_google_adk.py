@@ -68,9 +68,7 @@ async def run(agent: LlmAgent, prompt: str) -> str:
     session = await runner.session_service.create_session(app_name=APP, user_id=USER)
     message = types.Content(role="user", parts=[types.Part(text=prompt)])
     final = ""
-    async for event in runner.run_async(
-        user_id=USER, session_id=session.id, new_message=message
-    ):
+    async for event in runner.run_async(user_id=USER, session_id=session.id, new_message=message):
         if event.is_final_response() and event.content and event.content.parts:
             final = "".join(p.text or "" for p in event.content.parts)
     return final
@@ -122,8 +120,7 @@ def main() -> None:
     reply = asyncio.run(
         run(
             assistant,
-            "Ask the weather agent for the weather in Paris, then answer in one "
-            "short sentence.",
+            "Ask the weather agent for the weather in Paris, then answer in one short sentence.",
         )
     )
     flush_providers()

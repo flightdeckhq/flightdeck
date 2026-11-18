@@ -40,13 +40,13 @@ except ImportError:
 # factory before patch runs and ``payload.transport`` would land null.
 
 import flightdeck_sensor
+
 from _helpers import (
     fetch_events_for_session,
     init_sensor,
     mcp_server_params,
     print_result,
 )
-
 
 REFERENCE_MODULE = "playground._mcp_reference_server"
 SECONDARY_MODULE = "playground._secondary_mcp_server"
@@ -55,88 +55,92 @@ SECONDARY_MODULE = "playground._secondary_mcp_server"
 async def _exercise_reference_server() -> None:
     """Open a session against the reference server and exercise every
     op the sensor patches so the six MCP event types all land."""
-    async with _mcp_stdio.stdio_client(mcp_server_params(REFERENCE_MODULE)) as (
-        read,
-        write,
+    async with (
+        _mcp_stdio.stdio_client(mcp_server_params(REFERENCE_MODULE)) as (
+            read,
+            write,
+        ),
+        ClientSession(read, write) as session,
     ):
-        async with ClientSession(read, write) as session:
-            t0 = time.monotonic()
-            await session.initialize()
-            print_result(
-                "ClientSession.initialize",
-                True,
-                int((time.monotonic() - t0) * 1000),
-                "fingerprint stamped on session",
-            )
+        t0 = time.monotonic()
+        await session.initialize()
+        print_result(
+            "ClientSession.initialize",
+            True,
+            int((time.monotonic() - t0) * 1000),
+            "fingerprint stamped on session",
+        )
 
-            t0 = time.monotonic()
-            tools = await session.list_tools()
-            print_result(
-                "session.list_tools",
-                True,
-                int((time.monotonic() - t0) * 1000),
-                f"{len(tools.tools)} tools",
-            )
+        t0 = time.monotonic()
+        tools = await session.list_tools()
+        print_result(
+            "session.list_tools",
+            True,
+            int((time.monotonic() - t0) * 1000),
+            f"{len(tools.tools)} tools",
+        )
 
-            t0 = time.monotonic()
-            await session.call_tool("echo", {"text": "hello mcp"})
-            print_result(
-                "session.call_tool(echo)",
-                True,
-                int((time.monotonic() - t0) * 1000),
-            )
+        t0 = time.monotonic()
+        await session.call_tool("echo", {"text": "hello mcp"})
+        print_result(
+            "session.call_tool(echo)",
+            True,
+            int((time.monotonic() - t0) * 1000),
+        )
 
-            t0 = time.monotonic()
-            resources = await session.list_resources()
-            print_result(
-                "session.list_resources",
-                True,
-                int((time.monotonic() - t0) * 1000),
-                f"{len(resources.resources)} resources",
-            )
+        t0 = time.monotonic()
+        resources = await session.list_resources()
+        print_result(
+            "session.list_resources",
+            True,
+            int((time.monotonic() - t0) * 1000),
+            f"{len(resources.resources)} resources",
+        )
 
-            t0 = time.monotonic()
-            await session.read_resource("mem://demo")
-            print_result(
-                "session.read_resource(mem://demo)",
-                True,
-                int((time.monotonic() - t0) * 1000),
-            )
+        t0 = time.monotonic()
+        await session.read_resource("mem://demo")
+        print_result(
+            "session.read_resource(mem://demo)",
+            True,
+            int((time.monotonic() - t0) * 1000),
+        )
 
-            t0 = time.monotonic()
-            prompts = await session.list_prompts()
-            print_result(
-                "session.list_prompts",
-                True,
-                int((time.monotonic() - t0) * 1000),
-                f"{len(prompts.prompts)} prompts",
-            )
+        t0 = time.monotonic()
+        prompts = await session.list_prompts()
+        print_result(
+            "session.list_prompts",
+            True,
+            int((time.monotonic() - t0) * 1000),
+            f"{len(prompts.prompts)} prompts",
+        )
 
-            t0 = time.monotonic()
-            await session.get_prompt("greet", {"name": "playground"})
-            print_result(
-                "session.get_prompt(greet)",
-                True,
-                int((time.monotonic() - t0) * 1000),
-            )
+        t0 = time.monotonic()
+        await session.get_prompt("greet", {"name": "playground"})
+        print_result(
+            "session.get_prompt(greet)",
+            True,
+            int((time.monotonic() - t0) * 1000),
+        )
 
 
 async def _exercise_secondary_server() -> None:
     """Sequential, not gathered: deterministic event ordering for live
     inspection in the dashboard."""
-    async with _mcp_stdio.stdio_client(mcp_server_params(SECONDARY_MODULE)) as (
-        read,
-        write,
+    async with (
+        _mcp_stdio.stdio_client(mcp_server_params(SECONDARY_MODULE)) as (
+            read,
+            write,
+        ),
+        ClientSession(read, write) as session,
     ):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            t0 = time.monotonic()
-            await session.call_tool("reverse", {"text": "playground"})
-            print_result(
-                "secondary server: reverse",
-                True,
-                int((time.monotonic() - t0) * 1000),
-            )
+        await session.initialize()
+        t0 = time.monotonic()
+        await session.call_tool("reverse", {"text": "playground"})
+        print_result(
+            "secondary server: reverse",
+            True,
+            int((time.monotonic() - t0) * 1000),
+        )
 
 
 def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
@@ -224,9 +228,7 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     print_result("mcp_prompt_get.has_content=True", pg_has_content_ok, 0)
     print_result("mcp_prompt_get no inline arguments", pg_no_inline_args, 0)
     print_result("mcp_prompt_get no inline rendered", pg_no_inline_rendered, 0)
-    if not (
-        name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered
-    ):
+    if not (name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered):
         raise AssertionError(f"mcp_prompt_get payload mismatch: {pg!r}")
 
     # Per-event server_name + transport consistency on EVERY MCP event.

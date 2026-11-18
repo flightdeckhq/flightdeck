@@ -50,6 +50,7 @@ from typing import Any
 from _helpers import (
     API_TOKEN,
     API_URL,
+    MS_PER_S,
     fetch_event_content,
     fetch_events_for_session,
     init_sensor,
@@ -77,7 +78,6 @@ MODEL_TIMEOUT_S = 60
 LANDED_S = 25.0
 POLL_S = 0.5
 API_TIMEOUT_S = 5.0
-MS_PER_S = 1000
 # How much of a payload a failure message quotes.
 FAILURE_DUMP_CHARS = 2000
 # The exit code run_all.py reads as SKIP.

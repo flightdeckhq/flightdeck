@@ -62,9 +62,7 @@ def main() -> None:
     early_client = openai.OpenAI()
     _ = early_client.chat
     flightdeck_sensor.patch(providers=[Provider.OPENAI], quiet=True)
-    print(
-        f"[playground:36_openai_floor] openai={openai.__version__} session_id={session_id}"
-    )
+    print(f"[playground:36_openai_floor] openai={openai.__version__} session_id={session_id}")
 
     t0 = time.monotonic()
     r = openai.OpenAI().chat.completions.create(model=MODEL, max_tokens=5, messages=HI)
@@ -77,9 +75,7 @@ def main() -> None:
 
     t0 = time.monotonic()
     early_client.chat.completions.create(model=MODEL, max_tokens=5, messages=HI)
-    print_result(
-        "client built before patch()", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("client built before patch()", True, int((time.monotonic() - t0) * 1000))
 
     async def _async_chat() -> None:
         async with openai.AsyncOpenAI() as client:
@@ -127,9 +123,7 @@ def main() -> None:
     client = openai.OpenAI()
     client.embeddings.create(model=EMBEDDING_MODEL, input="flightdeck")
     client.embeddings.create(model=EMBEDDING_MODEL, input=["flight", "deck"])
-    print_result(
-        "embeddings (single + list)", True, int((time.monotonic() - t0) * 1000)
-    )
+    print_result("embeddings (single + list)", True, int((time.monotonic() - t0) * 1000))
 
     flightdeck_sensor.teardown()
 

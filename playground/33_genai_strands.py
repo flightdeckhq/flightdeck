@@ -76,8 +76,7 @@ def main() -> None:
         model=model,
         name="assistant",
         system_prompt=(
-            "Delegate weather questions to the weather agent with the "
-            "ask_weather_agent tool."
+            "Delegate weather questions to the weather agent with the ask_weather_agent tool."
         ),
         tools=[
             weather.as_tool(
@@ -90,8 +89,7 @@ def main() -> None:
 
     since = run_started()
     result = assistant(
-        "Ask the weather agent for the weather in Paris, then answer in one "
-        "short sentence."
+        "Ask the weather agent for the weather in Paris, then answer in one short sentence."
     )
     telemetry.tracer_provider.force_flush()
     telemetry.tracer_provider.shutdown()

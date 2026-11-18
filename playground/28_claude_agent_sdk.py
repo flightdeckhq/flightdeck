@@ -34,12 +34,13 @@ SDK is not installed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
-import urllib.error
-import urllib.request
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import (
     API_TOKEN,
     API_URL,
@@ -135,9 +137,7 @@ def _check_session(
     if any(not c.get("tokens_input") for c in calls):
         problems.append("a post_call without input tokens")
     if not any(t.get("tool_name") == "Bash" for t in tools):
-        problems.append(
-            f"no Bash tool_call (tools: {[t.get('tool_name') for t in tools]})"
-        )
+        problems.append(f"no Bash tool_call (tools: {[t.get('tool_name') for t in tools]})")
     billing = {c.get("billing_mode") for c in calls}
     # The bare framework label, with the SDK's version in context.frameworks.
     row = _api("GET", f"/v1/sessions/{sdk_session}").get("session") or {}
@@ -258,7 +258,9 @@ async def _mcp_run(cwd: str) -> tuple[str, list[str]]:
         }
     }
     async for message in sdk.query(
-        prompt=f"Call the echo tool of the {MCP_SERVER_NAME} MCP server with the text hi, then stop.",
+        prompt=(
+            f"Call the echo tool of the {MCP_SERVER_NAME} MCP server with the text hi, then stop."
+        ),
         options=options,
     ):
         if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
@@ -291,10 +293,8 @@ def _provision_mcp_block() -> None:
 
 
 def _remove_mcp_policy() -> None:
-    try:
+    with contextlib.suppress(urllib.error.HTTPError):
         _api("DELETE", f"/v1/mcp-policies/{FLAVOR}")
-    except urllib.error.HTTPError:
-        pass
 
 
 def _check_stop(sdk_session: str, denials: list[str], started: float) -> None:
@@ -333,9 +333,7 @@ def _check_mcp_block(sdk_session: str, denials: list[str], started: float) -> No
     payload = (blocks[0].get("payload") or {}) if blocks else {}
     problems = []
     if not blocks:
-        problems.append(
-            f"no policy_mcp_block (events: {[e['event_type'] for e in events]})"
-        )
+        problems.append(f"no policy_mcp_block (events: {[e['event_type'] for e in events]})")
     elif (
         payload.get("server_url") != MCP_SERVER_URL
         or payload.get("decision_path") != "flavor_entry"

@@ -67,17 +67,17 @@ for _modname in (
         )
         sys.exit(2)
 
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
+
 from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
-    llama_index_anthropic_incompatibility,
     API_URL,
     fetch_events_for_session,
     init_sensor,
+    llama_index_anthropic_incompatibility,
     mcp_server_params,
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 _INCOMPATIBLE = llama_index_anthropic_incompatibility()
 if _INCOMPATIBLE is not None:
@@ -255,8 +255,7 @@ async def _scenario_block() -> str | None:
     payload = block_events[0].get("payload") or {}
     if payload.get("decision_path") not in ("flavor_entry",):
         return (
-            f"BLOCK scenario: decision_path={payload.get('decision_path')!r}, "
-            "expected flavor_entry"
+            f"BLOCK scenario: decision_path={payload.get('decision_path')!r}, expected flavor_entry"
         )
     return None
 
@@ -300,9 +299,7 @@ async def _scenario_allow() -> str | None:
     if not tool_calls:
         return "ALLOW scenario: no mcp_tool_call event landed"
     policy_events = [
-        e
-        for e in events
-        if e.get("event_type") in ("policy_mcp_warn", "policy_mcp_block")
+        e for e in events if e.get("event_type") in ("policy_mcp_warn", "policy_mcp_block")
     ]
     if policy_events:
         return (

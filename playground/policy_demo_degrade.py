@@ -16,6 +16,7 @@ Run: ``python playground/policy_demo_degrade.py``
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ except ImportError:
     sys.exit(2)
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")
@@ -131,10 +133,8 @@ def main() -> None:
                 f"models seen: {[pc.get('model') for pc in post_calls]!r}",
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             _api("DELETE", f"/v1/policies/{policy['id']}")
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":

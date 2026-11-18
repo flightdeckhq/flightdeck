@@ -390,6 +390,9 @@ make lint
 
 This runs:
 - `mypy --strict` and `ruff check` on the sensor
+- `ruff check` and `ruff format --check` on the playground scripts
+  (`playground/ruff.toml` extends the sensor's settings, so the same
+  commands run from `playground/` check them the same way)
 - `gofmt -l .` then `golangci-lint run ./...` on storage, ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
 

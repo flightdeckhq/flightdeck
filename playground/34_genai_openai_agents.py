@@ -48,9 +48,7 @@ try:
     from opentelemetry import trace
     from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 except ImportError as exc:
-    skip_if_not_installed(
-        exc, ("agents", "openai", "opentelemetry.instrumentation.openai_agents")
-    )
+    skip_if_not_installed(exc, ("agents", "openai", "opentelemetry.instrumentation.openai_agents"))
 
 MODEL = "gpt-4o-mini"
 SETTINGS = ModelSettings(max_tokens=200)
@@ -83,8 +81,7 @@ def main() -> None:
     assistant = Agent(
         name="assistant",
         instructions=(
-            "Delegate weather questions to the weather agent with the "
-            "ask_weather_agent tool."
+            "Delegate weather questions to the weather agent with the ask_weather_agent tool."
         ),
         tools=[
             weather.as_tool(
@@ -99,8 +96,7 @@ def main() -> None:
     since = run_started()
     result = Runner.run_sync(
         assistant,
-        "Ask the weather agent for the weather in Paris, then answer in one "
-        "short sentence.",
+        "Ask the weather agent for the weather in Paris, then answer in one short sentence.",
     )
     flush()
     print_result("agent run", True, 0, repr(str(result.final_output)[:80]))

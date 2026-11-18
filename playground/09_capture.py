@@ -29,6 +29,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import API_TOKEN, API_URL, assert_event_landed, init_sensor, print_result
 
 API = API_URL

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import importlib.util
 import json
 import os
 import sys
@@ -124,6 +125,32 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             f"the test resolved names that leave the machine: {', '.join(sorted(set(refused)))}",
             pytrace=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _tiktoken_downloads_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tiktoken downloads an encoding's data on first use
+    (``tiktoken.load.read_file``, with ``requests``) and caches it; a
+    machine without the cache, a CI runner, would resolve the download
+    host on every run. The download is refused here as a refused
+    connection fails it, with ``requests``'s ``ConnectionError``, before a
+    name is resolved: tiktoken fails and the sensor falls back to its
+    character estimate, as it does on a machine without the data. Data
+    already cached is read as before."""
+    if importlib.util.find_spec("tiktoken") is None:
+        return
+    import tiktoken.load
+
+    real_read_file = tiktoken.load.read_file
+
+    def _read_file(blobpath: str) -> bytes:
+        if blobpath.startswith(("http://", "https://")):
+            import requests  # as tiktoken does: without it, the same ImportError
+
+            raise requests.exceptions.ConnectionError(f"unit tests do not download {blobpath}")
+        return real_read_file(blobpath)
+
+    monkeypatch.setattr(tiktoken.load, "read_file", _read_file)
 
 
 @pytest.fixture(autouse=True)

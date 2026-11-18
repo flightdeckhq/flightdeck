@@ -27,6 +27,8 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import (
+    CONTENT_LANDED_DEADLINE_S,
+    CONTENT_POLL_S,
     assert_reply_stored,
     assert_token_cost_fields,
     assert_event_landed,
@@ -39,6 +41,13 @@ from _helpers import (
 )
 
 MODEL = "gpt-4o-mini"
+# text-embedding-3-small's output dimension when the call names none.
+TEXT_EMBEDDING_3_SMALL_DIMENSION = 1536
+# Bytes per value of a base64 embedding: the API encodes float32 values.
+FLOAT32_BYTES = 4
+# One events fetch while waiting for the embeddings events never blocks
+# longer than this, so CONTENT_LANDED_DEADLINE_S stays the bound.
+EMBEDDINGS_FETCH_TIMEOUT_S = 2.0
 # Streamed calls this script makes: sync chat stream, async chat stream,
 # plain chat iteration, Responses stream; each must land one metered
 # post_call.
@@ -542,17 +551,17 @@ def main() -> None:
     # see the first event before the second has flushed. Poll until
     # ≥2 embedding events are visible.
     embeds: list[dict] = []
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
     while time.monotonic() < deadline:
         events = fetch_events_for_session(
             session_id,
             expect_event_types=["embeddings"],
-            timeout_s=2.0,
+            timeout_s=EMBEDDINGS_FETCH_TIMEOUT_S,
         )
         embeds = [e for e in events if e.get("event_type") == "embeddings"]
         if len(embeds) >= 2:
             break
-        time.sleep(0.3)
+        time.sleep(CONTENT_POLL_S)
     if len(embeds) < 2:
         raise AssertionError(
             f"expected ≥2 embeddings events; got {len(embeds)}: {embeds!r}"
@@ -593,7 +602,9 @@ def main() -> None:
         model="text-embedding-3-small", input=base64_payload, encoding_format="base64",
     )
     vector = encoded.data[0].embedding
-    decoded = len(base64.b64decode(vector)) // 4 if isinstance(vector, str) else None
+    decoded = (
+        len(base64.b64decode(vector)) // FLOAT32_BYTES if isinstance(vector, str) else None
+    )
     print_result(
         "OpenAI().embeddings.create(encoding_format=base64)",
         isinstance(vector, str),
@@ -601,7 +612,7 @@ def main() -> None:
         f"{len(vector)}-character string, {decoded} float32 values",
     )
     reported = None
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
     while reported is None and time.monotonic() < deadline:
         for e in fetch_events_for_session(session_id, expect_event_types=["embeddings"]):
             if e.get("event_type") != "embeddings" or not e.get("has_content"):
@@ -610,8 +621,11 @@ def main() -> None:
                 reported = (e.get("payload") or {}).get("output_dimensions")
                 break
         else:
-            time.sleep(0.3)
-    dimension_ok = reported == {"count": 1, "dimension": decoded} and decoded == 1536
+            time.sleep(CONTENT_POLL_S)
+    dimension_ok = (
+        reported == {"count": 1, "dimension": decoded}
+        and decoded == TEXT_EMBEDDING_3_SMALL_DIMENSION
+    )
     print_result(
         "base64 embeddings report the decoded dimension",
         dimension_ok,

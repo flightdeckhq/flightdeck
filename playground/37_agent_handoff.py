@@ -30,6 +30,9 @@ import urllib.request
 import uuid
 from typing import Any
 
+import flightdeck_sensor
+from flightdeck_sensor.core.session import SIGNAL_AGENT_HANDOFF
+
 from _helpers import (
     API_TOKEN,
     API_URL,
@@ -38,9 +41,6 @@ from _helpers import (
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor
-from flightdeck_sensor.core.session import SIGNAL_AGENT_HANDOFF
 
 FLAVOR = "playground-agent-handoff"
 CHILD_ROLE = "weather_agent"

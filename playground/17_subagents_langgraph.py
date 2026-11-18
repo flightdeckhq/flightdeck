@@ -44,7 +44,6 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-
 # Mirror of the threshold in sensor/flightdeck_sensor/core/session.py
 # and observe_cli.mjs. Setting the ``Writer`` incoming state body
 # above this drives the event_content overflow path; staying
@@ -56,8 +55,8 @@ def main() -> None:
     require_env("ANTHROPIC_API_KEY")
 
     try:
-        from langgraph.graph import END, START, StateGraph
         from langchain_anthropic import ChatAnthropic
+        from langgraph.graph import END, START, StateGraph
         from typing_extensions import TypedDict
     except ImportError:
         print("SKIP: pip install langgraph langchain-anthropic")

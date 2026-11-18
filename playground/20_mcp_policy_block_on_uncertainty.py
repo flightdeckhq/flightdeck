@@ -32,12 +32,12 @@ except ImportError:
     print("SKIP: pip install mcp to run this example")
     sys.exit(2)
 
+import flightdeck_sensor
+
 from _helpers import (
     mcp_server_params,
     print_result,
 )
-
-import flightdeck_sensor
 
 
 async def run_demo() -> int:

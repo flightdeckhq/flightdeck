@@ -41,6 +41,7 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+
 from _helpers import (
     API_TOKEN,
     API_URL,

@@ -28,10 +28,11 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
+
 from _helpers import (
+    assert_event_landed,
     assert_reply_stored,
     assert_token_cost_fields,
-    assert_event_landed,
     fetch_events_for_session,
     init_sensor,
     print_result,

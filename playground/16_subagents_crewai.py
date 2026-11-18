@@ -48,7 +48,7 @@ def main() -> None:
     require_env("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
     try:
-        from crewai import Agent, Crew, LLM, Task  # type: ignore[import-untyped]
+        from crewai import LLM, Agent, Crew, Task  # type: ignore[import-untyped]
     except ImportError:
         print("SKIP: pip install crewai")
         sys.exit(2)

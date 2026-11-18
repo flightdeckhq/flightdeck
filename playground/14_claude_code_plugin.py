@@ -61,7 +61,6 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-
 # Namespace UUID shared between the plugin (agent_id.mjs) and the
 # Python sensor for every uuid5 derivation. Re-deriving the child
 # session_id locally lets us target the right session for assertions

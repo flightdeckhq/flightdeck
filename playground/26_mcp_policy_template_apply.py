@@ -60,6 +60,8 @@ except ImportError:
     print("SKIP: pip install mcp to run this example")
     sys.exit(2)
 
+import flightdeck_sensor
+
 from _helpers import (
     API_URL,
     fetch_events_for_session,
@@ -68,9 +70,6 @@ from _helpers import (
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor
-
 
 # ---------------------------------------------------------------------
 # API helpers — admin-token mutations + small read shims.

@@ -67,17 +67,17 @@ for _modname in (
         )
         sys.exit(2)
 
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
+
 from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
-    llama_index_anthropic_incompatibility,
     API_URL,
     fetch_events_for_session,
     init_sensor,
+    llama_index_anthropic_incompatibility,
     mcp_server_params,
     print_result,
     wait_for_dev_stack,
 )
-
-import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 _INCOMPATIBLE = llama_index_anthropic_incompatibility()
 if _INCOMPATIBLE is not None:

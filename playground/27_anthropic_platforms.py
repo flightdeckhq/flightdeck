@@ -29,10 +29,10 @@ except ImportError:
     print("SKIP: pip install anthropic to run this example")
     sys.exit(2)
 
-from pydantic import BaseModel
-
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+from pydantic import BaseModel
+
 from _helpers import (
     STREAMED_POST_CALL_DEADLINE_S,
     STREAMED_POST_CALL_FETCH_TIMEOUT_S,

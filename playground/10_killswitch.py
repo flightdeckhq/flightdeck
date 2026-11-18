@@ -27,6 +27,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import DirectiveError, Provider
+
 from _helpers import init_sensor, print_result
 
 API = os.environ.get("FLIGHTDECK_API_URL", "http://localhost:4000/api")

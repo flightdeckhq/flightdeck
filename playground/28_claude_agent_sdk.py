@@ -36,10 +36,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import urllib.error
-import urllib.request
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -52,6 +52,7 @@ except ImportError:
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+
 from _helpers import (
     API_TOKEN,
     API_URL,

@@ -1,4 +1,4 @@
-.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents playground-google-adk test-integration-google-adk
+.PHONY: help build build-webui build-flightdeck run-flightdeck test-flightdeck lint-flightdeck test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-restart dev-reset down logs dev-split test-split down-split release-prep release-tag version-check installer-copies vuln-scan release-snapshot pypi-wheels pricing-refresh playground-anthropic playground-openai playground-google-genai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-agent-handoff playground-llamaindex-agents playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all playground-openai-agents playground-langgraph-runnable-nodes playground-deepagents playground-google-adk test-integration-google-adk
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -237,6 +237,9 @@ playground-genai-google-adk: ## Rule 40a playground: Google ADK over OpenTelemet
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py
 
+playground-google-genai: ## Rule 40d playground: google-genai (Gemini API): generate, stream, async, chat, automatic function calling, thinking, embeddings and a policy block. Requires GEMINI_API_KEY.
+	$(PYTHON) playground/43_google_genai.py
+
 playground-openai-floor: ## Rule 40d playground: chat, streams and embeddings on the oldest supported openai (built-in-constructor resources). Requires the OpenAI floor venv + OPENAI_API_KEY.
 	$(OPENAI_FLOOR_PYTHON) playground/36_openai_floor.py
 
@@ -283,7 +286,7 @@ playground-langgraph-runnable-nodes: ## Rule 40d playground: a hand-built LangGr
 playground-deepagents: ## Rule 40d playground: a Deep Agent delegating to one custom sub-agent through its task tool lands one child session named after the sub-agent, sync and streamed. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/42_deepagents.py
 
-playground-google-adk: ## Rule 40d playground: the sensor's Google ADK wrap (transfer, AgentTool, function tool) on real models through LiteLlm and ADK's Anthropic model; a Gemini section self-skips. Requires the sensor ADK venv + OPENAI_API_KEY or ANTHROPIC_API_KEY.
+playground-google-adk: ## Rule 40d playground: the sensor's Google ADK wrap (transfer, AgentTool, function tool) on real models through LiteLlm, ADK's Anthropic model and its Gemini model. Requires the sensor ADK venv + OPENAI_API_KEY, ANTHROPIC_API_KEY or GEMINI_API_KEY.
 	$(SENSOR_ADK_PYTHON) playground/38_google_adk.py
 
 # MCP Protection Policy demos. Demos 18-21 do

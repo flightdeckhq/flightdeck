@@ -175,6 +175,17 @@ func TestEmbeddedCatalogue_CoversCurrentModels(t *testing.T) {
 		{"gpt-4o-mini", platformDirect},
 		{"text-embedding-3-small", platformDirect},
 		{"gpt-4o", platformAzure},
+		// The Gemini models google-genai calls today: the Gemini API's
+		// (direct) and Vertex AI's rows, the -latest aliases the API
+		// serves, and its embeddings model.
+		{"gemini-3.1-flash-lite", platformDirect},
+		{"gemini-3.1-flash-lite", platformVertex},
+		{"gemini-3.5-flash-lite", platformDirect},
+		{"gemini-3.5-flash", platformDirect},
+		{"gemini-3.6-flash", platformDirect},
+		{"gemini-flash-lite-latest", platformDirect},
+		{"gemini-flash-latest", platformDirect},
+		{"gemini-embedding-001", platformDirect},
 	} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("embedded catalogue lacks %v", k)

@@ -1,0 +1,741 @@
+{
+  "_comment": "Gemini call contents as the content endpoint served them from a dev stack, captured from live google-genai 2.34 calls on the Gemini API (playground 43 and an inline-image / code-execution check), and the content the sensor stored for google-genai 1.64.0 calls (the SDK-floors lane) on the Gemini API and on Vertex AI against a fake endpoint (sdk164_*: the second round of an automatic-function-calling call with inline data). Each is the request body the SDK built and the response body as received.",
+  "plain_call": {
+    "event_id": "e-gemini-plain_call",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": [
+      {
+        "text": "Answer in at most five words."
+      }
+    ],
+    "messages": [],
+    "tools": null,
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "Hi there!",
+                "thoughtSignature": "EpwBCpkBAWkUfROsYY4Z2/tQ9YzL8MrP287f3mgW3JEBrFMcwnDs4RI8VS0oSgVfaCELZhSyNCZDHTGrIijcvqVvHD1S2SdCOffkOQ7s7MUPwZgFK6mNPTQimNpwqGfWTCS1edw6TsfjAdhSGaMC0UfDSTctelUW6NtHQZYmpkH95Fglyikfw6fUAq9dgoVciEBbb8MKHCTHKYUzZ9l3"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "BxP8apeNBLSmkdUPpISLiAg",
+      "usageMetadata": {
+        "candidatesTokenCount": 3,
+        "promptTokenCount": 12,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 12
+          }
+        ],
+        "serviceTier": "standard",
+        "totalTokenCount": 15
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "Say hi."
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:39.853Z"
+  },
+  "chat_second_turn": {
+    "event_id": "e-gemini-chat_second_turn",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": [
+      {
+        "text": "Answer in at most five words."
+      }
+    ],
+    "messages": [],
+    "tools": null,
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "Your name is Ada.",
+                "thoughtSignature": "EpwBCpkBAWkUfRN+H66YekXpMW1QDJpEM1rXtxfir56XMlvM6Ll3W77i6lhyrHdehu8g2orlI0+V1p+zuTUgIIcKapdYhnQRopqGOXE1XNWDVva1eRSeJa1HQPjp0MdVvbYX/rLnmNnlen6gmHmGjjucX5NnakWPQERsBk1ERvGVhkSO86PIkC8sNZMLQAHToj3l/3N50XxieO31Fs0z"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "DxP8at-PF_mJ7M8P79jRoQc",
+      "usageMetadata": {
+        "candidatesTokenCount": 5,
+        "promptTokenCount": 28,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 28
+          }
+        ],
+        "serviceTier": "standard",
+        "totalTokenCount": 33
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "My name is Ada."
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "Nice to meet you, Ada.",
+            "thoughtSignature": "EpwBCpkBAWkUfRMsXi9befPSr3yOI0Fv_TwSP-QsFsEcL6rtp0F4l7EEMBMbgUxCXYNRXw18Z0EZsK4ddULyD0LL-tKjRI9HLaRRGecAEZpqAoLL8pGqOSwdoAdWtd7u5_oUUBvmKCpKQcTAS6s-Z8tYo42NqwXNN9ngbezfc3pOsnvq6onWsou05I707BHEnZjGtZ0zEIsLBs7p8Ys9"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "text": "What is my name?"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:48.431Z"
+  },
+  "function_calling_round_1": {
+    "event_id": "e-gemini-function_calling_round_1",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Returns the current weather in a city.",
+            "name": "get_weather",
+            "parameters_json_schema": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "response_json_schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "functionCall": {
+                  "args": {
+                    "city": "Paris"
+                  },
+                  "id": "call_1523272621736346655",
+                  "name": "get_weather"
+                },
+                "thoughtSignature": "EpwBCpkBAWkUfROfb5904O/AusJ7iQ+RJMItj2+n/f0kG7zrxOK6dePgoz+POa/keXixlxklqoPT6byC0YF59q/zJpWep5wwYsSDMoKGR3XC7ya+/S8QRnRT9BYmo769YTKg8McufzKX1pO397XPXeq1jB0pju8ups5mUK+zWcdQ9h1mnfKaVkWiGMxloQ+7Gk+ce8WakgH9tlut5WhG"
+              }
+            ],
+            "role": "model"
+          },
+          "finishMessage": "Model generated function call(s).",
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "EBP8atDaL9r2xN8Ptqy9gA8",
+      "usageMetadata": {
+        "candidatesTokenCount": 16,
+        "promptTokenCount": 65,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 65
+          }
+        ],
+        "serviceTier": "standard",
+        "totalTokenCount": 81
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is the weather in Paris? Use the tool."
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:49.194Z"
+  },
+  "function_calling_round_2": {
+    "event_id": "e-gemini-function_calling_round_2",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Returns the current weather in a city.",
+            "name": "get_weather",
+            "parameters_json_schema": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "response_json_schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "The weather in Paris is currently sunny with a temperature of 21\u00b0C.",
+                "thoughtSignature": "EpwBCpkBAWkUfRP6Q5O/HRue5kzKTe6di/Mzr43ajneJCe3QMXvtcv6k41fXhtXY7VuZLixt2UyMLrgOol2uxDR4PbCsx3fh8v7YLlan5cHw/9O7CZJSfBs+RRctMUgyF2xPh9Z8QCNBFZKIRTWt+TKeTu0gsy/+gbkwZ9/Sx5Wbz4YcXWcFy35Gp3CVkS3ASdVo5GR08ndh+GBxIK2y"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "ERP8ar_WIM-DkdUPoezlwQg",
+      "usageMetadata": {
+        "candidatesTokenCount": 17,
+        "promptTokenCount": 102,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 102
+          }
+        ],
+        "serviceTier": "standard",
+        "totalTokenCount": 119
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is the weather in Paris? Use the tool."
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "city": "Paris"
+              },
+              "id": "call_1523272621736346655",
+              "name": "get_weather"
+            },
+            "thoughtSignature": "EpwBCpkBAWkUfROfb5904O_AusJ7iQ-RJMItj2-n_f0kG7zrxOK6dePgoz-POa_keXixlxklqoPT6byC0YF59q_zJpWep5wwYsSDMoKGR3XC7ya-_S8QRnRT9BYmo769YTKg8McufzKX1pO397XPXeq1jB0pju8ups5mUK-zWcdQ9h1mnfKaVkWiGMxloQ-7Gk-ce8WakgH9tlut5WhG"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "get_weather",
+              "response": {
+                "result": "sunny, 21 C in Paris"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:50.017Z"
+  },
+  "thinking": {
+    "event_id": "e-gemini-thinking",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "**Calculating the Product of 17 and 23**\n\nOkay, so the user wants the numerical answer to 17 multiplied by 23, and nothing else. Straightforward. I need to get this calculation done efficiently. Let's see... I could just crank it out directly, but let's see if there's a more elegant approach. Ah, yes! I'm recognizing the potential for a difference of squares trick here. I can express 17 and 23 as a difference and sum relative to 20: (20 - 3) * (20 + 3).\n\nThat's perfect. This fits the a\u00b2 - b\u00b2 pattern exactly. Therefore, it's equivalent to 20 squared minus 3 squared. 20 squared is 400, and 3 squared is 9. Simple arithmetic from here: 400 - 9.\n\n\n",
+                "thought": true
+              },
+              {
+                "text": "391",
+                "thoughtSignature": "EusDCugDAWkUfRNgz9rBfT20gbyMtjNPqNMW3aNus4tHJDbfnRTR+xfcGvcB28hrF7GmHLxiC/+8BV+KFFSHh4F+sg0k8FZf6x9Z4P2F2y2ywQd4UX9y+F48c5AncuCFfErW+rTxiOqxUZM7TWaqWIhHQXuoRil8gkuREl5fsP9BWIwCFeIdXi0hdRXuCFFLHLTw3ILvx/VGHtWhZGe82y/Y6hqilKyom01V6ZoA5Z6KZekfAyqZkKl4XHn2rfiozWhUp8ncSp7Yww4PKdkc00PnHf9L3MAQh7EpJIxBDvx6gUD63bfC6ZeIv4eRuvjwNPbw+CbvIr2ryHUFpuQtGyJlM6K2A8szeIL9NEAzVCLQXHEtVLac3cV2zsKrjlUWBV3s5is6BDe9BpdB6jM6FESaH8lUBH3sYMMHFbWp4690ac9mUo6KIYm2C2sfVuVkEC8Y+BVE5gujPuG07dN5Sa12wHR8+c5XXNvxB2pn6An1Izx2HZxY7LKV49P06mtxb5AzNk6uK1QHVifxJ6wtcWZ4GdVXszgnn4OmLxCf5Ef0SXu3f8cPiog4+/SdWh7ThF4f74wirfu+A6YMBuhIdg/nuFQeTkScCBkKYcmHL9qWv3cU+KpxF+EOTphZMx7YuVep6G5TRfTCMA2sV4s="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "FBP8aqasLPqbkdUPk77_wAk",
+      "usageMetadata": {
+        "candidatesTokenCount": 3,
+        "promptTokenCount": 17,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 17
+          }
+        ],
+        "serviceTier": "standard",
+        "thoughtsTokenCount": 120,
+        "totalTokenCount": 140
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is 17 * 23? Answer with the number only."
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:54.846Z"
+  },
+  "embeddings": {
+    "event_id": "e-gemini-embeddings",
+    "session_id": "b40578e3-e11b-4a21-ac0d-4c83e4898931",
+    "provider": "google",
+    "model": "gemini-embedding-001",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {},
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "hello"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "world"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T08:40:55.26Z"
+  },
+  "inline_image": {
+    "event_id": "e-gemini-inline_image",
+    "session_id": "a91a976b-358e-403a-a351-8f3f63a3ee9a",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "Red",
+                "thoughtSignature": "EpwBCpkBAWkUfROMKque4UJlyLXoEQI1XNNSuasiXZrP9P3zmC6Jv81MFdn8ySucCZxYb4bS+oVf4K1WZCB8OpLeALvwFKBp1vOUXSh0FS1vfvQjx+vRhnGNUj7B2wpmsSIwwy5xWKx1Mzn3bD30tSzvuj49P9yXo1sBAxB2XB91S5FpjTtRZmdiLeHDJlaeRFSUKLIziV8D2kfpo7CC"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "xx38aoOKJKmGvdIP2Ju6gQc",
+      "usageMetadata": {
+        "candidatesTokenCount": 1,
+        "promptTokenCount": 1099,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 10
+          },
+          {
+            "modality": "IMAGE",
+            "tokenCount": 1089
+          }
+        ],
+        "serviceTier": "standard",
+        "totalTokenCount": 1100
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What colour is this image? One word."
+          },
+          {
+            "inlineData": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC-aJAAAAeUlEQVR4nO3PQQkAMAzAwCqpf1ETMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj13PLIEAOXyUUwAAAABJRU5ErkJggg==",
+              "mime_type": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T09:26:32.235Z"
+  },
+  "code_execution": {
+    "event_id": "e-gemini-code_execution",
+    "session_id": "a91a976b-358e-403a-a351-8f3f63a3ee9a",
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "codeExecution": {}
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "executableCode": {
+                  "code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nnum = 2\nwhile len(primes) < 10:\n    if is_prime(num):\n        primes.append(num)\n    num += 1\n\nprime_sum = sum(primes)\nprint(f\"The first 10 prime numbers are: {primes}\")\nprint(f\"The sum of the first 10 prime numbers is: {prime_sum}\")",
+                  "id": "call_16679227374097099032",
+                  "language": "PYTHON"
+                },
+                "thoughtSignature": "EpwBCpkBAWkUfRP8bDoNoVsmtt4keTav+yBVJnP9ybodmIPmC1RnptUW7fPe+aW7jh8LoPI/wFjb69Lo7j/00MlJ3Svk0oZNT4hvYyYvJDo8SmeZ+mPAOqTiB1OQ69miVwWIOQ+VnFUkza261ivUv8c9IFhgL+xD+VI77NHyDPArntg8eZqKcdvoCCaFWyZMv0tzUQNkDbvFtCw0we3N"
+              },
+              {
+                "codeExecutionResult": {
+                  "id": "call_16679227374097099032",
+                  "outcome": "OUTCOME_OK",
+                  "output": "The first 10 prime numbers are: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nThe sum of the first 10 prime numbers is: 129\n"
+                }
+              },
+              {
+                "text": "The first 10 prime numbers are 2, 3, 5, 7, 11, 13, 17, 19, 23, and 29.\n\nThe sum of these numbers is **129**.",
+                "thoughtSignature": "EpwBCpkBAWkUfRMkVOIn2+JlJdEo1WtGB9lo80eRLqisD05pJk9rEdHuca1S+F3nuIsspgVmqw9J4oG9lv/4D4O4j5BVZOe83l4aJDBK+zhD6V/tITkZeXrvQkRjzAIU9sja1wIP3J11OGmt8ISVNan8sLAx0Zuf8OrIw1ESBct8QNQjUxUNhIHYwqAG9eufxKxYoundPfRoZbQ93YUZ"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "yB38aoL8JM_mnsEP4d_DuQg",
+      "usageMetadata": {
+        "candidatesTokenCount": 219,
+        "promptTokenCount": 20,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 20
+          }
+        ],
+        "serviceTier": "standard",
+        "toolUsePromptTokenCount": 243,
+        "toolUsePromptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 243
+          }
+        ],
+        "totalTokenCount": 482
+      }
+    },
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is the sum of the first 10 prime numbers? Run code to compute it."
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "captured_at": "2026-11-17T09:26:36.833Z"
+  },
+  "sdk164_gemini_api_round_2": {
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Describes the image the user sent.",
+            "name": "describe_image",
+            "parameters": {
+              "properties": {
+                "detail": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "detail"
+              ],
+              "type": "OBJECT"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "It is a red square."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 270,
+        "candidatesTokenCount": 7,
+        "totalTokenCount": 277
+      },
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "r-164"
+    },
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "session_id": "s",
+    "event_id": "e-gemini-sdk164-gemini_api-round-2",
+    "captured_at": "2026-11-17T10:35:43.467263+00:00",
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is in this image?"
+          },
+          {
+            "inlineData": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAA=",
+              "mimeType": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "call-1",
+              "args": {
+                "detail": "colour"
+              },
+              "name": "describe_image"
+            },
+            "thoughtSignature": "c2lnbmF0dXJl"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "describe_image",
+              "response": {
+                "result": "a red square (colour)"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system_prompt": [
+      {
+        "text": "Be brief."
+      }
+    ]
+  },
+  "sdk164_vertex_round_2": {
+    "messages": [],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Describes the image the user sent.",
+            "name": "describe_image",
+            "parameters": {
+              "properties": {
+                "detail": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "detail"
+              ],
+              "type": "OBJECT"
+            },
+            "response": {
+              "type": "STRING"
+            }
+          }
+        ]
+      }
+    ],
+    "response": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "It is a red square."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 270,
+        "candidatesTokenCount": 7,
+        "totalTokenCount": 277
+      },
+      "modelVersion": "gemini-3.1-flash-lite",
+      "responseId": "r-164"
+    },
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "session_id": "s",
+    "event_id": "e-gemini-sdk164-vertex-round-2",
+    "captured_at": "2026-11-17T10:35:43.471699+00:00",
+    "input": [
+      {
+        "parts": [
+          {
+            "text": "What is in this image?"
+          },
+          {
+            "inline_data": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAA=",
+              "mime_type": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "function_call": {
+              "id": "call-1",
+              "args": {
+                "detail": "colour"
+              },
+              "name": "describe_image"
+            },
+            "thought_signature": "c2lnbmF0dXJl"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "function_response": {
+              "name": "describe_image",
+              "response": {
+                "result": "a red square (colour)"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "system_prompt": [
+      {
+        "text": "Be brief."
+      }
+    ]
+  }
+}

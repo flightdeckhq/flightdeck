@@ -28,7 +28,7 @@ CHILD_TIMEOUT_SECS = 60.0
 # settings (they would send its events to a real stack, under their
 # flavor) and provider credentials and endpoints (a child must only ever
 # reach the capture server).
-_SCRUBBED_PREFIXES = ("FLIGHTDECK_", "ANTHROPIC_", "OPENAI_", "LITELLM_")
+_SCRUBBED_PREFIXES = ("FLIGHTDECK_", "ANTHROPIC_", "OPENAI_", "LITELLM_", "GEMINI_", "GOOGLE_")
 _SCRUBBED_NAMES = frozenset({"AGENT_FLAVOR", "AGENT_TYPE"})
 
 _SENSOR_ROOT = str(Path(flightdeck_sensor.__file__).resolve().parents[1])
@@ -41,6 +41,10 @@ HANG_SECS = 60.0
 # SDKs parse them into their own types and the sensor meters them.
 _CHAT_COMPLETION_USAGE = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
 _MESSAGE_USAGE = {"input_tokens": 7, "output_tokens": 3}
+_GEMINI_USAGE = {"promptTokenCount": 7, "candidatesTokenCount": 3, "totalTokenCount": 10}
+# The Gemini API method a google-genai generate_content call posts to
+# (``/v1beta/models/<model>:generateContent``).
+_GEMINI_GENERATE = ":generateContent"
 # The tool a chat completion that offers tools is answered with a call to.
 CAPTURE_TOOL_NAME = "get_weather"
 
@@ -102,8 +106,9 @@ class CaptureServer:
 
     Records every event posted to ``.../v1/events`` in arrival order, and
     answers OpenAI chat completions, Anthropic messages (and their token
-    counts) and the sensor's heartbeat. Other GETs (the policy preflight)
-    get 404, which the sensor treats as no policy.
+    counts), Gemini ``generateContent`` and the sensor's heartbeat. Other
+    GETs (the policy preflight) get 404, which the sensor treats as no
+    policy.
 
     With ``hang_after_start`` it records every event after session_start
     and then holds the response until the server exits: a control plane
@@ -188,6 +193,19 @@ class CaptureServer:
                             "stop_reason": "end_turn",
                             "stop_sequence": None,
                             "usage": _MESSAGE_USAGE,
+                        }
+                    )
+                elif path.endswith(_GEMINI_GENERATE):
+                    self._reply(
+                        {
+                            "candidates": [
+                                {
+                                    "content": {"role": "model", "parts": [{"text": "hi"}]},
+                                    "finishReason": "STOP",
+                                }
+                            ],
+                            "usageMetadata": _GEMINI_USAGE,
+                            "modelVersion": "gemini-3.1-flash-lite",
                         }
                     )
                 elif path.endswith("/marker"):

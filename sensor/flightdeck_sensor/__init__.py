@@ -77,6 +77,12 @@ if TYPE_CHECKING:
     )
     from flightdeck_sensor.interceptor.google_adk import patch_google_adk as patch_google_adk
     from flightdeck_sensor.interceptor.google_adk import unpatch_google_adk as unpatch_google_adk
+    from flightdeck_sensor.interceptor.google_genai import (
+        patch_google_genai as patch_google_genai,
+    )
+    from flightdeck_sensor.interceptor.google_genai import (
+        unpatch_google_genai as unpatch_google_genai,
+    )
     from flightdeck_sensor.interceptor.langgraph import (
         patch_langgraph_classes as patch_langgraph_classes,
     )
@@ -224,9 +230,12 @@ class _SDKTarget:
 # and the import of ``langgraph.graph`` imports it first, so its patch
 # imports nothing from ``langgraph.graph``. LlamaIndex is keyed on
 # ``llama_index.core`` for the same reason as LangGraph (``llama_index`` is
-# a namespace package). Google ADK is keyed on ``google.adk.runners``, the
-# module of the runner it patches: ``google`` is a namespace package, and
-# ``google.adk`` loads its runner only when first asked for one.
+# a namespace package). google-genai is keyed on ``google.genai.models``,
+# the module of the classes it patches, which ``google.genai`` imports as
+# it is imported (``google`` is a namespace package). Google ADK is keyed
+# on ``google.adk.runners``, the module of the runner it patches:
+# ``google.adk`` loads its runner only when first asked for one. google-genai
+# comes before ADK, whose Gemini model calls through it.
 _SDK_TARGETS: tuple[_SDKTarget, ...] = (
     _SDKTarget(
         Provider.ANTHROPIC,
@@ -289,6 +298,13 @@ _SDK_TARGETS: tuple[_SDKTarget, ...] = (
         "openai_agents",
         "patch_openai_agents",
         "unpatch_openai_agents",
+    ),
+    _SDKTarget(
+        Provider.GOOGLE_GENAI,
+        "google.genai.models",
+        "google_genai",
+        "patch_google_genai",
+        "unpatch_google_genai",
     ),
     _SDKTarget(
         Provider.GOOGLE_ADK,
@@ -989,7 +1005,12 @@ def patch(
             session), ``OPENAI_AGENTS`` (wraps the OpenAI Agents SDK's
             runner and guardrails so each agent, and each agent used as
             a tool, lands as a child session, with its hand-offs and
-            guardrail tripwires) and ``GOOGLE_ADK`` (a plugin in every
+            guardrail tripwires), ``GOOGLE_GENAI`` (the request methods
+            of google-genai's ``Models`` / ``AsyncModels``, so every
+            Gemini call through any client, chat or framework, on the
+            Gemini API or Vertex AI, is metered and enforced; one event
+            per request, each round of automatic function calling
+            included) and ``GOOGLE_ADK`` (a plugin in every
             Google ADK runner and a wrap of its runs, so each sub-agent
             run lands as a child session, with its hand-offs; the root
             agent is the sensor's session). Silent no-op when a target's

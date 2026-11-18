@@ -42,7 +42,7 @@ from flightdeck_sensor.transport.client import (
     _EventStore,
 )
 from tests.unit._child_process import CaptureServer, child_env, finish, read_until, start_child
-from tests.unit._signal_child import INFLIGHT_EVENT_TYPE
+from tests.unit._signal_child import BUSY, INFLIGHT_EVENT_TYPE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -258,12 +258,20 @@ def test_a_second_sigint_raises_at_once_and_session_end_is_still_sent() -> None:
 
 
 @posix_only
-def test_a_signal_shutdown_loads_no_module() -> None:
+@pytest.mark.parametrize("option", ["", BUSY], ids=["idle", "signal-at-a-call-return"])
+def test_a_signal_shutdown_loads_no_module(option: str) -> None:
     # The control plane is down until the signal, so session_end's
     # response is the first one the session parses; and no SDK was used,
     # so no stream was ever settled before the shutdown settles them.
+    # The child prints READY inside the try that catches the
+    # KeyboardInterrupt: the signal is sent the moment READY is read, and
+    # the interpreter can run its handler as the print call returns,
+    # before the next statement; on a busy runner it did, outside the
+    # try, and the child died of the KeyboardInterrupt with -SIGINT. With
+    # BUSY that moment is pinned: the child is in a C call after READY,
+    # and the handler runs as it returns.
     with CaptureServer(unavailable=True) as capture:
-        proc, session_id = _start(capture, "imports")
+        proc, session_id = _start(capture, "imports", *([option] if option else []))
         capture.unavailable = False
         proc.send_signal(signal.SIGINT)
         code, out, err = finish(proc)

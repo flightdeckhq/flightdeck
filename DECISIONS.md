@@ -1255,3 +1255,27 @@ calling the SDK on entry sent, on 0.86, a change made in between.
 **Rejected alternative:** reading the SDK's version to pick the moment
 (silently wrong on the first release that moves it); storing the request
 body read off the response (a second content source, for one path only).
+
+## D287 -- Gemini is metered at google-genai's request methods, one event per billed request, its content the request body as sent
+
+**Date:** 2026-11-17
+**Decision:** the sensor patches `_generate_content`,
+`_generate_content_stream` and `_embed_content` on `Models` /
+`AsyncModels` (google-genai 1.64+): each automatic-function-calling round
+and continuation hop is its own `post_call`. `provider=google`; platform
+`gemini-api` or `vertex`. `tokens_output` = candidates + thoughts,
+`tokens_reasoning` = thoughts. Content is what the provider received:
+the method runs on a copy of its `Models` whose API client records the
+request dict the SDK hands it (and a non-streamed response body), and
+`contents`, `systemInstruction`'s parts and `tools` are stored from it,
+in the body's spelling; a stream's response is its chunks by alias. Not
+recorded: no content, never another shape.
+**Why:** the public methods return only the last round's response;
+reasoning is a subset of output for every provider. The SDK rewrites
+the arguments into the body, with a spelling that varies by release and
+platform: the caller's arguments would store whatever form the caller
+wrote, and the viewer would need the SDK's normalisation.
+**Rejected alternative:** patching the public methods (undercounts
+multi-round calls); the httpx layer (blind to which call a request is);
+the caller's arguments as content; re-running the SDK's private
+converters (a second conversion, which a one-shot iterable cannot feed).

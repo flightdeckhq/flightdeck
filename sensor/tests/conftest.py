@@ -99,6 +99,9 @@ def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    # google-genai reads its key and its Vertex AI switch from these.
+    for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"):
+        monkeypatch.delenv(name, raising=False)
 
     def _refuse(**_kwargs: Any) -> None:
         # A fresh exception on every call: a single shared instance would

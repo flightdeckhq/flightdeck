@@ -993,15 +993,18 @@ usage replaces it when the response arrives.
 
 An iterator that raises while it is read stops the reading. The call then
 goes on as any other: the estimate counts the items read, and the policy
-check runs before the SDK is touched, so a BLOCK raises and nothing is
-sent. The SDK gets an iterator over the items read before the failure,
+check runs before any request is sent (for Anthropic's `messages.stream()`
+when the manager is entered, see "Streaming metering"), so a BLOCK raises and
+nothing is sent. The SDK gets an iterator over the items read before the failure,
 which then raises the same exception. So the SDK raises it where it reads
 that argument, as without the sensor, whichever release is installed:
 the call itself, the await of an async call, or the entering of a stream
 manager (`messages.stream()`, `chat.completions.stream()`,
 `with_streaming_response`): anthropic 0.86 raises it when `stream()` is
 called, 2.x when the manager is entered. The call is reported as any call
-the SDK rejects before sending: an `llm_error` after its `pre_call`. An
+the SDK rejects before sending: an `llm_error` after its `pre_call`
+(raised by anthropic 0.86's `stream()`, which makes no request, it has
+no policy check, so the caller gets the SDK's exception). An
 SDK that never reads that argument sends the call, which is metered as
 any other. The sensor reads an Anthropic
 `messages.stream()` call's iterators when `stream()` is called, so that
@@ -2958,17 +2961,16 @@ streaming views, google-genai's async request methods, and every call
 through a following OpenAI or `wrap` proxy) the session is read then, so a coroutine created under one
 session and awaited after `teardown` goes to the SDK untouched, and one
 awaited in the next session reports to it, with its capture setting. The
-`.stream()` helpers of the OpenAI SDK send on entry, and a manager is
-matched to the session active when it is entered the same way.
-Anthropic's `messages.stream()`, sync or async, calls the SDK's own
-`stream()` when it is called, so the call belongs to the session it was
-called in; its pre-call (the policy check and `pre_call`) runs when the
-manager is entered, where the request goes out. A stream
-still open at `teardown` is settled when its session ends (see "Shutdown
-and signals"). A manager entered after its session has ended (after
-`teardown`, or once the next session has started) sends its request and
-raises nothing; its `pre_call` and `post_call` belong to the ended
-session, whose event queue has closed, so they are not sent.
+`.stream()` helpers of the OpenAI SDK and Anthropic's `messages.stream()`,
+sync or async, send on entry, and a manager is matched to the session
+active when it is entered the same way: one entered after `teardown` is
+the SDK's own, sending its request with nothing policed or reported, and
+one entered in the next session is policed by it and reports to it, with
+its capture setting. Anthropic's `messages.stream()` calls the SDK's own
+`stream()` when it is called, which reports nothing; one called with no
+session active returns the SDK's own manager. A stream still open at
+`teardown` is settled when its session ends (see "Shutdown and
+signals").
 
 Deferring the session to the await changes nothing a caller can see at
 the call itself. Every async entry point the sensor patches or proxies
@@ -10481,7 +10483,8 @@ sensor emits one per request from `_pre_call`, when the request is made:
 at the call for a plain or a streamed call, and at entry for a stream
 helper's manager (Anthropic `messages.stream()`, whose request goes out
 on entry), so a manager never entered emits nothing and each entry that
-sends a request emits its own; the Claude Code plugin emits one per
+makes a request emits its own, naming the model the caller asked for, as
+a plain call's does; the Claude Code plugin emits one per
 `UserPromptSubmit` hook fire. Carries:
 
 - `model`, `tokens_input`: the model the caller asked for and the
@@ -10672,21 +10675,31 @@ unguarded SDK does, so provider errors surface there. `messages.stream()`
 calls the SDK's `stream()` inside the call and returns a manager that
 stands for the SDK's (`base.StreamManager`, or `AsyncStreamManager` on an
 async client): entering it sends the request, as the SDK's manager does,
-and gives a guard of that entry's own. The policy check and the
-`pre_call` run at entry, where the request is made, with the latency
-measured from there: a manager never entered reports nothing, a BLOCK
-or the kill switch refuses the entry before anything is sent (nothing
-is sent before an entry either, so no request escapes the check), and a
-WARN is reported with the request it applies to. A DEGRADE has to reach
-the model the SDK fixes in its request when `stream()` is called, so it
-is read then, without acting on anything else, and swapped in; one that
-begins only between the call and an entry has the SDK build the request
-again, with the swapped model, at that entry. Each entry is a request of
-its own, as for the SDK's manager: a sync manager entered twice (or its
-shallow copy, which is the manager itself) sends and reports two
-requests; an async manager's request is a coroutine, so the SDK refuses
-a second entry with `RuntimeError`, which the sensor lets through with
-nothing reported, as nothing was sent. Like the SDK's manager it is not iterable and has
+and gives a guard of that entry's own. Everything about that request is
+decided at entry, where it is made, as for any call made at that moment:
+the session it reports to (see "A new session after teardown"), the
+policy check and its decision, and the `pre_call`, with the latency
+measured from there. A manager never entered reports nothing. A BLOCK
+or the kill switch refuses the entry before anything is sent, so the
+`BudgetExceededError` or `DirectiveError` is raised by the `with` /
+`async with`, not by `stream()`; nothing is sent before an entry
+either, so no request escapes the check. A WARN is reported with the
+request it applies to. A DEGRADE in force at the entry swaps the model
+in that entry's request: the SDK fixes the caller's model in the
+request it builds when `stream()` is called, so it builds the request
+again, with the swapped model, for that entry; a DEGRADE in force at
+the call and lifted by the entry leaves the caller's model. The events
+name the models as a plain call's do under the same policy: the
+`pre_call` the model the caller asked for, the `post_call` the model
+sent. Each entry is a request of its own, as for the SDK's manager: a
+sync manager entered twice (or its shallow copy, which is the manager
+itself) sends and reports two requests, and an entry that fails is a
+call that failed, reported after its `pre_call` whatever it raises. An
+async manager's request is a coroutine the SDK awaits on the first
+entry, whatever that entry ends in (the sensor closes it when that
+entry is refused or sent with another model), so every later entry is
+the SDK manager's own, which raises `RuntimeError` before anything
+runs: no policy check, no event. Like the SDK's manager it is not iterable and has
 no other protocol, its public attributes are the SDK manager's, read
 without sending anything, and it carries the SDK class's name, so a
 misuse (iterating it before entering it, the other client kind's

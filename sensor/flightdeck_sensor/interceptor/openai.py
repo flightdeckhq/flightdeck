@@ -559,7 +559,11 @@ class _HelperStreamManager:
     finalizer would delay the post_call of a stream the caller left early
     until the next intercepted call. The guard's exit takes the same
     exception the caller's block raised, so a provider failure, an early
-    exit and a full read are reported as on every other stream."""
+    exit and a full read are reported as on every other stream.
+
+    The manager the caller gets has the SDK manager's protocol and name
+    and nothing more (see :func:`_helper_manager`): ``with`` on a sync
+    client's, ``async with`` on an async client's."""
 
     def __init__(self, manager: Any, request: _HelperRequest) -> None:
         self._manager = manager
@@ -574,6 +578,13 @@ class _HelperStreamManager:
             guard.use_accumulator(helper_stream_accumulator(helper))
         return helper
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._manager, name)
+
+
+class _SyncHelperStreamManager(_HelperStreamManager):
+    """A sync client's ``.stream()`` manager (``with``)."""
+
     def __enter__(self) -> Any:
         return self._adopt(self._manager.__enter__())
 
@@ -583,6 +594,10 @@ class _HelperStreamManager:
         finally:
             for guard in self._request.guards:
                 guard.__exit__(exc_type, exc_val, exc_tb)
+
+
+class _AsyncHelperStreamManager(_HelperStreamManager):
+    """An async client's ``.stream()`` manager (``async with``)."""
 
     async def __aenter__(self) -> Any:
         return self._adopt(await self._manager.__aenter__())
@@ -594,8 +609,28 @@ class _HelperStreamManager:
             for guard in self._request.guards:
                 await guard.__aexit__(exc_type, exc_val, exc_tb)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._manager, name)
+
+class _DualHelperStreamManager(_SyncHelperStreamManager, _AsyncHelperStreamManager):
+    """A manager whose SDK class takes both ``with`` and ``async with``."""
+
+
+def _helper_manager(manager: Any, request: _HelperRequest) -> Any:
+    """The sensor's manager for the SDK's ``manager``: the protocol the
+    SDK class has (``with``, ``async with``, both), named as that class,
+    so introspection and the interpreter's errors (``async with`` on a
+    sync manager) are as without the sensor."""
+    sdk_type = type(manager)
+    sync, async_ = hasattr(sdk_type, "__enter__"), hasattr(sdk_type, "__aenter__")
+    wrapper: type = (
+        _DualHelperStreamManager
+        if sync and async_
+        else _AsyncHelperStreamManager
+        if async_
+        else _SyncHelperStreamManager
+        if sync
+        else _HelperStreamManager
+    )
+    return base.named_like(wrapper, sdk_type)(manager, request)
 
 
 def _helper_stream(proxy: Any, real: Any, kwargs: dict[str, Any]) -> Any:
@@ -606,7 +641,7 @@ def _helper_stream(proxy: Any, real: Any, kwargs: dict[str, Any]) -> Any:
     if not callable(helper):
         return real.stream(**kwargs)
     request = _HelperRequest(proxy)
-    return _HelperStreamManager(helper(request, **kwargs), request)
+    return _helper_manager(helper(request, **kwargs), request)
 
 
 def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:

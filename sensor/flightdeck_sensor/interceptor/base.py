@@ -1321,14 +1321,21 @@ def _holds_read_iterator(value: Any, depth: int = 1) -> bool:
     )
 
 
-def _returning(result: Any) -> Callable[..., Any]:
+class _Made:
     """An SDK call already made, for a stream guard to open: it returns
-    ``result`` whatever it is given."""
+    ``result`` whatever it is given. ``result`` is what the call made (a
+    stream manager, for ``messages.stream()``)."""
 
-    def made(**_kwargs: Any) -> Any:
-        return result
+    def __init__(self, result: Any) -> None:
+        self.result = result
 
-    return made
+    def __call__(self, **_kwargs: Any) -> Any:
+        return self.result
+
+
+def _returning(result: Any) -> Callable[..., Any]:
+    """See :class:`_Made`."""
+    return _Made(result)
 
 
 def _sent_at_once(
@@ -1753,6 +1760,12 @@ class _GuardCore:
         # helper stream, which assembles its own.
         self._accumulator: StreamAccumulator | None = None
         drain_deferred_settles(session)
+
+    @property
+    def made(self) -> Any:
+        """The SDK object the call made at once (a ``messages.stream()``
+        manager), or ``None`` for a call made on entry."""
+        return self._real_fn.result if isinstance(self._real_fn, _Made) else None
 
     def _hook_failed(self, hook: str) -> None:
         """A provider stream hook raised. The guard carries on without it
@@ -2266,6 +2279,93 @@ class GuardedStream(_GuardCore):
         if self._stream is None:
             raise AttributeError(name)
         return getattr(self._stream, name)
+
+
+# The classes named_like built, one per (wrapper, SDK class).
+_NAMED_LIKE: dict[tuple[type, type], type] = {}
+
+
+def named_like(wrapper: type, sdk_type: type) -> type:
+    """``wrapper`` under the name and module of the SDK class it stands
+    for, so what the interpreter says about the object (``async with`` on
+    a sync manager, iterating a manager; Python 3.14 names the class with
+    its module) is word for word what it says without the sensor. The
+    class is still a subclass of ``wrapper``. Built once per pair; two
+    threads building it at once keep the first."""
+    key = (wrapper, sdk_type)
+    named = _NAMED_LIKE.get(key)
+    if named is None:
+        named = type(
+            sdk_type.__name__,
+            (wrapper,),
+            {"__qualname__": sdk_type.__qualname__, "__module__": sdk_type.__module__},
+        )
+        named = _NAMED_LIKE.setdefault(key, named)
+    return named
+
+
+class StreamManager:
+    """What a stream helper's call (``messages.stream()``) hands the
+    caller in place of the SDK's manager: the manager's own protocol
+    (``with``) and nothing more. Entering it enters the stream guard and
+    returns it, so the caller iterates the guard; the manager itself is
+    not iterable, as the SDK's is not. Every public attribute is the SDK
+    manager's, read without entering it."""
+
+    def __init__(self, guard: GuardedStream) -> None:
+        self._guard = guard
+
+    def __enter__(self) -> GuardedStream:
+        return self._guard.__enter__()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self._guard.__exit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._guard.made, name)
+
+
+class AsyncStreamManager:
+    """Async counterpart of :class:`StreamManager` (``async with``) for an
+    async client's ``messages.stream()``."""
+
+    def __init__(self, guard: GuardedAsyncStream) -> None:
+        self._guard = guard
+
+    async def __aenter__(self) -> GuardedAsyncStream:
+        return await self._guard.__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self._guard.__aexit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._guard.made, name)
+
+
+def stream_manager(guard: GuardedStream | GuardedAsyncStream) -> Any:
+    """The manager a stream helper's call returns, for ``guard`` over the
+    SDK manager the call made: a :class:`StreamManager` or
+    :class:`AsyncStreamManager` named as the SDK's class. A call that made
+    no manager (one the sensor passed through) returns the guard."""
+    made = guard.made
+    if made is None:
+        return guard
+    wrapper: type = AsyncStreamManager if isinstance(guard, GuardedAsyncStream) else StreamManager
+    return named_like(wrapper, type(made))(guard)
 
 
 def _build_streaming_summary(

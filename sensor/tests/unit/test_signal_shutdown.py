@@ -877,11 +877,15 @@ def test_a_signal_waits_for_end_running_on_another_thread(
     end_finishes = threading.Thread(target=_end_finishes)
     started = time.monotonic()
     end_finishes.start()
-    session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-    elapsed = time.monotonic() - started
-    end_finishes.join(DRAIN_WAIT_SECS)
+    try:
+        session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
+        elapsed = time.monotonic() - started
+        # The handler returned because end() had finished, not before.
+        ended_on_return = session._ended.is_set()
+    finally:
+        end_finishes.join(DRAIN_WAIT_SECS)
     assert OTHER_END_SECS <= elapsed < DRAIN_WAIT_SECS
-    assert session._ended.is_set()
+    assert ended_on_return
     assert passed_on == [signal.SIGTERM]
     session.event_queue.close()
 

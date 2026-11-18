@@ -17,11 +17,10 @@ has closed, with or without the sensor:
   still queued; ``asyncio.run`` cancels the worker's task, which is done.
 
 The next async litellm call, on another loop, resets the worker
-(``_ensure_queue``). There litellm 1.83, the SDK floors and SDK majors
-lanes' release, drops the never-run task and the queued handlers, and
-litellm 1.104, the dev and Google ADK lanes' release, drops the task only:
-it carries the handlers over to its new queue, where they run once a later
-loop lives long enough. Python reports each coroutine dropped as never
+(``_ensure_queue``). There litellm 1.83 drops the never-run task and the
+queued handlers, and litellm 1.104 drops the task only: it carries the
+handlers over to its new queue, where they run once a later loop lives
+long enough. Python reports each coroutine dropped as never
 awaited, inside whichever test made that next call, which may be in a
 module that turns ``RuntimeWarning`` into an error. Retiring the worker
 after the test that left it also drops, on 1.104, the handlers litellm

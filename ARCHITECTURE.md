@@ -1255,8 +1255,10 @@ different levels:
   `ChatCompletionStream` / `ResponseStream` from a manager that stands
   for the SDK's: it has that manager's protocol and nothing more (`with`
   on a sync client's, `async with` on an async client's) and carries its
-  class name and module, so an `async with` on a sync client's manager
-  raises the `TypeError` the SDK's manager raises, word for word. The helper keeps the SDK's
+  class name, so an `async with` on a sync client's manager raises the
+  `TypeError` the SDK's manager raises, at the same moment (its module
+  stays the sensor's, so Python 3.14, which prints a class with its
+  module, names that module in the message). The helper keeps the SDK's
   stream state for the events it reads, so the guard takes the helper's
   assembly (a chat helper's `current_completion_snapshot`, a Responses
   helper's terminal `Response` or the snapshot its state folded) rather
@@ -1542,7 +1544,11 @@ and the Anthropic patch in its patched resource methods (`create`,
 
 `litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
 return the shared stream guard (`GuardedStream` / `GuardedAsyncStream`)
-around litellm's `CustomStreamWrapper`. The sensor asks litellm for
+around litellm's `CustomStreamWrapper`, seen through that wrapper's
+protocol (`base.protocol_view`): it iterates both ways, `for` and `async
+for`, whichever call made it, and is no context manager, so the stream
+the caller gets does the same, and reading it either way is metered
+once and fails as litellm's does. The sensor asks litellm for
 `stream_options={"include_usage": True}`, so litellm appends one chunk
 carrying the provider's usage after the `finish_reason` chunk (one choice
 with an empty delta, where OpenAI sends empty `choices`). The guard meters
@@ -10663,13 +10669,23 @@ stands for the SDK's (`base.StreamManager`, or `AsyncStreamManager` on an
 async client): entering it sends the request, as the SDK's manager does,
 and gives the guard. Like the SDK's manager it is not iterable and has
 no other protocol, its public attributes are the SDK manager's, read
-without sending anything, and it carries the SDK class's name and
-module, so a misuse (iterating it before entering it, the other client
-kind's `with`) raises what the SDK's manager raises, word for word.
-Every other object the sensor hands back in place of an SDK object (a
-stream guard, a view's response proxy) has the protocol of the object it
-stands for: `with` / `async with`, iteration and async iteration, and
-`await`, on the object and on its class.
+without sending anything, and it carries the SDK class's name, so a
+misuse (iterating it before entering it, the other client kind's
+`with`) raises the exception type the SDK's manager raises, at the same
+moment; the message is the SDK's word for word except on Python 3.14,
+which prints a class with its module, the sensor's here. On the
+Anthropic, OpenAI, litellm and google-genai SDKs every other object the
+sensor hands back for a stream helper, a streamed call or a raw or
+streaming view (a stream guard, a view's response proxy, a litellm
+stream) has the protocol of the object it stands for: `with` / `async
+with`, iteration and async iteration, and `await`, on the object and on
+its class. Each copies as that object does: a shallow copy works, and is
+the object itself, so the call is still metered once; a deep copy or a
+pickle is the SDK object's, raising what that raises. One difference
+remains: an OpenAI sync client's streaming view hands back the SDK's own
+`ResponseContextManager`, holding the sensor proxy's method where the SDK
+holds the resource's bound method, so its deep copy works and its pickle
+raises `PicklingError` where the SDK's raise `TypeError`.
 
 `chunk_count`, the inter-chunk timings and `partial_chunks` count the
 events the SDK yields to the caller. Protocol frames the SDK consumes
@@ -10831,9 +10847,11 @@ fields described under `post_call` apply here too. Embeddings adds:
   in the first: its length, or for a call that asked for
   `encoding_format="base64"` (OpenAI and litellm; google-genai has no
   such option), the number of float32 values its base64 string decodes
-  to, four bytes each, as the OpenAI SDK decodes it. A string that does
-  not decode to whole float32 values gives no dimension, and the event
-  then carries no `output_dimensions`.
+  to, four bytes each, decoded as the OpenAI SDK decodes it (characters
+  outside the base64 alphabet skipped, bad padding refused). A string the
+  SDK itself could not decode into whole float32 values, or one that
+  decodes to none, gives no dimension, and the event then carries no
+  `output_dimensions`.
 
 When `capture_prompts=true`:
 
@@ -10842,7 +10860,8 @@ When `capture_prompts=true`:
   token-id lists) — round-trips into `event_content.input`.
 - `payload.content.embedding_output` carries the raw vectors, each as
   the provider returned it: a list of floats, or the base64 string of a
-  call that asked for `encoding_format="base64"` — round-trips into
+  call that asked for `encoding_format="base64"`, an empty one included
+  — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate
   protects this; there is no separate dial.
 

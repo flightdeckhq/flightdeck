@@ -149,10 +149,15 @@ All notable changes to Flightdeck are documented here.
   `AttributeError` instead of the SDK's `TypeError`; Anthropic's
   `messages.stream()` manager could be iterated before it was entered,
   which the SDK's cannot, and reading an attribute on it sent the
-  request. Each manager now has the SDK manager's protocol, name and
-  module and nothing more, so `hasattr`, `async with`, `with` and
-  iteration behave and fail as without the sensor. A BLOCK still stops
-  every form before a request is sent.
+  request; copying an OpenAI manager recursed until it failed. Each
+  manager now has the SDK manager's protocol and name and nothing more,
+  so `hasattr`, `async with`, `with` and iteration behave and fail as
+  without the sensor (the same exception, at the same moment). The
+  stream `litellm.completion` / `acompletion` return with `stream=True`
+  now iterates both ways and is no context manager, as litellm's own;
+  every object these paths return copies, deep-copies and pickles as the
+  SDK object it stands for. A BLOCK still stops every form before a
+  request is sent.
 - **An event holding a NaN or an infinity is no longer lost.** A reply
   the SDK parsed with a `NaN` or `-Infinity` in it (an OpenAI-compatible
   server's logprob, a tool call's arguments), or a sub-agent hand-off
@@ -167,8 +172,9 @@ All notable changes to Flightdeck are documented here.
   `output_dimensions.dimension` reported the string's length (8,192 for
   a 1,536-value vector) while the stored vector was the string's
   characters as a list. The dimension is now the number of float32
-  values the string decodes to, and the vector is stored as the string
-  the provider returned (OpenAI and litellm).
+  values the string decodes to, decoded as the SDK decodes it, and the
+  vector is stored as the string the provider returned, an empty one
+  included (OpenAI and litellm).
 - **The warning for a provider body that did not parse says so.** A raw
   view's response that the SDK could not parse was reported as content
   that "holds UnreadableResponse, which cannot be written as JSON"; the

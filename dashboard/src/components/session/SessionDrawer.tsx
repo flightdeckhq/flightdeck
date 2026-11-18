@@ -29,7 +29,7 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
-import { PromptViewer } from "./PromptViewer";
+import { EMBEDDINGS_EVENT_TYPE, PromptViewer } from "./PromptViewer";
 import { NoEventContent, NoRunContent } from "./NoEventContent";
 import { SignalPromptsPanel } from "./SignalContentViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
@@ -2188,7 +2188,14 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
           event.event_type === "session_signal"
             ? <SignalPromptsPanel event={event} />
             : event.has_content
-              ? <PromptViewer eventId={event.id} clientType={event.client_type ?? session?.client_type} eventType={event.event_type} />
+              ? (
+                <PromptViewer
+                  eventId={event.id}
+                  clientType={event.client_type ?? session?.client_type}
+                  eventType={event.event_type}
+                  outputDimensions={event.payload?.output_dimensions}
+                />
+              )
               : <NoEventContent event={event} session={session} />
         )}
         {activeTab === "neighbors" && (
@@ -2260,7 +2267,14 @@ export function PromptsTab({
     }
   }, [focusedEventId, selectedEventId]);
 
-  if (contentEvents.length === 0) {
+  // The selected event is looked up among all the run's events, not the
+  // listed ones: a timeline row's "View Prompts →" can open an event the
+  // list leaves out (an embeddings call), in a run whose list may be
+  // empty, and the viewer needs its type.
+  const selectedEvent = selectedEventId ? events.find((e) => e.id === selectedEventId) : undefined;
+  const embeddingsSelected = selectedEvent?.event_type === EMBEDDINGS_EVENT_TYPE;
+
+  if (contentEvents.length === 0 && !embeddingsSelected) {
     return <NoRunContent session={session} />;
   }
 
@@ -2273,7 +2287,8 @@ export function PromptsTab({
         <PromptViewer
           eventId={selectedEventId}
           clientType={session?.client_type}
-          eventType={contentEvents.find((e) => e.id === selectedEventId)?.event_type}
+          eventType={selectedEvent?.event_type}
+          outputDimensions={selectedEvent?.payload?.output_dimensions}
         />
       </div>
     );

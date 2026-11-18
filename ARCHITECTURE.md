@@ -1777,7 +1777,8 @@ An `embed_content` call stores in `input` the contents its request sent
 `batchEmbedContents`, each instance's `content` on Vertex AI's
 `predict`, the request's own on its `embedContent`) and the vectors in
 `embedding_output`. The dashboard's Prompts tab shows a Gemini call in
-these terms (see Session drawer, the Prompts tab).
+these terms, and an `embed_content` call's stored contents under
+Contents (see Session drawer, the Prompts tab).
 
 **Not patched.** `count_tokens` and `compute_tokens` (no inference
 call; the sensor's estimate is local); the image, video and other
@@ -9296,11 +9297,30 @@ Prompts tab shows its captured text instead, and without it the
 capture-disabled message for a signal whose text the plugin always
 sends while capture is on (`context_compacted`, `notification`,
 `task_created`, `task_completed`, `elicitation_requested`), otherwise
-"This event carries no captured text." An embeddings event's input is
-shown by `EmbeddingsContentViewer` in its expanded event row. The run
-drawer's Prompts tab lists the run's events that stored content of
-the types `post_call`, `tool_call`, `mcp_tool_call` and
-`mcp_prompt_get`, each opening in `PromptViewer`. The viewer's
+"This event carries no captured text." An embeddings event's Prompts
+tab (the drawer passes `PromptViewer` the event's type and its
+`output_dimensions`) shows, under the provider header, the input its
+request sent, under the provider's name for it: Input for an OpenAI or
+litellm call (the API's `input` parameter), Contents for a
+google-genai `embed_content` call (the contents its request sent). That
+box's Rendered view is the expanded event row's input view, the one
+`EmbeddingsContentViewer` draws, so an input reads the same in both
+places (see Content Capture, Modality parity principle: text cut at 280 characters,
+token ids with their count cut at 35 ids, a list behind its `N inputs`
+header that expands it, any other value as its JSON, a Gemini
+request's `Content` objects included); its JSON view is the stored
+`input`. The sensor stores no response for an embeddings call (its
+`response` is `{}`, and the vectors, in `embedding_output`, are not
+returned by `GET /v1/events/:id/content`), so the tab shows no response
+body: its Response section shows the event's `output_dimensions` (the
+`count` of vectors and the `dimension` of each, as the event payload
+carries them, its JSON view that object), and the tab has no Response
+section when the event carries none. The run drawer's "View Prompts →"
+on an embeddings row opens the same view in the run drawer's Prompts
+tab, also when the run stored no other content. The run drawer's
+Prompts tab lists the run's events that stored content of the types
+`post_call`, `tool_call`, `mcp_tool_call` and `mcp_prompt_get`, each
+opening in `PromptViewer`; an embeddings event is not listed. The viewer's
 header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
@@ -9409,7 +9429,8 @@ that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
 built from `response.created` on, and for litellm the latest response a
 `response.created` / `response.in_progress` event carried
 (`status: "in_progress"`, no output). An embeddings
-call's input stays with `EmbeddingsContentViewer`. A Gemini call (an
+event, whatever its content holds, has the embeddings view above,
+known by the event's type. A Gemini call (an
 event other than an embeddings call whose content is stored under
 provider `google`; the drawer passes the event's type, and an
 embeddings event keeps the view every embeddings event has, whatever
@@ -11502,7 +11523,10 @@ Per-framework embeddings content capture matrix:
 
 Content (when captured) round-trips: sensor `PromptContent.input` →
 ingestion `payload.content` → worker `event_content.input` JSONB →
-`GET /v1/events/:id/content` → dashboard `<EmbeddingsContentViewer>`.
+`GET /v1/events/:id/content` → dashboard `<EmbeddingsContentViewer>`
+in the expanded event row, and the event's Prompts tab, whose input box
+renders the input with the same component (see Session drawer, the
+Prompts tab).
 
 The viewer picks its render branch by the stored input's JSON type:
 

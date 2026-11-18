@@ -67,6 +67,16 @@ All notable changes to Flightdeck are documented here.
   response (which showed the whole response object) and passed back in
   a later request (which showed `(empty)`), as a Responses `refusal`
   part already showed in a request, and that part in a response.
+- The Prompts tab shows an embeddings call's input, which it left out
+  (it showed only an empty response, `{}`): under Input for an OpenAI or
+  litellm call, under Contents for a Gemini `embed_content` call, drawn
+  as the expanded event row draws it (text, token ids with their count,
+  a list of inputs behind its count, any other value as its JSON), with
+  the stored input byte for byte in the JSON view. Its Response section
+  shows the call's vector count and dimension rather than an empty
+  response. The run drawer's "View Prompts →" on an embeddings row now
+  opens this view, also in a run with no other stored content (it showed
+  "No content was recorded for this run.").
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a

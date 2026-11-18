@@ -26,6 +26,7 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import (
+    assert_reply_stored,
     assert_token_cost_fields,
     assert_event_landed,
     fetch_event_content,
@@ -240,6 +241,21 @@ def main() -> None:
         f"{raw_body.usage.total_tokens} tokens, request_id={raw_rid}",
     )
 
+    # The chat raw view, the path langchain-openai's ChatOpenAI.invoke
+    # takes.
+    t0 = time.monotonic()
+    raw_chat = openai.OpenAI().chat.completions.with_raw_response.create(
+        model=MODEL, messages=HI, max_tokens=8,
+    )
+    raw_chat_rid = raw_chat.headers.get("x-request-id")
+    raw_chat_body = raw_chat.parse()
+    print_result(
+        "OpenAI().chat.completions.with_raw_response.create",
+        bool(raw_chat_rid) and raw_chat_body.usage.total_tokens > 0,
+        int((time.monotonic() - t0) * 1000),
+        f"served {raw_chat_body.model}, request_id={raw_chat_rid}",
+    )
+
     # Responses function tool call: the sensor emits one tool_call event
     # per function_call output item.
     t0 = time.monotonic()
@@ -423,6 +439,7 @@ def main() -> None:
         "chat.completions.parse": parse_rid,
         "responses.parse": rparse_rid,
         "responses.with_raw_response.create": raw_rid,
+        "chat.completions.with_raw_response.create": raw_chat_rid,
         "prompt cache second send": cached_rid,
     }
     deadline = time.monotonic() + NEW_PATH_EVENTS_DEADLINE_S
@@ -460,6 +477,18 @@ def main() -> None:
         )
         if not metered:
             raise AssertionError(f"{label}: no metered post_call for request_id={rid}")
+    # A raw-view call stores the reply the wrapper holds and names the
+    # served model (the API serves the alias MODEL with a dated model), as
+    # a plain call with the same reply does.
+    assert_reply_stored(
+        session_id, "responses.with_raw_response.create", raw_body.id, raw_body.model
+    )
+    assert_reply_stored(
+        session_id,
+        "chat.completions.with_raw_response.create",
+        raw_chat_body.id,
+        raw_chat_body.model,
+    )
     cache_event = by_rid[cached_rid]
     cache_read = cache_event.get("tokens_cache_read")
     print_result(

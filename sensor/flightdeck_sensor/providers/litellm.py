@@ -429,7 +429,10 @@ class LitellmProvider:
                 # never dumped.
                 resp_dict = _stream_response_summary(response)
             else:
-                resp_dict = {"raw": str(response)}
+                # No response stores an empty one; anything else (a dict) is
+                # stored as it is, which the transport sends when JSON can
+                # write it, never as its string form.
+                resp_dict = {} if response is None else response
 
             return PromptContent(
                 system=None,

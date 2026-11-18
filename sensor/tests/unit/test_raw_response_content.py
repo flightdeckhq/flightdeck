@@ -345,11 +345,6 @@ def _report(events: list[dict[str, Any]]) -> dict[str, Any]:
     fields, its stored content and the tool_call events it emitted."""
     event = _call_event(events)
     fields = {name: event.get(name) for name in _FIELDS}
-    metadata = dict(fields["provider_metadata"] or {})
-    # The plain Anthropic call reads no response header (see the
-    # request-id rows below).
-    metadata.pop("request_id", None)
-    fields["provider_metadata"] = metadata
     content = event.get("content")
     if isinstance(content, dict):
         content = {k: v for k, v in content.items() if k not in _PER_CALL_CONTENT_FIELDS}
@@ -384,6 +379,7 @@ def test_a_raw_call_reports_the_plain_calls_event(
     expected = _report(_plain(session, name, is_async))
     _wrapper, _message, events = _raw(session, name, is_async)
     assert _report(events) == expected
+    assert expected["fields"]["provider_metadata"]["request_id"] == REQUEST_ID
     sdk = _PATHS[name][0]
     if name.startswith("embeddings"):
         return
@@ -793,3 +789,25 @@ def test_a_message_stream_helper_never_iterated_stores_an_empty_response(
             return _stored(_providers()["anthropic"], stream)
 
     assert asyncio.run(entered()) == {}
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("beta", [False, True], ids=["messages", "beta.messages"])
+def test_a_plain_anthropic_call_reports_the_request_id_the_sdk_stamped(
+    beta: bool, is_async: bool, router: respx.MockRouter, sensored: Callable[..., Session]
+) -> None:
+    """The plain call returns no headers; the SDK stamps the
+    ``request-id`` header on the message as ``_request_id``."""
+    session = sensored(capture=False)
+    client = _client("anthropic", is_async)
+    resource = client.beta.messages if beta else client.messages
+    message = _run(lambda: resource.create(**MESSAGES_KW))
+    assert message._request_id == REQUEST_ID
+    event = _call_event(_sent(session, 0))
+    assert event["provider_metadata"] == {"platform": "anthropic", "request_id": REQUEST_ID}
+
+
+def test_an_anthropic_message_without_a_stamped_request_id_reports_none() -> None:
+    message = anthropic.types.Message.model_validate(MESSAGE)
+    metadata = AnthropicProvider(capture_prompts=False).extract_response_metadata(message)
+    assert metadata is None or "request_id" not in metadata

@@ -205,7 +205,10 @@ class AnthropicProvider:
         """Pull rate-limit headers + request id from anthropic responses,
         plus the platform this provider was attributed to (see
         ``__init__``), which is reported whether or not the response
-        exposes any header."""
+        exposes any header. A parsed message exposes no headers, but the
+        SDK stamps the ``request-id`` header on it as ``_request_id``, so
+        a plain call reports the request id a raw-view call reads from
+        the header."""
         out: dict[str, Any] = {}
         if self._platform:
             out["platform"] = self._platform
@@ -218,6 +221,9 @@ class AnthropicProvider:
                     break
             getter = getattr(headers, "get", None) if headers else None
             if not callable(getter):
+                request_id = getattr(obj, "_request_id", None)
+                if isinstance(request_id, str) and request_id:
+                    out["request_id"] = request_id
                 return out or None
             mapping = {
                 "anthropic-ratelimit-tokens-remaining": "ratelimit_remaining_tokens",

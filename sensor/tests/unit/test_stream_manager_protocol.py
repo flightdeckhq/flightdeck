@@ -589,10 +589,9 @@ def test_block_refuses_every_form_of_a_stream_helper_before_any_request(
     unentered_managers_collected: None,
 ) -> None:
     """A BLOCK decision stops a stream helper used the right way and
-    every misuse of its manager with no request sent: at the call
-    (Anthropic, whose ``stream()`` is checked when called) or at entry
-    (OpenAI, whose manager builds its request then); a misuse the
-    interpreter refuses first sends nothing either."""
+    every misuse of its manager with no request sent: at entry, where
+    both SDKs' managers send their request; a misuse the interpreter
+    refuses first sends nothing either."""
     session = sensor(True)
     assert session is not None
     session.policy = PolicyCache(token_limit=100, block_at_pct=50)

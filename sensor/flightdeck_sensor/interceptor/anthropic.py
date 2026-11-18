@@ -502,17 +502,11 @@ class SensorMessages(base.SessionProxy):
         # The arguments are bound against the SDK's signature first, so an
         # argument error raises at the call before the sensor reads or
         # estimates anything. The SDK's ``stream()`` is then called now, as
-        # the caller calls it, after the estimate and the policy check; it
-        # builds its request now or on entry, as its release does, and the
-        # guard enters the manager it returns (see base.call_stream).
+        # the caller calls it; it builds its request now or on entry, as its
+        # release does, and sends it on entry, which is when the policy is
+        # checked and the pre_call emitted (see base.StreamHelperCall).
         base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
-        if self._is_async:
-            return base.stream_manager(
-                base.call_stream_async(real_fn, kwargs, session, provider, call_now=True)
-            )
-        return base.stream_manager(
-            base.call_stream(real_fn, kwargs, session, provider, call_now=True)
-        )
+        return base.call_stream_helper(real_fn, kwargs, session, provider, is_async=self._is_async)
 
     @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:

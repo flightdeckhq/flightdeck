@@ -86,8 +86,14 @@ class PolicyCache:
         self._forced_degrade = False
         self._lock = threading.Lock()
 
-    def check(self, tokens_used: int, estimated: int) -> PolicyResult:
+    def check(self, tokens_used: int, estimated: int, *, peek: bool = False) -> PolicyResult:
         """Evaluate all thresholds against *tokens_used* + *estimated*.
+
+        ``peek`` evaluates without recording that a WARN fired, so a later
+        check for the same request still returns it: a stream helper reads
+        the decision when the SDK takes its arguments (a DEGRADE must reach
+        the model the SDK fixes then) and acts on it, events included, when
+        the request is made.
 
         Server-side thresholds can return BLOCK, DEGRADE, or WARN.
         Local thresholds only return WARN (never BLOCK/DEGRADE).
@@ -134,7 +140,8 @@ class PolicyCache:
                     )
 
                 if pct >= self.warn_at_pct and not self._server_warned:
-                    self._server_warned = True
+                    if not peek:
+                        self._server_warned = True
                     return PolicyResult(
                         PolicyDecision.WARN,
                         source="server",
@@ -150,7 +157,8 @@ class PolicyCache:
             if self.local_limit is not None and self.local_limit > 0:
                 threshold = int(self.local_limit * self.local_warn_at)
                 if projected >= threshold and not self._local_warned:
-                    self._local_warned = True
+                    if not peek:
+                        self._local_warned = True
                     return PolicyResult(
                         PolicyDecision.WARN,
                         source="local",

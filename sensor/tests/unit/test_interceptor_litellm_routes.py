@@ -651,7 +651,9 @@ def test_responses_stream_left_early_stores_the_in_progress_response(
             try:
                 return await _aread_until_first_delta(stream)
             finally:
-                await stream.close()
+                # litellm's iterator has no close(); the caller leaves it,
+                # and the guard settles (here at once, as at collection).
+                await base.guard_of(stream).close()
 
         kinds = asyncio.run(_read())
     else:
@@ -659,7 +661,7 @@ def test_responses_stream_left_early_stores_the_in_progress_response(
         try:
             kinds = _read_until_first_delta(stream)
         finally:
-            stream.close()
+            base.guard_of(stream).close()
     assert "response.completed" not in kinds
     (pc,) = _post_calls(capture_session)
     assert pc["streaming"]["final_outcome"] == "aborted"
@@ -724,7 +726,7 @@ def test_responses_stream_left_early_without_capture_stores_nothing(session: Ses
     try:
         _read_until_first_delta(stream)
     finally:
-        stream.close()
+        base.guard_of(stream).close()
     (pc,) = _post_calls(session)
     assert pc["streaming"]["final_outcome"] == "aborted"
     _assert_nothing_captured(session)

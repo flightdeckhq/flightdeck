@@ -613,13 +613,28 @@ def test_a_stream_whose_sent_copy_cannot_be_told_stores_the_copy_taken_on_entry(
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
-def test_a_blocked_stream_raises_at_the_call_and_sends_nothing(
+def test_a_blocked_stream_raises_at_entry_and_sends_nothing(
     provider: respx.MockRouter, monkeypatch: pytest.MonkeyPatch, is_async: bool
 ) -> None:
+    """``messages.stream()`` sends its request when the manager is
+    entered, so that is where a BLOCK refuses it: the call itself
+    returns the manager, and entering it raises with nothing sent."""
     session = _session()
     session.policy = PolicyCache(token_limit=1, block_at_pct=1)
     client = _sensored("patched", "anthropic", session, monkeypatch, is_async=is_async)
     sent = provider.routes["anthropic"].call_count
+    manager = client.messages.stream(**ANTHROPIC_OK)
     with pytest.raises(flightdeck_sensor.BudgetExceededError):
-        client.messages.stream(**ANTHROPIC_OK)
+        if is_async:
+
+            async def _enter() -> None:
+                async with manager:
+                    pass
+
+            asyncio.run(_enter())
+        else:
+            with manager:
+                pass
     assert provider.routes["anthropic"].call_count == sent
+    # The manager's request coroutine was never awaited; close it.
+    base._discard(manager._call.made)

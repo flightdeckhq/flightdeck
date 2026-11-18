@@ -57,8 +57,8 @@ class UnreadableResponse:
     run. It carries nothing, so usage falls back to the pre-call estimate
     and the model to the requested one. As stored content it is an object
     JSON cannot write, so the event is sent without its content, with the
-    transport's warning naming this type once per event type
-    (``transport/body_limit.py``)."""
+    transport's warning, once per event type, that the provider's response
+    body did not parse (``transport/body_limit.py``)."""
 
     __slots__ = ()
 

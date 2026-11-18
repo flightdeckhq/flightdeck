@@ -19,6 +19,8 @@ import math
 import threading
 from typing import Any
 
+from flightdeck_sensor.providers._access import UnreadableResponse
+
 _log = logging.getLogger("flightdeck_sensor.transport.body_limit")
 
 #: Largest event body the sensor sends, as measured by
@@ -175,7 +177,8 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
     """
     body, unencodable = _encode(payload)
     if body is None:
-        if payload.get("content") is None:
+        content = payload.get("content")
+        if content is None:
             raise TypeError(f"event is not JSON serializable: {unencodable}")
         payload = _without_content(payload)
         body, outside = _encode(payload)
@@ -183,12 +186,25 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
             raise TypeError(f"event is not JSON serializable outside its content: {outside}")
         event_type = payload.get("event_type")
         log = _log.warning if _first_time(event_type, unencodable) else _log.debug
-        log(
-            "%s event's captured content holds %s, which cannot be written as JSON; "
-            "sent without its content",
-            event_type,
-            unencodable,
-        )
+        if unencodable == UnreadableResponse.__name__:
+            # The response the call returned stands in for a provider body
+            # the SDK could not parse (see providers/_access.py).
+            provider = payload.get("provider") or (
+                content.get("provider") if isinstance(content, dict) else None
+            )
+            log(
+                "%s event (%s): the provider's response body did not parse, so the call "
+                "is reported on the pre-call estimate and sent without its content",
+                event_type,
+                provider or "unknown provider",
+            )
+        else:
+            log(
+                "%s event's captured content holds %s, which cannot be written as JSON; "
+                "sent without its content",
+                event_type,
+                unencodable,
+            )
     size = encoded_size(body)
     content = payload.get("content")
     if size <= MAX_EVENT_BODY_BYTES or content is None:

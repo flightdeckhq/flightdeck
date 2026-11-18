@@ -864,12 +864,28 @@ def test_a_signal_waits_for_end_running_on_another_thread(
     assert session._end_claim.acquire(blocking=False)
     session._ending_thread = threading.get_ident() + 1
     passed_on: list[int] = []
-    end_finishes = threading.Timer(OTHER_END_SECS, session._ended.set)
+
+    # end() on the other thread, finishing after OTHER_END_SECS. Timed with
+    # time.sleep, which follows the monotonic clock this test measures
+    # with: a threading.Timer waits through Event.wait, which on an
+    # interpreter without sem_clockwait follows the wall clock, and a step
+    # of that clock (WSL2 syncs it to the host) can fire it early.
+    def _end_finishes() -> None:
+        time.sleep(OTHER_END_SECS)
+        session._ended.set()
+
+    end_finishes = threading.Thread(target=_end_finishes)
     started = time.monotonic()
     end_finishes.start()
-    session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-    elapsed = time.monotonic() - started
+    try:
+        session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
+        elapsed = time.monotonic() - started
+        # The handler returned because end() had finished, not before.
+        ended_on_return = session._ended.is_set()
+    finally:
+        end_finishes.join(DRAIN_WAIT_SECS)
     assert OTHER_END_SECS <= elapsed < DRAIN_WAIT_SECS
+    assert ended_on_return
     assert passed_on == [signal.SIGTERM]
     session.event_queue.close()
 

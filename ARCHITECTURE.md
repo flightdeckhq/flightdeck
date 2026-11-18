@@ -1854,7 +1854,7 @@ both (see Sub-agent framework coverage).
 
 | Framework | Native: LLM calls | Native: structure | OTLP GenAI | What each path gives |
 |---|---|---|---|---|
-| LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
+| LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
 | LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
 | CrewAI 1.14+ | yes on its OpenAI, Anthropic and Gemini (`google.genai`; verified live on 1.15) providers and the litellm fallback; no on its Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
@@ -9319,8 +9319,14 @@ model writes it, and a cut or malformed string is still what the
 provider received. A function call with no arguments says `(no
 arguments)`, the OpenAI field's name, and a custom tool's call with no
 input `(no input)`. A call of a type the viewer does not know is shown
-as its JSON, and a message with neither text nor a call shows
-`(empty)`. A tool's reply (a `tool` message, or a legacy `function`
+as its JSON. An assistant message that carries a `refusal` (the
+model's text when it declines, given beside a null `content`, as
+Structured Outputs returns it) shows it labelled `refusal`, OpenAI's
+word, over the text in the box any text shows in, after the message's
+text when it has any and before its calls, in a request's messages and
+in the response's message alike; a refusal is the model declining, not
+a failure, so nothing about it wears an error's colours. A message with
+neither text, a refusal nor a call shows `(empty)`. A tool's reply (a `tool` message, or a legacy `function`
 message) is labelled `tool result` and the tool it answers: the name of
 the call whose `id` its `tool_call_id` holds, looked up among the calls
 of the earlier assistant messages in the same list (the nearest one
@@ -9347,11 +9353,45 @@ and `input_audio` named by type), a `function_call` with its name,
 `call_id` and arguments, a `function_call_output` with its `call_id`
 and output, labelled `tool result` and, when the `function_call` it
 answers is earlier in the input (the nearest one when a `call_id`
-repeats), that call's name, a `reasoning` item with its summary text, and any other
-item type labelled by its `type` and shown as its JSON, never dropped.
+repeats), that call's name, a `reasoning` item as a response's
+reasoning item shows (below, without its own label: the box's badge
+names it), so a reasoning item passed back with its `encrypted_content`
+shows the mark, never the content, and any other item type labelled by
+its `type` and shown as its JSON, never dropped.
 Its function tools, which the Responses API declares flat (`name`,
 `description`, `parameters`), show their parameters, and a hosted tool
-(`web_search_preview` and the like) is named by its `type`. A legacy
+(`web_search_preview` and the like) is named by its `type`. Its stored
+response is the API's response object (for a streamed call, the one
+the stream's terminal event carried, or the snapshot of a stream left
+early), and the Response box shows its `output` items in order with the
+request side's components: a `message` item's content parts as the
+input's are (`output_text` as text, a `refusal` part labelled
+`refusal`), a `function_call` as the input's `function_call` item
+shows (the same item passed back in the next request looks the same),
+a `reasoning` item labelled `reasoning` with its summary text (else its
+reasoning text, else `(no summary)`) and, when it carries
+`encrypted_content`, the mark `encrypted_content · encrypted
+reasoning, in JSON` (the content only in the JSON view), a hosted
+tool's call (`web_search_call`, `file_search_call`,
+`code_interpreter_call`, `computer_call`, `local_shell_call`,
+`image_generation_call`, `mcp_call`, `mcp_list_tools`,
+`mcp_approval_request`, `custom_tool_call`) labelled by its `type`
+(and its `status` when it did not complete) over the fields that say
+what it did (an `action`'s own fields, an MCP call's `arguments` parsed
+as a function call's are, an MCP tool list's tool names, a code
+interpreter's `image` output's `url` named `data URL` when it is one,
+as a request's image part is, its `logs` as stored; an image
+generation's `result`, base64 bytes, as a placeholder naming its format
+and size, never the bytes, adding `cut to fit the event size limit`
+when the sensor cut them, as a Gemini inline payload's placeholder
+does), and any other item labelled by its `type`
+as its JSON, never dropped; an empty `output` says `(no output)`. Under
+the items, the response's `status` when it is not `completed`, with
+`incomplete_details`' reason, and its `error`'s code and message, then
+the token line from its `usage`. The rest of the response (its
+settings, `billing`, the text's `annotations`, the rest of `usage`) is
+in the JSON view only. A response whose `output` is not a list shows as
+its JSON. A legacy
 completion (litellm's `text_completion`) shows its stored `input` under
 Prompt, the request parameter it holds: a string as written, a list of
 prompts as one box each, token ids as their JSON. The viewer knows
@@ -10142,6 +10182,53 @@ Both themes are first-class — every component renders correctly under
 each. Tests run under both theme projects via Playwright's `projects`
 config and assertions are theme-agnostic.
 
+Text that must read at WCAG AA uses the text-safe tokens:
+`--muted-text`, `--accent-text`, `--event-llm-text`,
+`--event-tool-text`, `--danger-text`, `--success-text` and
+`--warning-text`, each the nearest shade of its hue that reaches 4.6:1
+(AA's 4.5:1 with a margin, so a browser's 8-bit compositing of a tint or
+a small edit to a token cannot take a text under AA) on the surfaces it
+is used on (`--surface`, `--bg-elevated`, `--bg`, a list row's
+`--surface-hover` and focused `--accent-glow`, a badge's 15% tint of its
+own hue), or an alias of the
+hue where the hue already does, so both themes define the same set. The
+hue tokens (`--text-muted`, `--accent`, `--event-llm`, ...) stay as they
+are for badges' tints and borders, charts, swimlanes and icons. The
+Prompts tab of both drawers (with its no-content, capture-off and
+`session_signal` states and the run drawer's list of the run's calls)
+and the embeddings viewer draw all their text in these tokens, with
+`--text` and `--text-secondary`, except the run drawer list's
+event-type badges, which keep the look every event-type badge shares,
+the type's hue as text on its tint; role badges keep their hue's tint and
+border with the text in its `-text` token, and their JSON views
+(`SyntaxJson` given `TEXT_SAFE_SYNTAX_COLORS`) colour keys, strings and
+numbers with them and `true` / `false` / `null` in `--text`, apart from
+the punctuation's `--text-secondary`. Every other JSON view keeps
+`SyntaxJson`'s default colours. A unit test
+(`dashboard/tests/unit/prompts-tab-contrast.test.tsx`) renders the
+Prompts tab for every provider and in each of those states and checks
+each text's colour pair against `themes.css` in both themes.
+
+Every custom property the dashboard reads is defined. A `var()` of a
+name nothing defines is invalid at computed-value time, so the property
+takes its initial value (a background turns transparent, and a focus
+ring whose offset colour is undefined does not draw at all) and neither
+the build nor the type check says so. A unit test
+(`dashboard/tests/unit/theme-tokens-defined.test.ts`) reads `src/` for
+`var(--name)`, Tailwind's `bg-(--name)` shorthand, and a string literal
+that is exactly a name (`"--chart-1"`, built into a `var()` or read with
+`getPropertyValue` at runtime), and fails on any name `themes.css` or
+`globals.css` does not declare. Its allow-list gives a reason for each
+entry: the properties the code sets inline and reads back
+(`--runs-chip-border`, `--swimlane-label-backdrop`) and a Tailwind theme
+variable (`--color-gray-200`).
+
+The shared tabs and switch draw their focus ring with its offset gap in
+the colour of the surface they sit on: a tab on its tab list
+(`--bg-elevated`), the switch on the panel it is used in (`--surface`;
+a switch on another surface passes its own `ring-offset` class). The
+active tab is `--surface` on the `--bg-elevated` list.
+
 ### Constants
 
 `dashboard/src/lib/constants.ts` is the single source of truth for
@@ -10273,8 +10360,8 @@ Operator-actionable enrichment:
   session run under the buggy build" for triage.
 - `interceptor_versions` (optional): `{dep_name: version}` for
   every framework the sensor has interceptors for that's installed
-  in the agent's process (anthropic, openai, litellm, langchain,
-  langgraph, llama-index-core, crewai, mcp). Uninstalled deps
+  in the agent's process (anthropic, openai, google-genai, litellm,
+  langchain, langgraph, llama-index-core, crewai, mcp). Uninstalled deps
   silently omitted.
 - `policy_snapshot` (optional): identity-only snapshot of the
   policy state in effect at session_start. Token-budget side

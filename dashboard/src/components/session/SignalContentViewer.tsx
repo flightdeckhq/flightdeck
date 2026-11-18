@@ -59,7 +59,7 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
         data-testid="signal-content-viewer"
         data-state="loading"
         className="mt-2 font-mono text-[11px]"
-        style={{ color: "var(--text-muted)" }}
+        style={{ color: "var(--muted-text)" }}
       >
         Loading…
       </div>
@@ -76,7 +76,7 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
         style={{
           background: "var(--bg-elevated)",
           border: "1px dashed var(--border-subtle)",
-          color: "var(--text-muted)",
+          color: "var(--muted-text)",
         }}
       >
         (no text captured)
@@ -90,7 +90,7 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
         <div key={key} data-testid={`signal-content-${key}`}>
           <div
             className="mb-1 text-[11px] font-semibold uppercase tracking-wide"
-            style={{ color: "var(--text-muted)" }}
+            style={{ color: "var(--muted-text)" }}
           >
             {SIGNAL_TEXT_LABELS[key] ?? key}
           </div>
@@ -139,7 +139,7 @@ export function SignalPromptsPanel({ event }: { event: AgentEvent }) {
     <div
       data-testid="signal-prompts-empty"
       className="px-4 py-6 text-[13px]"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--muted-text)" }}
     >
       {message}
     </div>

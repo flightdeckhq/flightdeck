@@ -3,7 +3,7 @@ import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight, Database } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import type { EventContent } from "@/lib/types";
-import { SyntaxJson } from "@/components/ui/syntax-json";
+import { SyntaxJson, TEXT_SAFE_SYNTAX_COLORS } from "@/components/ui/syntax-json";
 import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW_COUNT } from "@/lib/constants";
 
 /**
@@ -165,7 +165,7 @@ export function EmbeddingsContentViewer({
         style={{
           background: "var(--bg-elevated)",
           border: "1px dashed var(--border-subtle)",
-          color: "var(--text-muted)",
+          color: "var(--muted-text)",
           padding: "8px 10px",
         }}
       >
@@ -183,7 +183,7 @@ export function EmbeddingsContentViewer({
         data-testid="embeddings-content-viewer"
         data-state="loading"
         className="mt-2 text-xs"
-        style={{ color: "var(--text-muted)", padding: "8px 10px" }}
+        style={{ color: "var(--muted-text)", padding: "8px 10px" }}
       >
         <span data-testid="embeddings-content-state-loading">Loading…</span>
       </div>
@@ -212,7 +212,7 @@ export function EmbeddingsContentViewer({
           data-testid="embeddings-content-viewer"
           data-state="empty"
           className="mt-2 text-xs"
-          style={{ color: "var(--text-muted)", padding: "8px 10px" }}
+          style={{ color: "var(--muted-text)", padding: "8px 10px" }}
         >
           <span data-testid="embeddings-content-state-empty">
             (content not captured)
@@ -252,7 +252,7 @@ const HEADER_STYLE: CSSProperties = {
  *  count). ``--text-secondary``, not ``--text-muted``: on the box's
  *  ``--bg-elevated`` at 11-12 px the muted text measures about 3.9:1
  *  in the dark theme and 2.3:1 in the light one; the secondary text
- *  7.5:1 and 4.4:1, the same as the header labels it sits beside. */
+ *  7.5:1 and 4.7:1, the same as the header labels it sits beside. */
 const HEADER_NOTE_STYLE: CSSProperties = {
   color: "var(--text-secondary)",
   fontWeight: 400,
@@ -298,7 +298,7 @@ function ExpandToggle({
       data-testid={testId}
       onClick={onToggle}
       className="mt-2 text-[11px]"
-      style={{ color: "var(--accent)" }}
+      style={{ color: "var(--accent-text)" }}
       aria-expanded={expanded}
     >
       {expanded ? "Show less" : showLabel}
@@ -351,7 +351,7 @@ function TokenIdsInputView({
   return (
     <InputBox state="tokens">
       <SingleInputHeader>
-        <span aria-hidden="true" style={{ color: "var(--text-muted)" }}>·</span>
+        <span aria-hidden="true" style={{ color: "var(--muted-text)" }}>·</span>
         <span>Token ids</span>
         <span style={HEADER_NOTE_STYLE}>
           (<span data-testid="embeddings-content-token-count">{tokenCount(ids.length)}</span>)
@@ -377,7 +377,7 @@ function JsonInputView({ value }: { value: unknown }) {
         <span style={HEADER_NOTE_STYLE}>(JSON)</span>
       </SingleInputHeader>
       <div data-testid="embeddings-content-state-json">
-        <SyntaxJson data={value} wrap />
+        <SyntaxJson data={value} wrap colors={TEXT_SAFE_SYNTAX_COLORS} />
       </div>
     </InputBox>
   );
@@ -426,7 +426,7 @@ function ListShell({
         </span>
         {tokenIds && (
           <>
-            <span aria-hidden="true" style={{ color: "var(--text-muted)" }}>·</span>
+            <span aria-hidden="true" style={{ color: "var(--muted-text)" }}>·</span>
             <span data-testid="embeddings-content-list-kind">Token ids</span>
           </>
         )}

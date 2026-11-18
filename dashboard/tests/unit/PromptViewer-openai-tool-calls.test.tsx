@@ -530,15 +530,16 @@ describe("PromptViewer: which call a Responses function_call_output answers", ()
 });
 
 describe("PromptViewer: what renders as it did before tool calls were shown", () => {
-  // Markup main renders for these boxes, captured from it: the change
-  // must leave every byte of it alone.
+  // The markup these boxes render, pinned byte for byte: the OpenAI
+  // tool-call view left it alone, and a change to it must be deliberate
+  // (its text colours are the text-safe tokens).
   const TEXT_BOX = (text: string) =>
     `<div class="rounded-md p-2.5" style="background: var(--bg-elevated); font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word;">${text}</div>`;
-  const EMPTY = '<div class="text-xs" style="color: var(--text-muted);">(empty)</div>';
+  const EMPTY = '<div class="text-xs" style="color: var(--muted-text);">(empty)</div>';
   const TOOL_USE = (name: string, key: string, value: string) =>
-    `<div data-testid="content-block-tool-use" class="rounded-md p-2.5" style="background: var(--bg-elevated); border: 1px solid var(--border);"><div class="font-mono text-[13px] font-semibold" style="color: var(--event-tool);">${name}</div><div class="mt-2"><div class="space-y-1.5"><div class="flex items-baseline gap-2 font-mono text-[12px]"><span data-testid="kv-label" class="font-medium" style="color: var(--text-muted);">${key}:</span><span style="color: var(--text);">${value}</span></div></div></div></div>`;
+    `<div data-testid="content-block-tool-use" class="rounded-md p-2.5" style="background: var(--bg-elevated); border: 1px solid var(--border);"><div class="font-mono text-[13px] font-semibold" style="color: var(--event-tool-text);">${name}</div><div class="mt-2"><div class="space-y-1.5"><div class="flex items-baseline gap-2 font-mono text-[12px]"><span data-testid="kv-label" class="font-medium" style="color: var(--muted-text);">${key}:</span><span style="color: var(--text);">${value}</span></div></div></div></div>`;
   const NO_INPUT_TOOL_USE = (name: string) =>
-    `<div data-testid="content-block-tool-use" class="rounded-md p-2.5" style="background: var(--bg-elevated); border: 1px solid var(--border);"><div class="font-mono text-[13px] font-semibold" style="color: var(--event-tool);">${name}</div><div class="mt-1 text-xs" style="color: var(--text-muted);">(no input)</div></div>`;
+    `<div data-testid="content-block-tool-use" class="rounded-md p-2.5" style="background: var(--bg-elevated); border: 1px solid var(--border);"><div class="font-mono text-[13px] font-semibold" style="color: var(--event-tool-text);">${name}</div><div class="mt-1 text-xs" style="color: var(--muted-text);">(no input)</div></div>`;
 
   it("OpenAI messages without tool activity, and a text response", async () => {
     await renderContent(
@@ -571,7 +572,7 @@ describe("PromptViewer: what renders as it did before tool calls were shown", ()
     expect(within(parts).queryByTestId("chat-tool-reply")).toBeNull();
     expect(toolBoxes(parts)).toHaveLength(0);
     expect(prettyBody("prompt-box-response")).toBe(
-      `<div><div class="space-y-2">${TEXT_BOX("Done.")}</div><div class="mt-2 font-mono text-[11px]" style="color: var(--text-muted);"><span>Tokens in: 3</span><span> · </span><span>Tokens out: 2</span></div></div>`,
+      `<div><div class="space-y-2">${TEXT_BOX("Done.")}</div><div class="mt-2 font-mono text-[11px]" style="color: var(--muted-text);"><span>Tokens in: 3</span><span> · </span><span>Tokens out: 2</span></div></div>`,
     );
   });
 
@@ -602,7 +603,7 @@ describe("PromptViewer: what renders as it did before tool calls were shown", ()
       `<div class="space-y-2">${TEXT_BOX("Checking.")}${TOOL_USE("get_weather", "city", "Paris")}${NO_INPUT_TOOL_USE("noop")}</div>`,
     );
     expect(prettyBody("prompt-box-message-2")).toBe(
-      '<div class="space-y-2"><div><div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]" style="color: var(--text-muted);">tool result</div><div data-testid="tool-result-raw"><pre class="rounded-md p-2.5 font-mono text-[12px]" style="background: var(--bg-elevated); color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0px;">Sunny, 21 C</pre></div></div></div>',
+      '<div class="space-y-2"><div><div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]" style="color: var(--muted-text);">tool result</div><div data-testid="tool-result-raw"><pre class="rounded-md p-2.5 font-mono text-[12px]" style="background: var(--bg-elevated); color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0px;">Sunny, 21 C</pre></div></div></div>',
     );
     expect(prettyBody("prompt-box-response")).toBe(
       `<div><div class="space-y-2">${TOOL_USE("get_time", "tz", "UTC")}</div></div>`,

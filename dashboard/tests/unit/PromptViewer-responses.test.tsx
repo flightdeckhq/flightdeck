@@ -249,7 +249,9 @@ describe("PromptViewer: an OpenAI Responses call", () => {
     expect(within(item(0)).getByTestId("pretty-json")).toHaveTextContent('"query": "eiffel"');
     expect(within(item(1)).getByText("item_reference")).toBeInTheDocument();
     expect(item(1)).toHaveTextContent("msg_previous");
-    expect(within(item(2)).getByTestId("pretty-json")).toHaveTextContent('"rs_2"');
+    // A reasoning item with no summary has the reasoning view, not JSON.
+    expect(within(item(2)).getByTestId("responses-reasoning-item")).toHaveTextContent("(no summary)");
+    expect(within(item(2)).queryByTestId("pretty-json")).toBeNull();
     expect(item(3)).toHaveTextContent("a bare string");
     expect(within(item(4)).getByTestId("pretty-json")).toHaveTextContent("no role, no type");
   });

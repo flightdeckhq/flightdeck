@@ -925,9 +925,12 @@ def test_an_iterator_litellm_can_copy_reaches_the_provider_as_without_the_sensor
         return litellm.completion(**kwargs)
 
     def outcome() -> tuple[str, Any]:
-        # On Python 3.11 litellm builds an async success-logging coroutine
-        # it never awaits once the call's event loop closes, with or
-        # without the sensor; it is dropped here, inside the call.
+        # litellm 1.83 leaves an async call's success-logging coroutine
+        # queued on the call's event loop once it closes, and drops it,
+        # never awaited, when the next call runs on a new loop: with or
+        # without the sensor, inside this test, which makes the call twice.
+        # What its logging worker still holds when the test ends is retired
+        # by the suite's fixture (tests/litellm_logging_worker.py).
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -1310,19 +1313,11 @@ def test_a_failing_iterator_given_to_litellm_is_policed(
     patch_litellm_functions(quiet=True)
     sent = routed.call_count
     try:
-        with warnings.catch_warnings():
-            # See test_an_iterator_litellm_can_copy_reaches_the_provider_as_without_the_sensor.
-            warnings.filterwarnings(
-                "ignore",
-                message="coroutine 'Logging.async_success_handler' was never awaited",
-                category=RuntimeWarning,
-            )
-            if blocked:
-                with pytest.raises(flightdeck_sensor.BudgetExceededError):
-                    _finish(call(), is_async)
-            else:
+        if blocked:
+            with pytest.raises(flightdeck_sensor.BudgetExceededError):
                 _finish(call(), is_async)
-            gc.collect()
+        else:
+            _finish(call(), is_async)
     finally:
         unpatch_litellm_functions()
     if blocked:

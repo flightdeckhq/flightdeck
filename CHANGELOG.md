@@ -44,6 +44,29 @@ All notable changes to Flightdeck are documented here.
   signatures are one mark, their values in the JSON view. A prompt the safety
   filters blocked says so, and the response shows the token line every
   provider's does.
+- The Prompts tab shows an OpenAI Responses call's response in the
+  Responses API's terms instead of as the whole response object: its
+  output items in order, a message's text, a `function_call` as the
+  same call shows when it is passed back in the next request's input
+  (its name, `call_id` and arguments), a `reasoning` item's summary with
+  a mark when it carries encrypted content (never shown, in a response
+  or when the item is passed back in a request, which showed it as
+  JSON), a hosted tool's call (`web_search_call`, `file_search_call`,
+  `code_interpreter_call`, `computer_call`, `image_generation_call`, the
+  MCP items, a custom tool's call) labelled by its type with the fields
+  that say what it did (a code interpreter's image output as `data URL`
+  rather than its bytes), an image generation's result as a placeholder
+  with its size (saying so when the sensor cut it to fit the event size
+  limit), and any other item as its JSON. A response that did not
+  complete shows its `status` and reason, a failed one its `error`, and
+  the token line reads the Responses `usage`. This holds for the
+  sensor's Responses calls and litellm's, streamed ones included (the
+  stored response is the final one the stream carried).
+- The Prompts tab shows a model's refusal labelled `refusal`, apart from
+  its answer text: an OpenAI chat message's `refusal` field, in a
+  response (which showed the whole response object) and passed back in
+  a later request (which showed `(empty)`), as a Responses `refusal`
+  part already showed in a request, and that part in a response.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a
@@ -90,11 +113,11 @@ All notable changes to Flightdeck are documented here.
   `SequentialAgent`, `ParallelAgent` or `LoopAgent` runs, an
   `AgentTool`'s agent nested under the agent that called it), with an
   `agent_handoff` signal for each transfer. The root agent is the
-  sensor's session, and the model calls stay on it, metered on `LiteLlm`
-  and ADK's Anthropic models. Gemini calls are not metered yet
-  ([#276](https://github.com/flightdeckhq/flightdeck/issues/276)); their
-  agents still appear as child sessions. Call `patch()` before building
-  runners and before the first `LiteLlm` call.
+  sensor's session, and the model calls stay on it, metered on ADK's
+  default `Gemini` model (through the google-genai patch; not in its
+  interactions mode, `use_interactions_api`), on `LiteLlm` and on ADK's
+  Anthropic models. Call `patch()` before building runners and before
+  the first `LiteLlm` call.
 
 ### Changed
 
@@ -109,6 +132,41 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Keyboard focus shows on the Policies page's tabs and on the Block on
+  uncertainty switch.** Their focus ring used a colour token no theme
+  defines, so it did not draw at all. It now draws in the accent, its
+  gap in the colour of the surface behind it. The active tab has its own
+  background on the tab list. The "Deny · interactive" pill in the
+  entry table takes the accent like its siblings take their colours,
+  with text that reads at 4.6:1 in a row at rest. The entry dialog's
+  Decision and Enforcement selects share its text fields' surface.
+- **The Policies page's fields, chips and panels show their background.**
+  They used a colour token no theme defines, so they drew with no
+  background. On the MCP Protection tab that covered:
+  - the audit log's date filters, event-type chips, expanded payload
+    and hovered row;
+  - the policy mode control;
+  - the entry table's search and hovered rows;
+  - the resolve panel's input and result;
+  - the scope picker's search and highlighted option;
+  - the entry dialog's fields, preview and code samples.
+
+  The page's tab list was affected too. All of them now use the
+  elevated surface the rest of the dashboard uses.
+- **The Prompts tab's text reads at WCAG AA (4.5:1) in both themes.**
+  Labels such as `tool result`, argument names, counts, `(empty)`
+  notes, call ids and the token line; tool names; the role badges
+  (`user`, `assistant`, `model`, `system`, `tool`); the `stderr` label;
+  and the keys, strings, numbers and `true` / `false` / `null` of every
+  JSON view measured as low as 2.3:1. They now use text-safe shades of
+  the same hues that read at 4.6:1 or better, so the tab looks the same,
+  and badges keep their tint and border. The light theme's secondary
+  text is a shade darker (`#6c6c75`), which raises it on every page.
+  The "No content was recorded" and "Prompt capture is not enabled for
+  this deployment." messages, a session signal's Prompts tab, the times
+  in a run's Prompts list, and the embeddings viewer's notes and "Show
+  full input" toggle read the same way. The event-type badges in a
+  run's Prompts list keep the look every event-type badge shares.
 - **The Prompts tab shows an OpenAI call's tool calls.** In the Rendered
   view an OpenAI chat assistant message that called a tool showed only
   `(empty)`: the tool's name and arguments were missing, and the `tool`

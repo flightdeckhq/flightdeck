@@ -1328,6 +1328,10 @@ if TYPE_CHECKING:
     _OnEntry = Callable[
         [dict[str, Any], list[dict[str, Any]]], tuple[dict[str, Any], Callable[..., Any]]
     ]
+    # How a stream helper's manager finds, as it is entered, the session
+    # and provider its request reports to: as a call made then would, or
+    # None for the SDK's own entry, untouched.
+    EntryTarget = Callable[[], tuple[Session, Provider] | None]
 
 
 class _Made:
@@ -1759,16 +1763,13 @@ class _GuardCore(HandedToCaller):
         made_at_call: bool = False,
         given: Mapping[str, tuple[Any, Any]] = _NONE_GIVEN,
         on_entry: _OnEntry | None = None,
-        reentry: bool = False,
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
         # A stream helper's entry (see StreamHelperCall): run as the guard
         # is entered, before the request is made, it checks the policy and
-        # collects the pre_call; ``reentry`` marks a second entry of the
-        # same manager.
+        # collects the pre_call.
         self._on_entry = on_entry
-        self._reentry = reentry
         # A stream manager the SDK made when the call was made: the request
         # is built then or on entry, depending on the release (see
         # _keep_the_copy_sent), from the arguments the SDK holds, ``given``
@@ -1836,26 +1837,27 @@ class _GuardCore(HandedToCaller):
         it is (``None`` for every other guard, whose pre_call went out at
         the call). A refusal (BLOCK, the kill switch) raises here, before
         anything is sent, with its events enqueued; the guard then has
-        nothing to settle."""
+        nothing to settle. Any other failure here (the SDK building the
+        request again for a degrade) is the call failing, reported as
+        :meth:`_entry_failed` reports it."""
         if self._on_entry is None:
             return None
         deferred: list[dict[str, Any]] = []
         try:
             self._kwargs, self._real_fn = self._on_entry(self._kwargs, deferred)
-        except BaseException:
+        except (BudgetExceededError, DirectiveError):
             self._finalized = True
+            raise
+        except BaseException as exc:
+            self._open_error = exc
+            self._entry_failed(exc, deferred)
             raise
         return deferred
 
     def _entry_failed(self, exc: BaseException, deferred: list[dict[str, Any]] | None) -> None:
-        """The request did not open. A second entry of an async helper's
-        manager raises ``RuntimeError`` from the SDK before anything is
-        sent (its request was a coroutine, awaited by the first entry), so
-        it reports nothing, as nothing was sent; any other failure is the
-        call failing, reported after its pre_call."""
-        if deferred is not None and self._reentry and isinstance(exc, RuntimeError):
-            self._finalized = True
-            return
+        """The request did not open: the call failing, reported after the
+        events its policy check collected (a WARN's included, so the
+        warning that check recorded as given is given)."""
         _flush_deferred(self._session, deferred)
         self._emit_pre_stream_error(exc)
 
@@ -2493,27 +2495,29 @@ def named_like(wrapper: type, sdk_type: type) -> type:
 
 class StreamHelperCall:
     """One stream helper call (Anthropic ``messages.stream()``): the
-    manager the SDK made when the call was made, and what each entry of
-    it needs. The SDK sends the request on entry, so that is when the
-    sensor checks the policy and emits the ``pre_call``: a manager never
-    entered reports nothing, and every entry is a request of its own,
-    metered by a guard of its own (a sync manager sends one per entry; an
-    async manager's request is a coroutine, so the SDK refuses a second
-    entry with ``RuntimeError`` and nothing is sent or reported).
+    manager the SDK made when the call was made, from the caller's
+    arguments as given, and what each entry of it needs. The SDK sends
+    the request on entry, so everything about that request is decided
+    there, as for any call made at that moment: the session it reports to
+    (``entry_target``), the policy check, its decision and the
+    ``pre_call``. A manager never entered reports nothing; every entry is
+    a request of its own, metered by a guard of its own. A sync manager
+    sends one per entry. An async manager's request is a coroutine the
+    SDK awaits on the first entry, whatever that entry ends in, so a later
+    entry is the SDK's own, which raises ``RuntimeError`` before anything
+    runs: no policy check, no event.
 
-    A DEGRADE has to reach the model the SDK fixes in its request when
-    the call is made, so it is read then, without acting on anything
-    else (:meth:`PolicyCache.check` with ``peek``); one that begins only
-    between the call and an entry makes the SDK build the request again,
-    with the swapped model, at that entry."""
+    A DEGRADE in force at an entry swaps the model in that entry's
+    request: the SDK fixed the caller's model in the request it built at
+    the call, so it builds the request again, with the swapped model, for
+    that entry."""
 
     def __init__(
         self,
         send: Callable[..., Any],
         made: Any,
         kwargs: dict[str, Any],
-        session: Session,
-        provider: Provider,
+        entry_target: EntryTarget,
         estimated: int,
         estimated_via: str,
         *,
@@ -2523,70 +2527,97 @@ class StreamHelperCall:
         self._send = send
         self.made = made
         self._kwargs = kwargs
-        self._session = session
-        self._provider = provider
+        self._entry_target = entry_target
         self._estimated = estimated
         self._estimated_via = estimated_via
         self._is_async = is_async
         self._given = given
-        self._entries = 0
 
-    def new_guard(self) -> GuardedStream | GuardedAsyncStream:
-        """The guard for the next entry."""
-        reentry = self._entries > 0
-        self._entries += 1
+    def used_up(self) -> bool:
+        """Whether the SDK manager's request has been taken: an async
+        manager's request coroutine, once its first entry has awaited it
+        (or the sensor closed it, for an entry refused or sent with
+        another model). Awaiting it again raises ``RuntimeError`` before
+        anything runs, so that entry is left to the SDK. A manager whose
+        request is not a coroutine (a sync manager's) is never used up."""
+        pending = _request_coroutines(self.made)
+        return bool(pending) and any(
+            inspect.getcoroutinestate(request) != inspect.CORO_CREATED for request in pending
+        )
+
+    def new_guard(self) -> GuardedStream | GuardedAsyncStream | None:
+        """The guard for an entry made now, or ``None`` when the entry is
+        the SDK's own (no session active, the class unpatched, or an
+        outer interceptor metering the call)."""
+        target = self._entry_target()
+        if target is None:
+            return None
+        session, provider = target
         guard_type: type[GuardedStream] | type[GuardedAsyncStream] = (
             GuardedAsyncStream if self._is_async else GuardedStream
         )
         return guard_type(
             _returning(self.made),
             self._kwargs,
-            self._session,
-            self._provider,
+            session,
+            provider,
             self._estimated,
             self._estimated_via,
             made_at_call=True,
             given=self._given,
-            on_entry=self._on_entry,
-            reentry=reentry,
+            on_entry=functools.partial(self._on_entry, session, provider),
         )
 
     def _on_entry(
-        self, kwargs: dict[str, Any], deferred: list[dict[str, Any]]
+        self,
+        session: Session,
+        provider: Provider,
+        kwargs: dict[str, Any],
+        deferred: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], Callable[..., Any]]:
+        """The policy check for this entry's request, and the SDK call
+        that makes it: the manager made at the call, or, under a DEGRADE,
+        one the SDK builds now with the swapped model. An async manager's
+        request coroutine is closed when this entry will not await it,
+        as its one entry."""
         try:
             sent = _pre_call(
-                self._session,
-                self._provider,
+                session,
+                provider,
                 kwargs,
                 self._estimated,
                 self._estimated_via,
                 deferred=deferred,
             )
-        except (BudgetExceededError, DirectiveError):
-            # Refused before its request was made: an async manager's
-            # request coroutine will never be awaited by this entry, and
-            # the SDK refuses a second entry of it all the same.
+        except BaseException:
             if self._is_async:
                 _discard(self.made)
             raise
-        if self._provider.get_model(sent) != self._provider.get_model(kwargs):
-            # A degrade that began after the call: the SDK builds the
-            # request again, with the swapped model; the manager made
-            # with the other one is never entered.
+        if provider.get_model(sent) == provider.get_model(kwargs):
+            return sent, _returning(self.made)
+        if self._is_async:
             _discard(self.made)
-            self.made = self._send(**_sending(self._session, sent))
-            self._kwargs = sent
-        return sent, _returning(self.made)
+        return sent, _returning(self._send(**_sending(session, sent)))
+
+
+def _request_coroutines(manager: Any) -> list[Any]:
+    """The request coroutines an async SDK manager holds (one), read from
+    its attributes, since the SDK keeps it name-mangled. Best effort."""
+    try:
+        return [value for value in vars(manager).values() if inspect.iscoroutine(value)]
+    except Exception:
+        return []
 
 
 def _discard(manager: Any) -> None:
     """Close the request coroutine an async manager holds and will never
-    await, so it is not reported as never awaited. Best effort."""
-    with contextlib.suppress(Exception):
-        for value in vars(manager).values():
-            if inspect.iscoroutine(value):
-                value.close()
+    await, so it is not reported as never awaited, and a later entry is
+    refused by the SDK as after its first. One already awaited is left
+    alone. Best effort."""
+    for request in _request_coroutines(manager):
+        if inspect.getcoroutinestate(request) == inspect.CORO_CREATED:
+            with contextlib.suppress(Exception):
+                request.close()
 
 
 class StreamManager(HandedToCaller):
@@ -2594,21 +2625,27 @@ class StreamManager(HandedToCaller):
     caller in place of the SDK's manager: the manager's own protocol
     (``with``) and nothing more. Each entry enters a stream guard of its
     own (see :class:`StreamHelperCall`) and returns it, so the caller
-    iterates the guard; the manager itself is not iterable, as the SDK's
-    is not. Every public attribute is the SDK manager's, read without
+    iterates the guard; an entry with no session to report to is the SDK
+    manager's own. The manager itself is not iterable, as the SDK's is
+    not. Every public attribute is the SDK manager's, read without
     entering it."""
 
     def __init__(self, call: StreamHelperCall) -> None:
         self._call = call
-        self._open: list[GuardedStream] = []
+        # The open entries, innermost last: a guard, or None for an entry
+        # the SDK manager made itself.
+        self._open: list[GuardedStream | None] = []
 
     def _stands_for(self) -> Any:
         return self._call.made
 
-    def __enter__(self) -> GuardedStream:
+    def __enter__(self) -> Any:
         guard = self._call.new_guard()
-        assert isinstance(guard, GuardedStream)
-        entered = guard.__enter__()
+        if guard is None:
+            entered = self._call.made.__enter__()
+        else:
+            assert isinstance(guard, GuardedStream)
+            entered = guard.__enter__()
         self._open.append(guard)
         return entered
 
@@ -2618,12 +2655,13 @@ class StreamManager(HandedToCaller):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if not self._open:
-            # Never entered: the SDK manager's own exit, which has nothing
-            # to close.
+        guard = self._open.pop() if self._open else None
+        if guard is None:
+            # Never entered (nothing to close), or entered as the SDK's
+            # own: the SDK manager's exit.
             self._call.made.__exit__(exc_type, exc_val, exc_tb)
             return
-        self._open.pop().__exit__(exc_type, exc_val, exc_tb)
+        guard.__exit__(exc_type, exc_val, exc_tb)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -2633,19 +2671,24 @@ class StreamManager(HandedToCaller):
 
 class AsyncStreamManager(HandedToCaller):
     """Async counterpart of :class:`StreamManager` (``async with``) for an
-    async client's ``messages.stream()``."""
+    async client's ``messages.stream()``. An entry after the first is the
+    SDK manager's own, which raises ``RuntimeError`` (see
+    :meth:`StreamHelperCall.used_up`)."""
 
     def __init__(self, call: StreamHelperCall) -> None:
         self._call = call
-        self._open: list[GuardedAsyncStream] = []
+        self._open: list[GuardedAsyncStream | None] = []
 
     def _stands_for(self) -> Any:
         return self._call.made
 
-    async def __aenter__(self) -> GuardedAsyncStream:
-        guard = self._call.new_guard()
-        assert isinstance(guard, GuardedAsyncStream)
-        entered = await guard.__aenter__()
+    async def __aenter__(self) -> Any:
+        guard = None if self._call.used_up() else self._call.new_guard()
+        if guard is None:
+            entered = await self._call.made.__aenter__()
+        else:
+            assert isinstance(guard, GuardedAsyncStream)
+            entered = await guard.__aenter__()
         self._open.append(guard)
         return entered
 
@@ -2655,10 +2698,11 @@ class AsyncStreamManager(HandedToCaller):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if not self._open:
+        guard = self._open.pop() if self._open else None
+        if guard is None:
             await self._call.made.__aexit__(exc_type, exc_val, exc_tb)
             return
-        await self._open.pop().__aexit__(exc_type, exc_val, exc_tb)
+        await guard.__aexit__(exc_type, exc_val, exc_tb)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -2671,36 +2715,39 @@ def call_stream_helper(
     kwargs: dict[str, Any],
     session: Session,
     provider: Provider,
+    entry_target: EntryTarget,
     *,
     is_async: bool,
 ) -> Any:
     """A stream helper call (Anthropic ``messages.stream()``): the SDK's
-    ``stream()`` is called now, as the caller calls it, and the caller
-    gets a :class:`StreamManager` / :class:`AsyncStreamManager` named as
-    the SDK's manager class, whose entries are metered (see
-    :class:`StreamHelperCall`). An iterator among the arguments is read
-    as in :func:`materialise_iterators`. A call the SDK refuses at once
-    (its arguments) is reported as a failed call, after its pre_call."""
+    ``stream()`` is called now, as the caller calls it, with the caller's
+    arguments, and the caller gets a :class:`StreamManager` /
+    :class:`AsyncStreamManager` named as the SDK's manager class, whose
+    entries are policed and metered (see :class:`StreamHelperCall`). An
+    iterator among the arguments is read as in
+    :func:`materialise_iterators`, and the estimate made, under the
+    session active at the call. A call the SDK refuses at once (an
+    argument it reads now) is reported as a failed call after its
+    ``pre_call``, with no policy check: no request is made, and the
+    caller gets the SDK's exception, as without the sensor."""
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, send = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _degraded_now(session, provider, kwargs, estimated)
-    call_kwargs = _sending(session, call_kwargs)
+    call_kwargs = _sending(session, kwargs)
     t0 = time.monotonic()
     try:
         made = send(**call_kwargs)
-    except (BudgetExceededError, DirectiveError):
-        raise
     except BaseException as exc:
-        _pre_call(session, provider, call_kwargs, estimated, estimated_via)
+        session.event_queue.enqueue(
+            _pre_call_event(session, provider, call_kwargs, estimated, estimated_via)
+        )
         _emit_error(session, provider, exc, int((time.monotonic() - t0) * 1000), call_kwargs)
         raise
     call = StreamHelperCall(
         send,
         made,
         call_kwargs,
-        session,
-        provider,
+        entry_target,
         estimated,
         estimated_via,
         is_async=is_async,
@@ -2708,22 +2755,6 @@ def call_stream_helper(
     )
     wrapper: type = AsyncStreamManager if is_async else StreamManager
     return named_like(wrapper, type(made))(call)
-
-
-def _degraded_now(
-    session: Session, provider: Provider, kwargs: dict[str, Any], estimated: int
-) -> dict[str, Any]:
-    """``kwargs`` with the degrade target as the model when the policy
-    degrades this call now, read without acting on anything else (see
-    :meth:`PolicyCache.check`'s ``peek``); else ``kwargs``."""
-    result = session.policy.check(session.tokens_used, estimated, peek=True)
-    if result.decision != PolicyDecision.DEGRADE or not session.policy.degrade_to:
-        return kwargs
-    swapped = copy.copy(kwargs)
-    swapped["model"] = session.policy.degrade_to
-    for name in getattr(provider, "model_alternative_params", ()):
-        swapped.pop(name, None)
-    return swapped
 
 
 class _StreamView(HandedToCaller):
@@ -3114,6 +3145,29 @@ def _flush_deferred(session: Session, deferred: list[dict[str, Any]] | None) -> 
     deferred.clear()
 
 
+def _pre_call_event(
+    session: Session,
+    provider: Provider,
+    kwargs: dict[str, Any],
+    estimated: int,
+    estimated_via: str,
+    decision: PolicyDecisionSummary | None = None,
+) -> dict[str, Any]:
+    """The ``pre_call`` payload for a call: the model the caller asked
+    for, the estimate and its source, and the policy decision when it is
+    not allow."""
+    extras: dict[str, Any] = {"tokens_input": estimated, "estimated_via": estimated_via}
+    try:
+        model = provider.get_model(kwargs)
+    except Exception:
+        model = ""
+    if model:
+        extras["model"] = model
+    if decision is not None:
+        extras["policy_decision_pre"] = decision.as_payload_dict()
+    return session._build_payload(EventType.PRE_CALL, **extras)
+
+
 def _pre_call(
     session: Session,
     provider: Provider,
@@ -3210,19 +3264,9 @@ def _pre_call(
     # attribution + decision summary. Always emitted (including before
     # BLOCK) so the agent's intent is recorded even when the call is
     # rejected — matches the plugin's pre_call posture.
-    pre_call_extras: dict[str, Any] = {
-        "tokens_input": estimated,
-        "estimated_via": estimated_via,
-    }
-    try:
-        pre_model = provider.get_model(kwargs)
-    except Exception:
-        pre_model = ""
-    if pre_model:
-        pre_call_extras["model"] = pre_model
-    if pre_call_decision is not None:
-        pre_call_extras["policy_decision_pre"] = pre_call_decision.as_payload_dict()
-    pre_call_payload = session._build_payload(EventType.PRE_CALL, **pre_call_extras)
+    pre_call_payload = _pre_call_event(
+        session, provider, kwargs, estimated, estimated_via, pre_call_decision
+    )
     _enqueue_or_defer(session, pre_call_payload, deferred)
 
     if decision == PolicyDecision.BLOCK:

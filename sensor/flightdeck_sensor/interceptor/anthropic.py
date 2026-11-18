@@ -490,7 +490,8 @@ class SensorMessages(base.SessionProxy):
         :class:`base.AsyncStreamManager` whose ``async with`` gives a
         :class:`base.GuardedAsyncStream`. Each manager has the SDK
         manager's protocol and name and nothing more, so it is not
-        iterable before it is entered, as the SDK's is not.
+        iterable before it is entered, as the SDK's is not. Each entry
+        reports to the session :meth:`_entry_target` finds then.
         """
         real_fn = self._method("stream")
         # As for create(): an outer interceptor's call, or no session to
@@ -503,10 +504,32 @@ class SensorMessages(base.SessionProxy):
         # argument error raises at the call before the sensor reads or
         # estimates anything. The SDK's ``stream()`` is then called now, as
         # the caller calls it; it builds its request now or on entry, as its
-        # release does, and sends it on entry, which is when the policy is
-        # checked and the pre_call emitted (see base.StreamHelperCall).
+        # release does, and sends it on entry, which is when the session is
+        # found, the policy checked and the pre_call emitted (see
+        # base.StreamHelperCall).
         base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
-        return base.call_stream_helper(real_fn, kwargs, session, provider, is_async=self._is_async)
+        return base.call_stream_helper(
+            real_fn, kwargs, session, provider, self._entry_target, is_async=self._is_async
+        )
+
+    def _entry_target(self) -> tuple[Session, AnthropicProvider] | None:
+        """The session and provider an entry of a manager this proxy's
+        ``stream()`` returned reports to, found as a call made through
+        this proxy at that moment finds them: the active session for the
+        class patch's proxy, with ``None`` (the SDK's own entry) when
+        there is none, an outer interceptor meters the call or the class
+        has been unpatched; this proxy's own target for one ``wrap()``
+        built (see :meth:`base.SessionProxy._target`)."""
+        if base.outer_intercept_active():
+            return None
+        if self._originals is None:
+            return self._target()
+        session = _current_session()
+        if session is None or not _patched(type(self._real)):
+            return None
+        if session is self._session:
+            return session, self._provider
+        return session, _provider_for(getattr(self._real, "_client", None), session)
 
     @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
@@ -715,6 +738,12 @@ def _current_session() -> Session | None:
     import flightdeck_sensor
 
     return flightdeck_sensor._session
+
+
+def _patched(cls: type) -> bool:
+    """Whether the resource class, or a base of it, carries the class
+    patch."""
+    return any(_PATCHED_SENTINEL in klass.__dict__ for klass in cls.__mro__)
 
 
 def _installed(cls: type, name: str, wrapper: Any) -> bool:

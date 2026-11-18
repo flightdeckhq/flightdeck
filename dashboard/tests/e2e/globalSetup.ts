@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LONG_RUN_FIXTURE } from "./_fixtures";
+import { clearPrivateFixtures } from "./_private-fixtures";
 import { BASE_URL, STACK_CONFIGURATION_ERROR } from "./_stack";
 
 // Playwright global setup hook. Seeds the canonical E2E fixture
@@ -150,6 +151,16 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   await waitForDashboard(baseURL);
   console.log(
     `[playwright globalSetup] dashboard ready after ${((Date.now() - tReady) / 1000).toFixed(1)}s`,
+  );
+
+  // Pre-flight: remove the runs and agents earlier runs' specs made
+  // outside the seed (_private-fixtures.ts says which, and how they are
+  // told apart), so this run starts from the seeded fleet, as a CI run
+  // on its fresh database does. It throws when it cannot finish, which
+  // stops the run.
+  const cleared = clearPrivateFixtures();
+  console.log(
+    `[playwright globalSetup] pre-flight removed ${cleared.sessions} runs and ${cleared.agents} agents earlier runs' specs left`,
   );
 
   const repoRoot = resolve(__dirname, "..", "..", "..");

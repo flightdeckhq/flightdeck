@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { expect, type Page, type Locator } from "@playwright/test";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL } from "./_stack";
 
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
@@ -769,7 +770,9 @@ export async function openPerAgentModal(page: Page, agentName: string): Promise<
 /** How long the private-agent helpers wait for the worker to store a
  *  run or an event: what the dashboard then fetches. */
 const PRIVATE_STORE_WAIT_MS = 15_000;
-const PRIVATE_HOST = "e2e-host-private";
+/** The host the private runs send: the pre-flight's marker for them
+ *  (_private-fixtures.ts). */
+const PRIVATE_HOST = PRIVATE_FIXTURE_HOSTS.privateAgent;
 /** The model the private runs report: the lane label shows it, and an
  *  LLM call on it carries no marker text. */
 const PRIVATE_MODEL = "claude-sonnet-4-5";

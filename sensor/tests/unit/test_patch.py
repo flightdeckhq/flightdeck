@@ -474,7 +474,9 @@ def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any
     )
     assert isinstance(manager, base.AsyncStreamManager)
     assert type(manager).__name__ == AsyncMessageStreamManager.__name__
-    assert isinstance(manager._guard, base.GuardedAsyncStream)
+    assert isinstance(manager._call.new_guard(), base.GuardedAsyncStream)
+    # Never entered: its request coroutine is closed, not left unawaited.
+    base._discard(manager._call.made)
 
 
 def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:

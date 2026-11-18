@@ -46,6 +46,7 @@ from flightdeck_sensor.core.exceptions import BudgetExceededError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
+from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor.anthropic import (
     patch_anthropic_classes,
     unpatch_anthropic_classes,
@@ -156,6 +157,16 @@ def _responses(request: httpx.Request) -> httpx.Response:
     )
 
 
+def _completions(request: httpx.Request) -> httpx.Response:
+    """OpenAI's legacy completions API, streamed (litellm.text_completion)."""
+    base = {"id": "t", "object": "text_completion", "created": 1, "model": "gpt-3.5-turbo-instruct"}
+    chunks = [
+        {**base, "choices": [{"index": 0, "text": "Hi", "finish_reason": None, "logprobs": None}]},
+        {**base, "choices": [{"index": 0, "text": "", "finish_reason": "stop", "logprobs": None}]},
+    ]
+    return _event_stream(_sse([(None, c) for c in chunks] + [(None, "[DONE]")]))
+
+
 def _messages(request: httpx.Request) -> httpx.Response:
     if not _streams(request):
         return httpx.Response(200, json=MESSAGE)
@@ -197,6 +208,9 @@ def router() -> Iterator[respx.MockRouter]:
         )
         mocked.post("https://api.anthropic.com/v1/messages", name="messages").mock(
             side_effect=_messages
+        )
+        mocked.post("https://api.openai.com/v1/completions", name="completions").mock(
+            side_effect=_completions
         )
         yield mocked
 
@@ -589,10 +603,9 @@ def test_block_refuses_every_form_of_a_stream_helper_before_any_request(
     unentered_managers_collected: None,
 ) -> None:
     """A BLOCK decision stops a stream helper used the right way and
-    every misuse of its manager with no request sent: at the call
-    (Anthropic, whose ``stream()`` is checked when called) or at entry
-    (OpenAI, whose manager builds its request then); a misuse the
-    interpreter refuses first sends nothing either."""
+    every misuse of its manager with no request sent: at entry, where
+    both SDKs' managers send their request; a misuse the interpreter
+    refuses first sends nothing either."""
     session = sensor(True)
     assert session is not None
     session.policy = PolicyCache(token_limit=100, block_at_pct=50)
@@ -640,32 +653,77 @@ def litellm_sensor(
     unpatch_litellm_functions()
 
 
+def _litellm_http(is_async: bool) -> Any:
+    """litellm's own HTTP client (its Responses API route) over the fake
+    transport: litellm's async client is not httpx's by default."""
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+
+    transport = httpx.MockTransport(_responses)
+    if is_async:
+        handler: Any = AsyncHTTPHandler()
+        handler.client = httpx.AsyncClient(transport=transport)
+    else:
+        handler = HTTPHandler()
+        handler.client = httpx.Client(transport=transport)
+    return handler
+
+
+# litellm call -> the call with stream=True, sync or async. Each returns
+# a stream class of its own: CustomStreamWrapper (completion),
+# TextCompletionStreamWrapper (text_completion), and
+# SyncResponsesAPIStreamingIterator / ResponsesAPIStreamingIterator
+# (responses), each with its own protocol.
+LITELLM_STREAMS: dict[str, Callable[[bool], Any]] = {
+    "completion": lambda is_async: (
+        pytest.importorskip("litellm").acompletion
+        if is_async
+        else pytest.importorskip("litellm").completion
+    )(
+        **CHAT_KW,
+        stream=True,
+        client=(openai.AsyncOpenAI if is_async else openai.OpenAI)(api_key="k", max_retries=0),
+    ),
+    "text_completion": lambda is_async: (
+        pytest.importorskip("litellm").atext_completion
+        if is_async
+        else pytest.importorskip("litellm").text_completion
+    )(model="gpt-3.5-turbo-instruct", prompt="hi", stream=True, api_key="k"),
+    "responses": lambda is_async: (
+        pytest.importorskip("litellm").aresponses
+        if is_async
+        else pytest.importorskip("litellm").responses
+    )(**RESPONSES_KW, stream=True, api_key="k", client=_litellm_http(is_async)),
+}
+# Public names a stream class may have or lack, beside its protocol: the
+# view must have exactly the ones litellm's own stream has.
+_STREAM_METHODS = ("close", "aclose", "open", "text_stream", "response")
+
+
 def _litellm_stream(is_async: bool) -> Any:
     """``litellm.completion`` / ``acompletion`` with ``stream=True`` through
     an OpenAI client over the fake transport."""
-    litellm = pytest.importorskip("litellm")
-    if is_async:
-        return litellm.acompletion(
-            **CHAT_KW, stream=True, client=openai.AsyncOpenAI(api_key="k", max_retries=0)
-        )
-    return litellm.completion(
-        **CHAT_KW, stream=True, client=openai.OpenAI(api_key="k", max_retries=0)
-    )
+    return LITELLM_STREAMS["completion"](is_async)
 
 
-async def _litellm_read(is_async: bool, how: str) -> tuple[Any, Any, Any]:
-    """The stream's protocol and copying, and what reading it ``how``
-    gives: its text, or the exception's type."""
-    stream = await _resolve(_litellm_stream(is_async))
-    seen = (_protocol(stream), _copying(stream))
+def _litellm_shape(stream: Any) -> tuple[str, dict[str, bool]]:
+    """The stream's class name and which of :data:`_STREAM_METHODS` it
+    has."""
+    return type(stream).__name__, {name: hasattr(stream, name) for name in _STREAM_METHODS}
+
+
+async def _litellm_read(is_async: bool, how: str, call: str = "completion") -> tuple[Any, ...]:
+    """The stream's protocol, class, methods and copying, and what reading
+    it ``how`` gives: its text, or the exception's type."""
+    stream = await _resolve(LITELLM_STREAMS[call](is_async))
+    seen = (_protocol(stream), _litellm_shape(stream), _copying(stream))
     text = []
     try:
         if how == "for":
             for chunk in stream:
-                text.append(_delta_text(chunk))
+                text.append(_chunk_text(chunk))
         else:
             async for chunk in stream:
-                text.append(_delta_text(chunk))
+                text.append(_chunk_text(chunk))
     except Exception as exc:
         return (*seen, ("raised", type(exc).__name__))
     return (*seen, ("read", "".join(text)))
@@ -676,36 +734,87 @@ def _delta_text(chunk: Any) -> str:
     return (getattr(choices[0].delta, "content", None) or "") if choices else ""
 
 
+def _chunk_text(chunk: Any) -> str:
+    """A chat chunk's text, a text-completion chunk's, or a Responses
+    event's type."""
+    kind = getattr(chunk, "type", None)
+    if isinstance(kind, str):
+        return f"<{kind}>"
+    choices = getattr(chunk, "choices", None) or []
+    if choices and getattr(choices[0], "delta", None) is None:
+        return str(getattr(choices[0], "text", None) or "")
+    return _delta_text(chunk)
+
+
 def _call_events(session: Session) -> list[str]:
     calls = session.event_queue.enqueue.call_args_list  # type: ignore[attr-defined]
     return [c.args[0]["event_type"] for c in calls if c.args[0]["event_type"] != "pre_call"]
 
 
 @pytest.mark.parametrize("how", ["for", "async for"])
-@pytest.mark.parametrize("is_async", [False, True], ids=["completion", "acompletion"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("call", sorted(LITELLM_STREAMS))
 @_PARTIAL_COPIES[0]
 @_PARTIAL_COPIES[1]
 def test_a_litellm_stream_has_the_protocol_of_litellms_and_reads_either_way_as_it(
+    call: str,
     is_async: bool,
     how: str,
     router: respx.MockRouter,
     litellm_sensor: Callable[[bool], Session | None],
     unentered_managers_collected: None,
 ) -> None:
-    """litellm's ``CustomStreamWrapper`` iterates both ways and is no
-    context manager, whichever call made it; the stream the sensor
-    returns has that protocol, copies and pickles as it does, and read
-    either way gives what reading litellm's own gives (its text, or the
-    same exception), reported once."""
+    """Each litellm stream class has a protocol of its own: litellm's
+    ``CustomStreamWrapper`` and ``TextCompletionStreamWrapper`` iterate
+    both ways, its Responses iterators one way each, and none is a
+    context manager or has ``close()``. The stream the sensor returns has
+    the class's protocol, name and methods, copies and pickles as it
+    does, and read either way gives what reading litellm's own gives (its
+    text, or the same exception), reported once."""
     litellm_sensor(False)
-    expected = asyncio.run(_litellm_read(is_async, how))
+    expected = asyncio.run(_litellm_read(is_async, how, call))
     session = litellm_sensor(True)
     assert session is not None
-    got = asyncio.run(_litellm_read(is_async, how))
+    got = asyncio.run(_litellm_read(is_async, how, call))
     assert got == expected
+    # A stream read in a way its class has no protocol for (a Responses
+    # iterator's other way) is refused by the interpreter, never read, and
+    # settles as abandoned once collected; a read that fails inside the
+    # stream is the call failing.
+    gc.collect()
+    base.drain_deferred_settles(session)
     events = _call_events(session)
     assert len(events) == 1, events
-    assert events[0] == ("post_call" if got[2][0] == "read" else "llm_error")
+    has_the_protocol = got[0]["__next__" if how == "for" else "__anext__"][1]
+    failed = got[3][0] == "raised" and has_the_protocol
+    assert events[0] == ("llm_error" if failed else "post_call")
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_whole_response_litellm_gives_for_a_stream_request_is_handed_back_as_it_is(
+    is_async: bool,
+    router: respx.MockRouter,
+    litellm_sensor: Callable[[bool], Session | None],
+) -> None:
+    """litellm answers ``responses(stream=True, mock_response=...)`` with a
+    whole ``ResponsesAPIResponse``, not a stream: the caller gets that
+    object, as without the sensor, and the call is reported once, as the
+    plain call it was."""
+    litellm = pytest.importorskip("litellm")
+
+    def made() -> Any:
+        # Read now: the patch replaces the module's function.
+        call = litellm.aresponses if is_async else litellm.responses
+        return asyncio.run(_resolve(call(**RESPONSES_KW, stream=True, mock_response="Hi")))
+
+    litellm_sensor(False)
+    expected = made()
+    session = litellm_sensor(True)
+    assert session is not None
+    got = made()
+    assert type(got) is type(expected)
+    assert _protocol(got) == _protocol(expected)
+    assert _call_events(session) == ["post_call"]
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["completion", "acompletion"])

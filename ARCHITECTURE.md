@@ -993,23 +993,29 @@ usage replaces it when the response arrives.
 
 An iterator that raises while it is read stops the reading. The call then
 goes on as any other: the estimate counts the items read, and the policy
-check runs before the SDK is touched, so a BLOCK raises and nothing is
-sent. The SDK gets an iterator over the items read before the failure,
+check runs before any request is sent (for Anthropic's `messages.stream()`
+when the manager is entered, see "Streaming metering"), so a BLOCK raises and
+nothing is sent. The SDK gets an iterator over the items read before the failure,
 which then raises the same exception. So the SDK raises it where it reads
 that argument, as without the sensor, whichever release is installed:
 the call itself, the await of an async call, or the entering of a stream
 manager (`messages.stream()`, `chat.completions.stream()`,
 `with_streaming_response`): anthropic 0.86 raises it when `stream()` is
 called, 2.x when the manager is entered. The call is reported as any call
-the SDK rejects before sending: an `llm_error` after its `pre_call`. An
+the SDK rejects before sending: an `llm_error` after its `pre_call`
+(raised by anthropic 0.86's `stream()`, which makes no request, it has
+no policy check, so the caller gets the SDK's exception). An
 SDK that never reads that argument sends the call, which is metered as
 any other. The sensor reads an Anthropic
 `messages.stream()` call's iterators when `stream()` is called, so that
-the estimate and the policy check run before the manager is returned.
+the estimate is made before the manager is returned.
 anthropic 0.86 reads them there too, but anthropic 2.x reads them only
 when the manager is entered, so on 2.x a lazy generator's own side
 effects run earlier than without the sensor. With no session active the
-arguments are not read.
+arguments are not read, except a stream helper's on a patched class or
+a following (`wrap()`) proxy: its entry may come under a session, so its
+iterators are read at the call all the same, and the entry's estimate
+counts them.
 
 An ordinary call's arguments hold no iterator and are only walked, never
 copied: the lists, tuples, dicts and strings go to the SDK as the same
@@ -1569,10 +1575,20 @@ arrives the guard keeps the latest response a `response.created` /
 terminal event stores that in-progress response (`object: "response"`,
 `status: "in_progress"`, no output) as its content only; its usage,
 model and stop reason still come from the events, and it emits no tool
-call. litellm's
-stream wrappers are not context managers and have no `close()`, so the
-guard is used as a plain iterator; a loop left early is reported once the
-guard is collected.
+call. Each of these classes has a protocol of its own, and the stream
+the caller gets has the protocol, name and public methods of the class
+litellm returned: `CustomStreamWrapper` and `TextCompletionStreamWrapper`
+iterate both ways, `SyncResponsesAPIStreamingIterator` only with `for`
+and `ResponsesAPIStreamingIterator` only with `async for`. None is a
+context manager or has `close()`, so the guard is used as a plain
+iterator; a loop left early is reported once the guard is collected, or
+when its session ends. litellm's `text_completion` stream sends its
+request at its first read, while the sensor polices it and emits its
+`pre_call` at the call, so a `text_completion` stream never read reports
+a call that was never made. A call that asks to stream but gets a whole
+response back (litellm answers `responses(stream=True,
+mock_response=...)` with a `ResponsesAPIResponse`) is handed back as
+that response and reported as the plain call it was.
 `LitellmProvider` surfaces the cache breakdown litellm exposes
 (`usage.prompt_tokens_details.cached_tokens` / `cache_creation_tokens`, or
 the Anthropic-named `cache_read_input_tokens` /
@@ -2958,16 +2974,26 @@ streaming views, google-genai's async request methods, and every call
 through a following OpenAI or `wrap` proxy) the session is read then, so a coroutine created under one
 session and awaited after `teardown` goes to the SDK untouched, and one
 awaited in the next session reports to it, with its capture setting. The
-`.stream()` helpers of the OpenAI SDK send on entry, and a manager is
-matched to the session active when it is entered the same way.
-Anthropic's `messages.stream()`, sync or async, runs the pre-call (the
-policy check and `pre_call`) and calls the SDK's own `stream()` when it
-is called, so the call belongs to the session it was called in. A stream
-still open at `teardown` is settled when its session ends (see "Shutdown
-and signals"). A manager entered after its session has ended (after
-`teardown`, or once the next session has started) sends its request and
-raises nothing; its `post_call` belongs to the ended session, whose
-event queue has closed, so it is not sent.
+`.stream()` helpers of the OpenAI SDK and Anthropic's `messages.stream()`,
+sync or async, send on entry, and a manager is matched to the session
+active when it is entered the same way: one entered after `teardown` is
+the SDK's own, sending its request with nothing policed or reported, and
+one entered in the next session is policed by it and reports to it, with
+its capture setting. That holds for a manager made with no session
+active too: a stream helper called on a patched Anthropic resource, or
+on a following proxy (`wrap()`'s, or one the OpenAI class patch handed
+out under an earlier session), returns the sensor's manager whatever
+the session at the call, and its entry finds the session then; with
+still none, the entry is the SDK's own. An outer interceptor metering
+the call or an unpatched class makes `stream()` return the SDK's own
+manager. So does an OpenAI client whose resource is first read while
+the class is patched and no session is active, which happens only
+inside `teardown()`, between the session ending and the patch coming
+off: the class patch hands it the SDK's own resource, and nothing made
+from it is metered. Anthropic's `messages.stream()` calls the SDK's own `stream()`
+when it is called, which reports nothing. A stream still open at
+`teardown` is settled when its session ends (see "Shutdown and
+signals").
 
 Deferring the session to the await changes nothing a caller can see at
 the call itself. Every async entry point the sensor patches or proxies
@@ -10476,8 +10502,13 @@ Operator-actionable enrichment:
 ### `pre_call`
 
 Pre-call event emitted before the LLM request goes out. The Python
-sensor emits one per real_fn call from `_pre_call`; the Claude Code
-plugin emits one per `UserPromptSubmit` hook fire. Carries:
+sensor emits one per request from `_pre_call`, when the request is made:
+at the call for a plain or a streamed call, and at entry for a stream
+helper's manager (Anthropic `messages.stream()`, whose request goes out
+on entry), so a manager never entered emits nothing and each entry that
+makes a request emits its own, naming the model the caller asked for, as
+a plain call's does; the Claude Code plugin emits one per
+`UserPromptSubmit` hook fire. Carries:
 
 - `model`, `tokens_input`: the model the caller asked for and the
   pre-call estimate.
@@ -10667,7 +10698,31 @@ unguarded SDK does, so provider errors surface there. `messages.stream()`
 calls the SDK's `stream()` inside the call and returns a manager that
 stands for the SDK's (`base.StreamManager`, or `AsyncStreamManager` on an
 async client): entering it sends the request, as the SDK's manager does,
-and gives the guard. Like the SDK's manager it is not iterable and has
+and gives a guard of that entry's own. Everything about that request is
+decided at entry, where it is made, as for any call made at that moment:
+the session it reports to (see "A new session after teardown"), the
+policy check and its decision, and the `pre_call`, with the latency
+measured from there. A manager never entered reports nothing. A BLOCK
+or the kill switch refuses the entry before anything is sent, so the
+`BudgetExceededError` or `DirectiveError` is raised by the `with` /
+`async with`, not by `stream()`; nothing is sent before an entry
+either, so no request escapes the check. A WARN is reported with the
+request it applies to. A DEGRADE in force at the entry swaps the model
+in that entry's request: the SDK fixes the caller's model in the
+request it builds when `stream()` is called, so it builds the request
+again, with the swapped model, for that entry; a DEGRADE in force at
+the call and lifted by the entry leaves the caller's model. The events
+name the models as a plain call's do under the same policy: the
+`pre_call` the model the caller asked for, the `post_call` the model
+sent. Each entry is a request of its own, as for the SDK's manager: a
+sync manager entered twice (or its shallow copy, which is the manager
+itself) sends and reports two requests, and an entry that fails is a
+call that failed, reported after its `pre_call` whatever it raises. An
+async manager's request is a coroutine the SDK awaits on the first
+entry, whatever that entry ends in (the sensor closes it when that
+entry is refused or sent with another model), so every later entry is
+the SDK manager's own, which raises `RuntimeError` before anything
+runs: no policy check, no event. Like the SDK's manager it is not iterable and has
 no other protocol, its public attributes are the SDK manager's, read
 without sending anything, and it carries the SDK class's name, so a
 misuse (iterating it before entering it, the other client kind's
@@ -10680,8 +10735,16 @@ streaming view (a stream guard, a view's response proxy, a litellm
 stream) has the protocol of the object it stands for: `with` / `async
 with`, iteration and async iteration, and `await`, on the object and on
 its class. A deep copy or a pickle of it does what it does to that
-object, raising what that raises; a shallow copy works, as for the SDK
-object, but is the object itself, so the call is still metered once.
+object, raising what that raises. A shallow copy works, as for the SDK
+object: a manager's or a response proxy's is the object itself, and an
+opened stream guard's (a litellm stream's included) is a guard over the
+SDK stream's own copy that
+shares the original's accounting, so it reads as the SDK's copy reads
+(on anthropic 2.x a copy made before the stream was read reads the
+response afresh, which raises `httpx.StreamConsumed` once the original
+has read it) and the call is still metered once whichever is read; that
+`StreamConsumed`, the HTTP client refusing a second read, is not
+reported as the request failing.
 One difference remains: an OpenAI sync client's streaming view hands back the SDK's own
 `ResponseContextManager`, holding the sensor proxy's method where the SDK
 holds the resource's bound method, so its deep copy works and its pickle

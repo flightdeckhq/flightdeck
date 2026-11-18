@@ -89,9 +89,9 @@ test.describe("T162 — the Prompts tab shows a tool call's arguments and result
     await expect(drawer.getByTestId("prompt-box-tool-output")).toHaveCount(0);
     await expect(drawer.getByText("Prompt capture is not enabled for this deployment.")).toHaveCount(0);
 
-    // Raw shows the arguments as stored.
-    await drawer.getByTestId("prompt-box-tool-input-raw").click();
-    await expect(drawer.getByTestId("prompt-box-tool-input-raw-json")).toContainText(
+    // JSON shows the arguments as stored.
+    await drawer.getByTestId("prompt-box-tool-input-json").click();
+    await expect(drawer.getByTestId("prompt-box-tool-input-json-view")).toContainText(
       `"query": "${TOOL_ARGS.query}"`,
     );
   });

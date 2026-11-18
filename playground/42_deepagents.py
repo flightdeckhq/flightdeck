@@ -2,7 +2,7 @@
 
 Drives a real Deep Agent on ``claude-haiku-4-5`` through the sensor's
 LangGraph wrap (Deep Agents is built on LangGraph; the sensor imports no
-Deep Agents module), two runs, each under its own sensor session:
+Deep Agents module), three runs, each under its own sensor session:
 
 1. **Sync** (``invoke``): the main agent delegates the question to its
    one custom sub-agent, ``researcher``, through the ``task`` tool; the
@@ -17,6 +17,16 @@ Deep Agents module), two runs, each under its own sensor session:
    ``teardown()``, so the second run's model calls must land on the
    second session.
 
+3. **Gemini** (``invoke``): a Deep Agent on ``ChatGoogleGenerativeAI``
+   (``gemini-3.1-flash-lite``) asked something it answers in one call,
+   without a tool or a sub-agent, under a third sensor session: the model
+   calls checked with ``assert_gemini_calls`` (one event pair per billed
+   request, ``provider=google``, the served model, each response's tokens,
+   the stored request and reply), counted from what the run did, and no
+   child session. Skipped without ``GEMINI_API_KEY`` (or
+   ``GOOGLE_API_KEY``); with the key set, a missing
+   ``langchain-google-genai`` fails the run.
+
 Self-skips (exit 2) without ``ANTHROPIC_API_KEY`` or without
 ``deepagents`` / ``langchain-anthropic``.
 """
@@ -25,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -35,6 +46,8 @@ from typing import Any
 from _helpers import (
     API_TOKEN,
     API_URL,
+    assert_gemini_calls,
+    child_sessions,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -65,6 +78,11 @@ SESSIONS_FETCH_TIMEOUT_S = 5.0
 # A page of child sessions: a run here opens one; a page this size shows
 # any extra one instead of hiding it.
 SESSIONS_PAGE_LIMIT = 50
+# The Gemini run: a current, cheap model the Gemini API serves to a new
+# key, asked something it answers in one call, without a tool.
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_PROMPT = "Name a colour. Answer in one word."
+MS_PER_S = 1000
 
 
 def _children(parent_id: str, want: int) -> list[dict[str, Any]]:
@@ -226,6 +244,74 @@ def main() -> None:
     _check(f"the streamed run answered {CAPITAL}", CAPITAL in streamed_answer, streamed_answer)
     flightdeck_sensor.teardown()
     _assert_one_researcher(async_root, "astream")
+
+    _run_gemini()
+
+
+def _run_gemini() -> None:
+    """A Deep Agent on Gemini, asked a question it answers without a tool
+    or a sub-agent, on a session of its own (see the module docstring)."""
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        print("  SKIP  Gemini run: GEMINI_API_KEY / GOOGLE_API_KEY is not set")
+        return
+    try:
+        from deepagents import create_deep_agent
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError as exc:
+        # With the key set, a missing package is a broken venv, not a run
+        # to skip.
+        raise AssertionError(f"GEMINI_API_KEY is set but the Gemini run cannot run: {exc}") from exc
+
+    import flightdeck_sensor
+    from flightdeck_sensor import Provider
+
+    root = str(uuid.uuid4())
+    init_sensor(root, flavor=FLAVOR)
+    flightdeck_sensor.patch(providers=[Provider.LANGGRAPH, Provider.GOOGLE_GENAI], quiet=True)
+    print(f"[playground:42_deepagents] gemini session_id={root}")
+    agent = create_deep_agent(
+        model=ChatGoogleGenerativeAI(model=GEMINI_MODEL, max_tokens=MAX_TOKENS),
+        tools=[],
+        system_prompt="Answer in one word, without using any tool.",
+    )
+    t0 = time.monotonic()
+    try:
+        result = agent.invoke({"messages": [{"role": "user", "content": GEMINI_PROMPT}]})
+    finally:
+        flightdeck_sensor.teardown()
+    # One model request per AI message: the count is what the run did.
+    replies = [m for m in result["messages"] if m.type == "ai"]
+    asked = [c["name"] for m in replies for c in m.tool_calls]
+    print_result(
+        "Deep Agent run on Gemini (invoke)",
+        bool(replies) and bool(replies[-1].text),
+        int((time.monotonic() - t0) * MS_PER_S),
+        f"{len(replies)} model calls, asked for {asked}",
+    )
+    _check(
+        "the Gemini run answered",
+        bool(replies) and bool(replies[-1].text),
+        f"messages={[m.type for m in result['messages']]}",
+    )
+    assert_gemini_calls(
+        root,
+        "Deep Agents (Gemini)",
+        requests=len(replies),
+        replies={GEMINI_PROMPT: replies[0].text},
+        asked=asked,
+        thinking_calls=0,
+        served_models={m.response_metadata.get("model_name") for m in replies},
+    )
+    # No task sub-agent ran, so no child session: the main agent is the
+    # sensor's session. The model calls above have landed, and a child's
+    # start is posted before the run's queued events, so one would have
+    # landed too.
+    children = child_sessions(root, 0)
+    _check(
+        "no child session without a task sub-agent run",
+        not children,
+        f"children={[c.get('agent_role') for c in children]}",
+    )
 
 
 if __name__ == "__main__":

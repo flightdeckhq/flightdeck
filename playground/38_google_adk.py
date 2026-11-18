@@ -44,11 +44,13 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import Counter
 from typing import Any
 
 from _helpers import (
     API_TOKEN,
     API_URL,
+    fetch_event_content,
     fetch_events_for_session,
     init_sensor,
     print_result,
@@ -169,9 +171,9 @@ class _ModelResponses:
         self.responses.append(llm_response)
 
     def tokens(self) -> tuple[int, int]:
-        """The input and output tokens the responses reported, as the
-        sensor counts a call's: the prompt with the tool-use prompt, the
-        candidates with the thoughts."""
+        """The input and output tokens the responses that report usage
+        reported, as the sensor counts a call's: the prompt with the
+        tool-use prompt, the candidates with the thoughts."""
         tokens_in = tokens_out = 0
         for response in self.responses:
             usage = response.usage_metadata
@@ -180,6 +182,10 @@ class _ModelResponses:
             tokens_in += (usage.prompt_token_count or 0) + (usage.tool_use_prompt_token_count or 0)
             tokens_out += (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
         return tokens_in, tokens_out
+
+    def without_usage(self) -> int:
+        """How many responses reported no usage."""
+        return sum(response.usage_metadata is None for response in self.responses)
 
 
 def _agents(model: Any, seen: _ModelResponses) -> Any:
@@ -338,11 +344,49 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         sum(p.get("tokens_input") or 0 for p in posts),
         sum(p.get("tokens_output") or 0 for p in posts),
     )
+    reported = seen.tokens()
+    missing = seen.without_usage()
+    # A check over no reported usage would pass whatever the post_calls
+    # carry.
     _check(
-        f"{label}: the post_calls' tokens are the tokens the model responses reported",
-        tokens == seen.tokens(),
-        (tokens, seen.tokens()),
+        f"{label}: at least one model response reported usage",
+        missing < requests,
+        f"{missing} of {requests} reported none",
     )
+    if missing:
+        # The sensor records a call whose response reports no usage with
+        # its pre-call estimate as the input tokens and no output tokens.
+        # Those post_calls are the ones whose stored response holds no
+        # usage; each one's input must be a pre_call's estimate.
+        print(
+            f"  note: {missing} of {requests} model responses reported no usage; "
+            "their post_calls must carry a pre-call estimate as input tokens and no "
+            "output tokens"
+        )
+        unreported = [
+            p for p in posts if not _reports_usage(fetch_event_content(p["id"]).get("response"))
+        ]
+        estimates = Counter(e.get("tokens_input") for e in _events(root, "pre_call", requests))
+        estimated = sum(p.get("tokens_input") or 0 for p in unreported)
+        _check(
+            f"{label}: the post_calls' tokens are the ones the model responses reported, "
+            "plus the pre-call estimates of the calls that reported none",
+            len(unreported) == missing
+            and all(p.get("tokens_output") == 0 for p in unreported)
+            and not Counter(p.get("tokens_input") for p in unreported) - estimates
+            and tokens == (reported[0] + estimated, reported[1]),
+            (
+                tokens,
+                reported,
+                [(p.get("tokens_input"), p.get("tokens_output")) for p in unreported],
+            ),
+        )
+    else:
+        _check(
+            f"{label}: the post_calls' tokens are the tokens the model responses reported",
+            tokens == reported,
+            (tokens, reported),
+        )
     _check(
         f"{label}: every model call's provider is {provider}",
         {p.get("provider") for p in posts} == {provider},
@@ -353,6 +397,15 @@ def section(label: str, make_model: Any, *, provider: str) -> None:
         f"{label}: one tool_call per function call, none from the wrap",
         tools == calls and {"get_weather", EXPERT_NAME, "transfer_to_agent"} <= set(calls),
         (tools, calls),
+    )
+
+
+def _reports_usage(response: Any) -> bool:
+    """Whether a stored model response reports usage: Gemini's
+    ``usageMetadata``, or the ``usage`` of an OpenAI (litellm) or Anthropic
+    response."""
+    return isinstance(response, dict) and any(
+        isinstance(response.get(key), dict) for key in ("usageMetadata", "usage")
     )
 
 

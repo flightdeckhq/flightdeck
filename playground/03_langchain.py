@@ -1,5 +1,5 @@
 """LangChain -- ChatAnthropic + ChatOpenAI + OpenAIEmbeddings, plus an
-MCP tool call via ``langchain-mcp-adapters``.
+MCP tool call via ``langchain-mcp-adapters`` and ChatGoogleGenerativeAI.
 
 LangChain constructs Anthropic() / OpenAI() clients internally. Because
 `flightdeck_sensor.patch()` mutates those classes at import time, every
@@ -22,16 +22,31 @@ MCP ``ClientSession`` and exposes its tools as native LangChain tools.
 The sensor patches ``ClientSession`` directly so every adapter-routed
 tool invocation produces an ``mcp_tool_call`` event with the
 ``transport=stdio`` attribution intact.
+
+The Gemini section (``langchain-google-genai``, which builds a
+``google.genai`` client the sensor's google-genai patch reaches) runs on a
+session of its own: ``invoke``, ``ainvoke``, a call given a thinking
+budget, and a ``bind_tools`` round (the call the model asks for, then its
+answer to the result). It checks
+one event pair per request the API billed, ``provider=google``, the model
+that answered, the tokens each response reported (thoughts as reasoning),
+each call's stored request and reply, and a ``tool_call`` per function the
+model asked for. It skips without ``GEMINI_API_KEY`` (or
+``GOOGLE_API_KEY``); with the key set, a missing
+``langchain-google-genai`` fails the run. ``04_langgraph.py`` and
+``42_deepagents.py`` run Gemini through their frameworks as well.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 import urllib.request
 import uuid
+from typing import Any
 
 try:
     from langchain_anthropic import ChatAnthropic
@@ -41,16 +56,51 @@ except ImportError:
     sys.exit(2)
 
 import flightdeck_sensor
+
 from _helpers import (
     API_TOKEN,
     API_URL,
     assert_event_landed,
+    assert_gemini_calls,
     assert_reply_stored,
     fetch_events_for_session,
     init_sensor,
     mcp_server_params,
     print_result,
+    stored_content_of,
 )
+
+# A current, cheap model the Gemini API serves to a new key; it thinks
+# when given a thinking budget.
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+# Room for a short answer, and for the thinking call's thoughts.
+GEMINI_MAX_TOKENS = 600
+# The thinking call's budget: enough thoughts for a small sum.
+GEMINI_THINKING_BUDGET = 256
+# The plain calls' prompts, each a call's one user turn: invoke, ainvoke,
+# and the thinking call.
+GEMINI_PROMPTS = ("Name a colour. Answer in one word.", "Name a fruit. Answer in one word.")
+THINKING_PROMPT = "What is 17 * 23? Answer with the number only."
+WEATHER_PROMPT = "What is the weather in Paris? Use the get_weather tool."
+# The requests the section makes, one each whatever the model answers:
+# invoke, ainvoke, the thinking call, and the tool round's two (the call
+# the model asks for, then its answer to the result).
+GEMINI_REQUESTS = 5
+# The calls asked to think: the thinking call.
+GEMINI_THINKING_CALLS = 1
+# The tool round's second request passes back the question, the model's
+# call and the result: three contents.
+TOOL_ROUND_CONTENTS = 3
+MS_PER_S = 1000
+
+
+def get_weather(city: str) -> str:
+    """Returns the current weather in a city."""
+    return f"sunny, 21 C in {city}"
+
+
+def _ms(t0: float) -> int:
+    return int((time.monotonic() - t0) * MS_PER_S)
 
 
 def _run_chat(session_id: str) -> None:
@@ -149,8 +199,8 @@ def _run_mcp(session_id: str) -> None:
     """Optional MCP demo using langchain-mcp-adapters. Skipped cleanly
     when the adapter (or the ``mcp`` SDK) isn't installed."""
     try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore[import-untyped]
         import mcp  # noqa: F401  -- presence check
+        from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore[import-untyped]
     except ImportError:
         print("SKIP MCP section: pip install mcp langchain-mcp-adapters")
         return
@@ -185,8 +235,7 @@ def _run_mcp(session_id: str) -> None:
         echo = next((t for t in tools if t.name == "echo"), None)
         if echo is None:
             raise AssertionError(
-                f"langchain-mcp-adapters did not expose 'echo'; "
-                f"got {[t.name for t in tools]!r}",
+                f"langchain-mcp-adapters did not expose 'echo'; got {[t.name for t in tools]!r}",
             )
         t0 = time.monotonic()
         await echo.ainvoke({"text": "hello from langchain playground"})
@@ -225,6 +274,91 @@ def _run_mcp(session_id: str) -> None:
         raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")
 
 
+def _run_gemini() -> None:
+    """``ChatGoogleGenerativeAI`` on a session of its own: ``invoke``,
+    ``ainvoke``, a thinking call and a ``bind_tools`` round, each request
+    one event pair with Gemini's stored body (see the module docstring)."""
+    if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        print("  SKIP  Gemini section: GEMINI_API_KEY / GOOGLE_API_KEY is not set")
+        return
+    try:
+        from langchain_core.messages import HumanMessage, ToolMessage
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except ImportError as exc:
+        # With the key set, a missing package is a broken venv, not a
+        # section to skip.
+        raise AssertionError(
+            f"GEMINI_API_KEY is set but the Gemini section cannot run: {exc}"
+        ) from exc
+
+    session_id = str(uuid.uuid4())
+    init_sensor(session_id, flavor="playground-langchain")
+    flightdeck_sensor.patch(quiet=True)
+    print(f"[playground:03_langchain] gemini session_id={session_id}")
+    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, max_tokens=GEMINI_MAX_TOKENS)
+    replies: list[Any] = []
+    try:
+        t0 = time.monotonic()
+        replies.append(llm.invoke(GEMINI_PROMPTS[0]))
+        print_result("ChatGoogleGenerativeAI.invoke", bool(replies[-1].text), _ms(t0))
+
+        t0 = time.monotonic()
+        replies.append(asyncio.run(llm.ainvoke(GEMINI_PROMPTS[1])))
+        print_result("ChatGoogleGenerativeAI.ainvoke", bool(replies[-1].text), _ms(t0))
+
+        t0 = time.monotonic()
+        thinker = ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            max_tokens=GEMINI_MAX_TOKENS,
+            thinking_budget=GEMINI_THINKING_BUDGET,
+            include_thoughts=True,
+        )
+        replies.append(thinker.invoke(THINKING_PROMPT))
+        print_result(
+            "ChatGoogleGenerativeAI.invoke with a thinking budget",
+            bool(replies[-1].text),
+            _ms(t0),
+            repr(replies[-1].text),
+        )
+
+        t0 = time.monotonic()
+        tooled = llm.bind_tools([get_weather])
+        question = HumanMessage(WEATHER_PROMPT)
+        call = tooled.invoke([question])
+        asked = [c["name"] for c in call.tool_calls]
+        results = [
+            ToolMessage(get_weather(**c["args"]), tool_call_id=c["id"]) for c in call.tool_calls
+        ]
+        answer = tooled.invoke([question, call, *results])
+        replies += [call, answer]
+        print_result(
+            "bind_tools: the call the model asks for, then its answer",
+            "get_weather" in asked and bool(answer.text),
+            _ms(t0),
+            f"asked for {asked}",
+        )
+    finally:
+        flightdeck_sensor.teardown()
+    prompts = (*GEMINI_PROMPTS, THINKING_PROMPT)
+    plain = dict(zip(prompts, replies[: len(prompts)], strict=True))
+    if "get_weather" not in asked or not all(r.text for r in (*plain.values(), answer)):
+        raise AssertionError(f"a Gemini call returned no answer or no call: {replies!r}")
+
+    assert_gemini_calls(
+        session_id,
+        "ChatGoogleGenerativeAI",
+        requests=GEMINI_REQUESTS,
+        replies={prompt: reply.text for prompt, reply in plain.items()},
+        asked=asked,
+        thinking_calls=GEMINI_THINKING_CALLS,
+        served_models={r.response_metadata.get("model_name") for r in replies},
+    )
+    # The round's second request passes the result back as Gemini spells
+    # it: a functionResponse part after the model's functionCall.
+    stored_content_of(session_id, "functionResponse", "input", least=TOOL_ROUND_CONTENTS)
+    print_result("the tool round's result is stored as a functionResponse", True, 0)
+
+
 def main() -> None:
     session_id = str(uuid.uuid4())
     init_sensor(session_id, flavor="playground-langchain")
@@ -239,6 +373,8 @@ def main() -> None:
     _run_mcp(session_id)
 
     flightdeck_sensor.teardown()
+
+    _run_gemini()
 
 
 if __name__ == "__main__":

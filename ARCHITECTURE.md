@@ -10679,10 +10679,10 @@ sensor hands back for a stream helper, a streamed call or a raw or
 streaming view (a stream guard, a view's response proxy, a litellm
 stream) has the protocol of the object it stands for: `with` / `async
 with`, iteration and async iteration, and `await`, on the object and on
-its class. Each copies as that object does: a shallow copy works, and is
-the object itself, so the call is still metered once; a deep copy or a
-pickle is the SDK object's, raising what that raises. One difference
-remains: an OpenAI sync client's streaming view hands back the SDK's own
+its class. A deep copy or a pickle of it does what it does to that
+object, raising what that raises; a shallow copy works, as for the SDK
+object, but is the object itself, so the call is still metered once.
+One difference remains: an OpenAI sync client's streaming view hands back the SDK's own
 `ResponseContextManager`, holding the sensor proxy's method where the SDK
 holds the resource's bound method, so its deep copy works and its pickle
 raises `PicklingError` where the SDK's raise `TypeError`.

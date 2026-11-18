@@ -154,10 +154,13 @@ All notable changes to Flightdeck are documented here.
   so `hasattr`, `async with`, `with` and iteration behave and fail as
   without the sensor (the same exception, at the same moment). The
   stream `litellm.completion` / `acompletion` return with `stream=True`
-  now iterates both ways and is no context manager, as litellm's own;
-  every object these paths return copies, deep-copies and pickles as the
-  SDK object it stands for. A BLOCK still stops every form before a
-  request is sent.
+  now iterates both ways and is no context manager, as litellm's own.
+  A deep copy or a pickle of what these paths return does what it does
+  to the SDK object it stands for, and a shallow copy works and is the
+  object itself, so the call is still metered once. One difference is
+  left: an OpenAI sync client's streaming view, whose deep copy works
+  and whose pickle raises `PicklingError` where the SDK's raise
+  `TypeError`. A BLOCK still stops every form before a request is sent.
 - **An event holding a NaN or an infinity is no longer lost.** A reply
   the SDK parsed with a `NaN` or `-Infinity` in it (an OpenAI-compatible
   server's logprob, a tool call's arguments), or a sub-agent hand-off

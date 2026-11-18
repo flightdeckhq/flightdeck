@@ -809,7 +809,8 @@ def test_litellm_streaming_returns_the_stream_guard(
 ) -> None:
     """stream=True goes through the sensor's stream guard: the patched
     function hands the caller a GuardedStream around what litellm
-    returned, and asked litellm for in-stream usage on the way.
+    returned, and leaves litellm's stream_options as the caller gave
+    them (the sensor asks for usage only where the request is final).
     """
     mock_completion = MagicMock(return_value=iter([]))
     monkeypatch.setattr(_litellm, "completion", mock_completion)
@@ -823,7 +824,7 @@ def test_litellm_streaming_returns_the_stream_guard(
     assert isinstance(base.guard_of(stream), base.GuardedStream)
     mock_completion.assert_called_once()
     assert mock_completion.call_args.kwargs["stream"] is True
-    assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in mock_completion.call_args.kwargs
 
 
 def test_unpatch_litellm_without_patch_is_noop(sensor_init: Any) -> None:
@@ -903,4 +904,4 @@ def test_sensor_litellm_streaming_returns_the_stream_guard(
         stream=True,
     )
     assert isinstance(base.guard_of(stream), base.GuardedStream)
-    assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in mock_completion.call_args.kwargs

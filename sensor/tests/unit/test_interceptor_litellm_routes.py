@@ -31,7 +31,6 @@ from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor import litellm as litellm_interceptor
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,
-    _is_text_usage_only_chunk,
     _named_arguments,
     _positional_names,
     _reissued_by_litellm,
@@ -262,6 +261,14 @@ async def _drain(stream: Any) -> list[Any]:
     return [c async for c in stream]
 
 
+def _usage_counts(chunk: Any) -> bool:
+    """Whether a text_completion chunk shows the usage (every chunk
+    carries a ``Usage``; only the one litellm adds for a caller who asked
+    counts tokens)."""
+    usage = getattr(chunk, "usage", None)
+    return bool(getattr(usage, "prompt_tokens", 0) or getattr(usage, "completion_tokens", 0))
+
+
 # ----- text_completion: one report per call ----------------------------------
 
 
@@ -304,7 +311,12 @@ def test_text_completion_on_litellms_httpx_route_is_reported_once(
     assert pc["model"] == "claude-3-5-haiku-20241022"  # the model served
 
 
-def test_text_completion_stream_meters_usage_and_hides_the_usage_chunk(session: Session) -> None:
+def test_text_completion_stream_meters_the_providers_usage(session: Session) -> None:
+    """litellm asks OpenAI for usage itself on OpenAI's own base; the
+    sensor adds nothing, the caller reads litellm's chunks (none of which
+    shows the usage, as the caller did not ask for it), and the post_call
+    carries the provider's counts, read as the usage chunk passed to
+    litellm."""
     transport = _Transport()
     stream = litellm.text_completion(
         model="gpt-4o-mini", prompt="hi", stream=True, client=_sdk_client(transport)
@@ -312,7 +324,7 @@ def test_text_completion_stream_meters_usage_and_hides_the_usage_chunk(session: 
     assert isinstance(base.guard_of(stream), base.GuardedStream)
     chunks = list(stream)
     assert "".join(c.choices[0].text or "" for c in chunks) == "hello"
-    assert not any(_is_text_usage_only_chunk(c) for c in chunks)
+    assert not any(_usage_counts(c) for c in chunks)
     sent = json.loads(transport.requests[-1].content)
     assert sent["stream_options"] == {"include_usage": True}
     (pc,) = _post_calls(session)
@@ -334,7 +346,7 @@ def test_text_completion_stream_keeps_the_usage_chunk_for_a_caller_who_asked(
             client=_sdk_client(transport),
         )
     )
-    assert any(_is_text_usage_only_chunk(c) for c in chunks)
+    assert any(_usage_counts(c) for c in chunks)
     (pc,) = _post_calls(session)
     assert pc["tokens_output"] == SDK_COMPLETION_TOKENS
 
@@ -1380,8 +1392,6 @@ def test_text_completion_adapter_reads_usage_only_from_the_usage_chunk() -> None
     usage = provider.usage_from_stream_chunk(usage_chunk)
     assert usage is not None and (usage.input_tokens, usage.output_tokens) == (5, 2)
     assert provider.chunk_completes_stream(usage_chunk) is True
-    assert _is_text_usage_only_chunk(usage_chunk)
-    assert not _is_text_usage_only_chunk(content_chunk)
 
 
 def test_responses_adapter_reads_both_usage_shapes_and_the_stop_reason() -> None:

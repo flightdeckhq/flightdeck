@@ -392,11 +392,6 @@ OBJECTS: dict[str, tuple[str, Callable[[Any, bool], Any], str]] = {
     "litellm responses(stream=True)": ("litellm-http", _litellm_responses, "stream"),
     "google-genai generate_content_stream": ("google", _gemini_stream, "stream"),
 }
-# The uses that never read a stream: litellm's text_completion stream
-# sends no request for them.
-_TEXT_COMPLETION_UNREAD = frozenset(
-    {"created, never used", "entered twice", "exited, then iterated", "closed, then iterated"}
-)
 SCENARIOS = (
     "created, never used",
     "entered twice",
@@ -415,28 +410,16 @@ async def _resolve(value: Any) -> Any:
     return value
 
 
-def _counted(chunk: Any) -> bool:
-    """A litellm usage-only chunk is left out of the reads: litellm asks
-    for it itself, and the sensor hides it from a caller who did not,
-    which is a finding of its own."""
-    if type(chunk).__name__ != "ModelResponseStream":
-        return True
-    choices = getattr(chunk, "choices", None) or []
-    if not choices:
-        return False
-    return bool(getattr(choices[0].delta, "content", None) or choices[0].finish_reason)
-
-
 async def _read(stream: Any, is_async: bool, limit: int | None = None) -> int:
     count = 0
     if is_async:
-        async for chunk in stream:
-            count += _counted(chunk)
+        async for _chunk in stream:
+            count += 1
             if limit is not None and count >= limit:
                 break
     else:
-        for chunk in stream:
-            count += _counted(chunk)
+        for _chunk in stream:
+            count += 1
             if limit is not None and count >= limit:
                 break
     return count
@@ -586,17 +569,6 @@ def test_a_stream_object_lives_as_the_sdks_and_its_events_match_its_requests(
         pytest.importorskip("litellm")
     if sdk == "google":
         pytest.importorskip("google.genai")
-    if name == "litellm text_completion(stream=True)" and scenario in _TEXT_COMPLETION_UNREAD:
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "litellm's text_completion stream sends its request at its first "
-                    "read, and the sensor emits the pre_call at the call: a stream "
-                    "never read reports a call that was never made"
-                ),
-            )
-        )
     gemini = _Gemini()
 
     def requests() -> int:

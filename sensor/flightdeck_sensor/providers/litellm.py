@@ -170,6 +170,11 @@ class LitellmProvider:
 
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
+        # The streamed call's outer-call mark (``base.OuterCall``), set by
+        # the litellm interceptor: the OpenAI interceptor leaves the
+        # provider's usage on it when litellm sends the request through
+        # the OpenAI SDK.
+        self.outer_call: Any = None
 
     @property
     def vendor(self) -> str | None:
@@ -321,8 +326,69 @@ class LitellmProvider:
             return None
 
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
-        """litellm stream wrappers report nothing after the fact."""
-        return None
+        """The provider's usage for a stream that did not show it: the
+        counts the OpenAI interceptor read from the request litellm sent
+        through the OpenAI SDK (left on the call's mark), else those
+        litellm keeps on its stream (:func:`kept_usage`), else nothing."""
+        handed = getattr(self.outer_call, "usage", None)
+        if isinstance(handed, TokenUsage) and handed.total > 0:
+            return handed
+        return self.kept_usage(stream)
+
+    def _with_handed_usage(self, response: dict[str, Any]) -> dict[str, Any]:
+        """The stored response of a stream whose usage chunk litellm never
+        saw (the OpenAI interceptor asked for it at the SDK and took it
+        out): litellm's assembled response, with the provider's counts in
+        its ``usage``, as when litellm assembles the usage chunk itself."""
+        handed = getattr(self.outer_call, "usage", None)
+        if not isinstance(handed, TokenUsage) or handed.total <= 0:
+            return response
+        usage = response.get("usage")
+        if isinstance(usage, dict) and (_count(usage.get("prompt_tokens")) or 0) > 0:
+            return response
+        return {
+            **response,
+            "usage": {
+                **(usage if isinstance(usage, dict) else {}),
+                "prompt_tokens": handed.input_tokens,
+                "completion_tokens": handed.output_tokens,
+                "total_tokens": handed.input_tokens + handed.output_tokens,
+            },
+        }
+
+    def kept_usage(self, stream: Any) -> TokenUsage | None:
+        """The usage litellm keeps on its stream without showing it, read
+        from the chunks its ``CustomStreamWrapper`` keeps (``chunks``; a
+        ``text_completion`` stream's inner wrapper), every attribute
+        checked: a missing attribute, another shape, or counts that are
+        not non-negative integers give ``None`` (the estimate), never an
+        exception and never a guessed number. The counts are cumulative,
+        so the largest of each wins."""
+        try:
+            target = stream
+            if type(target).__name__ == "TextCompletionStreamWrapper":
+                target = getattr(target, "completion_stream", None)
+            if type(target).__name__ != "CustomStreamWrapper":
+                return None
+            chunks = getattr(target, "chunks", None)
+            if not isinstance(chunks, list):
+                return None
+            best: TokenUsage | None = None
+            for chunk in chunks:
+                usage = getattr(chunk, "usage", None)
+                if usage is None:
+                    continue
+                prompt = _count(_field(usage, "prompt_tokens"))
+                completion = _count(_field(usage, "completion_tokens"))
+                if prompt is None or completion is None:
+                    continue
+                found = self.extract_usage(chunk)
+                if found.input_tokens != prompt or found.output_tokens != completion:
+                    continue
+                best = found if best is None else _larger(best, found)
+            return best if best is not None and best.total > 0 else None
+        except Exception:
+            return None
 
     def stream_completed(self, stream: Any) -> bool | None:
         """litellm stream wrappers do not track completion."""
@@ -426,7 +492,7 @@ class LitellmProvider:
                 # allowlisted response fields are stored (see
                 # _stream_response_summary); the wrapper's own state is
                 # never dumped.
-                resp_dict = _stream_response_summary(response)
+                resp_dict = self._with_handed_usage(_stream_response_summary(response))
             else:
                 # No response stores an empty one; anything else (a dict) is
                 # stored as it is, which the transport sends when JSON can
@@ -601,6 +667,17 @@ def _prompt_text(prompt: Any) -> str:
             for p in prompt
         )
     return "" if prompt is None else str(prompt)
+
+
+def _larger(a: TokenUsage, b: TokenUsage) -> TokenUsage:
+    """Field by field, the larger of two cumulative usage snapshots."""
+    return TokenUsage(
+        input_tokens=max(a.input_tokens, b.input_tokens),
+        output_tokens=max(a.output_tokens, b.output_tokens),
+        cache_read_tokens=max(a.cache_read_tokens, b.cache_read_tokens),
+        cache_creation_tokens=max(a.cache_creation_tokens, b.cache_creation_tokens),
+        reasoning_tokens=b.reasoning_tokens if a.reasoning_tokens is None else a.reasoning_tokens,
+    )
 
 
 def _usage_total(usage: Any) -> int:

@@ -21,6 +21,14 @@
  * needed. On a stack that is not an E2E stack (an agent not named
  * ``e2e-...``, or no E2E seed) the tests check instead that nothing went.
  *
+ * A scope can only narrow it: a prefix that does not extend ``e2e-``, or
+ * an id that is not a uuid, throws before psql starts; and the SQL itself
+ * refuses such a prefix, and refuses to delete a listed run whose agent
+ * is not named ``e2e-...``, whatever the scope passed. Those SQL checks
+ * run inside a transaction the test rolls back, against a real-like
+ * agent (``dev@dev-laptop``) that only that transaction holds, so no
+ * other session, spec or database ever sees it.
+ *
  * Data only: no page; they run unchanged under both theme projects.
  */
 import { spawnSync } from "node:child_process";
@@ -33,10 +41,14 @@ import {
   startPrivateAgent,
 } from "./_fixtures";
 import {
+  E2E_AGENT_NAME_PREFIX,
+  PREFLIGHT_SQL_BODY,
   PRIVATE_FIXTURE_HOSTS,
   clearPrivateFixtures,
+  preflightPsqlArgs,
   seedGateAgent,
   type ClearedPrivateFixtures,
+  type E2eAgentNamePrefix,
 } from "./_private-fixtures";
 import { POSTGRES_CONTAINER, POSTGRES_DB } from "./_stack";
 import { newRun, removeRun, seedRun, sessionStart, type Run } from "./_tool-content-run";
@@ -80,6 +92,52 @@ async function privateRun(page: Page, label: string) {
   const agent = createPrivateAgent(label, 1);
   await startPrivateAgent(page, agent);
   return { agent, sessionId: agent.sessionIds[0]! };
+}
+
+/** The pre-flight's statements, with these prefixes, scoped to one run
+ *  that only this transaction holds: a run on the private host of an
+ *  agent named ``agentName``, whose own row names it ``sessionAgentName``.
+ *  The transaction is rolled back whatever happens, so nothing it holds
+ *  is ever seen outside it. Returns psql's exit status and output; after
+ *  the pre-flight's statements it reports whether that run is still
+ *  there (``planted=1``). */
+function preflightOnPlantedRun(opts: {
+  prefix: string;
+  gatePrefix: string;
+  agentName: string;
+  sessionAgentName: string;
+}): { status: number | null; stdout: string; stderr: string } {
+  const seed = seedGateAgent();
+  const sessionId = randomUUID();
+  const args = preflightPsqlArgs({
+    prefix: opts.prefix,
+    gatePrefix: opts.gatePrefix,
+    seedId: seed.id,
+    checkSeedId: seed.id,
+    seedName: seed.name,
+    scoped: true,
+    only: [sessionId],
+  });
+  args.push(
+    "-v", `planted_sid=${sessionId}`,
+    "-v", `planted_aid=${randomUUID()}`,
+    "-v", `planted_agent=${opts.agentName}`,
+    "-v", `planted_session_agent=${opts.sessionAgentName}`,
+    "-v", `planted_host=${PRIVATE_FIXTURE_HOSTS.privateAgent}`,
+  );
+  const input =
+    "BEGIN;\n" +
+    "INSERT INTO agents (agent_id, agent_type, client_type, agent_name, user_name, hostname) " +
+    "VALUES (:'planted_aid'::uuid, 'coding', 'claude_code', :'planted_agent', 'dev', 'dev-laptop');\n" +
+    "INSERT INTO sessions (session_id, flavor, agent_type, host, agent_id, client_type, agent_name) " +
+    "VALUES (:'planted_sid'::uuid, 'claude-code', 'coding', :'planted_host', :'planted_aid'::uuid, " +
+    "'claude_code', :'planted_session_agent');\n" +
+    PREFLIGHT_SQL_BODY +
+    "SELECT 'planted=' || count(*) FROM sessions WHERE session_id = :'planted_sid'::uuid;\n" +
+    "ROLLBACK;\n";
+  const result = spawnSync("docker", args, { input, encoding: "utf8" });
+  if (result.error) throw new Error(`psql: failed to run docker: ${result.error.message}`);
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
 test.describe("T192 — the pre-flight removes only private runs", () => {
@@ -178,5 +236,83 @@ test.describe("T192 — the pre-flight removes only private runs", () => {
     }
     expect(real).toMatchObject({ sessions: 1, agents: 1 });
     expect(rowsPresent([sessionId], [agent.agentId])).toEqual({ sessions: 0, agents: 0 });
+  });
+
+  test("a scope that does not narrow throws before psql, and nothing goes", async ({ page }, testInfo) => {
+    const { agent, sessionId } = await privateRun(page, "t192-scope");
+    // What the type refuses, passed past it.
+    const notExtending = (prefix: string) => prefix as E2eAgentNamePrefix;
+
+    for (const prefix of ["", "o", "e2e", "E2E-"]) {
+      expect(
+        () => clearPrivateFixtures({ only: [sessionId], agentNamePrefix: notExtending(prefix) }),
+        `prefix ${JSON.stringify(prefix)}`,
+      ).toThrow(/does not extend e2e-/);
+    }
+    expect(() => clearPrivateFixtures({ only: [sessionId], seedAgentId: "not-a-uuid" })).toThrow(/not a uuid/);
+    expect(() => clearPrivateFixtures({ only: [`${sessionId},${randomUUID()}`] })).toThrow(/not a uuid/);
+    expect(rowsPresent([sessionId], [agent.agentId]), "the private run is still there").toEqual({
+      sessions: 1,
+      agents: 1,
+    });
+
+    const real = clearPrivateFixtures({ only: [sessionId] });
+    if (!isE2eStack(real)) {
+      testInfo.annotations.push({ type: "not an E2E stack", description: JSON.stringify(real) });
+      return;
+    }
+    expect(real).toMatchObject({ sessions: 1, agents: 1 });
+  });
+
+  test("the SQL refuses a widening prefix and a listed run of a non-e2e- agent", () => {
+    // A real Claude Code agent's run on the private host, listed: the
+    // reviewer's case. Prefixes that do not extend e2e- are refused by
+    // the SQL itself, before any delete.
+    for (const [prefix, gatePrefix] of [
+      [E2E_AGENT_NAME_PREFIX, ""],
+      [E2E_AGENT_NAME_PREFIX, "o"],
+      ["", ""],
+      ["o", "o"],
+    ] as const) {
+      const run = preflightOnPlantedRun({
+        prefix,
+        gatePrefix,
+        agentName: "dev@dev-laptop",
+        sessionAgentName: "dev@dev-laptop",
+      });
+      expect(run.status, `prefix ${JSON.stringify(prefix)}, gate ${JSON.stringify(gatePrefix)}`).not.toBe(0);
+      expect(run.stderr).toContain("the agent-name prefixes must be e2e- and extend it");
+      expect(run.stdout).not.toContain("sessions=");
+    }
+
+    // A prefix that narrows: the real agent counts as foreign, so the
+    // run stays.
+    const narrowed = preflightOnPlantedRun({
+      prefix: E2E_AGENT_NAME_PREFIX,
+      gatePrefix: "e2e-test-t192-",
+      agentName: "dev@dev-laptop",
+      sessionAgentName: "dev@dev-laptop",
+    });
+    expect(narrowed.status, narrowed.stderr).toBe(0);
+    expect(narrowed.stdout).toContain("sessions=0");
+    expect(narrowed.stdout).toContain("planted=1");
+
+    // A run whose agent row is named e2e- (so the stack passes for an
+    // E2E stack) but whose own row names a real agent: the check of the
+    // runs to delete uses the fixed prefix and refuses it. On a stack
+    // that is not an E2E stack nothing is selected, and the run stays.
+    const shadow = preflightOnPlantedRun({
+      prefix: E2E_AGENT_NAME_PREFIX,
+      gatePrefix: E2E_AGENT_NAME_PREFIX,
+      agentName: `e2e-test-t192-shadow-${randomUUID().slice(0, 8)}`,
+      sessionAgentName: "dev@dev-laptop",
+    });
+    if (shadow.status === 0) {
+      expect(shadow.stdout, "not an E2E stack: nothing selected").toContain("sessions=0");
+      expect(shadow.stdout).toContain("planted=1");
+    } else {
+      expect(shadow.stderr).toContain("names no e2e- agent: nothing deleted");
+      expect(shadow.stdout).not.toContain("sessions=");
+    }
   });
 });

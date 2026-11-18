@@ -9,7 +9,7 @@ import { NoEventContent, NoEventContentForEvent, NoRunContent } from "@/componen
 import { SignalPromptsPanel } from "@/components/session/SignalContentViewer";
 import { PromptsTab } from "@/components/session/SessionDrawer";
 import { TELEMETRY_OTLP } from "@/lib/agent-identity";
-import type { AgentEvent, EventContent, Session } from "@/lib/types";
+import type { AgentEvent, EventContent, OutputDimensions, Session } from "@/lib/types";
 import {
   TEXT_SAFE_FLOOR,
   THEMES,
@@ -33,7 +33,8 @@ import {
 // the backgrounds behind it are read from the markup and resolved
 // through themes.css as it is, so a token or a component change that
 // puts a text under the floor fails here. The embeddings viewer's
-// states are checked the same way.
+// states are checked the same way, and an embeddings event's Prompts
+// tab (real stored bodies) with its input opened as well.
 
 const TOKENS = readThemeTokens();
 
@@ -71,6 +72,8 @@ interface Case {
   content: EventContent | null;
   eventType?: string;
   clientType?: string;
+  /** An embeddings event's output_dimensions, which its view shows. */
+  outputDimensions?: OutputDimensions | null;
 }
 
 const base = { session_id: "s", system_prompt: null, messages: [], tools: null, response: null, captured_at: "2026-11-18T00:00:00Z" };
@@ -273,7 +276,18 @@ const BUILT: Case[] = [
 ];
 
 const gemini = fixture("gemini-content.json");
+
+/** Real embeddings events' stored bodies, each with its event's
+ *  output_dimensions, opened under the event's type. */
+const EMBEDDINGS_CASES: Case[] = Object.entries(fixture("embeddings-content.json"))
+  .filter(([key]) => !key.startsWith("_"))
+  .map(([key, value]) => {
+    const stored = value as { content: EventContent; output_dimensions: OutputDimensions | null };
+    return { name: `embeddings ${key}`, content: stored.content, eventType: "embeddings", outputDimensions: stored.output_dimensions };
+  });
+
 const CASES: Case[] = [
+  ...EMBEDDINGS_CASES,
   ...BUILT,
   ...Object.entries(gemini)
     .filter(([key]) => !key.startsWith("_"))
@@ -329,7 +343,12 @@ function failuresOf(where: string, paints: TextPaint[], baseBg = "var(--surface)
 async function promptsPaints(c: Case, i: number): Promise<TextPaint[]> {
   mockContent = c.content;
   const { container } = render(
-    <PromptViewer eventId={`e-contrast-${i}`} eventType={c.eventType ?? "post_call"} clientType={c.clientType} />,
+    <PromptViewer
+      eventId={`e-contrast-${i}`}
+      eventType={c.eventType ?? "post_call"}
+      clientType={c.clientType}
+      outputDimensions={c.outputDimensions}
+    />,
   );
   await waitFor(() => expect(container.querySelector(".animate-spin")).toBeNull());
   await waitFor(() => expect(container.textContent?.length ?? 0).toBeGreaterThan(0));
@@ -352,6 +371,30 @@ describe("the Prompts tab's text reads at 4.6:1 or better in both themes", () =>
     }
     // A pass that read little would prove nothing.
     expect(checked).toBeGreaterThan(1500);
+    expect(failures, JSON.stringify(failures.slice(0, 20), null, 1)).toEqual([]);
+  });
+
+  it("an embeddings event's view with its input opened: lists, whole texts, whole token ids", async () => {
+    const failures: Failure[] = [];
+    let checked = 0;
+    for (const [i, c] of EMBEDDINGS_CASES.entries()) {
+      mockContent = c.content;
+      const { container } = render(
+        <PromptViewer eventId={`e-contrast-embed-${i}`} eventType="embeddings" outputDimensions={c.outputDimensions} />,
+      );
+      await waitFor(() => expect(container.querySelector('[data-testid="prompt-viewer-embeddings"]')).not.toBeNull());
+      // Each click can add a button ("Show full inputs" once a list opens).
+      for (let k = 0; k < 3; k++) {
+        const next = container.querySelectorAll('[data-testid="embeddings-content-viewer"] button')[k];
+        if (!next) break;
+        fireEvent.click(next);
+      }
+      const paints = textPaints(container);
+      checked += paints.length;
+      failures.push(...failuresOf(`${c.name}, opened`, paints));
+      cleanup();
+    }
+    expect(checked).toBeGreaterThan(100);
     expect(failures, JSON.stringify(failures.slice(0, 20), null, 1)).toEqual([]);
   });
 

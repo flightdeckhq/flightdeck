@@ -987,6 +987,44 @@ export async function postPrivatePostCall(
   return eventId!;
 }
 
+/** Post one ``embeddings`` call on the private run ``sessionId``, now,
+ *  with its captured ``content`` (the event_content envelope: provider,
+ *  model, the request's ``input``, ``response`` ``{}`` as the sensor
+ *  stores it) and ``fields`` over the run's own (the call's model and
+ *  provider, its ``output_dimensions``); wait until it is stored with
+ *  its content, and return its event id. A run takes one such call: the
+ *  first stored ``embeddings`` event is the one. */
+export async function postPrivateEmbeddings(
+  page: Page,
+  agent: PrivateAgent,
+  sessionId: string,
+  content: Record<string, unknown>,
+  fields: Record<string, unknown> = {},
+): Promise<string> {
+  await postPrivateEvent(
+    page,
+    privateEvent(agent, sessionId, "embeddings", new Date(), {
+      tokens_input: 12,
+      tokens_total: 12,
+      latency_ms: 300,
+      ...fields,
+      has_content: true,
+      content: { ...content, session_id: sessionId, event_id: "" },
+    }),
+  );
+  let eventId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        eventId = (await privateSession(page, sessionId))?.events.find((e) => e.event_type === "embeddings")?.id;
+        return eventId;
+      },
+      { timeout: PRIVATE_STORE_WAIT_MS, message: `the embeddings call on ${sessionId} was not stored` },
+    )
+    .toBeDefined();
+  return eventId!;
+}
+
 /** End every run of a private agent, so none stays open after its spec:
  *  each run's end is posted even when another's is refused (a run a
  *  failed start never stored). */

@@ -16,7 +16,8 @@ import {
   readCutJson,
   type JsonPath,
 } from "@/lib/cut-json";
-import type { EventContent } from "@/lib/types";
+import type { EventContent, OutputDimensions } from "@/lib/types";
+import { EmbeddingsInput } from "./EmbeddingsContentViewer";
 
 interface PromptViewerProps {
   eventId: string | null;
@@ -26,9 +27,14 @@ interface PromptViewerProps {
    *  other row's text is shown as stored. */
   clientType?: string | null;
   /** The event's type. A Gemini call's content gets the Gemini view;
-   *  a Gemini embeddings event's keeps the view every embeddings event
-   *  has (see isGeminiContent). */
+   *  an embeddings event's, whatever its provider, gets the embeddings
+   *  view (see EmbeddingsContent). */
   eventType?: string | null;
+  /** An embeddings event's ``output_dimensions`` (its payload's count
+   *  of vectors and dimension of each), which the embeddings view shows
+   *  as the call's response: the sensor stores no response body for an
+   *  embeddings call. */
+  outputDimensions?: OutputDimensions | null;
 }
 
 /* ---- Role badge styles ----
@@ -621,7 +627,7 @@ function ChatMessageBody({ msg, reply }: { msg: Record<string, unknown>; reply?:
 
 /* ---- Main component ---- */
 
-export function PromptViewer({ eventId, clientType, eventType }: PromptViewerProps) {
+export function PromptViewer({ eventId, clientType, eventType, outputDimensions }: PromptViewerProps) {
   // fetchEventContent resolves null for any failed fetch: a 404 (capture
   // off for the session) or any other error. Either way the viewer shows
   // the capture-disabled message. Only this event's result is shown.
@@ -657,6 +663,10 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
 
   if (!content) return null;
 
+  if (eventType === EMBEDDINGS_EVENT_TYPE) {
+    return <EmbeddingsContent content={content} eventId={eventId} outputDimensions={outputDimensions} />;
+  }
+
   if (content.provider === OTEL_GENAI_PROVIDER) {
     return <OtelGenaiContent content={content} eventId={eventId} />;
   }
@@ -686,17 +696,7 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
 
   return (
     <div className="flex flex-col px-3 py-2">
-      {/* Provider header */}
-      <div className="flex items-center gap-2 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-        <ProviderLogo provider={getProvider(model) !== "unknown" ? getProvider(model) : (provider as "anthropic" | "openai" | "unknown")} size={16} />
-        <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>{provider}</span>
-        {model && (
-          <>
-            <span style={{ color: "var(--muted-text)" }}>·</span>
-            <span data-testid="prompt-viewer-model" className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
-          </>
-        )}
-      </div>
+      <ProviderHeader provider={provider} model={model} />
 
       {/* A Responses call's instructions and input */}
       {responses && content.system_prompt != null && (
@@ -834,6 +834,93 @@ export function PromptViewer({ eventId, clientType, eventType }: PromptViewerPro
         <Section title="Result">
           <ViewBox key={`${eventId}-tool-output`} raw={content.tool_output} name="the tool's result" testId="prompt-box-tool-output">
             <ToolValue value={content.tool_output} />
+          </ViewBox>
+        </Section>
+      )}
+    </div>
+  );
+}
+
+/** The tab's header: the provider's logo (by the model when it names
+ *  one), the provider and, when the content names one, the model. */
+function ProviderHeader({ provider, model }: { provider: string; model: string }) {
+  return (
+    <div className="flex items-center gap-2 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+      <ProviderLogo provider={getProvider(model) !== "unknown" ? getProvider(model) : (provider as "anthropic" | "openai" | "unknown")} size={16} />
+      <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>{provider}</span>
+      {model && (
+        <>
+          <span style={{ color: "var(--muted-text)" }}>·</span>
+          <span data-testid="prompt-viewer-model" className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---- Embeddings ----
+ *
+ * An embeddings call sends inputs and gets vectors back. The sensor
+ * stores the request's inputs as sent in ``input``, under the provider
+ * that took them, and no response body (``response`` is ``{}``; the
+ * vectors are kept apart and the content API does not return them).
+ * The view shows the inputs under the provider's own name for them,
+ * drawn by the expanded event row's input view, and, for the response,
+ * the event's ``output_dimensions``: never a vector, and never the
+ * empty response.
+ */
+
+/** The section an embeddings call's input is shown under, in the
+ *  provider's terms (its title, and what the box's toggle names): a
+ *  google-genai ``embed_content`` request sends ``contents``; the OpenAI
+ *  and litellm embeddings APIs take ``input``. */
+function embeddingsInputSection(provider: string): { title: string; name: string } {
+  return provider === GOOGLE_PROVIDER
+    ? { title: "Contents", name: "the contents" }
+    : { title: "Input", name: "the input" };
+}
+
+/** The label of the box that shows an embeddings event's
+ *  ``output_dimensions``: the stored field's name. */
+const OUTPUT_DIMENSIONS_FIELD = "output_dimensions";
+
+function EmbeddingsContent({
+  content,
+  eventId,
+  outputDimensions,
+}: {
+  content: EventContent;
+  eventId: string;
+  outputDimensions?: OutputDimensions | null;
+}) {
+  const provider = content.provider ?? "unknown";
+  const model = content.model ?? "";
+  const section = embeddingsInputSection(provider);
+  const dimensions = isPlainObject(outputDimensions) ? outputDimensions : null;
+  return (
+    <div data-testid="prompt-viewer-embeddings" className="flex flex-col px-3 py-2">
+      <ProviderHeader provider={provider} model={model} />
+
+      <Section title={section.title}>
+        {/* The content API leaves out an input stored as null; the JSON
+            view shows what is stored, null. */}
+        <ViewBox key={`${eventId}-embeddings-input`} raw={content.input ?? null} name={section.name} testId="prompt-box-embeddings-input">
+          <EmbeddingsInput input={content.input} />
+        </ViewBox>
+      </Section>
+
+      {dimensions && (
+        <Section title="Response">
+          <ViewBox
+            key={`${eventId}-embeddings-output`}
+            raw={dimensions}
+            name={`the response's ${OUTPUT_DIMENSIONS_FIELD}`}
+            testId="prompt-box-embeddings-output"
+            label={<BlockLabel>{OUTPUT_DIMENSIONS_FIELD}</BlockLabel>}
+          >
+            <div data-testid="embeddings-output-dimensions" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
+              <KeyValueList data={dimensions} />
+            </div>
           </ViewBox>
         </Section>
       )}
@@ -1854,8 +1941,8 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
 export const GOOGLE_PROVIDER = "google";
 
 /** The event type of an embeddings call, which keeps the view every
- *  provider's embeddings have. */
-const EMBEDDINGS_EVENT_TYPE = "embeddings";
+ *  provider's embeddings have (see EmbeddingsContent). */
+export const EMBEDDINGS_EVENT_TYPE = "embeddings";
 
 /** What a function call with nothing in its ``args`` says: Gemini's
  *  name for the field. */

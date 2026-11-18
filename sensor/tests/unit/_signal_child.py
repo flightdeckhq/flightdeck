@@ -52,6 +52,8 @@ import time
 import urllib.request
 from typing import Any
 
+from tests.network_guard import install_in_child
+
 # How long ``hold`` keeps the lock: the test sends its signal as soon as it
 # reads READY, so a second is ample for the signal to land while it is held.
 HOLD_SECS = 1.0
@@ -86,6 +88,8 @@ def _post_marker(server: str, name: str) -> None:
 
 
 def main() -> None:
+    # Before the sensor is imported: what it refuses fails the test.
+    install_in_child()
     server, mode = sys.argv[1], sys.argv[2]
     # The lock a hold mode holds, or the imports mode's option.
     option = sys.argv[3] if len(sys.argv) > 3 else ""

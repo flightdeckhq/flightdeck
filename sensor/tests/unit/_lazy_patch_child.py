@@ -35,7 +35,9 @@ import importlib
 import json
 import logging
 import sys
-from typing import Any, TypedDict
+from typing import TypedDict
+
+from tests.network_guard import install_in_child
 
 # Every SDK patch() can patch, by the module whose import triggers it.
 PATCHABLE = (
@@ -52,7 +54,6 @@ PATCHABLE = (
     "google.genai.models",
     "google.adk.runners",
 )
-_LOOPBACK = ("127.0.0.1", "::1", "localhost")
 # The host litellm downloads its price list from when it is imported.
 LITELLM_PRICE_LIST_HOST = "raw.githubusercontent.com"
 
@@ -79,17 +80,10 @@ def _quiet_litellm_logging() -> None:
         logging.getLogger(name).setLevel(logging.CRITICAL + 1)
 
 
-def _guard(event: str, args: tuple[Any, ...]) -> None:
-    """Refuse, and record, every attempt to leave the machine: a child
-    must only ever reach the capture server."""
-    host: Any = None
-    if event == "socket.getaddrinfo":
-        host = args[0]
-    elif event == "socket.connect" and isinstance(args[1], tuple):
-        host = args[1][0]
-    if host is not None and str(host) not in _LOOPBACK:
-        network.append(str(host))
-        raise ConnectionRefusedError(f"child processes may not connect to {host!r}")
+def _record_network(_kind: str, host: object) -> None:
+    """The network guard's recorder: a child must only ever reach the
+    capture server, and every host it tried is reported."""
+    network.append(str(host))
 
 
 def _loaded() -> list[str]:
@@ -288,7 +282,7 @@ def echo(text: str) -> str:
 
 def main() -> None:
     server, sdk, order = sys.argv[1], sys.argv[2], sys.argv[3]
-    sys.addaudithook(_guard)
+    install_in_child(_record_network)
 
     if order == "before" and sdk != "none":
         importlib.import_module(sdk)

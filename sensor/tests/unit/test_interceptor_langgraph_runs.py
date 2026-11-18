@@ -18,7 +18,6 @@ import asyncio
 import concurrent.futures
 import contextlib
 import json
-import os
 import sys
 import threading
 import time
@@ -40,6 +39,7 @@ from flightdeck_sensor.interceptor.langgraph import (
     unpatch_langgraph_classes,
 )
 from flightdeck_sensor.transport.client import ControlPlaneClient
+from tests.unit._child_process import run_python
 
 # How long a test waits for child posts queued on a loop's executor, or
 # for a post it holds back to be released; each is a call on a mock
@@ -1228,20 +1228,11 @@ def test_a_stream_under_nest_asyncio_is_closed_at_once() -> None:
     ignored GeneratorExit". Skips on an interpreter where LangGraph's own
     stream fails under nest_asyncio in the one known way (Python 3.14); any
     other failure of the unpatched baseline fails the test."""
-    import subprocess
-
     pytest.importorskip("nest_asyncio")
     if not _langgraph_mod._ensure_imported():
         pytest.skip("langgraph not installed")
     here = str(Path(__file__).parent)
-    done = subprocess.run(
-        [sys.executable, "-c", _NEST_ASYNCIO_CHILD, here],
-        capture_output=True,
-        text=True,
-        timeout=_CHILD_TIMEOUT_SECS,
-        env={k: v for k, v in os.environ.items() if not k.startswith("FLIGHTDECK_")},
-        check=False,
-    )
+    done = run_python(_NEST_ASYNCIO_CHILD, here, timeout=_CHILD_TIMEOUT_SECS)
     assert done.returncode == 0, done.stderr
     assert "ignored GeneratorExit" not in done.stderr, done.stderr
     child = json.loads(done.stdout.strip().splitlines()[-1])

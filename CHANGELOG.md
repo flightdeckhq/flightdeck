@@ -142,6 +142,14 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Keyboard focus shows on the Policies page's tabs and on the Block on
+  uncertainty switch.** Their focus ring used a colour token no theme
+  defines, so it did not draw at all. It now draws in the accent, its
+  gap in the colour of the surface behind it. The active tab has its own
+  background on the tab list. The "Deny · interactive" pill in the
+  entry table takes the accent like its siblings take their colours,
+  with text that reads at 4.6:1 in a row at rest. The entry dialog's
+  Decision and Enforcement selects share its text fields' surface.
 - **The Policies page's fields, chips and panels show their background.**
   They used a colour token no theme defines, so they drew with no
   background. On the MCP Protection tab that covered:

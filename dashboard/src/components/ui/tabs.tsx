@@ -26,11 +26,14 @@ const TabsTrigger = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Trigger
     ref={ref}
+    // A trigger sits on its TabsList (--bg-elevated): the focus ring's
+    // offset gap takes that colour, and the active trigger is raised on
+    // it in --surface.
     className={cn(
       "inline-flex items-center justify-center whitespace-nowrap rounded-xs px-3 py-1.5 text-sm font-medium transition-all",
-      "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--accent) focus-visible:ring-offset-2 focus-visible:ring-offset-(--background)",
+      "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-(--accent) focus-visible:ring-offset-2 focus-visible:ring-offset-(--bg-elevated)",
       "disabled:pointer-events-none disabled:opacity-50",
-      "data-[state=active]:bg-(--background) data-[state=active]:text-(--text) data-[state=active]:shadow-xs",
+      "data-[state=active]:bg-(--surface) data-[state=active]:text-(--text) data-[state=active]:shadow-xs",
       className,
     )}
     {...props}

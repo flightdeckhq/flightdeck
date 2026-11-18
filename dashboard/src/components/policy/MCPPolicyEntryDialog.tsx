@@ -37,6 +37,9 @@ const RESOLVE_DEBOUNCE_MS = 300;
 const inputClass =
   "h-9 w-full rounded-md border bg-(--bg-elevated) px-3 py-1 text-sm outline-hidden transition-colors focus:border-(--accent)";
 
+/** The Decision and Enforcement selects take the text fields' surface. */
+const selectTriggerClass = "w-full bg-(--bg-elevated)";
+
 /**
  * Add / edit dialog for an MCP policy entry. While the operator
  * types into the URL or Name fields, the dialog fires a debounced
@@ -327,7 +330,7 @@ export function MCPPolicyEntryDialog({
                 onValueChange={(v) => setEntryKind(v as "allow" | "deny")}
               >
                 <SelectTrigger
-                  className="w-full"
+                  className={selectTriggerClass}
                   data-testid="mcp-policy-entry-kind"
                 >
                   <SelectValue />
@@ -379,7 +382,7 @@ export function MCPPolicyEntryDialog({
                 onValueChange={(v) => setEnforcement(v as EnforcementValue)}
               >
                 <SelectTrigger
-                  className="w-full"
+                  className={selectTriggerClass}
                   data-testid="mcp-policy-entry-enforcement"
                 >
                   <SelectValue />

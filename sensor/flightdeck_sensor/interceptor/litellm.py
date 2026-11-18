@@ -445,16 +445,17 @@ def _intercept_sync(
         # provider errors surface at the call, as without the sensor. The
         # caller gets the guard with the protocol of litellm's stream
         # (CustomStreamWrapper iterates both ways and is no context
-        # manager).
-        return base.protocol_view(
-            base.call_stream(
-                _as_outer_call(orig),
-                call_kwargs,
-                session,
-                provider,
-                hide_chunk=hide_chunk,
-            ).open()
-        )
+        # manager), or litellm's whole response when it answered with one
+        # (see base._GuardCore.whole_response).
+        guard = base.call_stream(
+            _as_outer_call(orig),
+            call_kwargs,
+            session,
+            provider,
+            hide_chunk=hide_chunk,
+        ).open()
+        whole = guard.whole_response()
+        return base.protocol_view(guard) if whole is None else whole
     return base.call(_as_outer_call(orig), kwargs, session, provider)
 
 
@@ -475,7 +476,9 @@ async def _intercept_async(
             provider,
             hide_chunk=hide_chunk,
         )
-        return base.protocol_view(await guard.open())
+        await guard.open()
+        whole = guard.whole_response()
+        return base.protocol_view(guard) if whole is None else whole
     return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
 
 

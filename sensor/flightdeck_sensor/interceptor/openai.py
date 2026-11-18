@@ -775,8 +775,10 @@ class SensorCompletions(base.SessionProxy):
         whose request goes through :meth:`create` with ``stream=True`` and
         so takes the stream guard. The caller gets the SDK's manager and
         ``ChatCompletionStream`` (its events, ``get_final_completion()``
-        and ``current_completion_snapshot`` unchanged)."""
-        if self._target() is None:
+        and ``current_completion_snapshot`` unchanged). The request goes
+        out on entry and finds its session then (see
+        :meth:`base.SessionProxy._sends_later_to_follow`)."""
+        if self._target() is None and not self._sends_later_to_follow():
             return self._real.stream(**kwargs)
         return _helper_stream(self, self._real, kwargs)
 
@@ -1047,8 +1049,10 @@ class SensorResponses(base.SessionProxy):
         request for a new response goes through :meth:`create` with
         ``stream=True`` and so takes the stream guard. Resuming a stored
         response (``stream(response_id=...)``) re-reads one that was
-        already generated and passes through to the SDK's ``retrieve``."""
-        if self._target() is None:
+        already generated and passes through to the SDK's ``retrieve``.
+        The request goes out on entry and finds its session then (see
+        :meth:`base.SessionProxy._sends_later_to_follow`)."""
+        if self._target() is None and not self._sends_later_to_follow():
             return self._real.stream(**kwargs)
         return _helper_stream(self, self._real, kwargs)
 

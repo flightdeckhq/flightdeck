@@ -227,6 +227,13 @@ class FollowSession:
         # replaced whole, so a reader never sees one without the other.
         self._bound: tuple[Session, Any] | None = None
 
+    def still_patched(self) -> bool:
+        """Whether the patch that handed the proxy out is still installed
+        (always, for a proxy no patch handed out): while it is, a call
+        made later may find a session."""
+        patched_on = self._patched_on
+        return patched_on is None or getattr(patched_on[0], patched_on[1], None) is not None
+
     def resolve(self) -> tuple[Session, Any] | None:
         """``(session, provider)`` for a call made now, or ``None`` when
         the call must go to the SDK untouched."""
@@ -278,6 +285,14 @@ class SessionProxy:
         if self._follow is None:
             return self._session, self._provider
         return self._follow.resolve()
+
+    def _sends_later_to_follow(self) -> bool:
+        """For a call made now whose request the SDK sends later (a stream
+        helper's manager, on entry): whether the proxy may find a session
+        then although there is none now, as a following proxy whose patch
+        is still installed may. Such a call goes through the sensor, which
+        finds the session when the request goes out."""
+        return self._follow is not None and self._follow.still_patched()
 
     def _call(
         self,
@@ -1913,6 +1928,33 @@ class _GuardCore(HandedToCaller):
             self._hook_failed("stream_accumulator")
             return None
 
+    def whole_response(self) -> Any | None:
+        """The SDK's result, when a call that asked to stream got a whole
+        response back instead (litellm answers ``responses(stream=True,
+        mock_response=...)`` with a ``ResponsesAPIResponse``): it is
+        reported now as the plain call it was, from that response, and
+        handed to the caller as it is. ``None`` for a stream, which the
+        guard meters as it is read."""
+        result = self._stream
+        if (
+            result is None
+            or hasattr(type(result), "__next__")
+            or hasattr(type(result), "__anext__")
+        ):
+            return None
+        if not self._finalized:
+            self._finalized = True
+            _post_call(
+                self._session,
+                self._provider,
+                result,
+                self._estimated,
+                int((time.monotonic() - self._t0) * 1000),
+                self._kwargs,
+                estimated_via=self._estimated_via,
+            )
+        return result
+
     def _register_open(self) -> None:
         guards = getattr(self._session, "open_stream_guards", None)
         lock = getattr(self._session, "open_stream_guards_lock", None)
@@ -2518,8 +2560,6 @@ class StreamHelperCall:
         made: Any,
         kwargs: dict[str, Any],
         entry_target: EntryTarget,
-        estimated: int,
-        estimated_via: str,
         *,
         is_async: bool,
         given: Mapping[str, tuple[Any, Any]],
@@ -2528,8 +2568,6 @@ class StreamHelperCall:
         self.made = made
         self._kwargs = kwargs
         self._entry_target = entry_target
-        self._estimated = estimated
-        self._estimated_via = estimated_via
         self._is_async = is_async
         self._given = given
 
@@ -2553,6 +2591,7 @@ class StreamHelperCall:
         if target is None:
             return None
         session, provider = target
+        estimated, estimated_via = provider.estimate_tokens(self._kwargs)
         guard_type: type[GuardedStream] | type[GuardedAsyncStream] = (
             GuardedAsyncStream if self._is_async else GuardedStream
         )
@@ -2561,17 +2600,19 @@ class StreamHelperCall:
             self._kwargs,
             session,
             provider,
-            self._estimated,
-            self._estimated_via,
+            estimated,
+            estimated_via,
             made_at_call=True,
             given=self._given,
-            on_entry=functools.partial(self._on_entry, session, provider),
+            on_entry=functools.partial(self._on_entry, session, provider, estimated, estimated_via),
         )
 
     def _on_entry(
         self,
         session: Session,
         provider: Provider,
+        estimated: int,
+        estimated_via: str,
         kwargs: dict[str, Any],
         deferred: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], Callable[..., Any]]:
@@ -2581,14 +2622,7 @@ class StreamHelperCall:
         request coroutine is closed when this entry will not await it,
         as its one entry."""
         try:
-            sent = _pre_call(
-                session,
-                provider,
-                kwargs,
-                self._estimated,
-                self._estimated_via,
-                deferred=deferred,
-            )
+            sent = _pre_call(session, provider, kwargs, estimated, estimated_via, deferred=deferred)
         except BaseException:
             if self._is_async:
                 _discard(self.made)
@@ -2713,43 +2747,47 @@ class AsyncStreamManager(HandedToCaller):
 def call_stream_helper(
     real_fn: Any,
     kwargs: dict[str, Any],
-    session: Session,
-    provider: Provider,
+    at_call: tuple[Session, Provider] | None,
     entry_target: EntryTarget,
     *,
+    receiver: str,
     is_async: bool,
 ) -> Any:
     """A stream helper call (Anthropic ``messages.stream()``): the SDK's
     ``stream()`` is called now, as the caller calls it, with the caller's
     arguments, and the caller gets a :class:`StreamManager` /
     :class:`AsyncStreamManager` named as the SDK's manager class, whose
-    entries are policed and metered (see :class:`StreamHelperCall`). An
-    iterator among the arguments is read as in
-    :func:`materialise_iterators`, and the estimate made, under the
-    session active at the call. A call the SDK refuses at once (an
-    argument it reads now) is reported as a failed call after its
-    ``pre_call``, with no policy check: no request is made, and the
+    entries are policed and metered under the session each finds (see
+    :class:`StreamHelperCall`). ``at_call`` is the session active at the
+    call, or ``None`` when there is none but an entry may still find one
+    (``entry_target``): either way an iterator among the arguments is
+    read now, as in :func:`materialise_iterators` (``receiver`` names the
+    provider whose SDK gets them), since the SDK may read it before the
+    entry. A call the SDK refuses at once (an argument it reads now) is
+    reported to the session at the call, if any, as a failed call after
+    its ``pre_call``, with no policy check: no request is made, and the
     caller gets the SDK's exception, as without the sensor."""
-    arguments = materialise_iterators(kwargs, real_fn, provider.name)
+    arguments = materialise_iterators(kwargs, real_fn, receiver)
     kwargs, send = arguments.kwargs, arguments.send
-    estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _sending(session, kwargs)
+    call_kwargs = kwargs if at_call is None else _sending(at_call[0], kwargs)
     t0 = time.monotonic()
     try:
         made = send(**call_kwargs)
     except BaseException as exc:
-        session.event_queue.enqueue(
-            _pre_call_event(session, provider, call_kwargs, estimated, estimated_via)
-        )
-        _emit_error(session, provider, exc, int((time.monotonic() - t0) * 1000), call_kwargs)
+        if at_call is not None:
+            session, provider = at_call
+            estimated, estimated_via = provider.estimate_tokens(call_kwargs)
+            session.event_queue.enqueue(
+                _pre_call_event(session, provider, call_kwargs, estimated, estimated_via)
+            )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            _emit_error(session, provider, exc, latency_ms, call_kwargs)
         raise
     call = StreamHelperCall(
         send,
         made,
         call_kwargs,
         entry_target,
-        estimated,
-        estimated_via,
         is_async=is_async,
         given=arguments.given,
     )

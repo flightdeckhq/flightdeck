@@ -494,42 +494,34 @@ class SensorMessages(base.SessionProxy):
         reports to the session :meth:`_entry_target` finds then.
         """
         real_fn = self._method("stream")
-        # As for create(): an outer interceptor's call, or no session to
-        # report to, goes to the SDK untouched.
-        target = None if base.outer_intercept_active() else self._target()
-        if target is None:
+        # As for create(): an outer interceptor's call goes to the SDK
+        # untouched. With no session now, the request still goes out only
+        # on entry: a following proxy (wrap()'s) may find a session then,
+        # so it hands back the sensor's manager all the same.
+        if base.outer_intercept_active():
             return real_fn(**kwargs)
-        session, provider = target
-        # The arguments are bound against the SDK's signature first, so an
-        # argument error raises at the call before the sensor reads or
-        # estimates anything. The SDK's ``stream()`` is then called now, as
-        # the caller calls it; it builds its request now or on entry, as its
-        # release does, and sends it on entry, which is when the session is
-        # found, the policy checked and the pre_call emitted (see
-        # base.StreamHelperCall).
-        base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
-        return base.call_stream_helper(
-            real_fn, kwargs, session, provider, self._entry_target, is_async=self._is_async
+        at_call = self._target()
+        if at_call is None and not self._sends_later_to_follow():
+            return real_fn(**kwargs)
+        return _stream_helper(
+            real_fn,
+            self._sdk_method("stream") or self._real.stream,
+            kwargs,
+            at_call,
+            self._entry_target,
+            is_async=self._is_async,
         )
 
     def _entry_target(self) -> tuple[Session, AnthropicProvider] | None:
         """The session and provider an entry of a manager this proxy's
         ``stream()`` returned reports to, found as a call made through
-        this proxy at that moment finds them: the active session for the
-        class patch's proxy, with ``None`` (the SDK's own entry) when
-        there is none, an outer interceptor meters the call or the class
-        has been unpatched; this proxy's own target for one ``wrap()``
-        built (see :meth:`base.SessionProxy._target`)."""
-        if base.outer_intercept_active():
-            return None
+        this proxy at that moment finds them: the class patch's (see
+        :func:`_class_patch_entry_target`), or this proxy's own target
+        for one ``wrap()`` built (see :meth:`base.SessionProxy._target`);
+        ``None`` (the SDK's own entry) under an outer interceptor."""
         if self._originals is None:
-            return self._target()
-        session = _current_session()
-        if session is None or not _patched(type(self._real)):
-            return None
-        if session is self._session:
-            return session, self._provider
-        return session, _provider_for(getattr(self._real, "_client", None), session)
+            return None if base.outer_intercept_active() else self._target()
+        return _class_patch_entry_target(self._real, (self._session, self._provider))
 
     @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:
@@ -740,6 +732,55 @@ def _current_session() -> Session | None:
     return flightdeck_sensor._session
 
 
+def _stream_helper(
+    real_fn: Any,
+    sdk_fn: Any,
+    kwargs: dict[str, Any],
+    at_call: tuple[Session, AnthropicProvider] | None,
+    entry_target: Callable[[], tuple[Session, AnthropicProvider] | None],
+    *,
+    is_async: bool,
+) -> Any:
+    """``messages.stream()`` through the sensor (see
+    :func:`base.call_stream_helper`): ``at_call`` is the session active
+    now, if any, and ``entry_target`` finds the one each entry reports
+    to. The arguments are bound against the SDK's signature (``sdk_fn``)
+    first, so an argument error raises at the call before the sensor
+    reads anything. The SDK's ``stream()`` (``real_fn``) is then called
+    now, as the caller calls it; it builds its request now or on entry,
+    as its release does, and sends it on entry, which is when the session
+    is found, the policy checked and the pre_call emitted (see
+    :class:`base.StreamHelperCall`)."""
+    base.check_signature(sdk_fn, **kwargs)
+    return base.call_stream_helper(
+        real_fn,
+        kwargs,
+        at_call,
+        entry_target,
+        receiver=AnthropicProvider.name,
+        is_async=is_async,
+    )
+
+
+def _class_patch_entry_target(
+    resource: Any, bound: tuple[Session, AnthropicProvider] | None
+) -> tuple[Session, AnthropicProvider] | None:
+    """The session and provider an entry of a manager the class patch's
+    ``stream()`` returned reports to: the session active at the entry,
+    as for a call made then, with ``None`` (the SDK's own entry) when
+    there is none, an outer interceptor meters the call or the class has
+    been unpatched. ``bound`` is the session the call was made in, whose
+    provider is reused when it is still the active one."""
+    if base.outer_intercept_active():
+        return None
+    session = _current_session()
+    if session is None or not _patched(type(resource)):
+        return None
+    if bound is not None and bound[0] is session:
+        return bound
+    return session, _provider_for(getattr(resource, "_client", None), session)
+
+
 def _patched(cls: type) -> bool:
     """Whether the resource class, or a base of it, carries the class
     patch."""
@@ -795,7 +836,9 @@ def _intercepting_method(
     calls the class's original (handed over in ``originals``, so a
     subclass override that reaches here through ``super()`` is not
     re-entered); with no session, or once the class has been unpatched,
-    it is the original, untouched, so a client built before ``init()``
+    it is the original, untouched (except ``stream``, whose manager sends
+    on entry and so finds its session then, see
+    :class:`base.StreamHelperCall`), so a client built before ``init()``
     is metered as soon as a session exists, nothing is cached in an
     unmetered state, and a view that captured the wrapper stops metering
     with ``unpatch``. On an async resource, ``create`` and ``parse`` read
@@ -843,16 +886,27 @@ def _intercepting_method(
 
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
-        session = _current_session()
-        # No session, an outer interceptor (litellm) already metering this
-        # call (see base.outer_intercept), or the class was unpatched: the
-        # original runs untouched.
-        if (
-            session is None
-            or base.outer_intercept_active()
-            or not _installed(type(self), name, method)
-        ):
+        # An outer interceptor (litellm) already metering this call (see
+        # base.outer_intercept), or the class was unpatched: the original
+        # runs untouched.
+        if base.outer_intercept_active() or not _installed(type(self), name, method):
             return original(self, **kwargs)
+        session = _current_session()
+        if session is None:
+            if name != "stream":
+                # No session: the request goes out now, untouched.
+                return original(self, **kwargs)
+            # A manager sends its request on entry, which may come under a
+            # session: the sensor's manager finds it then.
+            sdk_stream = types.MethodType(original, self)
+            return _stream_helper(
+                sdk_stream,
+                sdk_stream,
+                kwargs,
+                None,
+                functools.partial(_class_patch_entry_target, self, None),
+                is_async=is_async,
+            )
         # The proxy is this call's own, so its method is called through the
         # class, not shaped like the SDK's (see base.SDKMethod): the caller
         # holds this method, which carries the SDK's own shape.

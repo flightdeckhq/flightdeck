@@ -126,7 +126,7 @@ export function MCPPolicyEntryTable({
             placeholder="Search URL, name, or fingerprint"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-full rounded-md border bg-(--background-elevated) pl-7 pr-3 text-xs outline-hidden transition-colors focus:border-(--accent)"
+            className="h-8 w-full rounded-md border bg-(--bg-elevated) pl-7 pr-3 text-xs outline-hidden transition-colors focus:border-(--accent)"
             style={{
               borderColor: "var(--border)",
               color: "var(--text)",
@@ -203,7 +203,7 @@ export function MCPPolicyEntryTable({
             {filtered.map((entry) => (
               <tr
                 key={entry.id}
-                className="border-b transition-colors hover:bg-(--background-elevated)"
+                className="border-b transition-colors hover:bg-(--bg-elevated)"
                 style={{ borderColor: "var(--border)" }}
                 data-testid={`mcp-policy-entry-${entry.id}`}
               >

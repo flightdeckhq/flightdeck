@@ -342,7 +342,7 @@ function DateField({
         type="datetime-local"
         value={dateToInput(value)}
         onChange={(e) => onChange(inputToISO(e.target.value))}
-        className="h-8 w-full rounded-md border bg-(--background-elevated) px-2 text-xs outline-hidden transition-colors focus:border-(--accent)"
+        className="h-8 w-full rounded-md border bg-(--bg-elevated) px-2 text-xs outline-hidden transition-colors focus:border-(--accent)"
         style={{ borderColor: "var(--border)", color: "var(--text)" }}
         data-testid={testid}
       />
@@ -383,7 +383,7 @@ function RowGroup({
       <tr
         className={cn(
           "border-b transition-colors",
-          "hover:bg-(--background-elevated)",
+          "hover:bg-(--bg-elevated)",
         )}
         style={{ borderColor: "var(--border)" }}
         data-testid={`mcp-policy-audit-row-${row.id}`}
@@ -415,7 +415,7 @@ function RowGroup({
             className="inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[11px]"
             style={{
               borderColor: "var(--border)",
-              background: "var(--background-elevated)",
+              background: "var(--bg-elevated)",
               color: "var(--text)",
             }}
           >
@@ -443,7 +443,7 @@ function RowGroup({
               className="rounded-md border px-3 py-2"
               style={{
                 borderColor: "var(--border)",
-                background: "var(--background-elevated)",
+                background: "var(--bg-elevated)",
               }}
               data-testid={`mcp-policy-audit-row-payload-${row.id}`}
             >

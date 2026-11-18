@@ -11,6 +11,16 @@ vi.mock("@/lib/api", async () => {
 
 import { listMCPPolicyAuditLog } from "@/lib/api";
 import { MCPPolicyAuditPanel } from "@/components/policy/MCPPolicyAuditPanel";
+import {
+  contrastRatio,
+  over,
+  paintRatio,
+  readThemeTokens,
+  resolveColor,
+  TEXT_SAFE_FLOOR,
+  textPaints,
+  THEMES,
+} from "./support/theme-contrast";
 
 const listMock = listMCPPolicyAuditLog as unknown as Mock;
 
@@ -104,5 +114,85 @@ describe("MCPPolicyAuditPanel", () => {
     expect(
       screen.getByTestId("mcp-policy-audit-event-type-global"),
     ).toBeTruthy();
+  });
+});
+
+describe("MCPPolicyAuditPanel's elevated surfaces, in both themes", () => {
+  const TOKENS = readThemeTokens();
+
+  /** The background an element sets: an inline background, or a Tailwind
+   *  bg-(--token) class. */
+  function backgroundOf(el: Element): string {
+    const inline = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/.exec(el.getAttribute("style") ?? "")?.[1]?.trim();
+    if (inline) return inline;
+    const token = /(?:^|\s)bg-\((--[a-z0-9-]+)\)/.exec(el.getAttribute("class") ?? "")?.[1];
+    if (token) return `var(${token})`;
+    throw new Error(`no background set on <${el.tagName.toLowerCase()} data-testid=${el.getAttribute("data-testid")}>`);
+  }
+
+  /** The panel with ROW_A expanded: the payload box, the date filters and
+   *  the row's event-type chip, each drawn on an elevated surface. */
+  async function elevatedSurfaces(): Promise<Record<string, HTMLElement>> {
+    listMock.mockResolvedValue([ROW_A]);
+    render(<MCPPolicyAuditPanel flavorOrGlobal="global" scopeKey="global" />);
+    fireEvent.click(await screen.findByTestId(`mcp-policy-audit-row-toggle-${ROW_A.id}`));
+    return {
+      "expanded payload": await screen.findByTestId(`mcp-policy-audit-row-payload-${ROW_A.id}`),
+      "From filter": screen.getByTestId("mcp-policy-audit-from-global"),
+      "To filter": screen.getByTestId("mcp-policy-audit-to-global"),
+      "event-type chip": screen.getByText(ROW_A.event_type),
+    };
+  }
+
+  it("the expanded payload, the date filters and the event-type chip take a defined, opaque background", async () => {
+    const surfaces = await elevatedSurfaces();
+    for (const theme of THEMES) {
+      for (const [name, el] of Object.entries(surfaces)) {
+        // resolveColor throws on a token themes.css does not define.
+        expect(resolveColor(TOKENS[theme], backgroundOf(el)).a, `${theme}: ${name}`).toBe(1);
+      }
+    }
+  });
+
+  it("the date filters' and the chip's text reads at the floor on them", async () => {
+    const surfaces = await elevatedSurfaces();
+    for (const theme of THEMES) {
+      const panel = resolveColor(TOKENS[theme], "var(--surface)");
+      for (const name of ["From filter", "To filter", "event-type chip"]) {
+        const el = surfaces[name]!;
+        const color = /(?:^|;)\s*color\s*:\s*([^;]+)/.exec(el.getAttribute("style") ?? "")?.[1]?.trim();
+        expect(color, name).toBeDefined();
+        const bg = over(resolveColor(TOKENS[theme], backgroundOf(el)), panel);
+        expect(contrastRatio(resolveColor(TOKENS[theme], color!), bg), `${theme}: ${name}`).toBeGreaterThanOrEqual(TEXT_SAFE_FLOOR);
+      }
+    }
+  });
+
+  // A known gap: the payload's JSON uses SyntaxJson's default palette, whose
+  // keys and true / false / null read under the floor on the elevated
+  // surface in both themes, and its strings and numbers too in the light
+  // one; the punctuation passes. The panel keeps that palette here (only the
+  // Prompts tab takes the text-safe one). This pins the gap as it is, so a
+  // change to it, either way, shows up here.
+  it("the expanded payload's JSON: the punctuation reads at the floor, the default palette's colours as known", async () => {
+    const { "expanded payload": payload } = await elevatedSurfaces();
+    const paints = textPaints(payload!);
+    expect(paints.map((p) => p.color)).toEqual(
+      expect.arrayContaining(["var(--event-llm)", "var(--status-active)", "var(--event-warn)", "var(--text-muted)", "var(--text-secondary)"]),
+    );
+    const under = new Set<string>();
+    for (const theme of THEMES) {
+      for (const paint of paints) {
+        if (paintRatio(TOKENS[theme], paint) < TEXT_SAFE_FLOOR) under.add(`${theme} ${paint.color}`);
+      }
+    }
+    expect([...under].sort()).toEqual([
+      "dark var(--event-llm)",
+      "dark var(--text-muted)",
+      "light var(--event-llm)",
+      "light var(--event-warn)",
+      "light var(--status-active)",
+      "light var(--text-muted)",
+    ]);
   });
 });

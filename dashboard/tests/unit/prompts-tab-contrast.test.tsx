@@ -411,19 +411,24 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
     expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
   });
 
-  // The list rows' event-type badges draw their type's hue as text on the
-  // hue's own tint, as every event-type badge in the app does; that is
-  // under the floor in places (the LLM CALL badge in both themes, the
-  // TOOL and MCP badges in the light one). They are left as they are
-  // here; when they are given text-safe colours this case starts to fail
-  // and becomes a plain `it`.
-  it.fails("the list rows' event-type badges (left as they are)", () => {
+  // A known gap: the list rows' event-type badges draw their type's hue as
+  // text on the hue's own tint, as every event-type badge in the app does,
+  // and that is under the floor (the LLM CALL badge in both themes, the
+  // TOOL and MCP badges in the light one). Whether and how they change is
+  // the maintainer's call. This case holds the gap as it is: it fails if a
+  // badge stops rendering, and it fails once every badge reads at the
+  // floor, when it becomes a check that they all pass.
+  it("the list rows' event-type badges render, and some read under the floor (a known gap)", () => {
     const { container } = render(
       <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={null} onSelectEvent={() => {}} />,
     );
-    const badges = textPaints(container).filter(isBadge);
-    expect(badges).toHaveLength(listEvents.length);
-    expect(failuresOf("list badges", badges)).toEqual([]);
+    const labels = ["LLM CALL", "TOOL", "MCP TOOL CALL", "MCP PROMPT FETCHED"];
+    const badges = textPaints(container).filter((p) => labels.includes(p.text));
+    expect(badges.map((b) => b.text)).toEqual(labels);
+    expect(
+      failuresOf("list badges", badges),
+      "every event-type badge in the list reads at the floor now: make this case check that they all pass",
+    ).not.toEqual([]);
   });
 });
 

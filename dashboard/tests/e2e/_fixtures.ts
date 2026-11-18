@@ -414,17 +414,192 @@ export async function waitForFleetReady(page: Page): Promise<void> {
   await anySwimlaneRow.waitFor({ state: "visible", timeout: 15_000 });
 }
 
-// The most frames bringSwimlaneRowIntoView's walk waits after one
-// scroll step for the rows in view to mount. They mount one or two
-// frames after the scroll, on an idle machine and on a saturated one
-// alike; the cap only matters for a placeholder that never mounts,
-// and keeps the walk moving past it, as the half-second mount poll per
-// step used to. 30 frames is half a second at 60 fps, and longer under
-// load, where frames come slower.
+// The most frames the swimlane walk waits after one scroll step for
+// the rows in view to mount. They mount one or two frames after the
+// scroll, on an idle machine and on a saturated one alike; the cap
+// only matters for a placeholder that never mounts, and keeps the walk
+// moving past it. 30 frames is half a second at 60 fps, and longer
+// under load, where frames come slower.
 const SETTLE_FRAMES_MAX = 30;
 // The rootMargin of the IntersectionObserver that mounts swimlane rows
 // (dashboard/src/components/timeline/VirtualizedSwimLane.tsx).
 const SWIMLANE_ROW_ROOT_MARGIN_PX = 200;
+// How far one step of the walk scrolls: about 3.3 rows. A step no
+// taller than the scroller's visible box keeps every row in view for
+// at least one step, and the walk waits for the rows in view to mount
+// before the next step, so no row is scrolled past unseen. A larger
+// step of 600 px could overshoot the box (about 310 px tall at the
+// default viewport).
+const SWIMLANE_WALK_STEP_PX = 200;
+// The most steps one walk takes: 48 000 px of rows, a thousand agents,
+// far past any seeded or accumulated fleet. The walk stops at the
+// scroller's bottom before this on every real fleet.
+const SWIMLANE_WALK_MAX_STEPS = 240;
+
+/** The selector of an agent's swimlane row (see ``findSwimlaneRow``). */
+function swimlaneRowSelector(agentName: string): string {
+  return `[data-testid="swimlane-agent-row-${agentName}"]`;
+}
+
+/** What ``readSwimlaneRows`` reads off one mounted swimlane row, all of
+ *  it at the same moment. */
+export interface SwimlaneRowLabels {
+  /** Whether the row has a box and is not hidden: what Playwright's
+   *  ``toBeVisible`` checks. */
+  visible: boolean;
+  /** The client-type pill's text, trimmed (CSS shows it upper-case);
+   *  null when the row has no pill. */
+  clientTypePill: string | null;
+  /** The agent-type badge's text, trimmed (CSS shows it upper-case);
+   *  null when the row has no badge. */
+  agentTypeBadge: string | null;
+}
+
+/** Each agent's row as ``readSwimlaneRows`` found it, or null for a row
+ *  the walk never saw mounted. */
+export type SwimlaneRowsRead = Record<string, SwimlaneRowLabels | null>;
+
+interface SwimlaneFindArgs {
+  /** Agent name -> the selector of its swimlane row. */
+  targets: Record<string, string>;
+  /** Scroll the first target's row into view once it is found. */
+  scrollIntoView: boolean;
+  stepPx: number;
+  maxSteps: number;
+  settleFramesMax: number;
+  rootMarginPx: number;
+}
+
+/**
+ * Runs in the page, as one evaluation: finds the swimlane row of every
+ * target and reads its labels at the moment it is mounted.
+ *
+ * Rows already mounted are read at once. For the others it snaps the
+ * scroller to the top (agents may live above the initial viewport:
+ * fresh sub-agents that closed seconds ago land high in the swimlane
+ * sort while the initial scroll position is mid-list on a populated
+ * fleet), then walks it down in ``stepPx`` steps until every target has
+ * been read, the scroller reaches its bottom, or ``maxSteps`` steps
+ * have run.
+ *
+ * After each scroll the walk waits, frame by frame, for the rows now in
+ * view to mount. A row mounts when its IntersectionObserver callback,
+ * delivered after the frame that laid out the scroll, sets state and
+ * React commits it, which can be a frame or two after the scroll. A
+ * placeholder (``data-virtualized``) inside the scroller's visible box
+ * is a row still waiting for that, so the walk takes the next step only
+ * once no placeholder is left in view, or after ``settleFramesMax``
+ * frames. The targets are checked after every frame.
+ *
+ * With ``scrollIntoView`` the first target's row, when mounted at the
+ * end, is scrolled into view in the same evaluation, centred when it is
+ * not fully in view (Chromium's ``scrollIntoViewIfNeeded``, the
+ * alignment Playwright's own scroll uses). Nothing waits for the row to
+ * hold still first: the page moves rows legitimately (the first render
+ * mounts every row and the observer swaps those out of view for
+ * placeholders; a row crossing an activity bucket moves the bucket
+ * divider), and Playwright's wait for a row to hold still (two
+ * animation frames with the same box) can use up a 2 s timeout on a
+ * busy page.
+ *
+ * Self-contained: Playwright sends its source to the page, so it uses
+ * nothing from this module.
+ */
+async function findSwimlaneRows(args: SwimlaneFindArgs): Promise<SwimlaneRowsRead> {
+  const { targets, scrollIntoView, stepPx, maxSteps, settleFramesMax, rootMarginPx } = args;
+  const found: SwimlaneRowsRead = {};
+  for (const name of Object.keys(targets)) found[name] = null;
+  const read = (row: HTMLElement): SwimlaneRowLabels => {
+    const box = row.getBoundingClientRect();
+    const pill = row.querySelector('[data-testid="swimlane-client-type-pill"]');
+    const badge = row.querySelector('[data-testid="swimlane-agent-type-badge"]');
+    return {
+      visible:
+        box.width > 0 &&
+        box.height > 0 &&
+        window.getComputedStyle(row).visibility !== "hidden",
+      clientTypePill: pill ? (pill.textContent ?? "").trim() : null,
+      agentTypeBadge: badge ? (badge.textContent ?? "").trim() : null,
+    };
+  };
+  // Read every target not read yet whose row is mounted; true once
+  // every target has been read.
+  const readMounted = (): boolean => {
+    let all = true;
+    for (const [name, selector] of Object.entries(targets)) {
+      if (found[name]) continue;
+      const row = document.querySelector<HTMLElement>(selector);
+      if (row) found[name] = read(row);
+      else all = false;
+    }
+    return all;
+  };
+  const finish = (): SwimlaneRowsRead => {
+    const first = Object.values(targets)[0];
+    const row = scrollIntoView && first ? document.querySelector<HTMLElement>(first) : null;
+    if (row) {
+      const chromium = row as HTMLElement & {
+        scrollIntoViewIfNeeded?: (centerIfNeeded?: boolean) => void;
+      };
+      if (chromium.scrollIntoViewIfNeeded) chromium.scrollIntoViewIfNeeded(true);
+      else row.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+    return found;
+  };
+  if (readMounted()) return finish();
+
+  // The closest overflow:auto/scroll ancestor of a mounted row; the
+  // document when there is none. No mounted row at all: nothing to walk.
+  const anyRow = document.querySelector<HTMLElement>('[data-testid^="swimlane-agent-row-"]');
+  if (!anyRow) return found;
+  let scroller: HTMLElement | null = null;
+  for (let node: HTMLElement | null = anyRow; node; node = node.parentElement) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") {
+      scroller = node;
+      break;
+    }
+  }
+  const scrolling = scroller ?? document.documentElement;
+  const scrollTop = () => (scroller ? scroller.scrollTop : window.scrollY);
+  const scrollDown = () => (scroller ?? window).scrollBy({ top: stepPx, behavior: "instant" });
+  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  // True when no placeholder sits in the box the rows' observer mounts
+  // (the scroller's visible box, within the viewport and its root
+  // margin), i.e. every row in view is mounted.
+  const rowsInViewMounted = () => {
+    const top = -rootMarginPx;
+    const bottom = window.innerHeight + rootMarginPx;
+    const clip = scroller?.getBoundingClientRect();
+    const boxTop = clip ? Math.max(clip.top, top) : top;
+    const boxBottom = clip ? Math.min(clip.bottom, bottom) : bottom;
+    for (const el of scrolling.querySelectorAll('[data-virtualized="true"]')) {
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.bottom > boxTop && r.top < boxBottom) return false;
+    }
+    return true;
+  };
+  // Wait for the rows in view to mount; true once every target is read.
+  const settle = async () => {
+    for (let frame = 0; frame < settleFramesMax; frame += 1) {
+      await nextFrame();
+      if (readMounted()) return true;
+      if (rowsInViewMounted()) return false;
+    }
+    return readMounted();
+  };
+  if (scroller) scroller.scrollTop = 0;
+  if (await settle()) return finish();
+  for (let step = 0; step < maxSteps; step += 1) {
+    const before = scrollTop();
+    scrollDown();
+    const moved = scrollTop() !== before;
+    if (await settle()) return finish();
+    // The scroller is at its bottom: every row has been in view.
+    if (!moved) break;
+  }
+  return finish();
+}
 
 /**
  * Scroll the Fleet swimlane container until the row for ``agentName``
@@ -438,18 +613,21 @@ const SWIMLANE_ROW_ROOT_MARGIN_PX = 200;
  * container forces the IntersectionObserver to mount additional
  * rows, eventually exposing the target.
  *
- * When the row is not mounted already, one browser evaluation walks
- * the scroller from the top in ``stepPx`` steps (at most ``maxSteps``,
- * and never past the bottom), waits for the rows to mount after each
- * step, and stops as soon as the row is there; the helper then scrolls
- * it into view. The walk is one page round trip however far down the
- * row sits: a round trip costs up to a second or more under load with
- * tracing on, so a walk of one round trip per step could spend a whole
- * test's budget on a row a few screens down.
+ * One browser evaluation (``findSwimlaneRows``) finds the row, walking
+ * the scroller from the top when it is not mounted, and scrolls it into
+ * view: one page round trip however far down the row sits. A round trip
+ * costs up to a second or more under load with tracing on, so a lookup
+ * of one round trip per step, or one that waits for the row to hold
+ * still before scrolling, could spend a whole test's budget.
  * If the row never appears, the locator returned is the test
  * assertion's responsibility -- callers should follow up with
  * ``await expect(locator).toBeVisible()`` so a missing row produces
  * a clean failure with the locator's natural error message.
+ *
+ * The row can move or unmount again after this returns: the page keeps
+ * re-rendering. A check that reads the row's own content should read it
+ * with ``readSwimlaneRows`` inside ``expect.poll`` instead, which finds
+ * and reads the row in the same evaluation.
  *
  * Mirrors what a real operator does when hunting a known agent in a
  * long fleet: scroll the list. The dashboard does NOT yet expose a
@@ -462,16 +640,7 @@ export async function bringSwimlaneRowIntoView(
   agentName: string,
   opts: { stepPx?: number; maxSteps?: number } = {},
 ): Promise<Locator> {
-  // Step ~3.3 rows at a time. A step no taller than the scroller's
-  // visible box keeps every row in view for at least one step, and the
-  // walk waits for the rows in view to mount before the next step, so
-  // no row is scrolled past unseen. A larger stepPx=600 could overshoot
-  // the box (about 310px tall at the default viewport).
-  const stepPx = opts.stepPx ?? 200;
-  const maxSteps = opts.maxSteps ?? 240;
-  const target = page.locator(
-    `[data-testid="swimlane-agent-row-${agentName}"]`,
-  );
+  const selector = swimlaneRowSelector(agentName);
   // Under parallel-suite load the swimlane re-renders frequently as
   // WebSocket events arrive from concurrent tests, so a one-shot
   // scroll-and-grab races the IntersectionObserver. Wait for
@@ -481,145 +650,62 @@ export async function bringSwimlaneRowIntoView(
   // network requests for 500 ms, which is long enough that
   // virtualization's mount/unmount churn isn't actively destroying
   // rows under our scroll loop. Bounded at 5 s so a chatty CI dev
-  // stack can't hang the helper indefinitely; the existing
-  // scroll-loop fallback below handles the case where idle is
-  // never reached.
+  // stack can't hang the helper indefinitely; the walk below
+  // handles the case where idle is never reached.
   try {
     await page.waitForLoadState("networkidle", { timeout: 5_000 });
   } catch {
     /* fall through — proceed with whatever has loaded */
   }
-  // Cheap path: row already mounted (top of LIVE bucket / small DB).
-  // Wrap the scroll in try/catch — under parallel-suite load the row
-  // can detach mid-call as the virtualized swimlane re-renders on
-  // incoming WebSocket events from other concurrent tests, throwing
-  // a 2000ms timeout that would otherwise bubble all the way up and fail
-  // the test outright. Falling through to the snap-to-top + scroll
-  // walk below recovers cleanly because the walk checks for the row
-  // again after every scroll.
-  if ((await target.count()) > 0) {
-    try {
-      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-      return target;
-    } catch {
-      /* fall through to the scroll loop below */
-    }
-  }
-  // Fallback: the row is not mounted. One browser evaluation does the
-  // whole hunt, so it costs one page round trip however far down the
-  // row sits. It snaps the scroller to the top first (agents may live
-  // above the initial viewport: fresh sub-agents that closed seconds
-  // ago land high in the swimlane sort while the initial scroll
-  // position is mid-list on a populated fleet), then walks it down in
-  // ``stepPx`` steps until the row mounts, the scroller reaches its
-  // bottom, or ``maxSteps`` steps have run.
-  //
-  // After each scroll the walk waits, frame by frame, for the rows now
-  // in view to mount. A row mounts when its IntersectionObserver
-  // callback, delivered after the frame that laid out the scroll, sets
-  // state and React commits it, which can be a frame or two after the
-  // scroll. A placeholder (``data-virtualized``) inside the scroller's
-  // visible box is a row still waiting for that, so the walk takes the
-  // next step only once no placeholder is left in view, or after
-  // SETTLE_FRAMES_MAX frames. The target is checked after every frame.
-  //
-  // Wait for a mounted row first: the walk finds the scroller from it.
-  const anyRow = page
+  // The walk finds the scroller from a mounted row: wait for one.
+  await page
     .locator('[data-testid^="swimlane-agent-row-"]')
-    .first();
-  await anyRow.waitFor({ state: "visible", timeout: 10_000 });
-  const mounted = await page.evaluate(
-    async ({
-      targetSelector,
-      stepPx,
-      maxSteps,
-      settleFramesMax,
-      rootMarginPx,
-    }) => {
-      const nextFrame = () =>
-        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const isMounted = () => document.querySelector(targetSelector) !== null;
-      if (isMounted()) return true;
-      // The closest overflow:auto/scroll ancestor of a mounted row;
-      // the document when there is none.
-      let scroller: HTMLElement | null = null;
-      for (
-        let node = document.querySelector<HTMLElement>(
-          '[data-testid^="swimlane-agent-row-"]',
-        );
-        node;
-        node = node.parentElement
-      ) {
-        const { overflowY } = window.getComputedStyle(node);
-        if (overflowY === "auto" || overflowY === "scroll") {
-          scroller = node;
-          break;
-        }
-      }
-      const scrolling = scroller ?? document.documentElement;
-      const scrollTop = () =>
-        scroller ? scroller.scrollTop : window.scrollY;
-      const scrollDown = () =>
-        (scroller ?? window).scrollBy({ top: stepPx, behavior: "instant" });
-      // True when no placeholder sits in the box the rows' observer
-      // mounts (the scroller's visible box, within the viewport and
-      // its root margin), i.e. every row in view is mounted.
-      const rowsInViewMounted = () => {
-        const top = -rootMarginPx;
-        const bottom = window.innerHeight + rootMarginPx;
-        const clip = scroller?.getBoundingClientRect();
-        const boxTop = clip ? Math.max(clip.top, top) : top;
-        const boxBottom = clip ? Math.min(clip.bottom, bottom) : bottom;
-        for (const el of scrolling.querySelectorAll(
-          '[data-virtualized="true"]',
-        )) {
-          const r = el.getBoundingClientRect();
-          if (r.height > 0 && r.bottom > boxTop && r.top < boxBottom) {
-            return false;
-          }
-        }
-        return true;
-      };
-      // Wait for the rows in view to mount; true once the target has.
-      const settle = async () => {
-        for (let frame = 0; frame < settleFramesMax; frame += 1) {
-          await nextFrame();
-          if (isMounted()) return true;
-          if (rowsInViewMounted()) return false;
-        }
-        return isMounted();
-      };
-      if (scroller) scroller.scrollTop = 0;
-      if (await settle()) return true;
-      for (let step = 0; step < maxSteps; step += 1) {
-        const before = scrollTop();
-        scrollDown();
-        const moved = scrollTop() !== before;
-        if (await settle()) return true;
-        // The scroller is at its bottom: every row has been in view.
-        if (!moved) return false;
-      }
-      return false;
-    },
-    {
-      targetSelector: `[data-testid="swimlane-agent-row-${agentName}"]`,
-      stepPx,
-      maxSteps,
-      settleFramesMax: SETTLE_FRAMES_MAX,
-      rootMarginPx: SWIMLANE_ROW_ROOT_MARGIN_PX,
-    },
-  );
-  if (mounted) {
-    try {
-      await target.first().scrollIntoViewIfNeeded({ timeout: 2000 });
-    } catch {
-      // The row detached between the walk and the scroll; the
-      // caller's assertion on the returned locator reports it.
-    }
-  }
-  // Return the locator anyway so the caller's expect.toBeVisible()
-  // produces the useful failure message.
-  return target;
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await page.evaluate(findSwimlaneRows, {
+    targets: { [agentName]: selector },
+    scrollIntoView: true,
+    stepPx: opts.stepPx ?? SWIMLANE_WALK_STEP_PX,
+    maxSteps: opts.maxSteps ?? SWIMLANE_WALK_MAX_STEPS,
+    settleFramesMax: SETTLE_FRAMES_MAX,
+    rootMarginPx: SWIMLANE_ROW_ROOT_MARGIN_PX,
+  });
+  // Return the locator whether or not the row was found, so the
+  // caller's expect.toBeVisible() produces the useful failure message.
+  return page.locator(selector);
+}
+
+/**
+ * Find the swimlane rows of ``agentNames`` and read each one's labels
+ * (``SwimlaneRowLabels``), in one browser evaluation; a row the walk
+ * never saw mounted reads null. Made for ``expect.poll``: each attempt
+ * finds and reads every row at the moment it is mounted, so a check
+ * does not depend on a row staying put between page round trips while
+ * the Fleet re-renders, re-sorts and swaps rows out of view, and its
+ * cost does not grow with the number of rows checked.
+ *
+ *   await expect
+ *     .poll(() => readSwimlaneRows(page, [CODING_AGENT.name]))
+ *     .toEqual({ [CODING_AGENT.name]: { visible: true, ... } });
+ *
+ * It does not wait for the page: with no row mounted yet every row
+ * reads null, and the poll tries again. It leaves the scroller where
+ * the walk stopped.
+ */
+export async function readSwimlaneRows(
+  page: Page,
+  agentNames: readonly string[],
+): Promise<SwimlaneRowsRead> {
+  const targets: Record<string, string> = {};
+  for (const name of agentNames) targets[name] = swimlaneRowSelector(name);
+  return page.evaluate(findSwimlaneRows, {
+    targets,
+    scrollIntoView: false,
+    stepPx: SWIMLANE_WALK_STEP_PX,
+    maxSteps: SWIMLANE_WALK_MAX_STEPS,
+    settleFramesMax: SETTLE_FRAMES_MAX,
+    rootMarginPx: SWIMLANE_ROW_ROOT_MARGIN_PX,
+  });
 }
 
 /**

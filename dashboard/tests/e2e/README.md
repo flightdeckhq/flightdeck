@@ -101,8 +101,8 @@ the swimlane↔table parity assertion). The current journeys:
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
-`findSwimlaneRow`, `bringSwimlaneRowIntoView`, `waitForFleetReady`,
-`waitForInvestigateReady`, `investigateParamsFromUrl`, and
+`findSwimlaneRow`, `bringSwimlaneRowIntoView`, `readSwimlaneRows`,
+`waitForFleetReady`, `waitForInvestigateReady`, `investigateParamsFromUrl`, and
 `agentIdByName` / `openPerAgentModal` (the modal through the agent
 drawer's "Open in swimlane"), and the private-agent helpers
 `createPrivateAgent` / `startPrivateAgent` / `postPrivateToolCall` /
@@ -325,6 +325,31 @@ leaves the pointer and its tooltip closes for good.
   fails whenever the shift lands between the two.
 - Compare positions read in one synchronous `evaluate`. Boxes read one
   `boundingBox()` at a time can be 9 px apart on the same lane.
+
+### A row moves or unmounts between round trips
+
+The Fleet's first render mounts every agent's row, including the rows
+far below the fold; a frame later the scroller jumps to its right
+edge, and a frame or two after that the IntersectionObserver swaps the
+rows out of view for placeholders. Later, rows shift with the divider
+above. So a row a spec found in one page round trip can be elsewhere,
+or gone, by the next, and every round trip costs: the trace records
+the page before and after it, up to a second or more on a busy page.
+A spec that looks a row up, then reads it in several more calls, spends
+its budget on a slow machine and reads rows that have moved.
+
+- Read a row's own content with `readSwimlaneRows(page, names)` inside
+  `expect.poll`: one evaluation per attempt finds each row (walking the
+  scroller to a row below the fold) and reads its client-type pill and
+  agent-type badge at the moment it is mounted, and the poll repeats the
+  whole lookup (T01, T22).
+- Scan the rows mounted right now with one `evaluateAll`, never a
+  `count()` followed by `nth(i)` calls (T21, T50), and read one row's
+  several fields in one `evaluate` (T49).
+- `bringSwimlaneRowIntoView` finds the row and scrolls it into view in
+  one evaluation, without waiting for it to hold still. Use it before
+  pointing at or clicking the row, and assert with web-first
+  assertions.
 
 ### A test that passed only on its retry
 

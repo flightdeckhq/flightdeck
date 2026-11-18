@@ -24,42 +24,44 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
     await page.goto("/");
     await waitForFleetReady(page);
 
-    const rows = page.locator('[data-testid^="swimlane-agent-row-"]');
-    const count = await rows.count();
-    expect(count).toBeGreaterThan(0); // sanity: fleet has agents
+    // Every row mounted right now, read in one browser evaluation: its
+    // testid, its client-type pill's title ("client_type=<value>"; a
+    // row with no client_type renders no pill) and its agent-type
+    // badge, all at the same moment. A scan of one locator call per row
+    // and field costs a page round trip each, and reads a list the
+    // Fleet keeps re-rendering underneath it: the first render mounts
+    // every row before the observer swaps those out of view for
+    // placeholders, and rows move as agents change activity bucket, so
+    // the row counted first need not be there when its fields are read.
+    const rows = await page
+      .locator('[data-testid^="swimlane-agent-row-"]')
+      .evaluateAll((els) =>
+        els.map((row) => ({
+          testId: row.getAttribute("data-testid") ?? "<unknown>",
+          pillTitle:
+            row
+              .querySelector('[data-testid="swimlane-client-type-pill"]')
+              ?.getAttribute("title") ?? "",
+          agentType:
+            row
+              .querySelector('[data-testid="swimlane-agent-type-badge"]')
+              ?.textContent?.trim()
+              .toLowerCase() ?? "",
+        })),
+      );
+    expect(rows.length).toBeGreaterThan(0); // sanity: fleet has agents
 
     let checked = 0;
-    for (let i = 0; i < count; i += 1) {
-      const row = rows.nth(i);
-      // Pull the immediate row container's siblings via XPath up to
-      // the parent flavor wrapper so we hit the badge/pill that
-      // SwimLane renders next to the row. The badge and pill are
-      // children of the row's left panel, so a direct .locator()
-      // descend works.
-      const badgeText = await row
-        .locator('[data-testid="swimlane-agent-type-badge"]')
-        .first()
-        .textContent()
-        .catch(() => "");
-      // A row with no client_type renders no pill; look for it before
-      // reading its title so such a row costs no locator timeout.
-      const pill = row.locator('[data-testid="swimlane-client-type-pill"]').first();
-      const pillTitle = (await pill.count()) > 0 ? await pill.getAttribute("title") : "";
-
+    for (const { testId, pillTitle, agentType } of rows) {
       // The pill's title is "client_type=<value>"; a row with no
       // client_type renders no pill and has nothing to check.
       const clientType = CLIENT_TYPE_VALUES.find(
-        (c) => (pillTitle ?? "") === `client_type=${c}`,
+        (c) => pillTitle === `client_type=${c}`,
       );
       if (!clientType) continue;
-      const agentType = (badgeText ?? "").trim().toLowerCase();
-
-      // Identifier for the failure message — derive from the testid.
-      const testIdAttr = (await row.getAttribute("data-testid")) ?? "<unknown>";
-
       expect(
         agentType,
-        `swimlane row ${testIdAttr}: client_type=${clientType} is expected to` +
+        `swimlane row ${testId}: client_type=${clientType} is expected to` +
           ` send agent_type=${CLIENT_TYPE_META[clientType].agentType} (fleet anomaly)`,
       ).toBe(CLIENT_TYPE_META[clientType].agentType);
       checked += 1;

@@ -1068,10 +1068,14 @@ class Session:
         # decision (rather than ``len(str(body))`` which varies per
         # framework body type).
         try:
-            encoded = json.dumps(message.body, default=_json_default)
+            # ``allow_nan=False``: a NaN or an infinity in framework state
+            # would be written as ``NaN`` / ``Infinity``, which is not JSON,
+            # and ingestion would reject the whole session event.
+            encoded = json.dumps(message.body, default=_json_default, allow_nan=False)
         except Exception as exc:
             # A body that still cannot be encoded (a cycle, a raising
-            # model_dump) is dropped; the session events still go out.
+            # model_dump, a non-finite float) is dropped; the session
+            # events still go out.
             _log.warning(
                 "sub-agent %s_message body is not JSON-encodable (%s); dropped",
                 direction,

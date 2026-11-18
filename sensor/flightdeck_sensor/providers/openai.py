@@ -18,6 +18,8 @@ from flightdeck_sensor.providers._access import (
     is_raw_stream,
     response_message,
     stored_response,
+    stored_vector,
+    vector_dimension,
 )
 from flightdeck_sensor.providers._access import field as _field
 from flightdeck_sensor.providers._access import given as _given
@@ -599,12 +601,10 @@ class OpenAIProvider:
                 return None
             count = len(data)
             first = data[0]
-            embedding = getattr(first, "embedding", None) or (
-                first.get("embedding") if isinstance(first, dict) else None
-            )
-            if not embedding:
+            dimension = vector_dimension(_field(first, "embedding"))
+            if dimension is None:
                 return None
-            return {"count": count, "dimension": len(embedding)}
+            return {"count": count, "dimension": dimension}
         except Exception:
             return None
 
@@ -842,7 +842,7 @@ class OpenAIProvider:
                 # The events.payload.output_dimensions field carries
                 # the {count, dimension} summary so the dashboard can
                 # render the shape chip without fetching this body.
-                vectors: list[list[float]] | None = None
+                vectors: list[Any] | None = None
                 obj = response_message(response)
                 try:
                     data = getattr(obj, "data", None) or (
@@ -851,11 +851,11 @@ class OpenAIProvider:
                     if data:
                         vectors = []
                         for entry in data:
-                            emb = getattr(entry, "embedding", None) or (
-                                entry.get("embedding") if isinstance(entry, dict) else None
-                            )
+                            # ``_field``, not ``or``: an empty string is a
+                            # vector as returned too.
+                            emb = _field(entry, "embedding")
                             if emb is not None:
-                                vectors.append(list(emb))
+                                vectors.append(stored_vector(emb))
                 except Exception:
                     vectors = None
                 return PromptContent(

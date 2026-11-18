@@ -87,11 +87,14 @@ risk hiding a billed call:
 (:class:`base.GuardedStream` from the sync entry points,
 :class:`base.GuardedAsyncStream` from the async ones) around litellm's
 own stream (``CustomStreamWrapper``, ``TextCompletionStreamWrapper``, a
-Responses streaming iterator). The guard iterates like the wrapper
-(``for chunk in ...`` / ``async for chunk in ...``) and proxies its
-attributes. For ``completion`` and ``text_completion`` the sensor asks
-litellm for ``stream_options={"include_usage": True}``, which makes
-litellm append one chunk carrying the provider's ``usage`` after the
+Responses streaming iterator), seen through that stream's protocol
+(:func:`base.protocol_view`): ``CustomStreamWrapper`` iterates both ways
+(``for chunk in ...`` and ``async for chunk in ...``, whichever call
+made it) and is no context manager, and so is what the caller gets;
+either way of reading it is metered once. Its attributes are proxied.
+For ``completion`` and ``text_completion`` the sensor asks litellm
+for ``stream_options={"include_usage": True}``, which makes litellm
+append one chunk carrying the provider's ``usage`` after the
 ``finish_reason`` chunk; the guard meters that chunk and hides it from a
 caller who did not ask for usage, so their loop sees exactly the chunks
 it would see without the sensor. A Responses stream carries its usage on
@@ -439,14 +442,19 @@ def _intercept_sync(
     if kwargs.get("stream"):
         call_kwargs, hide_chunk = _stream_request(kwargs, usage_chunk)
         # Opened eagerly: litellm sends the request inside the call, so
-        # provider errors surface at the call, as without the sensor.
-        return base.call_stream(
-            _as_outer_call(orig),
-            call_kwargs,
-            session,
-            provider,
-            hide_chunk=hide_chunk,
-        ).open()
+        # provider errors surface at the call, as without the sensor. The
+        # caller gets the guard with the protocol of litellm's stream
+        # (CustomStreamWrapper iterates both ways and is no context
+        # manager).
+        return base.protocol_view(
+            base.call_stream(
+                _as_outer_call(orig),
+                call_kwargs,
+                session,
+                provider,
+                hide_chunk=hide_chunk,
+            ).open()
+        )
     return base.call(_as_outer_call(orig), kwargs, session, provider)
 
 
@@ -467,7 +475,7 @@ async def _intercept_async(
             provider,
             hide_chunk=hide_chunk,
         )
-        return await guard.open()
+        return base.protocol_view(await guard.open())
     return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
 
 
@@ -572,12 +580,14 @@ class SensorLitellm:
 
     def completion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.completion(**kwargs)``; ``stream=True``
-        returns a :class:`base.GuardedStream` over litellm's stream."""
+        returns a :class:`base.GuardedStream` over litellm's stream, seen
+        through its protocol (:func:`base.protocol_view`)."""
         return _intercept_completion(_OrigCompletion, kwargs, self._session, self._provider)
 
     async def acompletion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.acompletion(**kwargs)``; ``stream=True``
-        resolves to a :class:`base.GuardedAsyncStream`."""
+        resolves to a :class:`base.GuardedAsyncStream` over litellm's
+        stream, seen through its protocol (:func:`base.protocol_view`)."""
         return await _intercept_acompletion(
             _OrigAcompletion,
             kwargs,

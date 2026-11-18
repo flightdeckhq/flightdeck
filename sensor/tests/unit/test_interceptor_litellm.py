@@ -320,7 +320,7 @@ def test_litellm_stream_to_openai_sdk_emits_exactly_one_post_call(session: Sessi
     transport = _Transport()
     client = _sdk_client(transport)
     stream = litellm.completion(model="gpt-4o-mini", messages=MSG, client=client, stream=True)
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     seen = list(stream)
     assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop"]
     assert len(transport.requests) == 1
@@ -352,7 +352,7 @@ async def test_litellm_async_stream_to_openai_sdk_emits_exactly_one_post_call(
     stream = await litellm.acompletion(
         model="gpt-4o-mini", messages=MSG, client=client, stream=True
     )
-    assert isinstance(stream, base.GuardedAsyncStream)
+    assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
     seen = [c async for c in stream]
     assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop"]
     assert len(transport.requests) == 1
@@ -372,7 +372,7 @@ def test_litellm_completion_stream_meters_usage_and_hides_the_usage_chunk(
     session: Session,
 ) -> None:
     stream = litellm.completion(**_stream_kwargs())
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     seen = list(stream)
     assert seen, "the mocked stream delivered no chunks"
     assert all(getattr(c, "usage", None) is None for c in seen)  # the usage chunk is absorbed
@@ -402,7 +402,7 @@ def test_litellm_completion_stream_keeps_the_usage_chunk_for_a_caller_who_asked(
 
 async def test_litellm_acompletion_stream_meters_usage(session: Session) -> None:
     stream = await litellm.acompletion(**_stream_kwargs())
-    assert isinstance(stream, base.GuardedAsyncStream)
+    assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
     seen = [c async for c in stream]
     assert "".join(c.choices[0].delta.content or "" for c in seen) == MOCK_TEXT
     assert all(getattr(c, "usage", None) is None for c in seen)
@@ -457,7 +457,7 @@ def test_litellm_stream_with_capture_stores_a_serialisable_response(
 def test_sensor_litellm_wrapper_streams_through_the_guard() -> None:
     session = _session()
     stream = SensorLitellm(session).completion(**_stream_kwargs())
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     seen = list(stream)
     assert seen[-1].choices[0].finish_reason == "stop"
     (pc,) = _post_calls(session)
@@ -467,7 +467,7 @@ def test_sensor_litellm_wrapper_streams_through_the_guard() -> None:
 async def test_sensor_litellm_wrapper_streams_async_through_the_guard() -> None:
     session = _session()
     stream = await SensorLitellm(session).acompletion(**_stream_kwargs())
-    assert isinstance(stream, base.GuardedAsyncStream)
+    assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
     assert len([c async for c in stream]) > 0
     assert len(_post_calls(session)) == 1
 

@@ -10148,8 +10148,9 @@ Text that must read at WCAG AA uses the text-safe tokens:
 `--warning-text`, each the nearest shade of its hue that reaches 4.6:1
 (AA's 4.5:1 with a margin, so a browser's 8-bit compositing of a tint or
 a small edit to a token cannot take a text under AA) on the surfaces it
-is used on (`--surface`, `--bg-elevated`, `--bg`, a focused list row's
-`--accent-glow`, a badge's 15% tint of its own hue), or an alias of the
+is used on (`--surface`, `--bg-elevated`, `--bg`, a list row's
+`--surface-hover` and focused `--accent-glow`, a badge's 15% tint of its
+own hue), or an alias of the
 hue where the hue already does, so both themes define the same set. The
 hue tokens (`--text-muted`, `--accent`, `--event-llm`, ...) stay as they
 are for badges' tints and borders, charts, swimlanes and icons. The

@@ -10142,25 +10142,31 @@ Both themes are first-class — every component renders correctly under
 each. Tests run under both theme projects via Playwright's `projects`
 config and assertions are theme-agnostic.
 
-Text that must read at WCAG AA (4.5:1) uses the text-safe tokens:
+Text that must read at WCAG AA uses the text-safe tokens:
 `--muted-text`, `--accent-text`, `--event-llm-text`,
 `--event-tool-text`, `--danger-text`, `--success-text` and
-`--warning-text`, each the nearest shade of its hue that reaches 4.5:1
-on the surfaces it is used on (`--surface`, `--bg-elevated`, `--bg`, a
-badge's 15% tint of its own hue), or an alias of the hue where the hue
-already does, so both themes define the same set. The hue tokens
-(`--text-muted`, `--accent`, `--event-llm`, ...) stay as they are for
-badges' tints and borders, charts, swimlanes and icons. The Prompts tab
+`--warning-text`, each the nearest shade of its hue that reaches 4.6:1
+(AA's 4.5:1 with a margin, so a browser's 8-bit compositing of a tint or
+a small edit to a token cannot take a text under AA) on the surfaces it
+is used on (`--surface`, `--bg-elevated`, `--bg`, a focused list row's
+`--accent-glow`, a badge's 15% tint of its own hue), or an alias of the
+hue where the hue already does, so both themes define the same set. The
+hue tokens (`--text-muted`, `--accent`, `--event-llm`, ...) stay as they
+are for badges' tints and borders, charts, swimlanes and icons. The
+Prompts tab of both drawers (with its no-content, capture-off and
+`session_signal` states and the run drawer's list of the run's calls)
 and the embeddings viewer draw all their text in these tokens, with
-`--text` and `--text-secondary`; role badges keep their hue's tint and
+`--text` and `--text-secondary`, except the run drawer list's
+event-type badges, which keep the look every event-type badge shares,
+the type's hue as text on its tint; role badges keep their hue's tint and
 border with the text in its `-text` token, and their JSON views
 (`SyntaxJson` given `TEXT_SAFE_SYNTAX_COLORS`) colour keys, strings and
 numbers with them and `true` / `false` / `null` in `--text`, apart from
 the punctuation's `--text-secondary`. Every other JSON view keeps
 `SyntaxJson`'s default colours. A unit test
 (`dashboard/tests/unit/prompts-tab-contrast.test.tsx`) renders the
-Prompts tab for every provider and checks each text's colour pair
-against `themes.css` in both themes.
+Prompts tab for every provider and in each of those states and checks
+each text's colour pair against `themes.css` in both themes.
 
 ### Constants
 

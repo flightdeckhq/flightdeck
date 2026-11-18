@@ -115,10 +115,14 @@ All notable changes to Flightdeck are documented here.
   (`user`, `assistant`, `model`, `system`, `tool`); the `stderr` label;
   and the keys, strings, numbers and `true` / `false` / `null` of every
   JSON view measured as low as 2.3:1. They now use text-safe shades of
-  the same hues, so the tab looks the same, and badges keep their tint
-  and border. The light theme's secondary text is a shade darker
-  (`#6c6c75`), which raises it on every page. The embeddings viewer's
-  notes and "Show full input" toggle read at 4.5:1 too.
+  the same hues that read at 4.6:1 or better, so the tab looks the same,
+  and badges keep their tint and border. The light theme's secondary
+  text is a shade darker (`#6c6c75`), which raises it on every page.
+  The "No content was recorded" and "Prompt capture is not enabled for
+  this deployment." messages, a session signal's Prompts tab, the times
+  in a run's Prompts list, and the embeddings viewer's notes and "Show
+  full input" toggle read the same way. The event-type badges in a
+  run's Prompts list keep the look every event-type badge shares.
 - **The Prompts tab shows an OpenAI call's tool calls.** In the Rendered
   view an OpenAI chat assistant message that called a tool showed only
   `(empty)`: the tool's name and arguments were missing, and the `tool`

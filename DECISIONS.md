@@ -1287,8 +1287,9 @@ converters (a second conversion, which a one-shot iterable cannot feed).
 text takes a `-text` token instead (`--muted-text`, `--accent-text`,
 `--event-llm-text`, `--event-tool-text`, `--danger-text`,
 `--success-text`, `--warning-text`): the nearest shade of the same hue
-that reaches 4.5:1 on the surfaces it is used on, or an alias of the hue
-where the hue already does, so both themes define the same set. Badges
+that reaches 4.6:1 (AA with a margin for 8-bit compositing) on the
+surfaces it is used on, or an alias of the hue where the hue already
+does, so both themes define the same set. Badges
 keep their hue's tint and border and take the `-text` token for their
 text. The Prompts tab and the embeddings viewer use them; a unit test
 measures every text there against themes.css.

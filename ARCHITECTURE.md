@@ -1079,6 +1079,34 @@ those lists before that: a tool-use loop appends the reply to the very
 list it sent, and a stream's caller holds its conversation while the
 stream is open.
 
+The response side of the stored content is the message the call
+returned, dumped as the plain call's is (its pydantic `model_dump`), so
+a call through a raw or streaming view and a plain call with the same
+reply store the same content and report the same `model` (the served
+one), usage, stop reason and tool calls. A raw-view call
+(`with_raw_response`, Anthropic and OpenAI) returns the SDK's
+raw-response wrapper with its body read; the sensor reads it once per
+call, as the message its `parse()` returns (`providers/_access.py`),
+and every reader takes that message. The SDK caches that parse per
+target type, so the caller's own `parse()` returns the same object and a
+`parse(to=...)` reads the body afresh, the wrapper's headers, body and
+`http_response` are as the SDK left them, and the caller observes
+nothing the sensor did. When the parse raises (a body that is not the
+JSON the SDK expects), the call returns as it would, the caller's own
+`parse()` raises the same exception, the event keeps the pre-call
+estimate as its usage and goes without its content, with the warning
+naming `UnreadableResponse` once per event type. An async `parse()` (a
+coroutine function) is never called by a reader, since only the
+caller's await may run it: the anthropic 2.x async raw view is awaited
+by its own intercept instead (see "SDK class patching"). No response
+(`None`), a stream that assembled nothing (never iterated, or dropped
+before its settle) and a streaming view whose body was never parsed
+store an empty response (`{}`) beside the request. A dict response is
+stored as it is. Any other object in place of a message is stored only
+when JSON can write it as it is; otherwise the event goes without its
+content, with the warning naming its type. Nothing is stored as an
+object's attributes or its string form.
+
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`. A request that
 names no `model` is counted against `claude-sonnet-4-6`
@@ -1146,7 +1174,9 @@ different levels:
   installed SDK below the
   floor is reported once, when the sensor first patches it, with a
   warning rather than silently left unmetered. The raw view returns a response whose body is
-  already read, and is metered like a plain call. Its `parse()` is
+  already read, and is metered like a plain call, from the message its
+  `parse()` returns (see the response side of the stored content under
+  "`PromptContent` dataclass"). Its `parse()` is
   synchronous on both client kinds up to the 0.x SDKs; from 2.x the async
   client's raw view returns an `AsyncAPIResponse` whose `parse()` is a
   coroutine, so the sensor awaits it (no network, and the SDK caches the
@@ -1157,8 +1187,11 @@ different levels:
   unread response, so the sensor returns a proxy that meters at the
   caller's `parse()` (`await parse()` on the async client) and never
   reads the body itself: a response closed after being read some other
-  way is parsed from the bytes already read, a response never read
-  reports the pre-call estimate, and a parsed event stream
+  way is parsed from the bytes already read (a `parse(to=...)` into the
+  caller's own type is such a read, so once it has read the body the
+  call is metered from the SDK's message, parsed from those bytes), a
+  response never read reports the pre-call estimate, and a parsed event
+  stream
   (`create(stream=True)` through either view) is handed to the stream
   guard, whose latency then runs from the `parse()` call rather than
   from the request. The guard is entered as `parse()` hands it over, on
@@ -1235,7 +1268,8 @@ different levels:
   (whose `with_raw_response` / `with_streaming_response` are the SDK's own
   client views built over the sensor proxy) are metered the same way. A
   raw-view call returns the SDK's `LegacyAPIResponse` with its headers and
-  its body read, and is metered like a plain call; a raw-view
+  its body read, and is metered like a plain call, from the message its
+  `parse()` returns; a raw-view
   `parse()` through the client view hands back the raw response, as the
   resource's own `with_raw_response.parse()` does. A view call whose body
   is unread when the caller gets it (every streaming-view call, and a
@@ -1904,7 +1938,7 @@ wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them. `ChatGoogleGenerativeAI.invoke` and `.stream` (langchain-google-genai 4.x, through google-genai; verified live on 4.4) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw view with `stream=True` and parses the response at once, so it is metered from the stream as well. `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them. `ChatGoogleGenerativeAI.invoke` and `.stream` (langchain-google-genai 4.x, through google-genai; verified live on 4.4) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including tool loops built from a model node and `ToolNode`, and LangChain's `create_agent` (built on LangGraph) |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete`. llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so that pairing fails inside the SDK with or without the sensor |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic, OpenAI and Gemini (`gemini/...`, `GeminiCompletion`, through google-genai) provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -10394,6 +10428,11 @@ Operator-actionable enrichment additionally carries:
   processing_ms, request_id, model_info, query_source}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
+  `request_id` is read from the response headers when the call returns
+  them (a raw or streaming view), and otherwise from the request id the
+  Anthropic and OpenAI SDKs stamp on the parsed message (`_request_id`,
+  from the same header), so a plain call and a raw-view call with the
+  same reply report the same id.
   `query_source` is the Claude Code call site a call came from (for
   example `sdk` or `agent:builtin:general-purpose`), set only on calls
   reported over OTLP (see Ingestion API > OTLP ingest).

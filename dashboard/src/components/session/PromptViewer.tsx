@@ -1323,7 +1323,7 @@ function ResponsesReasoningItem({ item }: { item: Record<string, unknown> }) {
     <div data-testid="responses-output-reasoning">
       <BlockLabel>reasoning</BlockLabel>
       {shown.length > 0 ? <ResponsesReasoning summary={shown} /> : <Muted>{NO_SUMMARY}</Muted>}
-      {encrypted && <RawOnlyMark testId="responses-encrypted-reasoning" text={ENCRYPTED_REASONING_MARK} />}
+      {encrypted && <JsonOnlyMark testId="responses-encrypted-reasoning" text={ENCRYPTED_REASONING_MARK} />}
     </div>
   );
 }
@@ -1973,13 +1973,13 @@ function isSignatureOnly(part: Record<string, unknown>): boolean {
  *  as stored and that its values, opaque bytes the model reads back, are
  *  in the JSON view. Shown once per turn; the values are never rendered. */
 function ThoughtSignatureMark({ field }: { field: string }) {
-  return <RawOnlyMark testId="gemini-thought-signature" text={`${field} · opaque bytes, in JSON`} />;
+  return <JsonOnlyMark testId="gemini-thought-signature" text={`${field} · opaque bytes, in JSON`} />;
 }
 
 /** The mark under a piece whose stored value the Rendered view does not
  *  show (opaque or encrypted bytes): the field as stored and where its
  *  value is, in the secondary text colour. */
-function RawOnlyMark({ testId, text }: { testId: string; text: string }) {
+function JsonOnlyMark({ testId, text }: { testId: string; text: string }) {
   return (
     <div data-testid={testId} className="mt-1 flex justify-end">
       <span className="font-mono text-[10px] tracking-[0.04em]" style={{ color: "var(--text-secondary)" }}>

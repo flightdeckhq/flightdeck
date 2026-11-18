@@ -484,12 +484,13 @@ class SensorMessages(base.SessionProxy):
     def stream(self, **kwargs: Any) -> Any:
         """Intercept messages.stream() -- returns a guarded context manager.
 
-        Async streaming is supported. Sync ``messages.stream``
-        returns a :class:`base.GuardedStream`; async
+        Sync ``messages.stream`` returns a :class:`base.StreamManager`
+        whose ``with`` gives a :class:`base.GuardedStream`; async
         ``AsyncAnthropic.messages.stream`` returns a
-        :class:`base.GuardedAsyncStream` with awaitable
-        ``__aenter__``/``__aexit__`` and ``__aiter__``/``__anext__``. The
-        caller decides which surface based on their client type.
+        :class:`base.AsyncStreamManager` whose ``async with`` gives a
+        :class:`base.GuardedAsyncStream`. Each manager has the SDK
+        manager's protocol and name and nothing more, so it is not
+        iterable before it is entered, as the SDK's is not.
         """
         real_fn = self._method("stream")
         # As for create(): an outer interceptor's call, or no session to
@@ -506,8 +507,12 @@ class SensorMessages(base.SessionProxy):
         # guard enters the manager it returns (see base.call_stream).
         base.check_signature(self._sdk_method("stream") or self._real.stream, **kwargs)
         if self._is_async:
-            return base.call_stream_async(real_fn, kwargs, session, provider, call_now=True)
-        return base.call_stream(real_fn, kwargs, session, provider, call_now=True)
+            return base.stream_manager(
+                base.call_stream_async(real_fn, kwargs, session, provider, call_now=True)
+            )
+        return base.stream_manager(
+            base.call_stream(real_fn, kwargs, session, provider, call_now=True)
+        )
 
     @base.SDKMethod
     def parse(self, **kwargs: Any) -> Any:

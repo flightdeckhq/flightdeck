@@ -3,6 +3,8 @@ provider adapters and the interceptors."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import inspect
 from typing import TYPE_CHECKING, Any
 
@@ -55,8 +57,8 @@ class UnreadableResponse:
     run. It carries nothing, so usage falls back to the pre-call estimate
     and the model to the requested one. As stored content it is an object
     JSON cannot write, so the event is sent without its content, with the
-    transport's warning naming this type once per event type
-    (``transport/body_limit.py``)."""
+    transport's warning, once per event type, that the provider's response
+    body did not parse (``transport/body_limit.py``)."""
 
     __slots__ = ()
 
@@ -186,3 +188,40 @@ def stored_response(message: Any, is_stream: Callable[[Any], bool]) -> Any:
         except TypeError:
             return dump()
     return message
+
+
+# Bytes per value of an embedding the API returns base64-encoded: the
+# vector's float32 values, little-endian, back to back (the OpenAI SDK
+# decodes it with ``numpy.frombuffer(..., dtype="float32")``, or
+# ``array.array("f", ...)`` without numpy).
+_FLOAT32_BYTES = 4
+
+
+def vector_dimension(embedding: Any) -> int | None:
+    """The number of values in one returned embedding: the length of a
+    list of floats, or for the base64 string a call with
+    ``encoding_format="base64"`` gets, the number of float32 values it
+    decodes to, decoded as the OpenAI SDK decodes it (``b64decode``
+    without validation, so characters outside the alphabet are skipped
+    and bad padding raises). ``None`` where the SDK's own decoding would
+    raise (bad padding, a length that is not whole float32 values), for
+    no values at all, and for any other shape. Never raises."""
+    if isinstance(embedding, str):
+        try:
+            raw = base64.b64decode(embedding)
+        except (binascii.Error, ValueError):
+            return None
+        if len(raw) % _FLOAT32_BYTES:
+            return None
+        return len(raw) // _FLOAT32_BYTES or None
+    try:
+        return len(embedding) if embedding else None
+    except TypeError:
+        return None
+
+
+def stored_vector(embedding: Any) -> Any:
+    """One returned embedding as content capture stores it: as the
+    provider returned it, a list of floats or a base64 string (never the
+    string's characters as a list)."""
+    return embedding if isinstance(embedding, str) else list(embedding)

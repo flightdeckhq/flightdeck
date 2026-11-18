@@ -484,16 +484,12 @@ class _HelperRequest:
         return self.send(self._proxy, kwargs)
 
     def send(self, proxy: Any, kwargs: dict[str, Any]) -> Any:
-        """``proxy.create(**kwargs)``, keeping the guard it opens, if any."""
+        """``proxy.create(**kwargs)``, keeping the guard it opens, if any.
+        On an async client the request is awaited by the manager's entry,
+        through :class:`_Opening`."""
         result = proxy.create(**_given(kwargs))
         if inspect.iscoroutine(result):
-
-            async def _opened() -> Any:
-                opened = await result
-                self._keep(opened)
-                return opened
-
-            return _opened()
+            return _Opening(result, self)
         self._keep(result)
         return result
 
@@ -506,6 +502,23 @@ class _HelperRequest:
         if name == _SDK_CLIENT_ATTR:
             return _HelperClient(self, value)
         return value
+
+
+class _Opening:
+    """The request an async ``.stream()`` manager awaits on entry: the
+    proxy's ``create`` coroutine, awaited, keeping the guard it opens. Not
+    a coroutine itself, so a manager the caller never enters leaves one
+    coroutine unawaited (the proxy's ``create``), as the SDK's manager
+    leaves one (its own ``create``), not two."""
+
+    def __init__(self, request: Any, helper_request: _HelperRequest) -> None:
+        self._request = request
+        self._helper_request = helper_request
+
+    def __await__(self) -> Any:
+        opened = yield from self._request.__await__()
+        self._helper_request._keep(opened)
+        return opened
 
 
 # The attribute an SDK resource holds its client under (``self._client``).
@@ -552,18 +565,25 @@ class _HelperClient:
         return getattr(self._real, name)
 
 
-class _HelperStreamManager:
+class _HelperStreamManager(base.HandedToCaller):
     """The SDK's ``.stream()`` manager, whose exit also settles the stream
     guard the helper read through. The SDK's exit closes the HTTP
     response, which the guard does not see; leaving it to the guard's
     finalizer would delay the post_call of a stream the caller left early
     until the next intercepted call. The guard's exit takes the same
     exception the caller's block raised, so a provider failure, an early
-    exit and a full read are reported as on every other stream."""
+    exit and a full read are reported as on every other stream.
+
+    The manager the caller gets has the SDK manager's protocol and name
+    and nothing more (see :func:`_helper_manager`): ``with`` on a sync
+    client's, ``async with`` on an async client's."""
 
     def __init__(self, manager: Any, request: _HelperRequest) -> None:
         self._manager = manager
         self._request = request
+
+    def _stands_for(self) -> Any:
+        return self._manager
 
     def _adopt(self, helper: Any) -> Any:
         """Point the guard at the helper's own assembly: the helper keeps
@@ -573,6 +593,18 @@ class _HelperStreamManager:
         for guard in self._request.guards:
             guard.use_accumulator(helper_stream_accumulator(helper))
         return helper
+
+    def __getattr__(self, name: str) -> Any:
+        # Private and dunder names stay local: the SDK manager's own are
+        # name-mangled and read only by its own methods, and forwarding
+        # ``_manager`` itself would recurse on a copy made without it.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._manager, name)
+
+
+class _SyncHelperStreamManager(_HelperStreamManager):
+    """A sync client's ``.stream()`` manager (``with``)."""
 
     def __enter__(self) -> Any:
         return self._adopt(self._manager.__enter__())
@@ -584,6 +616,10 @@ class _HelperStreamManager:
             for guard in self._request.guards:
                 guard.__exit__(exc_type, exc_val, exc_tb)
 
+
+class _AsyncHelperStreamManager(_HelperStreamManager):
+    """An async client's ``.stream()`` manager (``async with``)."""
+
     async def __aenter__(self) -> Any:
         return self._adopt(await self._manager.__aenter__())
 
@@ -594,8 +630,28 @@ class _HelperStreamManager:
             for guard in self._request.guards:
                 await guard.__aexit__(exc_type, exc_val, exc_tb)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._manager, name)
+
+class _DualHelperStreamManager(_SyncHelperStreamManager, _AsyncHelperStreamManager):
+    """A manager whose SDK class takes both ``with`` and ``async with``."""
+
+
+def _helper_manager(manager: Any, request: _HelperRequest) -> Any:
+    """The sensor's manager for the SDK's ``manager``: the protocol the
+    SDK class has (``with``, ``async with``, both), named as that class,
+    so introspection and the interpreter's errors (``async with`` on a
+    sync manager) are as without the sensor."""
+    sdk_type = type(manager)
+    sync, async_ = hasattr(sdk_type, "__enter__"), hasattr(sdk_type, "__aenter__")
+    wrapper: type = (
+        _DualHelperStreamManager
+        if sync and async_
+        else _AsyncHelperStreamManager
+        if async_
+        else _SyncHelperStreamManager
+        if sync
+        else _HelperStreamManager
+    )
+    return base.named_like(wrapper, sdk_type)(manager, request)
 
 
 def _helper_stream(proxy: Any, real: Any, kwargs: dict[str, Any]) -> Any:
@@ -606,7 +662,7 @@ def _helper_stream(proxy: Any, real: Any, kwargs: dict[str, Any]) -> Any:
     if not callable(helper):
         return real.stream(**kwargs)
     request = _HelperRequest(proxy)
-    return _HelperStreamManager(helper(request, **kwargs), request)
+    return _helper_manager(helper(request, **kwargs), request)
 
 
 def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:

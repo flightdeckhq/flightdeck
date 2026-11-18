@@ -12,6 +12,7 @@ counts via stream_options={include_usage: true} (sensor-injected).
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
 import time
 import uuid
@@ -26,6 +27,8 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import (
+    CONTENT_LANDED_DEADLINE_S,
+    CONTENT_POLL_S,
     assert_reply_stored,
     assert_token_cost_fields,
     assert_event_landed,
@@ -38,6 +41,25 @@ from _helpers import (
 )
 
 MODEL = "gpt-4o-mini"
+# text-embedding-3-small's output dimension when the call names none.
+TEXT_EMBEDDING_3_SMALL_DIMENSION = 1536
+# Bytes per value of a base64 embedding: the API encodes float32 values.
+FLOAT32_BYTES = 4
+# One events fetch while waiting for the embeddings events never blocks
+# longer than this, so CONTENT_LANDED_DEADLINE_S stays the bound.
+EMBEDDINGS_FETCH_TIMEOUT_S = 2.0
+# The embeddings model every embeddings call here uses.
+EMBEDDING_MODEL = "text-embedding-3-small"
+# The event type an embeddings call is reported as.
+EMBEDDINGS_EVENT_TYPE = "embeddings"
+# Embeddings events the round-trip check reads: the single-string call
+# and the list call.
+EXPECTED_EMBEDDINGS_EVENTS = 2
+# Leading characters of the session id that tag this run's inputs, enough
+# to tell one run's from another's.
+SESSION_ID_TAG_CHARS = 8
+# Milliseconds per second, for the durations print_result reports.
+MS_PER_S = 1000
 # Streamed calls this script makes: sync chat stream, async chat stream,
 # plain chat iteration, Responses stream; each must land one metered
 # post_call.
@@ -374,9 +396,7 @@ def main() -> None:
     # means has_content=True and the input round-trips via /v1/events/:id/content.
     single_payload = "playground single-string capture"
     t0 = time.monotonic()
-    openai.OpenAI().embeddings.create(
-        model="text-embedding-3-small", input=single_payload
-    )
+    openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=single_payload)
     print_result(
         "OpenAI().embeddings.create (single)", True, int((time.monotonic() - t0) * 1000)
     )
@@ -385,9 +405,7 @@ def main() -> None:
     # narrows to one input form.
     list_payload = ["item one", "item two", "item three"]
     t0 = time.monotonic()
-    openai.OpenAI().embeddings.create(
-        model="text-embedding-3-small", input=list_payload
-    )
+    openai.OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=list_payload)
     print_result(
         "OpenAI().embeddings.create (list)", True, int((time.monotonic() - t0) * 1000)
     )
@@ -527,7 +545,8 @@ def main() -> None:
     print_result(
         "billed-but-failed parse landed as post_call + llm_error", length_ok, 0,
         f"error={length_err.get('error')!r} "
-        f"post_call tokens={(billed or {}).get('tokens_input')}/{(billed or {}).get('tokens_output')}",
+        f"post_call tokens={(billed or {}).get('tokens_input')}/"
+        f"{(billed or {}).get('tokens_output')}",
     )
     if not length_ok:
         raise AssertionError(
@@ -539,22 +558,23 @@ def main() -> None:
     # land (single + list); fetch_events_for_session returns as soon as
     # ``embeddings`` first appears in the seen-set, so a naive call can
     # see the first event before the second has flushed. Poll until
-    # ≥2 embedding events are visible.
+    # both embedding events are visible.
     embeds: list[dict] = []
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
     while time.monotonic() < deadline:
         events = fetch_events_for_session(
             session_id,
-            expect_event_types=["embeddings"],
-            timeout_s=2.0,
+            expect_event_types=[EMBEDDINGS_EVENT_TYPE],
+            timeout_s=EMBEDDINGS_FETCH_TIMEOUT_S,
         )
-        embeds = [e for e in events if e.get("event_type") == "embeddings"]
-        if len(embeds) >= 2:
+        embeds = [e for e in events if e.get("event_type") == EMBEDDINGS_EVENT_TYPE]
+        if len(embeds) >= EXPECTED_EMBEDDINGS_EVENTS:
             break
-        time.sleep(0.3)
-    if len(embeds) < 2:
+        time.sleep(CONTENT_POLL_S)
+    if len(embeds) < EXPECTED_EMBEDDINGS_EVENTS:
         raise AssertionError(
-            f"expected ≥2 embeddings events; got {len(embeds)}: {embeds!r}"
+            f"expected ≥{EXPECTED_EMBEDDINGS_EVENTS} embeddings events; "
+            f"got {len(embeds)}: {embeds!r}"
         )
     print_result("embeddings events emitted", True, 0, f"{len(embeds)} events")
 
@@ -563,7 +583,7 @@ def main() -> None:
     # received, including the OpenAI quirk that single strings come
     # back wrapped in a list-of-tokens for some clients.
     captured = []
-    for e in embeds[-2:]:
+    for e in embeds[-EXPECTED_EMBEDDINGS_EVENTS:]:
         if not e.get("has_content"):
             raise AssertionError(f"embedding event missing has_content: {e!r}")
         body = fetch_event_content(e["id"])
@@ -581,6 +601,51 @@ def main() -> None:
         print(f"  note: single-string captured shape: {captured[0]!r}")
     if captured[1] != list_payload:
         print(f"  note: list captured shape: {captured[1]!r}")
+
+    # Embeddings with encoding_format="base64": the API returns each
+    # vector as the base64 string of its float32 values, and the event's
+    # output_dimensions names the decoded dimension, not the string's
+    # length. Matched to its event by an input of its own.
+    base64_payload = f"playground base64 embedding {session_id[:SESSION_ID_TAG_CHARS]}"
+    t0 = time.monotonic()
+    encoded = openai.OpenAI().embeddings.create(
+        model=EMBEDDING_MODEL, input=base64_payload, encoding_format="base64",
+    )
+    vector = encoded.data[0].embedding
+    decoded = (
+        len(base64.b64decode(vector)) // FLOAT32_BYTES if isinstance(vector, str) else None
+    )
+    print_result(
+        "OpenAI().embeddings.create(encoding_format=base64)",
+        isinstance(vector, str),
+        int((time.monotonic() - t0) * MS_PER_S),
+        f"{len(vector)}-character string, {decoded} float32 values",
+    )
+    reported = None
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
+    while reported is None and time.monotonic() < deadline:
+        for e in fetch_events_for_session(session_id, expect_event_types=[EMBEDDINGS_EVENT_TYPE]):
+            if e.get("event_type") != EMBEDDINGS_EVENT_TYPE or not e.get("has_content"):
+                continue
+            if fetch_event_content(e["id"]).get("input") == base64_payload:
+                reported = (e.get("payload") or {}).get("output_dimensions")
+                break
+        else:
+            time.sleep(CONTENT_POLL_S)
+    dimension_ok = (
+        reported == {"count": len(encoded.data), "dimension": decoded}
+        and decoded == TEXT_EMBEDDING_3_SMALL_DIMENSION
+    )
+    print_result(
+        "base64 embeddings report the decoded dimension",
+        dimension_ok,
+        0,
+        f"output_dimensions={reported}",
+    )
+    if not dimension_ok:
+        raise AssertionError(
+            f"base64 embeddings: output_dimensions={reported!r}, decoded {decoded}"
+        )
 
     # Auth-error classification: deliberately bogus key on a fresh
     # client, expect openai's AuthenticationError which the sensor's

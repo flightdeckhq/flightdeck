@@ -511,7 +511,9 @@ def test_a_raw_response_that_does_not_parse_is_metered_on_the_estimate_without_c
     """The call returns the wrapper as without the sensor and the caller's
     own ``parse()`` raises; the event keeps the pre-call estimate and the
     requested model, has no tool calls, and goes without its content, with
-    one warning naming the unreadable response for any number of calls."""
+    one warning for any number of calls that says, for the event type and
+    the provider, that the provider's response body did not parse, and
+    holds none of the body."""
     monkeypatch.setattr(body_limit, "_warned_unencodable", set())
     _not_json(router)
     session = sensored(capture=True)
@@ -537,8 +539,13 @@ def test_a_raw_response_that_does_not_parse_is_metered_on_the_estimate_without_c
         ] == []
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1, warnings
-    assert "UnreadableResponse" in warnings[0]
+    event_type = "embeddings" if name.startswith("embeddings") else "post_call"
+    assert warnings[0] == (
+        f"{event_type} event ({sdk}): the provider's response body did not parse, so the "
+        "call is reported on the pre-call estimate and sent without its content"
+    )
     assert NOT_JSON.decode() not in warnings[0]
+    assert "UnreadableResponse" not in warnings[0]
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])

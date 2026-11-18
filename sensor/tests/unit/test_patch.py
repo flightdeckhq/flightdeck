@@ -456,22 +456,25 @@ def test_sensor_beta_messages_create_routes_through_intercept(
 
 
 def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:
-    """SensorMessages.stream on an async client returns a GuardedAsyncStream.
-
-    Async streaming produces a :class:`base.GuardedAsyncStream` with the
-    same TTFT + chunk + abort measurement policy as the sync wrapper.
+    """SensorMessages.stream on an async client returns the async manager
+    over a GuardedAsyncStream: entering it gives the guard, with the same
+    TTFT + chunk + abort measurement policy as the sync wrapper.
     """
+    from anthropic.lib.streaming import AsyncMessageStreamManager
+
     from flightdeck_sensor.interceptor import base
 
     async_client = anthropic.AsyncAnthropic(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorAnthropic)
-    guarded = wrapped.messages.stream(
+    manager = wrapped.messages.stream(
         model="claude-sonnet-4-6",
         max_tokens=10,
         messages=[],
     )
-    assert isinstance(guarded, base.GuardedAsyncStream)
+    assert isinstance(manager, base.AsyncStreamManager)
+    assert type(manager).__name__ == AsyncMessageStreamManager.__name__
+    assert isinstance(manager._guard, base.GuardedAsyncStream)
 
 
 def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:
@@ -815,7 +818,7 @@ def test_litellm_streaming_returns_the_stream_guard(
         messages=[{"role": "user", "content": "hi"}],
         stream=True,
     )
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     mock_completion.assert_called_once()
     assert mock_completion.call_args.kwargs["stream"] is True
     assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}
@@ -897,5 +900,5 @@ def test_sensor_litellm_streaming_returns_the_stream_guard(
         messages=[{"role": "user", "content": "hi"}],
         stream=True,
     )
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}

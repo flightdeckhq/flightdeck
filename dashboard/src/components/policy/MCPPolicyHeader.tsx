@@ -158,7 +158,7 @@ export function MCPPolicyHeader({
               className="mt-3 inline-flex items-center rounded-md border px-3 py-1.5 text-sm"
               style={{
                 borderColor: "var(--border)",
-                background: "var(--background-elevated)",
+                background: "var(--bg-elevated)",
                 color: "var(--text-muted)",
               }}
               data-testid={`mcp-policy-mode-readonly-${scopeKey}`}
@@ -201,7 +201,7 @@ export function MCPPolicyHeader({
                   <>
                     Allow-list mode only. When ON, blocks against
                     servers not in your allow list emit a{" "}
-                    <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
+                    <code className="rounded-sm bg-(--bg-elevated) px-1 py-0.5 font-mono text-[10px]">
                       policy_mcp_block
                     </code>{" "}
                     audit event so you can review first-time encounters
@@ -311,7 +311,7 @@ function ModeSegmented({
       className="mt-2 inline-flex rounded-md border p-1"
       style={{
         borderColor: "var(--border)",
-        background: "var(--background-elevated)",
+        background: "var(--bg-elevated)",
       }}
       data-testid={testid}
     >

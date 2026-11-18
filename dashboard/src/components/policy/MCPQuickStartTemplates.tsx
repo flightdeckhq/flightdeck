@@ -167,7 +167,7 @@ export function MCPQuickStartTemplates({
               {templates.map((tpl) => (
                 <li
                   key={tpl.name}
-                  className="rounded-sm px-3 py-2 transition-colors hover:bg-(--background-elevated)"
+                  className="rounded-sm px-3 py-2 transition-colors hover:bg-(--bg-elevated)"
                   data-testid={`mcp-quickstart-templates-row-${tpl.name}`}
                 >
                   <div className="flex items-start justify-between gap-3">

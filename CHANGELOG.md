@@ -109,6 +109,19 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The Policies page's fields, chips and panels show their background.**
+  They used a colour token no theme defines, so they drew with no
+  background. On the MCP Protection tab that covered:
+  - the audit log's date filters, event-type chips, expanded payload
+    and hovered row;
+  - the policy mode control;
+  - the entry table's search and hovered rows;
+  - the resolve panel's input and result;
+  - the scope picker's search and highlighted option;
+  - the entry dialog's fields, preview and code samples.
+
+  The page's tab list was affected too. All of them now use the
+  elevated surface the rest of the dashboard uses.
 - **The Prompts tab's text reads at WCAG AA (4.5:1) in both themes.**
   Labels such as `tool result`, argument names, counts, `(empty)`
   notes, call ids and the token line; tool names; the role badges

@@ -10169,6 +10169,18 @@ the punctuation's `--text-secondary`. Every other JSON view keeps
 Prompts tab for every provider and in each of those states and checks
 each text's colour pair against `themes.css` in both themes.
 
+Every custom property the dashboard reads is defined. A `var()` of a
+name nothing defines is invalid at computed-value time, so the property
+takes its initial value (a background turns transparent) and neither the
+build nor the type check says so. A unit test
+(`dashboard/tests/unit/theme-tokens-defined.test.ts`) reads `src/` for
+`var(--name)` and Tailwind's `bg-(--name)` shorthand and fails on any
+name `themes.css` or `globals.css` does not declare. Its allow-list gives
+a reason for each entry: a property the code sets inline and reads back,
+a Tailwind theme variable, and the references that wait on a design
+choice (`--background` in the shared switch and tabs, `--info` on the
+MCP policy table's interactive pill).
+
 ### Constants
 
 `dashboard/src/lib/constants.ts` is the single source of truth for

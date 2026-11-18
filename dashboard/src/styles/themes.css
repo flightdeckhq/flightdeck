@@ -127,15 +127,15 @@
 
   /* Text-safe colours: the shade of a hue that reads at 4.6:1 or better
      as text (WCAG AA asks 4.5:1) on every surface it is drawn on here:
-     --surface, --bg-elevated, --bg, a focused Prompts-list row
-     (--accent-glow over --surface), and a badge's tint (15% of the
-     badge's hue over --surface), each composite taken both exactly and
-     as the 8-bit colour a browser draws. Used only for text; badges'
-     tints and borders, charts, swimlanes and icons keep the hue tokens
-     above.
-     Where the hue itself reaches 4.6:1 it is aliased, so both themes
-     define the same set. Each comment names the text and its closest
-     pair, the ratio cut (not rounded) to three decimals.
+     --surface, --bg-elevated, --bg, a Prompts-list row hovered
+     (--surface-hover) or focused (--accent-glow over --surface), and a
+     badge's tint (15% of the badge's hue over --surface), each
+     composite taken both exactly and as the 8-bit colour a browser
+     draws. Used only for text; badges' tints and borders, charts,
+     swimlanes and icons keep the hue tokens above. Where the hue itself
+     reaches 4.6:1 it is aliased, so both themes define the same set.
+     Each comment names the text and its closest pair, the ratio cut
+     (not rounded) to three decimals.
      tests/unit/prompts-tab-contrast.test.tsx checks every pair the
      Prompts tab uses. */
   --muted-text: #898989; /* labels, counts, notes, ids, timestamps; closest pair: a system badge's tint, 4.641:1 */
@@ -167,9 +167,8 @@
   /* Text */
   --text: #09090b;
   --text-muted: #a1a1aa;
-  /* Secondary text, and the light theme's --muted-text; closest pair: a
-     system badge's tint, 4.602:1 (--bg-elevated 4.729:1, --surface
-     5.198:1). */
+  /* Secondary text, on every page; reads at AA on each light surface:
+     --surface-hover 4.564:1, --bg-elevated 4.729:1, --surface 5.198:1. */
   --text-secondary: #6c6c75;
   --text-disabled: #d4d4d8;
 
@@ -265,7 +264,7 @@
   --topology-pill-fg: var(--accent);
 
   /* Text-safe colours: see the dark theme's block. */
-  --muted-text: var(--text-secondary); /* labels, counts, notes, ids, timestamps (no lighter grey reaches 4.6:1 on --bg-elevated); closest pair: a system badge's tint, 4.602:1 */
+  --muted-text: #6b6b74; /* labels, counts, notes, ids, timestamps; a step darker than --text-secondary, for a hovered Prompts-list row; closest pair: --surface-hover, 4.632:1 */
   --accent-text: #7b38ed; /* the assistant and model badges, the embeddings toggle; closest pair: the assistant badge's 8-bit tint, 4.601:1 */
   --event-llm-text: #4e52ef; /* the user badge, JSON keys; closest pair: the user badge's tint, 4.602:1 */
   --event-tool-text: #06728c; /* tool names, tool badges; closest pair: the tool badge's 8-bit tint, 4.614:1 */

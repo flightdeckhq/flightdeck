@@ -459,6 +459,13 @@ describe("the text-safe tokens on the surfaces they are used on", () => {
         }
       });
     }
+    // A hovered row of the run drawer's Prompts list (hover:bg-surface-hover)
+    // under its timestamp; jsdom applies no :hover, so the render walk above
+    // never sees this background.
+    it(`${theme}: --muted-text on a hovered Prompts-list row (--surface-hover)`, () => {
+      const t = TOKENS[theme];
+      expect(contrastRatio(resolveColor(t, "var(--muted-text)"), resolveColor(t, "var(--surface-hover)"))).toBeGreaterThanOrEqual(TEXT_SAFE_FLOOR);
+    });
   }
 
   it("both themes define the same text-safe tokens", () => {

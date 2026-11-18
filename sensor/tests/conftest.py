@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -41,6 +46,8 @@ if _sdk_uses_httpx2():
 
     httpx2.alias_httpx()
 
+import flightdeck_sensor  # noqa: E402
+from flightdeck_sensor.core.session import Session  # noqa: E402
 from flightdeck_sensor.core.types import SensorConfig  # noqa: E402
 from flightdeck_sensor.providers.anthropic import AnthropicProvider  # noqa: E402
 from flightdeck_sensor.transport.client import ControlPlaneClient  # noqa: E402
@@ -48,6 +55,9 @@ from tests.litellm_logging_worker import retire_litellm_logging_worker  # noqa: 
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
+
+# The session's own start, kept before any test module stubs it.
+_REAL_SESSION_START = Session.start
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +212,61 @@ def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     refusing = MagicMock()
     refusing.messages.count_tokens.side_effect = _refuse
     monkeypatch.setattr(AnthropicProvider, "_client", refusing)
+
+
+@dataclass(frozen=True)
+class SentRequest:
+    """One request urllib would have sent."""
+
+    method: str
+    url: urllib.parse.SplitResult
+    headers: dict[str, str]
+
+
+class ControlPlaneRequests:
+    """The requests the sensor would have sent to its control plane, in
+    the order it made them."""
+
+    def __init__(self) -> None:
+        self.sent: list[SentRequest] = []
+
+    def to(self, method: str, path_end: str) -> list[SentRequest]:
+        """The requests made with ``method`` whose path ends with ``path_end``."""
+        return [r for r in self.sent if r.method == method and r.url.path.endswith(path_end)]
+
+    def preflight_policy(self) -> SentRequest:
+        """The policy fetch ``init()`` makes before the session starts."""
+        (request,) = self.to("GET", "/v1/policy")
+        return request
+
+
+@pytest.fixture
+def control_plane_requests(monkeypatch: pytest.MonkeyPatch) -> Iterator[ControlPlaneRequests]:
+    """The sensor's control-plane traffic, stubbed at urllib's HTTP and
+    HTTPS handlers, the layer below the request urllib builds: every
+    request is recorded (method, URL, headers) and refused as an
+    unreachable control plane refuses it, so the sensor fails open as it
+    does then, and nothing is resolved or sent. The session's real start
+    runs, its preflight requests included (a test module that stubs
+    ``Session.start`` gets it back here), and the session is ended while
+    the stub is in place, so its ``session_end`` is recorded too."""
+    recorder = ControlPlaneRequests()
+
+    def _refused(_handler: object, request: urllib.request.Request) -> Any:
+        recorder.sent.append(
+            SentRequest(
+                request.get_method(),
+                urllib.parse.urlsplit(request.full_url),
+                dict(request.header_items()),
+            )
+        )
+        raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "stubbed"))
+
+    monkeypatch.setattr(urllib.request.HTTPHandler, "http_open", _refused)
+    monkeypatch.setattr(urllib.request.HTTPSHandler, "https_open", _refused)
+    monkeypatch.setattr(Session, "start", _REAL_SESSION_START)
+    yield recorder
+    flightdeck_sensor.teardown()
 
 
 class _MockHandler(BaseHTTPRequestHandler):

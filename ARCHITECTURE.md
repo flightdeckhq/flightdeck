@@ -8879,7 +8879,26 @@ action row onto a wrapping line.
   (ListTree icon) routes to `/events?agent_id=<id>`. Both
   carry the same affordance so the two read identically as
   primary actions. Testids `agent-drawer-open-swimlane` and
-  `agent-drawer-open-in-events`.
+  `agent-drawer-open-in-events`. When the agent has two or more runs
+  at once in the window the per-agent modal opens with (it always
+  opens at `DEFAULT_TIME_RANGE`, 1m, ending at the swimlane's
+  whole-second now), the swimlane button reads `Open in swimlane ·
+  3 runs` and draws the runs chip's accent tint and border, its text
+  in `--text` and its icon in the accent; past nine the label reads
+  `9+ runs`. Its `aria-label` (`Open <agent> in swimlane, 3 runs at
+  once`) and its tooltip (`3 runs at once: each gets its own lane`)
+  carry the full count, and `data-run-count` the number. The number
+  is the runs chip's (`runsAtOnce` over `layoutRowLanes` of the
+  agent's runs, on the swimlane panel's own width, and
+  `runsAtOnceShown` for the label), so on the Fleet's default range
+  the chip and the button read the same, and the modal opens with
+  those runs side by side, one lane each; it draws a lane too for any
+  other run in the window that ran before or after them. With one run
+  at once or none, the button is the plain one. The button reads its
+  agent's runs from the fleet store, the events cache's write count
+  and a one-second clock (the swimlane's own step) itself, so a run
+  starting or ending, or a passing second, re-renders the button and
+  not the drawer.
 - **Row 4 — linkage sections** (conditional) — labelled
   uppercase muted headers above the pill rows so the cluster
   reads as a navigation surface, not free-floating chips.
@@ -9758,7 +9777,9 @@ with the overlap tolerance that splits the row), so five runs at once
 read `5 runs` although the row draws four lanes. Past nine the label
 reads `9+ runs`, so it fits the badge column. Its tooltip and
 `aria-label` carry the full count: `3 runs at once: expand in
-swimlane`. It is a button in the tab order, and a click opens the
+swimlane`. The number (`runsAtOnce`) and its label (`runsAtOnceShown`)
+are shared with the agent drawer's **Open in swimlane**, which shows
+them for the window the modal opens with. It is a button in the tab order, and a click opens the
 per-agent swimlane modal for that agent, the modal the agent drawer's
 **Open in swimlane** opens, hosted by `Fleet.tsx`; if the agent leaves
 the fleet roster while it is open, the modal closes and does not

@@ -37,6 +37,8 @@ import {
 	laneGeometry,
 	layoutRowLanes,
 	runSegments,
+	runsAtOnce,
+	runsAtOnceShown,
 	type RunSegment,
 	type SegmentPlacement,
 } from "@/lib/swimlane-lanes";
@@ -182,12 +184,10 @@ const RUNS_CHIP_RADIUS_PX = 3;
 // (TopologyCell), so the two accent chips read as one family. Hovered,
 // the border turns full accent; the tint stays, so the text keeps its
 // contrast.
-const RUNS_CHIP_TINT = "color-mix(in srgb, var(--accent) 15%, transparent)";
-const RUNS_CHIP_BORDER = "color-mix(in srgb, var(--accent) 40%, transparent)";
-// The highest count the chip prints; more read "9+ runs", so the label
-// fits the badge column. The tooltip and accessible name carry the
-// full count.
-const RUNS_CHIP_MAX_SHOWN = 9;
+// The agent drawer's "Open in swimlane" draws them too when it names
+// the runs at once.
+export const RUNS_CHIP_TINT = "color-mix(in srgb, var(--accent) 15%, transparent)";
+export const RUNS_CHIP_BORDER = "color-mix(in srgb, var(--accent) 40%, transparent)";
 
 // Reserved zone at the strip's right edge for the absolutely-
 // positioned AgentStatusBadge wrapper. The wrapper itself sits at
@@ -659,7 +659,8 @@ export function AgentLabelStrip({
  */
 function RunsChip({ count, onClick }: { count: number; onClick: () => void }) {
 	const label = `${count} runs at once: expand in swimlane`;
-	const shown = count > RUNS_CHIP_MAX_SHOWN ? `${RUNS_CHIP_MAX_SHOWN}+` : String(count);
+	// Past nine "9+", so the label fits the badge column.
+	const shown = runsAtOnceShown(count);
 	return (
 		<button
 			type="button"
@@ -799,10 +800,9 @@ function SwimLaneComponent({
 	// lane. The split decides whether it shows; the count of runs at
 	// once is only its number.
 	const expandRuns = useCallback(() => onExpandRuns?.(flavor), [onExpandRuns, flavor]);
+	const runsCount = runsAtOnce(runLayout);
 	const runsChip =
-		onExpandRuns && runLayout.laneCount > 1 ? (
-			<RunsChip count={Math.max(runLayout.concurrency, 2)} onClick={expandRuns} />
-		) : null;
+		onExpandRuns && runsCount !== null ? <RunsChip count={runsCount} onClick={expandRuns} /> : null;
 
 	return (
 		<div

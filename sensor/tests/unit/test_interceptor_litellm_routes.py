@@ -309,7 +309,7 @@ def test_text_completion_stream_meters_usage_and_hides_the_usage_chunk(session: 
     stream = litellm.text_completion(
         model="gpt-4o-mini", prompt="hi", stream=True, client=_sdk_client(transport)
     )
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     chunks = list(stream)
     assert "".join(c.choices[0].text or "" for c in chunks) == "hello"
     assert not any(_is_text_usage_only_chunk(c) for c in chunks)
@@ -344,7 +344,7 @@ async def test_atext_completion_stream_meters_usage(session: Session) -> None:
     stream = await litellm.atext_completion(
         model="gpt-4o-mini", prompt="hi", stream=True, client=_async_sdk_client(transport)
     )
-    assert isinstance(stream, base.GuardedAsyncStream)
+    assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
     chunks = await _drain(stream)
     assert "".join(c.choices[0].text or "" for c in chunks) == "hello"
     (pc,) = _post_calls(session)
@@ -474,7 +474,7 @@ def test_responses_native_stream_is_metered_from_the_terminal_event(
                 client=_async_handler(routes),
                 api_key="test-key",
             )
-            assert isinstance(stream, base.GuardedAsyncStream)
+            assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
             return await _drain(stream)
 
         events = asyncio.run(_read())
@@ -482,7 +482,7 @@ def test_responses_native_stream_is_metered_from_the_terminal_event(
         stream = litellm.responses(
             model="gpt-4o-mini", input="hi", stream=True, client=_handler(routes), api_key="k"
         )
-        assert isinstance(stream, base.GuardedStream)
+        assert isinstance(base.guard_of(stream), base.GuardedStream)
         events = list(stream)
     assert events[-1].type == "response.completed"
     assert "stream_options" not in routes.bodies[-1]  # nothing added to a Responses request

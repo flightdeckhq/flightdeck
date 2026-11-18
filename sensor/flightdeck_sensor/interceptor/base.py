@@ -25,6 +25,7 @@ import inspect
 import io
 import json
 import logging
+import pickle
 import sys
 import time
 import types
@@ -1696,7 +1697,39 @@ async def _async_text_deltas(guard: Any) -> AsyncIterator[str]:
             yield text
 
 
-class _GuardCore:
+class HandedToCaller:
+    """Copying and pickling of an object the sensor hands the caller in
+    place of an SDK object (a stream, a stream manager, a raw response),
+    as for that object. A shallow copy works, as it does for every such
+    SDK object, and is the object itself: the SDK's copy shares the one
+    response with the original, and a second guard over it would report
+    the call twice. A deep copy or a pickle is the SDK object's
+    (:meth:`_stands_for`): it raises what that raises, or gives a copy of
+    the SDK object, as without the sensor."""
+
+    def _stands_for(self) -> Any:
+        """The SDK object this one stands for, or ``None``."""
+        return None
+
+    def __copy__(self) -> Any:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+        sdk_object = self._stands_for()
+        if sdk_object is None:
+            raise TypeError(f"cannot deep-copy {type(self).__name__!r} object")
+        return copy.deepcopy(sdk_object, memo)
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        sdk_object = self._stands_for()
+        if sdk_object is None:
+            raise TypeError(f"cannot pickle {type(self).__name__!r} object")
+        # Pickled as the SDK object is: what that raises, raised here; one
+        # that pickles is unpickled as the SDK object.
+        return pickle.loads, (pickle.dumps(sdk_object, protocol),)
+
+
+class _GuardCore(HandedToCaller):
     """State and provider-facing helpers shared by :class:`GuardedStream`
     and :class:`GuardedAsyncStream`. Everything here is synchronous; the
     subclasses add the sync or async lifecycle and iteration protocol."""
@@ -1742,6 +1775,9 @@ class _GuardCore:
         self._chunk_count: int = 0
         self._inter_chunk_ms: list[float] = []
         self._stream_iter: Any = None
+        # The SDK stream's iterator in the other mode, for a stream that
+        # iterates both ways (litellm's), read through protocol_view.
+        self._stream_other_iter: Any = None
         self._usage: TokenUsage | None = None
         self._entered = False
         self._exhausted = False
@@ -1766,6 +1802,9 @@ class _GuardCore:
         """The SDK object the call made at once (a ``messages.stream()``
         manager), or ``None`` for a call made on entry."""
         return self._real_fn.result if isinstance(self._real_fn, _Made) else None
+
+    def _stands_for(self) -> Any:
+        return self._stream
 
     def _hook_failed(self, hook: str) -> None:
         """A provider stream hook raised. The guard carries on without it
@@ -2256,6 +2295,33 @@ class GuardedStream(_GuardCore):
             self._record_chunk(chunk)
             return chunk
 
+    def next_chunk(self) -> Any:
+        """The next chunk the caller sees (see :func:`protocol_view`)."""
+        return self.__next__()
+
+    async def anext_chunk(self) -> Any:
+        """The next chunk the caller sees, read with the SDK stream's own
+        async iteration: a stream a sync call made that also iterates
+        asynchronously (litellm's), metered as the sync iteration is."""
+        self._enter_stream()
+        if self._stream_other_iter is None:
+            self._stream_other_iter = self._require_stream().__aiter__()
+        while True:
+            try:
+                chunk = await self._stream_other_iter.__anext__()
+            except StopAsyncIteration:
+                self._exhausted = True
+                self._finalize()
+                raise
+            except Exception as exc:
+                self._emit_stream_error(exc)
+                raise
+            if self._hidden(chunk):
+                self._record_chunk(chunk, visible=False)
+                continue
+            self._record_chunk(chunk)
+            return chunk
+
     @property
     def text_stream(self) -> Iterator[str]:
         """Text deltas of a helper stream, iterated through the guard so
@@ -2286,25 +2352,27 @@ _NAMED_LIKE: dict[tuple[type, type], type] = {}
 
 
 def named_like(wrapper: type, sdk_type: type) -> type:
-    """``wrapper`` under the name and module of the SDK class it stands
-    for, so what the interpreter says about the object (``async with`` on
-    a sync manager, iterating a manager; Python 3.14 names the class with
-    its module) is word for word what it says without the sensor. The
-    class is still a subclass of ``wrapper``. Built once per pair; two
-    threads building it at once keep the first."""
+    """``wrapper`` under the name of the SDK class it stands for (its
+    ``__name__`` and ``__qualname__``; the module stays the sensor's), so
+    what the interpreter says about the object (``async with`` on a sync
+    manager, iterating a manager) names the class the caller would see
+    without the sensor. Python 3.14 prints the class with its module, so
+    there the message names the sensor's module; ``type()``, ``repr``,
+    ``inspect.getmodule`` and pickle describe the sensor's class. Built
+    once per pair; two threads building it at once keep the first."""
     key = (wrapper, sdk_type)
     named = _NAMED_LIKE.get(key)
     if named is None:
         named = type(
             sdk_type.__name__,
             (wrapper,),
-            {"__qualname__": sdk_type.__qualname__, "__module__": sdk_type.__module__},
+            {"__qualname__": sdk_type.__qualname__, "__module__": wrapper.__module__},
         )
         named = _NAMED_LIKE.setdefault(key, named)
     return named
 
 
-class StreamManager:
+class StreamManager(HandedToCaller):
     """What a stream helper's call (``messages.stream()``) hands the
     caller in place of the SDK's manager: the manager's own protocol
     (``with``) and nothing more. Entering it enters the stream guard and
@@ -2314,6 +2382,9 @@ class StreamManager:
 
     def __init__(self, guard: GuardedStream) -> None:
         self._guard = guard
+
+    def _stands_for(self) -> Any:
+        return self._guard.made
 
     def __enter__(self) -> GuardedStream:
         return self._guard.__enter__()
@@ -2332,12 +2403,15 @@ class StreamManager:
         return getattr(self._guard.made, name)
 
 
-class AsyncStreamManager:
+class AsyncStreamManager(HandedToCaller):
     """Async counterpart of :class:`StreamManager` (``async with``) for an
     async client's ``messages.stream()``."""
 
     def __init__(self, guard: GuardedAsyncStream) -> None:
         self._guard = guard
+
+    def _stands_for(self) -> Any:
+        return self._guard.made
 
     async def __aenter__(self) -> GuardedAsyncStream:
         return await self._guard.__aenter__()
@@ -2366,6 +2440,78 @@ def stream_manager(guard: GuardedStream | GuardedAsyncStream) -> Any:
         return guard
     wrapper: type = AsyncStreamManager if isinstance(guard, GuardedAsyncStream) else StreamManager
     return named_like(wrapper, type(made))(guard)
+
+
+class _StreamView(HandedToCaller):
+    """A stream guard seen through the protocol of the SDK stream it
+    guards, for an SDK stream whose protocol is not the guard's (litellm's
+    ``CustomStreamWrapper`` iterates both ways and is no context manager).
+    Every public attribute is the guard's, and so the SDK stream's."""
+
+    def __init__(self, guard: GuardedStream | GuardedAsyncStream) -> None:
+        self._guard = guard
+
+    def _stands_for(self) -> Any:
+        return self._guard._stream
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._guard, name)
+
+
+class _IterableView(_StreamView):
+    """``for chunk in stream``, through the guard."""
+
+    def __iter__(self) -> Any:
+        return self
+
+    def __next__(self) -> Any:
+        return self._guard.next_chunk()
+
+
+class _AsyncIterableView(_StreamView):
+    """``async for chunk in stream``, through the guard."""
+
+    def __aiter__(self) -> Any:
+        return self
+
+    async def __anext__(self) -> Any:
+        return await self._guard.anext_chunk()
+
+
+class _BothWaysView(_IterableView, _AsyncIterableView):
+    """A stream that iterates both ways, through one guard: either way of
+    reading it is metered once."""
+
+
+def guard_of(stream: Any) -> Any:
+    """The stream guard behind ``stream`` (a :func:`protocol_view` of it,
+    or the guard itself), else ``stream``."""
+    return stream._guard if isinstance(stream, _StreamView) else stream
+
+
+_ITERATION = ("__iter__", "__next__", "__aiter__", "__anext__")
+_CONTEXT_AND_AWAIT = ("__enter__", "__exit__", "__aenter__", "__aexit__", "__await__")
+
+
+def protocol_view(guard: GuardedStream | GuardedAsyncStream) -> Any:
+    """``guard``, opened, as the caller gets it: the guard itself when its
+    protocol is the SDK stream's, else a view with exactly the SDK
+    stream's iteration (sync, async or both) and no context manager,
+    named as the SDK stream's class. An SDK stream with a context or
+    await protocol keeps the guard, which provides its own kind's."""
+    sdk_type = type(guard._stream)
+    wanted = {name for name in (*_ITERATION, *_CONTEXT_AND_AWAIT) if hasattr(sdk_type, name)}
+    have = {name for name in (*_ITERATION, *_CONTEXT_AND_AWAIT) if hasattr(type(guard), name)}
+    if wanted == have or wanted & set(_CONTEXT_AND_AWAIT):
+        return guard
+    sync = "__next__" in wanted
+    async_ = "__anext__" in wanted
+    if not (sync or async_):
+        return guard
+    view: type = _BothWaysView if sync and async_ else _IterableView if sync else _AsyncIterableView
+    return named_like(view, sdk_type)(guard)
 
 
 def _build_streaming_summary(
@@ -2570,6 +2716,36 @@ class GuardedAsyncStream(_GuardCore):
             except StopAsyncIteration:
                 self._exhausted = True
                 await self._finalize()
+                raise
+            except Exception as exc:
+                self._emit_stream_error(exc)
+                raise
+            if self._hidden(chunk):
+                self._record_chunk(chunk, visible=False)
+                continue
+            self._record_chunk(chunk)
+            return chunk
+
+    async def anext_chunk(self) -> Any:
+        """The next chunk the caller sees (see :func:`protocol_view`)."""
+        return await self.__anext__()
+
+    def next_chunk(self) -> Any:
+        """The next chunk the caller sees, read with the SDK stream's own
+        sync iteration: a stream an async call made that also iterates
+        synchronously (litellm's), metered as the async iteration is. The
+        guard was opened by the call's await; one that was not cannot be
+        opened here, without an event loop."""
+        if not self._entered:
+            raise TypeError("an async stream is opened by awaiting it, not by a for loop")
+        if self._stream_other_iter is None:
+            self._stream_other_iter = iter(self._require_stream())
+        while True:
+            try:
+                chunk = next(self._stream_other_iter)
+            except StopIteration:
+                self._exhausted = True
+                self._settle_now()
                 raise
             except Exception as exc:
                 self._emit_stream_error(exc)

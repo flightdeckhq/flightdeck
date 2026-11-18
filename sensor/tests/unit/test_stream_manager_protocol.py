@@ -1,28 +1,36 @@
 """Every object the sensor hands a caller of a stream helper, a streamed
-``create`` or a raw / streaming view has the protocol of the SDK object it
+call or a raw / streaming view has the protocol of the SDK object it
 stands for, at each stage: the call's result, what entering it gives and
-what ``parse()`` gives.
+what ``parse()`` gives. OpenAI and Anthropic (every path below), litellm
+(``completion`` / ``acompletion`` with ``stream=True``) and google-genai
+(``generate_content_stream``).
 
 A protocol is the presence of ``__enter__`` / ``__exit__``,
 ``__aenter__`` / ``__aexit__``, ``__iter__`` / ``__next__``,
 ``__aiter__`` / ``__anext__`` and ``__await__``, on the object and on its
-class (the interpreter looks a protocol up on the class). A stream
-helper's manager (OpenAI ``chat.completions.stream()`` /
-``responses.stream()``, Anthropic ``messages.stream()``) is also named as
-the SDK's class, so what the interpreter raises for the wrong protocol
+class (the interpreter looks a protocol up on the class), and what
+``copy.copy``, ``copy.deepcopy`` and ``pickle.dumps`` do with the object
+(work, or raise which exception). A stream helper's manager (OpenAI
+``chat.completions.stream()`` / ``responses.stream()``, Anthropic
+``messages.stream()``) is also named as the SDK's class, so a misuse
 (``async with`` on a sync manager, iterating a manager before entering
-it) is what it raises without the sensor, word for word.
+it) raises the exception the SDK's manager raises, at the same moment;
+the message is the same word for word where Python names a class without
+its module (3.11 to 3.13).
 
-Driven with the real ``openai`` / ``anthropic`` clients over respx; the
-oracle is the same call without the sensor, in the same environment.
+Driven with the real SDK clients over fake transports; the oracle is the
+same call without the sensor, in the same environment.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import gc
 import inspect
 import json
+import pickle
+import sys
 import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -333,6 +341,26 @@ def _protocol(obj: Any) -> dict[str, tuple[bool, bool]]:
     return {name: (hasattr(obj, name), hasattr(type(obj), name)) for name in PROTOCOL}
 
 
+def _outcome(fn: Callable[[], Any]) -> str:
+    """``"works"``, or the type of the exception ``fn`` raises."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fn()
+    except Exception as exc:
+        return type(exc).__name__
+    return "works"
+
+
+def _copying(obj: Any) -> dict[str, str]:
+    """What copying and pickling ``obj`` do."""
+    return {
+        "copy": _outcome(lambda: copy.copy(obj)),
+        "deepcopy": _outcome(lambda: copy.deepcopy(obj)),
+        "pickle": _outcome(lambda: pickle.dumps(obj)),
+    }
+
+
 async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
@@ -346,39 +374,41 @@ async def _drain(stream: Any) -> None:
             pass
 
 
-async def _stages(name: str, is_async: bool) -> list[tuple[str, dict[str, tuple[bool, bool]]]]:
-    """Each stage's protocol, using the result as its caller would."""
+async def _stages(
+    name: str, is_async: bool, probe: Callable[[Any], Any] = _protocol
+) -> list[tuple[str, Any]]:
+    """``probe`` of each stage, using the result as its caller would."""
     sdk, call, how = _PATHS[name]
     made = call(_client(sdk, is_async))
-    seen = [("call", _protocol(made))]
+    seen = [("call", probe(made))]
     if how in ("manager", "view", "view-stream"):
         if is_async:
             async with made as entered:
-                seen.append(("entered", _protocol(entered)))
-                await _use(entered, how, seen)
+                seen.append(("entered", probe(entered)))
+                await _use(entered, how, seen, probe)
         else:
             with made as entered:
-                seen.append(("entered", _protocol(entered)))
-                await _use(entered, how, seen)
+                seen.append(("entered", probe(entered)))
+                await _use(entered, how, seen, probe)
         return seen
     result = await _resolve(made)
-    seen.append(("awaited", _protocol(result)))
+    seen.append(("awaited", probe(result)))
     if how == "stream":
         await _drain(result)
     else:
         parsed = await _resolve(result.parse())
-        seen.append(("parsed", _protocol(parsed)))
+        seen.append(("parsed", probe(parsed)))
         if how == "raw-stream":
             await _drain(parsed)
     return seen
 
 
-async def _use(entered: Any, how: str, seen: list[Any]) -> None:
+async def _use(entered: Any, how: str, seen: list[Any], probe: Callable[[Any], Any]) -> None:
     if how == "manager":
         await _drain(entered)
         return
     parsed = await _resolve(entered.parse())
-    seen.append(("parsed", _protocol(parsed)))
+    seen.append(("parsed", probe(parsed)))
     if how == "view-stream":
         await _drain(parsed)
 
@@ -398,6 +428,59 @@ def test_each_stage_has_the_protocol_of_the_sdk_object(
     expected = asyncio.run(_stages(name, is_async))
     sensor(True)
     assert asyncio.run(_stages(name, is_async)) == expected
+
+
+# A deep copy of an SDK object that holds a client builds part of the
+# client before it fails; that part's finalizer then complains, with or
+# without the sensor.
+_PARTIAL_COPIES = [
+    pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
+    pytest.mark.filterwarnings("ignore::RuntimeWarning"),
+]
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("name", sorted(_PATHS))
+@_PARTIAL_COPIES[0]
+@_PARTIAL_COPIES[1]
+def test_each_stage_copies_and_pickles_as_the_sdk_object(
+    name: str,
+    is_async: bool,
+    router: respx.MockRouter,
+    sensor: Callable[[bool], Session | None],
+    unentered_managers_collected: None,
+) -> None:
+    """A shallow copy works and a deep copy or a pickle raises the same
+    exception type, as for the SDK object; the sensor's copy is the
+    object itself, so the call is still metered once.
+
+    One stage differs and is pinned as it is: an OpenAI sync client's
+    streaming view returns the SDK's own ``ResponseContextManager``, which
+    holds the request function it will call. Without the sensor that is
+    the resource's bound method, whose deep copy and pickle reach the
+    client and raise ``TypeError``; with the sensor it is the proxy's
+    method, a plain function shaped like the SDK's (its name, qualified
+    name and module), which ``copy`` treats as atomic and ``pickle``
+    looks up by that name, finding the SDK's function instead."""
+    sensor(False)
+    expected = asyncio.run(_stages(name, is_async, _copying))
+    session = sensor(True)
+    got = asyncio.run(_stages(name, is_async, _copying))
+    if "with_streaming_response" in name and not is_async and _PATHS[name][0] == "openai":
+        assert got[0] == ("call", {"copy": "works", "deepcopy": "works", "pickle": "PicklingError"})
+        assert expected[0] == (
+            "call",
+            {"copy": "works", "deepcopy": "TypeError", "pickle": "TypeError"},
+        )
+        got, expected = got[1:], expected[1:]
+    assert got == expected
+    assert session is not None
+    calls = [
+        c.args[0]["event_type"]
+        for c in session.event_queue.enqueue.call_args_list  # type: ignore[attr-defined]
+        if c.args[0]["event_type"] in ("post_call", "llm_error")
+    ]
+    assert calls == ["post_call"]
 
 
 def _raised(fn: Callable[[], Any]) -> tuple[str, str] | None:
@@ -435,8 +518,12 @@ _MISUSES: dict[str, Callable[[Any, bool], Any]] = {
 }
 
 
-# An async client's manager made and never entered leaves the coroutine
-# the SDK built for its request unawaited, with or without the sensor.
+# An async client's manager made and never entered leaves one coroutine
+# unawaited: the SDK's own request without the sensor (``AsyncCompletions
+# .create`` / ``AsyncResponses.create`` for OpenAI, ``AsyncAPIClient.post``
+# for Anthropic); with the sensor, Anthropic's is the same SDK coroutine,
+# and OpenAI's is the sensor's own ``create`` (``SessionProxy._call``),
+# which would have made the SDK's.
 _UNENTERED_ASYNC_MANAGER = [
     pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning"),
     pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
@@ -470,8 +557,10 @@ def test_a_misused_manager_raises_what_the_sdk_manager_raises_and_sends_nothing(
 ) -> None:
     """``async with`` on a sync client's manager, ``with`` on an async
     one's, and iterating a manager before entering it raise the same
-    exception, with the same message, as on the SDK's manager, and no
-    request leaves."""
+    exception type as on the SDK's manager, at the same moment (the call
+    returns, the misuse raises), and no request leaves. The message is the
+    same word for word below Python 3.14; 3.14 prints the class with its
+    module, which is the sensor's for the sensor's manager."""
     sdk, call, _how = _PATHS[name]
     outcomes = []
     for on in (False, True):
@@ -479,7 +568,10 @@ def test_a_misused_manager_raises_what_the_sdk_manager_raises_and_sends_nothing(
         manager = call(_client(sdk, is_async))
         outcomes.append(_raised(lambda m=manager: _MISUSES[misuse](m, is_async)))
     assert outcomes[0] is not None
-    assert outcomes[1] == outcomes[0]
+    assert outcomes[1] is not None
+    assert outcomes[1][0] == outcomes[0][0]
+    if sys.version_info < (3, 14):
+        assert outcomes[1][1] == outcomes[0][1]
     assert all(route.call_count == 0 for route in router.routes)
 
 
@@ -521,3 +613,175 @@ def test_block_refuses_every_form_of_a_stream_helper_before_any_request(
     if misuse is None:
         assert raised.type is BudgetExceededError
     assert all(route.call_count == 0 for route in router.routes)
+
+
+# ----- litellm and google-genai -------------------------------------------------------
+
+
+@pytest.fixture
+def litellm_sensor(
+    sensor: Callable[[bool], Session | None],
+) -> Iterator[Callable[[bool], Session | None]]:
+    """As :func:`sensor`, with litellm's functions patched too."""
+    pytest.importorskip("litellm")
+    from flightdeck_sensor.interceptor.litellm import (
+        patch_litellm_functions,
+        unpatch_litellm_functions,
+    )
+
+    def _set(on: bool) -> Session | None:
+        unpatch_litellm_functions()
+        session = sensor(on)
+        if on:
+            patch_litellm_functions(quiet=True)
+        return session
+
+    yield _set
+    unpatch_litellm_functions()
+
+
+def _litellm_stream(is_async: bool) -> Any:
+    """``litellm.completion`` / ``acompletion`` with ``stream=True`` through
+    an OpenAI client over the fake transport."""
+    litellm = pytest.importorskip("litellm")
+    if is_async:
+        return litellm.acompletion(
+            **CHAT_KW, stream=True, client=openai.AsyncOpenAI(api_key="k", max_retries=0)
+        )
+    return litellm.completion(
+        **CHAT_KW, stream=True, client=openai.OpenAI(api_key="k", max_retries=0)
+    )
+
+
+async def _litellm_read(is_async: bool, how: str) -> tuple[Any, Any, Any]:
+    """The stream's protocol and copying, and what reading it ``how``
+    gives: its text, or the exception's type."""
+    stream = await _resolve(_litellm_stream(is_async))
+    seen = (_protocol(stream), _copying(stream))
+    text = []
+    try:
+        if how == "for":
+            for chunk in stream:
+                text.append(_delta_text(chunk))
+        else:
+            async for chunk in stream:
+                text.append(_delta_text(chunk))
+    except Exception as exc:
+        return (*seen, ("raised", type(exc).__name__))
+    return (*seen, ("read", "".join(text)))
+
+
+def _delta_text(chunk: Any) -> str:
+    choices = getattr(chunk, "choices", None) or []
+    return (getattr(choices[0].delta, "content", None) or "") if choices else ""
+
+
+def _call_events(session: Session) -> list[str]:
+    calls = session.event_queue.enqueue.call_args_list  # type: ignore[attr-defined]
+    return [c.args[0]["event_type"] for c in calls if c.args[0]["event_type"] != "pre_call"]
+
+
+@pytest.mark.parametrize("how", ["for", "async for"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["completion", "acompletion"])
+@_PARTIAL_COPIES[0]
+@_PARTIAL_COPIES[1]
+def test_a_litellm_stream_has_the_protocol_of_litellms_and_reads_either_way_as_it(
+    is_async: bool,
+    how: str,
+    router: respx.MockRouter,
+    litellm_sensor: Callable[[bool], Session | None],
+    unentered_managers_collected: None,
+) -> None:
+    """litellm's ``CustomStreamWrapper`` iterates both ways and is no
+    context manager, whichever call made it; the stream the sensor
+    returns has that protocol, copies and pickles as it does, and read
+    either way gives what reading litellm's own gives (its text, or the
+    same exception), reported once."""
+    litellm_sensor(False)
+    expected = asyncio.run(_litellm_read(is_async, how))
+    session = litellm_sensor(True)
+    assert session is not None
+    got = asyncio.run(_litellm_read(is_async, how))
+    assert got == expected
+    events = _call_events(session)
+    assert len(events) == 1, events
+    assert events[0] == ("post_call" if got[2][0] == "read" else "llm_error")
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["completion", "acompletion"])
+def test_block_refuses_a_litellm_stream_before_any_request(
+    is_async: bool,
+    router: respx.MockRouter,
+    litellm_sensor: Callable[[bool], Session | None],
+) -> None:
+    session = litellm_sensor(True)
+    assert session is not None
+    session.policy = PolicyCache(token_limit=100, block_at_pct=50)
+    session._tokens_used = 90
+    with pytest.raises(BudgetExceededError):
+        asyncio.run(_resolve(_litellm_stream(is_async)))
+    assert all(route.call_count == 0 for route in router.routes)
+
+
+def _gemini(request: httpx.Request) -> httpx.Response:
+    chunk = {
+        "candidates": [
+            {"content": {"role": "model", "parts": [{"text": "Hi"}]}, "finishReason": "STOP"}
+        ],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1, "totalTokenCount": 4},
+        "modelVersion": "gemini-2.5-flash",
+    }
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=f"data: {json.dumps(chunk)}\n\n".encode(),
+    )
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@_PARTIAL_COPIES[0]
+@_PARTIAL_COPIES[1]
+def test_a_google_genai_stream_has_the_protocol_of_the_sdks(
+    is_async: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    unentered_managers_collected: None,
+) -> None:
+    """google-genai's ``generate_content_stream`` hands back the SDK's own
+    generator (the sensor guards the request beneath it): the same
+    protocol and copying, read as without the sensor."""
+    genai = pytest.importorskip("google.genai")
+    from google.genai import types
+
+    from flightdeck_sensor.interceptor import google_genai
+
+    transport = httpx.MockTransport(_gemini)
+    options = types.HttpOptions(
+        httpx_client=httpx.Client(transport=transport),
+        httpx_async_client=httpx.AsyncClient(transport=transport),
+    )
+
+    async def read() -> tuple[Any, Any, str]:
+        client = genai.Client(api_key="k", http_options=options)
+        if is_async:
+            stream = await client.aio.models.generate_content_stream(
+                model="gemini-2.5-flash", contents="hi"
+            )
+            seen = (_protocol(stream), _copying(stream))
+            text = [chunk.text or "" async for chunk in stream]
+        else:
+            stream = client.models.generate_content_stream(model="gemini-2.5-flash", contents="hi")
+            seen = (_protocol(stream), _copying(stream))
+            text = [chunk.text or "" for chunk in stream]
+        return (*seen, "".join(text))
+
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    expected = asyncio.run(read())
+    session = _session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    google_genai.patch_google_genai(quiet=True)
+    try:
+        got = asyncio.run(read())
+    finally:
+        google_genai.unpatch_google_genai()
+    assert got == expected
+    assert _call_events(session) == ["post_call"]

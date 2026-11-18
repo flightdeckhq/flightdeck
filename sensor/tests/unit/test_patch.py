@@ -818,7 +818,7 @@ def test_litellm_streaming_returns_the_stream_guard(
         messages=[{"role": "user", "content": "hi"}],
         stream=True,
     )
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     mock_completion.assert_called_once()
     assert mock_completion.call_args.kwargs["stream"] is True
     assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}
@@ -900,5 +900,5 @@ def test_sensor_litellm_streaming_returns_the_stream_guard(
         messages=[{"role": "user", "content": "hi"}],
         stream=True,
     )
-    assert isinstance(stream, base.GuardedStream)
+    assert isinstance(base.guard_of(stream), base.GuardedStream)
     assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}

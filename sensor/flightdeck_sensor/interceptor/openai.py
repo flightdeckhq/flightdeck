@@ -484,16 +484,12 @@ class _HelperRequest:
         return self.send(self._proxy, kwargs)
 
     def send(self, proxy: Any, kwargs: dict[str, Any]) -> Any:
-        """``proxy.create(**kwargs)``, keeping the guard it opens, if any."""
+        """``proxy.create(**kwargs)``, keeping the guard it opens, if any.
+        On an async client the request is awaited by the manager's entry,
+        through :class:`_Opening`."""
         result = proxy.create(**_given(kwargs))
         if inspect.iscoroutine(result):
-
-            async def _opened() -> Any:
-                opened = await result
-                self._keep(opened)
-                return opened
-
-            return _opened()
+            return _Opening(result, self)
         self._keep(result)
         return result
 
@@ -506,6 +502,23 @@ class _HelperRequest:
         if name == _SDK_CLIENT_ATTR:
             return _HelperClient(self, value)
         return value
+
+
+class _Opening:
+    """The request an async ``.stream()`` manager awaits on entry: the
+    proxy's ``create`` coroutine, awaited, keeping the guard it opens. Not
+    a coroutine itself, so a manager the caller never enters leaves one
+    coroutine unawaited (the proxy's ``create``), as the SDK's manager
+    leaves one (its own ``create``), not two."""
+
+    def __init__(self, request: Any, helper_request: _HelperRequest) -> None:
+        self._request = request
+        self._helper_request = helper_request
+
+    def __await__(self) -> Any:
+        opened = yield from self._request.__await__()
+        self._helper_request._keep(opened)
+        return opened
 
 
 # The attribute an SDK resource holds its client under (``self._client``).
@@ -552,7 +565,7 @@ class _HelperClient:
         return getattr(self._real, name)
 
 
-class _HelperStreamManager:
+class _HelperStreamManager(base.HandedToCaller):
     """The SDK's ``.stream()`` manager, whose exit also settles the stream
     guard the helper read through. The SDK's exit closes the HTTP
     response, which the guard does not see; leaving it to the guard's
@@ -569,6 +582,9 @@ class _HelperStreamManager:
         self._manager = manager
         self._request = request
 
+    def _stands_for(self) -> Any:
+        return self._manager
+
     def _adopt(self, helper: Any) -> Any:
         """Point the guard at the helper's own assembly: the helper keeps
         the SDK's stream state for the events it reads through the guard,
@@ -579,6 +595,11 @@ class _HelperStreamManager:
         return helper
 
     def __getattr__(self, name: str) -> Any:
+        # Private and dunder names stay local: the SDK manager's own are
+        # name-mangled and read only by its own methods, and forwarding
+        # ``_manager`` itself would recurse on a copy made without it.
+        if name.startswith("_"):
+            raise AttributeError(name)
         return getattr(self._manager, name)
 
 

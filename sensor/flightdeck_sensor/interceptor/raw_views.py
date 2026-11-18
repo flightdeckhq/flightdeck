@@ -339,7 +339,7 @@ def _typed_parse_read_body(response: Any, call: DeferredCall) -> bool:
     return not call.streams and _body_already_read(response)
 
 
-class DeferredResponse:
+class DeferredResponse(base.HandedToCaller):
     """Stands in for the SDK's response on a view whose body is unread
     (``APIResponse`` on the sync streaming view, ``LegacyAPIResponse`` on
     a streaming raw-view call). The sensor meters at the caller's
@@ -359,6 +359,9 @@ class DeferredResponse:
         self._response = response
         self._call = call
         call.register(response)
+
+    def _stands_for(self) -> Any:
+        return self._response
 
     def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = self._response.parse(*args, **kwargs)
@@ -397,7 +400,7 @@ class DeferredResponse:
         return getattr(self._response, name)
 
 
-class DeferredAsyncResponse:
+class DeferredAsyncResponse(base.HandedToCaller):
     """Async counterpart of :class:`DeferredResponse`: the SDK's
     ``AsyncAPIResponse.parse()`` is a coroutine, so metering happens
     when the caller's ``await response.parse()`` resolves."""
@@ -406,6 +409,9 @@ class DeferredAsyncResponse:
         self._response = response
         self._call = call
         call.register(response)
+
+    def _stands_for(self) -> Any:
+        return self._response
 
     async def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = await self._response.parse(*args, **kwargs)

@@ -1012,7 +1012,10 @@ the estimate is made before the manager is returned.
 anthropic 0.86 reads them there too, but anthropic 2.x reads them only
 when the manager is entered, so on 2.x a lazy generator's own side
 effects run earlier than without the sensor. With no session active the
-arguments are not read.
+arguments are not read, except a stream helper's on a patched class or
+a following (`wrap()`) proxy: its entry may come under a session, so its
+iterators are read at the call all the same, and the entry's estimate
+counts them.
 
 An ordinary call's arguments hold no iterator and are only walked, never
 copied: the lists, tuples, dicts and strings go to the SDK as the same
@@ -1572,10 +1575,20 @@ arrives the guard keeps the latest response a `response.created` /
 terminal event stores that in-progress response (`object: "response"`,
 `status: "in_progress"`, no output) as its content only; its usage,
 model and stop reason still come from the events, and it emits no tool
-call. litellm's
-stream wrappers are not context managers and have no `close()`, so the
-guard is used as a plain iterator; a loop left early is reported once the
-guard is collected.
+call. Each of these classes has a protocol of its own, and the stream
+the caller gets has the protocol, name and public methods of the class
+litellm returned: `CustomStreamWrapper` and `TextCompletionStreamWrapper`
+iterate both ways, `SyncResponsesAPIStreamingIterator` only with `for`
+and `ResponsesAPIStreamingIterator` only with `async for`. None is a
+context manager or has `close()`, so the guard is used as a plain
+iterator; a loop left early is reported once the guard is collected, or
+when its session ends. litellm's `text_completion` stream sends its
+request at its first read, while the sensor polices it and emits its
+`pre_call` at the call, so a `text_completion` stream never read reports
+a call that was never made. A call that asks to stream but gets a whole
+response back (litellm answers `responses(stream=True,
+mock_response=...)` with a `ResponsesAPIResponse`) is handed back as
+that response and reported as the plain call it was.
 `LitellmProvider` surfaces the cache breakdown litellm exposes
 (`usage.prompt_tokens_details.cached_tokens` / `cache_creation_tokens`, or
 the Anthropic-named `cache_read_input_tokens` /
@@ -2966,9 +2979,19 @@ sync or async, send on entry, and a manager is matched to the session
 active when it is entered the same way: one entered after `teardown` is
 the SDK's own, sending its request with nothing policed or reported, and
 one entered in the next session is policed by it and reports to it, with
-its capture setting. Anthropic's `messages.stream()` calls the SDK's own
-`stream()` when it is called, which reports nothing; one called with no
-session active returns the SDK's own manager. A stream still open at
+its capture setting. That holds for a manager made with no session
+active too: a stream helper called on a patched Anthropic resource, or
+on a following proxy (`wrap()`'s, or one the OpenAI class patch handed
+out under an earlier session), returns the sensor's manager whatever
+the session at the call, and its entry finds the session then; with
+still none, the entry is the SDK's own. An outer interceptor metering
+the call or an unpatched class makes `stream()` return the SDK's own
+manager. So does an OpenAI client whose resource is first read while
+the class is patched and no session is active, which happens only
+inside `teardown()`, between the session ending and the patch coming
+off: the class patch hands it the SDK's own resource, and nothing made
+from it is metered. Anthropic's `messages.stream()` calls the SDK's own `stream()`
+when it is called, which reports nothing. A stream still open at
 `teardown` is settled when its session ends (see "Shutdown and
 signals").
 

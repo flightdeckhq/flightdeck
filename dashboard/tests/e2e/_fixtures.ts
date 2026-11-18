@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { expect, type Page, type Locator } from "@playwright/test";
+import { FLIGHTDECK_NAMESPACE, uuid5 } from "./_identity";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL } from "./_stack";
 
 // Shared fixture metadata for the E2E suite. Mirrors the canonical
@@ -323,23 +325,6 @@ export const LANE_FIXTURES = {
  *  namespace (``_derive_session_id``). */
 export function fixtureSessionId(agentName: string, role: string): string {
   return uuid5(`flightdeck-e2e/${agentName}/${role}`, FLIGHTDECK_NAMESPACE);
-}
-
-const FLIGHTDECK_NAMESPACE = "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61";
-
-/** RFC 4122 version-5 UUID (SHA-1), as Python's ``uuid.uuid5``. */
-function uuid5(name: string, namespace: string): string {
-  const ns = Uint8Array.from(
-    namespace.replace(/-/g, "").match(/../g)!.map((h) => parseInt(h, 16)),
-  );
-  const bytes = createHash("sha1")
-    .update(Buffer.concat([Buffer.from(ns), Buffer.from(name, "utf8")]))
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Buffer.from(bytes).toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export const ALL_FIXTURE_AGENTS = [
@@ -769,7 +754,9 @@ export async function openPerAgentModal(page: Page, agentName: string): Promise<
 /** How long the private-agent helpers wait for the worker to store a
  *  run or an event: what the dashboard then fetches. */
 const PRIVATE_STORE_WAIT_MS = 15_000;
-const PRIVATE_HOST = "e2e-host-private";
+/** The host the private runs send: the pre-flight's marker for them
+ *  (_private-fixtures.ts). */
+const PRIVATE_HOST = PRIVATE_FIXTURE_HOSTS.privateAgent;
 /** The model the private runs report: the lane label shows it, and an
  *  LLM call on it carries no marker text. */
 const PRIVATE_MODEL = "claude-sonnet-4-5";
@@ -800,7 +787,6 @@ function privateEvent(
     session_id: sessionId,
     flavor: agent.flavor,
     event_type: eventType,
-    host: PRIVATE_HOST,
     framework: "claude-code",
     model: PRIVATE_MODEL,
     tokens_input: null,
@@ -816,14 +802,18 @@ function privateEvent(
     content: null,
     capture_prompts: true,
     timestamp: at.toISOString(),
-    agent_id: agent.agentId,
     agent_type: "coding",
-    agent_name: agent.agentName,
     client_type: "claude_code",
     user: "e2e-runner",
-    hostname: PRIVATE_HOST,
     ...(agent.role ? { agent_role: agent.role } : {}),
     ...extra,
+    // After ``extra``: the fields a caller passes (another client's
+    // identity, a call's model) never replace the agent or the host the
+    // pre-flight recognises a private run by (_private-fixtures.ts).
+    host: PRIVATE_HOST,
+    hostname: PRIVATE_HOST,
+    agent_id: agent.agentId,
+    agent_name: agent.agentName,
   };
   if (eventType === "session_start") {
     payload.sensor_version = "e2e-fixture/0.0.0";

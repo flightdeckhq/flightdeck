@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { SWIMLANE_LOOKBACK_SEC, waitForFleetReady } from "./_fixtures";
+import { PRIVATE_FIXTURE_HOSTS } from "./_private-fixtures";
 import { API_URL, INGEST_URL } from "./_stack";
 
 // T130 — the Fleet sidebar's agent-row controls reach every live run of
@@ -22,7 +23,7 @@ import { API_URL, INGEST_URL } from "./_stack";
 const AUTH = { Authorization: "Bearer tok_dev" };
 const INGEST = `${INGEST_URL}/v1`;
 const API = `${API_URL}/v1`;
-const HOST = "e2e-fleet-controls-host";
+const HOST = PRIVATE_FIXTURE_HOSTS.fleetControls;
 
 /** Age of the run the page never loads, in hours: past the swimlane's
  *  24 h sessions page and inside ingestion's 48 h clock-skew window. */

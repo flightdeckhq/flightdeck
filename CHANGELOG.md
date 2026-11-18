@@ -6,6 +6,26 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- The sensor meters and enforces Gemini calls made through the
+  google-genai SDK (1.64 and later), on the Gemini API and on Vertex AI:
+  `client.models` and `client.aio.models` (`generate_content`,
+  `generate_content_stream`, `embed_content`), chats, and every framework
+  that calls Gemini through it, including Google ADK's default model,
+  LangChain's `ChatGoogleGenerativeAI` and CrewAI's Gemini provider.
+  `patch()` covers it as `Provider.GOOGLE_GENAI`. Each request Google
+  bills is one call, so each round of automatic function calling is its
+  own `post_call`, with a `tool_call` for each function the model asked
+  for, and a policy block or a stop applies at the next round. Calls
+  report `provider=google`, the `gemini-api` or `vertex` platform, the
+  model that answered, thinking tokens as reasoning (counted in the
+  output), cached tokens and the service tier, and a 429 per-day quota,
+  a rate limit, a rejected key, an overloaded model or a safety stop as
+  their own errors. With capture on, the content is what the provider
+  received and returned: the request body the SDK built (its
+  `contents`, `systemInstruction` and `tools`, in the body's own
+  spelling) and the response body; the Prompts tab shows its system
+  instruction, tools and response, not yet its contents. `playground/43_google_genai.py` exercises it against the
+  real API.
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a

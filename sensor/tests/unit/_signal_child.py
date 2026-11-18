@@ -1,6 +1,6 @@
 """Child process for test_signal_shutdown.py.
 
-Usage: ``_signal_child.py <capture server url> <mode> [<lock>]``
+Usage: ``_signal_child.py <capture server url> <mode> [<lock> | busy]``
 
 Starts a sensor session that reports to the capture server, prints
 ``SESSION <id>`` and ``READY``, then waits for the signal the test sends;
@@ -19,7 +19,13 @@ if none ends it, it prints ``ALIVE`` and exits normally. Modes:
 - ``imports``: from READY on, records every module loaded and every
   ``exec`` run, on any thread, through an audit hook; when the SIGINT
   reaches it as KeyboardInterrupt it prints them as ``LOADED <json>`` and
-  exits normally.
+  exits normally. READY is printed inside the ``try`` that catches the
+  KeyboardInterrupt: the test signals as soon as it reads READY, and the
+  interpreter can run the handler as the print call returns, before any
+  later statement starts. With ``busy`` it computes in C for a moment
+  after READY (no signal handler runs inside that call), so the handler
+  runs right as that call returns, as it can on a loaded machine as the
+  print returns.
 - ``inflight``: queues one ``INFLIGHT_EVENT_TYPE`` event before READY, so
   that against a capture server that holds its responses the drain
   thread's POST of it is under way when the signal lands.
@@ -61,6 +67,11 @@ SHORT_WAIT_SECS = 1.0
 APP_EXIT_CODE = 7
 # The event ``inflight`` queues (test_signal_shutdown.py looks for it).
 INFLIGHT_EVENT_TYPE = "tool_call"
+# The ``imports`` option that computes in C after READY (see the module
+# docstring), and how much: tens of milliseconds and more, far longer
+# than the test takes to send its signal once it reads READY.
+BUSY = "busy"
+BUSY_RANGE = 20_000_000
 
 
 def _post_marker(server: str, name: str) -> None:
@@ -76,7 +87,8 @@ def _post_marker(server: str, name: str) -> None:
 
 def main() -> None:
     server, mode = sys.argv[1], sys.argv[2]
-    lock_name = sys.argv[3] if len(sys.argv) > 3 else ""
+    # The lock a hold mode holds, or the imports mode's option.
+    option = sys.argv[3] if len(sys.argv) > 3 else ""
 
     if mode == "chain":
 
@@ -100,7 +112,7 @@ def main() -> None:
             "session": session._lock,
             "queue": session.event_queue._queue.mutex,
             "policy": session.policy._lock,
-        }[lock_name]
+        }[option]
         with lock:
             print("READY", flush=True)
             deadline = time.monotonic() + (HOLD_SECS if mode == "hold" else LONG_HOLD_SECS)
@@ -129,8 +141,10 @@ def main() -> None:
                 loaded.append(f"exec {where}")
 
         sys.addaudithook(record)
-        print("READY", flush=True)
         try:
+            print("READY", flush=True)
+            if option == BUSY:
+                sum(range(BUSY_RANGE))
             time.sleep(WAIT_SECS)
         except KeyboardInterrupt:
             print(f"LOADED {json.dumps(loaded)}", flush=True)

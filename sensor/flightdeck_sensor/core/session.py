@@ -89,6 +89,7 @@ _ACTIVE_SUBAGENT_SCOPE: ContextVar[SubagentScope | None] = ContextVar(
 _INTERCEPTOR_DEPS: tuple[str, ...] = (
     "anthropic",
     "openai",
+    "google-genai",
     "litellm",
     "langchain",
     "langgraph",

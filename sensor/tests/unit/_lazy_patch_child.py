@@ -49,6 +49,7 @@ PATCHABLE = (
     "llama_index.core",
     "claude_agent_sdk",
     "agents",
+    "google.genai.models",
     "google.adk.runners",
 )
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
@@ -190,6 +191,13 @@ def _use(sdk: str, server: str) -> bool:
         )
         Runner.run_sync(Agent(name="worker", model=model), "hi")
         return AgentRunner.__dict__.get("_flightdeck_openai_agents_patched", False) is True
+    if sdk == "google.genai.models":
+        from google import genai
+        from google.genai import models
+
+        client = genai.Client(api_key="test-key", http_options={"base_url": server})
+        client.models.generate_content(model="gemini-3.1-flash-lite", contents="hi")
+        return "_flightdeck_patched" in models.Models.__dict__
     if sdk == "google.adk.runners":
         return asyncio.run(_run_adk_agent(server))
     raise ValueError(sdk)

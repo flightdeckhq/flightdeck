@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import logging
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,9 @@ PLATFORM_ANTHROPIC = "anthropic"
 PLATFORM_OPENAI = "openai"
 PLATFORM_AZURE = "azure"
 PLATFORM_VERTEX = "vertex"
+# Google's Gemini API (generativelanguage.googleapis.com), which the
+# google-genai SDK talks to unless it is set up for Vertex AI.
+PLATFORM_GEMINI_API = "gemini-api"
 # The platform of a client pointed at this machine, whatever spelling of
 # the loopback host it uses (an IPv6 literal would otherwise fail the
 # hostname check below and read as invalid-host).
@@ -45,12 +49,14 @@ _PLATFORM_HOSTS: tuple[tuple[str, str, str], ...] = (
     # Vertex matches only the Vertex AI API hosts (aiplatform.<...>
     # .googleapis.com and the regional <region>-aiplatform.googleapis.com)
     # and google-cloud only Claude Platform on Google Cloud's gateway
-    # (claude.googleapis.com), not every Google API host.
+    # (claude.googleapis.com), not every Google API host; gemini-api only
+    # the Gemini API's own host.
     ("", ".anthropic.com", PLATFORM_ANTHROPIC),
     ("bedrock-runtime.", ".amazonaws.com", "bedrock"),
     ("bedrock-mantle.", ".api.aws", "bedrock-mantle"),
     ("aws-external-anthropic.", ".api.aws", "aws"),
     ("claude.", ".googleapis.com", "google-cloud"),
+    ("generativelanguage.", ".googleapis.com", PLATFORM_GEMINI_API),
     ("aiplatform.", ".googleapis.com", PLATFORM_VERTEX),
     ("", "-aiplatform.googleapis.com", PLATFORM_VERTEX),
     ("", ".services.ai.azure.com", "foundry"),
@@ -111,16 +117,34 @@ class Endpoint:
     local: bool = False
 
 
+def _endpoint_of_host(host: Any, default_platform: str) -> Endpoint:
+    if isinstance(host, str) and host:
+        if is_loopback_host(host):
+            return Endpoint(platform=PLATFORM_LOCALHOST, local=True)
+        return Endpoint(platform=platform_for_host(host))
+    return Endpoint(platform=default_platform)
+
+
 def endpoint_of(client: Any, default_platform: str) -> Endpoint:
     """The endpoint of a client, read from ``client.base_url.host``;
     ``default_platform`` when the client exposes no usable host (a test
     double)."""
     try:
-        host = getattr(getattr(client, "base_url", None), "host", None)
-        if isinstance(host, str) and host:
-            if is_loopback_host(host):
-                return Endpoint(platform=PLATFORM_LOCALHOST, local=True)
-            return Endpoint(platform=platform_for_host(host))
+        return _endpoint_of_host(
+            getattr(getattr(client, "base_url", None), "host", None), default_platform
+        )
+    except Exception:
+        _log.debug("platform attribution failed", exc_info=True)
+    return Endpoint(platform=default_platform)
+
+
+def endpoint_of_url(base_url: Any, default_platform: str) -> Endpoint:
+    """The endpoint of a client configured by a base URL string (the
+    google-genai client's ``http_options.base_url``), read from its host;
+    ``default_platform`` when the URL names none."""
+    try:
+        if isinstance(base_url, str) and base_url:
+            return _endpoint_of_host(urllib.parse.urlsplit(base_url).hostname, default_platform)
     except Exception:
         _log.debug("platform attribution failed", exc_info=True)
     return Endpoint(platform=default_platform)

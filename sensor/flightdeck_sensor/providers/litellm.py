@@ -343,9 +343,9 @@ class LitellmProvider:
         handed = getattr(self.outer_call, "usage", None)
         if not isinstance(handed, TokenUsage) or handed.total <= 0:
             return response
+        # The provider's counts win over any litellm worked out itself
+        # without the usage chunk (litellm 1.83 counts the prompt then).
         usage = response.get("usage")
-        if isinstance(usage, dict) and (_count(usage.get("prompt_tokens")) or 0) > 0:
-            return response
         return {
             **response,
             "usage": {

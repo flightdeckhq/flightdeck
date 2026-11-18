@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 from typing import Any
 
@@ -79,7 +80,7 @@ def _longest_string_bytes(value: Any) -> int:
 
 
 def _serialize_cut(payload: dict[str, Any], content: Any, cap: int) -> bytes:
-    return json.dumps({**payload, "content": _cap_strings(content, cap)}).encode()
+    return json.dumps({**payload, "content": _cap_strings(content, cap)}, allow_nan=False).encode()
 
 
 # Payload fields holding a sub-agent message stub that points at the
@@ -116,10 +117,37 @@ def _first_time(event_type: Any, unencodable: str) -> bool:
         return True
 
 
+#: What a warning names when the value JSON cannot write is a float that
+#: is not finite. Python's json module would write it as ``NaN`` /
+#: ``Infinity``, which is not JSON: ingestion rejects such a body whole.
+NON_FINITE_FLOAT = "a non-finite float (NaN or Infinity)"
+
+
+def _holds_non_finite(value: Any) -> bool:
+    """Whether ``value``'s dicts and lists hold a NaN or an infinity. Each
+    container is visited once, so a circular reference ends the walk."""
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                return True
+            continue
+        if not isinstance(item, (dict, list, tuple)) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        pending.extend(item.values() if isinstance(item, dict) else item)
+    return False
+
+
 def _encode(payload: dict[str, Any]) -> tuple[bytes | None, str]:
     """``payload`` as JSON, or (None, what could not be encoded): the type
-    name of the first object json cannot write, else the error's text (a
-    circular reference)."""
+    name of the first object json cannot write, :data:`NON_FINITE_FLOAT`
+    for a NaN or an infinity, else the error's text (a circular
+    reference). The body is always JSON: a non-finite float is refused
+    rather than written as ``NaN`` / ``Infinity``, as the provider SDKs'
+    own encoders refuse it."""
     unencodable: list[str] = []
 
     def refuse(value: Any) -> Any:
@@ -127,27 +155,32 @@ def _encode(payload: dict[str, Any]) -> tuple[bytes | None, str]:
         raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
     try:
-        return json.dumps(payload, default=refuse).encode(), ""
+        return json.dumps(payload, default=refuse, allow_nan=False).encode(), ""
     except (TypeError, ValueError) as exc:
-        return None, unencodable[0] if unencodable else str(exc)
+        if unencodable:
+            return None, unencodable[0]
+        return None, NON_FINITE_FLOAT if _holds_non_finite(payload) else str(exc)
 
 
 def serialize_event(payload: dict[str, Any]) -> bytes:
     """The JSON body for one event, kept within :data:`MAX_EVENT_BODY_BYTES`.
 
     An event without content, or one over the limit even without it, is
-    sent as it is. An event whose content json cannot write is sent
-    without it, with a warning: its token counts and metadata still
-    arrive, and the content is never replaced by a string form the
-    provider never received. A failure outside the content raises, as
-    before.
+    sent as it is. An event whose content json cannot write (an object, or
+    a non-finite float) is sent without it, with a warning: its token
+    counts and metadata still arrive, and the content is never replaced
+    by a string form, or a ``null``, the provider never returned. A
+    failure outside the content raises, as before; nothing that is not
+    JSON is ever sent.
     """
     body, unencodable = _encode(payload)
     if body is None:
         if payload.get("content") is None:
             raise TypeError(f"event is not JSON serializable: {unencodable}")
         payload = _without_content(payload)
-        body = json.dumps(payload).encode()
+        body, outside = _encode(payload)
+        if body is None:
+            raise TypeError(f"event is not JSON serializable outside its content: {outside}")
         event_type = payload.get("event_type")
         log = _log.warning if _first_time(event_type, unencodable) else _log.debug
         log(
@@ -161,7 +194,7 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
     if size <= MAX_EVENT_BODY_BYTES or content is None:
         return body
     event_type = payload.get("event_type")
-    bare = json.dumps(_without_content(payload)).encode()
+    bare = json.dumps(_without_content(payload), allow_nan=False).encode()
     if encoded_size(bare) > MAX_EVENT_BODY_BYTES:
         _log.warning(
             "%s event is %d bytes and over the event size limit without its content; sent as it is",

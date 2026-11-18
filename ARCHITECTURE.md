@@ -1591,7 +1591,12 @@ be had that way, in three tiers by the route litellm takes:
   the provider reports usage in its own events whatever the request says,
   so the sensor asks for nothing. The counts come from the usage litellm
   shows when it shows it, else from the usage on the chunks litellm keeps
-  on its stream.
+  on its stream. That record holds the provider's counts for Anthropic
+  and Gemini (measured on litellm 1.83 and 1.104); for Vertex AI,
+  Bedrock, Cohere and Ollama it is expected by reading, not measured:
+  their stream iterators put the provider's usage on a chunk, and
+  litellm keeps every chunk before it removes the usage from the one it
+  shows.
 
 The usage litellm keeps but does not show is read by one function that
 checks every attribute it reads (a missing attribute, an unexpected

@@ -1299,7 +1299,7 @@ and borders across the app, where they are not text.
 themselves (changes every chart, badge and swimlane at once); per-theme
 colours chosen in components (components would branch on the theme).
 
-## D289 -- Usage is asked for where the request is final, never at a layer whose decision the caller observes
+## D290 -- Usage is asked for where the request is final, never at a layer whose decision the caller observes
 
 **Date:** 2026-11-18
 **Decision:** a litellm stream shows its caller exactly what litellm

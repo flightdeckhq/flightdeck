@@ -15,7 +15,9 @@ import { EMBEDDING_TOKEN_IDS_PREVIEW_COUNT as TOKEN_IDS_PREVIEW_COUNT } from "@/
  * model output content). Reusing PromptViewer would have meant
  * overloading its system/messages/response slots with embedding
  * fields, creating "convenient now, confusing later" debt, so the two
- * shapes stay separate.
+ * shapes stay separate. The Prompts tab's view of an embeddings event
+ * draws its input box with ``EmbeddingsInput``, the input view below,
+ * so the input reads the same there as in the expanded row.
  *
  * The embeddings API takes four shapes of ``input``, and the sensor
  * stores the one the call sent as it was sent. The viewer reads the
@@ -141,8 +143,6 @@ export function EmbeddingsContentViewer({
   eventId,
   hasContent,
 }: EmbeddingsContentViewerProps) {
-  const [expanded, setExpanded] = useState(false);
-
   // No request when the caller knows there is nothing to fetch. Only
   // this event's result is shown.
   const contentFetch = useKeyedFetch<EventContent | null>(hasContent ? eventId : null, () =>
@@ -190,8 +190,20 @@ export function EmbeddingsContentViewer({
     );
   }
 
+  return <EmbeddingsInput input={content.input} />;
+}
+
+/**
+ * A stored embeddings ``input``, drawn by its shape (see
+ * ``classifyEmbeddingInput``): the view the expanded event row shows
+ * once the content has loaded, and the one the Prompts tab shows in its
+ * input box, so an input reads the same in both places. The stored
+ * value is drawn as it is, never converted to another shape.
+ */
+export function EmbeddingsInput({ input }: { input: unknown }) {
+  const [expanded, setExpanded] = useState(false);
   const onToggle = () => setExpanded((v) => !v);
-  const shape = classifyEmbeddingInput(content.input);
+  const shape = classifyEmbeddingInput(input);
   switch (shape.kind) {
     case "string":
       return <SingleInputView text={shape.text} expanded={expanded} onToggle={onToggle} />;

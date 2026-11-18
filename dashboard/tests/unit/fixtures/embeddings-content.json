@@ -1,0 +1,220 @@
+{
+ "_source": "Bodies GET /v1/events/:id/content served for real embeddings calls through the sensor (openai 2.54.0, litellm, google-genai 2.34.0, capture on) to a dev stack, 2026-11-18, and each event's payload output_dimensions. The vectors are stored apart (event_content.embedding_output) and the content API does not return them.",
+ "openai_string": {
+  "_call": "playground/02_direct_openai.py, embeddings.create(input=<str>)",
+  "output_dimensions": {
+   "count": 1,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "143b9264-126d-4b9b-a878-85bd7e412f9b",
+   "session_id": "59c38003-1738-4460-8d69-aa1f831af7af",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": "playground single-string capture",
+   "captured_at": "2026-11-18T11:55:39.356793Z"
+  }
+ },
+ "openai_list": {
+  "_call": "playground/02_direct_openai.py, embeddings.create(input=[<str>, ...])",
+  "output_dimensions": {
+   "count": 3,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "956902c4-9b57-4431-979b-65ee3e697f20",
+   "session_id": "59c38003-1738-4460-8d69-aa1f831af7af",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": [
+    "item one",
+    "item two",
+    "item three"
+   ],
+   "captured_at": "2026-11-18T11:55:39.595005Z"
+  }
+ },
+ "openai_langchain_token_lists": {
+  "_call": "playground/03_langchain.py, OpenAIEmbeddings.embed_documents (LangChain sends token-id lists)",
+  "output_dimensions": {
+   "count": 1,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "65f2371e-3c3e-49f5-a879-a0ad0c5a90ef",
+   "session_id": "c76bec73-2314-4c5a-a7e2-bd6c77825572",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": [
+    [
+     1387,
+     1993,
+     8859,
+     8995,
+     1380,
+     3486
+    ]
+   ],
+   "captured_at": "2026-11-18T11:55:48.662254Z"
+  }
+ },
+ "litellm_string": {
+  "_call": "playground/12_litellm.py, litellm.embedding(input=<str>)",
+  "output_dimensions": {
+   "count": 1,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "90bc9ce0-d88e-44fc-9780-885b69baed26",
+   "session_id": "fa841543-770e-4abe-9a87-11d8a297e337",
+   "provider": "litellm",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": "playground litellm embeddings capture",
+   "captured_at": "2026-11-18T11:56:05.796394Z"
+  }
+ },
+ "google_contents": {
+  "_call": "playground/43_google_genai.py, models.embed_content(contents=[<str>, <str>]) on the Gemini API",
+  "output_dimensions": {
+   "count": 2,
+   "dimension": 3072
+  },
+  "content": {
+   "event_id": "ad5b4411-e3f2-4523-9a84-ae6e1b205570",
+   "session_id": "cfb9e999-82cd-418b-aea2-44509cc5027b",
+   "provider": "google",
+   "model": "gemini-embedding-001",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": [
+    {
+     "parts": [
+      {
+       "text": "hello"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "parts": [
+      {
+       "text": "world"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "captured_at": "2026-11-18T11:57:19.959171Z"
+  }
+ },
+ "openai_token_ids": {
+  "_call": "embeddings.create(input=[<token id>, ...]) through the sensor",
+  "output_dimensions": {
+   "count": 1,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "88ae8d70-2a61-4253-b149-ba0c28b43188",
+   "session_id": "3f75646b-cadb-43fd-ada3-12f05218e687",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": [
+    9906,
+    1917,
+    13
+   ],
+   "captured_at": "2026-11-18T11:58:01.284193Z"
+  }
+ },
+ "openai_long_string": {
+  "_call": "embeddings.create(input=<964-character str>) through the sensor",
+  "output_dimensions": {
+   "count": 1,
+   "dimension": 1536
+  },
+  "content": {
+   "event_id": "e5e00c64-ccff-478e-a586-371f9f11bc69",
+   "session_id": "3f75646b-cadb-43fd-ada3-12f05218e687",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": "Lighthouse 1 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 2 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 3 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 4 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 5 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 6 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 7 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 8 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 9 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 10 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 11 stands on a rocky point and its lamp turns once every ten seconds. Lighthouse 12 stands on a rocky point and its lamp turns once every ten seconds.",
+   "captured_at": "2026-11-18T11:58:01.48823Z"
+  }
+ },
+ "openai_many_inputs": {
+  "_call": "embeddings.create(input=<30 strs>, dimensions=64) through the sensor",
+  "output_dimensions": {
+   "count": 30,
+   "dimension": 64
+  },
+  "content": {
+   "event_id": "a61ae3f3-82ec-4a05-a4c3-417d54b397d8",
+   "session_id": "7ea60ef4-cd02-4548-96a5-5726d783cb7b",
+   "provider": "openai",
+   "model": "text-embedding-3-small",
+   "system_prompt": null,
+   "messages": [],
+   "tools": null,
+   "response": {},
+   "input": [
+    "Short note number 1 about the weather in a coastal town.",
+    "Short note number 2 about the weather in a coastal town.",
+    "Short note number 3 about the weather in a coastal town.",
+    "Short note number 4 about the weather in a coastal town.",
+    "Short note number 5 about the weather in a coastal town.",
+    "Short note number 6 about the weather in a coastal town.",
+    "Short note number 7 about the weather in a coastal town.",
+    "Short note number 8 about the weather in a coastal town.",
+    "Short note number 9 about the weather in a coastal town.",
+    "Short note number 10 about the weather in a coastal town.",
+    "Short note number 11 about the weather in a coastal town.",
+    "Short note number 12 about the weather in a coastal town.",
+    "Short note number 13 about the weather in a coastal town.",
+    "Short note number 14 about the weather in a coastal town.",
+    "Short note number 15 about the weather in a coastal town.",
+    "Short note number 16 about the weather in a coastal town.",
+    "Short note number 17 about the weather in a coastal town.",
+    "Short note number 18 about the weather in a coastal town.",
+    "Short note number 19 about the weather in a coastal town.",
+    "Short note number 20 about the weather in a coastal town.",
+    "Short note number 21 about the weather in a coastal town.",
+    "Short note number 22 about the weather in a coastal town.",
+    "Short note number 23 about the weather in a coastal town.",
+    "Short note number 24 about the weather in a coastal town.",
+    "Short note number 25 about the weather in a coastal town.",
+    "Short note number 26 about the weather in a coastal town.",
+    "Short note number 27 about the weather in a coastal town.",
+    "Short note number 28 about the weather in a coastal town.",
+    "Short note number 29 about the weather in a coastal town.",
+    "Short note number 30 about the weather in a coastal town."
+   ],
+   "captured_at": "2026-11-18T11:58:17.900016Z"
+  }
+ }
+}

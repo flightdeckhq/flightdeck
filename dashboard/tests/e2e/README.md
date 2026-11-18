@@ -105,6 +105,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T185-prompts-tab-shows-a-responses-reasoning-response.spec.ts` | On an agent of its own, an OpenAI Responses `post_call` whose output is a `reasoning` item with a summary and `encrypted_content`, then the answer: the reasoning is labelled `reasoning` with its summary, the mark `encrypted_content · encrypted reasoning, in JSON` shows and the encrypted content does not (the JSON view keeps it), then the answer and the token line, with no status line for a completed response |
 | `T186-prompts-tab-shows-a-chat-refusal.spec.ts` | On an agent of its own, two OpenAI chat `post_call`s: a response whose message refused (`content` null, `refusal` set) shows the refusal labelled `refusal`, not the response object, and the next call's passed-back message shows it the same way, not `(empty)` |
 | `T187-prompts-tab-shows-a-responses-refusal.spec.ts` | On an agent of its own, two OpenAI Responses `post_call`s: a response whose message holds a `refusal` part shows it labelled `refusal`, not the response object, with the same markup the next call's input shows the passed-back part with |
+| `T188-embeddings-event-opens-its-input-in-the-prompts-tab.spec.ts` | On an agent of its own, two runs with one `embeddings` call each and no other content (an OpenAI call with two texts, a google-genai `embed_content` call with the Gemini API's `Content` objects): the event drawer's Prompts tab, the run drawer's "View Prompts →" on the expanded row, and the run drawer's full detail of the row each show the input under the provider's name for it (`Input`, `Contents`), drawn as the expanded row draws it, its JSON view the stored input, and the event's `output_dimensions` as the response, never `{}` nor a vector |
 | `T190-agent-drawer-swimlane-button-names-runs-at-once.spec.ts` | On agents of its own: one with three runs at once, whose drawer's swimlane button reads `Open in swimlane · 3 runs`, named `Open <agent> in swimlane, 3 runs at once` with the tooltip `3 runs at once: each gets its own lane`, and opens the per-agent modal with three lanes; one with a single run, whose button is the plain `Open in swimlane` with no count or tooltip |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
@@ -114,13 +115,14 @@ names, flavors, role timeline offsets) and locator helpers:
 `agentIdByName` / `openPerAgentModal` (the modal through the agent
 drawer's "Open in swimlane"), and the private-agent helpers
 `createPrivateAgent` / `startPrivateAgent` / `postPrivateToolCall` /
-`postPrivatePostCall` / `endPrivateAgent`: an agent of one spec run's
+`postPrivatePostCall` / `postPrivateEmbeddings` / `endPrivateAgent`: an agent of one spec run's
 own, named `e2e-test-<label>-<id>`, with runs started through ingestion
 (their `session_start` can be dated in the past), so its lanes draw
 only what the spec posts (T171's ten-run row, T172's marker text,
 T173-T177), and a run's content is only what the spec captured (T180's
 OpenAI chat, T181's Responses, T182's and T183's Gemini and T184-T187's
-Responses and refusal `post_call`s, posted with `postPrivatePostCall`).
+Responses and refusal `post_call`s, posted with `postPrivatePostCall`,
+and T188's `embeddings` calls, posted with `postPrivateEmbeddings`).
 `createPrivateSubAgent` makes a sub-agent of one, `<parent>/<role>`,
 each of its runs started under a run of the parent (T176). The spec keeps
 the agent from `createPrivateAgent` before `startPrivateAgent` waits, so

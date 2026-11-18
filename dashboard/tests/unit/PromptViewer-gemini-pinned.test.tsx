@@ -11,7 +11,10 @@ import type { EventContent } from "@/lib/types";
 // contents' markup from the PromptViewer of the commit before the view
 // (feat/sensor-gemini 3d1c4ab9, whose PromptViewer is main's ad1b8b97),
 // with each box's toggle naming its views Rendered and JSON and the text
-// in its text-safe colours (themes.css's -text tokens). Set
+// in its text-safe colours (themes.css's -text tokens). The two
+// embeddings contents were captured again when the Prompts tab began
+// showing an embeddings call's input (the other entries did not move);
+// PromptViewer-embeddings-pinned.test.tsx pins that view. Set
 // CAPTURE_PINNED_MARKUP=1 to write that file again from the component in
 // place, only for a change meant to alter this markup, and check its diff.
 

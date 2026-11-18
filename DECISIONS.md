@@ -1279,3 +1279,21 @@ wrote, and the viewer would need the SDK's normalisation.
 multi-round calls); the httpx layer (blind to which call a request is);
 the caller's arguments as content; re-running the SDK's private
 converters (a second conversion, which a one-shot iterable cannot feed).
+
+## D288 -- Text takes a text-safe shade of its hue; the hue tokens stay as they are
+
+**Date:** 2026-11-18
+**Decision:** where a hue token reads under WCAG AA (4.5:1) as text,
+text takes a `-text` token instead (`--muted-text`, `--accent-text`,
+`--event-llm-text`, `--event-tool-text`, `--danger-text`,
+`--success-text`, `--warning-text`): the nearest shade of the same hue
+that reaches 4.5:1 on the surfaces it is used on, or an alias of the hue
+where the hue already does, so both themes define the same set. Badges
+keep their hue's tint and border and take the `-text` token for their
+text. The Prompts tab and the embeddings viewer use them; a unit test
+measures every text there against themes.css.
+**Why:** the hue tokens also colour badges' tints, charts, swimlanes
+and borders across the app, where they are not text.
+**Rejected alternative:** darkening or lightening the hue tokens
+themselves (changes every chart, badge and swimlane at once); per-theme
+colours chosen in components (components would branch on the theme).

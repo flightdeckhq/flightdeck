@@ -47,10 +47,10 @@ The sensor reaches a framework's LLM calls through the clients it builds:
 
 | Framework        | Chat | Embeddings |
 |------------------|------|------------|
-| LangChain        | `langchain-anthropic`, `langchain-openai` | `OpenAIEmbeddings.embed_*` |
+| LangChain        | `langchain-anthropic`, `langchain-openai`, `langchain-google-genai` (`ChatGoogleGenerativeAI`, through google-genai; verified live on 4.4) | `OpenAIEmbeddings.embed_*` |
 | LangGraph        | transitive via LangChain (any graph routing through `ChatAnthropic` or `ChatOpenAI`) | inherits |
 | LlamaIndex       | `llama-index-llms-anthropic`, `llama-index-llms-openai` | inherits |
-| CrewAI 1.14+     | `LLM(model=...).call()` via native Anthropic / OpenAI provider classes | inherits |
+| CrewAI 1.14+     | `LLM(model=...).call()` via native Anthropic / OpenAI / Gemini (`google.genai`; verified live on 1.15) provider classes | inherits |
 | bifrost          | multi-protocol LLM gateway (point the matching SDK at bifrost's `base_url`) | multi-protocol |
 | Claude Agent SDK | `query()` and `ClaudeSDKClient`: each run is its own `claude_agent_sdk` session, reported from the SDK's message stream, that the dashboard can stop and the MCP policy holds (`pip install flightdeck-sensor[claude-agent-sdk]`) | n/a |
 

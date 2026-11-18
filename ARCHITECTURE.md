@@ -1854,7 +1854,7 @@ both (see Sub-agent framework coverage).
 
 | Framework | Native: LLM calls | Native: structure | OTLP GenAI | What each path gives |
 |---|---|---|---|---|
-| LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
+| LangChain | yes | yes, for an agent run inside another graph run | no | Native: the `ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI` and `OpenAIEmbeddings` calls (see LLM call paths below). An agent built with `create_agent` runs on LangGraph; its model, tool and middleware nodes are the agent's own steps, which the LangGraph wrap leaves alone, so a top-level agent run is the sensor's session alone. An agent run started inside another graph run or a child (an agent used as a tool, an agent used as a node) is one child session, named after the agent (see LangGraph graphs) |
 | LangGraph | yes | yes, for the nodes of a graph built by hand and for graph runs inside another | no | Native: a child session per run of each node of a graph the application builds (a function or a Runnable, its own `ToolNode` included), role from the node name, and per graph run started inside another graph run or a child (a compiled graph used as a node, a graph invoked from a node or a tool), role from the run's name; each nested under the child it runs in. `create_agent`'s steps and generator nodes open none, and a top-level graph run opens none (see LangGraph graphs) |
 | CrewAI 1.14+ | yes on its OpenAI, Anthropic and Gemini (`google.genai`; verified live on 1.15) providers and the litellm fallback; no on its Azure (`azure-ai-inference`) and Bedrock (boto3) providers | yes | no | Native: a child session per `Agent.execute_task`, role from `Agent.role` |
 | Claude Agent SDK (Python) | yes | its own session per run | no | Native: a `claude_agent_sdk` session per run, read from the SDK's message stream, with directives and the MCP policy applied through its hooks (see Claude Agent SDK). The TypeScript SDK reports through Claude Code's own OpenTelemetry (OTLP ingest > Dialects) |
@@ -10273,8 +10273,8 @@ Operator-actionable enrichment:
   session run under the buggy build" for triage.
 - `interceptor_versions` (optional): `{dep_name: version}` for
   every framework the sensor has interceptors for that's installed
-  in the agent's process (anthropic, openai, litellm, langchain,
-  langgraph, llama-index-core, crewai, mcp). Uninstalled deps
+  in the agent's process (anthropic, openai, google-genai, litellm,
+  langchain, langgraph, llama-index-core, crewai, mcp). Uninstalled deps
   silently omitted.
 - `policy_snapshot` (optional): identity-only snapshot of the
   policy state in effect at session_start. Token-budget side

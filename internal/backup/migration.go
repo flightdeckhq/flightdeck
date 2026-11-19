@@ -2,7 +2,9 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,9 +27,27 @@ const keepBefore = 2
 // skipped rather than fill the disk the database lives on.
 const spaceFactor = 2
 
-// beforeName matches the files BeforeMigration writes, and nothing a
-// person or `flightdeck backup` names: before-<release>-<stamp>[-n].db.
-var beforeName = regexp.MustCompile(`^before-[A-Za-z0-9._+-]+-([0-9]{8}T[0-9]{6}Z)(-[0-9]+)?\.db$`)
+// beforeRecord, in the backups directory, lists the copies BeforeMigration
+// wrote, with the size and modification time each had: the only files it
+// ever lists or removes. A file named like one but not in the record (a
+// person's own before-….db), or in it but no longer the same size and
+// time (replaced since), is not this binary's and is left alone.
+const beforeRecord = "before-copies.json"
+
+// maxRecordBytes bounds what is read of the record: a line per copy, and
+// a few copies.
+const maxRecordBytes = 64 << 10
+
+// recordedCopy is one line of the record.
+type recordedCopy struct {
+	// Name is the copy's file name in the backups directory.
+	Name string `json:"name"`
+	// Bytes and Modified are its size and modification time once written.
+	Bytes    int64     `json:"bytes"`
+	Modified time.Time `json:"modified"`
+	// Taken is when it was taken, which orders the copies.
+	Taken time.Time `json:"taken"`
+}
 
 // freeSpace reads the free space of a directory's file system; the tests
 // replace it to stand for a disk that is nearly full.
@@ -48,7 +68,8 @@ type Before struct {
 // BeforeMigration copies the SQLite database at db into dir (created,
 // mode 0700) as before-<release>-<UTC stamp>.db, before a start applies
 // a migration to it, checks that the copy opens at the version it had,
-// and removes the older such copies past keepBefore. With less free
+// records it (beforeRecord), and removes the recorded copies past
+// keepBefore, never another file. With less free
 // space in dir than spaceFactor times the database (its write-ahead log
 // included) it copies nothing and says so: the start goes on, since
 // refusing it would drop the events of every agent until someone made
@@ -72,44 +93,84 @@ func BeforeMigration(ctx context.Context, db, dir, release string, now time.Time
 	if err != nil {
 		return Before{Skipped: "no copy was taken before migrating: " + err.Error()}
 	}
-	pruneBefore(dir, keepBefore)
+	info, err := os.Stat(c.Path)
+	if err != nil {
+		return Before{Copy: c}
+	}
+	copies := append(recordedCopies(dir), recordedCopy{Name: name, Bytes: info.Size(), Modified: info.ModTime(), Taken: now.UTC()})
+	sortNewestFirst(copies)
+	for _, old := range copies[min(keepBefore, len(copies)):] {
+		_ = os.Remove(filepath.Join(dir, old.Name))
+	}
+	_ = writeRecord(dir, copies[:min(keepBefore, len(copies))])
 	return Before{Copy: c}
 }
 
-// BeforeCopies lists the copies BeforeMigration kept in dir, the newest
-// first.
+// BeforeCopies lists the copies BeforeMigration wrote in dir that are
+// still there as it wrote them, the newest first.
 func BeforeCopies(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	type copyFile struct{ name, stamp string }
-	var found []copyFile
-	for _, e := range entries {
-		if m := beforeName.FindStringSubmatch(e.Name()); m != nil && e.Type().IsRegular() {
-			found = append(found, copyFile{e.Name(), m[1] + m[2]})
-		}
-	}
-	sort.Slice(found, func(i, j int) bool {
-		if found[i].stamp != found[j].stamp {
-			return found[i].stamp > found[j].stamp
-		}
-		return found[i].name > found[j].name
-	})
-	paths := make([]string, len(found))
-	for i, f := range found {
-		paths[i] = filepath.Join(dir, f.name)
+	copies := recordedCopies(dir)
+	sortNewestFirst(copies)
+	paths := make([]string, len(copies))
+	for i, c := range copies {
+		paths[i] = filepath.Join(dir, c.Name)
 	}
 	return paths
 }
 
-// pruneBefore removes the copies of BeforeMigration in dir past the keep
-// newest. Only names BeforeMigration writes are touched.
-func pruneBefore(dir string, keep int) {
-	copies := BeforeCopies(dir)
-	for _, path := range copies[min(keep, len(copies)):] {
-		_ = os.Remove(path)
+// recordedCopies are the record's copies that are still this binary's:
+// a plain file in dir of the recorded size and modification time.
+func recordedCopies(dir string) []recordedCopy {
+	f, err := os.Open(filepath.Join(dir, beforeRecord))
+	if err != nil {
+		return nil
 	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxRecordBytes))
+	if err != nil {
+		return nil
+	}
+	var listed []recordedCopy
+	if json.Unmarshal(data, &listed) != nil {
+		return nil
+	}
+	var ours []recordedCopy
+	for _, c := range listed {
+		if filepath.Base(c.Name) != c.Name {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(dir, c.Name))
+		if err == nil && info.Mode().IsRegular() && info.Size() == c.Bytes && info.ModTime().Equal(c.Modified) {
+			ours = append(ours, c)
+		}
+	}
+	return ours
+}
+
+func sortNewestFirst(copies []recordedCopy) {
+	sort.SliceStable(copies, func(i, j int) bool { return copies[i].Taken.After(copies[j].Taken) })
+}
+
+// writeRecord writes the record of dir, mode 0600, through a temporary
+// file and a rename, so a reader never finds half of it.
+func writeRecord(dir string, copies []recordedCopy) error {
+	data, err := json.MarshalIndent(copies, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := createPartial(dir, beforeRecord)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, beforeRecord)); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func fileSize(path string) int64 {

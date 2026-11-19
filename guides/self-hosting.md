@@ -140,13 +140,21 @@ docker exec <container> flightdeck backup
 docker cp <container>:/data/backups/flightdeck-<time>.db .
 ```
 
-A restore needs the container stopped, and runs the image's binary in a container of its own on the volume, as the image's user, so the database keeps the owner the server needs; use the image tag the container runs:
+A restore needs the container stopped, and runs the image's binary in a container of its own on the volume, as the image's user (uid 65532), so the database keeps the owner the server needs; use the image tag the container runs. A backup already on the volume, in `/data/backups/`, is restored from there:
 
 ```bash
 docker stop <container>
-docker run --rm -v <volume>:/data -v "$PWD":/backup:ro flightdeckhq/flightdeck restore /backup/flightdeck-<time>.db
+docker run --rm -v <volume>:/data flightdeckhq/flightdeck restore /data/backups/flightdeck-<time>.db
 docker start <container>
 ```
+
+A backup from outside (one `docker cp` took out is yours, mode 0600, which uid 65532 cannot read) goes onto the volume first, owned by that user, with the backup in the current directory:
+
+```bash
+docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 install -D -o 65532 -g 65532 -m 600 /backup/flightdeck-<time>.db /data/backups/flightdeck-<time>.db
+```
+
+and is then restored from `/data/backups/` as above.
 
 **On Kubernetes** `kubectl exec <pod> -- flightdeck backup` writes a checked copy onto the pod's own claim, which covers a bad upgrade but not the loss of the claim. The image has no `tar`, which `kubectl cp` needs, so a copy cannot be taken out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` (or a file in `flightdeck/backups/`) on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the files are owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
 

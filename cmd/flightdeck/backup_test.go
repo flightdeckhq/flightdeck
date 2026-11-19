@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/internal/backup"
 	"github.com/flightdeckhq/flightdeck/internal/datadir"
@@ -147,6 +148,11 @@ func TestBinary_RefusesADatabaseANewerReleaseMigrated(t *testing.T) {
 	if err := storage.Migrate(ctx, storage.SQLiteURL(db)); err != nil {
 		t.Fatal(err)
 	}
+	// A copy kept before an earlier migration, as a start keeps one.
+	kept := backup.BeforeMigration(ctx, db, filepath.Join(dataDir, datadir.BackupsDir), "v0.11.0", time.Now()).Copy.Path
+	if kept == "" {
+		t.Fatal("no copy was kept")
+	}
 	h, err := storage.Open(ctx, storage.SQLiteURL(db))
 	if err != nil {
 		t.Fatal(err)
@@ -155,13 +161,6 @@ func TestBinary_RefusesADatabaseANewerReleaseMigrated(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = h.Close()
-	kept := filepath.Join(dataDir, datadir.BackupsDir, "before-v0.11.0-20261101T000000Z.db")
-	if err := os.MkdirAll(filepath.Dir(kept), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(kept, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	code, out := runToExit(t, nil, "--port", freePort(t), "--data-dir", dataDir)
 	if code != 1 {
 		t.Fatalf("the start exited %d:\n%s", code, out)
@@ -173,5 +172,25 @@ func TestBinary_RefusesADatabaseANewerReleaseMigrated(t *testing.T) {
 	}
 	if strings.Contains(out, "no migration found") {
 		t.Errorf("the refusal is golang-migrate's:\n%s", out)
+	}
+}
+
+// A start that finds no database but the one a restore replaced and did
+// not put back refuses, naming it and the command that restores it, and
+// creates no empty database in its place.
+func TestBinary_DoesNotStartAnEmptyDatabaseInPlaceOfAReplacedOne(t *testing.T) {
+	ctx := context.Background()
+	dataDir := tempDir(t)
+	db := filepath.Join(dataDir, datadir.DatabaseFile)
+	replaced := db + ".replaced-20261119T093000Z"
+	if err := storage.Migrate(ctx, storage.SQLiteURL(replaced)); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runToExit(t, nil, "--port", freePort(t), "--data-dir", dataDir)
+	if code != 1 || !strings.Contains(out, "does not start") || !strings.Contains(out, "flightdeck restore "+replaced) {
+		t.Fatalf("the start exited %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(db); err == nil {
+		t.Error("the refused start created an empty database")
 	}
 }

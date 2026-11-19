@@ -6687,8 +6687,13 @@ a pending migration to a SQLite database (its version above 0 and below
 the newest embedded), it copies the database to
 `<data dir>/backups/before-<binary version>-<UTC timestamp>.db` (mode
 0600) with `VACUUM INTO`, as `flightdeck backup` does, checks that the
-copy opens at the version it had, and keeps the two latest such copies,
-removing older ones (never a file `flightdeck backup` wrote). The copy is
+copy opens at the version it had, and keeps the two latest such copies.
+It records each copy it writes, with its size and modification time, in
+`backups/before-copies.json` (mode 0600), and lists and removes only
+those: a file named like one that it did not write (a person's own
+`before-….db`, one with a stamp in the future) or one changed since it
+was recorded is never removed and never counted among the two, and an
+entry whose file is gone is dropped. The copy is
 the way back after an upgrade: `flightdeck restore` of it under the
 release before. A fresh database (version 0) has nothing to keep. When
 the file system of `backups/` has less free space than twice the
@@ -12698,7 +12703,8 @@ loopback, the address it listens on, which `flightdeck connect` reads
 SQLite mode, `flightdeck.db.migrate.lock`, which
 an instance holds while it applies the migrations (see Storage >
 Migrations), `backups/` (mode 0700) with the copies `flightdeck backup`
-writes by default and the two latest taken before a migration, and,
+writes by default and the two latest taken before a migration (and
+`before-copies.json`, the record of those), and,
 after a restore, the database it replaced as
 `flightdeck.db.replaced-<timestamp>` (Backing up and restoring, below).
 With `--database-url postgres://…`
@@ -13681,9 +13687,14 @@ and the database (`--data-dir`, `--database-url`,
 server would open, its symbolic links resolved. On Postgres both refuse
 (exit 4) and print the `pg_dump` or `psql` command to use instead; the
 image has the binary, so `docker exec <container> flightdeck backup`
-backs up a running container and `docker run --rm -v <volume>:/data
--v <dir>:/backup:ro flightdeckhq/flightdeck restore /backup/<file>`
-restores into a stopped one's volume, as the image's user.
+backs up a running container onto its volume, and `docker run --rm -v
+<volume>:/data flightdeckhq/flightdeck restore /data/backups/<file>`
+restores a copy on the volume into a stopped container's database, as
+the image's user (65532), so the database keeps the owner the server
+needs. A backup brought in from outside is first put on the volume
+readable by that user (the guide gives a one-line `install -o 65532`
+for it): a file `docker cp` takes out is the host user's, mode 0600,
+which the image's user cannot read from a bind mount.
 
 | Command | What it does |
 |---|---|
@@ -13696,8 +13707,9 @@ either, naming the PID and, when the installed service is that process,
 the `flightdeck service` commands that stop it and start it again. It
 refuses before it changes anything (exit 1) when `<file>` is the
 database itself, by name or as the same file through a link, or one of
-its `-wal` and `-shm` files; when it is not a SQLite database, is
-damaged (a truncated file is) or has no Flightdeck schema; when its
+its `-wal` and `-shm` files; when it is empty, is not a SQLite
+database, is damaged (a truncated file is) or has no Flightdeck schema;
+when its
 schema is newer than the binary's migrations, which says which release
 to install; or when its schema is marked dirty. A schema older than the
 binary's is restored as it is and migrated forward by the next start,
@@ -13723,16 +13735,26 @@ directory:
 4. It renames the copy to `flightdeck.db`, checks that it opens, and
    removes `flightdeck.db.restore`.
 
-A failure in steps 3 and 4 renames back what was moved, removes the
-copy and says that the database is as it was. A process that stops
-between steps 2 and 4 (a crash, a power loss) leaves
-`flightdeck.db.restore` behind, and the next `restore` or server start
-on the data dir, holding the locks, reads it before anything else: with
-the copy still there it puts the replaced database back under its names
-and removes the copy (the restore is undone), and with the copy already
-renamed into place it removes the file (the restore is done); a start
-logs which. So at every moment a start finds either the database as it
-was before the restore or the restored one, and never an empty one.
+A failure in steps 3 and 4 renames back what was moved, the last first,
+and only once every file is back removes the copy and the marker and
+says that the database is as it was. When a rename back fails too (on
+Windows, a file another program holds open), the copy and the marker
+stay and the message says so. A process that stops between steps 2 and
+4 (a crash, a power loss) leaves the marker behind too. The next
+`restore` or server start on the data dir, holding the locks, reads it
+before anything else: with the copy still there it puts the replaced
+database back under its names and removes the copy (the restore is
+undone), and with the copy already renamed into place it removes the
+marker (the restore is done); a start logs which. A marker cut short
+(the restore stopped while writing it, before anything moved) is
+refused with that said and the file to remove, as is one that names
+files a restore does not write, on whose say nothing is renamed.
+Independently of the marker, a start that finds no `flightdeck.db` but
+a `flightdeck.db.replaced-*` does not create an empty database in its
+place: it refuses, naming the replaced database and the `flightdeck
+restore` command that puts it back. So at every moment a start finds
+the database as it was before the restore, or the restored one, or
+refuses, and never serves an empty one in their place.
 `restore` prints the database it restored (schema version, sessions,
 events), the path of the one it replaced, and that the replaced files
 are removed by hand once the restored database is what was expected.

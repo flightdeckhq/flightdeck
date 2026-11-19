@@ -227,6 +227,98 @@ func TestRestore_AProcessStoppedAtAnyStepLeavesADatabaseAStartCanUse(t *testing.
 	}
 }
 
+// withRename makes the restore's renames go through hook for the test.
+func withRename(t *testing.T, hook func(from, to string) error) {
+	t.Helper()
+	saved := rename
+	rename = hook
+	t.Cleanup(func() { rename = saved })
+}
+
+// A rename back that fails while a failed restore is being undone (a file
+// held open, as on Windows) leaves the marker and the copy in place: the
+// error says so, a start in that state refuses rather than create an
+// empty database where the database is missing, and the next start or
+// restore finishes putting the database back.
+func TestRestore_AFailedRenameBackLeavesTheMarkerForTheNextStart(t *testing.T) {
+	for _, at := range restoreSteps()[2:] {
+		t.Run(at, func(t *testing.T) {
+			db, source := restoreSetup(t)
+			withStep(t, func(name string) error {
+				if name == at {
+					return errors.New("sabotage")
+				}
+				return nil
+			})
+			failedOnce := false
+			withRename(t, func(from, to string) error {
+				if strings.Contains(from, replacedInfix) && !failedOnce {
+					failedOnce = true
+					return errors.New("the file is in use")
+				}
+				return os.Rename(from, to)
+			})
+			_, err := Restore(context.Background(), source, db, testNow)
+			if err == nil || !strings.Contains(err.Error(), "and the copy stay") || !failedOnce {
+				t.Fatalf("a restore whose undo failed at %s: %v", at, err)
+			}
+			if _, err := os.Stat(db + markerSuffix); err != nil {
+				t.Fatalf("the marker is gone after a failed undo: %v", err)
+			}
+			if _, err := os.Stat(db); err != nil {
+				if lost := LostDatabase(db); lost == nil || !strings.Contains(lost.Error(), "flightdeck restore") {
+					t.Errorf("the database is missing, and a start would not refuse: %v", lost)
+				}
+			}
+			withRename(t, os.Rename)
+			withStep(t, func(string) error { return nil })
+			if _, err := RecoverInterrupted(db); err != nil {
+				t.Fatal(err)
+			}
+			if got := sessionsIn(t, db); got != 10 {
+				t.Errorf("after the next start the database holds %d sessions, want its 10", got)
+			}
+			for _, pattern := range []string{db + restoringInfix + "*", db + markerSuffix, db + replacedInfix + "*"} {
+				if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+					t.Errorf("after the recovery %v is left", matches)
+				}
+			}
+		})
+	}
+}
+
+// A start that finds no database but one a restore replaced refuses,
+// naming it and the command that puts it back, instead of creating an
+// empty database in its place.
+func TestLostDatabase_RefusesToStartAnEmptyDatabaseInPlaceOfAReplacedOne(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "flightdeck.db")
+	if err := LostDatabase(db); err != nil {
+		t.Errorf("an empty data dir: %v", err)
+	}
+	replaced := db + replacedInfix + "20261119T093000Z"
+	closedDatabase(t, replaced, 1)
+	_ = os.WriteFile(replaced+"-wal", nil, 0o600)
+	err := LostDatabase(db)
+	if err == nil || !strings.Contains(err.Error(), "flightdeck restore "+replaced) || strings.Contains(err.Error(), replaced+"-wal,") {
+		t.Errorf("no database and a replaced one: %v", err)
+	}
+	closedDatabase(t, db, 1)
+	if err := LostDatabase(db); err != nil {
+		t.Errorf("a database beside a replaced one: %v", err)
+	}
+}
+
+func TestRecoverInterrupted_AMarkerCutShortSaysNothingMoved(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "flightdeck.db")
+	closedDatabase(t, db, 2)
+	_ = os.WriteFile(db+markerSuffix, []byte(`{"staged":"flightdeck.db.rest`), 0o600)
+	_, err := RecoverInterrupted(db)
+	if err == nil || !strings.Contains(err.Error(), "before it moved any file") || !strings.Contains(err.Error(), "Remove it ("+db+markerSuffix+")") {
+		t.Errorf("a marker cut short: %v", err)
+	}
+}
+
 func TestRecoverInterrupted_RenamesNothingOnAMarkerItDidNotWrite(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "flightdeck.db")
 	closedDatabase(t, db, 2)

@@ -257,6 +257,20 @@ func restoreMain(ctx context.Context, args []string, rt IO) int {
 		return fail(rt, command, ExitFailed, "the backup %s cannot be read: %s. Nothing changed", source, clause(err))
 	} else if !info.Mode().IsRegular() {
 		return fail(rt, command, ExitFailed, "the backup %s is not a file. Nothing changed", source)
+	} else if info.Size() == 0 {
+		// SQLite reads an empty file as an empty database, which would be
+		// refused as one of another schema: it is no backup at all.
+		return fail(rt, command, ExitFailed, "the backup %s is empty (0 bytes): it holds no database. Nothing changed", source)
+	}
+	if f, err := os.Open(source); err != nil {
+		// SQLite would say only "unable to open database file": a backup
+		// another user owns, mode 0600, is the usual case, in a container
+		// that runs as a user of its own.
+		return fail(rt, command, ExitFailed, "the backup %s cannot be read by the user restore runs as (uid %d): %s. Make it "+
+			"readable by that user, in a container by putting it on the volume owned by the image's user (guides/self-hosting.md "+
+			"has the command). Nothing changed", source, os.Getuid(), clause(err))
+	} else {
+		_ = f.Close()
 	}
 
 	for _, lock := range []string{layout.Lock, db.path + datadir.DatabaseLockSuffix} {

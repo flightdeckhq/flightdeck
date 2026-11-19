@@ -480,6 +480,11 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		} else if note != "" {
 			slog.Warn(note)
 		}
+		// Nor one that a restore moved aside and did not put back: an
+		// empty database created in its place would be served instead.
+		if err := backup.LostDatabase(database.path); err != nil {
+			return err
+		}
 		if err := datadir.CreatePrivate(database.path); err != nil {
 			return err
 		}

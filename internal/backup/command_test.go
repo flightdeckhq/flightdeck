@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +200,7 @@ func TestRestoreCommand_RefusesWhatIsNotABackupAndChangesNothing(t *testing.T) {
 		"newer":               {newer, "a newer release wrote it"},
 		"dirty":               {dirty, "had not finished"},
 		"missing":             {filepath.Join(dir, "missing.db"), "is not there"},
+		"empty":               {write("empty.db", nil), "is empty (0 bytes)"},
 	} {
 		before := databaseFiles(t, data)
 		var c cmdRun
@@ -211,6 +213,30 @@ func TestRestoreCommand_RefusesWhatIsNotABackupAndChangesNothing(t *testing.T) {
 	if code := (&cmdRun{}).main("restore", "--data-dir", data); code != ExitUsage {
 		t.Errorf("restore with no file exited %d", code)
 	}
+}
+
+// A backup the restoring user cannot read (another user's 0600 file, as
+// a container's user meets a host file) is refused with the user named
+// and the way to make it readable, instead of SQLite's "unable to open".
+func TestRestoreCommand_SaysWhyItCannotReadABackup(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("file modes do not keep this user out here")
+	}
+	data := t.TempDir()
+	closedDatabase(t, filepath.Join(data, datadir.DatabaseFile), 1)
+	backup := filepath.Join(t.TempDir(), "backup.db")
+	closedDatabase(t, backup, 2)
+	if err := os.Chmod(backup, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(backup, 0o600) }()
+	before := databaseFiles(t, data)
+	var c cmdRun
+	if code := c.main("restore", backup, "--data-dir", data); code != ExitFailed ||
+		!strings.Contains(c.stderr.String(), "cannot be read by the user restore runs as") {
+		t.Errorf("an unreadable backup exited %d:\n%s", code, c.output())
+	}
+	sameDatabaseFiles(t, data, before)
 }
 
 // A data dir reached through a symbolic link is restored in the

@@ -62,6 +62,10 @@ var step = func(string) error { return nil }
 // process killed at that point leaves.
 var errStop = errors.New("stopped here")
 
+// rename is os.Rename for every rename of a restore and of the recovery;
+// the tests make it fail, as a file held open does on Windows.
+var rename = os.Rename
+
 // Restore replaces the SQLite database at db with a copy of the one at
 // source. The caller holds the data dir's lock and db's lock, checked
 // source (CheckFull) and made sure it is not db. In db's directory it:
@@ -132,22 +136,26 @@ func Restore(ctx context.Context, source, db string, now time.Time) (Restored, e
 	// Step 3: the logs first, then the database, so that at no moment a
 	// start finds the database without the log that belongs to it.
 	var moved [][2]string
+	// undo renames back what moved, the last first, and only once every
+	// file is back removes the copy and the marker: when a rename back
+	// fails (a file held open on Windows), both stay, and the next start
+	// or restore reads the marker and finishes putting the database back.
 	undo := func() error {
-		var first error
 		for i := len(moved) - 1; i >= 0; i-- {
-			if err := os.Rename(moved[i][1], moved[i][0]); err != nil && first == nil {
-				first = err
+			if err := rename(moved[i][1], moved[i][0]); err != nil {
+				return fmt.Errorf("rename %s back to %s: %w", moved[i][1], moved[i][0], err)
 			}
 		}
 		unstage()
 		removeMarker(db)
 		_ = syncDir(dir)
-		return first
+		return nil
 	}
 	failed := func(what string, err error) (Restored, error) {
 		if uerr := undo(); uerr != nil {
-			return Restored{}, fmt.Errorf("%s: %w; putting the database back failed too (%v): %s is the marker that the next start "+
-				"or restore reads to finish putting it back", what, err, uerr, db+markerSuffix)
+			return Restored{}, fmt.Errorf("%s: %w; putting the database back failed too (%v). %s and the copy stay: the next "+
+				"start or restore reads them and finishes putting the database back, and until then no start serves an "+
+				"empty database in its place", what, err, uerr, db+markerSuffix)
 		}
 		return Restored{}, fmt.Errorf("%s: %w; the database is as it was", what, err)
 	}
@@ -157,7 +165,7 @@ func Restore(ctx context.Context, source, db string, now time.Time) (Restored, e
 			continue
 		}
 		to := filepath.Join(dir, replaced+suffix)
-		if err := os.Rename(from, to); err != nil {
+		if err := rename(from, to); err != nil {
 			return failed("move "+from+" aside", err)
 		}
 		moved = append(moved, [2]string{from, to})
@@ -169,19 +177,20 @@ func Restore(ctx context.Context, source, db string, now time.Time) (Restored, e
 	}
 
 	// Step 4.
-	if err := os.Rename(staged, db); err != nil {
+	if err := rename(staged, db); err != nil {
 		return failed("put the copy in place", err)
 	}
-	// From here the copy is db: undoing first renames it back to the
-	// staged name, which undo removes.
+	// From here the copy is db: undoing renames it back to the staged
+	// name first. Should that fail, the renames of undo put the replaced
+	// database back over it, which is the undo still.
 	if err := step("swapped"); errors.Is(err, errStop) {
 		return Restored{}, err
 	} else if err != nil {
-		_ = os.Rename(db, staged)
+		_ = rename(db, staged)
 		return failed("after putting the copy in place", err)
 	}
 	if _, err := storage.CheckSQLiteFile(ctx, db, storage.CheckOpens); err != nil {
-		_ = os.Rename(db, staged)
+		_ = rename(db, staged)
 		return failed("the restored database does not open", err)
 	}
 	removeMarker(db)
@@ -255,14 +264,52 @@ func readMarker(db string) (marker, bool, error) {
 	}
 	var m marker
 	if err := json.Unmarshal(data, &m); err != nil {
-		return marker{}, false, fmt.Errorf("%s does not parse: %w", db+markerSuffix, err)
+		// A restore writes the marker whole and flushes it before it moves
+		// anything, so a marker cut short was being written when the
+		// restore stopped, and nothing has moved.
+		return marker{}, false, fmt.Errorf("%s, the marker of a restore, does not parse (%v): the restore stopped while it was "+
+			"writing it, before it moved any file, so the database is as it was. Remove it (%s) and start again",
+			db+markerSuffix, err, db+markerSuffix)
 	}
 	base := filepath.Base(db)
 	if filepath.Base(m.Staged) != m.Staged || filepath.Base(m.Replaced) != m.Replaced ||
 		!strings.HasPrefix(m.Staged, base+restoringInfix) || !strings.HasPrefix(m.Replaced, base+replacedInfix) {
-		return marker{}, false, fmt.Errorf("%s names files that are not a restore's: %q and %q", db+markerSuffix, m.Staged, m.Replaced)
+		return marker{}, false, fmt.Errorf("%s names files that are not a restore's (%q and %q), so nothing is renamed on its say: "+
+			"remove it (%s) once the database's files are as you want them", db+markerSuffix, m.Staged, m.Replaced, db+markerSuffix)
 	}
 	return m, true, nil
+}
+
+// LostDatabase reports a database a restore moved aside and did not put
+// back: there is no db, but a <db>.replaced-* is there. A start that
+// created db then would serve a new, empty database while the real one
+// sits under another name, so it refuses instead, with the files found
+// and the command that puts one back. nil when db is there or no
+// replaced database is.
+func LostDatabase(db string) error {
+	if exists(db) {
+		return nil
+	}
+	dir := filepath.Dir(db)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, filepath.Base(db)+replacedInfix) && !strings.HasSuffix(name, "-wal") &&
+			!strings.HasSuffix(name, "-shm") && e.Type().IsRegular() {
+			found = append(found, filepath.Join(dir, name))
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("there is no database at %s, but a restore left the one it replaced: %s. Flightdeck would start on a "+
+		"new, empty database in its place, so it does not start. To serve that database, run flightdeck restore %s with this "+
+		"start's --data-dir; to start with an empty database instead, move those files (with their -wal and -shm) out of %s",
+		db, strings.Join(found, ", "), found[len(found)-1], dir)
 }
 
 // RecoverInterrupted finishes or undoes a restore of db that stopped
@@ -294,8 +341,9 @@ func RecoverInterrupted(db string) (string, error) {
 		if !exists(from) || exists(to) {
 			continue
 		}
-		if err := os.Rename(from, to); err != nil {
-			return "", fmt.Errorf("putting back the database a restore was replacing: %s: %w", from, err)
+		if err := rename(from, to); err != nil {
+			return "", fmt.Errorf("putting back the database a restore was replacing: %s: %w; %s stays, and the next start "+
+				"or restore tries again", from, err, db+markerSuffix)
 		}
 	}
 	if exists(staged) {

@@ -9,9 +9,11 @@ import (
 	"time"
 )
 
-// The copies kept before migrations are the latest keepBefore; nothing
-// else in the directory is touched, `flightdeck backup`'s copies
-// included.
+// The copies kept before migrations are the latest keepBefore of the ones
+// this binary wrote; nothing else in the directory is touched: not
+// `flightdeck backup`'s copies, not a file a person named like one of
+// its own (before-mine-<stamp>.db), and not one with a stamp in the
+// future, which does not push the real copies out either.
 func TestBeforeMigration_KeepsTheTwoLatestCopies(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "flightdeck.db")
 	closedDatabase(t, db, 2)
@@ -19,7 +21,13 @@ func TestBeforeMigration_KeepsTheTwoLatestCopies(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	mine := map[string]string{"flightdeck-20260101T000000Z.db": "a backup", "notes.txt": "notes", "before-mine.db": "a name of mine"}
+	mine := map[string]string{
+		"flightdeck-20260101T000000Z.db":  "a backup",
+		"notes.txt":                       "notes",
+		"before-mine.db":                  "a name of mine",
+		"before-mine-20260101T000000Z.db": "a look-alike of mine",
+		"before-v9-29991231T235959Z.db":   "a future stamp",
+	}
 	for name, content := range mine {
 		_ = os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
 	}
@@ -44,6 +52,59 @@ func TestBeforeMigration_KeepsTheTwoLatestCopies(t *testing.T) {
 			t.Errorf("%s was touched: %q, %v", name, data, err)
 		}
 	}
+}
+
+// The record is the only thing that makes a file this binary's: an entry
+// whose file is gone is dropped, and a recorded file a person replaced
+// (another size or time) is no longer listed or removed.
+func TestBeforeMigration_TheRecordDecidesWhatIsItsOwn(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "flightdeck.db")
+	closedDatabase(t, db, 1)
+	dir := filepath.Join(t.TempDir(), "backups")
+	start := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	first := BeforeMigration(context.Background(), db, dir, "v1", start)
+	// A record that also names a file that is not there.
+	record, _ := os.ReadFile(filepath.Join(dir, beforeRecord))
+	withMissing := strings.Replace(string(record), "[", `[{"name":"before-v0-20250101T000000Z.db","bytes":1,"modified":"2025-01-01T00:00:00Z","taken":"2025-01-01T00:00:00Z"},`, 1)
+	if err := os.WriteFile(filepath.Join(dir, beforeRecord), []byte(withMissing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := BeforeCopies(dir); len(got) != 1 || got[0] != first.Copy.Path {
+		t.Fatalf("with a missing file recorded, the copies are %v", got)
+	}
+	// The person replaces the first copy with a file of their own.
+	if err := os.WriteFile(first.Copy.Path, []byte("mine now"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if b := BeforeMigration(context.Background(), db, dir, "v1", start.Add(time.Duration(i)*time.Second)); b.Copy.Path == "" {
+			t.Fatalf("copy %d: %s", i, b.Skipped)
+		}
+	}
+	if data, err := os.ReadFile(first.Copy.Path); err != nil || string(data) != "mine now" {
+		t.Errorf("a recorded file the person replaced was removed or changed: %q, %v", data, err)
+	}
+	got := BeforeCopies(dir)
+	if len(got) != 2 {
+		t.Errorf("the copies are %v, want the two latest it wrote", got)
+	}
+	for _, path := range got {
+		if path == first.Copy.Path {
+			t.Errorf("a replaced file is listed as a copy: %v", got)
+		}
+	}
+	if strings.Contains(readFile(t, filepath.Join(dir, beforeRecord)), "before-v0-20250101T000000Z.db") {
+		t.Error("the record still names a file that is not there")
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestBeforeMigration_SkipsTheCopyWhenTheDiskIsNearlyFull(t *testing.T) {

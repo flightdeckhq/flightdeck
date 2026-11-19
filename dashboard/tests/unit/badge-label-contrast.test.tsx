@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { StreamingPill } from "@/components/session/EventRow";
 import { attachBadge, defaultBadge, eventBadgeConfig, type BadgeConfig } from "@/lib/events";
+import type { AgentEvent } from "@/lib/types";
 import {
   BADGE_ROW_SURFACES,
   TEXT_SAFE_FLOOR,
@@ -8,13 +11,14 @@ import {
   readThemeTokens,
 } from "./support/theme-contrast";
 
-// Every event-type badge's label (getBadge's textVar) reads at 4.6:1 or
-// better (TEXT_SAFE_FLOOR) over its badge's tint (15% of the type's hue)
-// in both themes, on every row surface a badge sits on: --surface,
-// --bg-elevated, --bg, a hovered row, a focused row, the Neighbors
-// anchor, a linked Live feed row and an active Events facet, each
-// composite taken exactly and as the 8-bit colour a browser draws. The
-// hue stays the badge's tint and border.
+// Every event-type badge's label (getBadge's textVar), and the streaming
+// badge's (STREAM, ABORTED), reads at 4.6:1 or better (TEXT_SAFE_FLOOR)
+// over its badge's tint (15% of the type's hue) in both themes, on every
+// row surface a badge sits on: --surface, --bg-elevated, --bg, a hovered
+// row, a focused row, the Neighbors anchor, a linked Live feed row and
+// an active Events facet, each composite taken exactly and as a browser
+// draws it, rounded to 8 bits after each layer. The hue stays the
+// badge's tint and border.
 
 const TOKENS = readThemeTokens();
 /** The tint every event-type badge draws under its label. */
@@ -41,6 +45,34 @@ describe("every event-type badge's label reads at the floor over its tint, on ev
         expect(failures).toEqual([]);
       });
     }
+  }
+});
+
+describe("the streaming badge's label reads at the floor over its tint, on every row surface, in both themes", () => {
+  /** A streamed post_call whose stream completed or was aborted. */
+  const streamed = (outcome: "completed" | "aborted") =>
+    ({
+      id: `ev-stream-${outcome}`,
+      session_id: "s",
+      event_type: "post_call",
+      payload: { streaming: { final_outcome: outcome, ttft_ms: 120, chunk_count: 12 } },
+    }) as unknown as AgentEvent;
+
+  for (const [outcome, label] of [["completed", "STREAM"], ["aborted", "ABORTED"]] as const) {
+    it(`${label}: its label in a badge text token over its hue's tint`, () => {
+      render(<StreamingPill event={streamed(outcome)} />);
+      const pill = screen.getByText(label);
+      expect(pill.style.color).toMatch(/^var\(--[a-z0-9-]+-badge-text\)$/);
+      const failures: string[] = [];
+      for (const theme of THEMES) {
+        for (const row of BADGE_ROW_SURFACES) {
+          const ratio = labelRatio(TOKENS[theme], pill.style.color, pill.style.background, row);
+          if (ratio < TEXT_SAFE_FLOOR) failures.push(`${theme}, ${row.name}: ${ratio.toFixed(3)}:1`);
+        }
+      }
+      expect(failures).toEqual([]);
+      cleanup();
+    });
   }
 });
 

@@ -7,7 +7,7 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import { SurroundingEventsList } from "@/components/events/SurroundingEventsList";
-import { EventRow } from "@/components/session/EventRow";
+import { EventRow, StreamingPill } from "@/components/session/EventRow";
 import { PromptsTab, SessionDrawer } from "@/components/session/SessionDrawer";
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import { attachBadge, eventBadgeConfig, getBadge } from "@/lib/events";
@@ -16,12 +16,14 @@ import type { AgentEvent, FeedEvent, MCPPolicyEntry, Session } from "@/lib/types
 // Every place an event-type badge or an MCP policy decision pill is
 // drawn, its markup byte for byte: EventTypePill (the Events page, the
 // run drawer's Timeline rows, the agent drawer), the Live feed's badge,
-// the event drawer's header chip, the run drawer's attach pill, the
-// Neighbors list, the Fleet sidebar's policy events, the run drawer's
-// event detail header and its Prompts list, and the policy table's
-// decision pills, for every event type. fixtures/badge-sites-pinned-
-// before-badge-text.json holds the markup as it was when each label was
-// drawn in its hue. The labels now take a text shade of the hue
+// the event drawer's header chip, the run drawer's attach pill and its
+// rows' STREAM / ABORTED badge, the Neighbors list, the Fleet sidebar's
+// policy events, the run drawer's event detail header and its Prompts
+// list, and the policy table's decision pills, for every event type.
+// fixtures/badge-sites-pinned-before-badge-text.json holds the markup as
+// main drew it, each label in its hue (captured again from main's
+// sources once the Prompts list listed embeddings calls, and with the
+// streaming badge added). The labels now take a text shade of the hue
 // (BadgeConfig.textVar, and each pill's family's badge text token), and
 // nothing else moved: each pinned badge, with its label's colour (and
 // only that) swapped for the new one, is the markup rendered now. Set
@@ -83,9 +85,8 @@ beforeEach(() => {
 /** Every event type with a badge of its own, and one without (the
  *  default badge). */
 const EVENT_TYPES = [...Object.keys(eventBadgeConfig), "an_unknown_type"];
-/** The types the run drawer's Prompts list lists on the branch this
- *  file was pinned on. */
-const PROMPTS_LIST_TYPES = ["post_call", "tool_call", "mcp_tool_call", "mcp_prompt_get"];
+/** The types the run drawer's Prompts list lists. */
+const PROMPTS_LIST_TYPES = ["post_call", "tool_call", "mcp_tool_call", "mcp_prompt_get", "embeddings"];
 
 function event(eventType: string, i: number): AgentEvent {
   return {
@@ -172,6 +173,16 @@ async function markups(): Promise<Record<string, string>> {
     const pill = container.querySelector('[data-testid="event-type-pill"]')!;
     expect(pill.textContent).toBe(attachBadge.label);
     out["EventRow:attach"] = pill.outerHTML;
+    cleanup();
+  }
+  for (const outcome of ["completed", "aborted"] as const) {
+    const streamed = {
+      ...event("post_call", 0),
+      id: `ev-stream-${outcome}`,
+      payload: { streaming: { final_outcome: outcome, ttft_ms: 120, chunk_count: 12 } },
+    } as unknown as AgentEvent;
+    const { container } = render(<StreamingPill event={streamed} />);
+    out[`StreamingPill:${outcome}`] = container.firstElementChild!.outerHTML;
     cleanup();
   }
 
@@ -268,6 +279,11 @@ function colourSwap(key: string): { was: string; now: string } {
       interactive: { was: "var(--accent-text)", now: "var(--accent-badge-text)" },
     }[kind]!;
   }
+  if (site === "StreamingPill") {
+    return kind === "aborted"
+      ? { was: "var(--event-error)", now: "var(--danger-badge-text)" }
+      : { was: "var(--event-llm)", now: "var(--event-llm-badge-text)" };
+  }
   const badge = kind === "attach" ? attachBadge : getBadge(kind);
   return { was: badge.cssVar, now: badge.textVar };
 }
@@ -290,7 +306,8 @@ describe("every badge and decision pill: only the label's colour moved", () => {
     const now = await markups();
     // The same badges at every site as when it was pinned.
     expect(Object.keys(now).sort()).toEqual(Object.keys(pinned).sort());
-    // Every site is covered: the decision pills and ten badge sites.
+    // Every site is covered: the decision pills, the streaming badge and
+    // the event-type badge sites.
     const sites = new Set(Object.keys(pinned).map((k) => k.split(":")[0]));
     expect([...sites].sort()).toEqual([
       "EventDetailDrawer",
@@ -301,6 +318,7 @@ describe("every badge and decision pill: only the label's colour moved", () => {
       "SessionDrawer.detail",
       "SessionDrawer.prompts",
       "SessionDrawer.prompts.focused",
+      "StreamingPill",
       "SurroundingEventsList",
       "pill",
     ]);

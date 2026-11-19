@@ -10304,14 +10304,20 @@ a border) in its family's: `--event-llm-badge-text`,
 `--warning-badge-text`, `--danger-badge-text`, `--success-badge-text`
 and `--accent-badge-text`, which the warn, block, error and result
 badges, the attach badge and the four pills share (those hues are the
-warning, danger and success hues in both themes). Each is the nearest
+warning, danger and success hues in both themes). A streamed call's
+`STREAM` badge takes `--event-llm-badge-text` and an aborted one's
+`ABORTED` takes `--danger-badge-text`, over the LLM and error hues'
+tints. Each is the nearest
 shade of its hue that reads at 4.6:1 over the label's tint on every row
 the badge sits in: `--surface`, `--bg-elevated`, `--bg`, a hovered row
 (`--surface-hover`), a focused row (`--accent-glow` over the surface),
 the Neighbors list's anchor (8% `--accent` over `--bg`), the Live feed's
 linked row (12%) and the Events page's active facet (15% `--primary`
-over `--bg`), or an alias of the family's `-text` token or of the hue
-where that already does. These are their own tokens because the shared
+over `--bg`); a decision pill's on the four surfaces its table's rows
+are drawn on. Each composite is measured exactly and as a browser draws
+it, rounded to 8 bits after each layer. Where the family's `-text`
+token or the hue already reaches the floor, the badge token aliases it.
+These are their own tokens because the shared
 `-text` tokens are set for other text and do not reach the floor on a
 tint in an accent-washed row; darkening them would move that text. Every
 site that draws a badge takes the label from `textVar`: `EventTypePill`
@@ -10320,7 +10326,8 @@ feed, the event drawer's header, the run drawer's attach badge, event
 detail header and Prompts list, the Neighbors list and the Fleet
 sidebar's policy events. A unit test
 (`dashboard/tests/unit/badge-label-contrast.test.tsx`) checks every
-event type's label on every one of those rows in both themes.
+event type's label and the streaming badge's on every one of those rows
+in both themes.
 
 The Prompts tab of both drawers (with its no-content, capture-off and
 `session_signal` states and the run drawer's list of the run's calls)

@@ -153,8 +153,9 @@ All notable changes to Flightdeck are documented here.
   of its hue that reads at 4.6:1 or better on every row it sits in (at
   rest, hovered, focused, a linked Live feed row, an active Events
   facet), wherever a badge is drawn: the Events page, the Live feed,
-  both drawers, the Neighbors list, the Fleet sidebar's policy events
-  and the Policies page's decision pills. The badges' tints and borders,
+  both drawers (the run drawer's STREAM and ABORTED badges included),
+  the Neighbors list, the Fleet sidebar's policy events and the
+  Policies page's decision pills. The badges' tints and borders,
   and the swimlanes, charts and dots, keep their colours.
 - **An embeddings call too big for one event keeps its input.** With
   capture on, an embeddings event over the 768 KiB event size limit was

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { MCPPolicyEntryTable } from "@/components/policy/MCPPolicyEntryTable";
 import type { MCPPolicyEntry } from "@/lib/types";
-import { BADGE_ROW_SURFACES, labelRatio, readThemeTokens, TEXT_SAFE_FLOOR, THEMES } from "./support/theme-contrast";
+import { labelRatio, PILL_ROW_SURFACES, readThemeTokens, TEXT_SAFE_FLOOR, THEMES } from "./support/theme-contrast";
 
 function entry(
   override: Partial<MCPPolicyEntry> = {},
@@ -304,13 +304,14 @@ describe("MCPPolicyEntryTable's decision pills, in both themes", () => {
   });
 
   // Each label over its tint in a row at rest (--surface), in a hovered row
-  // (hover:bg-(--bg-elevated)), and on every other surface a badge sits on.
+  // (hover:bg-(--bg-elevated)), and on the other two surfaces a row is
+  // drawn on. The table has no focused, linked or active rows.
   for (const name of Object.keys(FAMILY) as Array<keyof typeof FAMILY>) {
-    it(`the ${name} pill's label reads at the floor at rest, hovered and on every row surface, in both themes`, () => {
+    it(`the ${name} pill's label reads at the floor at rest and hovered, on every surface its table sits on, in both themes`, () => {
       const pill = pills()[name];
       const failures: string[] = [];
       for (const theme of THEMES) {
-        for (const row of BADGE_ROW_SURFACES) {
+        for (const row of PILL_ROW_SURFACES) {
           const ratio = labelRatio(TOKENS[theme], pill.color, pill.background, row);
           if (ratio < TEXT_SAFE_FLOOR) failures.push(`${theme}, ${row.name}: ${ratio.toFixed(3)}:1`);
         }

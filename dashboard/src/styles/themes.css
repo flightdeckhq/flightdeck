@@ -147,31 +147,34 @@
   --warning-text: var(--warning); /* JSON numbers; closest pair: --bg-elevated, 9.075:1 */
 
   /* Badge text: the label of an event-type badge (lib/events.ts getBadge,
-     its 15% tint) and of an MCP policy decision pill (its 12% tint), at
-     4.6:1 or better over its tint on every row it sits in: --surface,
-     --bg-elevated, --bg, --surface-hover, a focused row's --accent-glow
-     (over --surface, --bg-elevated or --bg), the Neighbors list's
-     anchor (8% --accent over --bg), the Live feed's linked row (12%) and
-     the Events page's active facet (15% --primary over --bg), each
-     composite taken exactly and as the 8-bit colour a browser draws.
-     The shared -text tokens above are not darkened for this (they set
-     other text); where one or the hue itself reaches the floor here, the
-     badge token aliases it, so both themes define the same set. Each
-     comment names the closest pair, the ratio cut to three decimals.
-     tests/unit/badge-label-contrast.test.tsx checks every pair. */
-  --event-llm-badge-text: #8a8df5; /* closest pair: the llm tint in a focused row on --bg-elevated, 8-bit, 4.639:1 */
-  --event-tool-badge-text: var(--event-tool-text); /* closest pair: the tool tint in a focused row on --bg-elevated, 8-bit, 5.162:1 */
-  --event-embeddings-badge-text: var(--event-embeddings); /* closest pair: the embeddings tint in a focused row on --bg-elevated, 8-bit, 5.162:1 */
-  --event-mcp-tool-badge-text: var(--event-mcp-tool); /* closest pair: the MCP tool tint in a focused row on --bg-elevated, 6.532:1 */
-  --event-mcp-resource-badge-text: var(--event-mcp-resource); /* closest pair: the MCP resource tint in a focused row on --bg-elevated, 5.008:1 */
-  --event-mcp-prompt-badge-text: var(--event-mcp-prompt); /* closest pair: the MCP prompt tint in a focused row on --bg-elevated, 4.686:1 */
-  --event-degrade-badge-text: #f97519; /* closest pair: the degrade tint in a focused row on --bg-elevated, 8-bit, 4.626:1 */
-  --event-directive-badge-text: #bb7af9; /* closest pair: the directive tint in a focused row on --bg-elevated, 4.620:1 */
-  --event-lifecycle-badge-text: #919191; /* START, END, SIGNAL, EVENT; closest pair: the lifecycle tint in a focused row on --bg-elevated, 4.603:1 */
-  --warning-badge-text: var(--warning-text); /* WARN, ATTACH, Deny · warn; closest pair: the warn tint in a focused row on --bg-elevated, 6.177:1 */
-  --danger-badge-text: #f26c6c; /* BLOCK, ERROR, Deny · block; closest pair: the block tint in a focused row on --bg-elevated, 8-bit, 4.600:1 */
-  --success-badge-text: var(--success-text); /* RESULT, MCP info, Allow; closest pair: the result tint in a focused row on --bg-elevated, 8-bit, 5.465:1 */
-  --accent-badge-text: #a679f3; /* Deny · interactive; closest pair: the accent tint in a focused row on --bg-elevated, 4.605:1 */
+     and the streaming pill, on a 15% tint of its hue) and of an MCP
+     policy decision pill (a 12% tint), at 4.6:1 or better over its tint
+     on every row it sits in. A badge: --surface, --bg-elevated, --bg,
+     --surface-hover, a focused row's --accent-glow (over --surface,
+     --bg-elevated or --bg), the Neighbors list's anchor (8% --accent
+     over --bg), the Live feed's linked row (12%) and the Events page's
+     active facet (15% --primary over --bg). A decision pill: the four
+     surfaces (its table's rows, at rest and hovered). Each composite is
+     taken exactly and as a browser draws it, rounded to 8 bits after
+     each layer. The shared -text tokens above are not darkened for this
+     (they set other text); where one or the hue itself reaches the floor
+     here, the badge token aliases it, so both themes define the same
+     set. Each comment names the closest pair, the ratio cut to three
+     decimals. tests/unit/badge-label-contrast.test.tsx checks every
+     pair. */
+  --event-llm-badge-text: #8a8df5; /* LLM CALL, PRE CALL, STREAM; closest pair: a focused row on --bg-elevated, 8-bit, 4.639:1 */
+  --event-tool-badge-text: var(--event-tool-text); /* closest pair: a focused row on --bg-elevated, 8-bit, 5.162:1 */
+  --event-embeddings-badge-text: var(--event-embeddings); /* closest pair: a focused row on --bg-elevated, 8-bit, 5.162:1 */
+  --event-mcp-tool-badge-text: var(--event-mcp-tool); /* closest pair: a focused row on --bg-elevated, 6.532:1 */
+  --event-mcp-resource-badge-text: var(--event-mcp-resource); /* closest pair: a focused row on --bg-elevated, 5.008:1 */
+  --event-mcp-prompt-badge-text: var(--event-mcp-prompt); /* closest pair: a focused row on --bg-elevated, 4.686:1 */
+  --event-degrade-badge-text: #f97519; /* closest pair: a focused row on --bg-elevated, 8-bit, 4.606:1 */
+  --event-directive-badge-text: #bb7af9; /* closest pair: a focused row on --bg-elevated, 8-bit, 4.618:1 */
+  --event-lifecycle-badge-text: #919191; /* START, END, SIGNAL, EVENT; closest pair: a focused row on --bg-elevated, 4.603:1 */
+  --warning-badge-text: var(--warning-text); /* WARN, ATTACH, Deny · warn; closest pair: the WARN tint in a focused row on --bg-elevated, 6.177:1 */
+  --danger-badge-text: #f26c6c; /* BLOCK, ERROR, ABORTED, Deny · block; closest pair: the BLOCK tint in a focused row on --bg-elevated, 8-bit, 4.600:1 */
+  --success-badge-text: var(--success-text); /* RESULT, MCP info, Allow; closest pair: the RESULT tint in a focused row on --bg-elevated, 5.470:1 */
+  --accent-badge-text: #a679f3; /* Deny · interactive; closest pair: a hovered row, 4.794:1 */
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;
@@ -300,19 +303,19 @@
   --warning-text: #956503; /* JSON numbers; closest pair: --bg-elevated, 4.614:1 */
 
   /* Badge text: see the dark theme's block. */
-  --event-llm-badge-text: #3639ed; /* closest pair: the llm tint in the active facet (15% --primary over --bg), 8-bit, 4.605:1 */
-  --event-tool-badge-text: #056177; /* closest pair: the tool tint in the active facet, 4.632:1 */
-  --event-embeddings-badge-text: #056177; /* the tool hue's shade (the same hue); closest pair: the embeddings tint in the active facet, 4.632:1 */
-  --event-mcp-tool-badge-text: #056177; /* the tool hue's shade (the same hue); closest pair: the MCP tool tint in the active facet, 4.632:1 */
-  --event-mcp-resource-badge-text: #036547; /* closest pair: the MCP resource tint in the active facet, 4.652:1 */
-  --event-mcp-prompt-badge-text: #7916d2; /* closest pair: the MCP prompt tint in the active facet, 4.615:1 */
-  --event-degrade-badge-text: #9a3a08; /* closest pair: the degrade tint in the active facet, 8-bit, 4.608:1 */
-  --event-directive-badge-text: #7916d2; /* closest pair: the directive tint in the active facet, 4.615:1 */
-  --event-lifecycle-badge-text: #5c5c66; /* START, END, SIGNAL, EVENT; closest pair: the lifecycle tint in the active facet, 8-bit, 4.626:1 */
-  --warning-badge-text: #7a5402; /* WARN, ATTACH, Deny · warn; closest pair: the warn tint in the active facet, 4.616:1 */
-  --danger-badge-text: #a71b1b; /* BLOCK, ERROR, Deny · block; closest pair: the block tint in the active facet, 4.629:1 */
-  --success-badge-text: #0e672f; /* RESULT, MCP info, Allow; closest pair: the result tint in the active facet, 8-bit, 4.642:1 */
-  --accent-badge-text: #6a1eea; /* Deny · interactive; closest pair: the accent tint in the active facet, 4.600:1 */
+  --event-llm-badge-text: #3639ed; /* LLM CALL, PRE CALL, STREAM; closest pair: an active Events facet (15% --primary over --bg), 8-bit, 4.605:1 */
+  --event-tool-badge-text: #056177; /* closest pair: an active Events facet, 4.632:1 */
+  --event-embeddings-badge-text: #056177; /* the tool hue's shade (the same hue); closest pair: an active Events facet, 4.632:1 */
+  --event-mcp-tool-badge-text: #056177; /* the tool hue's shade (the same hue); closest pair: an active Events facet, 4.632:1 */
+  --event-mcp-resource-badge-text: #036547; /* closest pair: an active Events facet, 8-bit, 4.634:1 */
+  --event-mcp-prompt-badge-text: #7916d2; /* closest pair: an active Events facet, 4.615:1 */
+  --event-degrade-badge-text: #993a08; /* closest pair: an active Events facet, 8-bit, 4.627:1 */
+  --event-directive-badge-text: #7916d2; /* closest pair: an active Events facet, 4.615:1 */
+  --event-lifecycle-badge-text: #5c5c66; /* START, END, SIGNAL, EVENT; closest pair: an active Events facet, 8-bit, 4.626:1 */
+  --warning-badge-text: #7a5402; /* WARN, ATTACH, Deny · warn; closest pair: the WARN tint in an active Events facet, 4.616:1 */
+  --danger-badge-text: #a71b1b; /* BLOCK, ERROR, ABORTED, Deny · block; closest pair: the BLOCK tint in an active Events facet, 4.629:1 */
+  --success-badge-text: #0e672f; /* RESULT, MCP info, Allow; closest pair: the RESULT tint in an active Events facet, 8-bit, 4.642:1 */
+  --accent-badge-text: #6a1eea; /* Deny · interactive; closest pair: a hovered row, 8-bit, 5.200:1 */
 
   /* Fonts */
   --font-ui: "Geist", system-ui, sans-serif;

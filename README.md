@@ -61,10 +61,10 @@ Or run it from PyPI without installing:
 uvx flightdeck-cli
 ```
 
-**Docker**: the image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`.
+**Docker**: the image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`. After a stop, `docker start -a flightdeck` runs the same container again.
 
 ```bash
-docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
+docker run --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 ```
 
 **Release page**: the archives for every platform are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers above download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed).
@@ -75,8 +75,8 @@ docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 |---|---|---|
 | The install command | Stop Flightdeck, run the install command again, start it | Delete the `flightdeck` file the installer put in `/usr/local/bin` or `~/.local/bin`, and the `PATH` line you added for it, if any; on Windows, [these steps](guides/windows.md#uninstall) |
 | Homebrew | `brew upgrade flightdeckhq/tap/flightdeck`, then restart Flightdeck (`brew services restart flightdeck` for the service) | `brew services stop flightdeck` if it runs as a service, then `brew uninstall flightdeckhq/tap/flightdeck` |
-| PyPI | Stop Flightdeck, `pip install --upgrade flightdeck-cli`, start it; with uvx, `uvx flightdeck-cli@latest` | `pip uninstall flightdeck-cli`; uvx installs nothing |
-| Docker | `docker pull flightdeckhq/flightdeck`, then `docker stop` and `docker rm` the container and run the same `docker run` again | `docker stop` and `docker rm` the container, then `docker rmi flightdeckhq/flightdeck` |
+| PyPI | Stop Flightdeck, `pip install --upgrade flightdeck-cli`, start it; with uvx, `uvx flightdeck-cli@latest` | `pip uninstall flightdeck-cli`; uvx installs nothing, and `uv cache clean flightdeck-cli`, then `uv cache prune`, remove its cached copy |
+| Docker | `docker pull flightdeckhq/flightdeck`, `docker stop flightdeck`, `docker rm flightdeck`, then the same `docker run` again | `docker stop flightdeck`, `docker rm flightdeck`, then `docker rmi flightdeckhq/flightdeck` |
 
 The first start of a new release migrates the database when the release changes its schema, and an older release does not start on it after that: [back up](guides/self-hosting.md#backing-up-and-restoring) before you upgrade to keep a way back. To uninstall, first run `flightdeck connect claude-code --remove` (without the binary, `claude plugin uninstall flightdeck@flightdeck-plugins`): a plugin left installed warns at the start of every Claude Code session that it cannot reach Flightdeck. Then remove the binary as above. The data dir stays (`~/.flightdeck`, `%LOCALAPPDATA%\flightdeck`, or the `flightdeck` volume): Flightdeck does not delete sessions or events, so delete the directory (`docker volume rm flightdeck`) only to remove all of them.
 

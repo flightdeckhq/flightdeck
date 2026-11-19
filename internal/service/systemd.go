@@ -239,15 +239,23 @@ func (s *systemd) load(ctx context.Context) error {
 	return s.do(ctx, "restart", systemdUnit)
 }
 
+// restart reloads the units first, so a file the manager has not read
+// yet is the one restarted.
 func (s *systemd) restart(ctx context.Context) error {
+	_ = s.do(ctx, "daemon-reload")
 	_ = s.do(ctx, "reset-failed", systemdUnit)
 	return s.do(ctx, "restart", systemdUnit)
 }
 
 // unload stops the unit and disables it; the file stays for the caller
-// to remove.
+// to remove. A unit whose file is already gone cannot be disabled, but
+// the manager still runs it until it is stopped.
 func (s *systemd) unload(ctx context.Context) error {
-	return s.do(ctx, "disable", "--now", systemdUnit)
+	err := s.do(ctx, "disable", "--now", systemdUnit)
+	if err != nil && s.do(ctx, "stop", systemdUnit) == nil {
+		return nil
+	}
+	return err
 }
 
 // forget reloads the units once the file is gone, so the manager no

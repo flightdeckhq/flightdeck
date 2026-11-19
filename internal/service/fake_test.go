@@ -207,7 +207,13 @@ func (f *fakeSystem) systemctl(args []string) ([]byte, []byte, error) {
 		}
 		return nil, nil, f.start((&systemd{}).argv(f.loaded))
 	case len(args) == 3 && args[0] == "disable" && args[1] == "--now" && args[2] == systemdUnit:
+		if _, err := os.Stat(unitFile); err != nil {
+			return nil, []byte("Failed to disable unit: Unit file flightdeck.service does not exist."), errExit
+		}
 		f.proc, f.enabled = nil, false
+		return nil, nil, nil
+	case len(args) == 2 && args[0] == "stop" && args[1] == systemdUnit:
+		f.proc = nil
 		return nil, nil, nil
 	}
 	return nil, []byte("unexpected systemctl --user " + strings.Join(args, " ")), errExit

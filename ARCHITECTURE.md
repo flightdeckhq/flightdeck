@@ -13444,8 +13444,8 @@ command: a per-user service of the system's own service manager, with
 no root and nothing to install. The CLI writes the service's one file,
 outside the data dir, and asks the manager to load and start it; the
 server never writes it, as it never writes the files `flightdeck
-connect` changes. Windows has no such command yet (`flightdeck service`
-says so and exits 4).
+connect` changes. Windows has no such service yet (`flightdeck service
+install` says so and exits 4).
 
 | | Linux | macOS |
 |---|---|---|
@@ -13505,12 +13505,12 @@ exit 2; on a system with no user service manager to ask (Linux with no
 user manager answering; macOS with no login session for the user, as
 over SSH alone), exit 4; when the binary runs from a temporary or a cache
 directory (`go run`, `uvx`, `pipx run`) that may be gone at the next
-login; when a file not written by `flightdeck service install` is at the
-service's path (the file's first line says who wrote it, and a file
-without that line is never changed or removed); when another
-`flightdeck`, not this service, holds the data dir's lock (its PID is
-named); and when another process listens on the port, unless it is this
-service on the same address. Once the manager has started the service,
+login, exit 4; when a file not written by `flightdeck service install`
+is at the service's path (the file's first line says who wrote it, and
+a file without that line is never changed or removed), exit 1; when
+another `flightdeck`, not this service, holds the data dir's lock (its
+PID is named), exit 1; and when another process listens on the port,
+unless it is this service on the same address, exit 1. Once the manager has started the service,
 `install` waits for it: it is up when its health routes answer and the
 PID in the data dir's lock file is the one the manager started, so a
 `flightdeck` that took the port in between does not pass for it. A

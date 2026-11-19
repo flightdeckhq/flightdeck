@@ -602,6 +602,24 @@ func TestRemove_RemovesTheServiceAndLeavesTheDataDir(t *testing.T) {
 	}
 }
 
+// A unit file deleted by hand leaves the manager running the service
+// until it is stopped: remove stops it all the same.
+func TestRemove_StopsAServiceWhoseFileWasDeleted(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	if code := te.main("install", "--port", freePort(t), "--data-dir", te.dataDir("d")); code != ExitOK {
+		t.Fatalf("install exited %d:\n%s", code, te.output())
+	}
+	if err := os.Remove(systemdOf(te).path()); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.main("remove"); code != ExitOK {
+		t.Fatalf("remove exited %d:\n%s", code, te.output())
+	}
+	if te.sys.running() != nil || !te.sys.called("systemctl --user stop flightdeck.service") {
+		t.Errorf("the service still runs after remove: %q", te.sys.calls)
+	}
+}
+
 func TestStatusAndRestart(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	if code := te.main("status"); code != ExitNotInstalled || !strings.Contains(te.stdout.String(), "not installed") {

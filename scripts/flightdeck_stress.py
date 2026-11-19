@@ -10,8 +10,9 @@ API, and checks what a single-writer database must still guarantee:
   * the log has no "database is locked" / SQLITE_BUSY;
   * reads keep answering while the writes run (the slowest read stays
     under READ_STALL_SECS);
-  * on SQLite the write-ahead log stays bounded, a snapshot taken with
-    VACUUM INTO while the load runs is a valid database, and a clean
+  * on SQLite the write-ahead log stays bounded, a backup taken with
+    `flightdeck backup` while the load runs is a valid database with no
+    row whose parent is missing (one moment of it), and a clean
     stop leaves one database file.
 
 With no --database-url the binary runs on its default, the SQLite file
@@ -56,6 +57,10 @@ READY_TIMEOUT_SECS = 60
 STORE_TIMEOUT_SECS = 300
 # The binary's own shutdown budget is 30 s per step.
 STOP_TIMEOUT_SECS = 90
+# `flightdeck backup` of the run's database, a few megabytes: it copies
+# and checks it in about a second; two minutes turns a hang into a
+# failure on a loaded runner.
+BACKUP_TIMEOUT_SECS = 120
 # A read that takes longer than this while writes run counts as stalled
 # behind them. Readers use their own connections on SQLite (WAL) and
 # never wait for the writer, so reads stay in the tens of milliseconds;
@@ -358,34 +363,52 @@ def main() -> int:
 
             snapshot_rows = None
             if sqlite_default:
-                # A backup taken while the load runs, the way the docs
-                # say to take one.
+                # A backup taken while the load runs, with the command the
+                # docs give: `flightdeck backup`, which runs beside the
+                # server. What it wrote is then read here with Python's
+                # own SQLite, not the binary's.
                 snapshot = Path(tmp) / "snapshot.db"
                 while stats.posted < expected // 4 and any(
                     w.is_alive() for w in writers
                 ):
                     time.sleep(0.05)
-                src = sqlite3.connect(str(data / "flightdeck.db"), timeout=30)
-                try:
-                    src.execute("VACUUM INTO ?", (str(snapshot),))
-                finally:
-                    src.close()
-                snap = sqlite3.connect(str(snapshot))
-                try:
-                    check = snap.execute("PRAGMA integrity_check").fetchall()
-                    snapshot_rows = snap.execute(
-                        "SELECT COUNT(*) FROM events WHERE flavor = ?", (flavor,)
-                    ).fetchone()[0]
-                finally:
-                    snap.close()
-                if check != [("ok",)]:
+                backup = subprocess.run(
+                    [args.binary, "backup", "--data-dir", str(data), str(snapshot)],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=BACKUP_TIMEOUT_SECS,
+                )
+                if backup.returncode != 0:
                     failures.append(
-                        f"the VACUUM INTO snapshot fails integrity_check: {check[:3]}"
+                        f"flightdeck backup under load exited {backup.returncode}: "
+                        f"{(backup.stdout + backup.stderr).strip()[:500]}"
                     )
-                if not 0 < snapshot_rows <= expected:
-                    failures.append(
-                        f"the snapshot holds {snapshot_rows} of this run's events"
-                    )
+                else:
+                    snap = sqlite3.connect(str(snapshot))
+                    try:
+                        check = snap.execute("PRAGMA integrity_check").fetchall()
+                        # One moment of the database: no event without its
+                        # session, which a torn copy could hold.
+                        orphans = snap.execute("PRAGMA foreign_key_check").fetchall()
+                        snapshot_rows = snap.execute(
+                            "SELECT COUNT(*) FROM events WHERE flavor = ?", (flavor,)
+                        ).fetchone()[0]
+                    finally:
+                        snap.close()
+                    if check != [("ok",)]:
+                        failures.append(
+                            f"the backup taken under load fails integrity_check: {check[:3]}"
+                        )
+                    if orphans:
+                        failures.append(
+                            "the backup taken under load has rows whose parent is missing: "
+                            f"{orphans[:3]}"
+                        )
+                    if not 0 < snapshot_rows <= expected:
+                        failures.append(
+                            f"the backup holds {snapshot_rows} of this run's events"
+                        )
 
             for w in writers:
                 w.join()

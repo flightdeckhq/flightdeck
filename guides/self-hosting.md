@@ -115,47 +115,48 @@ Everything Flightdeck keeps is in its data dir (`--data-dir`, default `~/.flight
 
 Keep backups on another disk or another machine: a copy on the same disk is lost with that disk. A backup holds everything the database does, captured prompts included, so keep it where only you can read it.
 
-Where a restore below says to stop Flightdeck and start it again, a service of [`flightdeck service`](#running-in-the-background) is stopped with `flightdeck service remove` (a process of it that is killed is started again by the service manager) and started with `flightdeck service install` and the flags it had, which `flightdeck service status` shows first; for another Postgres, its URL goes in the `--database-url-file` given to that install.
-
 ### SQLite
 
-While the binary runs, copy the database with SQLite itself:
+```bash
+flightdeck backup
+```
+
+That copies the database, while Flightdeck runs or not, to `backups/flightdeck-<time>.db` in the data dir; `flightdeck backup <file>` writes it to the file you name, or into a directory (`flightdeck backup /mnt/usb/`). It needs nothing else installed (no `sqlite3`, on Windows too), checks the copy before it says it is done, and never writes over a file. Give it the `--data-dir` (or `--database-url`) Flightdeck runs with, as for every command.
+
+To restore, stop Flightdeck, then:
 
 ```bash
-sqlite3 ~/.flightdeck/flightdeck.db "VACUUM INTO '/backup/flightdeck.db'"
+flightdeck restore <file>
 ```
 
-That (or the shell's `.backup` command) writes a consistent snapshot without stopping the binary; `VACUUM INTO` refuses to write over a file that already exists, and `.backup` replaces it. Without `sqlite3` (Windows does not ship it, and many Linux systems lack it), stop Flightdeck (Ctrl+C, and wait for it to exit) and copy the file: a clean stop folds the write-ahead log into `flightdeck.db` and removes it, so that one file is the whole database. A copy of `flightdeck.db` taken while the binary runs is not a backup: its latest writes are in `flightdeck.db-wal` beside it. In PowerShell:
+It refuses while Flightdeck runs, naming its process, and refuses a file that is not a Flightdeck backup, is damaged or cut short, or comes from a newer release, with nothing changed. It keeps the database it replaces, with its write-ahead log, as `flightdeck.db.replaced-<time>` beside it, and puts that back if any step fails; remove it once Flightdeck shows what you expect. A service of [`flightdeck service`](#running-in-the-background) is stopped with `flightdeck service remove` (a process of it that is killed is started again by the service manager) and started again with `flightdeck service install` and the flags it had, which `flightdeck service status` shows first; `restore` says so when the service is what holds the database.
 
-```powershell
-Copy-Item "$env:LOCALAPPDATA\flightdeck\flightdeck.db" D:\backup\flightdeck.db
+A start that upgrades the database's schema first keeps a copy of it in `backups/before-<release>-<time>.db`, the two latest, and the start-up block names it: with the release before, `flightdeck restore` of that copy is the way back. An older release does not start on a database a newer one has migrated; it says so, with the copies it finds. A backup from an older release is restored as it is, and the next start migrates it forward.
+
+**In the image** the data dir is `/data`, on the container's volume. The commands below write `<container>` and `<volume>` for their names: `flightdeck` and `flightdeck` with the README's `docker run`, `flightdeck-flightdeck-1` and `flightdeck_data` under Compose, and otherwise what `docker ps -a` and `docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' <container>` print. A backup runs in the running container, onto its volume, and `docker cp` copies it out:
+
+```bash
+docker exec <container> flightdeck backup
+docker cp <container>:/data/backups/flightdeck-<time>.db .
 ```
 
-To restore:
-
-1. Stop Flightdeck, and check that the process has exited: `pgrep -x flightdeck` (Linux, macOS) or `Get-Process flightdeck` (Windows) finds nothing. A terminal that ran it shows its prompt again once it has, and Homebrew's service is no longer `started` in `brew services list`.
-2. In the data dir, rename `flightdeck.db` to `flightdeck.db.before-restore`, and `flightdeck.db-wal` and `flightdeck.db-shm`, if they are there, to `flightdeck.db.before-restore-wal` and `flightdeck.db.before-restore-shm`. SQLite pairs a log with its database by name: the renamed set still opens as the database was, while a log left as `flightdeck.db-wal` would be applied to the restored file, which would then not open. A `flightdeck.db.before-restore` from an earlier restore goes somewhere else first.
-3. Copy the backup into the data dir as `flightdeck.db`.
-4. Start Flightdeck. Once it shows what you expect, the `before-restore` files can go.
-
-The start migrates a backup from an older release forward. An older release does not start on a database a newer one has migrated, so a backup taken before an upgrade is also the way back to the release before it.
-
-**In the image** the data dir is `/data`, on the container's volume. The commands below write `<container>` and `<volume>` for their names: `flightdeck` and `flightdeck` with the README's `docker run`, `flightdeck-flightdeck-1` and `flightdeck_data` under Compose, and otherwise what `docker ps -a` and `docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' <container>` print. A backup and a restore both need the container stopped:
+A restore needs the container stopped, and runs the image's binary in a container of its own on the volume, as the image's user (uid 65532), so the database keeps the owner the server needs; use the image tag the container runs. A backup already on the volume, in `/data/backups/`, is restored from there:
 
 ```bash
 docker stop <container>
-docker inspect -f '{{.State.Running}}' <container>
+docker run --rm -v <volume>:/data flightdeckhq/flightdeck restore /data/backups/flightdeck-<time>.db
+docker start <container>
 ```
 
-The second command prints `false` once it has stopped. `docker cp <container>:/data/flightdeck.db .` then copies the database out, and `docker start <container>` starts it again. The image has no shell, so a restore runs in a container of its own. With the backup in the current directory as `flightdeck.db`, this moves the current database aside as `flightdeck.db.before-restore` and copies the backup in:
+A backup from outside (one `docker cp` took out is yours, mode 0600, which uid 65532 cannot read) goes onto the volume first, owned by that user, with the backup in the current directory:
 
 ```bash
-docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -ec 'cd /data; if [ -e flightdeck.db.before-restore ]; then echo "flightdeck.db.before-restore is there from an earlier restore: copy it out and remove it first" >&2; exit 1; fi; for s in "" -wal -shm; do [ ! -e flightdeck.db$s ] || mv flightdeck.db$s flightdeck.db.before-restore$s; done; cp /backup/flightdeck.db .; chown 65532:65532 flightdeck.db'
+docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -c 'install -d -o 65532 -g 65532 -m 700 /data /data/backups && install -o 65532 -g 65532 -m 600 /backup/flightdeck-<time>.db /data/backups/flightdeck-<time>.db'
 ```
 
-Then `docker start <container>`. The database must belong to the image's user, 65532: a file copied in with `docker cp` keeps another owner, and the start then fails with `permission denied`. The command changes nothing when a `flightdeck.db.before-restore` from an earlier restore is there: copy that out (`docker cp <container>:/data/flightdeck.db.before-restore .`), remove it (`docker run --rm -v <volume>:/data alpine:3 sh -c 'rm /data/flightdeck.db.before-restore*'`), and run it again.
+and is then restored from `/data/backups/` as above. The first `install` gives `/data` and `/data/backups` to that user: a volume the image made has them so already, but a new one (an off-site backup restored into a fresh volume) that this container mounts first is root's, and Flightdeck could write neither its database nor the copies it keeps before upgrades there.
 
-**On Kubernetes** the image has no `tar`, which `kubectl cp` needs, so the database cannot be copied out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the file is owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
+**On Kubernetes** `kubectl exec <pod> -- flightdeck backup` writes a checked copy onto the pod's own claim, which covers a bad upgrade but not the loss of the claim. The image has no `tar`, which `kubectl cp` needs, so a copy cannot be taken out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` (or a file in `flightdeck/backups/`) on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the files are owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
 
 ### Postgres
 

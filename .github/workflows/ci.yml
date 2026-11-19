@@ -1686,6 +1686,26 @@ jobs:
         shell: pwsh
         run: go test -count=1 -run '^TestBinary_(ConnectCommand|HelpNamesConnect)$' ./cmd/flightdeck/
 
+      # flightdeck backup and restore on Windows, which ships no sqlite3
+      # and refuses to rename a file another handle holds open: the
+      # package's tests (a failure and a stop at every step of a restore),
+      # the storage module's snapshot and file check, and through the
+      # binary a backup while it serves, a restore refused while it runs,
+      # and restores into its data dir (with the write-ahead log the kill
+      # left) and into a new one, each served afterwards.
+      - name: flightdeck backup and restore on Windows
+        shell: pwsh
+        run: |
+          go test -count=1 ./internal/backup/...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -count=1 -run '^TestBinary_BackupWhileServingThenRestore$' ./cmd/flightdeck/
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location storage
+          go test -count=1 -run '^Test(SQLiteSnapshot|CheckSQLiteFile|LatestVersion|Migrate_RefusesANewerSchema)' .
+          $code = $LASTEXITCODE
+          Pop-Location
+          exit $code
+
   # flightdeck service's macOS code against the real launchd: the
   # package's tests on macOS, then scripts/service-gate.sh on the binary
   # built here (the plist through plutil -lint, launchctl bootstrap in the

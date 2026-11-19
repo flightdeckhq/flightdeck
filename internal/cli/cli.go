@@ -88,6 +88,8 @@ type Options struct {
 	// as it was given, "--listen :4141" or "FLIGHTDECK_LISTEN=:4141", for
 	// the binary's warning and refusal. Empty for any other address.
 	HostlessListen string
+	// Args are a Command's arguments that are not flags, in order.
+	Args []string
 }
 
 // The variables of the three flags that choose the listen address.
@@ -122,6 +124,14 @@ const ConnectCommand = "connect"
 // it; its install takes the server's flags through ParseCommand.
 const ServiceCommand = "service"
 
+// BackupCommand and RestoreCommand are `flightdeck backup [<file>]` and
+// `flightdeck restore <file>` (internal/backup), which take the server's
+// flags through ParseCommand and read the data dir and the database.
+const (
+	BackupCommand  = "backup"
+	RestoreCommand = "restore"
+)
+
 // The two variables of the database setting: the URL itself, or a file
 // that holds it.
 const (
@@ -153,6 +163,10 @@ type Command struct {
 	Flags func(*flag.FlagSet)
 	// Usage writes the command's usage text; the flags follow it.
 	Usage func(io.Writer)
+	// MaxArgs is how many arguments that are not flags the command takes
+	// (`flightdeck restore <file>`), in Options.Args; flags may come
+	// before and after them. More is a usage error.
+	MaxArgs int
 }
 
 // Parse reads args (without the program name) against env, which maps
@@ -233,7 +247,8 @@ func parse(args []string, env func(string) string, out io.Writer, cmd *Command) 
 		fs.BoolVar(&o.Version, "version", false, "print the version and exit")
 		fs.Usage = func() {
 			_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n       flightdeck %s [<agent>] [flags]\n"+
-				"       flightdeck %s install|status|restart|remove\n\n"+
+				"       flightdeck %s install|status|restart|remove\n"+
+				"       flightdeck "+BackupCommand+" [<file>] [flags]\n       flightdeck "+RestoreCommand+" <file> [flags]\n\n"+
 				"Runs the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
 				"With no flags it serves on %s, this machine only, and keeps its data in a SQLite database\n"+
 				"under the data dir. --port 4100 serves on another port of this machine; --public lets other machines in\n"+
@@ -244,7 +259,10 @@ func parse(args []string, env func(string) string, out io.Writer, cmd *Command) 
 				"flightdeck %s connects a coding agent on this machine to Flightdeck (flightdeck %s claude-code);\n"+
 				"with no agent it lists the agents and whether each is connected. flightdeck %s --help has its flags.\n\n"+
 				"flightdeck %s install keeps Flightdeck running in the background on Linux and macOS: it starts it now\n"+
-				"and at every login, and again if it dies, with the flags given to install. flightdeck %s --help has the rest.\n\nFlags:\n",
+				"and at every login, and again if it dies, with the flags given to install. flightdeck %s --help has the rest.\n\n"+
+				"flightdeck "+BackupCommand+" copies the SQLite database, while Flightdeck runs or not, to <file> or under the data dir's\n"+
+				"backups/; flightdeck "+RestoreCommand+" <file> puts a copy back, with Flightdeck stopped, keeping the database it replaces.\n"+
+				"Both read --data-dir and the database flags; --help on either has the details.\n\nFlags:\n",
 				HealthCommand, ConnectCommand, ServiceCommand, DefaultListen, HealthCommand, ConnectCommand, ConnectCommand, ConnectCommand,
 				ServiceCommand, ServiceCommand)
 			fs.PrintDefaults()
@@ -265,16 +283,30 @@ func parse(args []string, env func(string) string, out io.Writer, cmd *Command) 
 		fs.SetOutput(io.Discard)
 		fs.Usage = func() {}
 	}
-	if err := fs.Parse(args); err != nil {
-		if o.Health && errors.Is(err, flag.ErrHelp) {
-			fs.SetOutput(out)
-			usage()
-		}
-		return Options{}, err
+	maxArgs := 0
+	if cmd != nil {
+		maxArgs = cmd.MaxArgs
 	}
-	if fs.NArg() > 0 {
-		fs.Usage()
-		return Options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	// The flag package stops at the first argument that is not a flag;
+	// a command's arguments may come before its flags too, so parsing
+	// resumes after each one.
+	for rest := args; ; {
+		if err := fs.Parse(rest); err != nil {
+			if o.Health && errors.Is(err, flag.ErrHelp) {
+				fs.SetOutput(out)
+				usage()
+			}
+			return Options{}, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		if len(o.Args) == maxArgs {
+			fs.Usage()
+			return Options{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		}
+		o.Args = append(o.Args, fs.Arg(0))
+		rest = fs.Args()[1:]
 	}
 	// A flag given on the command line wins, an empty one included.
 	given := map[string]bool{}

@@ -72,7 +72,7 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 		if dev {
 			token = bootstrap.Result{Token: bootstrap.DevToken, Dev: true}
 		}
-		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true)
+		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true, nil)
 		out, err := os.ReadFile(f.Name())
 		if err != nil {
 			t.Fatal(err)

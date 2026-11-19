@@ -41,6 +41,16 @@ const (
 	LockFile     = "flightdeck.lock"
 )
 
+// DatabaseLockSuffix names the lock file of a SQLite database: the
+// database's path with this suffix, beside it. The server holds it while
+// it serves the file, and `flightdeck restore` while it replaces it.
+const DatabaseLockSuffix = ".lock"
+
+// BackupsDir is the directory under the data dir that holds the copies
+// `flightdeck backup` writes by default and the ones kept before a
+// migration. It is created, mode 0700, when a copy is first written.
+const BackupsDir = "backups"
+
 // Layout names the paths under a data directory.
 type Layout struct {
 	Root     string
@@ -50,6 +60,7 @@ type Layout struct {
 	Secrets  string // secrets.json
 	ACME     string // the TLS certificate cache
 	Tmp      string // SQLite's temporary files; made and cleaned by PrepareTmp
+	Backups  string // BackupsDir; made by the first copy written there
 	// Warning is set when the directory exists with a mode wider than
 	// 0700 (not on Windows): the bus store and the secrets file inside
 	// are then readable by other users of the machine. The caller logs
@@ -75,6 +86,7 @@ func Ensure(dir string) (Layout, error) {
 		Secrets:  filepath.Join(abs, "secrets.json"),
 		ACME:     filepath.Join(abs, "acme"),
 		Tmp:      filepath.Join(abs, "tmp"),
+		Backups:  filepath.Join(abs, BackupsDir),
 	}
 	// tmp is left to PrepareTmp, which looks at what is there before it
 	// touches it.

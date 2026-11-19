@@ -186,6 +186,27 @@ func asDirty(rawURL string, err error) *DirtyError {
 	return e
 }
 
+// MigrateTo migrates the database at rawURL up or down to version, under
+// the lock Migrate takes. It exists for tests that need a database a
+// release behind (the copy a start keeps before it migrates); the binary
+// only ever migrates up, with Migrate.
+func MigrateTo(ctx context.Context, rawURL string, version uint) error {
+	release, err := lockMigrations(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+	defer release()
+	m, err := newMigrator(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _, _ = m.Close() }()
+	if err := m.Migrate(version); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("storage: migrate to %d: %w", version, err)
+	}
+	return nil
+}
+
 // MigrateDown reverts every migration (used by tests to prove each
 // down file is the inverse of its up file). It takes the migration lock
 // Migrate takes.

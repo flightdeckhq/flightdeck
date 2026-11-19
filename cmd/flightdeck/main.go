@@ -24,6 +24,7 @@ import (
 
 	apiapp "github.com/flightdeckhq/flightdeck/api/app"
 	ingestionapp "github.com/flightdeckhq/flightdeck/ingestion/app"
+	"github.com/flightdeckhq/flightdeck/internal/backup"
 	"github.com/flightdeckhq/flightdeck/internal/bootstrap"
 	"github.com/flightdeckhq/flightdeck/internal/cli"
 	"github.com/flightdeckhq/flightdeck/internal/connect"
@@ -53,8 +54,9 @@ var version = "dev"
 const shutdownTimeout = 30 * time.Second
 
 // lockSuffix names the lock file of a SQLite database: the database's
-// path with this suffix, beside the file it guards.
-const lockSuffix = ".lock"
+// path with this suffix, beside the file it guards. `flightdeck restore`
+// takes the same lock, so the two never run on one file at once.
+const lockSuffix = datadir.DatabaseLockSuffix
 
 // The Postgres connections of one flightdeck process. Each service has
 // a pool of its own (storage.DB.Share), which alone would be
@@ -138,6 +140,27 @@ func run(args []string, stdout, stderr *os.File) int {
 			return lines
 		}
 		return background.Main(ctx, args[1:], rt)
+	}
+	if len(args) > 0 && (args[0] == cli.BackupCommand || args[0] == cli.RestoreCommand) {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return backup.Main(ctx, args[0], args[1:], backup.IO{
+			Stdout: stdout,
+			Stderr: stderr,
+			Getenv: os.Getenv,
+			Now:    time.Now,
+			// A restore refused by the data dir's lock names the service
+			// when the service is what holds it.
+			ServiceHint: func(ctx context.Context, pid int) string {
+				ctx, cancel := context.WithTimeout(ctx, serviceProbeTimeout)
+				defer cancel()
+				if _, servicePID, ok := serviceRunning(ctx); !ok || servicePID != pid {
+					return ""
+				}
+				return "Stop it with flightdeck service remove (flightdeck service status shows its flags first), " +
+					"restore, then start it again with flightdeck service install and those flags"
+			},
+		})
 	}
 	opts, err := cli.Parse(args, os.Getenv, stderr)
 	if errors.Is(err, cli.ErrHelp) {
@@ -449,6 +472,14 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 			return asService(databaseInUse(err, database.path), opts)
 		}
 		defer fileLock.Release()
+		// A restore that stopped halfway (a crash, a power loss) is
+		// finished or undone before the file is opened or created, so a
+		// start never serves an empty database in place of either.
+		if note, err := backup.RecoverInterrupted(database.path); err != nil {
+			return err
+		} else if note != "" {
+			slog.Warn(note)
+		}
 		if err := datadir.CreatePrivate(database.path); err != nil {
 			return err
 		}
@@ -551,8 +582,14 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	}()
 	// The schema next, once, before any statement of a service or of
 	// the token bootstrap runs: the embedded migrations of the backend.
+	// A SQLite database a migration is about to change is copied first,
+	// the way back to the release before.
+	var before *migrationCopy
+	if database.backend == storage.SQLite {
+		before = copyBeforeMigrating(ctx, database, layout)
+	}
 	if err := storage.Migrate(ctx, database.url); err != nil {
-		return fmt.Errorf("database %s: %w", database.display, err)
+		return migrateFailed(err, database, layout)
 	}
 	slog.Info("database schema is current", "backend", database.backend)
 	// Each service gets a handle of its own on that database, so the
@@ -637,7 +674,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		// by, written before the start-up block says it serves.
 		defer recordInstance(layout.Root, lns.plain.Addr().String(), os.Getpid())()
 	}
-	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil)
+	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil, before)
 	if dev {
 		// Where the coding agents on this machine report, beside serving
 		// and never in its way; the first signal cancels it, and the stop
@@ -878,7 +915,8 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 	return nil
 }
 
-func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, hosts router.HostPolicy, layout datadir.Layout, db database, embedded bool) {
+func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, hosts router.HostPolicy, layout datadir.Layout, db database,
+	embedded bool, before *migrationCopy) {
 	base, anyInterface := publicURL(opts)
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\nFlightdeck %s\n\n", version)
@@ -914,6 +952,13 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 		p("  Bus         embedded NATS, store %s\n", layout.NATS)
 	} else {
 		p("  Bus         NATS at %s\n", storage.MaskURL(opts.NatsURL))
+	}
+	switch {
+	case before == nil:
+	case before.Skipped != "":
+		p("  Backup      WARNING: %s\n", before.Skipped)
+	default:
+		p("  Backup      %s   (schema version %d, kept before this start migrated it to %d)\n", before.Copy.Path, before.from, before.to)
 	}
 	p("\nPress Ctrl+C to stop.\n\n")
 }

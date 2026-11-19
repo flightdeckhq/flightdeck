@@ -739,8 +739,8 @@ exporter setup, or structure no mapped dialect reports. Native wraps: Google
 ADK, OpenAI Agents SDK, Microsoft Agent Framework, LlamaIndex, Deep Agents.
 Pydantic AI and Strands keep OTLP for structure (their SDK calls are metered
 natively). Agno, Haystack, smolagents: labels only, demand-ranked (#278).
-Gemini (google-genai) and Bedrock Converse are deferred (#276, #277; D178
-stands); their PromptViewer branches are approved for that work.
+Bedrock Converse is deferred (#277; D178 stands); its PromptViewer branch
+is approved for that work.
 **Why:** OTLP sessions are observe-only and appear after the run ends; the
 SDK patches already meter every framework on Anthropic, OpenAI or litellm.
 **Rejected alternative:** native wraps for every framework (patching risk

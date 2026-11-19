@@ -7067,7 +7067,7 @@ CREATE TABLE event_content (
     "input" JSONB, -- embeddings input, an OpenAI Responses request's input, a Gemini request's contents
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
-    embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
+    embedding_output JSONB,            -- embeddings vectors, or the cut marker string that replaced them (capture_prompts gate)
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
@@ -7090,7 +7090,7 @@ never carries content inline.
 | `input` | Responses `input`, a Gemini request's `contents` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
-| `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
+| `embedding_output` | NULL | output vectors, or the marker string that replaced them to fit the event size limit | NULL | NULL | NULL | NULL |
 
 The JSON type of the content's `system` picks its column: a string is
 stored in `system_prompt` and a list in `system_blocks`, as the list,
@@ -9437,7 +9437,11 @@ Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
 only appears when the session runs custom directives (a sensor session
 that supports directives, see Observer-session class) and
 `flavorDirectives.length > 0` (filtered from the fleet store's
-`customDirectives` slice by the session's flavor).
+`customDirectives` slice by the session's flavor). The tabs share one
+scroll container, and each view of it (a tab, the Prompts tab's list,
+a call opened from it) keeps its own scroll position for the run: a
+tab opens at its top the first time and where it was left after that,
+and a newly opened call opens at its top.
 
 The drawer reads its run through its own fetch (`useSession`), and the
 fleet store's live stream tells it when to refetch: on an
@@ -9500,7 +9504,14 @@ loaded events (the ones its Timeline holds) that stored content of the
 types `post_call`, `tool_call`, `mcp_tool_call`, `mcp_prompt_get` and
 `embeddings`, newest first, one row each with its event-type badge,
 its time and its model (a tool call's tool name), each opening in
-`PromptViewer`; "← Back to event list" returns to that list. An
+`PromptViewer`; "← Back to event list" returns to the opened call's
+row: back at the distance from the top of the view it had when the
+call was opened (calls that arrived at the list's top meanwhile do not
+move it), brought into view if it would be outside it, and holding
+keyboard focus. After the Timeline's "View Prompts →", Back scrolls the
+row it highlights into view and focuses it; the highlighted row is
+scrolled to only then, not when the tab is shown again. When the row is
+no longer in the list, focus goes to the Prompts tab. An
 embeddings call is listed like any other, so a run whose only content
 is embeddings lists its calls, and the run drawer's "View Prompts →" on
 an embeddings row opens the same view as its row in the list. The viewer's
@@ -10397,13 +10408,50 @@ is used on (`--surface`, `--bg-elevated`, `--bg`, a list row's
 own hue), or an alias of the
 hue where the hue already does, so both themes define the same set. The
 hue tokens (`--text-muted`, `--accent`, `--event-llm`, ...) stay as they
-are for badges' tints and borders, charts, swimlanes and icons. The
-Prompts tab of both drawers (with its no-content, capture-off and
+are for badges' tints and borders, charts, swimlanes and icons.
+
+An event-type badge (`getBadge` in `lib/events.ts`: the type's hue as a
+15% tint and a 30% border) draws its label in the type's badge text
+token, its `textVar`, and an MCP policy decision pill (`Allow`, `Deny ·
+warn`, `Deny · block`, `Deny · interactive`: its hue as a 12% tint and
+a border) in its family's: `--event-llm-badge-text`,
+`--event-tool-badge-text`, `--event-embeddings-badge-text`,
+`--event-mcp-tool-badge-text`, `--event-mcp-resource-badge-text`,
+`--event-mcp-prompt-badge-text`, `--event-degrade-badge-text`,
+`--event-directive-badge-text`, `--event-lifecycle-badge-text`, and
+`--warning-badge-text`, `--danger-badge-text`, `--success-badge-text`
+and `--accent-badge-text`, which the warn, block, error and result
+badges, the attach badge and the four pills share (those hues are the
+warning, danger and success hues in both themes). A streamed call's
+`STREAM` badge takes `--event-llm-badge-text` and an aborted one's
+`ABORTED` takes `--danger-badge-text`, over the LLM and error hues'
+tints. Each is the nearest
+shade of its hue that reads at 4.6:1 over the label's tint on every row
+the badge sits in: `--surface`, `--bg-elevated`, `--bg`, a hovered row
+(`--surface-hover`), a focused row (`--accent-glow` over the surface),
+the Neighbors list's anchor (8% `--accent` over `--bg`), the Live feed's
+linked row (12%) and the Events page's active facet (15% `--primary`
+over `--bg`); a decision pill's on the four surfaces its table's rows
+are drawn on. Each composite is measured exactly and as a browser draws
+it, rounded to 8 bits after each layer. Where the family's `-text`
+token or the hue already reaches the floor, the badge token aliases it.
+These are their own tokens because the shared
+`-text` tokens are set for other text and do not reach the floor on a
+tint in an accent-washed row; darkening them would move that text. Every
+site that draws a badge takes the label from `textVar`: `EventTypePill`
+(the Events page, the run drawer's Timeline, the agent drawer), the Live
+feed, the event drawer's header, the run drawer's attach badge, event
+detail header and Prompts list, the Neighbors list and the Fleet
+sidebar's policy events. A unit test
+(`dashboard/tests/unit/badge-label-contrast.test.tsx`) checks every
+event type's label and the streaming badge's on every one of those rows
+in both themes.
+
+The Prompts tab of both drawers (with its no-content, capture-off and
 `session_signal` states and the run drawer's list of the run's calls)
 and the embeddings viewer draw all their text in these tokens, with
-`--text` and `--text-secondary`, except the run drawer list's
-event-type badges, which keep the look every event-type badge shares,
-the type's hue as text on its tint; role badges keep their hue's tint and
+`--text` and `--text-secondary`, the list's event-type badges in their
+badge text tokens; role badges keep their hue's tint and
 border with the text in its `-text` token, and their JSON views
 (`SyntaxJson` given `TEXT_SAFE_SYNTAX_COLORS`) colour keys, strings and
 numbers with them and `true` / `false` / `null` in `--text`, apart from
@@ -11057,7 +11105,12 @@ When `capture_prompts=true`:
   call that asked for `encoding_format="base64"`, an empty one included
   — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate
-  protects this; there is no separate dial.
+  protects this; there is no separate dial. When the vectors would take
+  the event past the 768 KiB body limit, `embedding_output` carries
+  instead the size rule's marker alone, a string
+  (`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, N
+  the size of the vectors' JSON), so the input arrives whole (see
+  Content Capture); `output_dimensions` still reports the vectors.
 
 ### `llm_error`
 
@@ -11745,7 +11798,19 @@ event past the 768 KiB body limit, marking each cut string (see
 Plugin, Configuration, which describes the measure and the marker; the
 sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
-never cut. An event whose captured `content` cannot be written as JSON
+never cut. An embeddings call's vectors are numbers, which no string
+cut shortens, so the sensor cuts them first (the plugin sends no
+embeddings events): on an event over the limit
+whose content holds vectors (`embedding_output`), the vectors are
+replaced, all of them, by the marker alone,
+`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, where
+N is the size of the vectors' JSON, and an event that then fits is sent
+with its input whole. Only an input over the limit on its own is then
+cut, by the rule above, the marker left as it is; when no cut fits, the
+event is sent without content. Vectors are never kept in part: a
+vector returned as a base64 string is replaced with the others, never
+shortened alongside the input. Vectors no larger than the marker stay
+as they are. An event whose captured `content` cannot be written as JSON
 (an object the capture did not turn into data, or a float that is not
 finite: NaN or an infinity) is sent without its content
 (`has_content=false`, as an event over the limit is), with a warning

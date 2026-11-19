@@ -311,7 +311,8 @@ function DecisionPill({ entry }: { entry: MCPPolicyEntry }) {
   //   deny + interactive → violet (the accent)
   //   deny + no enforcement → red (treated as block by default)
   // Each pill is its hue's 12% tint with a border in the hue; the text is
-  // the hue too, except the accent's, which takes its text-safe shade.
+  // the hue's badge text shade, which reads at 4.6:1 over the tint in a
+  // row at rest and hovered (themes.css, "Badge text").
   let label: string;
   let bg: string;
   let border: string;
@@ -320,20 +321,23 @@ function DecisionPill({ entry }: { entry: MCPPolicyEntry }) {
   if (entry.entry_kind === "allow") {
     label = "Allow";
     bg = "color-mix(in srgb, var(--success, #16a34a) 12%, transparent)";
-    border = fg = "var(--success, #16a34a)";
+    border = "var(--success, #16a34a)";
+    fg = "var(--success-badge-text)";
   } else if (entry.enforcement === "warn") {
     label = "Deny · warn";
     bg = "color-mix(in srgb, var(--warning, #d97706) 12%, transparent)";
-    border = fg = "var(--warning, #d97706)";
+    border = "var(--warning, #d97706)";
+    fg = "var(--warning-badge-text)";
   } else if (entry.enforcement === "interactive") {
     label = "Deny · interactive";
     bg = "color-mix(in srgb, var(--accent) 12%, transparent)";
     border = "var(--accent)";
-    fg = "var(--accent-text)";
+    fg = "var(--accent-badge-text)";
   } else {
     label = "Deny · block";
     bg = "color-mix(in srgb, var(--danger) 12%, transparent)";
-    border = fg = "var(--danger)";
+    border = "var(--danger)";
+    fg = "var(--danger-badge-text)";
   }
 
   return (

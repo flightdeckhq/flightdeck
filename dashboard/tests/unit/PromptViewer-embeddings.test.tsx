@@ -13,13 +13,17 @@ import type { AgentEvent, EventContent, OutputDimensions, Session } from "@/lib/
 // under the provider's name for it (Input for OpenAI and litellm,
 // Contents for google-genai), drawn by the expanded event row's input
 // view, the stored input byte for byte in its JSON view, and the event's
-// output_dimensions as the response, never the empty stored response.
+// output_dimensions under Output (the event's metadata, not a response;
+// never the empty stored response). The run drawer's Prompts list lists
+// embeddings calls beside the run's other calls, each opening that view.
 // The contents in fixtures/embeddings-content.json are what the content
 // API served for real calls; the rest are built in the shapes the
 // sensor stores (the API's own input shapes, and a google-genai request's
-// contents on Vertex AI). The capture-off guard passes on main as well;
-// every other case fails there (main showed only the stored response,
-// {}).
+// contents on Vertex AI). Three guards hold whatever the view or the
+// list shows: capture off keeps its message in the viewer, and in the
+// list an embeddings call with no content is not listed and capture off
+// keeps its message. Every other case was written to fail on the code
+// before it.
 
 let mockContent: EventContent | null = null;
 

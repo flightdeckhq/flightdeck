@@ -1,7 +1,7 @@
 /**
- * T191 — On the Policies page the active tab is raised on its tab list,
- * and a tab focused from the keyboard draws its focus ring, the ring's
- * offset gap in the tab list's colour.
+ * T191 — On the Policies page the active tab has its own background on
+ * its tab list, and a tab focused from the keyboard draws its focus
+ * ring, the ring's offset gap in the tab list's colour.
  *
  * Structural and theme-agnostic: the assertions compare computed values
  * with each other (the active tab's background against the list's, the
@@ -32,7 +32,7 @@ function computedColour(el: Locator, value: string): Promise<string> {
 	}, value);
 }
 
-test.describe("T191 — The Policies tabs: the active tab is raised, a focused tab draws its ring", () => {
+test.describe("T191 — The Policies tabs: the active tab has its own background on the list, a focused tab draws its ring", () => {
 	test("the active tab stands out on its tab list, and keyboard focus draws a ring on the list's colour", async ({ page }) => {
 		await page.goto("/policies");
 		const active = page.getByTestId("policies-tab-token-budget");
@@ -40,7 +40,7 @@ test.describe("T191 — The Policies tabs: the active tab is raised, a focused t
 		const list = active.locator("xpath=..");
 		await expect(list).toHaveAttribute("role", "tablist");
 
-		// Raised: an opaque background of its own, not the list's.
+		// Its own background on the list: opaque, and not the list's.
 		const listBackground = await list.evaluate((el) => getComputedStyle(el).backgroundColor);
 		const activeBackground = await settled(active, "backgroundColor");
 		expect(activeBackground).not.toBe(listBackground);

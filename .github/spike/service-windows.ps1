@@ -437,6 +437,47 @@ function Invoke-Admin {
         }
     }
 
+    Step 'D product shape' {
+        Section 'D: the shape a release would use: the launcher and flightdeck.exe in a path with a space and a non-ASCII letter, a task folder'
+        $odd = "Flight Deck $([char]0x00EF)"
+        $prog = Join-Path $Root $odd
+        New-Item -ItemType Directory -Force -Path $prog | Out-Null
+        Copy-Item $flightdeck, $launcherw $prog
+        $data = Join-Path $Root "data $([char]0x00EF)"
+        $name = "\FlightdeckSpike\$env:USERNAME"
+        $xml = New-TaskXml -UserId $me -LogonType InteractiveToken -Command (Join-Path $prog 'launcherw.exe') `
+            -Arguments "`"$(Join-Path $prog 'flightdeck.exe')`" --port 4245 --data-dir `"$data`"" -WorkDir $prog -Repeat
+        if ((Register-Task $name $xml) -ne 0) { Result 'D product shape' 'register in a task folder' 'FAILED'; return }
+        $w = Start-Watched 'D product shape' 4245 '' { Start-Task $name | Out-Null } 90
+        if (-not $w) { Remove-Task $name; return }
+        Result 'D product shape' 'health' "$(Get-Health 4245 '/api/health')"
+        Result 'D product shape' 'data dir' "$data has: $((Get-ChildItem -LiteralPath $data -Name -ErrorAction SilentlyContinue) -join ', ')"
+        $lockPid = 0
+        try { $lockPid = [int] (Get-Content -LiteralPath (Join-Path $data 'flightdeck.lock') -Raw -ErrorAction Stop).Trim() } catch { Note "lock unreadable: $($_.Exception.Message)" }
+        $server = Get-CimInstance Win32_Process -Filter "ProcessId=$($w.Pid)"
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($server.ParentProcessId)"
+        Result 'D product shape' 'processes' "listener $($w.Pid) ($($server.Name)), lock file names $lockPid, parent $($parent.ProcessId) ($($parent.Name))"
+        $o = taskkill /F /PID $lockPid 2>&1
+        Note "taskkill /F /PID $lockPid (the lock file's pid): exit $LASTEXITCODE"
+        $w2 = Wait-Listener 4245 100 $w.Pid
+        Result 'D product shape' 'restart after killing the lock file''s pid' $(if ($w2) { "restarted after $($w2.Seconds) s" } else { 'NOT restarted within 100 s' })
+        if ($w2) {
+            $launcher = (Get-CimInstance Win32_Process -Filter "ProcessId=$($w2.Pid)").ParentProcessId
+            $o = schtasks /End /TN $name 2>&1
+            Start-Sleep 3
+            $alive = Get-Process -Id $launcher -ErrorAction SilentlyContinue
+            Result 'D product shape' 'schtasks /End' "launcher $launcher $(if ($alive) { 'still runs' } else { 'ended' }); server $($w2.Pid) $(if (Get-Process -Id $w2.Pid -ErrorAction SilentlyContinue) { 'STILL RUNS' } else { 'ended' })"
+            Get-Process -Id $w2.Pid -ErrorAction SilentlyContinue | Stop-Process -Force
+        }
+        $o = schtasks /Delete /TN $name /F 2>&1; Note "schtasks /Delete: exit $LASTEXITCODE $($o -join ' ')"
+        $folderLeft = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\FlightdeckSpike'
+        Result 'D product shape' 'task folder after the last task is deleted' $(if ($folderLeft) { 'the folder stays' } else { 'gone' })
+        if ($folderLeft) {
+            $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+            try { $svc.GetFolder('\').DeleteFolder('FlightdeckSpike', 0); Note 'deleted the folder through the Schedule.Service COM API' } catch { Note "DeleteFolder: $($_.Exception.Message)" }
+        }
+    }
+
     Section 'a standard user whose profile path has a space and a non-ASCII letter'
     $user = "Fd Sp$([char]0x00EF)ke"
     $pw = 'Fd!' + (-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 16 | ForEach-Object { [char] $_ })) + 'a1'
@@ -544,6 +585,22 @@ function Invoke-User {
                 $w = Wait-Listener 4251 20
                 Result 'B interactive, standard user' 'run with no Winlogon session of its own' $(if ($w) { "ran: $(Describe-Report (Get-Report user-it))" } else { "did not run: $(Get-TaskLastResult $name)" })
                 Remove-Task $name
+            }
+        }
+
+        Step 'B interactive, standard user, task folder' {
+            Section 'B: the standard user registers its task in a folder'
+            $name = "\FlightdeckSpikeUser\$env:USERNAME"
+            $xml = New-TaskXml -UserId $me -LogonType InteractiveToken -Command $sleeper -Arguments '-port 4256 -tag user-folder' -WorkDir $prog -Repeat
+            $code = Register-Task $name $xml
+            Result 'B interactive, standard user' 'register in a new task folder' "exit $code"
+            if ($code -eq 0) {
+                $o = schtasks /Delete /TN $name /F 2>&1; Note "schtasks /Delete: exit $LASTEXITCODE"
+                try {
+                    $svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+                    $svc.GetFolder('\').DeleteFolder('FlightdeckSpikeUser', 0)
+                    Result 'B interactive, standard user' 'delete its task folder' 'deleted'
+                } catch { Result 'B interactive, standard user' 'delete its task folder' "FAILED: $($_.Exception.Message)" }
             }
         }
 

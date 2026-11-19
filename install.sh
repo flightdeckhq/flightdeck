@@ -52,10 +52,34 @@
 #                           connect that fails never fails the install. An agent
 #                           too old to connect is never connected: the script
 #                           says to update it first.
-#   FLIGHTDECK_CONNECT_ASK_TIMEOUT  seconds the connect question waits for an
-#                           answer (default 60; no answer is a no). Only
+#   FLIGHTDECK_SERVICE      whether to start Flightdeck now and at every login, in
+#                           the background, without asking: yes or no (spaces
+#                           and commas around it ignored, as in
+#                           FLIGHTDECK_CONNECT; anything else is reported and
+#                           read as no). Unset,
+#                           the script asks on the terminal, and prints the
+#                           command to run instead when there is no terminal.
+#                           A yes runs `flightdeck service install` (Linux and
+#                           macOS, as your user, no sudo), which reads the
+#                           FLIGHTDECK_ server variables of this shell
+#                           (FLIGHTDECK_PORT, FLIGHTDECK_DATA_DIR, ...); a
+#                           service install that fails never fails the install.
+#                           Nothing is asked as root, with a release older than
+#                           the command, or where the system cannot run the
+#                           service (no user systemd, a container).
+#   FLIGHTDECK_CONNECT_ASK_TIMEOUT  seconds a question waits for an answer
+#                           (default 60; no answer is a no). Only
 #                           scripts/test-install-sh.sh sets it, to shorten a
 #                           run that leaves the question unanswered.
+#
+# Run again where the service runs the binary it replaces, the script
+# stops the service first and starts it again after, so the new binary
+# is the one that runs; the service's flags stay as they were. A service
+# you had stopped stays stopped (the script says how to start it). The new
+# binary is written beside the old one and renamed over it, so the name
+# never holds half a binary; a run that stops after stopping the service
+# (an error, a full disk, Ctrl+C) starts the service again on whichever
+# binary is in place, the old or the new, and says whether it runs.
 #
 # POSIX sh: it runs under dash, bash, zsh and BusyBox ash. Windows users
 # run install.ps1 instead (or download the .zip from the release page).
@@ -65,6 +89,9 @@ DEFAULT_REPO_URL="https://github.com/flightdeckhq/flightdeck"
 REPO_URL="${FLIGHTDECK_RELEASE_URL:-$DEFAULT_REPO_URL}"
 SIGNED_URL="${FLIGHTDECK_RELEASE_SIGNED_URL:-$DEFAULT_REPO_URL}"
 BINARY="flightdeck"
+# The new binary while it is written beside the one it replaces; on_exit
+# removes it if the run stops there.
+STAGED=""
 # The signer of checksums.txt: this repository's release workflow,
 # through GitHub's OIDC issuer. Any workflow file of the repository is
 # accepted so a renamed workflow does not break older installs.
@@ -275,13 +302,14 @@ CONNECT_NEEDS_CONFIRMATION=4
 # later.
 CONNECT_OUTDATED=5
 
-# ask_yes QUESTION: yes for an empty answer, y or yes; anything else, end
-# of input, or no answer within ASK_TIMEOUT_SECS, is no. POSIX read has
-# no timeout, so the answer is read by a background reader that is
-# killed when the time is up.
+# ask_yes QUESTION NO_ANSWER: yes for an empty answer, y or yes; anything
+# else, end of input, or no answer within ASK_TIMEOUT_SECS, is no, and
+# the last says NO_ANSWER ("not connecting"). POSIX read has no timeout,
+# so the answer is read by a background reader that is killed when the
+# time is up.
 ask_yes() {
   printf '%s [Y/n] ' "$1" >/dev/tty
-  answer_file="${tmp}/connect-answer"
+  answer_file="${tmp}/answer"
   rm -f "$answer_file"
   (IFS= read -r line </dev/tty && printf '%s' "$line" >"$answer_file") &
   reader=$!
@@ -289,7 +317,7 @@ ask_yes() {
   while kill -0 "$reader" 2>/dev/null; do
     if [ "$waited" -ge "$ASK_TIMEOUT_SECS" ]; then
       kill -KILL "$reader" 2>/dev/null || true
-      printf '\nNo answer in %s seconds: not connecting.\n' "$ASK_TIMEOUT_SECS" >/dev/tty
+      printf '\nNo answer in %s seconds: %s.\n' "$ASK_TIMEOUT_SECS" "$2" >/dev/tty
       return 1
     fi
     sleep 1
@@ -368,22 +396,29 @@ DETECTED
   printf '%s' "$found_state"
 }
 
+# join_words VALUE prints VALUE's words, separated by commas or spaces,
+# joined by commas: " claude-code, other " is claude-code,other and
+# " all " is all. FLIGHTDECK_CONNECT and FLIGHTDECK_SERVICE are both read
+# through it, so the two take the same spellings.
+join_words() {
+  joined=""
+  old_ifs="$IFS"
+  IFS=', '
+  set -f
+  for word in $1; do
+    joined="${joined:+$joined,}$word"
+  done
+  set +f
+  IFS="$old_ifs"
+  printf '%s' "$joined"
+}
+
 # connect_agents BIN offers to connect each agent found, or connects
 # the ones FLIGHTDECK_CONNECT names.
 connect_agents() {
   detected="$("$1" connect --detected </dev/null 2>/dev/null)" || return 0
   CONNECT_KNOWN=1
-  # The value's words, separated by commas or spaces, joined by commas:
-  # " claude-code, other " is claude-code,other and " all " is all.
-  choice=""
-  old_ifs="$IFS"
-  IFS=', '
-  set -f
-  for word in ${FLIGHTDECK_CONNECT:-}; do
-    choice="${choice:+$choice,}$word"
-  done
-  set +f
-  IFS="$old_ifs"
+  choice="$(join_words "${FLIGHTDECK_CONNECT:-}")"
   case "$choice" in
     '' | all | none) ;;
     *)
@@ -455,7 +490,7 @@ connect_agents() {
             outdated_hint "$name" "$id"
             continue
           fi
-          if [ "$plan_status" -eq 0 ] && ask_yes "Connect $name to Flightdeck?"; then
+          if [ "$plan_status" -eq 0 ] && ask_yes "Connect $name to Flightdeck?" "not connecting"; then
             connect_one "$1" "$id" "$name"
             continue
           fi
@@ -466,6 +501,283 @@ connect_agents() {
   done <<DETECTED
 $detected
 DETECTED
+}
+
+# ---- the background service ----------------------------------------------
+#
+# `flightdeck service install` (Linux and macOS) writes a service of the
+# system's own manager, for this user, that starts the binary now, at
+# every login and again when it stops. The binary knows how; this script
+# only asks, with the rules of the connect offer above. A re-run where
+# that service runs the binary being replaced stops it first and starts
+# it again after, so the process that runs is the new binary; one the
+# user had stopped stays stopped. A run that stops between the two (an
+# error, Ctrl+C) starts it again on the binary in place (on_exit).
+
+# The service's names under its manager, for the stop before a
+# replacement: the binary has no stop command, and `flightdeck service
+# remove` would also drop the flags the service was installed with.
+SERVICE_UNIT="flightdeck.service"
+SERVICE_LABEL="com.flightdeck-hq.flightdeck"
+# How long the stop of a launchd agent may take: the service gives the
+# binary 75 seconds to stop (its ExitTimeOut), and launchd then kills it.
+SERVICE_STOP_SECS=80
+# `flightdeck service install --dry-run` exits with this status when the
+# system cannot run the service (no user service manager, a container,
+# a binary in a temporary directory): nothing is offered then.
+SERVICE_UNSUPPORTED=4
+SERVICE_INSTALL_HINT="To start Flightdeck now and at every login: flightdeck service install"
+# What a re-run found of the service that runs the binary it replaces:
+# running (the manager runs it, or keeps starting it again), stopped (the
+# user stopped it), or "" (no such service).
+SERVICE_FOUND=""
+# Set from the moment this run stops the service until it starts it
+# again: an exit in between starts it again (on_exit).
+SERVICE_PENDING=""
+# Set once the service runs the binary this run installed.
+SERVICE_RUNS=""
+# The closing line about the service, "" for none.
+SERVICE_HINT=""
+# What `flightdeck service status` showed: the service's command line and
+# its state.
+SVC_COMMAND=""
+SVC_STATE=""
+
+# knows_service BIN: BIN has the service command. A release older than
+# it reads `service` as an argument it does not take and fails (or, as
+# the test's stand-in does, prints something else): only its usage
+# counts.
+knows_service() {
+  "$1" service help </dev/null 2>/dev/null | grep -q 'flightdeck service install'
+}
+
+# shell_word WORD: WORD as `flightdeck service status` writes it on its
+# command line: as it is when it holds only ASCII letters, digits and
+# -_./,:=@+, else in single quotes with each ' written '\''.
+shell_word() {
+  case "$1" in
+    '' | *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./,:=@+-]*)
+      printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# service_status BIN reads the installed service's command line and state
+# into SVC_COMMAND and SVC_STATE, as `BIN service status` shows them, and
+# fails when no service is installed (status 3), the system cannot run
+# one (4) or BIN cannot say. A service that is installed but does not run
+# or answer exits 1, and is installed all the same.
+service_status() {
+  if status_out="$("$1" service status </dev/null 2>/dev/null)"; then
+    :
+  else
+    case $? in
+      1) ;;
+      *) return 1 ;;
+    esac
+  fi
+  SVC_COMMAND="$(printf '%s\n' "$status_out" | sed -n 's/^  command  *//p')"
+  SVC_STATE="$(printf '%s\n' "$status_out" | sed -n 's/^  state  *//p')"
+}
+
+# runs_binary COMMAND REAL: the service's COMMAND line starts with the
+# binary at REAL (its path with the links resolved, as install writes it).
+runs_binary() {
+  word="$(shell_word "$2")"
+  case "$1" in
+    "$word" | "$word "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# stop_service and start_service run the manager's own stop and start of
+# the service's systemd user unit or launchd agent.
+stop_service() {
+  case "$os" in
+    linux) systemctl --user stop "$SERVICE_UNIT" ;;
+    darwin)
+      launchctl bootout "gui/$(id -u)/$SERVICE_LABEL" || return 1
+      # launchd forgets the agent once its process has exited.
+      waited=0
+      while launchctl print "gui/$(id -u)/$SERVICE_LABEL" >/dev/null 2>&1; do
+        [ "$waited" -lt "$SERVICE_STOP_SECS" ] || return 1
+        sleep 1
+        waited=$((waited + 1))
+      done
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+start_service() {
+  case "$os" in
+    linux) systemctl --user start "$SERVICE_UNIT" ;;
+    darwin) launchctl bootstrap "gui/$(id -u)" "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" ;;
+    *) return 1 ;;
+  esac
+}
+
+# prepare_upgrade DIR: when the service runs the binary in DIR, which this
+# run is about to replace, stop it, so that the start after the
+# replacement leaves the new binary running; one the user had stopped is
+# left stopped. The binary in place is asked: it installed the service.
+prepare_upgrade() {
+  old="$1/$BINARY"
+  [ -x "$old" ] || return 0
+  [ "$(id -u)" != 0 ] || return 0
+  knows_service "$old" || return 0
+  service_status "$old" || return 0
+  runs_binary "$SVC_COMMAND" "$(cd "$1" && pwd -P)/$BINARY" || return 0
+  # Stopped (`not running (...)`, `not loaded by the service manager`) is
+  # the user's doing; anything else the manager runs, or keeps starting
+  # again after a failure.
+  case "$SVC_STATE" in
+    'not running'* | 'not loaded'*)
+      SERVICE_FOUND=stopped
+      return 0
+      ;;
+  esac
+  SERVICE_FOUND=running
+  # Set before the stop: an exit while it waits starts the service again.
+  SERVICE_PENDING=1
+  info "Stopping the Flightdeck service to replace the binary it runs"
+  if ! stop_service </dev/null; then
+    info "The service did not stop (see above); replacing the binary all the same, and starting the service again after"
+  fi
+}
+
+# start_again BIN starts the service with BIN, the binary in place: its
+# `service restart` waits until the service answers. A binary older than
+# the command (pinned with VERSION) gets the manager's own start.
+start_again() {
+  if knows_service "$1"; then
+    "$1" service restart </dev/null
+    return
+  fi
+  start_service </dev/null || return 1
+  info "Started the Flightdeck service again with ${1}."
+}
+
+# after_replace BIN: the binary is replaced. A service this run stopped
+# starts again with BIN, the new binary; one the user had stopped stays
+# stopped, and the closing line says how to start it.
+after_replace() {
+  case "$SERVICE_FOUND" in
+    running)
+      # An interrupt from here is the restart's own, which says what it
+      # leaves: on_exit does not start the service a second time.
+      SERVICE_PENDING=""
+      info ""
+      if start_again "$1"; then
+        SERVICE_RUNS=1
+      else
+        info "The Flightdeck service did not start again with the new binary (see above): flightdeck service status shows why."
+      fi
+      ;;
+    stopped)
+      info ""
+      info "The Flightdeck service was stopped and stays stopped; it runs the new binary once started: flightdeck service restart starts it now."
+      ;;
+  esac
+}
+
+# on_exit removes this run's temporary files. When the run stopped the
+# service and exits before it started it again (an error, a full disk,
+# Ctrl+C), it starts the service again on the binary in place: the old
+# one if the replacement did not happen, the new one if it did, so the
+# user is never left without the service they had.
+on_exit() {
+  exit_status=$?
+  rm -rf "$tmp"
+  [ -z "$STAGED" ] || rm -f "$STAGED"
+  if [ -n "$SERVICE_PENDING" ]; then
+    SERVICE_PENDING=""
+    bin="${dir}/${BINARY}"
+    info ""
+    info "The install stopped before it finished; starting the Flightdeck service again with ${bin} ($("$bin" --version 2>/dev/null || true))"
+    if start_again "$bin"; then
+      info "The Flightdeck service runs again."
+    else
+      info "The Flightdeck service is stopped (see above): flightdeck service status says why."
+    fi
+  fi
+  exit "$exit_status"
+}
+
+# install_service BIN runs the service install. Its stdin is /dev/null
+# and its failure is reported, never fatal: the binary is installed
+# either way.
+install_service() {
+  info ""
+  if "$1" service install </dev/null; then
+    SERVICE_RUNS=1
+  else
+    info "Starting Flightdeck in the background did not finish (see above); run it again later: flightdeck service install"
+  fi
+}
+
+# offer_service BIN REAL asks whether to start Flightdeck now and at every
+# login, or follows FLIGHTDECK_SERVICE. BIN is the installed binary and
+# REAL its path with the links resolved.
+offer_service() {
+  # A re-run found the service above, running or stopped.
+  [ -z "$SERVICE_FOUND" ] || return 0
+  # The service refuses root: it would run as root, in root's home.
+  [ "$(id -u)" != 0 ] || return 0
+  knows_service "$1" || return 0
+  # A service installed already is left as it is; one that runs another
+  # binary is named.
+  if service_status "$1"; then
+    if [ -n "$SVC_COMMAND" ] && ! runs_binary "$SVC_COMMAND" "$2"; then
+      SERVICE_HINT="The Flightdeck service runs another flightdeck and keeps running it: ${SVC_COMMAND}. To run this one instead: ${1} service install, with the flags that command line shows"
+    fi
+    return 0
+  fi
+  # The spellings FLIGHTDECK_CONNECT takes: lower-case words, spaces and
+  # commas around them ignored.
+  choice="$(join_words "${FLIGHTDECK_SERVICE:-}")"
+  case "$choice" in
+    '' | yes | no) ;;
+    *)
+      info ""
+      info "FLIGHTDECK_SERVICE is neither yes nor no (${FLIGHTDECK_SERVICE}): not starting Flightdeck in the background"
+      choice=no
+      ;;
+  esac
+  # The binary's own dry run says whether this system can run the service
+  # and whether an install would pass its checks now (a flightdeck
+  # already holding the data dir, a port in use).
+  if "$1" service install --dry-run </dev/null >/dev/null 2>"${tmp}/service-check"; then
+    :
+  else
+    check_status=$?
+    reason="$(sed -n '1s/^flightdeck service install: //p' "${tmp}/service-check")"
+    if [ "$check_status" -eq "$SERVICE_UNSUPPORTED" ]; then
+      if [ "$choice" = yes ] && [ -n "$reason" ]; then
+        info ""
+        info "Not starting Flightdeck in the background: ${reason}"
+      fi
+      return 0
+    fi
+    SERVICE_HINT="$SERVICE_INSTALL_HINT"
+    [ -z "$reason" ] || SERVICE_HINT="${SERVICE_HINT} (it would not start now: ${reason})"
+    return 0
+  fi
+  case "$choice" in
+    yes) install_service "$1" ;;
+    no) SERVICE_HINT="$SERVICE_INSTALL_HINT" ;;
+    *)
+      if can_ask; then
+        info ""
+        info "Flightdeck can run in the background as your user: started now, at every login, and again if it stops (flightdeck service remove undoes it)."
+        if ask_yes "Start Flightdeck now and at every login?" "not starting it"; then
+          install_service "$1"
+          return 0
+        fi
+      fi
+      SERVICE_HINT="$SERVICE_INSTALL_HINT"
+      ;;
+  esac
 }
 
 # ---- main ---------------------------------------------------------------
@@ -489,7 +801,7 @@ main() {
   fi
 
   tmp="$(mktemp -d 2>/dev/null || mktemp -d -t flightdeck)"
-  trap 'rm -rf "$tmp"' EXIT
+  trap on_exit EXIT
   trap 'exit 130' INT TERM
 
   info "Downloading ${base}/${asset}"
@@ -508,21 +820,37 @@ main() {
   dir="$(choose_install_dir)"
   mkdir -p "$dir" 2>/dev/null || fail "cannot create ${dir}; set INSTALL_DIR to a directory you can write to"
   [ -w "$dir" ] || fail "cannot write to ${dir}; set INSTALL_DIR to a directory you can write to"
+  prepare_upgrade "$dir"
+  # The new binary is written beside the old one and renamed over it, one
+  # step: the name never holds half a binary, not even when the run is
+  # interrupted, so a service started from it starts a whole one.
   # install(1) copies and sets the mode in one step; the fallback keeps
   # the script working on a system without it.
+  STAGED="${dir}/.${BINARY}.installing.$$"
   if command -v install >/dev/null 2>&1; then
-    install -m 0755 "${tmp}/${BINARY}" "${dir}/${BINARY}"
+    install -m 0755 "${tmp}/${BINARY}" "$STAGED" || fail "cannot write ${STAGED}; ${dir}/${BINARY} was not replaced"
   else
-    cp "${tmp}/${BINARY}" "${dir}/${BINARY}" && chmod 0755 "${dir}/${BINARY}"
+    { cp "${tmp}/${BINARY}" "$STAGED" && chmod 0755 "$STAGED"; } || fail "cannot write ${STAGED}; ${dir}/${BINARY} was not replaced"
   fi
+  mv -f "$STAGED" "${dir}/${BINARY}" || fail "cannot rename ${STAGED} to ${dir}/${BINARY}; it was not replaced"
+  STAGED=""
 
   info "Installed $("${dir}/${BINARY}" --version) to ${dir}/${BINARY}"
   # Under GitHub Actions, later steps find the binary without a PATH edit.
   if [ -n "${GITHUB_PATH:-}" ]; then
     echo "$dir" >>"$GITHUB_PATH"
   fi
+  after_replace "${dir}/${BINARY}"
   connect_agents "${dir}/${BINARY}"
-  if on_path "$dir"; then
+  offer_service "${dir}/${BINARY}" "$(cd "$dir" && pwd -P)/${BINARY}"
+  if [ -n "$SERVICE_RUNS" ]; then
+    info ""
+    info "Next: open the address above. Flightdeck runs in the background; flightdeck service status shows it."
+    if ! on_path "$dir"; then
+      info "${dir} is not on your PATH. Add it (for example in ~/.profile) to run flightdeck commands:"
+      info "  export PATH=\"${dir}:\$PATH\""
+    fi
+  elif on_path "$dir"; then
     info ""
     info "Next: run \`flightdeck\` and open the URL it prints."
   else
@@ -531,6 +859,7 @@ main() {
     info "  export PATH=\"${dir}:\$PATH\""
     info "Then run \`flightdeck\` and open the URL it prints."
   fi
+  [ -z "$SERVICE_HINT" ] || info "$SERVICE_HINT"
   if [ -n "$CONNECT_HINTS" ]; then
     printf '%s' "$CONNECT_HINTS"
   elif [ -n "$CONNECT_KNOWN" ] && [ -z "$CONNECT_FOUND" ]; then

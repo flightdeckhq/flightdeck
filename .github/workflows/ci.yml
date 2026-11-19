@@ -693,6 +693,17 @@ jobs:
           [ -S "$bus" ] || { echo "::error::no systemd user manager for $USER 30 s after enable-linger"; exit 1; }
           XDG_RUNTIME_DIR="/run/user/$(id -u)" scripts/service-gate.sh ./bin/flightdeck 4100 4101
 
+      - name: install.sh offers the service, and a re-run upgrades it (systemd)
+        # scripts/installer-service-gate.sh: bin/flightdeck and a second
+        # build that prints another version, served as two releases on
+        # loopback; install.sh installs the first with the service
+        # accepted, a re-run with the second stops the service, replaces
+        # the binary and starts it again, and the process that serves is
+        # then a new one running the file now installed.
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v$(cat VERSION)-gate.2" -o bin/flightdeck-next ./cmd/flightdeck
+          XDG_RUNTIME_DIR="/run/user/$(id -u)" scripts/installer-service-gate.sh ./bin/flightdeck ./bin/flightdeck-next 4102
+
       - name: Concurrency smoke on SQLite
         # Twenty sessions of a hundred events each while four readers
         # hit the query API: every event stored once, no 5xx, no locked
@@ -1434,7 +1445,7 @@ jobs:
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \
             scripts/check-script-modes.sh scripts/test-check-script-modes.sh scripts/fake-claude.sh \
-            scripts/service-gate.sh
+            scripts/service-gate.sh scripts/installer-service-gate.sh
           shellcheck scripts/check-installer-copies.sh scripts/test-check-installer-copies.sh
 
       # A script the Makefile or a workflow runs by its path must be
@@ -1484,7 +1495,12 @@ jobs:
       # entry, unsupported CPU, unknown version, plain-HTTP host), and
       # the offer to connect coding agents (the question answered on a
       # pseudo-terminal, no terminal, each FLIGHTDECK_CONNECT value, a
-      # connect that fails, an older binary).
+      # connect that fails, an older binary), and the offer to start
+      # Flightdeck in the background (the same matrix with
+      # FLIGHTDECK_SERVICE, root, a system that cannot run the service,
+      # an install that fails, and the re-runs that stop the service
+      # before the replacement and start it after, against stand-ins for
+      # the binary's service command, systemctl and launchctl).
       - name: install.sh against a local release server
         run: scripts/test-install-sh.sh
 
@@ -1710,8 +1726,9 @@ jobs:
   # package's tests on macOS, then scripts/service-gate.sh on the binary
   # built here (the plist through plutil -lint, launchctl bootstrap in the
   # runner's login session, a kill -9 launchd starts again, kickstart -k,
-  # a second install on another port, bootout and remove). The Linux leg
-  # runs in the flightdeck job against the runner's systemd. The binary
+  # a second install on another port, bootout and remove), and install.sh
+  # accepting the service, then re-run as an upgrade. The Linux legs run
+  # in the flightdeck job against the runner's systemd. The binary
   # is built without the dashboard bundle: the gate needs the health
   # routes only, and a fresh checkout's empty webui/dist builds.
   service-macos:
@@ -1745,6 +1762,15 @@ jobs:
 
       - name: flightdeck service against launchd
         run: scripts/service-gate.sh ./bin/flightdeck 4100 4101
+
+      # install.sh with the service accepted, then re-run as an upgrade,
+      # against the runner's launchd (scripts/installer-service-gate.sh):
+      # the agent is booted out before the binary is replaced and the new
+      # binary starts it again.
+      - name: install.sh offers the service, and a re-run upgrades it (launchd)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=v$(cat VERSION)-gate.2" -o bin/flightdeck-next ./cmd/flightdeck
+          scripts/installer-service-gate.sh ./bin/flightdeck ./bin/flightdeck-next 4102
 
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and

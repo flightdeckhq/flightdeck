@@ -171,6 +171,9 @@ brews:
       one before starting the other: they share the port and the data dir.
       The service's output, with the token, is in #{var}/log/flightdeck.log.
 
-      To use a Postgres instead, run `flightdeck --database-url postgres://...`
-      (or export FLIGHTDECK_DATABASE_URL) from a terminal; `brew services`
-      passes neither flags nor the environment.
+      `brew services` passes neither flags nor the environment. For a port,
+      a data dir or a Postgres of its own in the background, stop it
+      (`brew services stop flightdeck`) and run
+      `flightdeck service install --no-brew` with those flags; a Postgres URL
+      goes in a file only you can read, `--database-url-file <file>`. In a
+      terminal, `flightdeck --database-url postgres://...` uses one directly.

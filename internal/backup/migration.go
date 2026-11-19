@@ -76,8 +76,8 @@ type Before struct {
 // room. A copy that fails is reported the same way.
 func BeforeMigration(ctx context.Context, db, dir, release string, now time.Time) Before {
 	size := fileSize(db) + fileSize(db+"-wal")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Before{Skipped: fmt.Sprintf("no copy was taken before migrating: create %s: %v", dir, err)}
+	if err := mkdirPrivate(dir); err != nil {
+		return Before{Skipped: "no copy was taken before migrating: " + err.Error()}
 	}
 	if free, ok := freeSpace(dir); ok && free < spaceFactor*uint64(size) {
 		return Before{Skipped: fmt.Sprintf("no copy was taken before migrating: %s has %s free, and a copy needs %s "+

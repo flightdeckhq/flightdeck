@@ -151,10 +151,10 @@ docker start <container>
 A backup from outside (one `docker cp` took out is yours, mode 0600, which uid 65532 cannot read) goes onto the volume first, owned by that user, with the backup in the current directory:
 
 ```bash
-docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 install -D -o 65532 -g 65532 -m 600 /backup/flightdeck-<time>.db /data/backups/flightdeck-<time>.db
+docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -c 'install -d -o 65532 -g 65532 -m 700 /data /data/backups && install -o 65532 -g 65532 -m 600 /backup/flightdeck-<time>.db /data/backups/flightdeck-<time>.db'
 ```
 
-and is then restored from `/data/backups/` as above.
+and is then restored from `/data/backups/` as above. The first `install` gives `/data` and `/data/backups` to that user: a volume the image made has them so already, but a new one (an off-site backup restored into a fresh volume) that this container mounts first is root's, and Flightdeck could write neither its database nor the copies it keeps before upgrades there.
 
 **On Kubernetes** `kubectl exec <pod> -- flightdeck backup` writes a checked copy onto the pod's own claim, which covers a bad upgrade but not the loss of the claim. The image has no `tar`, which `kubectl cp` needs, so a copy cannot be taken out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` (or a file in `flightdeck/backups/`) on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the files are owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
 

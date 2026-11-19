@@ -6701,7 +6701,11 @@ database (with its write-ahead log), the copy is skipped with a
 warning, in the log and in the start-up block, naming the space and
 `flightdeck backup`, and the start migrates: refusing to start would
 drop the events of every agent until someone made room. A copy that
-fails otherwise is the same warning. The start-up block of a start that
+fails otherwise is the same warning; a `backups/` the server's user
+cannot write in (one another user made, as a root `install -D` into a
+volume makes it) is named in it with its owner and mode and the user
+the server runs as, as `flightdeck backup` names it when it cannot
+write there. The start-up block of a start that
 migrated says which copy was kept. The copy reads the whole database, so
 it adds roughly the time `flightdeck backup` takes to a start that
 migrates, and only to that start; a start with nothing to migrate does
@@ -13692,9 +13696,13 @@ backs up a running container onto its volume, and `docker run --rm -v
 restores a copy on the volume into a stopped container's database, as
 the image's user (65532), so the database keeps the owner the server
 needs. A backup brought in from outside is first put on the volume
-readable by that user (the guide gives a one-line `install -o 65532`
-for it): a file `docker cp` takes out is the host user's, mode 0600,
-which the image's user cannot read from a bind mount.
+readable by that user, in a `/data` and a `/data/backups` that user owns
+(the guide gives the one `docker run` for it, two `install -o 65532`):
+a file `docker cp` takes out is the host user's, mode 0600, which the
+image's user cannot read from a bind mount, and a volume that a root
+container is the first to mount (a new volume for a restore from an
+off-site copy) has a root-owned `/data`, as `install -D` would make
+`backups/`, where the image's user can write nothing.
 
 | Command | What it does |
 |---|---|
@@ -13723,7 +13731,11 @@ directory:
    failure here (a full disk, a damaged backup) removes the copy and
    nothing else has changed.
 2. It writes `flightdeck.db.restore`, a small file that names the copy
-   and the name the current database will take, and flushes it.
+   and the name the current database will take and records how far the
+   restore has got, its state: `moving` here. It is written whole and
+   flushed; each later state is written whole to
+   `flightdeck.db.restore.next`, flushed and renamed over it, so the
+   marker always holds one state, the one before or the one after.
 3. It renames the current `flightdeck.db-wal`, `flightdeck.db-shm` and
    `flightdeck.db` (those that are there) to
    `flightdeck.db.replaced-<UTC timestamp>` with the same suffixes,
@@ -13732,23 +13744,45 @@ directory:
    still opens as it was, and that log can never be applied to the
    restored file. Nothing is deleted, and no existing file is renamed
    over.
-4. It renames the copy to `flightdeck.db`, checks that it opens, and
-   removes `flightdeck.db.restore`.
+4. It records `swapping`, renames the copy to `flightdeck.db`, checks
+   that it opens, and removes `flightdeck.db.restore`: a marker gone is
+   a restore whose result was checked.
 
-A failure in steps 3 and 4 renames back what was moved, the last first,
-and only once every file is back removes the copy and the marker and
-says that the database is as it was. When a rename back fails too (on
-Windows, a file another program holds open), the copy and the marker
-stay and the message says so. A process that stops between steps 2 and
-4 (a crash, a power loss) leaves the marker behind too. The next
+A failure in steps 3 and 4 renames back what was moved, the last first:
+after step 4's rename it first records `undoing` and renames the
+restored copy back to its staging name. It stops at the first rename
+that fails, so nothing is ever renamed over a file, and only once every
+file is back removes the marker, then the copy, and says that the
+database is as it was. When a rename back fails (on Windows, a file
+another program holds open), the marker stays and the message says what
+the next start does with it. A process that stops between steps 2 and 4
+(a crash, a power loss) leaves the marker behind too. The next
 `restore` or server start on the data dir, holding the locks, reads it
-before anything else: with the copy still there it puts the replaced
-database back under its names and removes the copy (the restore is
-undone), and with the copy already renamed into place it removes the
-marker (the restore is done); a start logs which. A marker cut short
-(the restore stopped while writing it, before anything moved) is
-refused with that said and the file to remove, as is one that names
-files a restore does not write, on whose say nothing is renamed.
+before anything else and acts on its state:
+
+- `moving`, or `swapping` with the copy still under its staging name:
+  the copy never took the database's name. The replaced database is put
+  back under its names, those that are free, and the copy removed: the
+  restore is undone.
+- `swapping` with the copy renamed into place: the swap happened and
+  was never checked. The start checks that `flightdeck.db` opens: when
+  it does, it removes the marker and the restore is done; when it does
+  not, it records `undoing` and goes on as below. An unchecked swap is
+  never taken for a finished restore.
+- `undoing`: the restore gave up after the swap. The restored copy, when
+  it still has the database's name, is renamed back to its staging
+  name, the replaced database put back, and the copy removed.
+
+A start logs which. A rename that fails here leaves the marker, and the
+start refuses, so the next one tries again. When recording `undoing`
+fails as well as a rename back, the marker still says `swapping` and the
+message says so: the next start checks the restored copy and keeps it
+only if it opens. A `flightdeck.db.restore.next` left by a process that
+stopped while writing it is removed, the marker's own state standing. A
+marker cut short (the restore stopped while writing the first one,
+before anything moved) is refused with that said and the file to
+remove, as is one that names files a restore does not write or a state
+it does not know, on whose say nothing is renamed.
 Independently of the marker, a start that finds no `flightdeck.db` but
 a `flightdeck.db.replaced-*` does not create an empty database in its
 place: it refuses, naming the replaced database and the `flightdeck
@@ -13771,10 +13805,15 @@ with every committed row; a backup and a restore through a data dir
 that is a symbolic link; refusals that leave every file as it was (the
 database itself, a non-SQLite file, a truncated one, a newer schema, a
 held lock); a replaced database's leftover `-wal` kept with it and not
-applied to the restored file; two restores within one second; and the
+applied to the restored file; two restores within one second; the
 process stopped at each step of a restore (sabotage hooks between the
 steps), after which a start finds the database before the restore or
-the restored one. CI runs `flightdeck backup` under load in the SQLite
+the restored one; renames back that fail (a seam over the renames),
+after which the marker stays and the next start puts the database back;
+a restored copy that does not open after the swap, and one damaged
+after a process stopped there, which no start keeps; and a `backups/`
+the user cannot write in, named with its owner by `backup` and by the
+start-up warning. CI runs `flightdeck backup` under load in the SQLite
 concurrency smoke (`scripts/flightdeck_stress.py`), and on Windows a
 backup, a restore and a restore refused while the binary runs.
 

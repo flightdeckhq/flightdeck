@@ -475,7 +475,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		// A restore that stopped halfway (a crash, a power loss) is
 		// finished or undone before the file is opened or created, so a
 		// start never serves an empty database in place of either.
-		if note, err := backup.RecoverInterrupted(database.path); err != nil {
+		if note, err := backup.RecoverInterrupted(context.Background(), database.path); err != nil {
 			return err
 		} else if note != "" {
 			slog.Warn(note)

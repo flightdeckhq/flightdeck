@@ -283,7 +283,7 @@ func restoreMain(ctx context.Context, args []string, rt IO) int {
 	if _, err := datadir.PrepareTmp(layout.Tmp); err == nil {
 		storage.SetSQLiteTempDir(layout.Tmp)
 	}
-	if note, err := RecoverInterrupted(db.path); err != nil {
+	if note, err := RecoverInterrupted(ctx, db.path); err != nil {
 		return fail(rt, command, ExitFailed, "%v", err)
 	} else if note != "" {
 		_, _ = fmt.Fprintln(rt.Stdout, strings.ToUpper(note[:1])+note[1:]+".")
@@ -339,7 +339,8 @@ func notABackup(source, db string) string {
 	case same(source, db+"-wal"), same(source, db+"-shm"):
 		return "a file SQLite keeps beside the database"
 	case filepath.Dir(source) == filepath.Dir(db) &&
-		(strings.HasPrefix(filepath.Base(source), filepath.Base(db)+restoringInfix) || filepath.Base(source) == filepath.Base(db)+markerSuffix):
+		(strings.HasPrefix(filepath.Base(source), filepath.Base(db)+restoringInfix) ||
+			filepath.Base(source) == filepath.Base(db)+markerSuffix || filepath.Base(source) == filepath.Base(db)+markerSuffix+nextSuffix):
 		return "a file of a restore under way"
 	}
 	return ""

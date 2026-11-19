@@ -115,6 +115,9 @@ func createPartial(dir, base string) (string, error) {
 	}
 	path := filepath.Join(dir, "."+base+".partial-"+hex.EncodeToString(random[:]))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, fs.ErrPermission) {
+		return "", notWritable(dir)
+	}
 	if err != nil {
 		return "", fmt.Errorf("create a file for the copy in %s: %w", dir, err)
 	}
@@ -183,12 +186,42 @@ func syncDir(dir string) error {
 	return err
 }
 
+// notWritable is the error of a directory this process may not create a
+// file in: its path, its owner and mode, the user flightdeck runs as, and
+// what gives that user the directory. A backups/ another user made (a
+// root container's install -D on a volume) is the usual case.
+func notWritable(dir string) error {
+	who, fix := runningAs(dir)
+	owner := ""
+	if info, err := os.Stat(dir); err == nil {
+		if o := ownerOf(info); o != "" {
+			owner = ": " + o
+		}
+	}
+	return fmt.Errorf("%s cannot be written by %s%s; give it to that user (%s)", dir, who, owner, fix)
+}
+
+// mkdirPrivate creates dir and its parents, mode 0700, as backups/ is
+// made; a parent the process may not write in is named as notWritable
+// names it.
+func mkdirPrivate(dir string) error {
+	err := os.MkdirAll(dir, 0o700)
+	var pathErr *fs.PathError
+	if errors.Is(err, fs.ErrPermission) && errors.As(err, &pathErr) {
+		return notWritable(filepath.Dir(pathErr.Path))
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	return nil
+}
+
 // DefaultTarget is the file `flightdeck backup` writes with no file
 // given: backups/flightdeck-<UTC timestamp>.db under dir, with -2, -3 …
 // when the second's name is taken. dir is created, mode 0700.
 func DefaultTarget(dir string, now time.Time) (string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", dir, err)
+	if err := mkdirPrivate(dir); err != nil {
+		return "", err
 	}
 	name, err := freeName("flightdeck-"+stamp(now), ".db", func(n string) bool { return exists(filepath.Join(dir, n)) })
 	if err != nil {

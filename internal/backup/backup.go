@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -165,9 +166,12 @@ func syncFile(path string) error {
 }
 
 // syncDir flushes a directory's entries, so a rename in it survives a
-// power loss. Windows has no such call; its renames are durable on their
-// own, and the error is ignored there.
+// power loss. Windows refuses to flush a directory (NTFS records a
+// rename in its journal), so there it does nothing.
 func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	d, err := os.Open(dir)
 	if err != nil {
 		return err

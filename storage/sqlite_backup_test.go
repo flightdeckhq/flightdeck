@@ -134,7 +134,14 @@ func TestSQLiteSnapshot_ACrashedDatabaseIsCopiedWithItsLog(t *testing.T) {
 		mustExec(t, db, `INSERT INTO crash_rows (id) VALUES (?)`, i)
 	}
 	crashed := filepath.Join(t.TempDir(), "crashed.db")
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	// The open database's shared-memory index has byte ranges SQLite
+	// locks on Windows, which another handle cannot read; SQLite builds it
+	// again from the log, so it is left out there.
+	suffixes := []string{"", "-wal", "-shm"}
+	if runtime.GOOS == "windows" {
+		suffixes = suffixes[:2]
+	}
+	for _, suffix := range suffixes {
 		data, err := os.ReadFile(path + suffix)
 		if err != nil {
 			t.Fatal(err)

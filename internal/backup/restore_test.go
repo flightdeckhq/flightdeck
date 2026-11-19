@@ -42,7 +42,7 @@ func TestRestore_ReplacesTheDatabaseAndKeepsTheOneItReplacedWithItsLog(t *testin
 		t.Errorf("the restored database holds %d sessions, want the backup's 3", got)
 	}
 	replaced := db + ".replaced-20261119T093000Z"
-	if len(r.Replaced) != 3 || r.Replaced[0] != replaced {
+	if len(r.Replaced) != len(crashedFiles()) || r.Replaced[0] != replaced {
 		t.Fatalf("Replaced = %q, want %s first, with its -wal and -shm", r.Replaced, replaced)
 	}
 	// The replaced database opens as it was, its log paired with it by
@@ -141,13 +141,21 @@ func TestRestore_ADamagedBackupChangesNothing(t *testing.T) {
 	sameFiles(t, filepath.Dir(db), before)
 }
 
-// The steps of a restore, in order, as the step hook names them.
-var restoreSteps = []string{"staged", "marker", "moved-wal", "moved-shm", "moved", "swapped"}
+// restoreSteps are the steps of a restore of restoreSetup's database, in
+// order, as the step hook names them: a moved file's step runs only when
+// the crashed database has that file (crashedFiles).
+func restoreSteps() []string {
+	steps := []string{"staged", "marker"}
+	for _, suffix := range crashedFiles()[1:] {
+		steps = append(steps, "moved"+suffix)
+	}
+	return append(steps, "moved", "swapped")
+}
 
 // A step that fails puts everything back: the data dir is file for file
 // as it was.
 func TestRestore_AFailureAtAnyStepPutsTheDatabaseBack(t *testing.T) {
-	for _, at := range restoreSteps {
+	for _, at := range restoreSteps() {
 		t.Run(at, func(t *testing.T) {
 			db, source := restoreSetup(t)
 			before := files(t, filepath.Dir(db))
@@ -174,7 +182,7 @@ func TestRestore_AFailureAtAnyStepPutsTheDatabaseBack(t *testing.T) {
 // database: the one from before the restore, with every session its log
 // held, or the restored one, never none and never an empty one.
 func TestRestore_AProcessStoppedAtAnyStepLeavesADatabaseAStartCanUse(t *testing.T) {
-	for _, at := range restoreSteps {
+	for _, at := range restoreSteps() {
 		t.Run(at, func(t *testing.T) {
 			db, source := restoreSetup(t)
 			withStep(t, func(name string) error {

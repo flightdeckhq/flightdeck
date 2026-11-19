@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -78,7 +79,7 @@ func crashedDatabase(t *testing.T, path string, sessions int) {
 	if info, err := os.Stat(live + "-wal"); err != nil || info.Size() == 0 {
 		t.Fatalf("the crashed database needs a write-ahead log: %v", err)
 	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	for _, suffix := range crashedFiles() {
 		data, err := os.ReadFile(live + suffix)
 		if err != nil {
 			t.Fatal(err)
@@ -87,6 +88,18 @@ func crashedDatabase(t *testing.T, path string, sessions int) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// crashedFiles are the files a killed server leaves that crashedDatabase
+// copies: the database, its log and its shared-memory index. On Windows
+// the open index has byte ranges SQLite locks, which another handle
+// cannot read, so it is left out there: SQLite builds it again from the
+// log.
+func crashedFiles() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"", "-wal"}
+	}
+	return []string{"", "-wal", "-shm"}
 }
 
 // files maps every file under dir to the hash of its content: the state

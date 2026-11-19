@@ -145,6 +145,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The run drawer's Prompts list keeps your place.** "← Back to event
+  list" after opening a call returned the list to its top; it now
+  returns to that call's row, where it was on screen (new calls that
+  arrived at the top of a live run's list meanwhile do not move it),
+  with keyboard focus on it. The drawer's tabs share one scroll area,
+  so opening the Prompts tab after scrolling the Timeline showed the
+  list part-way down, and a call opened from far down the list opened
+  part-way down too. Each tab, the Timeline included, now opens at its
+  own top the first time and where you left it after that, and a call
+  opens at its top.
 - **Event-type badges and MCP policy decision pills read at WCAG AA in
   both themes.** Each drew its label in its hue on a tint of the same
   hue, under AA (2.3:1 for START and END in both themes; in the light

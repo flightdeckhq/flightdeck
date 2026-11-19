@@ -21,8 +21,13 @@ carries them was metered from the provider's usage.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import json
-from typing import Any
+import sys
+import threading
+import warnings
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import httpx
@@ -31,6 +36,9 @@ from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # (input, output) each fake reports.
 OPENAI_USAGE = (11, 7)
@@ -249,6 +257,64 @@ def events_of(session: Session, event_type: str) -> list[dict[str, Any]]:
     return [
         c.args[0] for c in queue.enqueue.call_args_list if c.args[0].get("event_type") == event_type
     ]
+
+
+def _pool_worker(thread: threading.Thread) -> bool:
+    """A ``concurrent.futures`` pool worker (litellm's logging executor):
+    it lives as long as its pool, so it is never waited for."""
+    target = getattr(thread, "_target", None)
+    return getattr(target, "__module__", None) == "concurrent.futures.thread"
+
+
+@contextlib.contextmanager
+def collected() -> Iterator[set[str]]:
+    """Collect, before the block's test ends, what the block left behind,
+    and give the ``RuntimeWarning`` messages that collection raises.
+
+    litellm makes a request coroutine it never awaits when an async-made
+    stream that sends its request at its first read (Gemini's routes) is
+    read with ``for``, with or without the sensor; collected, it warns
+    "coroutine 'make_call' was never awaited". A failed read hands its
+    exception, and through it the stream, to a logging thread litellm
+    starts, and litellm 1.83 keeps the last call's pre-call record (its
+    logging object, and through it that exception) in
+    ``litellm.error_logs`` until the next call replaces it. So the threads
+    the block started (bar pool workers) are waited for, that record is
+    dropped, and everything is collected here, inside the test that made
+    it: nothing of it lands in a later test (a module that turns warnings
+    into errors would fail on it). The warning records are dropped once
+    read: a "never awaited" record holds its coroutine."""
+    before = set(threading.enumerate())
+    found: set[str] = set()
+    try:
+        yield found
+    finally:
+        for thread in threading.enumerate():
+            if thread not in before and not thread.daemon and not _pool_worker(thread):
+                thread.join()
+        error_logs = getattr(sys.modules.get("litellm"), "error_logs", None)
+        if isinstance(error_logs, dict):
+            error_logs.pop("PRE_CALL", None)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gc.collect()
+        found.update(str(w.message) for w in caught if issubclass(w.category, RuntimeWarning))
+        caught.clear()
+
+
+@contextlib.contextmanager
+def only_new_objects_collected() -> Iterator[None]:
+    """For a module whose tests use :func:`collected`: what is alive when
+    the module starts is collected once and frozen (``gc.freeze``), so each
+    collection in its tests scans only what its tests made. A full
+    collection with litellm loaded takes about a quarter of a second, and
+    a parity row makes four."""
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
 
 
 def _plain(value: Any) -> Any:

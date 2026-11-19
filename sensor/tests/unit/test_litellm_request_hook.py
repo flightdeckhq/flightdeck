@@ -22,11 +22,9 @@ that one call.
 from __future__ import annotations
 
 import asyncio
-import gc
 import json
 import logging
 import threading
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -52,9 +50,11 @@ from ._stream_parity_fakes import (  # noqa: E402
     MESSAGES,
     OPENAI_USAGE,
     OpenAIServer,
+    collected,
     events_of,
     full_dump,
     make_session,
+    only_new_objects_collected,
     openai_usage_body,
     set_dump,
 )
@@ -67,14 +67,20 @@ litellm.suppress_debug_info = True
 COMPAT = {"api_base": "https://llm.internal.example/v1", "api_key": "test"}
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _collections_scan_what_the_tests_made() -> Iterator[None]:
+    with only_new_objects_collected():
+        yield
+
+
 @pytest.fixture(autouse=True)
-def _litellm_request_coroutines_collected() -> Iterator[None]:
-    """Collect what a test left behind before it ends (see the parity
-    module), so no "never awaited" warning lands in a later test."""
-    yield
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        gc.collect()
+def _nothing_left_for_a_later_test() -> Iterator[None]:
+    """What a test made is collected before it ends (``collected``): a
+    test that leaves anything that warns when collected fails here rather
+    than a later test that turns warnings into errors."""
+    with collected() as left:
+        yield
+    assert not left, left
 
 
 @pytest.fixture

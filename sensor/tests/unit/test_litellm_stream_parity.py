@@ -12,6 +12,10 @@ sensor, and compares, chunk by chunk, everything the caller can read:
   order;
 - the exception, when the unsensored read raises: the sensored read
   raises the same type;
+- the warnings collecting what the call left raises, collected inside the
+  row (litellm's "coroutine 'make_call' was never awaited" where it makes
+  a request coroutine it never awaits, as for an async-made Gemini stream
+  read with ``for``): the same;
 - every request body the provider received: the same, except that on an
   OpenAI-shaped route the provider is asked for usage
   (``stream_options.include_usage: true``) where the body sent without
@@ -25,7 +29,9 @@ sensor, and compares, chunk by chunk, everything the caller can read:
   row, except the rows on the named list (:func:`_estimated`), which
   carry the pre-call estimate. Nothing else: the fakes report counts no
   estimate and no count of litellm's own produces, so a row metered from
-  litellm's own count fails.
+  litellm's own count fails. A row whose read raises without the sensor
+  reports one ``pre_call`` and one ``llm_error`` and no ``post_call``,
+  the error's partial counts the provider's exact counts or none.
 
 Rows: routes x the caller's ``stream_options`` (none, usage asked, usage
 refused) x, on the OpenAI-shaped routes, the caller's ``extra_body``
@@ -39,9 +45,7 @@ fallback reads turns its rows red rather than estimating silently.
 from __future__ import annotations
 
 import asyncio
-import gc
 import importlib.metadata
-import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -72,9 +76,11 @@ from ._stream_parity_fakes import (  # noqa: E402
     AnthropicServer,
     GeminiServer,
     OpenAIServer,
+    collected,
     events_of,
     full_dump,
     make_session,
+    only_new_objects_collected,
     set_dump,
 )
 
@@ -84,17 +90,20 @@ if TYPE_CHECKING:
 litellm.suppress_debug_info = True
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _collections_scan_what_the_tests_made() -> Iterator[None]:
+    with only_new_objects_collected():
+        yield
+
+
 @pytest.fixture(autouse=True)
-def _litellm_request_coroutines_collected() -> Iterator[None]:
-    """A row that reads an async-made Gemini stream with ``for`` makes
-    litellm create its request coroutine and never await it (it does so
-    without the sensor too). It is collected here, its "never awaited"
-    warning ignored, so that warning lands in this row rather than in a
-    later test that turns warnings into errors."""
-    yield
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        gc.collect()
+def _nothing_left_for_a_later_test() -> Iterator[None]:
+    """Each run of a row collects what it left (``collected``), so a row
+    that leaves anything that warns when collected fails here rather than
+    in a later test that turns warnings into errors."""
+    with collected() as left:
+        yield
+    assert not left, left
 
 
 # The route's tier: where the sensor can ask for usage and where it reads it.
@@ -251,6 +260,10 @@ class Observed:
     bodies: list[dict[str, Any]] = field(default_factory=list)
     shown_usage: list[tuple[Any, Any]] = field(default_factory=list)
     chunks: list[Any] = field(default_factory=list)
+    # The RuntimeWarnings collecting what the call left raised (litellm's
+    # "coroutine 'make_call' was never awaited", on the rows where it
+    # makes one): what the caller sees.
+    warnings: list[str] = field(default_factory=list)
 
 
 def _client(route: Route, server: Any, is_async: bool) -> Any:
@@ -326,10 +339,12 @@ def _observe(
             k: dict(v) if isinstance(v, dict) else v for k, v in extra_body.items()
         }
     observed = Observed()
-    try:
-        observed.chunks = _read(route.entry, made, how, kwargs)
-    except Exception as exc:
-        observed.error = type(exc)
+    with collected() as left:
+        try:
+            observed.chunks = _read(route.entry, made, how, kwargs)
+        except Exception as exc:
+            observed.error = type(exc)
+    observed.warnings = sorted(left)
     observed.bodies = list(server.bodies)
     for chunk in observed.chunks:
         usage = getattr(chunk, "usage", None)
@@ -455,7 +470,9 @@ def test_a_litellm_stream_shows_the_caller_what_it_shows_without_the_sensor(
     _dumps(unsensored, volatile)
     _dumps(sensored, volatile)
 
-    # The caller's loop: the same chunks, or the same exception.
+    # The caller's loop: the same chunks, or the same exception, and the
+    # same warnings once what the call left is collected.
+    assert sensored.warnings == unsensored.warnings
     if unsensored.error is not None:
         assert sensored.error is unsensored.error
     else:
@@ -468,11 +485,19 @@ def test_a_litellm_stream_shows_the_caller_what_it_shows_without_the_sensor(
         _expected_body(route, stream_options, extra_body, body) for body in unsensored.bodies
     ]
 
+    (pre_call,) = events_of(session, "pre_call")
     if unsensored.error is not None:
+        # A call that fails as it does without the sensor is reported once,
+        # with its error and no post_call; any counts the error carries are
+        # the provider's exact counts.
+        assert events_of(session, "post_call") == []
+        (error,) = events_of(session, "llm_error")
+        detail = error["error"]
+        partial = (detail.get("partial_tokens_input"), detail.get("partial_tokens_output"))
+        assert partial in ((None, None), route.usage)
         return
     # One call metered once: the provider's exact counts, or the pre-call
     # estimate on the named list. Nothing else.
-    (pre_call,) = events_of(session, "pre_call")
     (post_call,) = events_of(session, "post_call")
     tokens = (post_call["tokens_input"], post_call["tokens_output"])
     if _estimated(route, stream_options, extra_body, READS[read][0], unsensored):

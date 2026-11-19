@@ -9,6 +9,8 @@ reports a request only when it is sent.
 - Made with no session active, the stream finds its session at its first
   read, which is the call: a blocking session refuses it with nothing
   sent, a session reports it, and with none it is litellm's own.
+- A stream never read, once collected, raises the warnings it raises
+  without the sensor.
 
 Also here: the reader of the usage litellm keeps on its stream.
 """
@@ -18,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import types
-import warnings
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -49,8 +50,10 @@ from ._stream_parity_fakes import (  # noqa: E402
     OPENAI_USAGE,
     GeminiServer,
     OpenAIServer,
+    collected,
     events_of,
     make_session,
+    only_new_objects_collected,
 )
 
 if TYPE_CHECKING:
@@ -61,17 +64,20 @@ if TYPE_CHECKING:
 litellm.suppress_debug_info = True
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _collections_scan_what_the_tests_made() -> Iterator[None]:
+    with only_new_objects_collected():
+        yield
+
+
 @pytest.fixture(autouse=True)
-def _litellm_request_coroutines_collected() -> Iterator[None]:
-    """A row that reads an async-made Gemini stream with ``for`` makes
-    litellm create its request coroutine and never await it (it does so
-    without the sensor too). It is collected here, its "never awaited"
-    warning ignored, so that warning lands in this row rather than in a
-    later test that turns warnings into errors."""
-    yield
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        gc.collect()
+def _nothing_left_for_a_later_test() -> Iterator[None]:
+    """What a test made is collected before it ends (``collected``): a
+    test that leaves anything that warns when collected fails here rather
+    than a later test that turns warnings into errors."""
+    with collected() as left:
+        yield
+    assert not left, left
 
 
 # (entry, model, fake server, client kind, the counts it reports)
@@ -227,10 +233,41 @@ def test_a_stream_made_with_no_session_finds_its_session_at_the_first_read(
         assert (len(server.bodies), _kinds(session)) == (1, [])
 
 
+def _never_read(route: str, is_async: bool) -> tuple[list[str], int]:
+    """Make the stream and let it go unread: the warnings collecting it
+    raises, and the requests sent."""
+    with collected() as left:
+        stream, server = _make(route, is_async)
+        del stream
+    return sorted(left), len(server.bodies)
+
+
+@pytest.mark.parametrize("with_session", [True, False], ids=["session", "no session"])
+@_ROUTES
+@_CLIENTS
+def test_a_stream_never_read_warns_as_it_does_without_the_sensor(
+    monkeypatch: pytest.MonkeyPatch, route: str, is_async: bool, with_session: bool
+) -> None:
+    """Once collected, a stream the caller never read raises the warnings
+    it raises without the sensor, and sends nothing."""
+    assert not getattr(litellm, "_flightdeck_patched", False), "litellm left patched"
+    unsensored = _never_read(route, is_async)
+    session = make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session if with_session else None)
+    patch_litellm_functions(quiet=True)
+    patch_openai_classes(quiet=True)
+    try:
+        sensored = _never_read(route, is_async)
+    finally:
+        unpatch_litellm_functions(quiet=True)
+        unpatch_openai_classes()
+    assert sensored == unsensored
+    assert unsensored[1] == 0
+    assert _kinds(session) == []
+
+
 def flightdeck_sensor_session_end(session: Session) -> None:
     """Collect what the test let go and settle what the session holds."""
-    import gc
-
     gc.collect()
     base.drain_deferred_settles(session)
 

@@ -35,7 +35,19 @@ All notable changes to Flightdeck are documented here.
   service runs says so. On a Homebrew install it points to `brew
   services` unless given `--no-brew`; on a server nobody stays logged in
   to, it prints the `loginctl enable-linger` command that keeps it
-  running from boot. Windows comes later.
+  running from boot. Not on Windows, where Flightdeck runs in its window
+  (guides/windows.md).
+- The install command on Linux and macOS (`install.sh`) offers it once
+  the binary is installed: `Start Flightdeck now and at every login?
+  [Y/n]`, asked only on a terminal and printed as the command to run
+  otherwise, as the offer to connect coding agents is;
+  `FLIGHTDECK_SERVICE=yes` or `no` answers without asking, and the
+  service gets the `FLIGHTDECK_` variables set for the install
+  (`FLIGHTDECK_PORT`, …). Nothing is asked as root or where the system
+  cannot run the service. Run again to install a new release, the
+  installer stops that service before it replaces the binary and starts
+  it after, so the new release is the one that runs, with the service's
+  flags as they were.
 - `--database-url-file` (`FLIGHTDECK_DATABASE_URL_FILE`) reads the
   database URL from a file at every start, so a Postgres password stays
   off the command line; the service takes its database this way.

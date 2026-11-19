@@ -238,6 +238,7 @@ flightdeck/
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
 ├── scripts/service-gate.sh     # `flightdeck service` against the real systemd or launchd: install, a kill the manager restarts, restart, reinstall on another port, remove
+├── scripts/installer-service-gate.sh  # install.sh with the service accepted, then re-run as an upgrade, against the real systemd or launchd: the running process is the new binary
 ├── scripts/test-install-ps1.ps1  # install.ps1 piped through iex against a local release layout, under Windows PowerShell 5.1 and 7
 ├── scripts/fake-claude.sh      # A stand-in `claude` CLI for the connect tests on Unix and the install gate: records argv and stdin, keeps plugin state
 ├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
@@ -13788,6 +13789,53 @@ the service runs while WSL does, which is said instead. A launchd agent
 runs in the user's login session, so on macOS the service runs while
 the user is logged in.
 
+**Offered by the installer.** `install.sh` (Linux and macOS) offers the
+service once the binary is installed, after the offer to connect the
+coding agents and with the same rules: `Start Flightdeck now and at
+every login? [Y/n]` is asked only on a terminal (`/dev/tty`, the
+foreground group, the 60-second bound, no answer a no), and with no
+terminal the closing lines print the command instead, `To start
+Flightdeck now and at every login: flightdeck service install`.
+`FLIGHTDECK_SERVICE` decides without asking: `yes` installs it, `no`
+prints the command; another value is reported and read as `no`. A yes
+runs `<binary> service install` with the installer's environment, so
+`FLIGHTDECK_PORT`, `FLIGHTDECK_DATA_DIR` and the other server variables
+set for the install reach the service, and its stdin from `/dev/null`.
+A failed install prints the command's own lines and the command to run
+again, and the installer exits 0. Nothing is asked, and nothing printed,
+when the installer runs as root (the service refuses root), when the
+binary is a release older than the command (it does not print the
+service usage for `service help`), or when `<binary> service install
+--dry-run` exits 4, this system cannot run the service (no user service
+manager, a container): the command's own status decides, not a guess of
+the installer's; with `FLIGHTDECK_SERVICE=yes` the command's reason is
+printed. A dry run that fails otherwise (a `flightdeck` already holding
+the data dir, a port in use, `FLIGHTDECK_DATABASE_URL` set) asks nothing
+and prints the command with that reason. Once the service runs, the
+closing lines say so and name `flightdeck service status` instead of
+saying to run `flightdeck`. `install.ps1` does not offer it, since
+Windows has no such service.
+
+**An installer re-run upgrades the service.** Before it replaces the
+binary, `install.sh` asks the binary already in place for
+`service status`. When the service is installed and its command (the
+`command` line, compared with the installed path's symbolic links
+resolved and quoted as `status` quotes it) runs that binary, the
+installer stops the service with its manager's own stop (`systemctl
+--user stop flightdeck.service`, `launchctl bootout
+gui/<uid>/com.flightdeck-hq.flightdeck`), since the binary has no stop
+command, replaces the binary, and starts the service again with the new
+binary's `service restart`, which waits for it to answer, so the
+process that runs afterwards is the new binary; a new binary older than
+the command is started with the manager's own start (`systemctl --user
+start`, `launchctl bootstrap` of the plist). A restart that fails says
+so and names `flightdeck service status`, and the installer exits 0.
+The service's flags are not touched: the file stays as it was written.
+A service that runs another binary (another install directory) is left
+running and named in the closing lines, with the `flightdeck service
+install` that points it at this one. A re-run where no service is
+installed behaves as a first install, the offer included.
+
 The unit tests (`internal/service`) run the commands against in-process
 stand-ins for `systemctl` and `launchctl` that keep the state the
 manager would, with the files written under a temporary home: the unit
@@ -13805,7 +13853,18 @@ port of its own and a fresh data dir, health, a `kill -9` of the
 service's process and the manager starting a new one, `flightdeck
 service restart`, `status`, a second `install` on another port that
 moves the service there, and `remove`, after which the file is gone,
-nothing answers and the data dir still holds its database.
+nothing answers and the data dir still holds its database. The same two
+CI jobs run `scripts/installer-service-gate.sh`: two builds of the
+binary that print different versions are served as a release on
+loopback, `install.sh` installs the first with `FLIGHTDECK_SERVICE=yes`
+on a port and a data dir of its own, the service answers, and a re-run
+with the second build stops the service, replaces the binary and starts
+it again: the process the data dir's lock names is then a new one whose
+executable is the file now installed (`/proc/<pid>/exe` on Linux, not
+the replaced file; the inode `lsof` shows for it on macOS), with the
+service's port and data dir unchanged; the service is removed at the
+end. `scripts/test-install-sh.sh` runs the offer's matrix against
+stand-ins for the binary and for `systemctl` and `launchctl`.
 
 #### Backing up and restoring
 
@@ -13970,7 +14029,9 @@ and reads two variables: `FLIGHTDECK_TOKEN`, the token to save with
 the data dir it looks in for the running server when `--data-dir` is
 not given, as the server reads it. The installers read
 `FLIGHTDECK_CONNECT`: connector ids separated by commas, `all` or
-`none`, connecting agents without asking.
+`none`, connecting agents without asking; `install.sh` also reads
+`FLIGHTDECK_SERVICE`, `yes` or `no`, installing the background service
+without asking or not.
 
 Two more variables have no flag, since a flag's value shows in the
 process list: `FLIGHTDECK_DASHBOARD_TOKEN_FILE`, the path of a file
@@ -14086,8 +14147,14 @@ Once the binary is installed, both installers offer to connect the
 coding agents they find, through the binary's `flightdeck connect`
 (see Connecting coding agents): they ask on a terminal, print the
 command otherwise, follow `FLIGHTDECK_CONNECT` when it is set, and a
-failed connect does not fail the install. The Homebrew formula's caveats
-name the same command; PyPI and Docker print nothing after an install.
+failed connect does not fail the install. `install.sh` then offers to
+start Flightdeck now and at every login with `flightdeck service
+install`, under the same rules (`FLIGHTDECK_SERVICE`), and a re-run
+where that service runs the installed binary stops it before the binary
+is replaced and starts it again after (Deployment > Running in the
+background). The Homebrew formula's caveats name `flightdeck connect`
+and `brew services start flightdeck`; PyPI and Docker print nothing
+after an install.
 
 The two installers are fetched from the project's site. GitHub Pages
 serves `docs/` of `main` at `flightdeck-hq.com` as static files and
@@ -14144,7 +14211,15 @@ connect offer: the question answered yes and no (on a pseudo-terminal
 for `install.sh`, through the installer's own decision function with an
 injected answer for `install.ps1`), no terminal, each value of
 `FLIGHTDECK_CONNECT`, a connect that fails and an older binary that does
-not know the command. The PowerShell
+not know the command. `scripts/test-install-sh.sh` covers the service
+offer the same way, against stand-ins for the binary's `service`
+command, `systemctl`, `launchctl` and `id`: yes and no on a
+pseudo-terminal, no terminal, `FLIGHTDECK_SERVICE` each way and a value
+that is neither, root, an older binary, a system that cannot run the
+service, a dry run that fails, an install that fails, and the re-runs
+with the service installed (on Linux and on macOS: the stop runs while
+the old binary is in place, and the restart is the new binary's), with
+a service of another binary, and with none. The PowerShell
 installer appends its directory to the user PATH by writing the Path
 value of `HKCU\Environment` back with the registry type it had and its
 `%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE` (a failed

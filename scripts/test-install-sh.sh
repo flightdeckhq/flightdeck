@@ -16,6 +16,21 @@
 # of bytes it could read on stdin; FAKE_FLIGHTDECK_CONNECT_EXIT is the
 # exit status of a connect, and FAKE_FLIGHTDECK_NO_CONNECT makes it an
 # older release that does not know the command.
+#
+# It answers `flightdeck service` only when FAKE_FLIGHTDECK_SERVICE_DIR
+# names a directory (else it is a release older than the command): the
+# installed service is the file `unit` there, holding the command line
+# `service status` prints, and every service call is appended to
+# `calls.log` there with the fake's version and the bytes it could read
+# on stdin. FAKE_FLIGHTDECK_SERVICE_UNSUPPORTED makes it a system that
+# cannot run the service (exit 4), FAKE_FLIGHTDECK_SERVICE_CHECK_SAYS a
+# dry run that fails with that reason, and FAKE_FLIGHTDECK_SERVICE_INSTALL_EXIT
+# and FAKE_FLIGHTDECK_SERVICE_RESTART_EXIT the exit statuses of install
+# and restart; FAKE_FLIGHTDECK_NO_SERVICE_IN names a release tag whose
+# fake does not know the command. Stand-ins for systemctl and launchctl
+# log their calls there too, with the version of the binary installed at
+# that moment, and stand-ins for `id` (root) and `uname` (macOS) go ahead
+# on PATH where a case needs them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,6 +39,8 @@ WORK="$(mktemp -d)"
 FAKE="$WORK/release"
 PORT="${TEST_INSTALL_PORT:-8765}"
 TAG=v0.0.1-test
+# The release an installer re-run upgrades to.
+TAG2=v0.0.2-test
 cleanup() {
   if [[ -n "${HTTP_PID:-}" ]]; then kill "$HTTP_PID" 2>/dev/null || true; fi
   rm -rf "$WORK"
@@ -37,14 +54,44 @@ sha256() {
 # One archive per platform the installer can ask for, each holding a
 # fake binary that prints the tag; checksums.txt over all of them.
 build_release() {
-  local dir="$1"
+  local dir="$1" tag="$2"
   mkdir -p "$dir"
   : >"$dir/checksums.txt"
   for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
-    local stage="$WORK/stage-$target"
+    local stage="$WORK/stage-$tag-$target"
     mkdir -p "$stage"
     cat >"$stage/flightdeck" <<FAKE
 #!/bin/sh
+if [ "\${1:-}" = service ] && [ -n "\${FAKE_FLIGHTDECK_SERVICE_DIR:-}" ] && [ "\${FAKE_FLIGHTDECK_NO_SERVICE_IN:-}" != "$tag" ]; then
+  shift
+  sd="\$FAKE_FLIGHTDECK_SERVICE_DIR"
+  if [ "\${1:-}" = help ]; then echo "Usage: flightdeck service install [flags]   start Flightdeck now and at every login"; exit 0; fi
+  printf 'service %s by $tag (stdin %s bytes)\n' "\$*" "\$(wc -c | tr -d ' ')" >>"\$sd/calls.log"
+  if [ -n "\${FAKE_FLIGHTDECK_SERVICE_UNSUPPORTED:-}" ]; then echo "flightdeck service \$1: no systemd user manager answers for this user" >&2; exit 4; fi
+  case "\${1:-}" in
+    status)
+      if [ ! -f "\$sd/unit" ]; then echo "The Flightdeck service is not installed: flightdeck service install installs it."; exit 3; fi
+      echo "Flightdeck service: the systemd user unit ~/.config/systemd/user/flightdeck.service"
+      echo "  state      running (pid 4242), starts at login"
+      echo "  command    \$(cat "\$sd/unit")"
+      exit 0 ;;
+    install)
+      if [ "\${2:-}" = --dry-run ]; then
+        if [ -n "\${FAKE_FLIGHTDECK_SERVICE_CHECK_SAYS:-}" ]; then echo "flightdeck service install: \$FAKE_FLIGHTDECK_SERVICE_CHECK_SAYS" >&2; exit 1; fi
+        exit 0
+      fi
+      if [ "\${FAKE_FLIGHTDECK_SERVICE_INSTALL_EXIT:-0}" != 0 ]; then echo "flightdeck service install: the service did not come up" >&2; exit "\$FAKE_FLIGHTDECK_SERVICE_INSTALL_EXIT"; fi
+      printf '%s --port 4100 --data-dir /srv/fake\n' "\$(cd "\$(dirname "\$0")" && pwd -P)/flightdeck" >"\$sd/unit"
+      echo "The Flightdeck service is installed and runs: http://localhost:4100 (pid 4242)."
+      exit 0 ;;
+    restart)
+      if [ ! -f "\$sd/unit" ]; then exit 3; fi
+      if [ "\${FAKE_FLIGHTDECK_SERVICE_RESTART_EXIT:-0}" != 0 ]; then echo "flightdeck service restart: the service did not come up" >&2; exit "\$FAKE_FLIGHTDECK_SERVICE_RESTART_EXIT"; fi
+      echo "The Flightdeck service restarted and runs: http://localhost:4100 (pid 4343)."
+      exit 0 ;;
+  esac
+  exit 2
+fi
 if [ "\${1:-}" = connect ]; then
   shift
   if [ -n "\${FAKE_FLIGHTDECK_NO_CONNECT:-}" ]; then echo "flag provided but not defined" >&2; exit 2; fi
@@ -59,7 +106,7 @@ if [ "\${1:-}" = connect ]; then
   if [ -n "\${FAKE_FLIGHTDECK_CONNECT_SAYS:-}" ]; then echo "\$FAKE_FLIGHTDECK_CONNECT_SAYS"; else echo "fake flightdeck: connect \$*"; fi
   exit "\${FAKE_FLIGHTDECK_CONNECT_EXIT:-0}"
 fi
-echo "flightdeck $TAG ($target)"
+echo "flightdeck $tag ($target)"
 FAKE
     chmod 0755 "$stage/flightdeck"
     tar -czf "$dir/flightdeck_$target.tar.gz" -C "$stage" flightdeck
@@ -67,9 +114,10 @@ FAKE
   done
 }
 
-build_release "$FAKE/releases/latest/download"
+build_release "$FAKE/releases/latest/download" "$TAG"
 mkdir -p "$FAKE/releases/download"
 cp -R "$FAKE/releases/latest/download" "$FAKE/releases/download/$TAG"
+build_release "$FAKE/releases/download/$TAG2" "$TAG2"
 # A tampered release: the archive no longer matches its checksum entry.
 cp -R "$FAKE/releases/latest/download" "$FAKE/releases/download/v0.0.1-bad"
 printf 'x' >>"$FAKE/releases/download/v0.0.1-bad/flightdeck_linux_amd64.tar.gz"
@@ -500,5 +548,213 @@ must_not "$WORK/bg.out" '[Y/n]' "in the background nothing is asked"
 must "$WORK/bg.out" 'To connect Claude Code: flightdeck connect claude-code' "in the background the command is printed"
 pass "an install in the background asks nothing and prints the command"
 unset FAKE_FLIGHTDECK_LOG
+
+echo "-- starting Flightdeck in the background (flightdeck service)"
+# Stand-ins for the service managers: they log each call with the version
+# of the binary installed at that moment, so a log shows whether the stop
+# ran before the binary was replaced. launchctl print says the agent is
+# gone, as it is once bootout has stopped it.
+mkdir -p "$WORK/fakemgr"
+for manager in systemctl launchctl; do
+  cat >"$WORK/fakemgr/$manager" <<FAKE
+#!/bin/sh
+if [ "$manager" = launchctl ] && [ "\$1" = print ]; then exit 113; fi
+printf '%s %s [installed: %s]\n' "$manager" "\$*" "\$("\$FAKE_INSTALLED_BIN" --version 2>/dev/null)" >>"\$FAKE_FLIGHTDECK_SERVICE_DIR/calls.log"
+exit "\${FAKE_MANAGER_EXIT:-0}"
+FAKE
+  chmod 0755 "$WORK/fakemgr/$manager"
+done
+# root, and macOS on Apple silicon.
+mkdir -p "$WORK/fakeroot" "$WORK/fakedarwin"
+# shellcheck disable=SC2016  # the $1 and $@ are the stand-ins' own
+printf '#!/bin/sh\ncase "$1" in -u) echo 0 ;; *) exec /usr/bin/id "$@" ;; esac\n' >"$WORK/fakeroot/id"
+# shellcheck disable=SC2016  # the $1 and $@ are the stand-ins' own
+printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) exec /usr/bin/uname "$@" ;; esac\n' >"$WORK/fakedarwin/uname"
+chmod 0755 "$WORK/fakeroot/id" "$WORK/fakedarwin/uname"
+
+SERVICE_HINT='To start Flightdeck now and at every login: flightdeck service install'
+service_run() {
+  # service_run <name> <env...>: install.sh piped into sh with no
+  # terminal into $WORK/inst-<name>, the fake service's files in
+  # $WORK/svc-<name> (kept across runs of one name, for the re-runs),
+  # the managers' stand-ins first on PATH. Output in $WORK/<name>.out.
+  local name="$1"; shift
+  mkdir -p "$WORK/svc-$name"
+  curl -fsSL "http://127.0.0.1:$PORT/install.sh" |
+    no_tty env INSTALL_DIR="$WORK/inst-$name" FAKE_FLIGHTDECK_SERVICE_DIR="$WORK/svc-$name" \
+      FAKE_INSTALLED_BIN="$WORK/inst-$name/flightdeck" PATH="$WORK/fakemgr:$PATH" "$@" sh >"$WORK/$name.out" 2>&1 ||
+    { cat "$WORK/$name.out"; echo "FAIL: $name: the install failed"; exit 1; }
+}
+calls() { printf '%s' "$WORK/svc-$1/calls.log"; }
+# before <file> <first> <second>: <first> is logged on an earlier line than <second>.
+before() {
+  local a b
+  a="$(grep -nF -- "$2" "$1" | head -1 | cut -d: -f1)"
+  b="$(grep -nF -- "$3" "$1" | head -1 | cut -d: -f1)"
+  if [ -z "$a" ] || [ -z "$b" ] || [ "$a" -ge "$b" ]; then
+    printf 'FAIL: "%s" is not logged before "%s":\n' "$2" "$3"; cat "$1"; exit 1
+  fi
+}
+
+service_run svc-quiet
+must "$WORK/svc-quiet.out" "$SERVICE_HINT" "no terminal: the service command is printed"
+must "$(calls svc-quiet)" "service install --dry-run by $TAG (stdin 0 bytes)" "no terminal: the binary's dry run is asked"
+must_not "$(calls svc-quiet)" "service install by" "no terminal: no service installed"
+must_not "$WORK/svc-quiet.out" '[Y/n]' "no terminal: nothing asked"
+pass "without a terminal the installer prints the service command and installs nothing"
+
+service_run svc-yes FLIGHTDECK_SERVICE=yes
+must "$(calls svc-yes)" "service install by $TAG (stdin 0 bytes)" "FLIGHTDECK_SERVICE=yes installs it, its stdin empty"
+must "$WORK/svc-yes.out" 'The Flightdeck service is installed and runs: http://localhost:4100' "the service install's own output is shown"
+must "$WORK/svc-yes.out" 'Next: open the address above. Flightdeck runs in the background; flightdeck service status shows it.' "the closing line says it runs"
+must_not "$WORK/svc-yes.out" "run \`flightdeck\` and open the URL it prints" "a running service: not told to run flightdeck"
+must_not "$WORK/svc-yes.out" "$SERVICE_HINT" "an installed service: no hint"
+pass "FLIGHTDECK_SERVICE=yes installs the service without asking"
+
+service_run svc-no FLIGHTDECK_SERVICE=no
+must "$WORK/svc-no.out" "$SERVICE_HINT" "FLIGHTDECK_SERVICE=no prints the command"
+must_not "$(calls svc-no)" "service install by" "FLIGHTDECK_SERVICE=no installs nothing"
+pass "FLIGHTDECK_SERVICE=no installs nothing and prints the command"
+
+service_run svc-other FLIGHTDECK_SERVICE=maybe
+must "$WORK/svc-other.out" 'FLIGHTDECK_SERVICE is neither yes nor no (maybe): not starting Flightdeck in the background' "another value is reported"
+must_not "$(calls svc-other)" "service install by" "another value installs nothing"
+must "$WORK/svc-other.out" "$SERVICE_HINT" "another value prints the command"
+pass "a FLIGHTDECK_SERVICE that is neither yes nor no is reported and read as no"
+
+service_run svc-root FLIGHTDECK_SERVICE=yes PATH="$WORK/fakeroot:$WORK/fakemgr:$PATH"
+must_not "$WORK/svc-root.out" 'flightdeck service' "as root: nothing said about the service"
+if [ -s "$(calls svc-root)" ]; then echo "FAIL: as root the binary's service command ran:"; cat "$(calls svc-root)"; exit 1; fi
+pass "as root nothing is asked or run (the service refuses root)"
+
+curl -fsSL "http://127.0.0.1:$PORT/install.sh" |
+  no_tty env INSTALL_DIR="$WORK/inst-svc-older" FLIGHTDECK_SERVICE=yes PATH="$WORK/fakemgr:$PATH" sh >"$WORK/svc-older.out" 2>&1 ||
+  { cat "$WORK/svc-older.out"; echo "FAIL: the install with an older binary"; exit 1; }
+must_not "$WORK/svc-older.out" 'service' "an older binary: nothing said about the service"
+must "$WORK/svc-older.out" "run \`flightdeck\` and open the URL it prints" "an older binary installs as before"
+pass "a binary that does not know the service command (an older VERSION) skips the step silently"
+
+service_run svc-unsupported FAKE_FLIGHTDECK_SERVICE_UNSUPPORTED=1
+must_not "$WORK/svc-unsupported.out" 'service' "a system that cannot run it: nothing said without FLIGHTDECK_SERVICE"
+must_not "$WORK/svc-unsupported.out" '[Y/n]' "a system that cannot run it: nothing asked"
+service_run svc-unsupported-yes FAKE_FLIGHTDECK_SERVICE_UNSUPPORTED=1 FLIGHTDECK_SERVICE=yes
+must "$WORK/svc-unsupported-yes.out" 'Not starting Flightdeck in the background: no systemd user manager answers for this user' "FLIGHTDECK_SERVICE=yes where it cannot run: the binary's reason"
+must_not "$WORK/svc-unsupported-yes.out" "$SERVICE_HINT" "where it cannot run: no hint to run the command"
+pass "where the dry run exits 4 (no user service manager) nothing is offered; asked for, the binary's reason is printed"
+
+service_run svc-check FAKE_FLIGHTDECK_SERVICE_CHECK_SAYS='another flightdeck (pid 7) runs on the data dir' FLIGHTDECK_SERVICE=yes
+must "$WORK/svc-check.out" "$SERVICE_HINT (it would not start now: another flightdeck (pid 7) runs on the data dir)" "a failing dry run: the command and its reason"
+must_not "$(calls svc-check)" "service install by" "a failing dry run: nothing installed"
+pass "a dry run that fails otherwise (a flightdeck on the data dir) installs nothing and prints the command with the reason"
+
+service_run svc-fails FLIGHTDECK_SERVICE=yes FAKE_FLIGHTDECK_SERVICE_INSTALL_EXIT=1
+test -x "$WORK/inst-svc-fails/flightdeck"
+must "$WORK/svc-fails.out" 'flightdeck service install: the service did not come up' "a failed service install: its own line"
+must "$WORK/svc-fails.out" 'Starting Flightdeck in the background did not finish (see above); run it again later: flightdeck service install' "a failed service install says how to retry"
+must "$WORK/svc-fails.out" "run \`flightdeck\` and open the URL it prints" "the install carries on after a failed service install"
+pass "a service install that fails does not fail the install"
+
+for answer in y '' n __no_answer__; do
+  name="svc-pty-${answer:-empty}"
+  mkdir -p "$WORK/svc-$name"
+  out="$WORK/$name.out"
+  if ! FAKE_FLIGHTDECK_SERVICE_DIR="$WORK/svc-$name" FLIGHTDECK_CONNECT_ASK_TIMEOUT=2 INSTALL_DIR="$WORK/inst-$name" PATH="$WORK/fakemgr:$PATH" \
+    timeout "$((PTY_TIMEOUT_SECS + 10))" python3 "$WORK/pty_answer.py" "$answer" "$PTY_TIMEOUT_SECS" \
+    sh -c "curl -fsSL http://127.0.0.1:$PORT/install.sh | sh" >"$out" 2>&1; then
+    cat "$out"; echo "FAIL: the install on a terminal, service answer '$answer'"; exit 1
+  fi
+  must "$out" 'Start Flightdeck now and at every login? [Y/n]' "on a terminal the installer asks"
+  must "$out" 'again if it stops (flightdeck service remove undoes it)' "what it does is said before the question"
+  case "$answer" in
+    y | '')
+      must "$(calls "$name")" "service install by $TAG (stdin 0 bytes)" "answer '$answer' installs the service"
+      must "$out" 'Next: open the address above. Flightdeck runs in the background' "answer '$answer': the closing line says it runs"
+      ;;
+    *)
+      must_not "$(calls "$name")" "service install by" "answer '$answer' installs nothing"
+      must "$out" "$SERVICE_HINT" "answer '$answer' prints the command"
+      ;;
+  esac
+  if [ "$answer" = __no_answer__ ]; then
+    must "$out" 'No answer in 2 seconds: not starting it.' "an unanswered question times out as no"
+  fi
+  pass "on a terminal, under curl | sh, the service answer '$answer' is read from /dev/tty and followed"
+done
+
+# A re-run where the service runs the installed binary: the service is
+# stopped while the old binary is in place, the binary is replaced, and
+# the new binary's `service restart` starts it again; nothing is offered.
+service_run svc-up FLIGHTDECK_SERVICE=yes
+service_run svc-up VERSION="$TAG2"
+"$WORK/inst-svc-up/flightdeck" --version | grep -q "^flightdeck $TAG2"
+must "$(calls svc-up)" "systemctl --user stop flightdeck.service [installed: flightdeck $TAG (linux_amd64)]" "the stop runs while the old binary is installed"
+must "$(calls svc-up)" "service restart by $TAG2 (stdin 0 bytes)" "the new binary restarts the service"
+before "$(calls svc-up)" 'systemctl --user stop flightdeck.service' "service restart by $TAG2"
+must "$WORK/svc-up.out" 'Stopping the Flightdeck service to replace the binary it runs' "the re-run says it stops the service"
+must "$WORK/svc-up.out" 'The Flightdeck service restarted and runs' "the restart's own output is shown"
+must "$WORK/svc-up.out" 'Next: open the address above. Flightdeck runs in the background' "the closing line says it runs"
+must_not "$(calls svc-up)" "service install by $TAG2" "a re-run installs nothing more"
+must_not "$WORK/svc-up.out" '[Y/n]' "a re-run asks nothing"
+pass "a re-run with the service installed stops it before the replacement and starts the new binary after (systemd)"
+
+service_run svc-up-mac FLIGHTDECK_SERVICE=yes PATH="$WORK/fakedarwin:$WORK/fakemgr:$PATH"
+service_run svc-up-mac VERSION="$TAG2" PATH="$WORK/fakedarwin:$WORK/fakemgr:$PATH"
+must "$(calls svc-up-mac)" "launchctl bootout gui/$(id -u)/com.flightdeck-hq.flightdeck [installed: flightdeck $TAG (darwin_arm64)]" "macOS: the agent is booted out while the old binary is installed"
+before "$(calls svc-up-mac)" 'launchctl bootout' "service restart by $TAG2"
+must_not "$(calls svc-up-mac)" 'systemctl' "macOS: no systemctl"
+pass "a re-run on macOS boots the agent out before the replacement and the new binary restarts it"
+
+# The installed path with a space and a quote, written by `service status`
+# in single quotes as the binary quotes it.
+weird="$WORK/inst-svc up'grade"
+mkdir -p "$WORK/svc-weird"
+curl -fsSL "http://127.0.0.1:$PORT/install.sh" |
+  no_tty env INSTALL_DIR="$weird" FLIGHTDECK_SERVICE=no FAKE_FLIGHTDECK_SERVICE_DIR="$WORK/svc-weird" PATH="$WORK/fakemgr:$PATH" sh >"$WORK/svc-weird1.out" 2>&1 ||
+  { cat "$WORK/svc-weird1.out"; exit 1; }
+printf "'%s' --port 4100 --data-dir /srv/fake\n" "$WORK/inst-svc up'\\''grade/flightdeck" >"$WORK/svc-weird/unit"
+curl -fsSL "http://127.0.0.1:$PORT/install.sh" |
+  no_tty env INSTALL_DIR="$weird" VERSION="$TAG2" FAKE_FLIGHTDECK_SERVICE_DIR="$WORK/svc-weird" FAKE_INSTALLED_BIN="$weird/flightdeck" \
+    PATH="$WORK/fakemgr:$PATH" sh >"$WORK/svc-weird2.out" 2>&1 || { cat "$WORK/svc-weird2.out"; exit 1; }
+must "$WORK/svc-weird/calls.log" 'systemctl --user stop flightdeck.service' "a quoted path is matched"
+must "$WORK/svc-weird/calls.log" "service restart by $TAG2" "and restarted with the new binary"
+pass "a service whose binary path needs quoting is recognised as this install's"
+
+service_run svc-restart-fails FLIGHTDECK_SERVICE=yes
+service_run svc-restart-fails VERSION="$TAG2" FAKE_FLIGHTDECK_SERVICE_RESTART_EXIT=1
+must "$WORK/svc-restart-fails.out" 'The Flightdeck service did not start again with the new binary (see above): flightdeck service status shows why.' "a failed restart is said, with the status command"
+"$WORK/inst-svc-restart-fails/flightdeck" --version | grep -q "^flightdeck $TAG2"
+pass "a restart that fails after the replacement is reported, and the install succeeds"
+
+service_run svc-stop-fails FLIGHTDECK_SERVICE=yes
+service_run svc-stop-fails VERSION="$TAG2" FAKE_MANAGER_EXIT=1
+must "$WORK/svc-stop-fails.out" 'The service did not stop (see above); replacing the binary all the same, and starting the service again after' "a failed stop is said"
+must "$(calls svc-stop-fails)" "service restart by $TAG2" "the service is still restarted with the new binary"
+pass "a stop that fails is reported, and the new binary still restarts the service"
+
+# The new release is older than the command (a pinned VERSION): the
+# manager's own start brings the service back.
+service_run svc-up-older FLIGHTDECK_SERVICE=yes
+service_run svc-up-older VERSION="$TAG2" FAKE_FLIGHTDECK_NO_SERVICE_IN="$TAG2"
+before "$(calls svc-up-older)" 'systemctl --user stop flightdeck.service' 'systemctl --user start flightdeck.service'
+must "$(calls svc-up-older)" "systemctl --user start flightdeck.service [installed: flightdeck $TAG2 (linux_amd64)]" "the manager starts it once the new binary is in place"
+must "$WORK/svc-up-older.out" "Started the Flightdeck service again with $WORK/inst-svc-up-older/flightdeck." "the start is said"
+pass "a new binary without the service command: the manager's own start restarts the service"
+
+# A service that runs another binary (another install directory) is left
+# running, and named.
+service_run svc-elsewhere FLIGHTDECK_SERVICE=no
+printf '/opt/elsewhere/flightdeck --port 4100\n' >"$WORK/svc-svc-elsewhere/unit"
+service_run svc-elsewhere VERSION="$TAG2" FLIGHTDECK_SERVICE=yes
+must_not "$(calls svc-elsewhere)" 'systemctl' "another binary's service is not stopped"
+must_not "$(calls svc-elsewhere)" "service install by" "another binary's service is not replaced"
+must "$WORK/svc-elsewhere.out" 'The Flightdeck service runs another flightdeck and keeps running it: /opt/elsewhere/flightdeck --port 4100.' "it is named"
+pass "a service of another flightdeck is left as it is and named"
+
+# A re-run with no service behaves as a first install.
+service_run svc-none FLIGHTDECK_SERVICE=no
+service_run svc-none VERSION="$TAG2"
+must_not "$(calls svc-none)" 'systemctl' "no service: nothing stopped"
+must "$WORK/svc-none.out" "$SERVICE_HINT" "no service: the command is printed again"
+pass "a re-run without the service behaves as a first install"
 
 echo "INSTALL.SH TESTS OK"

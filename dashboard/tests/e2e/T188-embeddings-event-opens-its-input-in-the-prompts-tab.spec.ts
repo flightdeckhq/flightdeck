@@ -16,7 +16,8 @@
  * detail of that row, then its Prompts tab. The input shows under the
  * provider's name for it (Input, or Contents for google-genai), drawn
  * as the expanded row draws it, its JSON view the stored input; the
- * response is the event's output_dimensions, never ``{}`` nor a vector.
+ * Output section shows the event's output_dimensions, never ``{}`` nor a
+ * vector.
  *
  * Theme-agnostic: test ids and text only, so it runs under both the
  * neon-dark and clean-light theme projects (Rule 40c.3).
@@ -65,7 +66,7 @@ async function inputBox(root: Locator): Promise<Locator> {
 }
 
 /** The two OpenAI texts, behind their count, then opened; the JSON view
- *  is the stored input; the response is the output_dimensions. */
+ *  is the stored input; Output shows the output_dimensions. */
 async function expectOpenAIInput(root: Locator): Promise<void> {
   await expect(root.getByRole("button", { name: "Input", exact: true })).toBeVisible();
   const box = await inputBox(root);

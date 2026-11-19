@@ -143,11 +143,17 @@ describe("PromptViewer: an embeddings event shows its input", () => {
     expect(screen.getByTestId("prompt-viewer-model")).toHaveTextContent("gemini-embedding-001");
   });
 
-  it("the response is the event's output_dimensions, never the stored {} nor a vector", async () => {
+  it("the event's output_dimensions show under Output, never as a response: not the stored {} nor a vector", async () => {
     await renderTab(live.openai_many_inputs!);
     expect(screen.queryByTestId("prompt-box-response")).toBeNull();
     const output = screen.getByTestId("prompt-box-embeddings-output");
-    expect(screen.getByRole("button", { name: "Response" })).toBeInTheDocument();
+    // Event metadata, not stored response content: its section is
+    // Output, its toggle names the event's field, and nothing in the tab
+    // is called a response.
+    expect(screen.getByRole("button", { name: "Output" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByRole("button", { name: "Response" })).toBeNull();
+    expect(within(output).getByRole("group", { name: "View for the event's output_dimensions" })).toBeInTheDocument();
+    expect(screen.getByTestId("prompt-viewer-embeddings").textContent).not.toMatch(/response/i);
     expect(within(output).getByText("output_dimensions")).toBeInTheDocument();
     const fields = within(output).getByTestId("embeddings-output-dimensions");
     expect(within(fields).getAllByTestId("kv-label").map((l) => l.textContent)).toEqual(["count:", "dimension:"]);
@@ -161,8 +167,9 @@ describe("PromptViewer: an embeddings event shows its input", () => {
     expect(screen.queryByText("{}")).toBeNull();
   });
 
-  it("without output_dimensions the tab says nothing about a response", async () => {
+  it("without output_dimensions the tab has no Output section, and says nothing about a response", async () => {
     await renderTab(live.openai_string!, false);
+    expect(screen.queryByRole("button", { name: "Output" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Response" })).toBeNull();
     expect(screen.queryByTestId("prompt-box-embeddings-output")).toBeNull();
     expect(screen.queryByTestId("prompt-box-response")).toBeNull();
@@ -277,18 +284,126 @@ describe("the run drawer's View Prompts → on an embeddings row", () => {
     expect(screen.getByTestId("embeddings-output-dimensions")).toHaveTextContent(/count:\s*2(?!\d)/);
   });
 
-  it("guard: the list still leaves embeddings events out", () => {
+});
+
+describe("the run drawer's Prompts list lists embeddings calls", () => {
+  /** A list row's badge, time and model, as the row shows them. */
+  function rowParts(id: string): { badge: string; time: string; model: string } {
+    const spans = screen.getByTestId(`prompts-row-${id}`).querySelectorAll(":scope > span");
+    return { badge: spans[0]!.textContent!, time: spans[1]!.textContent!, model: spans[2]!.textContent! };
+  }
+
+  it("an embeddings call is a row beside the run's other calls: its badge, its time, its model", () => {
+    const at = "2026-11-18T09:30:15Z";
+    render(
+      <PromptsTab
+        session={SESSION}
+        events={[
+          event("e-post", "post_call", { model: "gpt-4o-mini" }),
+          event("e-embed", "embeddings", { occurred_at: at }),
+          event("e-tool", "tool_call", { model: null, tool_name: "search_docs" }),
+        ]}
+        selectedEventId={null}
+        focusedEventId={null}
+        onSelectEvent={() => {}}
+      />,
+    );
+    // In the order the run's events come in, the embeddings call among them.
+    expect(Array.from(document.querySelectorAll('[data-testid^="prompts-row-"]')).map((r) => r.getAttribute("data-testid"))).toEqual([
+      "prompts-row-e-post",
+      "prompts-row-e-embed",
+      "prompts-row-e-tool",
+    ]);
+    expect(rowParts("e-embed")).toEqual({
+      badge: "EMBED",
+      time: new Date(at).toLocaleTimeString(),
+      model: "text-embedding-3-small",
+    });
+    expect(rowParts("e-post").badge).toBe("LLM CALL");
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+  });
+
+  it("an embeddings-only run lists its calls instead of saying no content was recorded", () => {
+    render(
+      <PromptsTab
+        session={SESSION}
+        events={[event("e-embed-2", "embeddings"), event("e-embed-1", "embeddings", { model: "gemini-embedding-001" })]}
+        selectedEventId={null}
+        focusedEventId={null}
+        onSelectEvent={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("prompts-row-e-embed-2")).toBeInTheDocument();
+    expect(rowParts("e-embed-1")).toMatchObject({ badge: "EMBED", model: "gemini-embedding-001" });
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+    expect(screen.queryByText(/No content was recorded/)).toBeNull();
+  });
+
+  it("a row opens its call: the list selects that event", () => {
+    const onSelect = vi.fn();
     render(
       <PromptsTab
         session={SESSION}
         events={[event("e-post", "post_call", { model: "gpt-4o-mini" }), event("e-embed", "embeddings")]}
         selectedEventId={null}
         focusedEventId={null}
+        onSelectEvent={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("prompts-row-e-embed"));
+    expect(onSelect).toHaveBeenCalledWith("e-embed");
+  });
+
+  it("the selected row opens the embeddings view, and Back returns to the list with it", async () => {
+    const stored = live.openai_list!;
+    mockContent = stored.content;
+    const id = stored.content.event_id;
+    const events = [event(id, "embeddings", { payload: { output_dimensions: stored.output_dimensions! } })];
+    let selected: string | null = id;
+    const view = render(
+      <PromptsTab session={SESSION} events={events} selectedEventId={selected} focusedEventId={id} onSelectEvent={(next) => (selected = next)} />,
+    );
+    await screen.findByTestId("prompt-viewer-embeddings");
+    expect(within(inputBox()).getByTestId("embeddings-content-viewer")).toHaveAttribute("data-state", "list");
+    fireEvent.click(screen.getByRole("button", { name: "← Back to event list" }));
+    expect(selected).toBeNull();
+    // A focused row scrolls itself into view; jsdom has no layout to scroll.
+    Element.prototype.scrollIntoView ??= vi.fn();
+    view.rerender(
+      <PromptsTab session={SESSION} events={events} selectedEventId={selected} focusedEventId={id} onSelectEvent={(next) => (selected = next)} />,
+    );
+    expect(screen.getByTestId(`prompts-row-${id}`)).toHaveAttribute("data-focused", "true");
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+  });
+
+  it("guard: an embeddings event that stored no content is not listed, and a run with nothing listed keeps its message", () => {
+    render(
+      <PromptsTab
+        session={SESSION}
+        events={[event("e-embed-none", "embeddings", { has_content: false })]}
+        selectedEventId={null}
+        focusedEventId={null}
         onSelectEvent={() => {}}
       />,
     );
-    expect(screen.getByTestId("prompts-row-e-post")).toBeInTheDocument();
-    expect(screen.queryByTestId("prompts-row-e-embed")).toBeNull();
+    expect(screen.queryByTestId("prompts-row-e-embed-none")).toBeNull();
+    expect(screen.getByTestId("prompts-no-content-for-run")).toHaveTextContent("No content was recorded for this run.");
+    cleanup();
+  });
+
+  it("guard: capture off with no content keeps the disabled message", () => {
+    const off = { ...SESSION, capture_prompts: false, capture_enabled: false } as Session;
+    render(
+      <PromptsTab
+        session={off}
+        events={[event("e-embed-off", "embeddings", { has_content: false })]}
+        selectedEventId={null}
+        focusedEventId={null}
+        onSelectEvent={() => {}}
+      />,
+    );
+    expect(screen.getByText("Prompt capture is not enabled for this deployment.")).toBeInTheDocument();
+    expect(screen.queryByTestId("prompts-row-e-embed-off")).toBeNull();
     cleanup();
   });
 });

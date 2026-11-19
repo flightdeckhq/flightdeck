@@ -865,9 +865,9 @@ function ProviderHeader({ provider, model }: { provider: string; model: string }
  * that took them, and no response body (``response`` is ``{}``; the
  * vectors are kept apart and the content API does not return them).
  * The view shows the inputs under the provider's own name for them,
- * drawn by the expanded event row's input view, and, for the response,
- * the event's ``output_dimensions``: never a vector, and never the
- * empty response.
+ * drawn by the expanded event row's input view, and, under Output, the
+ * event's ``output_dimensions``: never a vector, and never the empty
+ * response.
  */
 
 /** The section an embeddings call's input is shown under, in the
@@ -883,6 +883,13 @@ function embeddingsInputSection(provider: string): { title: string; name: string
 /** The label of the box that shows an embeddings event's
  *  ``output_dimensions``: the stored field's name. */
 const OUTPUT_DIMENSIONS_FIELD = "output_dimensions";
+
+/** The title of the section that box is in. Its ``output_dimensions``
+ *  (how many vectors the call returned, and the dimension of each) is
+ *  the event's metadata, not a stored response: the sensor stores no
+ *  response for an embeddings call, and the content API does not
+ *  return the vectors. */
+const EMBEDDINGS_OUTPUT_SECTION_TITLE = "Output";
 
 function EmbeddingsContent({
   content,
@@ -910,11 +917,11 @@ function EmbeddingsContent({
       </Section>
 
       {dimensions && (
-        <Section title="Response">
+        <Section title={EMBEDDINGS_OUTPUT_SECTION_TITLE}>
           <ViewBox
             key={`${eventId}-embeddings-output`}
             raw={dimensions}
-            name={`the response's ${OUTPUT_DIMENSIONS_FIELD}`}
+            name={`the event's ${OUTPUT_DIMENSIONS_FIELD}`}
             testId="prompt-box-embeddings-output"
             label={<BlockLabel>{OUTPUT_DIMENSIONS_FIELD}</BlockLabel>}
           >

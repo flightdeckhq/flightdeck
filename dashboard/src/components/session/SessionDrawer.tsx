@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -63,6 +63,17 @@ import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useS
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
+
+/**
+ * What the run drawer's tab content shows, for its scroll position: a
+ * tab, with the Prompts tab's list and each call opened from it kept
+ * apart. The tabs share one scroll container, and each of these keeps
+ * its own position in it.
+ */
+export function tabContentView(tab: DrawerTab, selectedPromptEventId: string | null): string {
+  if (tab !== "prompts") return tab;
+  return selectedPromptEventId ? `prompts-call:${selectedPromptEventId}` : "prompts-list";
+}
 
 // Drawer pagination. Flat pill selector (mirrors Fleet's time-range
 // pills at Fleet.tsx:492-515) in place of a dropdown so the control
@@ -421,6 +432,33 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
   const [mcpServersExpanded, setMcpServersExpanded] = useState(false);
 
+  // The tabs share one scroll container; each view of it (a tab, the
+  // Prompts list, a call opened from it) keeps its own position, so a
+  // tab opens at its own top the first time and where the user left it
+  // after that, never at another tab's offset, and "← Back to event
+  // list" returns the list to where it was when the call was opened.
+  // Recorded on every scroll; a run of its own starts with none.
+  const tabContentRef = useRef<HTMLDivElement | null>(null);
+  // The drawer of the previous run stays mounted while it animates out
+  // beside the next run's: its container's unmount must not clear the
+  // ref the next run's container holds.
+  const attachTabContent = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    tabContentRef.current = el;
+    return () => {
+      if (tabContentRef.current === el) tabContentRef.current = null;
+    };
+  }, []);
+  const scrollPositions = useRef<Map<string, number>>(new Map());
+  const contentView = tabContentView(activeTab, selectedEventId);
+  useLayoutEffect(() => {
+    scrollPositions.current = new Map();
+  }, [sessionId]);
+  useLayoutEffect(() => {
+    const el = tabContentRef.current;
+    if (el) el.scrollTop = scrollPositions.current.get(contentView) ?? 0;
+  }, [contentView]);
+
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
   // and its content are gated on this being non-empty. A session that
@@ -622,7 +660,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     // still set focusedPromptEventId so that when the user clicks
     // "Back to event list" from detail, the origin row is
     // highlighted and scrolled into view -- preserves Fix C
-    // (03792f5) on the round trip.
+    // (03792f5) on the round trip. The call opens at its top.
+    scrollPositions.current.delete(tabContentView("prompts", eventId));
     setSelectedEventId(eventId);
     setFocusedPromptEventId(eventId);
   }
@@ -1046,7 +1085,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
               </div>
 
               {/* Tab content */}
-              <div className="flex-1 overflow-y-auto">
+              <div
+                ref={attachTabContent}
+                className="flex-1 overflow-y-auto"
+                data-testid="session-drawer-tab-content"
+                onScroll={(e) => {
+                  scrollPositions.current.set(contentView, e.currentTarget.scrollTop);
+                }}
+              >
                 {activeTab === "timeline" && (
                   <EventFeed
                     events={displayEvents}
@@ -1070,6 +1116,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
                     onSelectEvent={(id) => {
+                      // A call opened from the list opens at its top.
+                      if (id !== null) scrollPositions.current.delete(tabContentView("prompts", id));
                       setSelectedEventId(id);
                       // Clear the focused-row treatment only when
                       // the user selects a different event from the
@@ -2268,6 +2316,20 @@ export function PromptsTab({
       node.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [focusedEventId, selectedEventId]);
+
+  // "← Back to event list" returns keyboard focus to the row of the call
+  // that was open, so the user carries on from it. The drawer restores
+  // the list's scroll position; the focus does not scroll it.
+  const openedEventId = useRef<string | null>(selectedEventId);
+  useEffect(() => {
+    if (selectedEventId) {
+      openedEventId.current = selectedEventId;
+      return;
+    }
+    const opened = openedEventId.current;
+    openedEventId.current = null;
+    if (opened) rowRefs.current[opened]?.focus({ preventScroll: true });
+  }, [selectedEventId]);
 
   if (contentEvents.length === 0) {
     return <NoRunContent session={session} />;

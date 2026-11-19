@@ -145,6 +145,14 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The run drawer's Prompts list keeps your place.** "← Back to event
+  list" after opening a call returned the list to its top; it now
+  returns to where the list was, with keyboard focus on that call's
+  row. The drawer's tabs share one scroll area, so opening the Prompts
+  tab after scrolling the Timeline showed the list part-way down, and
+  a call opened from far down the list opened part-way down too. Each
+  tab now opens at its own top the first time and where you left it
+  after that, and a call opens at its top.
 - **An Anthropic stream manager reports exactly the requests it sends.**
   `messages.stream()` / `beta.messages.stream()` emitted their
   `pre_call` when `stream()` was called, so a manager never entered left

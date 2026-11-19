@@ -9330,7 +9330,11 @@ Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
 only appears when the session runs custom directives (a sensor session
 that supports directives, see Observer-session class) and
 `flavorDirectives.length > 0` (filtered from the fleet store's
-`customDirectives` slice by the session's flavor).
+`customDirectives` slice by the session's flavor). The tabs share one
+scroll container, and each view of it (a tab, the Prompts tab's list,
+a call opened from it) keeps its own scroll position for the run: a
+tab opens at its top the first time and where it was left after that,
+and a newly opened call opens at its top.
 
 The drawer reads its run through its own fetch (`useSession`), and the
 fleet store's live stream tells it when to refetch: on an
@@ -9393,7 +9397,10 @@ loaded events (the ones its Timeline holds) that stored content of the
 types `post_call`, `tool_call`, `mcp_tool_call`, `mcp_prompt_get` and
 `embeddings`, newest first, one row each with its event-type badge,
 its time and its model (a tool call's tool name), each opening in
-`PromptViewer`; "← Back to event list" returns to that list. An
+`PromptViewer`; "← Back to event list" returns to that list where it
+was when the call was opened, keyboard focus on that call's row (after
+the Timeline's "View Prompts →", on the row it highlights and scrolls
+into view). An
 embeddings call is listed like any other, so a run whose only content
 is embeddings lists its calls, and the run drawer's "View Prompts →" on
 an embeddings row opens the same view as its row in the list. The viewer's

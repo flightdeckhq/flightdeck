@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { SessionDrawer } from "@/components/session/SessionDrawer";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { SessionDrawer, tabContentView } from "@/components/session/SessionDrawer";
 import type { CustomDirective } from "@/lib/types";
 
 // Base session data
@@ -1331,6 +1331,122 @@ import { invalidateSessionCache } from "@/hooks/useSession";
 
 const mockFetchOlderEvents = fetchOlderEvents as ReturnType<typeof vi.fn>;
 const mockInvalidateSessionCache = invalidateSessionCache as ReturnType<typeof vi.fn>;
+
+describe("SessionDrawer — each tab keeps its own scroll position, and Back returns to the opened row", () => {
+  // jsdom has no layout: scrollTop is 0 and assigning it does nothing.
+  // Here it holds what is assigned, as a browser's does within range.
+  const scrollTops = new WeakMap<Element, number>();
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return scrollTops.get(this) ?? 0;
+      },
+      set(this: HTMLElement, value: number) {
+        scrollTops.set(this, value);
+      },
+    });
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+  afterEach(() => {
+    delete (HTMLElement.prototype as { scrollTop?: number }).scrollTop;
+  });
+
+  /** The user scrolls the tab content to ``top``. */
+  function scrollTo(container: HTMLElement, top: number) {
+    container.scrollTop = top;
+    fireEvent.scroll(container);
+  }
+
+  const content = () => screen.getByTestId("session-drawer-tab-content");
+
+  it("names each view of the tab content apart: a tab, the Prompts list, each call opened from it", () => {
+    expect(tabContentView("timeline", null)).toBe("timeline");
+    expect(tabContentView("timeline", "e3")).toBe("timeline");
+    expect(tabContentView("prompts", null)).toBe("prompts-list");
+    expect(tabContentView("prompts", "e3")).toBe("prompts-call:e3");
+    expect(tabContentView("prompts", "e4")).not.toBe(tabContentView("prompts", "e3"));
+  });
+
+  it("the Prompts tab opens at its own top after the Timeline was scrolled, and each tab comes back where it was left", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    scrollTo(content(), 600);
+
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(content().scrollTop).toBe(0);
+    scrollTo(content(), 250);
+
+    fireEvent.click(screen.getByText("Timeline"));
+    expect(content().scrollTop).toBe(600);
+
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(content().scrollTop).toBe(250);
+  });
+
+  it("Back from a call opened from the list returns the list where it was, focus on that call's row", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    scrollTo(content(), 400);
+
+    fireEvent.click(screen.getByTestId("prompts-row-e3"));
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    // The call opens at its top, not at the list's offset.
+    expect(content().scrollTop).toBe(0);
+
+    fireEvent.click(screen.getByText("← Back to event list"));
+    expect(content().scrollTop).toBe(400);
+    expect(document.activeElement).toBe(screen.getByTestId("prompts-row-e3"));
+  });
+
+  it("Back after the Timeline's View Prompts → focuses the row it highlights", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getAllByTestId("event-row")[0]!);
+    fireEvent.click(screen.getByText("View Prompts →"));
+    expect(content().scrollTop).toBe(0);
+
+    fireEvent.click(screen.getByText("← Back to event list"));
+    const row = screen.getByTestId("prompts-row-e3");
+    expect(row.getAttribute("data-focused")).toBe("true");
+    expect(document.activeElement).toBe(row);
+  });
+
+  it("a call left open keeps its own position across a tab switch; a call opened again starts at its top", () => {
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    fireEvent.click(screen.getByTestId("prompts-row-e3"));
+    scrollTo(content(), 180);
+
+    fireEvent.click(screen.getByText("Timeline"));
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    expect(content().scrollTop).toBe(180);
+
+    fireEvent.click(screen.getByText("← Back to event list"));
+    fireEvent.click(screen.getByTestId("prompts-row-e3"));
+    expect(content().scrollTop).toBe(0);
+  });
+
+  it("another run starts with no positions of its own", () => {
+    mockEventsOverride = eventsWithContent;
+    const { rerender } = render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    scrollTo(content(), 320);
+    fireEvent.click(screen.getByText("Timeline"));
+    scrollTo(content(), 500);
+
+    rerender(<SessionDrawer sessionId="s2" onClose={() => {}} />);
+    // The first run's drawer may still be animating out beside it.
+    const drawer = document.querySelector<HTMLElement>('[data-session-id="s2"]')!;
+    const next = () => within(drawer).getByTestId("session-drawer-tab-content");
+    expect(next().scrollTop).toBe(0);
+    fireEvent.click(within(drawer).getByText("Prompts"));
+    expect(next().scrollTop).toBe(0);
+  });
+});
 
 describe("SessionDrawer pagination", () => {
   beforeEach(() => {

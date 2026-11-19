@@ -402,6 +402,52 @@ describe("SessionDrawer", () => {
     expect(otherRow.style.background).toBe("");
   });
 
+  it("an embeddings-only run: the Prompts tab lists its calls, and View Prompts → then Back lands on its row", async () => {
+    // A run whose only stored content is embeddings calls. The list
+    // names each call (its EMBED badge and model), and the round trip
+    // from the Timeline row comes back to that row, focused, not to
+    // "No content was recorded for this run."
+    const embed = (id: string, at: string) => ({
+      id,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "embeddings" as const,
+      model: "text-embedding-3-small",
+      tokens_input: 12,
+      tokens_output: null,
+      tokens_total: 12,
+      latency_ms: 300,
+      tool_name: null,
+      has_content: true,
+      occurred_at: at,
+    });
+    mockEventsOverride = [baseEvents[0]!, embed("m1", "2026-04-07T10:01:00Z"), embed("m2", "2026-04-07T10:02:00Z")];
+    Element.prototype.scrollIntoView = vi.fn();
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+    // Newest first, as the Timeline lists them.
+    const rows = Array.from(document.querySelectorAll('[data-testid^="prompts-row-"]'));
+    expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual(["prompts-row-m2", "prompts-row-m1"]);
+    for (const row of rows) {
+      expect(row).toHaveTextContent("EMBED");
+      expect(row).toHaveTextContent("text-embedding-3-small");
+    }
+
+    fireEvent.click(screen.getByText("Timeline"));
+    fireEvent.click(screen.getByTestId("embeddings-event-row-m1"));
+    fireEvent.click(screen.getByText("View Prompts →"));
+    expect(screen.getByText("← Back to event list")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockFetchEventContent).toHaveBeenCalledWith("m1");
+    });
+    fireEvent.click(screen.getByText("← Back to event list"));
+    expect(screen.getByTestId("prompts-row-m1").getAttribute("data-focused")).toBe("true");
+    expect(screen.getByTestId("prompts-row-m2").getAttribute("data-focused")).toBeNull();
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+  });
+
   it("does not show kill button for closed session", () => {
     mockSessionOverride = { state: "closed" };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

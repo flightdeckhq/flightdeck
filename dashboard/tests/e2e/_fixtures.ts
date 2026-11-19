@@ -982,8 +982,9 @@ export async function postPrivatePostCall(
  *  model, the request's ``input``, ``response`` ``{}`` as the sensor
  *  stores it) and ``fields`` over the run's own (the call's model and
  *  provider, its ``output_dimensions``); wait until it is stored with
- *  its content, and return its event id. A run takes one such call: the
- *  first stored ``embeddings`` event is the one. */
+ *  its content, and return its event id. A run takes several such
+ *  calls, posted one after another: the one stored is the run's
+ *  ``embeddings`` event that was not there before the post. */
 export async function postPrivateEmbeddings(
   page: Page,
   agent: PrivateAgent,
@@ -991,6 +992,11 @@ export async function postPrivateEmbeddings(
   content: Record<string, unknown>,
   fields: Record<string, unknown> = {},
 ): Promise<string> {
+  const earlier = new Set(
+    ((await privateSession(page, sessionId))?.events ?? [])
+      .filter((e) => e.event_type === "embeddings")
+      .map((e) => e.id),
+  );
   await postPrivateEvent(
     page,
     privateEvent(agent, sessionId, "embeddings", new Date(), {
@@ -1006,7 +1012,9 @@ export async function postPrivateEmbeddings(
   await expect
     .poll(
       async () => {
-        eventId = (await privateSession(page, sessionId))?.events.find((e) => e.event_type === "embeddings")?.id;
+        eventId = (await privateSession(page, sessionId))?.events.find(
+          (e) => e.event_type === "embeddings" && !earlier.has(e.id),
+        )?.id;
         return eventId;
       },
       { timeout: PRIVATE_STORE_WAIT_MS, message: `the embeddings call on ${sessionId} was not stored` },

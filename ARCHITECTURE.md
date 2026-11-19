@@ -9384,15 +9384,19 @@ request's `Content` objects included); its JSON view is the stored
 `input`. The sensor stores no response for an embeddings call (its
 `response` is `{}`, and the vectors, in `embedding_output`, are not
 returned by `GET /v1/events/:id/content`), so the tab shows no response
-body: its Response section shows the event's `output_dimensions` (the
+body: its Output section shows the event's `output_dimensions` (the
 `count` of vectors and the `dimension` of each, as the event payload
-carries them, its JSON view that object), and the tab has no Response
-section when the event carries none. The run drawer's "View Prompts →"
-on an embeddings row opens the same view in the run drawer's Prompts
-tab, also when the run stored no other content. The run drawer's
-Prompts tab lists the run's events that stored content of the types
-`post_call`, `tool_call`, `mcp_tool_call` and `mcp_prompt_get`, each
-opening in `PromptViewer`; an embeddings event is not listed. The viewer's
+carries them, its JSON view that object), which is the event's
+metadata, not stored content, and the tab has no Output section when
+the event carries none. The run drawer's Prompts tab lists the run's
+loaded events (the ones its Timeline holds) that stored content of the
+types `post_call`, `tool_call`, `mcp_tool_call`, `mcp_prompt_get` and
+`embeddings`, newest first, one row each with its event-type badge,
+its time and its model (a tool call's tool name), each opening in
+`PromptViewer`; "← Back to event list" returns to that list. An
+embeddings call is listed like any other, so a run whose only content
+is embeddings lists its calls, and the run drawer's "View Prompts →" on
+an embeddings row opens the same view as its row in the list. The viewer's
 header names the provider and, when the content names one, the model.
 Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI

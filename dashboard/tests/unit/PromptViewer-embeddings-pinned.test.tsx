@@ -10,7 +10,10 @@ import type { EventContent, OutputDimensions } from "@/lib/types";
 // box in its JSON view, for each provider's stored input shapes (the
 // real stored bodies of fixtures/embeddings-content.json and built ones
 // in the shapes the sensor stores). fixtures/prompts-pinned-embeddings.json
-// holds the markup from the view's first version. Set
+// holds the markup from the view's first version, its entries with
+// output_dimensions captured again when that section was titled Output
+// (its toggle naming the event's output_dimensions; the entries without
+// did not move). Set
 // CAPTURE_PINNED_MARKUP=1 to write that file again from the component in
 // place, only for a change meant to alter this markup, and check its
 // diff.

@@ -2216,6 +2216,7 @@ const PROMPTS_TAB_EVENT_TYPES: ReadonlySet<string> = new Set([
   "tool_call",
   "mcp_tool_call",
   "mcp_prompt_get",
+  EMBEDDINGS_EVENT_TYPE,
 ]);
 
 export interface PromptsTabProps {
@@ -2247,8 +2248,9 @@ export function PromptsTab({
   // in tool_input, the Claude Code plugin's hook as tools[] (the
   // sanitised tool input) and response[] (the tool_result, when
   // capturePrompts is also on). An MCP tool call or prompt fetch keeps
-  // its arguments and result in tool_input / tool_output. All of them
-  // belong in the Prompts tab.
+  // its arguments and result in tool_input / tool_output, and an
+  // embeddings call the input its request sent. All of them belong in
+  // the Prompts tab.
   const contentEvents = events.filter(
     (e) => e.has_content && PROMPTS_TAB_EVENT_TYPES.has(e.event_type),
   );
@@ -2267,16 +2269,13 @@ export function PromptsTab({
     }
   }, [focusedEventId, selectedEventId]);
 
-  // The selected event is looked up among all the run's events, not the
-  // listed ones: a timeline row's "View Prompts →" can open an event the
-  // list leaves out (an embeddings call), in a run whose list may be
-  // empty, and the viewer needs its type.
-  const selectedEvent = selectedEventId ? events.find((e) => e.id === selectedEventId) : undefined;
-  const embeddingsSelected = selectedEvent?.event_type === EMBEDDINGS_EVENT_TYPE;
-
-  if (contentEvents.length === 0 && !embeddingsSelected) {
+  if (contentEvents.length === 0) {
     return <NoRunContent session={session} />;
   }
+
+  // The viewer needs the selected event's type (an embeddings call has
+  // its own view) and an embeddings call's output_dimensions.
+  const selectedEvent = selectedEventId ? events.find((e) => e.id === selectedEventId) : undefined;
 
   if (selectedEventId) {
     return (

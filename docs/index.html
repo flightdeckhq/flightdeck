@@ -606,7 +606,7 @@
       <div class="pane" role="tabpanel" id="cmd-docker" aria-labelledby="tab-docker" hidden>
         <span class="cmd-os">Docker</span>
         <div class="cmd">
-          <pre id="code-install-docker" data-prompt="$">docker run -p <span class="nb">127.0.0.1:4000:4000</span> -v <span class="nb">flightdeck:/data</span> <span class="nb">flightdeckhq/flightdeck</span></pre>
+          <pre id="code-install-docker" data-prompt="$">docker run <span class="nb">--name flightdeck</span> <span class="nb">-p 127.0.0.1:4000:4000</span> <span class="nb">-v flightdeck:/data</span> <span class="nb">flightdeckhq/flightdeck</span></pre>
           <button class="copy-hero" type="button" data-for="code-install-docker"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><span class="copy-label">Copy</span><span class="vh"> the Docker command</span></button>
         </div>
         <p class="install-then"><span>The image creates an access token on its first start and prints it; agents need it as <code>FLIGHTDECK_TOKEN</code>. The dashboard is at <code>http://localhost:4000</code>.</span></p>
@@ -805,10 +805,10 @@
       <p class="qs-alt-note">Runs it from PyPI without installing.</p>
       <h4><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-docker"/></svg>Docker</h4>
       <div class="codebox one">
-<pre id="code-qs-docker">docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck</pre>
+<pre id="code-qs-docker">docker run <span class="nb">--name flightdeck</span> <span class="nb">-p 127.0.0.1:4000:4000</span> <span class="nb">-v flightdeck:/data</span> <span class="nb">flightdeckhq/flightdeck</span></pre>
         <button class="copy mono" type="button" data-for="code-qs-docker"><span class="copy-label">Copy</span><span class="vh"> the Docker command</span></button>
       </div>
-      <p class="qs-alt-note">The image creates an access token on its first start and prints it; agents need it as <code>FLIGHTDECK_TOKEN</code>.</p>
+      <p class="qs-alt-note">The image creates an access token on its first start and prints it; agents need it as <code>FLIGHTDECK_TOKEN</code>. After a stop, <code>docker start -a flightdeck</code> runs the same container again.</p>
     </div>
     <p class="qs-note r">Then start it with <code>flightdeck</code>. The dashboard is at <code>http://localhost:4000</code>, and nothing needs configuring: agents on the same machine find it without a server address or a token. <code>flightdeck --port 4100</code> runs it on another port, where <code>flightdeck connect claude-code</code> finds it, and <code>flightdeck --public</code> lets other machines reach it; whoever can reach it can then read its token, so open it only on a network you trust, or put it behind a proxy that authenticates. Every channel installs the same binary, for Linux, macOS and Windows on amd64 and arm64; the archives are on the <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/releases">release page</a>, and <a target="_blank" rel="noopener noreferrer" href="https://github.com/flightdeckhq/flightdeck/blob/main/guides/windows.md">guides/windows.md</a> has the rest for Windows.</p>
 

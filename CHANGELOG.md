@@ -145,6 +145,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Event-type badges and MCP policy decision pills read at WCAG AA in
+  both themes.** Each drew its label in its hue on a tint of the same
+  hue, under AA (2.3:1 for START and END in both themes; in the light
+  theme 2.5:1 for WARN, 2.9:1 for an Allow pill, 3.7:1 for LLM CALL,
+  lower still on a focused or hovered row). The label now takes a shade
+  of its hue that reads at 4.6:1 or better on every row it sits in (at
+  rest, hovered, focused, a linked Live feed row, an active Events
+  facet), wherever a badge is drawn: the Events page, the Live feed,
+  both drawers (the run drawer's STREAM and ABORTED badges included),
+  the Neighbors list, the Fleet sidebar's policy events and the
+  Policies page's decision pills. The badges' tints and borders,
+  and the swimlanes, charts and dots, keep their colours.
 - **An embeddings call too big for one event keeps its input.** With
   capture on, an embeddings event over the 768 KiB event size limit was
   sent without any content: its vectors are numbers, which the size

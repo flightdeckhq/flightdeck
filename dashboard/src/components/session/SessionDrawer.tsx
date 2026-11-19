@@ -2151,7 +2151,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
         <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
-          style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
+          style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.textVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
           {badge.label}
         </span>
         <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>{session?.flavor ?? event.flavor}</span>
@@ -2321,7 +2321,7 @@ export function PromptsTab({
             onClick={() => onSelectEvent(event.id)}
           >
             <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
-              style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
+              style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.textVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>
             <span className="font-mono" style={{ color: "var(--muted-text)" }}>{new Date(event.occurred_at).toLocaleTimeString()}</span>

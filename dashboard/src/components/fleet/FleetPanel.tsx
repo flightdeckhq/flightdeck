@@ -334,10 +334,10 @@ export function FleetPanel({
           have something to show. Each row reads
             getEventDetail(evt)               (top line, font-mono)
             flavor · trunc(session_id) · BADGE (bottom line)
-          where BADGE is WARN / BLOCK / DEGRADE coloured by the
-          eventBadgeConfig cssVar shared with the swimlane badge,
-          Investigate POLICY facet, and drawer detail row -- one
-          colour family across every surface. */}
+          where BADGE is WARN / BLOCK / DEGRADE in the eventBadgeConfig
+          badge text shade (textVar) of the hue shared with the swimlane
+          badge, Investigate POLICY facet, and drawer detail row -- one
+          colour family across every surface; the dot takes the hue. */}
       {policyEvents.length > 0 && (
         <>
           <div
@@ -388,7 +388,7 @@ export function FleetPanel({
                             {" · "}
                             <span
                               className="font-semibold"
-                              style={{ color: badge.cssVar, fontSize: 10 }}
+                              style={{ color: badge.textVar, fontSize: 10 }}
                             >
                               {badge.label}
                             </span>

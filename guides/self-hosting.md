@@ -115,6 +115,8 @@ Everything Flightdeck keeps is in its data dir (`--data-dir`, default `~/.flight
 
 Keep backups on another disk or another machine: a copy on the same disk is lost with that disk. A backup holds everything the database does, captured prompts included, so keep it where only you can read it.
 
+Where a restore below says to stop Flightdeck and start it again, a service of [`flightdeck service`](#running-in-the-background) is stopped with `flightdeck service remove` (a process of it that is killed is started again by the service manager) and started with `flightdeck service install` and the flags it had, which `flightdeck service status` shows first; for another Postgres, its URL goes in the `--database-url-file` given to that install.
+
 ### SQLite
 
 While the binary runs, copy the database with SQLite itself:

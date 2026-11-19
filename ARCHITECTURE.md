@@ -1659,7 +1659,10 @@ Gemini's routes (litellm's `CustomStreamWrapper` makes its call then) and
 sends it when started). For such a stream the policy check still runs at
 the call, before anything can be sent, so a BLOCK refuses the call
 there; its `pre_call` and `post_call` are reported when the request
-leaves, at the first read, and a stream never read reports nothing. One
+leaves, at the first read, and a stream never read reports nothing. A
+first read that raises before the request leaves (litellm's own error,
+as for an async-made stream read with `for`) reports the `pre_call` and
+the call's `llm_error`, as any failed read does. One
 made while no session is active finds its session at that first read,
 which is the call: a blocking session refuses it with nothing sent, a
 session reports it, and with none it is litellm's own. The request

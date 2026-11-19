@@ -40,7 +40,7 @@ If PowerShell says `flightdeck` is not recognised, open a new PowerShell window,
 
 Everything Flightdeck keeps is in `%LOCALAPPDATA%\flightdeck`: the SQLite database `flightdeck.db`, the message-bus store `nats\` and `secrets.json`. The directory must be on a local disk: a network drive or a UNC path does not provide the file locks SQLite and Flightdeck rely on. One `flightdeck` runs per data directory; a second one on the same directory exits at once and names the process that holds it.
 
-[guides/self-hosting.md](self-hosting.md#backing-up-and-restoring) has backing up and restoring it. Windows does not ship `sqlite3`, so on Windows a backup is a copy of `flightdeck.db` taken while Flightdeck is stopped.
+`flightdeck backup` copies the database into `%LOCALAPPDATA%\flightdeck\backups\`, while Flightdeck runs, and `flightdeck backup D:\backup\` to another disk; `flightdeck restore <file>`, with Flightdeck stopped, puts a copy back. Neither needs `sqlite3`, which Windows does not ship. [guides/self-hosting.md](self-hosting.md#backing-up-and-restoring) has the details.
 
 ## Docker Desktop
 
@@ -54,7 +54,7 @@ The data is then in the `flightdeck` volume, and the container creates an access
 
 ## Upgrade
 
-Stop Flightdeck (Ctrl+C), then run the install command again. It replaces `flightdeck.exe` and adds nothing more to the `PATH`. While `flightdeck.exe` is running, Windows does not let it be replaced, and the installer stops with "The process cannot access the file … because it is being used by another process." The next start brings the database up to date; the data is kept. An older release does not start on a database a newer one has brought up to date, so a [backup](self-hosting.md#backing-up-and-restoring) taken before the upgrade is the way back.
+Stop Flightdeck (Ctrl+C), then run the install command again. It replaces `flightdeck.exe` and adds nothing more to the `PATH`. While `flightdeck.exe` is running, Windows does not let it be replaced, and the installer stops with "The process cannot access the file … because it is being used by another process." The next start brings the database up to date; the data is kept, and when the database changes, a copy of it from before is kept in `%LOCALAPPDATA%\flightdeck\backups\`. An older release does not start on a database a newer one has brought up to date, so that copy, or a [backup](self-hosting.md#backing-up-and-restoring) taken before the upgrade, is the way back: `flightdeck restore <file>` under the older release.
 
 ## Uninstall
 

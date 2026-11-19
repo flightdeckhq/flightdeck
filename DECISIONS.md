@@ -739,8 +739,8 @@ exporter setup, or structure no mapped dialect reports. Native wraps: Google
 ADK, OpenAI Agents SDK, Microsoft Agent Framework, LlamaIndex, Deep Agents.
 Pydantic AI and Strands keep OTLP for structure (their SDK calls are metered
 natively). Agno, Haystack, smolagents: labels only, demand-ranked (#278).
-Gemini (google-genai) and Bedrock Converse are deferred (#276, #277; D178
-stands); their PromptViewer branches are approved for that work.
+Bedrock Converse is deferred (#277; D178 stands); its PromptViewer branch
+is approved for that work.
 **Why:** OTLP sessions are observe-only and appear after the run ends; the
 SDK patches already meter every framework on Anthropic, OpenAI or litellm.
 **Rejected alternative:** native wraps for every framework (patching risk
@@ -1313,3 +1313,21 @@ one; an unentered manager left an orphan `pre_call`.
 **Rejected alternative:** enforcing at `stream()` (weaker: a manager made
 under budget could send later, a sync re-entry would skip the check);
 checking at both moments (a WARN reported twice, one call refused twice).
+
+## D291 -- An embeddings event too big to send gives up its vectors first, so its input arrives whole
+
+**Date:** 2026-11-19
+**Decision:** on an event over the 768 KiB body limit whose content holds
+an embeddings call's vectors (`embedding_output`), the sensor replaces
+them, all of them and base64 ones too, by the size rule's marker alone,
+`… [flightdeck: kept 0 of N bytes to fit the event size limit]` (N: the
+size of their JSON). Only then does the string cut apply, to the rest,
+never to that marker. `event_content.embedding_output` then holds the
+marker string in place of the vectors; vectors that fit are stored.
+**Why:** vectors are numbers no string cut shortens: from about 24
+texts at 1536 dimensions the event went without content, its input lost
+and the call indistinguishable from one with capture off.
+**Rejected alternative:** not capturing vectors at all (they are kept
+whenever they fit); keeping the leading vectors that fit (a partial
+matrix reads as the whole response and disagrees with
+`output_dimensions`).

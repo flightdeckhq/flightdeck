@@ -9397,10 +9397,14 @@ loaded events (the ones its Timeline holds) that stored content of the
 types `post_call`, `tool_call`, `mcp_tool_call`, `mcp_prompt_get` and
 `embeddings`, newest first, one row each with its event-type badge,
 its time and its model (a tool call's tool name), each opening in
-`PromptViewer`; "← Back to event list" returns to that list where it
-was when the call was opened, keyboard focus on that call's row (after
-the Timeline's "View Prompts →", on the row it highlights and scrolls
-into view). An
+`PromptViewer`; "← Back to event list" returns to the opened call's
+row: back at the distance from the top of the view it had when the
+call was opened (calls that arrived at the list's top meanwhile do not
+move it), brought into view if it would be outside it, and holding
+keyboard focus. After the Timeline's "View Prompts →", Back scrolls the
+row it highlights into view and focuses it; the highlighted row is
+scrolled to only then, not when the tab is shown again. When the row is
+no longer in the list, focus goes to the Prompts tab. An
 embeddings call is listed like any other, so a run whose only content
 is embeddings lists its calls, and the run drawer's "View Prompts →" on
 an embeddings row opens the same view as its row in the list. The viewer's

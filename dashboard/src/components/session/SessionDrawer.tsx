@@ -75,6 +75,20 @@ export function tabContentView(tab: DrawerTab, selectedPromptEventId: string | n
   return selectedPromptEventId ? `prompts-call:${selectedPromptEventId}` : "prompts-list";
 }
 
+/** The Prompts list's row of the call ``eventId`` in the tab content
+ *  ``container``, when the list shows it. */
+function promptsRowIn(container: HTMLElement, eventId: string): HTMLElement | null {
+  for (const row of container.querySelectorAll<HTMLElement>('[data-testid^="prompts-row-"]')) {
+    if (row.dataset.testid === `prompts-row-${eventId}`) return row;
+  }
+  return null;
+}
+
+/** ``row``'s distance from the top of the scroll container's view. */
+function offsetIn(container: HTMLElement, row: HTMLElement): number {
+  return row.getBoundingClientRect().top - container.getBoundingClientRect().top;
+}
+
 // Drawer pagination. Flat pill selector (mirrors Fleet's time-range
 // pills at Fleet.tsx:492-515) in place of a dropdown so the control
 // reads as inline chrome rather than a form field. Default 100 matches
@@ -450,13 +464,51 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     };
   }, []);
   const scrollPositions = useRef<Map<string, number>>(new Map());
+  // The call open in the Prompts tab, and, when it was opened from the
+  // list, its row's distance from the top of the tab content then. "←
+  // Back to event list" returns to THAT row however the list changed
+  // meanwhile (on a live run new calls arrive at the list's top while a
+  // call is open, which moves every row down): it puts the row back at
+  // that distance, or, for a call opened from the Timeline's "View
+  // Prompts →", scrolls its highlighted row into view; then focuses it,
+  // or the Prompts tab when the row is no longer in the list.
+  const openedPromptRow = useRef<{ id: string; offsetTop: number | null } | null>(null);
+  const promptsTabRef = useRef<HTMLButtonElement | null>(null);
+  // As the tab content's ref: the previous run's drawer, animating out,
+  // must not clear the next run's tab.
+  const attachPromptsTab = useCallback((el: HTMLButtonElement | null) => {
+    if (!el) return;
+    promptsTabRef.current = el;
+    return () => {
+      if (promptsTabRef.current === el) promptsTabRef.current = null;
+    };
+  }, []);
   const contentView = tabContentView(activeTab, selectedEventId);
   useLayoutEffect(() => {
     scrollPositions.current = new Map();
+    openedPromptRow.current = null;
   }, [sessionId]);
   useLayoutEffect(() => {
     const el = tabContentRef.current;
-    if (el) el.scrollTop = scrollPositions.current.get(contentView) ?? 0;
+    if (!el) return;
+    el.scrollTop = scrollPositions.current.get(contentView) ?? 0;
+    const opened = openedPromptRow.current;
+    if (contentView !== tabContentView("prompts", null) || !opened) return;
+    openedPromptRow.current = null;
+    const row = promptsRowIn(el, opened.id);
+    if (!row) {
+      promptsTabRef.current?.focus();
+      return;
+    }
+    row.focus({ preventScroll: true });
+    if (opened.offsetTop === null) {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    el.scrollTop += offsetIn(el, row) - opened.offsetTop;
+    const box = row.getBoundingClientRect();
+    const view = el.getBoundingClientRect();
+    if (box.top < view.top || box.bottom > view.bottom) row.scrollIntoView({ block: "nearest" });
   }, [contentView]);
 
   // Filter the fleet-wide custom directive list down to ones
@@ -660,8 +712,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     // still set focusedPromptEventId so that when the user clicks
     // "Back to event list" from detail, the origin row is
     // highlighted and scrolled into view -- preserves Fix C
-    // (03792f5) on the round trip. The call opens at its top.
+    // (03792f5) on the round trip. The call opens at its top, and Back
+    // scrolls the list to its row (the list was not on screen, so there
+    // is no place in it to return to).
     scrollPositions.current.delete(tabContentView("prompts", eventId));
+    openedPromptRow.current = { id: eventId, offsetTop: null };
     setSelectedEventId(eventId);
     setFocusedPromptEventId(eventId);
   }
@@ -1055,6 +1110,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 ).map((tab) => (
                   <button
                     key={tab}
+                    ref={tab === "prompts" ? attachPromptsTab : undefined}
                     data-testid={`drawer-tab-${tab}`}
                     className="pb-2 text-xs font-medium capitalize transition-colors"
                     style={activeTab === tab
@@ -1116,8 +1172,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
                     onSelectEvent={(id) => {
-                      // A call opened from the list opens at its top.
-                      if (id !== null) scrollPositions.current.delete(tabContentView("prompts", id));
+                      if (id !== null) {
+                        // A call opened from the list opens at its top;
+                        // Back returns to its row, where it is now.
+                        scrollPositions.current.delete(tabContentView("prompts", id));
+                        const el = tabContentRef.current;
+                        const row = el ? promptsRowIn(el, id) : null;
+                        openedPromptRow.current = { id, offsetTop: el && row ? offsetIn(el, row) : null };
+                      }
                       setSelectedEventId(id);
                       // Clear the focused-row treatment only when
                       // the user selects a different event from the
@@ -2275,10 +2337,10 @@ export interface PromptsTabProps {
   /**
    * Event id the user came from via a Timeline "View Prompts →"
    * click. When set (and no selectedEventId drilling into detail),
-   * the matching list row scrolls into view and renders with the
-   * accent-glow highlight so the user sees the origin event
-   * immediately. Distinct from selectedEventId, which replaces the
-   * list with PromptViewer.
+   * the matching list row renders with the accent-glow highlight so
+   * the user sees the origin event; the drawer scrolls it into view on
+   * "← Back to event list". Distinct from selectedEventId, which
+   * replaces the list with PromptViewer.
    */
   focusedEventId: string | null;
   onSelectEvent: (id: string | null) => void;
@@ -2302,35 +2364,10 @@ export function PromptsTab({
   const contentEvents = events.filter(
     (e) => e.has_content && PROMPTS_TAB_EVENT_TYPES.has(e.event_type),
   );
-  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-
-  // Scroll the focused row into view once the list is mounted. block:
-  // "center" keeps the row visually centred, not flush with the top
-  // where it can be clipped by the tab bar. Runs only when the
-  // focused id changes -- re-rendering the same focus after state
-  // churn shouldn't re-scroll the user mid-scroll.
-  useEffect(() => {
-    if (!focusedEventId || selectedEventId) return;
-    const node = rowRefs.current[focusedEventId];
-    if (node) {
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [focusedEventId, selectedEventId]);
-
-  // "← Back to event list" returns keyboard focus to the row of the call
-  // that was open, so the user carries on from it. The drawer restores
-  // the list's scroll position; the focus does not scroll it.
-  const openedEventId = useRef<string | null>(selectedEventId);
-  useEffect(() => {
-    if (selectedEventId) {
-      openedEventId.current = selectedEventId;
-      return;
-    }
-    const opened = openedEventId.current;
-    openedEventId.current = null;
-    if (opened) rowRefs.current[opened]?.focus({ preventScroll: true });
-  }, [selectedEventId]);
-
+  // Where the list stands, which row has focus and which row is brought
+  // into view are the drawer's (it owns the scroll container): it does so
+  // only when the user arrives at the list for a reason, "← Back to event
+  // list" from a call, never on a plain return to the tab.
   if (contentEvents.length === 0) {
     return <NoRunContent session={session} />;
   }
@@ -2363,9 +2400,6 @@ export function PromptsTab({
         return (
           <button
             key={event.id}
-            ref={(el) => {
-              rowRefs.current[event.id] = el;
-            }}
             data-testid={`prompts-row-${event.id}`}
             data-focused={isFocused ? "true" : undefined}
             className="flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover"

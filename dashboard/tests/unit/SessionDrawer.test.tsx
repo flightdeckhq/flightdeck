@@ -1446,6 +1446,116 @@ describe("SessionDrawer — each tab keeps its own scroll position, and Back ret
     fireEvent.click(within(drawer).getByText("Prompts"));
     expect(next().scrollTop).toBe(0);
   });
+
+  it("a plain return to the Prompts tab after a View Prompts → round trip keeps the list where it was left", () => {
+    // The highlighted row is brought into view when the user arrives for
+    // it (Back from the call), not every time the tab is shown again.
+    mockEventsOverride = eventsWithContent;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getAllByTestId("event-row")[0]!);
+    fireEvent.click(screen.getByText("View Prompts →"));
+    fireEvent.click(screen.getByText("← Back to event list"));
+    const scrollIntoView = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    scrollTo(content(), 700);
+
+    fireEvent.click(screen.getByText("Timeline"));
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-row-e3").getAttribute("data-focused")).toBe("true");
+    expect(content().scrollTop).toBe(700);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  describe("with rows laid out (jsdom has none: each row 35 px tall, the view 400 px from 100 px)", () => {
+    const ROW = 35;
+    const VIEW_TOP = 100;
+    const VIEW_HEIGHT = 400;
+    const rect = (top: number, height: number) =>
+      ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    let layout: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        if (this.dataset.testid === "session-drawer-tab-content") return rect(VIEW_TOP, VIEW_HEIGHT);
+        const view = this.closest<HTMLElement>('[data-testid="session-drawer-tab-content"]');
+        if (view && this.dataset.testid?.startsWith("prompts-row-")) {
+          const rows = Array.from(view.querySelectorAll('[data-testid^="prompts-row-"]'));
+          return rect(VIEW_TOP + rows.indexOf(this) * ROW - view.scrollTop, ROW);
+        }
+        return rect(0, 0);
+      });
+    });
+    afterEach(() => {
+      layout.mockRestore();
+    });
+
+    /** A captured LLM call, ``minute`` minutes into the run. */
+    const call = (id: string, minute: number) => ({
+      ...eventsWithContent[2]!,
+      id,
+      occurred_at: `2026-04-07T10:${String(minute).padStart(2, "0")}:00Z`,
+    });
+    const calls = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, i) => call(`c${from + i}`, from + i));
+
+    it("calls that arrive while a call is open: Back returns to that row, where it was, focused", () => {
+      mockEventsOverride = [baseEvents[0]!, ...calls(1, 12)];
+      const { rerender } = render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      fireEvent.click(screen.getByText("Prompts"));
+      scrollTo(content(), 140);
+      // Newest first: c5 is the 8th row, 105 px from the view's top.
+      const opened = screen.getByTestId("prompts-row-c5");
+      expect(opened.getBoundingClientRect().top - VIEW_TOP).toBe(105);
+      fireEvent.click(opened);
+
+      // Three calls arrive at the list's top while c5 is open.
+      mockEventsOverride = [baseEvents[0]!, ...calls(1, 15)];
+      rerender(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      fireEvent.click(screen.getByText("← Back to event list"));
+
+      const row = screen.getByTestId("prompts-row-c5");
+      expect(content().scrollTop).toBe(140 + 3 * ROW);
+      expect(row.getBoundingClientRect().top - VIEW_TOP).toBe(105);
+      expect(document.activeElement).toBe(row);
+    });
+
+    it("a row the restored offset leaves out of view is scrolled into view", () => {
+      mockEventsOverride = [baseEvents[0]!, ...calls(1, 12)];
+      render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      fireEvent.click(screen.getByText("Prompts"));
+      scrollTo(content(), 140);
+      fireEvent.click(screen.getByTestId("prompts-row-c5"));
+      // The tab content shrank while the call was open (a resized
+      // window): the row's old distance from the top is below the view.
+      layout.mockImplementation(function (this: HTMLElement) {
+        if (this.dataset.testid === "session-drawer-tab-content") return rect(VIEW_TOP, ROW * 2);
+        const view = this.closest<HTMLElement>('[data-testid="session-drawer-tab-content"]');
+        if (view && this.dataset.testid?.startsWith("prompts-row-")) {
+          const rows = Array.from(view.querySelectorAll('[data-testid^="prompts-row-"]'));
+          return rect(VIEW_TOP + rows.indexOf(this) * ROW - view.scrollTop, ROW);
+        }
+        return rect(0, 0);
+      });
+      fireEvent.click(screen.getByText("← Back to event list"));
+      const row = screen.getByTestId("prompts-row-c5");
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect(document.activeElement).toBe(row);
+    });
+
+    it("the opened call's row gone from the list: Back puts focus on the Prompts tab, never on the page", () => {
+      mockEventsOverride = [baseEvents[0]!, ...calls(1, 12)];
+      const { rerender } = render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      fireEvent.click(screen.getByText("Prompts"));
+      fireEvent.click(screen.getByTestId("prompts-row-c5"));
+
+      mockEventsOverride = [baseEvents[0]!, ...calls(6, 12)];
+      rerender(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      fireEvent.click(screen.getByText("← Back to event list"));
+
+      expect(screen.queryByTestId("prompts-row-c5")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByTestId("drawer-tab-prompts"));
+      expect(document.activeElement).not.toBe(document.body);
+    });
+  });
 });
 
 describe("SessionDrawer pagination", () => {

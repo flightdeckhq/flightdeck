@@ -7,6 +7,8 @@ real. A Gemini call lands with its provider, canonical model, tokens
 (thinking and cached tokens included), cost and platform; its content,
 in Gemini's own terms, is served by ``GET /v1/events/:id/content``, and
 404 with capture off; each round of automatic function calling is a call.
+An embeddings batch whose vectors do not fit the event keeps its
+contents, the vectors stored as the size rule's marker.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -270,3 +273,51 @@ def test_an_embeddings_call_lands(gemini: respx.MockRouter, flavor: str) -> None
     # Each batched request's content, as sent.
     assert content["input"] == [r["content"] for r in _sent(gemini)[0]["requests"]]
     assert content["input"][0] == {"parts": [{"text": "a"}], "role": "user"}
+
+
+# google-genai's default dimension for gemini-embedding-001: from 12
+# texts the vectors alone are over the 768 KiB event body limit.
+DEFAULT_DIMENSION = 3072
+VECTORS_MARKER = re.compile(r"… \[flightdeck: kept 0 of (\d+) bytes to fit the event size limit\]")
+
+
+def _full_size_vectors(request: httpx.Request) -> httpx.Response:
+    count = len(json.loads(request.content)["requests"])
+    values = [
+        [((i * 7919 + j) % 2001 - 1000) / 9973 for j in range(DEFAULT_DIMENSION)]
+        for i in range(count)
+    ]
+    return httpx.Response(200, json={"embeddings": [{"values": v} for v in values]})
+
+
+def test_an_embeddings_batch_whose_vectors_do_not_fit_lands_with_its_contents(
+    flavor: str,
+) -> None:
+    """The vectors give way to the size rule's marker, which
+    ``event_content.embedding_output`` stores in their place, a JSON
+    string; the contents arrive whole."""
+    texts = [f"text {i}: " + "lorem ipsum dolor sit amet " * 8 for i in range(12)]
+    with respx.mock(assert_all_called=False) as router:
+        router.route(host="generativelanguage.googleapis.com").mock(side_effect=_full_size_vectors)
+        client = _start(capture=True)
+        reply = client.models.embed_content(model=EMBED_MODEL, contents=texts)
+        # The router forgets its calls when the mock ends.
+        (sent,) = _sent(router)
+    assert reply.embeddings is not None
+    vectors = [list(e.values or []) for e in reply.embeddings]
+    (event,) = _events(flavor, "embeddings")
+    assert event["has_content"] is True
+    assert event["payload"]["output_dimensions"] == {"count": 12, "dimension": DEFAULT_DIMENSION}
+    content = _content(str(event["id"]))
+    assert content is not None
+    assert content["input"] == [r["content"] for r in sent["requests"]]
+    assert [c["parts"][0]["text"] for c in content["input"]] == texts
+    (row,) = query_rows(
+        "SELECT embedding_output FROM event_content WHERE event_id = :'event_id'",
+        event_id=str(event["id"]),
+    )
+    marker = row["embedding_output"]
+    assert isinstance(marker, str)
+    match = VECTORS_MARKER.fullmatch(marker)
+    assert match, marker
+    assert int(match.group(1)) == len(json.dumps(vectors).encode())

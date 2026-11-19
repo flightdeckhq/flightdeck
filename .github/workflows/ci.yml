@@ -680,6 +680,19 @@ jobs:
           GATE_EXPECT_DATABASE=Postgres scripts/install-gate.sh run 127.0.0.1:4000 ./bin/flightdeck \
             --database-url 'postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/flightdeck_gate?sslmode=disable'
 
+      - name: flightdeck service against the runner's systemd
+        # scripts/service-gate.sh: install, a kill -9 the user manager
+        # restarts, restart, a second install on another port, remove.
+        # The runner's shell has no login session, so no user manager
+        # runs for its user; lingering starts one, as on a server nobody
+        # logs in to (the command install prints there).
+        run: |
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for _ in $(seq 1 60); do [ -S "$bus" ] && break; sleep 0.5; done
+          [ -S "$bus" ] || { echo "::error::no systemd user manager for $USER 30 s after enable-linger"; exit 1; }
+          XDG_RUNTIME_DIR="/run/user/$(id -u)" scripts/service-gate.sh ./bin/flightdeck 4100 4101
+
       - name: Concurrency smoke on SQLite
         # Twenty sessions of a hundred events each while four readers
         # hit the query API: every event stored once, no 5xx, no locked
@@ -1420,7 +1433,8 @@ jobs:
           shellcheck --version | head -2
           shellcheck -s sh install.sh
           shellcheck scripts/install-gate.sh scripts/test-install-gate.sh scripts/test-install-sh.sh \
-            scripts/check-script-modes.sh scripts/test-check-script-modes.sh scripts/fake-claude.sh
+            scripts/check-script-modes.sh scripts/test-check-script-modes.sh scripts/fake-claude.sh \
+            scripts/service-gate.sh
           shellcheck scripts/check-installer-copies.sh scripts/test-check-installer-copies.sh
 
       # A script the Makefile or a workflow runs by its path must be
@@ -1671,6 +1685,46 @@ jobs:
       - name: The connect command through the binary
         shell: pwsh
         run: go test -count=1 -run '^TestBinary_(ConnectCommand|HelpNamesConnect)$' ./cmd/flightdeck/
+
+  # flightdeck service's macOS code against the real launchd: the
+  # package's tests on macOS, then scripts/service-gate.sh on the binary
+  # built here (the plist through plutil -lint, launchctl bootstrap in the
+  # runner's login session, a kill -9 launchd starts again, kickstart -k,
+  # a second install on another port, bootout and remove). The Linux leg
+  # runs in the flightdeck job against the runner's systemd. The binary
+  # is built without the dashboard bundle: the gate needs the health
+  # routes only, and a fresh checkout's empty webui/dist builds.
+  service-macos:
+    name: flightdeck service on macOS (launchd)
+    runs-on: macos-15
+    # The build of the binary takes a few minutes on a cold module cache,
+    # the gate under a minute; twenty fails a hung start long before the
+    # six-hour default.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - name: internal/service, internal/cli and internal/datadir on macOS
+        run: go test -count=1 ./internal/service/... ./internal/cli/... ./internal/datadir/...
+
+      - name: Build bin/flightdeck
+        run: CGO_ENABLED=0 go build -trimpath -o bin/flightdeck ./cmd/flightdeck
+
+      - name: flightdeck service against launchd
+        run: scripts/service-gate.sh ./bin/flightdeck 4100 4101
 
   # The release build on every pull request, without publishing:
   # goreleaser cross-compiles the six binaries (.goreleaser.yaml) and

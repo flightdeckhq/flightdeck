@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 )
@@ -77,6 +78,46 @@ func (l *Lock) Release() {
 	_ = unlockFile(l.f)
 	_ = l.f.Close()
 	l.f = nil
+}
+
+// Holder reports whether another process holds the lock on path, with
+// the PID the lock file names (0 when it names none). It writes
+// nothing: a missing file is "not held" and is not created, and the
+// content of one that exists is left as it is. When nobody holds the
+// lock, Holder takes it for the moment it needs to find that out, so a
+// process that tries Acquire in that moment is refused as if another
+// instance ran: call it where nothing is expected to start.
+func Holder(path string) (pid int, held bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("lock file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := lockFile(f); err != nil {
+		if errors.Is(err, errLocked) {
+			return readPID(f), true, nil
+		}
+		return 0, false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	_ = unlockFile(f)
+	return 0, false, nil
+}
+
+// LockPID returns the PID the lock file at path names, 0 when there is
+// none or the file cannot be read. It does not lock: the PID is the last
+// holder's, who may have ended since (Release leaves the file as it is),
+// so it tells which process holds the lock only beside another fact,
+// such as the PID a service manager started.
+func LockPID(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+	return readPID(f)
 }
 
 // pidMaxDigits bounds how much of a lock file is read for the holder's

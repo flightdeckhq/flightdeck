@@ -1348,3 +1348,20 @@ reaches the floor in the light theme, and those tokens set other text
 **Rejected alternative:** darkening the shared `-text` tokens (moves
 every text that uses them); one shade per site (seven sites drawing one
 badge would drift apart).
+
+## D293 -- Flightdeck runs in the background as a per-user service the CLI writes for the system's own manager
+
+**Date:** 2026-11-19
+**Decision:** `flightdeck service install` writes a systemd user unit
+(Linux) or a launchd agent (macOS) for the user who runs it, with the
+running binary's path and the server flags baked in, and starts it; it
+refuses root. A database URL reaches the unit only as a file path
+(`--database-url-file`, a new server flag). The CLI writes the file,
+never the server; one instance per data dir, Homebrew's service included.
+**Why:** after a reboot the binary was down until started by hand and
+the plugin dropped every session in between; the two managers ship with
+the OS and need no privileges.
+**Rejected alternative:** a system-wide unit or launchd daemon (root,
+and another user's home, so another data dir); a service-manager
+library or Windows-style service wrapper (a dependency for two text
+files); leaving it to `brew services` and Docker (no flags, no Linux).

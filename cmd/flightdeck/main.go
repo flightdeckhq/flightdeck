@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,6 +32,9 @@ import (
 	"github.com/flightdeckhq/flightdeck/internal/natsembed"
 	"github.com/flightdeckhq/flightdeck/internal/router"
 	"github.com/flightdeckhq/flightdeck/internal/serve"
+	// The background service of `flightdeck service`; this file's own
+	// `service` type is one of the three in-process services.
+	background "github.com/flightdeckhq/flightdeck/internal/service"
 	// The process's local time zone is UTC from the moment it starts.
 	_ "github.com/flightdeckhq/flightdeck/internal/utc"
 	"github.com/flightdeckhq/flightdeck/storage"
@@ -122,6 +126,19 @@ func run(args []string, stdout, stderr *os.File) int {
 			Interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(stdout.Fd())),
 		})
 	}
+	if len(args) > 0 && args[0] == cli.ServiceCommand {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		rt := background.System(stdout, stderr)
+		// Once the service answers, where the coding agents on this
+		// machine report, as a loopback start asks: the service's own
+		// warning goes to its log, which nobody reads at install.
+		rt.AgentNotes = func(ctx context.Context, listen string) []string {
+			lines, _ := connect.CheckReporting(ctx, agentRegistry(agentEnvironment(os.Environ())), listen)
+			return lines
+		}
+		return background.Main(ctx, args[1:], rt)
+	}
 	opts, err := cli.Parse(args, os.Getenv, stderr)
 	if errors.Is(err, cli.ErrHelp) {
 		return 0
@@ -148,10 +165,80 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 2
 	}
 	if err := serveAll(opts, stdout); err != nil {
+		if errors.As(err, new(*serviceConflictError)) {
+			_, _ = fmt.Fprintln(stderr, "flightdeck:", serviceRunningLine)
+		}
 		_, _ = fmt.Fprintln(stderr, "flightdeck:", err)
 		return 1
 	}
 	return 0
+}
+
+// serviceRunningLine is printed before the error of a start that found
+// its port or its data dir taken by the service `flightdeck service
+// install` runs: the plain "in use" would send the user looking for a
+// process they did not start by hand.
+const serviceRunningLine = "Flightdeck is already running as a service: flightdeck service status"
+
+// serviceProbeTimeout bounds the question to the service manager on that
+// failure: systemctl and launchctl answer in milliseconds, and the start
+// has already failed, so the answer is worth two seconds at most.
+const serviceProbeTimeout = 2 * time.Second
+
+// serviceRunning reports the installed service's settings and its PID
+// when it runs; the tests replace it.
+var serviceRunning = func(ctx context.Context) (background.Config, int, bool) {
+	return background.Running(ctx, background.System(io.Discard, io.Discard))
+}
+
+// serviceConflictError is a start refused by a port or a data dir that
+// the running service holds.
+type serviceConflictError struct{ err error }
+
+func (e *serviceConflictError) Error() string { return e.err.Error() }
+func (e *serviceConflictError) Unwrap() error { return e.err }
+
+// asService marks err, a start refused by a busy port or a held lock, as
+// the service's doing when the installed service runs on this start's
+// port or its data dir. The process that is the service is not: its own
+// refusal (another process took the port first) is not one it holds.
+func asService(err error, opts cli.Options) error {
+	if opts.Domain != "" {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), serviceProbeTimeout)
+	defer cancel()
+	c, pid, ok := serviceRunning(ctx)
+	if !ok || pid == os.Getpid() || !sameInstance(c, opts) {
+		return err
+	}
+	return &serviceConflictError{err: err}
+}
+
+// sameInstance reports whether a start with opts would take the port or
+// the data dir of the service that runs c.
+func sameInstance(c background.Config, opts cli.Options) bool {
+	_, servicePort, err1 := net.SplitHostPort(c.Listen)
+	_, port, err2 := net.SplitHostPort(opts.Listen)
+	if err1 == nil && err2 == nil && servicePort == port {
+		return true
+	}
+	return samePath(c.DataDir, opts.DataDir)
+}
+
+// samePath compares two paths once they are absolute and their links
+// resolved.
+func samePath(a, b string) bool {
+	canon := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		return p
+	}
+	return a != "" && b != "" && canon(a) == canon(b)
 }
 
 // hostlessWithSuppliedToken refuses the one start that a listen port
@@ -301,7 +388,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 
 	lns, err := bind(opts)
 	if err != nil {
-		return err
+		return asService(err, opts)
 	}
 	defer lns.closeAll()
 	if lns.plain != nil {
@@ -325,7 +412,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 	// one owner. Taken before anything in the directory is written.
 	dirLock, err := datadir.Acquire(layout.Lock)
 	if err != nil {
-		return dataDirInUse(err, layout.Root)
+		return asService(dataDirInUse(err, layout.Root), opts)
 	}
 	defer dirLock.Release()
 	// The lock is held: whatever SQLite files an earlier process left in
@@ -359,7 +446,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		// the file would write past both.
 		fileLock, err := datadir.Acquire(database.path + lockSuffix)
 		if err != nil {
-			return databaseInUse(err, database.path)
+			return asService(databaseInUse(err, database.path), opts)
 		}
 		defer fileLock.Release()
 		if err := datadir.CreatePrivate(database.path); err != nil {

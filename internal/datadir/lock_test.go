@@ -171,3 +171,54 @@ func TestAcquire_SpellingsThatDifferInCaseAreOneLockWhereTheFilesystemIgnoresCas
 		t.Fatalf("%d lock files for one name spelled four ways, want 1", locks)
 	}
 }
+
+func TestHolder_SaysWhoHoldsALockAndWritesNothing(t *testing.T) {
+	if !LockSupported {
+		t.Skip("this platform has no file lock")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, LockFile)
+
+	pid, held, err := Holder(path)
+	if err != nil || held || pid != 0 {
+		t.Fatalf("Holder of a missing file = %d, %v, %v; want not held", pid, held, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("Holder created the lock file (%v)", err)
+	}
+
+	lock, err := Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, held, err = Holder(path)
+	if err != nil || !held || pid != os.Getpid() {
+		t.Fatalf("Holder of a held lock = %d, %v, %v; want held by pid %d", pid, held, err, os.Getpid())
+	}
+	lock.Release()
+
+	// Released: the file still names the last holder, which LockPID
+	// reads and Holder does not take for a holder.
+	if err := os.WriteFile(path, []byte("12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pid, held, err = Holder(path)
+	if err != nil || held || pid != 0 {
+		t.Fatalf("Holder of a released lock = %d, %v, %v; want not held", pid, held, err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "12345\n" {
+		t.Fatalf("Holder changed the lock file to %q", data)
+	}
+	if got := LockPID(path); got != 12345 {
+		t.Fatalf("LockPID = %d, want 12345", got)
+	}
+	if got := LockPID(filepath.Join(dir, "missing")); got != 0 {
+		t.Fatalf("LockPID of a missing file = %d, want 0", got)
+	}
+	// Holder gave its moment of the lock back: Acquire succeeds.
+	again, err := Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire after Holder: %v", err)
+	}
+	again.Release()
+}

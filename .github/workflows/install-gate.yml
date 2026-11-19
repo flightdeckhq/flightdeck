@@ -21,6 +21,10 @@ name: Install gate
 #   ubuntu-24.04-arm  arm64  install.sh
 #   macos-15          arm64  brew install flightdeckhq/tap/flightdeck, brew services
 #   macos-15-intel    amd64  install.sh
+# The Linux legs and the macOS install.sh leg also run flightdeck service
+# on the installed binary against the runner's systemd or launchd
+# (scripts/service-gate.sh); the Homebrew leg checks that it points to
+# brew services there.
 #   windows-2022      amd64  install.ps1 (the irm | iex path, the .zip)
 #
 # No leg gives the binary a database. Postgres stays a supported one
@@ -172,6 +176,24 @@ jobs:
         env:
           GATE_EXPECT_VERSION: ${{ env.TAG }}
         run: scripts/install-gate.sh run "$GATE_LISTEN" "$(command -v flightdeck)"
+
+      # flightdeck service on the installed binary against the runner's
+      # systemd (scripts/service-gate.sh: install, a kill -9 the user
+      # manager restarts, restart, a second install, remove). The
+      # runner's shell has no login session; lingering starts its user
+      # manager. A tag older than the command has no script; the step
+      # says so and passes.
+      - name: flightdeck service (systemd user unit)
+        run: |
+          if [ ! -f scripts/service-gate.sh ]; then
+            echo "::notice::$TAG predates flightdeck service; nothing to check"
+            exit 0
+          fi
+          sudo loginctl enable-linger "$USER"
+          bus="/run/user/$(id -u)/bus"
+          for _ in $(seq 1 60); do [ -S "$bus" ] && break; sleep 0.5; done
+          [ -S "$bus" ] || { echo "::error::no systemd user manager for $USER 30 s after enable-linger"; exit 1; }
+          XDG_RUNTIME_DIR="/run/user/$(id -u)" scripts/service-gate.sh "$(command -v flightdeck)" 4100 4101
 
       # The supported alternative, on this leg only: the same binary and
       # the same checks with the database named by --database-url, on an
@@ -358,6 +380,30 @@ jobs:
         env:
           GATE_EXPECT_VERSION: ${{ env.TAG }}
         run: scripts/install-gate.sh run "$GATE_LISTEN" "$FLIGHTDECK_BIN"
+
+      # flightdeck service on the installed binary against launchd
+      # (scripts/service-gate.sh). On a Homebrew install the formula's
+      # own service applies, so there install must say so (exit 4) and
+      # write nothing; brew services is checked in the next step. A tag
+      # older than the command has no script; the step says so and passes.
+      - name: flightdeck service (launchd agent)
+        run: |
+          if [ ! -f scripts/service-gate.sh ]; then
+            echo "::notice::$TAG predates flightdeck service; nothing to check"
+            exit 0
+          fi
+          if [ "${{ matrix.channel }}" = brew ] && [ "$PRERELEASE" = false ]; then
+            set +e
+            out="$("$FLIGHTDECK_BIN" service install --port 4100 2>&1)"
+            code=$?
+            set -e
+            printf '%s\n' "$out"
+            [ "$code" = 4 ] || { echo "::error::service install on a Homebrew install exited $code, want 4"; exit 1; }
+            grep -q 'brew services start flightdeck' <<<"$out"
+            test ! -e "$HOME/Library/LaunchAgents/com.flightdeck-hq.flightdeck.plist"
+            exit 0
+          fi
+          scripts/service-gate.sh "$FLIGHTDECK_BIN" 4100 4101
 
       # brew services runs the binary with its defaults and no
       # environment: loopback :4000 (free again, the step above stopped

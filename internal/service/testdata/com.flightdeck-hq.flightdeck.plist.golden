@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by flightdeck service install: flightdeck service install rewrites it, and
+     flightdeck service remove removes it. ARCHITECTURE.md, Deployment > Running in
+     the background, at https://github.com/flightdeckhq/flightdeck says what each key does. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flightdeck-hq.flightdeck</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/flight deck/bin/flightdeck</string>
+		<string>--port</string>
+		<string>4100</string>
+		<string>--data-dir</string>
+		<string>/home/ada/Flight &#34;Deck&#34; &#39;n&#39; 100% $HOME ${USER} %h \back &lt;&amp;&gt; é</string>
+		<string>--database-url-file</string>
+		<string>/home/ada/.secrets/fd url</string>
+		<string>--allowed-hosts</string>
+		<string>fd.internal,.example.com</string>
+		<string>--metrics</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>75</integer>
+	<key>StandardOutPath</key>
+	<string>/home/ada/Flight &#34;Deck&#34; &#39;n&#39; 100% $HOME ${USER} %h \back &lt;&amp;&gt; é/flightdeck.log</string>
+	<key>StandardErrorPath</key>
+	<string>/home/ada/Flight &#34;Deck&#34; &#39;n&#39; 100% $HOME ${USER} %h \back &lt;&amp;&gt; é/flightdeck.log</string>
+</dict>
+</plist>

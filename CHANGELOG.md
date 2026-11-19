@@ -6,6 +6,25 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- `flightdeck service install` keeps Flightdeck running on Linux and
+  macOS: it starts it now and at every login, and again within seconds
+  if it dies, so a reboot or a closed terminal no longer loses Claude
+  Code sessions. It needs no sudo: it writes a systemd user unit
+  (`~/.config/systemd/user/flightdeck.service`, its log in the journal)
+  or a launchd agent (`~/Library/LaunchAgents/com.flightdeck-hq.flightdeck.plist`,
+  its log in the data dir) that runs this `flightdeck` with the flags
+  given to `install` (`--port`, `--public`, `--data-dir`, …), waits for
+  it to answer and prints the dashboard's address. Running it again
+  applies new flags or a new binary; `flightdeck service status` shows
+  whether it runs and answers, `restart` restarts it, and `remove`
+  removes it and leaves the data. A `flightdeck` started while the
+  service runs says so. On a Homebrew install it points to `brew
+  services` unless given `--no-brew`; on a server nobody stays logged in
+  to, it prints the `loginctl enable-linger` command that keeps it
+  running from boot. Windows comes later.
+- `--database-url-file` (`FLIGHTDECK_DATABASE_URL_FILE`) reads the
+  database URL from a file at every start, so a Postgres password stays
+  off the command line; the service takes its database this way.
 - The agent drawer's **Open in swimlane** reads `Open in swimlane ·
   3 runs`, in the accent of the Fleet row's runs chip, when the agent
   has two or more runs at once in the window the swimlane opens on, so

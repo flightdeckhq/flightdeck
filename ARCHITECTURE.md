@@ -220,7 +220,8 @@ flightdeck/
 ├── internal/                   # The binary's packages: cli (flags + env), datadir (dir, lock file, secrets), bootstrap (token mode),
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config),
 │                               # connect (`flightdeck connect`: the coding-agent connectors, Claude Code first;
-│                               # connect/fakeclaude, the Go stand-in `claude` its tests drive on Windows)
+│                               # connect/fakeclaude, the Go stand-in `claude` its tests drive on Windows),
+│                               # service (`flightdeck service`: the per-user systemd unit or launchd agent)
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
@@ -235,6 +236,7 @@ flightdeck/
 ├── scripts/release_notes.py    # The tag's CHANGELOG section as the GitHub release notes
 ├── scripts/install-gate.sh     # The from-scratch install gate's checks: no database configured, health, token, one event, the dashboard, a restart that keeps the session
 ├── scripts/test-install-gate.sh  # Tests the gate's checks against fake binaries, each broken in one way the gate must catch
+├── scripts/service-gate.sh     # `flightdeck service` against the real systemd or launchd: install, a kill the manager restarts, restart, reinstall on another port, remove
 ├── scripts/test-install-ps1.ps1  # install.ps1 piped through iex against a local release layout, under Windows PowerShell 5.1 and 7
 ├── scripts/fake-claude.sh      # A stand-in `claude` CLI for the connect tests on Unix and the install gate: records argv and stdin, keeps plugin state
 ├── scripts/check-installer-copies.sh  # Fails when docs/install.sh or docs/install.ps1 differs from the root installer; `make installer-copies` refreshes them
@@ -12747,7 +12749,16 @@ accepts `postgres://…` or `postgresql://…` (the multi-instance backend:
 several binaries, each with a data dir of its own, may share one
 Postgres database) and `sqlite://<path>` (a SQLite file somewhere else;
 a relative path is resolved against the working directory), and
-refuses any other value at start with the accepted forms. The binary
+refuses any other value at start with the accepted forms. The same URL
+can be kept in a file instead, `--database-url-file <path>`
+(`FLIGHTDECK_DATABASE_URL_FILE`), which the binary reads at every start:
+its content, without surrounding white space, at most 4 KiB, is the URL,
+so a password stays off the command line and out of the environment
+(the service `flightdeck service install` writes runs with it, Running
+in the background below). A message about the file names the file and
+never its content. The two forms are one setting: a flag of either form
+overrides the other form's variable, and both flags, or both variables
+with no flag, are a usage error that names both. The binary
 connects first (`storage.OpenRetry`): a Postgres that does not answer
 yet, as when compose starts both together, is waited for up to 60
 seconds, each attempt logged, and a signal ends the wait; a refused
@@ -13473,6 +13484,150 @@ under its prefix.
 Docker Compose and the Helm chart run the same image, so a feature is
 in both or in neither (Key Constraint #4).
 
+#### Running in the background
+
+`flightdeck service install` makes the binary start at every login and
+start again when it dies, on Linux and macOS, as the user who runs the
+command: a per-user service of the system's own service manager, with
+no root and nothing to install. The CLI writes the service's one file,
+outside the data dir, and asks the manager to load and start it; the
+server never writes it, as it never writes the files `flightdeck
+connect` changes. Windows has no such service yet (`flightdeck service
+install` says so and exits 4).
+
+| | Linux | macOS |
+|---|---|---|
+| Manager | the systemd user manager (`systemctl --user`) | launchd, the user's login session (`launchctl … gui/<uid>`) |
+| File | `~/.config/systemd/user/flightdeck.service` (under the manager's own `XDG_CONFIG_HOME` when it sets one) | `~/Library/LaunchAgents/com.flightdeck-hq.flightdeck.plist` |
+| Starts | at login (`WantedBy=default.target`, enabled), and at boot when lingering is on | at login (`RunAtLoad`) |
+| Starts again | 5 s after a crash, a kill or a non-zero exit, with no limit on attempts (`Restart=on-failure`, `RestartSec=5`, `StartLimitIntervalSec=0`); a clean exit (a stop) is not restarted | the same (`KeepAlive` with `SuccessfulExit` false), at most every 10 s, launchd's throttle |
+| Stops | SIGTERM, then a kill after 75 s (`TimeoutStopSec=75`): the binary's stop is two steps of at most 30 s each | the same (`ExitTimeOut` 75) |
+| Log | the user's journal, `journalctl --user -u flightdeck` | `<data dir>/flightdeck.log`, stdout and stderr appended, never rotated |
+
+The file is 0644 and holds no secret. It runs the absolute path of the
+binary that ran `install`, symbolic links resolved (on a Homebrew
+install `<prefix>/opt/flightdeck/bin/flightdeck`, the path Homebrew
+keeps across upgrades), with the server flags `install` was given, read
+as the server reads them, a flag or else its variable in the shell
+`install` runs in: `--port`, `--public`, `--listen`, `--data-dir`,
+`--allowed-hosts`, `--metrics` and `--database-url-file`. The data dir
+is always written out, made absolute; the listen address is written as
+`--port <port>`, `--public --port <port>` or `--listen <address>`.
+Nothing else of the shell reaches the service: the manager starts it in
+its own environment. A Postgres URL holds a password, so it is never
+written into the file: `install` refuses `--database-url` and
+`FLIGHTDECK_DATABASE_URL` and names `--database-url-file`, checks that
+the file holds a URL the server accepts, warns when other users can
+read it, and the service runs with `--database-url-file <that file>`,
+read at every start (Database, above). It refuses `--domain` too (ports
+80 and 443 need privileges a user's service does not have) and
+`--nats-url` (its URL can carry a token). Each value is written escaped
+for the file's format: in the unit every argument is in double quotes,
+with `\` and `"` escaped and `%` and `$` doubled, since systemd reads
+them as specifiers and variables; in the plist every value is XML-escaped.
+A value with a control character, or one that is not UTF-8, is refused:
+neither format carries it intact. A data dir with spaces, quotes, `%`
+or `$` in its name is written as it is.
+
+| Command | What it does |
+|---|---|
+| `flightdeck service install [flags]` | Checks, writes the file, loads it and (re)starts the service, then waits up to 90 s for it to answer, and prints the dashboard's address. Run again, it rewrites the file with the flags given now and restarts the service: the way new settings or a new binary take effect. |
+| `flightdeck service status` | The file, the manager's state (running with its PID, starting, stopped or failed, and whether it starts at login), the command it runs, whether the service's own process answers its health routes as `flightdeck health` asks them (an answer on its port while the service does not run, or from another PID, is said to be something else's), the dashboard's address and where the log is. A file that is gone while the manager still runs or enables the service is reported as that, not as "not installed". |
+| `flightdeck service restart` | The manager's restart (`systemctl --user restart`, `launchctl kickstart -k`), then the same wait as `install`. |
+| `flightdeck service remove` | Stops the service, unloads it and removes the file (`systemctl --user disable --now`, `launchctl bootout`), and nothing else: the data dir, its database and the log file in it stay as they are. A unit whose file was deleted by hand cannot be disabled: it is stopped, and the link that enabled it (`default.target.wants/flightdeck.service`, when it points at the unit's path) is removed. `remove` then checks with the manager that nothing runs and nothing is left, and says what is when something is. |
+
+`--dry-run`, on `install` and `remove`, prints the file, its path and the
+manager's commands, makes the same checks, and changes nothing. The exit
+status is 0 when the command did what it says (for `status`: the service
+runs and answers), 1 when a step failed (for `status`: installed but not
+running or not answering), 2 for a usage error, 3 when the service is
+not installed (`status`, `restart`) and 4 when this system or this
+install cannot run it, nothing written and the message saying what to
+use instead.
+
+Before it writes anything `install` refuses: when run as root (a
+per-user service started by root would run as root, in root's home),
+exit 2; on a system with no user service manager to ask (Linux with no
+`systemctl`, with systemd not running as PID 1, as on WSL without
+`systemd=true` in `/etc/wsl.conf`, which the message names, or with no
+user manager answering; macOS with no login session for the user, as
+over SSH alone), exit 4; when the binary runs from a temporary or a cache
+directory that may be gone at the next login (the temporary directory; a
+`go-build` directory of `go run`; uv's cache, an `archive-v<n>` or
+`environments-v<n>` bucket or anywhere under `UV_CACHE_DIR`,
+`$XDG_CACHE_HOME/uv`, `~/.cache/uv` or `~/Library/Caches/uv`, as `uvx`
+runs it; the cache of `pipx run`, under `PIPX_HOME` or its default
+homes), exit 4; when a file not written by `flightdeck service install`
+is at the service's path (the unit's first line and the plist's first
+comment say who wrote it, and a file that does not open with that line
+is never changed or removed), exit 1; when
+another `flightdeck`, not this service, holds the data dir's lock (its
+PID is named), exit 1; and when another process listens on the port,
+unless it is this service on the same address, exit 1. Once the manager has started the service,
+`install` waits for it: it is up when its health routes answer and the
+PID in the data dir's lock file is the one the manager started, so a
+`flightdeck` that took the port in between does not pass for it. A
+service that does not come up within 90 s, and one whose wait is
+interrupted (Ctrl+C, SIGTERM), is rolled back: the last lines of its
+log are printed, and the file it replaced is written back and started
+again, or, on a first install, the service is removed, the link that
+enables it included; exit 1. The rollback's manager commands run on a
+context of their own, bounded by two manager commands' time (180 s), so
+an interrupt that ends the wait does not also cancel them, and the
+closing line says what the manager reports afterwards: the earlier
+service back and running, nothing installed, or what is left and the
+command that clears it. A loopback service is then asked where the coding agents on this
+machine report, as a loopback start does (Agents that report elsewhere,
+above), and each line is printed, with the `flightdeck connect` command
+that points the agent at the service.
+
+One instance runs per data dir: the service is one more process the
+data dir's lock refuses a second of. A `flightdeck` started while the
+service runs on its port or its data dir fails on the port or on the
+lock, as any second instance does, and prints `Flightdeck is already
+running as a service: flightdeck service status` before that error. It
+asks the manager only on that failure, within 2 s, and not when the
+process is the service itself (the manager's PID for the service is
+its own).
+
+On a Homebrew install (the binary resolves into
+`<prefix>/Cellar/flightdeck/`), the formula's own service, `brew services
+start flightdeck`, runs the binary with no flags, and `install` says to
+use it and writes nothing, exit 4, unless it is given `--no-brew`: then
+it writes this service, which also gives a Homebrew install a port, a
+data dir or a Postgres of its choice. Either way it refuses, exit 4,
+while Homebrew's own service is loaded (`homebrew.mxcl.flightdeck` in
+launchd, `homebrew.flightdeck.service` under systemd), since the two
+would contend for the default data dir.
+
+A systemd user manager runs while its user has a session: the service
+starts at login and stops when the last session ends. A server nobody
+stays logged in to needs lingering, which starts the manager at boot;
+`install` and `status` print the one command, `sudo loginctl
+enable-linger <user>`, when lingering is off, and never run it. On WSL
+the service runs while WSL does, which is said instead. A launchd agent
+runs in the user's login session, so on macOS the service runs while
+the user is logged in.
+
+The unit tests (`internal/service`) run the commands against in-process
+stand-ins for `systemctl` and `launchctl` that keep the state the
+manager would, with the files written under a temporary home: the unit
+and the plist against golden files (a data dir with spaces, quotes, `%`
+and `$`), every flag written and read back, a second install, the
+refusals, the Homebrew cases, the rollback, an interrupt during the wait
+(the stand-ins, like `exec.CommandContext`, run nothing on a cancelled
+context), and `remove` leaving the data dir as it was. The temporary
+home they work in has its links resolved, as install resolves the
+binary's path (macOS keeps temporary files under `/var`, a link to
+`/private/var`). CI runs `scripts/service-gate.sh` against the real
+managers, on Linux in the binary's job and on macOS in a job of its own,
+and the install gate runs it on the released binaries: install on a
+port of its own and a fresh data dir, health, a `kill -9` of the
+service's process and the manager starting a new one, `flightdeck
+service restart`, `status`, a second `install` on another port that
+moves the service there, and `remove`, after which the file is gone,
+nothing answers and the data dir still holds its database.
+
 ### Environment variables
 
 **`flightdeck` binary:** flags win over environment variables, which win
@@ -13486,6 +13641,7 @@ over the defaults. `--listen` combines with neither `--port` nor
 | `--public` | `FLIGHTDECK_PUBLIC` | `true` listens on every interface (`0.0.0.0`), so other machines reach the server; the development token is then refused and an access token is minted or supplied, which whoever reaches the server can read: open it only on a network you trust, or put it behind a proxy that authenticates |
 | `--listen` | `FLIGHTDECK_LISTEN` | One address for the listener, `host:port` (`10.0.0.5:4000`, `0.0.0.0:4000`); a loopback host enables the development token, and a port with no host (`:4000`) is `127.0.0.1` |
 | `--database-url` | `FLIGHTDECK_DATABASE_URL` | Database, when it is not the SQLite file in the data dir: `postgres://…` or `postgresql://…` (percent-encode reserved characters in the password, `@` as `%40`), or `sqlite://<path>` for a SQLite file elsewhere (the path follows the scheme as it is, unencoded) |
+| `--database-url-file` | `FLIGHTDECK_DATABASE_URL_FILE` | A file holding that URL, read at every start, so the password is on no command line; not combined with `--database-url` (see Deployment > Database) |
 | `--data-dir` | `FLIGHTDECK_DATA_DIR` | Data directory (default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows): `flightdeck.db`, `flightdeck.lock`, `nats/`, `secrets.json`, `acme/`, `tmp/`, and `instance.json` while a loopback instance runs |
 | `--nats-url` | `FLIGHTDECK_NATS_URL` | External NATS server; unset, NATS runs embedded with no port |
 | `--domain` | `FLIGHTDECK_DOMAIN` | Public host name: TLS on `:443` with Let's Encrypt certificates, `:80` redirects; implies the non-loopback token mode |
@@ -13507,6 +13663,10 @@ holding the dashboard token the operator supplies, and
 
 None of them is required: with nothing set the binary listens on
 loopback and keeps its data in the SQLite file in its data dir.
+`flightdeck service install` (see Deployment > Running in the
+background) takes the flags of the table but `--database-url`,
+`--domain` and `--nats-url`, and their variables, and writes them into
+the service it installs.
 `flightdeck health` (see Health checks) takes the same flags and
 variables, under the same rules, and uses the listen address and the
 domain to find the running instance.
@@ -13600,7 +13760,7 @@ from one release tag (RELEASING.md has the sequence):
 |---|---|---|
 | Shell installer | `curl -fsSL https://flightdeck-hq.com/install.sh \| sh` | the release archive for the detected OS and CPU, verified against `checksums.txt`, into `/usr/local/bin` when writable, else `~/.local/bin`; `VERSION`, `INSTALL_DIR` and `FLIGHTDECK_RELEASE_URL` override the tag, the directory and the download host |
 | PowerShell installer | `irm https://flightdeck-hq.com/install.ps1 \| iex` | the Windows `.zip`, verified, into `%LOCALAPPDATA%\Programs\flightdeck`, added to the user's `PATH`; the same overrides |
-| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to the service, so a Postgres database (`--database-url`) means running the binary from a terminal |
+| Homebrew | `brew install flightdeckhq/tap/flightdeck` | the formula goreleaser writes to `flightdeckhq/homebrew-tap` on every stable release; `brew services start flightdeck` runs the binary as a user agent with no arguments and no environment, so with its defaults: `127.0.0.1:4000` and the data dir `~/.flightdeck`. The formula gives the service no data dir of its own under Homebrew's `var`, so the service and a `flightdeck` run from a terminal use one database (one of the two runs at a time: they share the port and the data dir's lock); only the service's log goes to `$(brew --prefix)/var/log/flightdeck.log`. A flag or an environment variable cannot be given to that service; for a port, a data dir or a Postgres of its own, `flightdeck service install --no-brew` writes the binary's own user service instead (Deployment > Running in the background) |
 | PyPI | `pip install flightdeck-cli`, `uvx flightdeck-cli`, `pipx run flightdeck-cli` | one wheel per platform (`py3-none-<platform>`, built by `packaging/pypi/build_wheels.py` from goreleaser's binaries with `zipfile`, no build backend; the Linux binary gets a manylinux and a musllinux wheel; two builds are byte-identical, timestamps from the tag's commit) carrying the binary at `flightdeck_cli/bin/`, the repository LICENSE and the `flightdeck` and `flightdeck-cli` console scripts, a shim that `exec`s it (runs it as a child on Windows); the package is `flightdeck-cli` because `flightdeck` on PyPI belongs to an unrelated project; a pre-release tag publishes as a PEP 440 pre-release (`0.9.0rc1`), which `pip` and `uvx` do not pick by default |
 | Docker | `docker run --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck` | the all-in-one image (root `Dockerfile`, distroless, non-root, `linux/amd64` and `linux/arm64`): the binary with `FLIGHTDECK_DATA_DIR=/data` and `FLIGHTDECK_LISTEN=0.0.0.0:4000` set in the image's environment and nothing else to configure; the image's `HEALTHCHECK` runs `flightdeck health`, which reads the same environment (see Health checks), so `docker ps` shows the container `healthy` once it serves. The image also sets `FLIGHTDECK_ALLOWED_HOSTS=localhost`: the container answers for `localhost` and IP addresses, and a name it is reached by otherwise is added with `-e FLIGHTDECK_ALLOWED_HOSTS=localhost,<name>` (see Host check). The database is the SQLite file `/data/flightdeck.db`, and `-e FLIGHTDECK_DATABASE_URL=postgres://…` names a Postgres instead. Everything the container writes is under `/data` (the root filesystem can be read-only), which the image declares as a volume and ships with mode 0700, owned by the runtime user (uid 65532); a new named volume takes that owner and mode over, while a bind mount keeps the host directory's, which must be writable by uid 65532 and draws the data dir's mode warning when it is wider than 0700. `0.0.0.0:4000` is not loopback, so the first start mints a token, prints it in the start-up block (`docker logs`) and keeps it in `/data/secrets.json` |
 
@@ -13741,7 +13901,8 @@ The Helm chart probes them over HTTP (startup and readiness on
 `/ingest/health`, liveness on `/api/health`). The workers have no
 `/health`: a worker whose consumer cannot create the stream or subscribe
 exits, which ends the binary with that error and lets its supervisor
-(`restart: unless-stopped`, the kubelet) start it again.
+(`restart: unless-stopped`, the kubelet, the user service of
+`flightdeck service install`) start it again.
 
 **`flightdeck health`.** The binary serves the two routes as
 `/api/health` and `/ingest/health` on its one listener, and

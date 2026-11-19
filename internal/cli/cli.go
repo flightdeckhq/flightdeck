@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 
@@ -57,6 +58,11 @@ type Options struct {
 	// or sqlite://<path>. Empty means the SQLite file in the data dir,
 	// which the caller resolves once the data dir is known.
 	DatabaseURL string
+	// DatabaseURLFile is the file DatabaseURL was read from
+	// (--database-url-file, FLIGHTDECK_DATABASE_URL_FILE), as it was
+	// given; empty when the URL came from --database-url or its
+	// variable, or when there is none.
+	DatabaseURLFile string
 	// DataDir holds the SQLite database, the NATS store, the secrets
 	// file and the TLS cache.
 	DataDir string
@@ -110,20 +116,69 @@ const HealthCommand = "health"
 // before Parse sees it.
 const ConnectCommand = "connect"
 
+// ServiceCommand is `flightdeck service`: it runs the binary as a
+// per-user background service (internal/service). It has subcommands of
+// its own, so the binary hands it the rest of the line before Parse sees
+// it; its install takes the server's flags through ParseCommand.
+const ServiceCommand = "service"
+
+// The two variables of the database setting: the URL itself, or a file
+// that holds it.
+const (
+	databaseURLEnv     = "FLIGHTDECK_DATABASE_URL"
+	databaseURLFileEnv = "FLIGHTDECK_DATABASE_URL_FILE"
+)
+
+// maxDatabaseURLFileBytes bounds how much of a --database-url-file is
+// read. A URL is a few hundred bytes; four kibibytes leaves room for a
+// long password and many options, and keeps a path that names some
+// other, large file from being read into memory.
+const maxDatabaseURLFileBytes = 4 << 10
+
+// byteOrderMark is the UTF-8 encoding of U+FEFF, which some editors put
+// at the start of a text file.
+const byteOrderMark = string(rune(0xFEFF))
+
 // ErrHelp is returned when the command line asked for the usage text,
 // which Parse has written to the output.
 var ErrHelp = flag.ErrHelp
+
+// Command is a subcommand that takes the server's flags beside flags of
+// its own, `flightdeck service install`: ParseCommand registers both on
+// one flag set and resolves the server's as Parse does.
+type Command struct {
+	// Name is the command in messages: "flightdeck service install".
+	Name string
+	// Flags registers the command's own flags.
+	Flags func(*flag.FlagSet)
+	// Usage writes the command's usage text; the flags follow it.
+	Usage func(io.Writer)
+}
 
 // Parse reads args (without the program name) against env, which maps
 // a variable name to its value ("" when unset, as os.Getenv does), and
 // writes usage to out on -h or an error.
 func Parse(args []string, env func(string) string, out io.Writer) (Options, error) {
-	fs := flag.NewFlagSet("flightdeck", flag.ContinueOnError)
+	return parse(args, env, out, nil)
+}
+
+// ParseCommand reads the command line of cmd: the server's flags and
+// variables under Parse's rules, with cmd's own flags on the same set.
+func ParseCommand(args []string, env func(string) string, out io.Writer, cmd Command) (Options, error) {
+	return parse(args, env, out, &cmd)
+}
+
+func parse(args []string, env func(string) string, out io.Writer, cmd *Command) (Options, error) {
+	name := "flightdeck"
+	if cmd != nil {
+		name = cmd.Name
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(out)
 	env = withoutServiceLinks(env)
 
 	var o Options
-	if len(args) > 0 && args[0] == HealthCommand {
+	if cmd == nil && len(args) > 0 && args[0] == HealthCommand {
 		o.Health = true
 		args = args[1:]
 	}
@@ -154,6 +209,10 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	fs.StringVar(&o.DatabaseURL, "database-url", "",
 		"database to use instead of the SQLite file in the data dir: a Postgres URL, postgres://user:password@host:5432/db?sslmode=disable, "+
 			"or another SQLite file, sqlite:///path/to/flightdeck.db (default: $FLIGHTDECK_DATABASE_URL, else the SQLite file in the data dir)")
+	var databaseURLFile string
+	fs.StringVar(&databaseURLFile, "database-url-file", "",
+		"a file that holds the --database-url value, read at every start, so a password is on no command line; "+
+			"not combined with --database-url (default: $"+databaseURLFileEnv+")")
 	fs.StringVar(&o.DataDir, "data-dir", envOr(env, "FLIGHTDECK_DATA_DIR", datadir.Default()),
 		"directory for the database ("+datadir.DatabaseFile+"), the message-bus store, the secrets file and the TLS cache (env FLIGHTDECK_DATA_DIR)")
 	fs.StringVar(&o.NatsURL, "nats-url", "",
@@ -170,20 +229,32 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	}
 	fs.BoolVar(&o.Metrics, "metrics", metricsDefault,
 		"start the services' metrics listeners on ports 9102 (workers), 9103 (ingestion) and 9104 (query API) (env FLIGHTDECK_METRICS)")
-	fs.BoolVar(&o.Version, "version", false, "print the version and exit")
-	fs.Usage = func() {
-		_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n       flightdeck %s [<agent>] [flags]\n\n"+
-			"Runs the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
-			"With no flags it serves on %s, this machine only, and keeps its data in a SQLite database\n"+
-			"under the data dir. --port 4100 serves on another port of this machine; --public lets other machines in\n"+
-			"(every network interface, on the --port given); --listen <address>:<port> serves on one address.\n\n"+
-			"flightdeck %s asks the instance that runs with the same --port, --public, --listen and --domain (or\n"+
-			"their environment variables) whether it serves, prints one line and exits 0 when it does and 1 when it\n"+
-			"does not: a container health check that needs no shell and no token.\n\n"+
-			"flightdeck %s connects a coding agent on this machine to Flightdeck (flightdeck %s claude-code);\n"+
-			"with no agent it lists the agents and whether each is connected. flightdeck %s --help has its flags.\n\nFlags:\n",
-			HealthCommand, ConnectCommand, DefaultListen, HealthCommand, ConnectCommand, ConnectCommand, ConnectCommand)
-		fs.PrintDefaults()
+	if cmd == nil {
+		fs.BoolVar(&o.Version, "version", false, "print the version and exit")
+		fs.Usage = func() {
+			_, _ = fmt.Fprintf(out, "Usage: flightdeck [flags]\n       flightdeck %s [flags]\n       flightdeck %s [<agent>] [flags]\n"+
+				"       flightdeck %s install|status|restart|remove\n\n"+
+				"Runs the Flightdeck control plane: ingestion, workers, query API and the dashboard in one process.\n"+
+				"With no flags it serves on %s, this machine only, and keeps its data in a SQLite database\n"+
+				"under the data dir. --port 4100 serves on another port of this machine; --public lets other machines in\n"+
+				"(every network interface, on the --port given); --listen <address>:<port> serves on one address.\n\n"+
+				"flightdeck %s asks the instance that runs with the same --port, --public, --listen and --domain (or\n"+
+				"their environment variables) whether it serves, prints one line and exits 0 when it does and 1 when it\n"+
+				"does not: a container health check that needs no shell and no token.\n\n"+
+				"flightdeck %s connects a coding agent on this machine to Flightdeck (flightdeck %s claude-code);\n"+
+				"with no agent it lists the agents and whether each is connected. flightdeck %s --help has its flags.\n\n"+
+				"flightdeck %s install keeps Flightdeck running in the background on Linux and macOS: it starts it now\n"+
+				"and at every login, and again if it dies, with the flags given to install. flightdeck %s --help has the rest.\n\nFlags:\n",
+				HealthCommand, ConnectCommand, ServiceCommand, DefaultListen, HealthCommand, ConnectCommand, ConnectCommand, ConnectCommand,
+				ServiceCommand, ServiceCommand)
+			fs.PrintDefaults()
+		}
+	} else {
+		cmd.Flags(fs)
+		fs.Usage = func() {
+			cmd.Usage(out)
+			fs.PrintDefaults()
+		}
 	}
 
 	usage := fs.Usage
@@ -208,9 +279,6 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 	// A flag given on the command line wins, an empty one included.
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
-	if !given["database-url"] {
-		o.DatabaseURL = env("FLIGHTDECK_DATABASE_URL")
-	}
 	if !given["nats-url"] {
 		o.NatsURL = env("FLIGHTDECK_NATS_URL")
 	}
@@ -231,11 +299,81 @@ func Parse(args []string, env func(string) string, out io.Writer) (Options, erro
 		// is the server's to report.
 		return o, nil
 	}
-	o.DatabaseURL = strings.TrimSpace(o.DatabaseURL)
-	if err := checkDatabaseURL(o.DatabaseURL); err != nil {
+	if o.DatabaseURL, o.DatabaseURLFile, err = resolveDatabaseURL(given, o.DatabaseURL, databaseURLFile, env); err != nil {
 		return Options{}, err
 	}
 	return o, nil
+}
+
+// resolveDatabaseURL decides the database URL from --database-url and
+// --database-url-file and their variables, given holding the flags on the
+// command line and url and file the two flags' values. The two are one
+// setting, so the rule is --listen's: a flag beats its variable, a flag
+// of either form overrides the other form's variable, and the two forms
+// given together, as flags or, with no flag deciding, as variables, are
+// a usage error that names both. The second result is the file the URL
+// was read from, as given. A message never carries the URL, only its
+// scheme, nor the file's content.
+func resolveDatabaseURL(given map[string]bool, url, file string, env func(string) string) (string, string, error) {
+	switch {
+	case given["database-url"] && given["database-url-file"]:
+		return "", "", errors.New("--database-url and --database-url-file were both given; they are two ways to name one database, " +
+			"so give one of them: --database-url-file keeps a password off the command line")
+	case given["database-url"]:
+	case given["database-url-file"]:
+	case env(databaseURLEnv) != "" && env(databaseURLFileEnv) != "":
+		return "", "", fmt.Errorf("%s and %s are both set; they are two ways to name one database, so set one of them. "+
+			"An empty value counts as unset, and a flag on the command line overrides both", databaseURLEnv, databaseURLFileEnv)
+	case env(databaseURLFileEnv) != "":
+		file = env(databaseURLFileEnv)
+	default:
+		url = env(databaseURLEnv)
+	}
+	source := "--database-url (" + databaseURLEnv + ")"
+	if given["database-url-file"] || (!given["database-url"] && file != "") {
+		if strings.TrimSpace(file) == "" {
+			return "", "", errors.New("--database-url-file is empty; give the file that holds the database URL, or leave it out " +
+				"to keep the data in " + datadir.DatabaseFile + " under the data dir")
+		}
+		read, err := readDatabaseURLFile(file)
+		if err != nil {
+			return "", "", err
+		}
+		url, source = read, "the file "+file+" (--database-url-file)"
+	} else {
+		file = ""
+	}
+	url = strings.TrimSpace(url)
+	if err := checkDatabaseURL(url, source); err != nil {
+		return "", "", err
+	}
+	return url, file, nil
+}
+
+// readDatabaseURLFile returns the URL a --database-url-file holds: its
+// content without surrounding white space or a byte-order mark. The
+// messages name the file, never its content.
+func readDatabaseURLFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		// The os error names the path.
+		return "", fmt.Errorf("--database-url-file (%s): %w", databaseURLFileEnv, err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxDatabaseURLFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("--database-url-file (%s): read %s: %w", databaseURLFileEnv, path, err)
+	}
+	if len(data) > maxDatabaseURLFileBytes {
+		return "", fmt.Errorf("--database-url-file (%s): %s is larger than a database URL (%d bytes at most)",
+			databaseURLFileEnv, path, maxDatabaseURLFileBytes)
+	}
+	url := strings.TrimSpace(strings.TrimPrefix(string(data), byteOrderMark))
+	if url == "" {
+		return "", fmt.Errorf("--database-url-file (%s): %s is empty; put the database URL in it, for example "+
+			"postgres://user:password@host:5432/db?sslmode=disable", databaseURLFileEnv, path)
+	}
+	return url, nil
 }
 
 // resolveListen decides the listen address from --listen on one side
@@ -388,9 +526,10 @@ func bothVariables(other string) error {
 
 // checkDatabaseURL accepts an empty URL (the SQLite file in the data
 // dir), a Postgres URL and a sqlite:// URL that names a file, and
-// refuses anything else with the accepted forms. The message carries
-// the URL's scheme only: the rest may hold a password.
-func checkDatabaseURL(raw string) error {
+// refuses anything else with the accepted forms, naming source, where
+// the URL came from. The message carries the URL's scheme only: the
+// rest may hold a password.
+func checkDatabaseURL(raw, source string) error {
 	if raw == "" {
 		return nil
 	}
@@ -402,13 +541,13 @@ func checkDatabaseURL(raw string) error {
 		} else {
 			scheme += "://"
 		}
-		return fmt.Errorf("--database-url (FLIGHTDECK_DATABASE_URL) got %s; it takes a Postgres URL "+
+		return fmt.Errorf("%s got %s; it takes a Postgres URL "+
 			"(postgres://user:password@host:5432/db or postgresql://…) or a SQLite file (sqlite:///path/to/flightdeck.db). "+
-			"Leave it out to keep the data in %s under the data dir", scheme, datadir.DatabaseFile)
+			"Leave it out to keep the data in %s under the data dir", source, scheme, datadir.DatabaseFile)
 	}
 	if backend == storage.SQLite {
 		if path := storage.SQLitePath(raw); path == "" || strings.HasPrefix(path, ":memory:") {
-			return errors.New("--database-url (FLIGHTDECK_DATABASE_URL) names no SQLite file: " +
+			return errors.New(source + " names no SQLite file: " +
 				"give a path after the scheme, for example sqlite:///var/lib/flightdeck/flightdeck.db")
 		}
 	}

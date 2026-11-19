@@ -1,0 +1,42 @@
+# TEMPORARY: the spike of `flightdeck service` on Windows (#347, PR 2).
+# It runs on pushes to its own branch only and is removed before the PR is
+# ready. It needs no secret and no permission beyond reading the checkout.
+name: Spike - flightdeck service on Windows
+
+on:
+  push:
+    branches: [feat/service-windows]
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    name: service spike (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    # The build of the binary takes a few minutes on a cold module cache;
+    # the restart waits add up to about fifteen.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.sum
+            go.work.sum
+            storage/go.sum
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
+      - name: Spike
+        shell: pwsh
+        run: ./.github/spike/service-windows.ps1 -Mode admin

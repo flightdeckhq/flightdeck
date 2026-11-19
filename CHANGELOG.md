@@ -156,6 +156,21 @@ All notable changes to Flightdeck are documented here.
   both drawers, the Neighbors list, the Fleet sidebar's policy events
   and the Policies page's decision pills. The badges' tints and borders,
   and the swimlanes, charts and dots, keep their colours.
+- **An embeddings call too big for one event keeps its input.** With
+  capture on, an embeddings event over the 768 KiB event size limit was
+  sent without any content: its vectors are numbers, which the size
+  rule's string cut cannot shorten. From about 25 texts at OpenAI's
+  default of 1536 dimensions (about 19 at google-genai's default of
+  3072), on OpenAI, litellm and google-genai alike, the call's input
+  was lost and the event read
+  as one with capture off. The sensor now gives up the vectors first:
+  `embedding_output` holds the size rule's marker in their place
+  (`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, N
+  the size of the vectors' JSON), and the input is sent whole. An input
+  over the limit on its own is cut as any other content is. Vectors
+  returned as base64 strings are given up the same way, never cut in
+  part alongside the input. Vectors that fit are stored as before, and
+  `output_dimensions` still reports their count and dimension.
 - **An Anthropic stream manager reports exactly the requests it sends.**
   `messages.stream()` / `beta.messages.stream()` emitted their
   `pre_call` when `stream()` was called, so a manager never entered left

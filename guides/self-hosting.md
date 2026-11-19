@@ -9,6 +9,19 @@ Flightdeck is self-hosted. Two deployment targets are supported, both running th
 - Docker Engine 28+ with Compose v2 (`docker compose version` reports `v2.x`), or a Kubernetes 1.25+ cluster with Helm 3.
 - For TLS from the binary: a DNS A/AAAA record for the host (e.g. `flightdeck.example.com`) and ports 80 and 443 reachable from the public internet.
 
+## Running in the background
+
+On one machine without Docker, `flightdeck service install` keeps the binary running for your user on Linux and macOS: it starts it now, at every login, and again within seconds if it stops. It needs no sudo, and it runs the `flightdeck` you run it with, with the flags you give it:
+
+```bash
+flightdeck service install --port 4100
+```
+
+- **Linux**: a systemd user unit, `~/.config/systemd/user/flightdeck.service`, with its log in the journal (`journalctl --user -u flightdeck`). The user manager runs while you are logged in; on a server nobody stays logged in to, `sudo loginctl enable-linger <user>` starts it at boot, and `install` prints that command when lingering is off. On WSL, systemd must be on (`[boot] systemd=true` in `/etc/wsl.conf`), and the service runs while WSL does.
+- **macOS**: a launchd agent, `~/Library/LaunchAgents/com.flightdeck-hq.flightdeck.plist`, with its log in `flightdeck.log` in the data dir. It runs while you are logged in to the Mac.
+
+`install` takes `--port`, `--public`, `--listen`, `--data-dir`, `--allowed-hosts` and `--metrics`, or their `FLIGHTDECK_` variables in the shell you run it from, and waits until the service answers. For a Postgres, put its URL in a file only you can read (`chmod 600`) and give the file, `--database-url-file <file>`: the URL never goes into the service's file or onto a command line. Run `install` again to change the flags; after you install a new release, `flightdeck service restart` runs it. `flightdeck service status` says whether the service runs and answers, and `flightdeck service remove` stops and removes it and leaves the data dir as it is. A `flightdeck` started by hand while the service runs on its port or data dir says that the service runs. On a Homebrew install, `brew services start flightdeck` runs the formula's own service, which takes no flags; `flightdeck service install --no-brew` writes this one instead, once Homebrew's is stopped. ARCHITECTURE.md ("Running in the background") has every line of the files it writes.
+
 ## Docker Compose
 
 ```bash

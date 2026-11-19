@@ -39,6 +39,8 @@ flightdeck
 
 The dashboard is at http://localhost:4000, and nothing needs configuring: agents on the same machine find it without a server address or a token; `flightdeck --port 4100` runs it on another port, and `flightdeck --help` lists the flags. The binary goes to `/usr/local/bin` or `~/.local/bin` and the data, a SQLite file, to `~/.flightdeck`; on Windows, to `%LOCALAPPDATA%\Programs\flightdeck` and `%LOCALAPPDATA%\flightdeck`. If `flightdeck` is not found, run the `PATH` line the installer printed, or on Windows open a new PowerShell window. [guides/windows.md](guides/windows.md) has the rest for Windows.
 
+To keep it running on Linux or macOS, starting at every login and again if it stops, run `flightdeck service install` once, with the flags you start it with (`flightdeck service install --port 4100`); it needs no sudo. `flightdeck service status` shows it, `flightdeck service restart` runs a newly installed release, and `flightdeck service remove` removes it and keeps the data. [guides/self-hosting.md](guides/self-hosting.md#running-in-the-background) has the details.
+
 ### Other ways to install
 
 Every channel installs the same binary, built for Linux, macOS and Windows on amd64 and arm64.

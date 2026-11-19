@@ -36,7 +36,6 @@ from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor.anthropic import SensorMessages
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,
-    _is_usage_only_chunk,
     patch_litellm_functions,
     unpatch_litellm_functions,
 )
@@ -322,7 +321,9 @@ def test_litellm_stream_to_openai_sdk_emits_exactly_one_post_call(session: Sessi
     stream = litellm.completion(model="gpt-4o-mini", messages=MSG, client=client, stream=True)
     assert isinstance(base.guard_of(stream), base.GuardedStream)
     seen = list(stream)
-    assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop"]
+    # On OpenAI's own base litellm asks for usage itself, so its trailing
+    # usage chunk is the caller's, as without the sensor.
+    assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop", None]
     assert len(transport.requests) == 1
     assert len(_events_of(session, "pre_call")) == 1
     (pc,) = _post_calls(session)
@@ -354,7 +355,9 @@ async def test_litellm_async_stream_to_openai_sdk_emits_exactly_one_post_call(
     )
     assert isinstance(base.guard_of(stream), base.GuardedAsyncStream)
     seen = [c async for c in stream]
-    assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop"]
+    # On OpenAI's own base litellm asks for usage itself, so its trailing
+    # usage chunk is the caller's, as without the sensor.
+    assert [c.choices[0].finish_reason for c in seen] == [None, None, "stop", None]
     assert len(transport.requests) == 1
     (pc,) = _post_calls(session)
     assert pc["tokens_output"] == SDK_COMPLETION_TOKENS
@@ -368,19 +371,22 @@ def _stream_kwargs() -> dict[str, Any]:
     return {"model": "gpt-4o-mini", "messages": MSG, "stream": True, "mock_response": MOCK_TEXT}
 
 
-def test_litellm_completion_stream_meters_usage_and_hides_the_usage_chunk(
+def test_litellm_mock_stream_without_usage_asked_reports_the_estimate(
     session: Session,
 ) -> None:
+    """litellm's mock_response stream carries no usage unless asked, and
+    the sensor asks litellm for nothing: the caller reads litellm's chunks
+    and the post_call carries the pre-call estimate."""
     stream = litellm.completion(**_stream_kwargs())
     assert isinstance(base.guard_of(stream), base.GuardedStream)
     seen = list(stream)
     assert seen, "the mocked stream delivered no chunks"
-    assert all(getattr(c, "usage", None) is None for c in seen)  # the usage chunk is absorbed
+    assert all(getattr(c, "usage", None) is None for c in seen)
     assert seen[-1].choices[0].finish_reason == "stop"
     assert "".join(c.choices[0].delta.content or "" for c in seen) == MOCK_TEXT
+    (pre_call,) = _events_of(session, "pre_call")
     (pc,) = _post_calls(session)
-    assert pc["tokens_input"] > 0
-    assert pc["tokens_output"] > 0
+    assert (pc["tokens_input"], pc["tokens_output"]) == (pre_call["tokens_input"], 0)
     assert pc["streaming"]["final_outcome"] == "completed"
     assert pc["streaming"]["chunk_count"] == len(seen)
     assert pc["streaming"]["ttft_ms"] is not None
@@ -407,7 +413,7 @@ async def test_litellm_acompletion_stream_meters_usage(session: Session) -> None
     assert "".join(c.choices[0].delta.content or "" for c in seen) == MOCK_TEXT
     assert all(getattr(c, "usage", None) is None for c in seen)
     (pc,) = _post_calls(session)
-    assert pc["tokens_output"] > 0
+    assert pc["tokens_output"] == 0  # no usage asked for: the estimate
     assert pc["streaming"]["final_outcome"] == "completed"
     assert pc["streaming"]["chunk_count"] == len(seen)
 
@@ -971,26 +977,6 @@ def test_streamed_call_with_capture_off_carries_no_content(
     assert pc.get("has_content") is not True
     assert pc.get("content") is None
     assert pc["tokens_output"] == SDK_COMPLETION_TOKENS
-
-
-# ----- the usage-only chunk test -------------------------------------------
-
-
-def _chunk(usage: Any, *, content: str | None = None, finish_reason: str | None = None) -> Any:
-    delta = types.SimpleNamespace(
-        content=content, tool_calls=None, function_call=None, reasoning_content=None
-    )
-    choice = types.SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return types.SimpleNamespace(usage=usage, choices=[choice])
-
-
-def test_usage_only_chunk_is_the_trailing_chunk_with_an_empty_delta() -> None:
-    usage = Usage(prompt_tokens=8, completion_tokens=2)
-    assert _is_usage_only_chunk(_chunk(usage)) is True
-    assert _is_usage_only_chunk(_chunk(None)) is False
-    assert _is_usage_only_chunk(_chunk(usage, content="text")) is False
-    assert _is_usage_only_chunk(_chunk(usage, finish_reason="stop")) is False
-    assert _is_usage_only_chunk(types.SimpleNamespace(usage=usage, choices=[])) is True
 
 
 # ----- extended usage --------------------------------------------------------

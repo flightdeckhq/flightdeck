@@ -170,6 +170,11 @@ class LitellmProvider:
 
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
+        # The streamed call's outer-call mark (``base.OuterCall``), set by
+        # the litellm interceptor: the OpenAI interceptor leaves the
+        # provider's usage on it when litellm sends the request through
+        # the OpenAI SDK.
+        self.outer_call: Any = None
 
     @property
     def vendor(self) -> str | None:
@@ -290,12 +295,25 @@ class LitellmProvider:
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def shown_usage_is_the_providers(self) -> bool:
+        """Whether usage litellm shows on its stream's chunks can be the
+        provider's. Not when the request went through the OpenAI SDK: the
+        OpenAI interceptor handed the provider's counts over on the call's
+        mark, and what litellm shows may be its own count of a stream whose
+        usage chunk it never saw. Not when the provider was not asked for
+        usage and sends none either: what litellm shows is then its own
+        count."""
+        mark = self.outer_call
+        return not (
+            getattr(mark, "sent_through_sdk", False) or getattr(mark, "usage_unasked", False)
+        )
+
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """Usage on litellm's trailing streaming chunk (present when the
-        request asked for ``stream_options.include_usage``, which the
-        litellm interceptor always does); same fields as a response."""
+        """Usage on litellm's trailing streaming chunk, when litellm shows
+        the provider's there (:meth:`shown_usage_is_the_providers`); same
+        fields as a response."""
         try:
-            if getattr(chunk, "usage", None) is None:
+            if getattr(chunk, "usage", None) is None or not self.shown_usage_is_the_providers():
                 return None
             result = self.extract_usage(chunk)
             return result if result.total > 0 else None
@@ -321,8 +339,70 @@ class LitellmProvider:
             return None
 
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
-        """litellm stream wrappers report nothing after the fact."""
-        return None
+        """The provider's usage for a stream that did not show it. For a
+        request litellm sent through the OpenAI SDK, the counts the OpenAI
+        interceptor read from it (left on the call's mark) and nothing
+        else; for a provider not asked for usage, nothing; otherwise those
+        litellm keeps on its stream (:func:`kept_usage`), else nothing.
+        Nothing means the pre-call estimate."""
+        mark = self.outer_call
+        if getattr(mark, "sent_through_sdk", False):
+            handed = getattr(mark, "usage", None)
+            return handed if isinstance(handed, TokenUsage) and handed.total > 0 else None
+        if getattr(mark, "usage_unasked", False):
+            return None
+        return self.kept_usage(stream)
+
+    def _with_handed_usage(self, response: dict[str, Any]) -> dict[str, Any]:
+        """The stored response of a stream litellm sent through the OpenAI
+        SDK: litellm's assembled response, its ``usage`` the provider's
+        usage object (as the OpenAI interceptor kept it from the usage
+        chunk, with the fields the provider returned) where litellm's own
+        does not carry the provider's counts. That is where litellm never
+        saw the chunk (the interceptor asked for it and took it out) or did
+        not keep it (1.83 discards a usage chunk it does not show), and
+        assembled zeros or its own count of the prompt instead."""
+        mark = self.outer_call
+        returned = getattr(mark, "returned_usage", None)
+        if not getattr(mark, "sent_through_sdk", False) or not isinstance(returned, dict):
+            return response
+        if _same_counts(response.get("usage"), returned):
+            return response
+        return {**response, "usage": returned}
+
+    def kept_usage(self, stream: Any) -> TokenUsage | None:
+        """The usage litellm keeps on its stream without showing it, read
+        from the chunks its ``CustomStreamWrapper`` keeps (``chunks``; a
+        ``text_completion`` stream's inner wrapper), every attribute
+        checked: a missing attribute, another shape, or counts that are
+        not non-negative integers give ``None`` (the estimate), never an
+        exception and never a guessed number. The counts are cumulative,
+        so the largest of each wins."""
+        try:
+            target = stream
+            if type(target).__name__ == "TextCompletionStreamWrapper":
+                target = getattr(target, "completion_stream", None)
+            if type(target).__name__ != "CustomStreamWrapper":
+                return None
+            chunks = getattr(target, "chunks", None)
+            if not isinstance(chunks, list):
+                return None
+            best: TokenUsage | None = None
+            for chunk in chunks:
+                usage = getattr(chunk, "usage", None)
+                if usage is None:
+                    continue
+                prompt = _count(_field(usage, "prompt_tokens"))
+                completion = _count(_field(usage, "completion_tokens"))
+                if prompt is None or completion is None:
+                    continue
+                found = self.extract_usage(chunk)
+                if found.input_tokens != prompt or found.output_tokens != completion:
+                    continue
+                best = found if best is None else _larger(best, found)
+            return best if best is not None and best.total > 0 else None
+        except Exception:
+            return None
 
     def stream_completed(self, stream: Any) -> bool | None:
         """litellm stream wrappers do not track completion."""
@@ -426,7 +506,7 @@ class LitellmProvider:
                 # allowlisted response fields are stored (see
                 # _stream_response_summary); the wrapper's own state is
                 # never dumped.
-                resp_dict = _stream_response_summary(response)
+                resp_dict = self._with_handed_usage(_stream_response_summary(response))
             else:
                 # No response stores an empty one; anything else (a dict) is
                 # stored as it is, which the transport sends when JSON can
@@ -601,6 +681,28 @@ def _prompt_text(prompt: Any) -> str:
             for p in prompt
         )
     return "" if prompt is None else str(prompt)
+
+
+_COUNT_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+
+def _same_counts(assembled: Any, returned: dict[str, Any]) -> bool:
+    """Whether litellm's assembled ``usage`` carries the counts the
+    provider returned."""
+    return isinstance(assembled, dict) and all(
+        assembled.get(name) == returned.get(name) for name in _COUNT_FIELDS
+    )
+
+
+def _larger(a: TokenUsage, b: TokenUsage) -> TokenUsage:
+    """Field by field, the larger of two cumulative usage snapshots."""
+    return TokenUsage(
+        input_tokens=max(a.input_tokens, b.input_tokens),
+        output_tokens=max(a.output_tokens, b.output_tokens),
+        cache_read_tokens=max(a.cache_read_tokens, b.cache_read_tokens),
+        cache_creation_tokens=max(a.cache_creation_tokens, b.cache_creation_tokens),
+        reasoning_tokens=b.reasoning_tokens if a.reasoning_tokens is None else a.reasoning_tokens,
+    )
 
 
 def _usage_total(usage: Any) -> int:
@@ -841,8 +943,13 @@ class LitellmResponsesProvider(LitellmProvider):
             return TokenUsage(input_tokens=0, output_tokens=0)
 
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """The usage of the response a terminal event carries."""
+        """The usage of the response a terminal event carries, when it is
+        the provider's (:meth:`LitellmProvider.shown_usage_is_the_providers`:
+        a Responses stream litellm bridges through a chat request it sends
+        through the OpenAI SDK reports the counts handed over instead)."""
         try:
+            if not self.shown_usage_is_the_providers():
+                return None
             response = _field(chunk, "response")
             if response is None or _field(response, "usage") is None:
                 return None

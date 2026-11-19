@@ -92,16 +92,37 @@ Responses streaming iterator), seen through that stream's protocol
 (``for chunk in ...`` and ``async for chunk in ...``, whichever call
 made it) and is no context manager, and so is what the caller gets;
 either way of reading it is metered once. Its attributes are proxied.
-For ``completion`` and ``text_completion`` the sensor asks litellm
-for ``stream_options={"include_usage": True}``, which makes litellm
-append one chunk carrying the provider's ``usage`` after the
-``finish_reason`` chunk; the guard meters that chunk and hides it from a
-caller who did not ask for usage, so their loop sees exactly the chunks
-it would see without the sensor. A Responses stream carries its usage on
-its terminal event and needs no option. litellm's stream wrappers are
-not context managers and have no ``close()``, so the guard is used as a
-plain iterator; the ``post_call`` is emitted when the stream is read to
-its end, or when the guard is collected after a loop left early.
+
+The caller reads exactly the chunks litellm shows without the sensor:
+the sensor never changes the ``stream_options`` litellm decides on and
+never hides or rewrites a chunk. It asks for usage only where the
+request is final, on the body actually sent (``extra_body`` merged over
+the arguments key by key, as the OpenAI SDK and litellm's handlers merge
+it), an explicit ``include_usage: false`` included. A request litellm
+sends through the OpenAI SDK is asked at the SDK (the OpenAI
+interceptor's litellm request hook), which takes out what its ask causes
+before litellm reads the stream and leaves the counts on the call's
+mark: the call's only counts. A provider whose OpenAI-shaped request
+litellm sends with its own handler is asked in the request body only
+(:func:`_asked_in_the_body`); every other provider is asked nothing. Off
+the SDK the counts are the usage litellm shows when the provider was
+asked or reports usage itself, else those litellm keeps on its stream
+(``LitellmProvider.usage_from_finished_stream``), else the pre-call
+estimate; never a count litellm worked out itself. A Responses stream
+carries its usage on its terminal event.
+
+A stream whose request leaves at its first read (Gemini's routes, and
+``text_completion`` on a legacy completions model;
+:func:`_sends_on_first_read`) is policed at the call, so a BLOCK refuses
+it there, but its ``pre_call`` and ``post_call`` are reported when the
+request leaves, and one never read reports nothing; one made with no
+session active finds its session at that first read
+(:class:`_SessionAtFirstRead`). A stream's reads run under the call's
+mark, so the request a first read sends is the call's. litellm's stream
+wrappers are not context managers and have no ``close()``, so the guard
+is used as a plain iterator; the ``post_call`` is emitted when the stream
+is read to its end, or when the guard is collected after a loop left
+early.
 
 **Scope of the mark.** It covers the whole litellm call, so an SDK
 call made from inside it -- by a litellm callback, guardrail or custom
@@ -120,11 +141,12 @@ and will be filed separately if framework reports surface it.
 
 from __future__ import annotations
 
-import copy
+import dis
 import functools
 import inspect
 import logging
 import sys
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType
@@ -137,7 +159,7 @@ from flightdeck_sensor.providers.litellm import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
-    from types import FrameType
+    from types import CodeType, FrameType
 
     from flightdeck_sensor.core.session import Session
 
@@ -197,22 +219,25 @@ def _current_session() -> Session | None:
 # handling, same event shape.
 
 
-def _as_outer_call(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """``fn`` run under :func:`base.outer_intercept`, so an interceptor
-    litellm reaches while serving the call (its OpenAI route calls
-    ``openai.OpenAI().chat.completions.create``; its Responses bridge
-    calls ``litellm.completion``) passes the call through instead of
-    reporting it a second time."""
+def _as_outer_call(
+    fn: Callable[..., Any], mark: base.OuterCall | None = None
+) -> Callable[..., Any]:
+    """``fn`` run under :func:`base.outer_intercept` (with ``mark``, the
+    litellm call's own, when given), so an interceptor litellm reaches
+    while serving the call (its OpenAI route calls
+    ``openai.OpenAI().chat.completions.create``; its Responses bridge calls
+    ``litellm.completion``) passes the call through instead of reporting it
+    a second time."""
 
     def _call(**kwargs: Any) -> Any:
-        with base.outer_intercept():
+        with base.outer_intercept(mark):
             return fn(**kwargs)
 
     return _call
 
 
 def _as_outer_async_call(
-    fn: Callable[..., Coroutine[Any, Any, Any]],
+    fn: Callable[..., Coroutine[Any, Any, Any]], mark: base.OuterCall | None = None
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Async form of :func:`_as_outer_call`. The mark is set inside the
     coroutine, so it lives in the task that awaits litellm -- where
@@ -221,7 +246,7 @@ def _as_outer_async_call(
     context."""
 
     async def _call(**kwargs: Any) -> Any:
-        with base.outer_intercept():
+        with base.outer_intercept(mark):
             return await fn(**kwargs)
 
     return _call
@@ -293,73 +318,159 @@ def _reissued_by_litellm(caller: FrameType | None) -> bool:
     return caller is not None and caller.f_globals.get("__name__") in _REISSUE_MODULES
 
 
-def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Ask litellm for ``stream_options={"include_usage": True}`` on a
-    copy of ``kwargs`` and say whether the caller had asked for usage
-    themselves (then the usage chunk is theirs; otherwise the guard
-    absorbs it). litellm forwards the option to providers that support
-    it and computes the usage itself for the rest, so the trailing chunk
-    is there on every route. Kept local rather than imported from the
-    OpenAI interceptor: the option has the same meaning on both, but the
-    two modules must stay independently importable and editable."""
-    result = copy.copy(kwargs)
-    existing = result.get("stream_options")
-    caller_asked = isinstance(existing, dict) and bool(existing.get("include_usage"))
-    if isinstance(existing, dict):
-        result["stream_options"] = {**existing, "include_usage": True}
-    else:
-        result["stream_options"] = {"include_usage": True}
-    return result, caller_asked
+# The litellm providers whose request is in OpenAI's shape but which
+# litellm sends with its own HTTP handler rather than the OpenAI SDK
+# (measured on litellm 1.83.0 and 1.104.2; together_ai and edenai are
+# such providers on 1.104, and together_ai goes through the SDK on 1.83).
+# Their usage is asked for in the request body only (see
+# :func:`_asked_in_the_body`). A provider litellm sends through the OpenAI
+# SDK is asked at the SDK, on the request litellm built (the OpenAI
+# interceptor's litellm request hook); every other provider reports its
+# usage in its own events and is asked nothing.
+_OPENAI_SHAPED_OWN_HANDLER = frozenset(
+    {
+        "azure_ai",
+        "chatgpt",
+        "cometapi",
+        "deepseek",
+        "edenai",
+        "fireworks_ai",
+        "github_copilot",
+        "groq",
+        "hosted_vllm",
+        "together_ai",
+        "xai",
+    }
+)
 
 
-# Delta fields that make a streamed chunk visible content for the caller.
-# A chunk whose choices carry none of these and no finish reason, but
-# carries ``usage``, is litellm's trailing usage chunk.
-_DELTA_CONTENT_FIELDS = ("content", "tool_calls", "function_call", "reasoning_content")
+def _asks_for_usage(options: Any) -> bool:
+    return isinstance(options, Mapping) and bool(options.get("include_usage"))
 
 
-def _is_usage_only_chunk(chunk: Any) -> bool:
-    """litellm's trailing usage chunk. Unlike OpenAI, litellm does not
-    send it with empty ``choices``: it carries one choice with an empty
-    delta and no finish reason, so the test is on the delta's fields.
-    A route that attached usage to an early role-only chunk (no content
-    yet) would match too and lose that chunk; none of the live-verified
-    routes does (Anthropic sync, OpenAI async), and the usage chunk is
-    the trailing one on every route litellm's wrapper serves."""
-    if getattr(chunk, "usage", None) is None:
+def _sent_stream_options(kwargs: dict[str, Any]) -> Any:
+    """The ``stream_options`` of the body litellm's own handler sends:
+    ``extra_body`` is merged over litellm's body key by key, so its
+    ``stream_options``, when it has one, replaces the caller's argument
+    whole."""
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, Mapping) and "stream_options" in extra:
+        return extra["stream_options"]
+    return kwargs.get("stream_options")
+
+
+def _asked_in_the_body(kwargs: dict[str, Any], mark: base.OuterCall) -> dict[str, Any]:
+    """The call as sent for a provider :data:`_OPENAI_SHAPED_OWN_HANDLER`
+    names whose body (``extra_body`` merged over the caller's arguments,
+    as litellm merges it) does not ask for usage, an explicit
+    ``include_usage: false`` included: ``include_usage: true`` set in the
+    ``stream_options`` of its ``extra_body``, the other keys of the
+    ``stream_options`` the body would carry kept. litellm puts it in the
+    provider's request body and nowhere else, and litellm's own
+    ``stream_options``, which decide what its stream shows the caller, are
+    left as the caller passed them: litellm shows the usage chunk only to
+    a caller whose ``stream_options`` asks for usage. So the body is not
+    changed for a caller whose ``stream_options`` asks while its
+    ``extra_body`` refuses: litellm would show that caller the usage
+    chunk the ask causes. That provider is then asked nothing and sends
+    no usage, which the mark records (``usage_unasked``), so the call is
+    metered from the estimate. Any other call is sent as it is."""
+    if _asks_for_usage(_sent_stream_options(kwargs)):
+        return kwargs
+    try:
+        _model, provider_name, _key, _base = _litellm_module.get_llm_provider(
+            model=kwargs.get("model", ""),
+            custom_llm_provider=kwargs.get("custom_llm_provider"),
+            api_base=kwargs.get("api_base"),
+        )
+    except Exception:
+        return kwargs
+    if provider_name not in _OPENAI_SHAPED_OWN_HANDLER:
+        return kwargs
+    extra = kwargs.get("extra_body")
+    if _asks_for_usage(kwargs.get("stream_options")) or not (
+        extra is None or isinstance(extra, Mapping)
+    ):
+        mark.usage_unasked = True
+        return kwargs
+    sent = _sent_stream_options(kwargs)
+    body = dict(extra or {})
+    body["stream_options"] = {**(sent if isinstance(sent, Mapping) else {}), "include_usage": True}
+    return {**kwargs, "extra_body": body}
+
+
+# The litellm module whose generators send a legacy completions request
+# when first read (``text_completion`` on a completions model).
+_SENDS_WHEN_READ_MODULE = "litellm.llms.openai.completion.handler"
+# litellm's own async wrapper around a text_completion stream.
+_ASYNC_TEXT_WRAPPER = ("litellm.main", "_async_streaming")
+
+
+def _module_of(frame: FrameType | None) -> str | None:
+    name = frame.f_globals.get("__name__") if frame is not None else None
+    return name if isinstance(name, str) else None
+
+
+def _async_gen_unstarted(gen: Any) -> bool:
+    """Whether async generator ``gen`` has not started. Python 3.12+ says
+    so (``inspect.getasyncgenstate``). Python 3.11 has no such state: an
+    unstarted generator there is one not running whose frame still stands
+    at its ``RETURN_GENERATOR`` instruction, where a generator's frame
+    waits until it is first resumed (the instructions before it set up the
+    generator's cells, so it is not always the first)."""
+    if sys.version_info >= (3, 12):
+        return bool(inspect.getasyncgenstate(gen) == inspect.AGEN_CREATED)
+    frame = gen.ag_frame
+    if frame is None or gen.ag_running:
         return False
-    for choice in getattr(chunk, "choices", None) or []:
-        if getattr(choice, "finish_reason", None):
-            return False
-        delta = getattr(choice, "delta", None)
-        if delta is not None and any(
-            getattr(delta, field, None) for field in _DELTA_CONTENT_FIELDS
-        ):
-            return False
-    return True
+    return bool(frame.f_lasti <= _generator_start(gen.ag_code))
 
 
-def _has_usage(usage: Any) -> bool:
-    """Whether a litellm ``Usage`` counts any tokens."""
-    total = 0
-    for name in ("prompt_tokens", "completion_tokens"):
-        value = getattr(usage, name, None)
-        if isinstance(value, int) and not isinstance(value, bool):
-            total += value
-    return total > 0
+def _generator_start(code: CodeType) -> int:
+    """The offset of a generator code's ``RETURN_GENERATOR`` instruction
+    (Python 3.11), or -1 when it has none, which reads as started (the
+    stream is then reported as a request made at the call)."""
+    for instruction in dis.get_instructions(code):
+        if instruction.opname == "RETURN_GENERATOR":
+            return instruction.offset
+    return -1
 
 
-def _is_text_usage_only_chunk(chunk: Any) -> bool:
-    """litellm's trailing usage chunk on a ``text_completion`` stream: a
-    ``TextCompletionResponse`` whose usage counts tokens (every chunk
-    carries a ``Usage``, zeros on all but this one) and whose choice
-    carries no text and no finish reason."""
-    if not _has_usage(getattr(chunk, "usage", None)):
-        return False
-    for choice in getattr(chunk, "choices", None) or []:
-        if getattr(choice, "finish_reason", None) or getattr(choice, "text", None):
-            return False
-    return True
+def _sends_on_first_read(stream: Any) -> bool:
+    """Whether litellm's stream has yet to send its request, which leaves
+    at its first read: a ``CustomStreamWrapper`` that makes its call when
+    first read (Gemini's routes), or a ``text_completion`` stream over
+    litellm's legacy completions generator, not yet started. False for
+    anything else, including a shape this does not know, which is then
+    reported as a request made at the call."""
+    name = type(stream).__name__
+    if name == "CustomStreamWrapper":
+        return (
+            getattr(stream, "completion_stream", None) is None
+            and getattr(stream, "make_call", None) is not None
+        )
+    if name == "TextCompletionStreamWrapper":
+        return _source_unsent(getattr(stream, "completion_stream", None))
+    return False
+
+
+def _source_unsent(source: Any) -> bool:
+    """See :func:`_sends_on_first_read`: what a text stream reads from."""
+    if type(source).__name__ == "CustomStreamWrapper":
+        return _sends_on_first_read(source)
+    if inspect.isgenerator(source):
+        return (
+            inspect.getgeneratorstate(source) == inspect.GEN_CREATED
+            and _module_of(source.gi_frame) == _SENDS_WHEN_READ_MODULE
+        )
+    if inspect.isasyncgen(source) and _async_gen_unstarted(source):
+        module = _module_of(source.ag_frame)
+        if module == _SENDS_WHEN_READ_MODULE:
+            return True
+        if (module, source.ag_code.co_name) == _ASYNC_TEXT_WRAPPER:
+            frame = source.ag_frame
+            return frame is not None and _source_unsent(frame.f_locals.get("response"))
+    return False
 
 
 def _intercept_completion(
@@ -370,7 +481,7 @@ def _intercept_completion(
 ) -> Any:
     """``litellm.completion`` through the sensor: a stream guard for
     ``stream=True``, the plain call intercept otherwise."""
-    return _intercept_sync(orig, kwargs, session, provider, _is_usage_only_chunk)
+    return _intercept_sync(orig, kwargs, session, provider, ask=True)
 
 
 async def _intercept_acompletion(
@@ -382,7 +493,7 @@ async def _intercept_acompletion(
     """``litellm.acompletion`` through the sensor; ``stream=True``
     resolves to the async stream guard, matching ``await
     litellm.acompletion(..., stream=True)`` on the unpatched module."""
-    return await _intercept_async(orig, kwargs, session, provider, _is_usage_only_chunk)
+    return await _intercept_async(orig, kwargs, session, provider, ask=True)
 
 
 def _intercept_text_completion(
@@ -392,9 +503,8 @@ def _intercept_text_completion(
     provider: LitellmProvider,
 ) -> Any:
     """``litellm.text_completion`` through the sensor (see
-    :func:`_intercept_completion`); the usage chunk of a stream is a
-    ``TextCompletionResponse``."""
-    return _intercept_sync(orig, kwargs, session, provider, _is_text_usage_only_chunk)
+    :func:`_intercept_completion`)."""
+    return _intercept_sync(orig, kwargs, session, provider, ask=True)
 
 
 async def _intercept_atext_completion(
@@ -404,7 +514,7 @@ async def _intercept_atext_completion(
     provider: LitellmProvider,
 ) -> Any:
     """``litellm.atext_completion`` through the sensor."""
-    return await _intercept_async(orig, kwargs, session, provider, _is_text_usage_only_chunk)
+    return await _intercept_async(orig, kwargs, session, provider, ask=True)
 
 
 def _intercept_responses(
@@ -414,9 +524,8 @@ def _intercept_responses(
     provider: LitellmProvider,
 ) -> Any:
     """``litellm.responses`` through the sensor. A Responses stream
-    carries its usage on its terminal event, so nothing is added to the
-    request and nothing is hidden from the caller."""
-    return _intercept_sync(orig, kwargs, session, provider, None)
+    carries its usage on its terminal event, so nothing is asked for."""
+    return _intercept_sync(orig, kwargs, session, provider, ask=False)
 
 
 async def _intercept_aresponses(
@@ -426,7 +535,18 @@ async def _intercept_aresponses(
     provider: LitellmProvider,
 ) -> Any:
     """``litellm.aresponses`` through the sensor."""
-    return await _intercept_async(orig, kwargs, session, provider, None)
+    return await _intercept_async(orig, kwargs, session, provider, ask=False)
+
+
+def _stream_call(
+    kwargs: dict[str, Any], provider: LitellmProvider, *, ask: bool
+) -> tuple[base.OuterCall, dict[str, Any]]:
+    """The litellm call's own mark, which the provider reads the usage
+    from that the OpenAI interceptor hands over, and the kwargs the call
+    is made with."""
+    mark = base.OuterCall()
+    provider.outer_call = mark
+    return mark, (_asked_in_the_body(kwargs, mark) if ask else kwargs)
 
 
 def _intercept_sync(
@@ -434,25 +554,29 @@ def _intercept_sync(
     kwargs: dict[str, Any],
     session: Session,
     provider: LitellmProvider,
-    usage_chunk: Callable[[Any], bool] | None,
+    *,
+    ask: bool,
 ) -> Any:
     """A sync entry point through the sensor: a stream guard for
-    ``stream=True`` (with the usage option added when ``usage_chunk``
-    names the chunk it produces), the plain call intercept otherwise."""
+    ``stream=True``, the plain call intercept otherwise."""
     if kwargs.get("stream"):
-        call_kwargs, hide_chunk = _stream_request(kwargs, usage_chunk)
-        # Opened eagerly: litellm sends the request inside the call, so
-        # provider errors surface at the call, as without the sensor. The
-        # caller gets the guard with the protocol of litellm's stream
-        # (CustomStreamWrapper iterates both ways and is no context
+        mark, call_kwargs = _stream_call(kwargs, provider, ask=ask)
+        # Opened at the call: litellm raises its argument errors there and
+        # sends most requests there, so provider errors surface at the
+        # call, as without the sensor; a stream that sends at its first
+        # read reports the call then (sent_on_first_read). Its reads run
+        # under the call's mark, so the request a first read sends is the
+        # call's. The caller gets the guard with the protocol of litellm's
+        # stream (CustomStreamWrapper iterates both ways and is no context
         # manager), or litellm's whole response when it answered with one
         # (see base._GuardCore.whole_response).
         guard = base.call_stream(
-            _as_outer_call(orig),
+            _as_outer_call(orig, mark),
             call_kwargs,
             session,
             provider,
-            hide_chunk=hide_chunk,
+            read_within=functools.partial(base.outer_intercept, mark),
+            sent_on_first_read=_sends_on_first_read,
         ).open()
         whole = guard.whole_response()
         return base.protocol_view(guard) if whole is None else whole
@@ -464,17 +588,19 @@ async def _intercept_async(
     kwargs: dict[str, Any],
     session: Session,
     provider: LitellmProvider,
-    usage_chunk: Callable[[Any], bool] | None,
+    *,
+    ask: bool,
 ) -> Any:
     """Async form of :func:`_intercept_sync`."""
     if kwargs.get("stream"):
-        call_kwargs, hide_chunk = _stream_request(kwargs, usage_chunk)
+        mark, call_kwargs = _stream_call(kwargs, provider, ask=ask)
         guard = base.call_stream_async(
-            _as_outer_async_call(orig),
+            _as_outer_async_call(orig, mark),
             call_kwargs,
             session,
             provider,
-            hide_chunk=hide_chunk,
+            read_within=functools.partial(base.outer_intercept, mark),
+            sent_on_first_read=_sends_on_first_read,
         )
         await guard.open()
         whole = guard.whole_response()
@@ -482,16 +608,114 @@ async def _intercept_async(
     return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
 
 
-def _stream_request(
-    kwargs: dict[str, Any], usage_chunk: Callable[[Any], bool] | None
-) -> tuple[dict[str, Any], Callable[[Any], bool] | None]:
-    """The kwargs a streamed call is sent with and the guard's
-    ``hide_chunk``: with ``usage_chunk``, the usage option is added and
-    the chunk it produces hidden unless the caller asked for it."""
-    if usage_chunk is None:
-        return kwargs, None
-    call_kwargs, caller_asked = _inject_stream_options(kwargs)
-    return call_kwargs, (None if caller_asked else usage_chunk)
+class _SessionAtFirstRead:
+    """A litellm stream made while no session was active whose request
+    leaves at its first read (see :func:`_sends_on_first_read`): that read
+    is the call, so it finds its session then. A session reports it (one
+    ``pre_call`` and its ``post_call``) and a blocking one refuses it with
+    nothing sent; with none it is litellm's own. It iterates both ways, as
+    litellm's stream wrappers do, and is no context manager; every other
+    attribute is the stream's."""
+
+    def __init__(
+        self,
+        stream: Any,
+        kwargs: dict[str, Any],
+        provider_cls: type[LitellmProvider],
+        made_async: bool,
+    ) -> None:
+        self._fd_stream = stream
+        self._fd_kwargs = kwargs
+        self._fd_provider_cls = provider_cls
+        self._fd_made_async = made_async
+        self._fd_reader: Any = None
+
+    def _fd_guard_args(self) -> tuple[Session, LitellmProvider, base.OuterCall] | None:
+        session = _current_session()
+        if session is None:
+            return None
+        provider = self._fd_provider_cls(capture_prompts=session.config.capture_prompts)
+        mark = base.OuterCall()
+        provider.outer_call = mark
+        return session, provider, mark
+
+    def _fd_sync_reader(self) -> Any:
+        if self._fd_reader is None:
+            args = self._fd_guard_args()
+            if args is None:
+                self._fd_reader = self._fd_stream
+            else:
+                session, provider, mark = args
+                guard = base.call_stream(
+                    base._returning(self._fd_stream),
+                    self._fd_kwargs,
+                    session,
+                    provider,
+                    read_within=functools.partial(base.outer_intercept, mark),
+                ).open()
+                self._fd_reader = base.protocol_view(guard)
+        return self._fd_reader
+
+    async def _fd_async_reader(self) -> Any:
+        if self._fd_reader is None:
+            args = self._fd_guard_args()
+            if args is None:
+                self._fd_reader = self._fd_stream
+            elif not self._fd_made_async:
+                return self._fd_sync_reader()
+            else:
+                session, provider, mark = args
+                guard = base.call_stream_async(
+                    base._returning(self._fd_stream),
+                    self._fd_kwargs,
+                    session,
+                    provider,
+                    read_within=functools.partial(base.outer_intercept, mark),
+                )
+                await guard.open()
+                self._fd_reader = base.protocol_view(guard)
+        return self._fd_reader
+
+    def __iter__(self) -> Any:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._fd_sync_reader())
+
+    def __aiter__(self) -> Any:
+        return self
+
+    async def __anext__(self) -> Any:
+        reader = await self._fd_async_reader()
+        return await reader.__anext__()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._fd_stream, name)
+
+
+def _found_at_first_read(
+    result: Any,
+    names: tuple[str, ...],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    provider_cls: type[LitellmProvider],
+    *,
+    made_async: bool,
+) -> Any:
+    """What a call made while no session was active returns: litellm's
+    own result, or, for a stream whose request leaves at its first read,
+    that stream seen through :class:`_SessionAtFirstRead`."""
+    if not kwargs.get("stream") and "stream" not in names[: len(args)]:
+        return result
+    try:
+        lazy = _sends_on_first_read(result)
+    except Exception:
+        lazy = False
+    named = _named_arguments(names, args, kwargs) if lazy else None
+    if named is None or not named.get("stream"):
+        return result
+    view_type = base.named_like(_SessionAtFirstRead, type(result))
+    return view_type(result, named, provider_cls, made_async)
 
 
 def _intercept_embedding(
@@ -722,9 +946,11 @@ def _patched_sync(
     @functools.wraps(orig)
     def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or (
-            base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1))
-        ):
+        if session is None:
+            return _found_at_first_read(
+                orig(*args, **kwargs), names, args, kwargs, provider_cls, made_async=False
+            )
+        if base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1)):
             return orig(*args, **kwargs)
         named = _named_arguments(names, args, kwargs)
         if named is None:
@@ -747,9 +973,11 @@ def _patched_async(
     @functools.wraps(orig)
     async def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or (
-            base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1))
-        ):
+        if session is None:
+            return _found_at_first_read(
+                await orig(*args, **kwargs), names, args, kwargs, provider_cls, made_async=True
+            )
+        if base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1)):
             return await orig(*args, **kwargs)
         named = _named_arguments(names, args, kwargs)
         if named is None:

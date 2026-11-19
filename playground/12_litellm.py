@@ -127,7 +127,8 @@ def main() -> None:
 
     # Sync streaming on the Anthropic route (litellm's raw-httpx path).
     # The caller does not ask for usage, so the loop sees content chunks
-    # only; the sensor meters the usage chunk litellm appends.
+    # only, as without the sensor; the sensor asks for nothing on this
+    # route and meters the usage litellm keeps on its stream.
     t0 = time.monotonic()
     sync_chunks = 0
     sync_text = ""

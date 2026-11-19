@@ -1556,18 +1556,125 @@ around litellm's `CustomStreamWrapper`, seen through that wrapper's
 protocol (`base.protocol_view`): it iterates both ways, `for` and `async
 for`, whichever call made it, and is no context manager, so the stream
 the caller gets does the same, and reading it either way is metered
-once and fails as litellm's does. The sensor asks litellm for
-`stream_options={"include_usage": True}`, so litellm appends one chunk
-carrying the provider's usage after the `finish_reason` chunk (one choice
-with an empty delta, where OpenAI sends empty `choices`). The guard meters
-that chunk and hides it from a caller who did not ask for usage, so their
-loop sees the chunks it would see without the sensor.
-`text_completion(stream=True)` returns the guard around litellm's
-`TextCompletionStreamWrapper`, with `include_usage` requested the same
-way; every chunk of that stream is a `TextCompletionResponse` carrying a
-`Usage`, zeros on all but litellm's trailing usage chunk, so the chunk
-that ends the stream, and the one the guard hides, is the one whose usage
-is not zero. `responses(stream=True)` returns the guard around litellm's
+once and fails as litellm's does. `text_completion(stream=True)` returns
+the guard around litellm's `TextCompletionStreamWrapper`, whose chunks
+are `TextCompletionResponse`s.
+
+The caller's loop sees exactly the chunks litellm shows without the
+sensor, in the same order and built with the same fields, and a read that
+raises without the sensor raises the same exception with it. What litellm
+shows is litellm's to decide (the caller's `stream_options`, or litellm's
+own default for the provider: on OpenAI's own base it asks for usage
+itself), so the sensor never changes the `stream_options` litellm decides
+on, never hides a chunk litellm shows and never rewrites one. It asks the
+provider for usage only where the request is final and no layer above
+observes the ask, and meters from the provider's counts wherever they can
+be had that way, in three tiers by the route litellm takes:
+
+- **Through the OpenAI SDK** (OpenAI's own base, Azure, the
+  OpenAI-compatible providers litellm serves with the SDK, and
+  `text_completion` on chat and legacy completions models): under the
+  litellm call's mark, the OpenAI interceptor sets `include_usage: true`
+  on the request litellm's provider request code sends (the chat and
+  legacy completion requests of litellm's OpenAI and Azure routes; any
+  other SDK call made under the mark, from a litellm callback, guardrail
+  or health check, is left as it is) when the body the SDK sends does not
+  ask for usage. That body is litellm's arguments with `extra_body`
+  merged over them key by key, as the SDK merges it, so a
+  `stream_options` in `extra_body` replaces the argument whole; the ask
+  is set where it lands, keeping the other keys of that `stream_options`.
+  An explicit `include_usage: false` is sent to the provider as `true`
+  and the usage chunk is removed before the caller's layer reads it: the
+  caller asked not to see usage and sees none, and the call is metered
+  with the provider's counts. The interceptor takes the usage chunk out
+  of the stream before litellm reads it, removes the `"usage": null`
+  OpenAI then sets on every other chunk, and hands the counts to the
+  litellm call, which reports them in its one `post_call`. When the body
+  already asks for usage, nothing is added or removed and the counts are
+  read as the usage chunk passes to litellm. The handed counts are the
+  call's only counts: what litellm shows on its own chunks is not read,
+  since litellm may show its own count of a stream whose usage chunk it
+  never saw. Each request the interceptor takes starts the call's counts
+  afresh, so an attempt that failed before a fallback answered adds
+  nothing to the call's report. These calls are metered from the
+  provider's counts whatever the caller asked for.
+- **OpenAI-shaped, sent by litellm's own HTTP handler** (groq, deepseek,
+  xai, fireworks_ai, hosted_vllm, azure_ai, github_copilot, chatgpt and
+  cometapi; in litellm 1.104 also together_ai, which 1.83 sends through
+  the SDK, and edenai, which 1.83 does not have): the sensor asks in the
+  provider's request body only, setting `include_usage: true` in the
+  `stream_options` of the call's `extra_body` where the body litellm
+  sends does not ask for usage. litellm merges `extra_body` over its body
+  key by key, so the caller's `extra_body` `stream_options` decides when
+  it has one, and an explicit `include_usage: false` is sent as `true`,
+  as through the SDK; the other keys of the `stream_options` that body
+  carries are kept. litellm shows the usage chunk only to a caller whose
+  `stream_options` argument asks for usage, so the chunk the ask causes
+  stays inside litellm and every chunk the caller sees is the unsensored
+  one. The one call the sensor does not ask for is the one whose
+  `stream_options` argument asks while its `extra_body` refuses: litellm
+  would show that caller the usage chunk an ask causes. The counts come
+  from the usage litellm shows when the provider was asked, else from
+  the usage chunk litellm keeps on its stream without showing it.
+- **Not OpenAI-shaped** (Anthropic, Gemini, Vertex AI, Bedrock, Cohere,
+  Ollama and the other providers litellm sends with its own handlers):
+  the provider reports usage in its own events whatever the request says,
+  so the sensor asks for nothing. The counts come from the usage litellm
+  shows when it shows it, else from the usage on the chunks litellm keeps
+  on its stream. That record holds the provider's counts for Anthropic
+  and Gemini (measured on litellm 1.83 and 1.104); for Vertex AI,
+  Bedrock, Cohere and Ollama it is expected by reading, not measured:
+  their stream iterators put the provider's usage on a chunk, and
+  litellm keeps every chunk before it removes the usage from the one it
+  shows.
+
+The usage litellm keeps but does not show is read by one function that
+checks every attribute it reads (a missing attribute, an unexpected
+shape or counts that are not non-negative integers give nothing, never
+an exception and never a guessed number); it is a fallback reader of
+litellm's own record. A call reports the provider's counts or the
+pre-call estimate, never a count litellm worked out itself, and the
+estimate only where none of this yields the provider's counts:
+
+- an OpenAI-shaped call litellm sends with its own handler, on a litellm
+  release that discards the usage chunk it does not show (1.83 does;
+  1.104 keeps it), when the caller's `stream_options` argument does not
+  ask for usage. The sensor's ask in the body is made on 1.83 as well,
+  so there the request gains `include_usage` with no metering gain; the
+  ask is not gated by litellm release;
+- an OpenAI-shaped call litellm sends with its own handler whose
+  `stream_options` argument asks for usage while its `extra_body`
+  refuses it: the provider is not asked and sends none, so whatever
+  litellm shows is its own count;
+- a `text_completion` stream on a route that does not go through the
+  OpenAI SDK, made by `atext_completion`: litellm wraps a plain generator
+  there and keeps no record;
+- any route and release where litellm keeps no record of a usage it does
+  not show.
+
+A stream left before its usage arrives reports the estimate.
+
+The sensor reports a litellm request when it is sent. Most litellm
+streams send their request at the call; two send it at their first read:
+Gemini's routes (litellm's `CustomStreamWrapper` makes its call then) and
+`text_completion` on a legacy completions model (litellm's generator
+sends it when started). For such a stream the policy check still runs at
+the call, before anything can be sent, so a BLOCK refuses the call
+there; its `pre_call` and `post_call` are reported when the request
+leaves, at the first read, and a stream never read reports nothing. A
+first read that raises before the request leaves (litellm's own error,
+as for an async-made stream read with `for`) reports the `pre_call` and
+the call's `llm_error`, as any failed read does. One
+made while no session is active finds its session at that first read,
+which is the call: a blocking session refuses it with nothing sent, a
+session reports it, and with none it is litellm's own. The request
+leaves only through litellm's iteration, which goes through the guard
+(or, for a stream made with no session, the sensor's view of it), so
+neither path sends it unpoliced. Every read of a litellm stream runs
+under the litellm call's mark, so the request a first read sends through
+the OpenAI SDK is the call's, and its usage is asked for and handed over
+as at the call.
+`responses(stream=True)` returns the guard around litellm's
 Responses streaming iterator; the terminal event (`response.completed` /
 `.incomplete` / `.failed`) carries the whole response and its usage, so
 nothing is added to the request and nothing is hidden, and the guard
@@ -1974,7 +2081,7 @@ wrapping.
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete`. llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so that pairing fails inside the SDK with or without the sensor |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic, OpenAI and Gemini (`gemini/...`, `GeminiCompletion`, through google-genai) provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | Google ADK 2.13+ | The default `Gemini` model through google-genai's `aio.models.generate_content` / `generate_content_stream`, one call per model turn; `LiteLlm` and `AnthropicLlm` / `Claude` through the litellm and Anthropic patches |
-| litellm | `litellm.completion` / `acompletion`, `text_completion` / `atext_completion` and `responses` / `aresponses`, `stream=True` included (sync and async; chat and text streams metered from litellm's trailing usage chunk, Responses streams from the terminal event); each call is reported once, by the wrapper of the entry point used, also where litellm serves it through the OpenAI SDK or its own `completion`; `embedding` / `aembedding` |
+| litellm | `litellm.completion` / `acompletion`, `text_completion` / `atext_completion` and `responses` / `aresponses`, `stream=True` included (sync and async; chat and text streams metered from the provider's counts: asked for at the OpenAI SDK, or in the provider body on litellm's OpenAI-shaped handlers, and read from what litellm shows or keeps, the estimate only where none of these has them; Responses streams from the terminal event); each call is reported once, by the wrapper of the entry point used, also where litellm serves it through the OpenAI SDK or its own `completion`; `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
 | bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); on Anthropic calls the gateway's host is recorded as `provider_metadata.platform`, on OpenAI calls the gateway is not recorded |
 
@@ -10688,24 +10795,44 @@ metered from the usage the provider sends inside the stream:
   `stream_options.include_usage` so the provider sends it. That chunk has
   empty `choices`, which the usual loop body (`chunk.choices[0]`) does
   not expect, so a caller who did not ask for usage never sees it: the
-  guard records its usage and drops it, the stream looks exactly as it
-  does without the sensor, and `chunk_count` counts the chunks the caller
-  saw. A caller who set `include_usage` themselves receives it as usual.
+  guard records its usage and drops it. Once usage is asked for, OpenAI
+  also sets `"usage": null` on every other chunk; the guard removes that
+  field from each chunk it hands on, so every chunk is built with the
+  fields it has without the sensor (`to_dict()`,
+  `model_dump(exclude_unset=True)` and `model_fields_set` match), and
+  `chunk_count` counts the chunks the caller saw. A caller who set
+  `include_usage` themselves receives the stream untouched.
   The usage chunk is the event that ends the response; stopping at the
   `finish_reason` chunk before it leaves the usage unread, and that call
   reports `aborted` with the pre-call estimate.
 - **OpenAI Responses.** `response.completed` carries `usage`.
-- **litellm.** The sensor injects `stream_options.include_usage` into the
-  litellm call, and litellm appends one trailing chunk carrying `usage`
-  after the `finish_reason` chunk, with one choice and an empty delta
-  rather than empty `choices`; the guard tells it apart by its delta
-  fields and hides it from a caller who did not ask for usage. As with
-  OpenAI chat, that chunk ends the response; stopping at the
-  `finish_reason` chunk leaves the usage unread. A `text_completion`
-  stream works the same way, its chunks `TextCompletionResponse`s, the
-  usage chunk the one whose `usage` is not zero (every chunk carries a
-  `Usage`). A `responses` stream carries `usage` on its terminal event,
-  as an OpenAI Responses stream does.
+- **litellm.** The sensor leaves litellm's `stream_options` as litellm
+  decides them and hides nothing litellm shows. Where litellm sends the
+  request through the OpenAI SDK, the OpenAI interceptor asks for usage
+  when the body the SDK sends does not (an explicit `include_usage:
+  false` included), takes the usage chunk that causes out of the stream
+  (and the `"usage": null` it puts on the other chunks) before litellm
+  reads it, and hands the counts to the litellm call, which reports them
+  and no other; when the body already asks, the counts are read as that
+  chunk passes. With capture on, the response stored for such a call is
+  litellm's assembled response; where its `usage` does not carry the
+  provider's counts, it is replaced by the usage object the provider
+  returned, with the fields it returned. That is where litellm never saw
+  the usage chunk (the interceptor took it out) or did not keep it
+  (litellm 1.83 discards a usage chunk it does not show), and assembled
+  zeros or its own count of the prompt instead. On litellm's own
+  OpenAI-shaped handlers, and on the providers asked nothing, the stored
+  response is litellm's assembled response as it is. On litellm's own
+  OpenAI-shaped handlers the ask goes in the provider body (`extra_body`)
+  only. Elsewhere nothing is asked.
+  Off the OpenAI SDK the counts are the usage litellm shows (a trailing
+  chunk after the `finish_reason` chunk, with one choice and an empty
+  delta, or for `text_completion` the `TextCompletionResponse` whose
+  `usage` is not zero), else the usage litellm keeps on its stream, else
+  the estimate (the routes are listed with the litellm streams above). A
+  stream left before its usage arrives reports the estimate. A
+  `responses` stream carries `usage` on its terminal event, as an OpenAI
+  Responses stream does.
 
 The sensor wraps the SDK stream in a guard (`GuardedStream`, or
 `GuardedAsyncStream` for async clients, in `interceptor/base.py`) that

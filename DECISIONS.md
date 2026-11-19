@@ -1314,6 +1314,23 @@ one; an unentered manager left an orphan `pre_call`.
 under budget could send later, a sync re-entry would skip the check);
 checking at both moments (a WARN reported twice, one call refused twice).
 
+## D290 -- Usage is asked for where the request is final, never at a layer whose decision the caller observes
+
+**Date:** 2026-11-18
+**Decision:** a litellm stream shows its caller exactly what litellm
+shows; the sensor never changes litellm's `stream_options` nor hides or
+rewrites a chunk. It asks on the body actually sent (`extra_body` merged
+over the arguments key by key): at the SDK on litellm's provider request
+only, removing what the ask causes before litellm reads it; in the body
+on litellm's OpenAI-shaped handlers; elsewhere not at all. An explicit
+`include_usage: false` is sent as `true`, its usage chunk removed before
+the caller's layer reads it. Counts: the provider's, or the estimate on
+a named list; never litellm's own.
+**Why:** litellm decides what its caller sees, so hiding by the caller's
+options hid chunks litellm shows and on 1.104 made `async for` raise.
+**Rejected alternative:** asking through litellm's `stream_options` and
+hiding what that adds by chunk shape; rewriting litellm's chunks.
+
 ## D291 -- An embeddings event too big to send gives up its vectors first, so its input arrives whole
 
 **Date:** 2026-11-19

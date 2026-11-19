@@ -201,6 +201,46 @@ All notable changes to Flightdeck are documented here.
   returned as base64 strings are given up the same way, never cut in
   part alongside the input. Vectors that fit are stored as before, and
   `output_dimensions` still reports their count and dimension.
+- **A litellm stream shows its caller what litellm shows.** The sensor
+  asked litellm for `stream_options.include_usage` on every streamed
+  call and hid the chunk that produced from a caller who had not asked,
+  but litellm asks for usage itself on OpenAI's own base, so a caller
+  lost the usage chunk litellm shows them; every `text_completion`
+  chunk's `usage` changed from a zero `Usage` to `None`; and on litellm
+  1.104 a stream made by `completion()` and read with `async for` raised
+  for OpenAI-compatible bases and `include_usage: false`. The sensor now
+  leaves litellm's `stream_options` and chunks alone and asks for usage
+  where the request is final: at the OpenAI SDK for the providers
+  litellm sends through it, taking out what the ask causes before
+  litellm reads the stream; in the request body for the OpenAI-shaped
+  providers litellm sends with its own HTTP handler; and not at all for
+  the others, whose usage comes from litellm's own record of the stream.
+  The ask is decided on the body actually sent, with the caller's
+  `extra_body` merged over the arguments as the SDK and litellm merge it,
+  so a caller's `extra_body` `stream_options` no longer turns the ask off
+  and leaves litellm's own count in the `post_call`. An explicit
+  `include_usage: false` is sent to the provider as `true` and the usage
+  chunk is removed before the caller's layer reads it, so the caller
+  still sees no usage and the call is metered with the provider's
+  counts. A call reports the provider's counts or the estimate, never a
+  count litellm worked out itself; the estimate remains only where none
+  of these has the provider's counts (an OpenAI-shaped own-handler call
+  on litellm 1.83 whose `stream_options` does not ask for usage, one
+  whose `stream_options` asks while its `extra_body` refuses, and
+  `atext_completion` off the SDK). With capture on, the stored response
+  of a stream litellm sent through the OpenAI SDK carries the provider's
+  counts: litellm's own `usage` where it has them, else the usage object
+  the provider returned.
+- **A direct OpenAI stream's chunks keep their set fields.** When the
+  sensor asks for usage, OpenAI sets `"usage": null` on every chunk; the
+  sensor now takes it out of each chunk it hands on, so `to_dict()` and
+  `model_dump(exclude_unset=True)` match the stream without the sensor.
+- **A litellm stream that sends its request at its first read reports a
+  call only when it does.** `text_completion` on a legacy completions
+  model and Gemini's routes reported a `pre_call` and a `post_call` at
+  the call even when never read. They now report when the request
+  leaves, and one made with no session finds its session at the first
+  read (a blocking one refuses it with nothing sent).
 - **An Anthropic stream manager reports exactly the requests it sends.**
   `messages.stream()` / `beta.messages.stream()` emitted their
   `pre_call` when `stream()` was called, so a manager never entered left

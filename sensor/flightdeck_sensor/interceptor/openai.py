@@ -75,8 +75,21 @@ Interception hierarchy for per-instance wrapping::
       ├── with_streaming_response → the SDK's client view over this proxy
       └── __getattr__        →  pass-through
 
-When ``stream=True``, injects ``stream_options={"include_usage": True}``
-into kwargs so OpenAI returns token usage in the final streaming chunk.
+When ``stream=True`` and the caller did not ask for usage, adds
+``stream_options={"include_usage": True}`` so OpenAI returns token usage
+in a final chunk; the guard absorbs that chunk and takes the
+``"usage": null`` the ask adds out of every chunk it hands on, so the
+caller reads the chunks, with their set fields, as without the sensor.
+
+A streamed provider request litellm's own request code sends through
+the SDK while a litellm call is in flight goes through the litellm
+request hook on the SDK's completion resources (see ``_litellm_hooked``):
+usage is asked for there when the body the SDK sends does not ask
+(``extra_body`` merged over the arguments; an explicit
+``include_usage: false`` is sent as ``true``), what the ask causes is
+taken out of the SDK stream before litellm reads it, and the counts are
+handed to the litellm call. Every other SDK call, a direct legacy
+``completions.create`` included, is the SDK's own as before.
 
 The SDK's raw and streaming views (``with_raw_response`` /
 ``with_streaming_response``, on a resource or on the client) mark their
@@ -91,11 +104,14 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import inspect
 import json
 import logging
+import sys
 import time
 import types
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from flightdeck_sensor.core.errors import classify_stop_reason
@@ -106,6 +122,8 @@ from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
+
     from flightdeck_sensor.core.session import Session
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
@@ -673,7 +691,7 @@ def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:
     if not kwargs.get("stream"):
         return kwargs, None
     call_kwargs, caller_asked_for_usage = _inject_stream_options(kwargs)
-    return call_kwargs, (None if caller_asked_for_usage else _is_usage_only_chunk)
+    return call_kwargs, (None if caller_asked_for_usage else _hide_asked_usage)
 
 
 class SensorCompletions(base.SessionProxy):
@@ -1291,6 +1309,304 @@ def _is_usage_only_chunk(chunk: Any) -> bool:
     return getattr(chunk, "usage", None) is not None and not getattr(chunk, "choices", None)
 
 
+def _forget_null_usage(chunk: Any) -> None:
+    """Once usage is asked for, OpenAI sets ``"usage": null`` on every
+    chunk before the last: take ``usage`` out of the chunk's set fields,
+    so the chunk is built with the fields it has when usage is not asked
+    for (``to_dict()``, ``model_dump(exclude_unset=True)`` and
+    ``model_fields_set`` match). Best effort; a chunk whose usage is not
+    null is left alone."""
+    if getattr(chunk, "usage", True) is not None:
+        return
+    with contextlib.suppress(Exception):
+        fields = getattr(chunk, "__pydantic_fields_set__", None)  # pydantic 2
+        if not isinstance(fields, set):
+            fields = vars(chunk).get("__fields_set__")  # pydantic 1
+        if isinstance(fields, set):
+            fields.discard("usage")
+
+
+def _hide_asked_usage(chunk: Any) -> bool:
+    """The guard's ``hide_chunk`` for a stream whose usage the sensor asked
+    for: the usage chunk is absorbed (the guard still meters it and feeds
+    it to the accumulator), and every chunk handed on loses the
+    ``"usage": null`` the ask added (see :func:`_forget_null_usage`)."""
+    if _is_usage_only_chunk(chunk):
+        return True
+    _forget_null_usage(chunk)
+    return False
+
+
+# ----------------------------------------------------------------------
+# litellm's own requests: usage asked for, and undone, at the SDK
+# ----------------------------------------------------------------------
+#
+# A litellm call that litellm sends through the OpenAI SDK reaches the
+# SDK's completion resources under the litellm call's mark. The request
+# litellm built is final there, so that is where the sensor asks for
+# usage: ``include_usage`` is set when the body the SDK will send (its
+# arguments with ``extra_body`` merged over them, as the SDK merges it)
+# does not ask for it, an explicit ``include_usage: false`` included, and
+# what the ask causes -- the usage chunk and the ``"usage": null`` on the
+# other chunks -- is taken out of the SDK stream before litellm reads it.
+# The counts, whoever asked, are handed to the litellm call on its mark
+# (``base.OuterCall.usage``), which its guard reports as the call's only
+# counts; nothing here emits an event. Only the request litellm's
+# provider request code makes (:data:`_LITELLM_REQUEST_FUNCTIONS`) is
+# touched: any other SDK call made under the mark (a litellm callback,
+# guardrail or health check) passes through as it always has.
+
+# The SDK's completion resources whose ``create`` the hook wraps:
+# (module, class) for chat completions and legacy completions.
+_LITELLM_HOOKED = (
+    ("openai.resources.chat", "Completions"),
+    ("openai.resources.chat", "AsyncCompletions"),
+    ("openai.resources", "Completions"),
+    ("openai.resources", "AsyncCompletions"),
+)
+# The attribute on a hooked class holding its own ``create``.
+_LITELLM_HOOK_SENTINEL = "_flightdeck_litellm_hook_create"
+# Marks the hook's wrapper.
+_LITELLM_HOOK_MARK = "_flightdeck_litellm_hook"
+# The resource method the hook wraps.
+_CREATE = "create"
+# The litellm functions that send a provider request through the SDK's
+# completion resources, as (module, function): the chat and legacy
+# completion requests of its OpenAI and Azure routes (measured on litellm
+# 1.83.0 and 1.104.2). A request from anywhere else is left alone, so a
+# litellm release that moves the request reads as no ask (the estimate),
+# never as a changed request of some other caller.
+_LITELLM_REQUEST_FUNCTIONS = frozenset(
+    {
+        ("litellm.llms.openai.openai", "make_sync_openai_chat_completion_request"),
+        ("litellm.llms.openai.openai", "make_openai_chat_completion_request"),
+        ("litellm.llms.openai.completion.handler", "streaming"),
+        ("litellm.llms.openai.completion.handler", "async_streaming"),
+        ("litellm.llms.azure.azure", "make_sync_azure_openai_chat_completion_request"),
+        ("litellm.llms.azure.azure", "make_azure_openai_chat_completion_request"),
+        ("litellm.llms.azure.completion.handler", "streaming"),
+        ("litellm.llms.azure.completion.handler", "async_streaming"),
+    }
+)
+
+
+def _undo_possible() -> bool:
+    """Whether the SDK's streams read their events through ``_iterator``
+    (every openai release from 1.0), the one place the hook can take out
+    what its addition causes. Without it, the hook asks for nothing."""
+    try:
+        from openai import AsyncStream, Stream
+
+        return all("_iterator" in cls.__init__.__code__.co_names for cls in (Stream, AsyncStream))
+    except Exception:
+        return False
+
+
+def _requested_by_litellm() -> bool:
+    """Whether the SDK call in progress is a provider request litellm
+    sends: the first frame above the hook outside the SDK and the sensor
+    is one of :data:`_LITELLM_REQUEST_FUNCTIONS`."""
+    frame: types.FrameType | None = sys._getframe(2)
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if not isinstance(name, str):
+            return False
+        if name == "openai" or name.startswith(("openai.", "flightdeck_sensor.")):
+            frame = frame.f_back
+            continue
+        return (name, frame.f_code.co_name) in _LITELLM_REQUEST_FUNCTIONS
+    return False
+
+
+def _sent_stream_options(kwargs: dict[str, Any]) -> Any:
+    """The ``stream_options`` of the body the SDK sends: ``extra_body`` is
+    merged over the arguments key by key, so its ``stream_options``, when
+    it has one, replaces the argument whole."""
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, Mapping) and "stream_options" in extra:
+        return extra["stream_options"]
+    return kwargs.get("stream_options")
+
+
+def _usage_asked(kwargs: dict[str, Any]) -> bool:
+    """Whether the body the SDK sends asks the provider for usage."""
+    options = _sent_stream_options(kwargs)
+    return isinstance(options, Mapping) and bool(options.get("include_usage"))
+
+
+_USAGE_READER: OpenAIProvider | None = None
+
+
+def _hand_over(mark: base.OuterCall, chunk: Any) -> None:
+    """Leave the usage a chunk carries on the litellm call's mark: its
+    counts, and the usage object as the provider returned it."""
+    global _USAGE_READER
+    if getattr(chunk, "usage", None) is None:
+        return
+    _keep_returned_usage(mark, chunk)
+    with contextlib.suppress(Exception):
+        if _USAGE_READER is None:
+            _USAGE_READER = OpenAIProvider()
+        found = _USAGE_READER.usage_from_stream_chunk(chunk)
+        if found is not None:
+            mark.usage = found if mark.usage is None else base._merge_usage(mark.usage, found)
+
+
+def _keep_returned_usage(mark: base.OuterCall, chunk: Any) -> None:
+    """Keep the usage object a chunk carries, with the fields the provider
+    returned, for the litellm call's stored response (the counts are
+    cumulative, so the last one is the call's)."""
+    with contextlib.suppress(Exception):
+        dumped = chunk.usage.model_dump(mode="json", exclude_unset=True)
+        if isinstance(dumped, dict):
+            mark.returned_usage = dumped
+
+
+def _undone(iterator: Any, added: bool, mark: base.OuterCall) -> Iterator[Any]:
+    """The SDK stream's events as litellm reads them: the usage is handed
+    over, and when the hook asked for it, the usage chunk is taken out and
+    the other chunks lose the ``"usage": null`` the ask added."""
+    for chunk in iterator:
+        _hand_over(mark, chunk)
+        if added:
+            if _is_usage_only_chunk(chunk):
+                continue
+            _forget_null_usage(chunk)
+        yield chunk
+
+
+async def _aundone(iterator: Any, added: bool, mark: base.OuterCall) -> AsyncIterator[Any]:
+    """Async form of :func:`_undone`."""
+    async for chunk in iterator:
+        _hand_over(mark, chunk)
+        if added:
+            if _is_usage_only_chunk(chunk):
+                continue
+            _forget_null_usage(chunk)
+        yield chunk
+
+
+def _hook_the_stream(result: Any, added: bool, mark: base.OuterCall) -> None:
+    """Read the SDK stream ``result`` is (or, for a raw response, parses
+    to: the SDK caches the parsed stream, which litellm's own ``parse()``
+    then gets) through :func:`_undone`. The stream object stays the SDK's,
+    with its own protocol."""
+    from openai import AsyncStream, Stream
+
+    stream = result
+    if not isinstance(stream, (Stream, AsyncStream)):
+        parse = getattr(result, "parse", None)
+        if not callable(parse):
+            return
+        stream = parse()
+    if isinstance(stream, AsyncStream):
+        stream._iterator = _aundone(stream._iterator, added, mark)
+    elif isinstance(stream, Stream):
+        stream._iterator = _undone(stream._iterator, added, mark)
+
+
+def _can_ask(kwargs: dict[str, Any]) -> bool:
+    """Whether the hook can set the ask in the body: an ``extra_body`` the
+    SDK merges (a mapping, or none) and an SDK stream it can take the
+    ask's results out of."""
+    extra = kwargs.get("extra_body")
+    return (extra is None or isinstance(extra, Mapping)) and _undo_possible()
+
+
+def _with_usage_asked(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``kwargs`` with ``include_usage: true`` where it lands in the body
+    the SDK sends: in the ``stream_options`` of ``extra_body`` when that
+    has one (it replaces the argument), else in the argument. Its other
+    keys are kept."""
+    options = _sent_stream_options(kwargs)
+    asked = {**(options if isinstance(options, Mapping) else {}), "include_usage": True}
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, Mapping) and "stream_options" in extra:
+        return {**kwargs, "extra_body": {**extra, "stream_options": asked}}
+    return {**kwargs, "stream_options": asked}
+
+
+def _litellm_hooked(create: Any, *, is_async: bool) -> Any:
+    """``create`` of an SDK completion resource with the litellm request
+    hook: a streamed request litellm's own code makes while a litellm call
+    is in flight asks for usage when its body does not, and its stream is
+    read through :func:`_undone`; every other call is ``create`` as is."""
+
+    def _prepared(kwargs: dict[str, Any]) -> tuple[base.OuterCall, dict[str, Any], bool] | None:
+        mark = base.current_outer_call()
+        if mark is None or not kwargs.get("stream") or not _requested_by_litellm():
+            return None
+        # This request is the call's: its counts are the only ones the
+        # call reports (an earlier attempt's never carry over).
+        mark.sent_through_sdk = True
+        mark.usage = None
+        mark.returned_usage = None
+        added = not _usage_asked(kwargs) and _can_ask(kwargs)
+        return mark, (_with_usage_asked(kwargs) if added else kwargs), added
+
+    if is_async:
+        # The SDK's async ``create`` is a plain function returning a
+        # coroutine (its argument errors raise at the call), and so is this.
+
+        async def _hooked_result(pending: Any, added: bool, mark: base.OuterCall) -> Any:
+            result = await pending
+            _hook_the_stream(result, added, mark)
+            return result
+
+        @functools.wraps(create)
+        def _acreate(self: Any, *args: Any, **kwargs: Any) -> Any:
+            prepared = _prepared(kwargs)
+            if prepared is None:
+                return create(self, *args, **kwargs)
+            mark, sent, added = prepared
+            return _hooked_result(create(self, *args, **sent), added, mark)
+
+        setattr(_acreate, _LITELLM_HOOK_MARK, True)
+        return _acreate
+
+    @functools.wraps(create)
+    def _create(self: Any, *args: Any, **kwargs: Any) -> Any:
+        prepared = _prepared(kwargs)
+        if prepared is None:
+            return create(self, *args, **kwargs)
+        mark, sent, added = prepared
+        result = create(self, *args, **sent)
+        _hook_the_stream(result, added, mark)
+        return result
+
+    setattr(_create, _LITELLM_HOOK_MARK, True)
+    return _create
+
+
+def _hooked_classes() -> list[type]:
+    import importlib
+
+    found: list[type] = []
+    for module_name, class_name in _LITELLM_HOOKED:
+        with contextlib.suppress(Exception):
+            found.append(getattr(importlib.import_module(module_name), class_name))
+    return found
+
+
+def _install_litellm_hook() -> None:
+    """Wrap ``create`` on the SDK's completion resources (idempotent)."""
+    for cls in _hooked_classes():
+        create = cls.__dict__.get(_CREATE)
+        if create is None or getattr(create, _LITELLM_HOOK_MARK, False):
+            continue
+        setattr(cls, _LITELLM_HOOK_SENTINEL, create)
+        setattr(cls, _CREATE, _litellm_hooked(create, is_async=cls.__name__.startswith("Async")))
+
+
+def _remove_litellm_hook() -> None:
+    """Give each hooked resource its own ``create`` back."""
+    for cls in _hooked_classes():
+        original = cls.__dict__.get(_LITELLM_HOOK_SENTINEL)
+        if original is not None:
+            setattr(cls, _CREATE, original)
+            delattr(cls, _LITELLM_HOOK_SENTINEL)
+
+
 # ----------------------------------------------------------------------
 # Class-level patching: descriptor and patch/unpatch functions
 # ----------------------------------------------------------------------
@@ -1654,6 +1970,7 @@ def patch_openai_classes(quiet: bool = False) -> None:
             _log.debug("openai not installed or unsupported; skipping patch")
         return
 
+    _install_litellm_hook()
     for attr_name, sentinel_attr, descriptor_cls, wrapper_cls in _OPENAI_PATCH_RESOURCES:
         _patch_one_resource(
             _OrigOpenAI,
@@ -1764,6 +2081,7 @@ def unpatch_openai_classes() -> None:
     """
     if not _OPENAI_AVAILABLE:
         return
+    _remove_litellm_hook()
     for attr_name, sentinel_attr, _descriptor_cls, _wrapper_cls in _OPENAI_PATCH_RESOURCES:
         _unpatch_one_resource(
             _OrigOpenAI,

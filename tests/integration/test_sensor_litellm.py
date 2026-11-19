@@ -64,16 +64,23 @@ def test_litellm_stream_through_the_openai_sdk_lands_one_post_call_with_trailing
         flightdeck_sensor.patch(quiet=True)  # litellm and the OpenAI SDK, both live
 
         pieces = []
-        for chunk in litellm.completion(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": "Hello"}],
-            stream=True,
-            api_key="test-key",
-        ):
-            assert getattr(chunk, "usage", None) is None, "the usage chunk must stay hidden"
+        chunks = list(
+            litellm.completion(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "Hello"}],
+                stream=True,
+                api_key="test-key",
+            )
+        )
+        for chunk in chunks:
             if chunk.choices and chunk.choices[0].delta.content:
                 pieces.append(chunk.choices[0].delta.content)
         assert "".join(pieces) == "Hi there"
+        # On OpenAI's own base litellm asks for usage itself, so its
+        # trailing usage chunk is the caller's, as without the sensor.
+        assert [getattr(c, "usage", None) is not None for c in chunks] == [False] * (
+            len(chunks) - 1
+        ) + [True]
         assert route.call_count == 1
         assert '"include_usage"' in route.calls.last.request.read().decode()
 
@@ -84,5 +91,5 @@ def test_litellm_stream_through_the_openai_sdk_lands_one_post_call_with_trailing
         assert post_call["tokens_output"] == 4
         streaming = post_call["payload"]["streaming"]
         assert streaming["final_outcome"] == "completed"
-        assert streaming["chunk_count"] == 3  # the usage chunk is absorbed
+        assert streaming["chunk_count"] == len(chunks)  # litellm's usage chunk included
         assert streaming["ttft_ms"] is not None

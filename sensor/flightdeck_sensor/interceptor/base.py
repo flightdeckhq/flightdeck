@@ -143,34 +143,56 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 #   wrap()-built client, in SensorMessages.create / stream / parse.
 
 
-class _OuterCall:
-    """The mark of one outer call: ``active`` is cleared when the call
-    ends, so every context that copied a reference (a task created inside
-    the call) reads the call as over, not only the context that set it."""
+class OuterCall:
+    """The mark of one outer call. ``active`` is set while a block marked
+    with it runs (:func:`outer_intercept`) and cleared when the block ends,
+    so every context that copied a reference (a task created inside the
+    call) reads the call as over, not only the context that set it.
+    ``usage`` is the provider's usage an SDK interceptor read from the
+    outer call's request, handed to the outer interceptor, which reports
+    it in its own event (the SDK interceptor emits none).
+    ``returned_usage`` is the provider's usage object as it returned it
+    (its JSON form), kept by the SDK interceptor from the request's usage
+    chunk, so the outer interceptor can store what the provider returned
+    where the outer SDK never saw that chunk or did not keep it.
+    ``sent_through_sdk`` is set when the SDK interceptor saw the outer
+    call's request: ``usage`` is then the call's only source of counts.
+    ``usage_unasked`` is set when the outer interceptor knows the
+    provider is not asked for usage and sends none, so any usage the
+    outer SDK shows is its own count, never the provider's."""
 
-    __slots__ = ("active",)
+    __slots__ = ("active", "returned_usage", "sent_through_sdk", "usage", "usage_unasked")
 
     def __init__(self) -> None:
-        self.active = True
+        self.active = False
+        self.usage: TokenUsage | None = None
+        self.returned_usage: dict[str, Any] | None = None
+        self.sent_through_sdk = False
+        self.usage_unasked = False
 
 
-_OUTER_INTERCEPT: contextvars.ContextVar[_OuterCall | None] = contextvars.ContextVar(
+_OUTER_INTERCEPT: contextvars.ContextVar[OuterCall | None] = contextvars.ContextVar(
     "flightdeck_outer_intercept", default=None
 )
 
 
 @contextlib.contextmanager
-def outer_intercept() -> Iterator[None]:
+def outer_intercept(mark: OuterCall | None = None) -> Iterator[OuterCall]:
     """Mark the provider call made inside the block as already metered by
     the interceptor running it, so an SDK interceptor the call reaches
-    passes it through. Nesting is safe: the outer mark stays active until
-    the outermost block exits."""
-    mark = _OuterCall()
+    passes it through. ``mark`` is the outer call's own (a new one when
+    omitted): the outer interceptor marks its call and the later reads of
+    its stream with the same one, and reads what the SDK interceptor left
+    on it. Nesting is safe: the mark stays active until the outermost
+    block marked with it exits."""
+    mark = OuterCall() if mark is None else mark
+    was_active = mark.active
+    mark.active = True
     token = _OUTER_INTERCEPT.set(mark)
     try:
-        yield
+        yield mark
     finally:
-        mark.active = False
+        mark.active = was_active
         _OUTER_INTERCEPT.reset(token)
 
 
@@ -178,8 +200,13 @@ def outer_intercept_active() -> bool:
     """Whether an outer interceptor is making the current call (see
     :func:`outer_intercept`); an SDK interceptor that sees ``True`` hands
     the call to the SDK untouched."""
+    return current_outer_call() is not None
+
+
+def current_outer_call() -> OuterCall | None:
+    """The mark of the outer call in flight here, or ``None``."""
     mark = _OUTER_INTERCEPT.get()
-    return mark is not None and mark.active
+    return mark if mark is not None and mark.active else None
 
 
 # ------------------------------------------------------------------
@@ -1503,6 +1530,8 @@ def call_stream(
     *,
     hide_chunk: Callable[[Any], bool] | None = None,
     call_now: bool = False,
+    read_within: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
+    sent_on_first_read: Callable[[Any], bool] | None = None,
 ) -> GuardedStream:
     """Streaming call intercept.
 
@@ -1516,13 +1545,25 @@ def call_stream(
     after the policy check, as the caller calls it, and the guard enters
     the manager it returns; so is a call with an iterator that raised
     midway (see :func:`_sent_at_once`).
+
+    ``read_within`` is the context each read of the stream runs in.
+    ``sent_on_first_read`` tells, of the stream the call returned, whether
+    its request leaves only at its first read (litellm's lazily-sent
+    streams): the policy check still runs here, before anything can be
+    sent, and a BLOCK refuses the call here, but the ``pre_call`` (and a
+    WARN's event) is enqueued when the request leaves, at the call or at
+    the first read, and a stream never read reports nothing.
     """
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    held: list[dict[str, Any]] | None = [] if sent_on_first_read is not None else None
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via, deferred=held)
     if call_now or not arguments.readable:
         call_kwargs = _sending(session, call_kwargs)
+        # Sent now: its events go now too.
+        _flush_deferred(session, held)
+        held = None
         real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedStream(
         real_fn,
@@ -1534,6 +1575,9 @@ def call_stream(
         hide_chunk=hide_chunk,
         made_at_call=call_now,
         given=arguments.given,
+        read_within=read_within,
+        sent_on_first_read=sent_on_first_read,
+        held=held,
     )
 
 
@@ -1545,6 +1589,8 @@ def call_stream_async(
     *,
     hide_chunk: Callable[[Any], bool] | None = None,
     call_now: bool = False,
+    read_within: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
+    sent_on_first_read: Callable[[Any], bool] | None = None,
 ) -> GuardedAsyncStream:
     """Async streaming call intercept.
 
@@ -1552,14 +1598,19 @@ def call_stream_async(
     context-manager + async-iterator protocols. Pre-call policy check
     still runs synchronously before the context is returned so BLOCK is
     honoured before the first network byte. An iterator among the
-    arguments, and ``call_now``, are handled as in :func:`call_stream`.
+    arguments, ``call_now``, ``read_within`` and ``sent_on_first_read``
+    are handled as in :func:`call_stream`.
     """
     arguments = materialise_iterators(kwargs, real_fn, provider.name)
     kwargs, real_fn = arguments.kwargs, arguments.send
     estimated, estimated_via = provider.estimate_tokens(kwargs)
-    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
+    held: list[dict[str, Any]] | None = [] if sent_on_first_read is not None else None
+    call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via, deferred=held)
     if call_now or not arguments.readable:
         call_kwargs = _sending(session, call_kwargs)
+        # Sent now: its events go now too.
+        _flush_deferred(session, held)
+        held = None
         real_fn = _sent_at_once(session, provider, real_fn, call_kwargs)
     return GuardedAsyncStream(
         real_fn,
@@ -1571,6 +1622,9 @@ def call_stream_async(
         hide_chunk=hide_chunk,
         made_at_call=call_now,
         given=arguments.given,
+        read_within=read_within,
+        sent_on_first_read=sent_on_first_read,
+        held=held,
     )
 
 
@@ -1778,9 +1832,24 @@ class _GuardCore(HandedToCaller):
         made_at_call: bool = False,
         given: Mapping[str, tuple[Any, Any]] = _NONE_GIVEN,
         on_entry: _OnEntry | None = None,
+        read_within: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
+        sent_on_first_read: Callable[[Any], bool] | None = None,
+        held: list[dict[str, Any]] | None = None,
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
+        # The context each read of the SDK stream runs in (an outer
+        # interceptor's mark, for a request its stream sends as it is
+        # read); None reads as is.
+        self._read_within = read_within
+        # Whether the stream the call returned has yet to send its request
+        # (one that sends at its first read): the call's events (``held``,
+        # collected by the policy check at the call) are then enqueued at
+        # the first read, when the request leaves, and a stream never read
+        # reports nothing. None: the request left with the call.
+        self._sent_on_first_read = sent_on_first_read
+        self._held = held
+        self._awaiting_send = False
         # A stream helper's entry (see StreamHelperCall): run as the guard
         # is entered, before the request is made, it checks the policy and
         # collects the pre_call.
@@ -1874,7 +1943,41 @@ class _GuardCore(HandedToCaller):
         events its policy check collected (a WARN's included, so the
         warning that check recorded as given is given)."""
         _flush_deferred(self._session, deferred)
+        held, self._held = self._held, None
+        _flush_deferred(self._session, held)
         self._emit_pre_stream_error(exc)
+
+    def _hold_or_send(self) -> None:
+        """The stream is open: enqueue the events the call held (see
+        ``sent_on_first_read``), or keep them until the first read when
+        the stream has yet to send its request."""
+        if self._held is None:
+            return
+        if self._sent_on_first_read is not None:
+            try:
+                waits = bool(self._sent_on_first_read(self._stream))
+            except Exception:
+                # Unknown: report at the call, as for a request that left.
+                self._hook_failed("sent_on_first_read")
+                waits = False
+            if waits:
+                self._awaiting_send = True
+                return
+        held, self._held = self._held, None
+        _flush_deferred(self._session, held)
+
+    def _before_read(self) -> contextlib.AbstractContextManager[Any]:
+        """Called before each read of the SDK stream: the first read of a
+        stream that sends its request then enqueues the call's events
+        (its latency runs from now), and every read runs in the context
+        ``read_within`` gives."""
+        if self._awaiting_send:
+            self._awaiting_send = False
+            held, self._held = self._held, None
+            _flush_deferred(self._session, held)
+            self._t0 = time.monotonic()
+            self._opened_t = self._t0
+        return self._read_within() if self._read_within is not None else contextlib.nullcontext()
 
     def _hook_failed(self, hook: str) -> None:
         """A provider stream hook raised. The guard carries on without it
@@ -2185,6 +2288,10 @@ class _GuardCore(HandedToCaller):
         if self._finalized or not self._entered:
             return
         self._finalized = True
+        if self._awaiting_send:
+            # Never read, so its request never left: nothing to report.
+            self._held = None
+            return
         content_response: Any = None
         if message is None:
             assembled = self._assembled()
@@ -2345,6 +2452,7 @@ class GuardedStream(_GuardCore):
             self._entry_failed(exc, deferred)
             raise
         _flush_deferred(self._session, deferred)
+        self._hold_or_send()
 
     def open(self) -> GuardedStream:
         """Send the request now instead of on first use. ``create(stream=True)``
@@ -2437,7 +2545,8 @@ class GuardedStream(_GuardCore):
             self._stream_iter = iter(self._require_stream())
         while True:
             try:
-                chunk = next(self._stream_iter)
+                with self._before_read():
+                    chunk = next(self._stream_iter)
             except StopIteration:
                 self._exhausted = True
                 self._finalize()
@@ -2470,7 +2579,8 @@ class GuardedStream(_GuardCore):
             self._stream_other_iter = self._require_stream().__aiter__()
         while True:
             try:
-                chunk = await self._stream_other_iter.__anext__()
+                with self._before_read():
+                    chunk = await self._stream_other_iter.__anext__()
             except StopAsyncIteration:
                 self._exhausted = True
                 self._finalize()
@@ -2977,6 +3087,7 @@ class GuardedAsyncStream(_GuardCore):
             self._entry_failed(exc, deferred)
             raise
         _flush_deferred(self._session, deferred)
+        self._hold_or_send()
 
     async def open(self) -> GuardedAsyncStream:
         """Send the request now (see :meth:`GuardedStream.open`)."""
@@ -3082,7 +3193,8 @@ class GuardedAsyncStream(_GuardCore):
             self._stream_iter = self._require_stream().__aiter__()
         while True:
             try:
-                chunk = await self._stream_iter.__anext__()
+                with self._before_read():
+                    chunk = await self._stream_iter.__anext__()
             except StopAsyncIteration:
                 self._exhausted = True
                 await self._finalize()
@@ -3113,7 +3225,8 @@ class GuardedAsyncStream(_GuardCore):
             self._stream_other_iter = iter(self._require_stream())
         while True:
             try:
-                chunk = next(self._stream_other_iter)
+                with self._before_read():
+                    chunk = next(self._stream_other_iter)
             except StopIteration:
                 self._exhausted = True
                 self._settle_now()

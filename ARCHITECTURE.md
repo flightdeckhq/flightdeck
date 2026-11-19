@@ -6960,7 +6960,7 @@ CREATE TABLE event_content (
     "input" JSONB, -- embeddings input, an OpenAI Responses request's input, a Gemini request's contents
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
-    embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
+    embedding_output JSONB,            -- embeddings vectors, or the cut marker string that replaced them (capture_prompts gate)
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
@@ -6983,7 +6983,7 @@ never carries content inline.
 | `input` | Responses `input`, a Gemini request's `contents` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
-| `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
+| `embedding_output` | NULL | output vectors, or the marker string that replaced them to fit the event size limit | NULL | NULL | NULL | NULL |
 
 The JSON type of the content's `system` picks its column: a string is
 stored in `system_prompt` and a list in `system_blocks`, as the list,
@@ -10930,7 +10930,12 @@ When `capture_prompts=true`:
   call that asked for `encoding_format="base64"`, an empty one included
   — round-trips into
   `event_content.embedding_output`. The single `capture_prompts` gate
-  protects this; there is no separate dial.
+  protects this; there is no separate dial. When the vectors would take
+  the event past the 768 KiB body limit, `embedding_output` carries
+  instead the size rule's marker alone, a string
+  (`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, N
+  the size of the vectors' JSON), so the input arrives whole (see
+  Content Capture); `output_dimensions` still reports the vectors.
 
 ### `llm_error`
 
@@ -11618,7 +11623,19 @@ event past the 768 KiB body limit, marking each cut string (see
 Plugin, Configuration, which describes the measure and the marker; the
 sensor's `transport/body_limit.py` applies the same rule to every
 event it POSTs). Token counts and the metadata outside `content` are
-never cut. An event whose captured `content` cannot be written as JSON
+never cut. An embeddings call's vectors are numbers, which no string
+cut shortens, so the sensor cuts them first (the plugin sends no
+embeddings events): on an event over the limit
+whose content holds vectors (`embedding_output`), the vectors are
+replaced, all of them, by the marker alone,
+`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, where
+N is the size of the vectors' JSON, and an event that then fits is sent
+with its input whole. Only an input over the limit on its own is then
+cut, by the rule above, the marker left as it is; when no cut fits, the
+event is sent without content. Vectors are never kept in part: a
+vector returned as a base64 string is replaced with the others, never
+shortened alongside the input. Vectors no larger than the marker stay
+as they are. An event whose captured `content` cannot be written as JSON
 (an object the capture did not turn into data, or a float that is not
 finite: NaN or an infinity) is sent without its content
 (`has_content=false`, as an event over the limit is), with a warning

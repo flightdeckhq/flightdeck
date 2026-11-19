@@ -9,6 +9,12 @@ An event over the limit has the strings of its captured ``content`` cut,
 each to the same largest length that fits, ending in a marker; when no
 cut fits, it is sent without content. The Claude Code plugin does the
 same (``plugin/hooks/scripts/core/poster.mjs``).
+
+An embeddings call's vectors are numbers, which no string cut shortens,
+so they go first: on an event over the limit, ``embedding_output`` is
+replaced whole by the marker, and the strings of the rest are cut only
+when the event still does not fit, so the call's input arrives whole
+whenever it fits on its own. The plugin carries no vectors.
 """
 
 from __future__ import annotations
@@ -81,8 +87,39 @@ def _longest_string_bytes(value: Any) -> int:
     return max((_longest_string_bytes(item) for item in items), default=0)
 
 
-def _serialize_cut(payload: dict[str, Any], content: Any, cap: int) -> bytes:
-    return json.dumps({**payload, "content": _cap_strings(content, cap)}, allow_nan=False).encode()
+def _cut_content(content: Any, cap: int, whole: str | None) -> Any:
+    """``content`` with its strings cut to ``cap``, but for the field
+    ``whole`` names, kept as it is."""
+    if whole is None or not isinstance(content, dict):
+        return _cap_strings(content, cap)
+    return {key: item if key == whole else _cap_strings(item, cap) for key, item in content.items()}
+
+
+def _serialize_cut(
+    payload: dict[str, Any], content: Any, cap: int, whole: str | None = None
+) -> bytes:
+    return json.dumps(
+        {**payload, "content": _cut_content(content, cap, whole)}, allow_nan=False
+    ).encode()
+
+
+#: The content field holding an embeddings call's vectors: lists of
+#: floats, or base64 strings for a call that asked for them.
+VECTORS_FIELD = "embedding_output"
+
+
+def _vectors_marked(content: Any) -> tuple[Any, int]:
+    """``content`` with its vectors replaced by the marker alone, and the
+    size of the vectors' JSON; ``(content, 0)`` when it holds no vectors,
+    or vectors no larger than the marker. Vectors are never kept in part:
+    a part of the matrix would read as the whole of it."""
+    if not isinstance(content, dict) or content.get(VECTORS_FIELD) is None:
+        return content, 0
+    total = len(json.dumps(content[VECTORS_FIELD], allow_nan=False).encode())
+    marker = truncation_marker(0, total)
+    if len(json.dumps(marker).encode()) >= total:
+        return content, 0
+    return {**content, VECTORS_FIELD: marker}, total
 
 
 # Payload fields holding a sub-agent message stub that points at the
@@ -174,6 +211,10 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
     by a string form, or a ``null``, the provider never returned. A
     failure outside the content raises, as before; nothing that is not
     JSON is ever sent.
+
+    An event over the limit gives up an embeddings call's vectors first
+    (see :func:`_vectors_marked`), then has the strings of the rest of
+    its content cut, and is sent without content when no cut fits.
     """
     body, unencodable = _encode(payload)
     if body is None:
@@ -218,10 +259,28 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
             size,
         )
         return body
+    # An embeddings call's vectors go first, whole; the string cut below
+    # then leaves the field as it is (the marker, or vectors no larger).
+    whole: str | None = None
+    vectors_bytes = 0
+    if isinstance(content, dict) and content.get(VECTORS_FIELD) is not None:
+        whole = VECTORS_FIELD
+        content, vectors_bytes = _vectors_marked(content)
+        if vectors_bytes:
+            marked = json.dumps({**payload, "content": content}, allow_nan=False).encode()
+            if encoded_size(marked) <= MAX_EVENT_BODY_BYTES:
+                _log.warning(
+                    "%s event is %d bytes; its vectors (%d bytes) were left out "
+                    "to fit the event size limit",
+                    event_type,
+                    size,
+                    vectors_bytes,
+                )
+                return marked
     # The body only grows with the cap, so when even an empty cap does
     # not fit, no cap does; that skips the search (each step serialises
     # the whole event).
-    if encoded_size(_serialize_cut(payload, content, 0)) > MAX_EVENT_BODY_BYTES:
+    if encoded_size(_serialize_cut(payload, content, 0, whole)) > MAX_EVENT_BODY_BYTES:
         _log.warning(
             "%s event is %d bytes and its content cannot be cut to fit the event size limit; "
             "sent without it",
@@ -229,23 +288,25 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
             size,
         )
         return bare
-    lo, hi = 0, min(_longest_string_bytes(content), MAX_EVENT_BODY_BYTES)
+    rest = content if whole is None else {k: v for k, v in content.items() if k != whole}
+    lo, hi = 0, min(_longest_string_bytes(rest), MAX_EVENT_BODY_BYTES)
     best: bytes | None = None
     best_cap = 0
     # Binary search for the largest per-string length that fits.
     while lo <= hi:
         cap = (lo + hi) // 2
-        candidate = _serialize_cut(payload, content, cap)
+        candidate = _serialize_cut(payload, content, cap, whole)
         if encoded_size(candidate) <= MAX_EVENT_BODY_BYTES:
             best, best_cap, lo = candidate, cap, cap + 1
         else:
             hi = cap - 1
     if best is not None:
         _log.warning(
-            "%s event is %d bytes; content strings over %d bytes were cut "
+            "%s event is %d bytes; %scontent strings over %d bytes were cut "
             "to fit the event size limit",
             event_type,
             size,
+            "its vectors were left out and " if vectors_bytes else "",
             best_cap,
         )
         return best

@@ -34,6 +34,24 @@ if none ends it, it prints ``ALIVE`` and exits normally. Modes:
   ``APP_EXIT_CODE``.
 - ``ignore``: ignores SIGTERM before ``init()`` and exits normally after
   ``SHORT_WAIT_SECS``.
+- ``miss``: as ``hold`` with the event queue's lock, so the handler
+  returns before session_end is out and the drain thread delivers the
+  signal again; then it blocks in ``time.sleep`` (inside
+  :func:`_blocked`). The first of those deliveries misses: once the main
+  thread is inside :func:`_blocked`, past its last check for a signal
+  before the sleep, it goes to the drain thread itself, which sets
+  Python's flag for the signal without interrupting the sleep -- what a
+  delivery that lands just as the main thread enters a blocking call
+  does. Later deliveries go to the main thread. With ``sigint`` it sets
+  SIGINT to the default action before ``init()``, and the test sends
+  SIGINT.
+- ``count``: installs an application SIGTERM handler before ``init()``
+  that counts its calls and returns, then holds the event queue's lock
+  as ``hold`` does, so the sensor's handler stops waiting for the
+  shutdown and calls it anyway. Once the shutdown has finished and
+  ``SHORT_WAIT_SECS`` more have passed, it prints ``CALLS <n>`` and
+  ``REDELIVERIES <n>`` (the drain thread's deliveries of the signal) and
+  exits normally.
 
 A lock is held in a ``time.sleep`` loop, not a busy loop: on Python 3.13
 an exception a signal handler raises while the interrupted code is at a
@@ -74,6 +92,61 @@ INFLIGHT_EVENT_TYPE = "tool_call"
 # than the test takes to send its signal once it reads READY.
 BUSY = "busy"
 BUSY_RANGE = 20_000_000
+# The ``miss`` option that sends SIGINT, with SIGINT set to the default
+# action, instead of SIGTERM.
+SIGINT_DEFAULT = "sigint"
+
+
+def _blocked() -> None:
+    """Where ``miss`` waits for a signal: a sleep with no check for a
+    signal between this function's start and the sleep's system call."""
+    time.sleep(WAIT_SECS)
+
+
+def _main_thread_is_blocked() -> bool:
+    """Whether the main thread is inside :func:`_blocked`. Asked by a
+    thread that holds the GIL, so the main thread is not running Python:
+    it is in the sleep, or about to enter it, past its last check for a
+    signal (a frame's first check runs before it can let the GIL go)."""
+    frame = sys._current_frames().get(threading.main_thread().ident or 0)
+    return frame is not None and frame.f_code is _blocked.__code__
+
+
+def _miss_first_redelivery() -> None:
+    """Make the drain thread's first delivery of a signal miss the main
+    thread (see the ``miss`` mode); later ones go through."""
+    from flightdeck_sensor.transport import client as transport
+
+    deliver = transport._redeliver
+    made: list[int] = []
+
+    def first_one_misses(signum: int) -> None:
+        made.append(signum)
+        if len(made) > 1:
+            deliver(signum)
+            return
+        deadline = time.monotonic() + WAIT_SECS
+        while not _main_thread_is_blocked() and time.monotonic() < deadline:
+            time.sleep(HOLD_POLL_SECS)
+        signal.pthread_kill(threading.get_ident(), signum)
+
+    transport._redeliver = first_one_misses
+
+
+def _count_redeliveries() -> list[int]:
+    """Record the drain thread's deliveries of a signal (passed through);
+    returns the list they are recorded in."""
+    from flightdeck_sensor.transport import client as transport
+
+    deliver = transport._redeliver
+    made: list[int] = []
+
+    def counted(signum: int) -> None:
+        made.append(signum)
+        deliver(signum)
+
+    transport._redeliver = counted
+    return made
 
 
 def _post_marker(server: str, name: str) -> None:
@@ -103,6 +176,15 @@ def main() -> None:
         signal.signal(signal.SIGTERM, app_handler)
     elif mode == "ignore":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif mode == "miss":
+        if option == SIGINT_DEFAULT:
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+        _miss_first_redelivery()
+    app_calls: list[int] = []
+    redeliveries: list[int] = []
+    if mode == "count":
+        redeliveries = _count_redeliveries()
+        signal.signal(signal.SIGTERM, lambda signum, _frame: app_calls.append(signum))
 
     import flightdeck_sensor
 
@@ -111,6 +193,28 @@ def main() -> None:
     assert session is not None
     print(f"SESSION {session.config.session_id}", flush=True)
 
+    if mode in ("miss", "count"):
+        with session.event_queue._queue.mutex:
+            print("READY", flush=True)
+            deadline = time.monotonic() + HOLD_SECS
+            while time.monotonic() < deadline:
+                time.sleep(HOLD_POLL_SECS)
+        if mode == "miss":
+            _blocked()
+            print("ALIVE", flush=True)
+            return
+        # The signal normally lands during the hold; on a loaded machine it
+        # can land just after it.
+        deadline = time.monotonic() + WAIT_SECS
+        while session._signal_shutdown is None and time.monotonic() < deadline:
+            time.sleep(HOLD_POLL_SECS)
+        shutdown = session._signal_shutdown
+        assert shutdown is not None, "the signal started no shutdown"
+        shutdown.wait()
+        time.sleep(SHORT_WAIT_SECS)
+        print(f"CALLS {len(app_calls)}", flush=True)
+        print(f"REDELIVERIES {len(redeliveries)}", flush=True)
+        return
     if mode in ("hold", "hold-long"):
         lock = {
             "session": session._lock,

@@ -6,7 +6,9 @@ them: the drain thread sends session_end, within one overall deadline
 counted from the signal (an event's POST already under way finishes
 first, unretried), while the handler polls for a bounded time; then the
 signal is passed on (or, for the default action, delivered again once
-session_end is out). The drain thread waits for a lock the interrupted
+session_end is out, and again until it takes effect: one that lands as
+the main thread enters a blocking call is acted on only when the call
+returns). The drain thread waits for a lock the interrupted
 code may hold only briefly, and does without it: on Python 3.13 that code
 may never release it. The subprocess tests send real signals to a child;
 the in-process ones pin the hand-off and the handler's decisions without
@@ -42,7 +44,7 @@ from flightdeck_sensor.transport.client import (
     _EventStore,
 )
 from tests.unit._child_process import CaptureServer, child_env, finish, read_until, start_child
-from tests.unit._signal_child import BUSY, INFLIGHT_EVENT_TYPE
+from tests.unit._signal_child import BUSY, INFLIGHT_EVENT_TYPE, SIGINT_DEFAULT
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,6 +94,31 @@ IN_FLIGHT_SECS = 0.5
 EVENT_ARRIVAL_SECS = 15.0
 POLL_SECS = 0.01
 
+# The drain thread's interval between deliveries of a deferred signal,
+# and the slack the time end() gives a shutdown has on top of its limit.
+REDELIVER_INTERVAL_SECS = client_module._REDELIVER_INTERVAL_SECS
+SHUTDOWN_FINISH_SLACK_SECS = client_module._SHUTDOWN_FINISH_SLACK_SECS
+
+# How many deliveries an in-process test waits to see: the one made as the
+# shutdown finishes and two more, so the repetition shows.
+REDELIVERIES_SEEN = 3
+
+# Readings of time.monotonic() around a time.sleep: the sleep never ends
+# early on that clock, so this only absorbs the readings' own rounding.
+CLOCK_TOLERANCE_SECS = 0.005
+
+# How late the deliveries may stop past their window on a loaded machine
+# (a late wake-up from the last sleep).
+DELIVERY_SLACK_SECS = 0.5
+
+# In the test of the deliveries' limit: what is left of the shutdown's
+# limit when they start, how far past its limit a late shutdown finished,
+# and the fewest deliveries either window (0.8 s or 0.5 s, an interval
+# apart) shows even on a loaded machine.
+CAP_LEFT_SECS = 0.3
+LATE_FINISH_SECS = 5.0
+MIN_DELIVERIES_IN_WINDOW = 2
+
 
 def _start(capture: CaptureServer, mode: str, *args: str) -> tuple[subprocess.Popen[str], str]:
     proc = start_child("_signal_child.py", capture.url, mode, *args, env=child_env())
@@ -132,6 +159,68 @@ def test_sigterm_with_a_sensor_lock_held_exits_after_session_end(lock: str) -> N
     assert elapsed < EXIT_BOUND_SECS, elapsed
     assert events[-1] == "session_end", events
     assert "ALIVE" not in out
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("option", "signum"),
+    [("", signal.SIGTERM), (SIGINT_DEFAULT, signal.SIGINT)],
+    ids=["sigterm", "sigint-default-action"],
+)
+def test_a_signal_delivered_again_that_misses_the_main_thread_still_ends_the_process(
+    option: str, signum: int
+) -> None:
+    # The handler returned before session_end was out (the queue's lock
+    # was held), and the drain thread's first delivery of the signal once
+    # it was out landed as the main thread went into a 30 s sleep: Python
+    # recorded it, but runs the handler only when the sleep returns. A
+    # later delivery interrupts the sleep.
+    with CaptureServer() as capture:
+        proc, session_id = _start(capture, "miss", *([option] if option else []))
+        sent = time.monotonic()
+        proc.send_signal(signum)
+        code, out, err = finish(proc)
+        elapsed = time.monotonic() - sent
+        events = capture.event_types(session_id)
+    assert code == -signum, (code, out, err)
+    assert elapsed < EXIT_BOUND_SECS, elapsed
+    assert events[-1] == "session_end", events
+    assert "ALIVE" not in out
+
+
+@posix_only
+def test_a_missed_delivery_after_a_session_end_that_never_answers_still_ends_the_process() -> None:
+    # session_end reached a control plane that never answers, so the
+    # drain thread delivers the signal again only at the shutdown's
+    # deadline, and that first delivery misses the sleeping main thread.
+    with CaptureServer(hang_after_start=True) as capture:
+        proc, session_id = _start(capture, "miss")
+        sent = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        code, out, err = finish(proc)
+        elapsed = time.monotonic() - sent
+        events = capture.event_types(session_id)
+    assert code == -signal.SIGTERM, (code, out, err)
+    assert elapsed < SHUTDOWN_TIMEOUT_SECS + SHUTDOWN_SLACK_SECS, elapsed
+    assert events[-1] == "session_end", events
+
+
+@posix_only
+def test_an_application_handler_the_sensor_replaced_is_called_once() -> None:
+    with CaptureServer() as capture:
+        proc, session_id = _start(capture, "count")
+        proc.send_signal(signal.SIGTERM)
+        code, out, err = finish(proc)
+        events = capture.event_types(session_id)
+    # The queue's lock was held, so the sensor's handler stopped waiting
+    # for the shutdown and called the application's handler, which
+    # returned. The drain thread delivered nothing once the shutdown was
+    # over: only a default action is left to it.
+    lines = out.splitlines()
+    assert code == 0, (code, out, err)
+    assert "CALLS 1" in lines, lines
+    assert "REDELIVERIES 0" in lines, lines
+    assert events[-1] == "session_end", events
 
 
 @posix_only
@@ -493,17 +582,155 @@ def test_a_deferred_signal_is_delivered_again_once_finished(
         lambda _deadline: release.wait(DRAIN_WAIT_SECS) and None
     )
     assert shutdown is not None
-    assert shutdown.redeliver_when_finished(signal.SIGTERM) is False
+    # A handler that is not installed: the deliveries after the first,
+    # which go only to the handler that asked, stop at once (they are
+    # pinned below).
+    not_installed = object()
+    assert shutdown.redeliver_when_finished(signal.SIGTERM, not_installed) is False
     release.set()
     assert shutdown.wait(DRAIN_WAIT_SECS)
     # The drain thread marks the shutdown finished before it delivers (so
     # a caller asking in the same instant cannot be missed); it has
     # delivered once it has exited.
     queue._drain_thread.join(DRAIN_WAIT_SECS)
+    assert not queue._drain_thread.is_alive()
     assert delivered == [signal.SIGTERM]
     # Asked once it has finished: the caller acts on the signal itself.
-    assert shutdown.redeliver_when_finished(signal.SIGTERM) is True
+    assert shutdown.redeliver_when_finished(signal.SIGTERM, not_installed) is True
     assert delivered == [signal.SIGTERM]
+
+
+def _record_deliveries(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, float]]:
+    """Replace the drain thread's delivery of a signal with a record of
+    each one: the signal and when (``time.monotonic()``)."""
+    made: list[tuple[int, float]] = []
+    monkeypatch.setattr(
+        client_module, "_redeliver", lambda signum: made.append((signum, time.monotonic()))
+    )
+    return made
+
+
+def _gaps(made: list[tuple[int, float]]) -> list[float]:
+    return [later[1] - earlier[1] for earlier, later in zip(made, made[1:], strict=False)]
+
+
+def test_a_deferred_signal_goes_on_being_delivered_while_the_handler_that_asked_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    made = _record_deliveries(monkeypatch)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def asking(_signum: int, _frame: Any) -> None:
+        pass
+
+    queue = EventQueue(_client())
+    release = threading.Event()
+    signal.signal(signal.SIGTERM, asking)
+    try:
+        shutdown = queue.shutdown_on_drain_thread(
+            lambda _deadline: release.wait(DRAIN_WAIT_SECS) and None
+        )
+        assert shutdown is not None
+        assert shutdown.redeliver_when_finished(signal.SIGTERM, asking) is False
+        release.set()
+        # A delivery that lands as the main thread enters a blocking call
+        # is acted on only when the call returns: the next interrupts it.
+        assert _poll(lambda: len(made) >= REDELIVERIES_SEEN, DRAIN_WAIT_SECS), made
+        # Another handler installed in its place (the default action the
+        # handler restores, or the application's): the deliveries stop.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        queue._drain_thread.join(DRAIN_WAIT_SECS)
+        assert not queue._drain_thread.is_alive()
+    finally:
+        release.set()
+        signal.signal(signal.SIGTERM, previous)
+        # Stopped before the real delivery is put back.
+        queue._drain_thread.join(DRAIN_WAIT_SECS)
+    assert {signum for signum, _at in made} == {signal.SIGTERM}
+    assert all(gap >= REDELIVER_INTERVAL_SECS - CLOCK_TOLERANCE_SECS for gap in _gaps(made)), made
+
+
+@pytest.mark.parametrize(
+    ("finished_past_the_limit", "window"),
+    [(False, CAP_LEFT_SECS + SHUTDOWN_FINISH_SLACK_SECS), (True, SHUTDOWN_FINISH_SLACK_SECS)],
+    ids=["within-the-limit", "past-the-limit"],
+)
+def test_deliveries_stop_at_the_shutdowns_limit(
+    monkeypatch: pytest.MonkeyPatch, finished_past_the_limit: bool, window: float
+) -> None:
+    # Nothing ends the process (its main thread is in a long computation
+    # in native code, which no signal interrupts): the deliveries stop as
+    # the time end() gives the shutdown runs out, its limit and its slack
+    # from the request; for a shutdown that finished past its limit, the
+    # slack from then.
+    made = _record_deliveries(monkeypatch)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def asking(_signum: int, _frame: Any) -> None:
+        pass
+
+    shutdown = DrainShutdown(lambda _deadline: None, lambda: True, threading.Thread())
+    if finished_past_the_limit:
+        shutdown.requested_at = time.monotonic() - SHUTDOWN_LIMIT_SECS - LATE_FINISH_SECS
+    else:
+        shutdown.requested_at = time.monotonic() - SHUTDOWN_LIMIT_SECS + CAP_LEFT_SECS
+    shutdown.redeliver_when_finished(signal.SIGTERM, asking)
+    signal.signal(signal.SIGTERM, asking)
+    try:
+        started = time.monotonic()
+        shutdown.keep_delivering()
+        elapsed = time.monotonic() - started
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert window - CLOCK_TOLERANCE_SECS <= elapsed < window + DELIVERY_SLACK_SECS, elapsed
+    # One delivery an interval while the window lasts.
+    most = round(window / REDELIVER_INTERVAL_SECS) + 1
+    assert MIN_DELIVERIES_IN_WINDOW <= len(made) <= most, made
+
+
+def test_a_signal_the_handler_defers_is_delivered_until_the_session_lets_its_handler_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The handler's whole hand-off: the signal's default action is left,
+    # session_end is slow, so the handler returns and asks for the signal
+    # with itself as the handler installed; the drain thread delivers it
+    # until the session puts the default action back (teardown()).
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.1)
+    made = _record_deliveries(monkeypatch)
+    # Passing the signal on would raise it in this process.
+    raised: list[int] = []
+    monkeypatch.setattr(signal, "raise_signal", raised.append)
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    session, client = _session()
+    release = threading.Event()
+
+    def slow_post(payload: dict[str, Any], **_limits: Any) -> tuple[None, bool]:
+        release.wait(DRAIN_WAIT_SECS)
+        return None, False
+
+    client.post_event.side_effect = slow_post
+    try:
+        session._register_signal(signal.SIGTERM)
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        # Returned without passing the signal on: session_end is not out yet.
+        assert raised == []
+        assert made == []
+        release.set()
+        assert _poll(lambda: len(made) >= REDELIVERIES_SEEN, DRAIN_WAIT_SECS), made
+        session.release_process_hooks()
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+        session.event_queue._drain_thread.join(DRAIN_WAIT_SECS)
+        assert not session.event_queue._drain_thread.is_alive()
+    finally:
+        release.set()
+        signal.signal(signal.SIGTERM, previous)
+        # Stopped before the real delivery is put back.
+        session.event_queue._drain_thread.join(DRAIN_WAIT_SECS)
+    assert {signum for signum, _at in made} == {signal.SIGTERM}
+    assert _event_types(client) == ["session_end"]
 
 
 def test_no_drain_thread_no_hand_off() -> None:

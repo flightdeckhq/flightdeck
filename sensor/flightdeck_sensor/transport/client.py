@@ -390,6 +390,9 @@ SHUTDOWN_LIMIT_SECS = max(SHUTDOWN_TIMEOUT_SECS, _TIMEOUT_SECS + SESSION_END_MIN
 # Room on top of SHUTDOWN_LIMIT_SECS for a waiter to see the shutdown
 # finish: the work between and after the POSTs (serialising, closing the
 # client) takes milliseconds, so half a second covers a loaded machine.
+# The drain thread's deliveries of a deferred signal last as long (see
+# DrainShutdown.keep_delivering): the exit is held no longer than end()
+# waits for the shutdown.
 _SHUTDOWN_FINISH_SLACK_SECS = 0.5
 
 # How long that shutdown waits for a lock the code a signal interrupted may
@@ -420,6 +423,16 @@ _THREAD_EXIT_TIMEOUT_SECS = 5.0
 # blocking on a lock; 10 ms is well under the time the shutdown's HTTP
 # POSTs take.
 _SHUTDOWN_POLL_SECS = 0.01
+
+# How often the drain thread delivers a signal to the main thread again
+# once the shutdown is over (see DrainShutdown.keep_delivering). Python
+# acts on a signal between the main thread's bytecodes, or inside a call
+# it retries after a signal (a sleep, a socket read, a lock wait) when
+# the signal interrupts that call. One that lands just as the main thread
+# enters such a call interrupts nothing and is acted on only when the call
+# returns; the next delivery interrupts the call. 100 ms keeps that wait
+# short next to the shutdown's seconds, at one system call a delivery.
+_REDELIVER_INTERVAL_SECS = 0.1
 
 
 class _EventStore(queue.Queue[Any]):
@@ -515,7 +528,10 @@ class DrainShutdown:
         # Set by the drain thread only and read through is_set(): a wait
         # polls it (see _SHUTDOWN_POLL_SECS).
         self._finished = threading.Event()
-        self._redeliver: int | None = None
+        # The signal to deliver again once finished, and the handler that
+        # was installed for it when it was asked (redeliver_when_finished):
+        # one attribute, so the drain thread never reads half of it.
+        self._redeliver: tuple[int, object] | None = None
 
     @property
     def finished(self) -> bool:
@@ -549,24 +565,65 @@ class DrainShutdown:
             time.sleep(min(_SHUTDOWN_POLL_SECS, remaining))
         return True
 
-    def redeliver_when_finished(self, signum: int) -> bool:
+    def redeliver_when_finished(self, signum: int, handler: object) -> bool:
         """Have the drain thread deliver ``signum`` to the main thread once
-        the shutdown has finished. Returns True when it has finished
+        the shutdown has finished, and go on delivering it while
+        ``handler``, the handler installed for it now, stays installed
+        (see :meth:`keep_delivering`). Returns True when it has finished
         already: the caller then acts on the signal itself, and a delivery
         the drain thread made in the same instant ends in that same
         action."""
-        self._redeliver = signum
+        self._redeliver = (signum, handler)
         return self._finished.is_set()
 
     def finish(self) -> None:
-        """Called by the drain thread when the shutdown is done."""
+        """Called by the drain thread when the shutdown is done: marks it
+        finished and makes the first delivery of a signal asked for."""
         self._finished.set()
-        signum = self._redeliver
-        if signum is not None:
+        asked = self._redeliver
+        if asked is not None:
+            try:
+                _redeliver(asked[0])
+            except Exception:
+                _log.warning("shutdown: could not deliver signal %d again", asked[0], exc_info=True)
+
+    def keep_delivering(self) -> None:
+        """Deliver the signal asked for again every
+        ``_REDELIVER_INTERVAL_SECS``, while the handler that asked stays
+        installed for it, until the shutdown's limit and its slack have
+        passed (``SHUTDOWN_LIMIT_SECS`` from the request, the time
+        :meth:`wait` gives the shutdown; or the slack from now, for a
+        shutdown that finished past its limit). Called by the drain thread
+        after :meth:`finish` and the shutdown's report.
+
+        A delivery that lands just as the main thread enters a blocking
+        call is acted on only when the call returns; the next one
+        interrupts the call. The handler acts on the first that reaches
+        it: it restores the default action and raises the signal again,
+        so the process ends and the rest are never sent. One installed in
+        its place since (the default action it restored, or another the
+        application installed) stops the deliveries, so they only ever
+        reach the handler that asked for them."""
+        asked = self._redeliver
+        if asked is None:
+            return
+        signum, handler = asked
+        until = (
+            max(self.requested_at + SHUTDOWN_LIMIT_SECS, time.monotonic())
+            + _SHUTDOWN_FINISH_SLACK_SECS
+        )
+        while True:
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(_REDELIVER_INTERVAL_SECS, remaining))
+            if signal.getsignal(signum) is not handler:
+                return
             try:
                 _redeliver(signum)
             except Exception:
-                _log.warning("shutdown: could not deliver signal %d again", signum, exc_info=True)
+                _log.debug("shutdown: could not deliver signal %d again", signum, exc_info=True)
+                return
 
 
 class EventQueue:
@@ -994,7 +1051,9 @@ class EventQueue:
         directive thread, then mark it finished (which also delivers a
         signal its caller asked to have delivered again). What went wrong,
         and the caller's report, are logged only after that, since logging
-        takes locks the code a signal interrupted may hold."""
+        takes locks the code a signal interrupted may hold; then that
+        signal goes on being delivered until it takes effect
+        (:meth:`DrainShutdown.keep_delivering`)."""
         self._queued_deadline = shutdown.requested_at + _FLUSH_TIMEOUT_SECS
         self._shutdown_deadline = shutdown.requested_at + SHUTDOWN_TIMEOUT_SECS
         failure: Exception | None = None
@@ -1024,6 +1083,7 @@ class EventQueue:
                 shutdown.report()
             except Exception:
                 _log.debug("shutdown: the report failed", exc_info=True)
+        shutdown.keep_delivering()
 
     def _directive_loop(self) -> None:
         """Background thread: drain the directive queue.

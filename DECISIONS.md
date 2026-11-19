@@ -1332,6 +1332,23 @@ whenever they fit); keeping the leading vectors that fit (a partial
 matrix reads as the whole response and disagrees with
 `output_dimensions`).
 
+## D292 -- A badge's label takes a badge text token; the shared `-text` tokens are not darkened for it
+
+**Date:** 2026-11-19
+**Decision:** extends D288. An event-type badge and an MCP policy
+decision pill draw their label in a `-badge-text` token of their hue's
+family (`BadgeConfig.textVar`): the nearest shade that reads at 4.6:1
+over the label's tint on every row the badge sits in, focused, hovered,
+linked and active rows included, or an alias of the family's `-text`
+token or of the hue where that already does. The hue stays the tint,
+the border, the dot and the chart mark.
+**Why:** on a tint in an accent-washed row no shared `-text` token
+reaches the floor in the light theme, and those tokens set other text
+(JSON keys and strings, tool names, role badges).
+**Rejected alternative:** darkening the shared `-text` tokens (moves
+every text that uses them); one shade per site (seven sites drawing one
+badge would drift apart).
+
 ## D293 -- Flightdeck runs in the background as a per-user service the CLI writes for the system's own manager
 
 **Date:** 2026-11-19

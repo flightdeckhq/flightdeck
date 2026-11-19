@@ -164,6 +164,28 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The run drawer's Prompts list keeps your place.** "← Back to event
+  list" after opening a call returned the list to its top; it now
+  returns to that call's row, where it was on screen (new calls that
+  arrived at the top of a live run's list meanwhile do not move it),
+  with keyboard focus on it. The drawer's tabs share one scroll area,
+  so opening the Prompts tab after scrolling the Timeline showed the
+  list part-way down, and a call opened from far down the list opened
+  part-way down too. Each tab, the Timeline included, now opens at its
+  own top the first time and where you left it after that, and a call
+  opens at its top.
+- **Event-type badges and MCP policy decision pills read at WCAG AA in
+  both themes.** Each drew its label in its hue on a tint of the same
+  hue, under AA (2.3:1 for START and END in both themes; in the light
+  theme 2.5:1 for WARN, 2.9:1 for an Allow pill, 3.7:1 for LLM CALL,
+  lower still on a focused or hovered row). The label now takes a shade
+  of its hue that reads at 4.6:1 or better on every row it sits in (at
+  rest, hovered, focused, a linked Live feed row, an active Events
+  facet), wherever a badge is drawn: the Events page, the Live feed,
+  both drawers (the run drawer's STREAM and ABORTED badges included),
+  the Neighbors list, the Fleet sidebar's policy events and the
+  Policies page's decision pills. The badges' tints and borders,
+  and the swimlanes, charts and dots, keep their colours.
 - **An embeddings call too big for one event keeps its input.** With
   capture on, an embeddings event over the 768 KiB event size limit was
   sent without any content: its vectors are numbers, which the size

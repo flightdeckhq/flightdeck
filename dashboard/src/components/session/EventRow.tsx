@@ -105,7 +105,7 @@ export function EventRow({
                   className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
                   style={{
                     background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                    color: badge.cssVar,
+                    color: badge.textVar,
                     border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
                     borderRadius: 3,
                   }}
@@ -238,7 +238,10 @@ export function StreamingPill({ event }: { event: AgentEvent }) {
     titleParts.push(`abort_reason=${stream.abort_reason}`);
   }
   const title = titleParts.join(" · ");
+  // The hue tints the badge and draws its border; the label takes the
+  // hue's badge text shade, as every event-type badge's does.
   const colorVar = aborted ? "var(--event-error)" : "var(--event-llm)";
+  const textVar = aborted ? "var(--danger-badge-text)" : "var(--event-llm-badge-text)";
   const label = aborted ? "ABORTED" : "STREAM";
   return (
     <span
@@ -250,7 +253,7 @@ export function StreamingPill({ event }: { event: AgentEvent }) {
       style={{
         padding: "0 5px",
         background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,
-        color: colorVar,
+        color: textVar,
         border: `1px solid color-mix(in srgb, ${colorVar} 30%, transparent)`,
         borderRadius: 3,
         letterSpacing: "0.04em",

@@ -174,7 +174,7 @@ export function SurroundingEventsList({
               className="flex h-[14px] min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1 font-mono text-[9px] font-semibold uppercase"
               style={{
                 background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                color: badge.cssVar,
+                color: badge.textVar,
                 border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
                 borderRadius: 2,
               }}

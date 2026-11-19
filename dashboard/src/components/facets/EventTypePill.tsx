@@ -11,9 +11,11 @@ import { getBadge } from "@/lib/events";
  * all three byte-identical.
  *
  * The pill is an 18px-high, 88px-min-width tinted capsule: 15%
- * event-colour background, full-colour text, 30% colour border. The
- * colour + label come from `getBadge(eventType)` so every event type
- * in `eventBadgeConfig` is covered with no new theme tokens.
+ * event-colour background, 30% colour border, and the label in the
+ * type's badge text shade (`textVar`, which reads at 4.6:1 over the
+ * tint; the hue itself does not). The colours + label come from
+ * `getBadge(eventType)` so every event type in `eventBadgeConfig` is
+ * covered.
  *
  * Emits a stable `data-testid="event-type-pill"` plus a
  * `data-event-type` attribute, so the cross-surface visual
@@ -37,7 +39,7 @@ export function EventTypePill({
       className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
       style={{
         background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-        color: badge.cssVar,
+        color: badge.textVar,
         border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
         borderRadius: 3,
       }}

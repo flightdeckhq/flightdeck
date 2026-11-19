@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -63,6 +63,31 @@ import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useS
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
+
+/**
+ * What the run drawer's tab content shows, for its scroll position: a
+ * tab, with the Prompts tab's list and each call opened from it kept
+ * apart. The tabs share one scroll container, and each of these keeps
+ * its own position in it.
+ */
+export function tabContentView(tab: DrawerTab, selectedPromptEventId: string | null): string {
+  if (tab !== "prompts") return tab;
+  return selectedPromptEventId ? `prompts-call:${selectedPromptEventId}` : "prompts-list";
+}
+
+/** The Prompts list's row of the call ``eventId`` in the tab content
+ *  ``container``, when the list shows it. */
+function promptsRowIn(container: HTMLElement, eventId: string): HTMLElement | null {
+  for (const row of container.querySelectorAll<HTMLElement>('[data-testid^="prompts-row-"]')) {
+    if (row.dataset.testid === `prompts-row-${eventId}`) return row;
+  }
+  return null;
+}
+
+/** ``row``'s distance from the top of the scroll container's view. */
+function offsetIn(container: HTMLElement, row: HTMLElement): number {
+  return row.getBoundingClientRect().top - container.getBoundingClientRect().top;
+}
 
 // Drawer pagination. Flat pill selector (mirrors Fleet's time-range
 // pills at Fleet.tsx:492-515) in place of a dropdown so the control
@@ -421,6 +446,71 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const [runtimeExpanded, setRuntimeExpanded] = useState(false);
   const [mcpServersExpanded, setMcpServersExpanded] = useState(false);
 
+  // The tabs share one scroll container; each view of it (a tab, the
+  // Prompts list, a call opened from it) keeps its own position, so a
+  // tab opens at its own top the first time and where the user left it
+  // after that, never at another tab's offset, and "← Back to event
+  // list" returns the list to where it was when the call was opened.
+  // Recorded on every scroll; a run of its own starts with none.
+  const tabContentRef = useRef<HTMLDivElement | null>(null);
+  // The drawer of the previous run stays mounted while it animates out
+  // beside the next run's: its container's unmount must not clear the
+  // ref the next run's container holds.
+  const attachTabContent = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    tabContentRef.current = el;
+    return () => {
+      if (tabContentRef.current === el) tabContentRef.current = null;
+    };
+  }, []);
+  const scrollPositions = useRef<Map<string, number>>(new Map());
+  // The call open in the Prompts tab, and, when it was opened from the
+  // list, its row's distance from the top of the tab content then. "←
+  // Back to event list" returns to THAT row however the list changed
+  // meanwhile (on a live run new calls arrive at the list's top while a
+  // call is open, which moves every row down): it puts the row back at
+  // that distance, or, for a call opened from the Timeline's "View
+  // Prompts →", scrolls its highlighted row into view; then focuses it,
+  // or the Prompts tab when the row is no longer in the list.
+  const openedPromptRow = useRef<{ id: string; offsetTop: number | null } | null>(null);
+  const promptsTabRef = useRef<HTMLButtonElement | null>(null);
+  // As the tab content's ref: the previous run's drawer, animating out,
+  // must not clear the next run's tab.
+  const attachPromptsTab = useCallback((el: HTMLButtonElement | null) => {
+    if (!el) return;
+    promptsTabRef.current = el;
+    return () => {
+      if (promptsTabRef.current === el) promptsTabRef.current = null;
+    };
+  }, []);
+  const contentView = tabContentView(activeTab, selectedEventId);
+  useLayoutEffect(() => {
+    scrollPositions.current = new Map();
+    openedPromptRow.current = null;
+  }, [sessionId]);
+  useLayoutEffect(() => {
+    const el = tabContentRef.current;
+    if (!el) return;
+    el.scrollTop = scrollPositions.current.get(contentView) ?? 0;
+    const opened = openedPromptRow.current;
+    if (contentView !== tabContentView("prompts", null) || !opened) return;
+    openedPromptRow.current = null;
+    const row = promptsRowIn(el, opened.id);
+    if (!row) {
+      promptsTabRef.current?.focus();
+      return;
+    }
+    row.focus({ preventScroll: true });
+    if (opened.offsetTop === null) {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    el.scrollTop += offsetIn(el, row) - opened.offsetTop;
+    const box = row.getBoundingClientRect();
+    const view = el.getBoundingClientRect();
+    if (box.top < view.top || box.bottom > view.bottom) row.scrollIntoView({ block: "nearest" });
+  }, [contentView]);
+
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
   // and its content are gated on this being non-empty. A session that
@@ -622,7 +712,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     // still set focusedPromptEventId so that when the user clicks
     // "Back to event list" from detail, the origin row is
     // highlighted and scrolled into view -- preserves Fix C
-    // (03792f5) on the round trip.
+    // (03792f5) on the round trip. The call opens at its top, and Back
+    // scrolls the list to its row (the list was not on screen, so there
+    // is no place in it to return to).
+    scrollPositions.current.delete(tabContentView("prompts", eventId));
+    openedPromptRow.current = { id: eventId, offsetTop: null };
     setSelectedEventId(eventId);
     setFocusedPromptEventId(eventId);
   }
@@ -1016,6 +1110,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 ).map((tab) => (
                   <button
                     key={tab}
+                    ref={tab === "prompts" ? attachPromptsTab : undefined}
                     data-testid={`drawer-tab-${tab}`}
                     className="pb-2 text-xs font-medium capitalize transition-colors"
                     style={activeTab === tab
@@ -1046,7 +1141,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
               </div>
 
               {/* Tab content */}
-              <div className="flex-1 overflow-y-auto">
+              <div
+                ref={attachTabContent}
+                className="flex-1 overflow-y-auto"
+                data-testid="session-drawer-tab-content"
+                onScroll={(e) => {
+                  scrollPositions.current.set(contentView, e.currentTarget.scrollTop);
+                }}
+              >
                 {activeTab === "timeline" && (
                   <EventFeed
                     events={displayEvents}
@@ -1070,6 +1172,14 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
                     onSelectEvent={(id) => {
+                      if (id !== null) {
+                        // A call opened from the list opens at its top;
+                        // Back returns to its row, where it is now.
+                        scrollPositions.current.delete(tabContentView("prompts", id));
+                        const el = tabContentRef.current;
+                        const row = el ? promptsRowIn(el, id) : null;
+                        openedPromptRow.current = { id, offsetTop: el && row ? offsetIn(el, row) : null };
+                      }
                       setSelectedEventId(id);
                       // Clear the focused-row treatment only when
                       // the user selects a different event from the
@@ -2151,7 +2261,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
         <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
-          style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
+          style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.textVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
           {badge.label}
         </span>
         <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>{session?.flavor ?? event.flavor}</span>
@@ -2227,10 +2337,10 @@ export interface PromptsTabProps {
   /**
    * Event id the user came from via a Timeline "View Prompts →"
    * click. When set (and no selectedEventId drilling into detail),
-   * the matching list row scrolls into view and renders with the
-   * accent-glow highlight so the user sees the origin event
-   * immediately. Distinct from selectedEventId, which replaces the
-   * list with PromptViewer.
+   * the matching list row renders with the accent-glow highlight so
+   * the user sees the origin event; the drawer scrolls it into view on
+   * "← Back to event list". Distinct from selectedEventId, which
+   * replaces the list with PromptViewer.
    */
   focusedEventId: string | null;
   onSelectEvent: (id: string | null) => void;
@@ -2254,21 +2364,10 @@ export function PromptsTab({
   const contentEvents = events.filter(
     (e) => e.has_content && PROMPTS_TAB_EVENT_TYPES.has(e.event_type),
   );
-  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-
-  // Scroll the focused row into view once the list is mounted. block:
-  // "center" keeps the row visually centred, not flush with the top
-  // where it can be clipped by the tab bar. Runs only when the
-  // focused id changes -- re-rendering the same focus after state
-  // churn shouldn't re-scroll the user mid-scroll.
-  useEffect(() => {
-    if (!focusedEventId || selectedEventId) return;
-    const node = rowRefs.current[focusedEventId];
-    if (node) {
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [focusedEventId, selectedEventId]);
-
+  // Where the list stands, which row has focus and which row is brought
+  // into view are the drawer's (it owns the scroll container): it does so
+  // only when the user arrives at the list for a reason, "← Back to event
+  // list" from a call, never on a plain return to the tab.
   if (contentEvents.length === 0) {
     return <NoRunContent session={session} />;
   }
@@ -2301,9 +2400,6 @@ export function PromptsTab({
         return (
           <button
             key={event.id}
-            ref={(el) => {
-              rowRefs.current[event.id] = el;
-            }}
             data-testid={`prompts-row-${event.id}`}
             data-focused={isFocused ? "true" : undefined}
             className="flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover"
@@ -2321,7 +2417,7 @@ export function PromptsTab({
             onClick={() => onSelectEvent(event.id)}
           >
             <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
-              style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
+              style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.textVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>
             <span className="font-mono" style={{ color: "var(--muted-text)" }}>{new Date(event.occurred_at).toLocaleTimeString()}</span>

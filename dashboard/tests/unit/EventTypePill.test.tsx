@@ -52,15 +52,15 @@ describe("EventTypePill", () => {
     ).toBeNull();
   });
 
-  it("uses the event colour from getBadge for background, text, and border", () => {
+  it("uses the event colours from getBadge: the hue for background and border, its badge text shade for the text", () => {
     const { getByTestId } = render(<EventTypePill eventType="policy_block" />);
     const pill = getByTestId("event-type-pill") as HTMLElement;
-    const expected = getBadge("policy_block").cssVar; // var(--event-block)
-    // The pill text colour is the raw cssVar; background + border are
-    // colour-mixes that embed the same cssVar.
-    expect(pill.style.color).toBe(expected);
-    expect(pill.style.background).toContain(expected);
-    expect(pill.style.border).toContain(expected);
+    const { cssVar, textVar } = getBadge("policy_block"); // var(--event-block), var(--danger-badge-text)
+    // Background + border are colour-mixes of the hue; the text is the
+    // shade of it that reads over the tint (badge-label-contrast.test.tsx).
+    expect(pill.style.color).toBe(textVar);
+    expect(pill.style.background).toContain(cssVar);
+    expect(pill.style.border).toContain(cssVar);
   });
 
   it("renders the pill as a <span> with the locked layout classes", () => {

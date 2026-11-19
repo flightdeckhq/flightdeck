@@ -70,6 +70,9 @@ func Migrate(ctx context.Context, rawURL string) error {
 		return err
 	}
 	defer func() { _, _ = m.Close() }()
+	if newer := asNewer(rawURL, m); newer != nil {
+		return newer
+	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		if dirty := asDirty(rawURL, err); dirty != nil {
 			return dirty
@@ -77,6 +80,48 @@ func Migrate(ctx context.Context, rawURL string) error {
 		return fmt.Errorf("storage: migrate up: %w", err)
 	}
 	return nil
+}
+
+// NewerSchemaError reports a database whose schema a newer release has
+// migrated past the newest migration this binary has. Migrations go
+// forward only, so this binary cannot serve it: golang-migrate would say
+// "no migration found for version N" and nothing more.
+type NewerSchemaError struct {
+	// Version is the schema version the database has.
+	Version uint
+	// Latest is the newest version this binary's migrations reach.
+	Latest uint
+	// Backend is the database's engine, which decides the way back.
+	Backend Backend
+}
+
+func (e *NewerSchemaError) Error() string {
+	back := "restore a copy of the database taken before the upgrade (flightdeck restore <file>)"
+	if e.Backend == Postgres {
+		back = "restore a dump of the database taken before the upgrade (psql)"
+	}
+	return fmt.Sprintf("storage: the database's schema is at version %d, and this release of Flightdeck knows versions up "+
+		"to %d: a newer release has migrated it, and migrations only go forward. Install that release or a newer one; "+
+		"or, to run this release, %s", e.Version, e.Latest, back)
+}
+
+// asNewer returns the NewerSchemaError of the database m migrates when
+// its version is above the newest embedded one, and nil otherwise (a
+// version that cannot be read is left to Up to report).
+func asNewer(rawURL string, m *migrate.Migrate) *NewerSchemaError {
+	version, dirty, err := m.Version()
+	if err != nil || dirty {
+		return nil
+	}
+	backend, err := BackendOf(rawURL)
+	if err != nil {
+		return nil
+	}
+	latest, err := LatestVersion(backend)
+	if err != nil || version <= latest {
+		return nil
+	}
+	return &NewerSchemaError{Version: version, Latest: latest, Backend: backend}
 }
 
 // DirtyError reports a schema that golang-migrate marked dirty: a

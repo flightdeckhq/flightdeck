@@ -140,6 +140,28 @@ func TestParseCommand_TakesTheServersFlagsBesideItsOwn(t *testing.T) {
 	}
 }
 
+// A command's arguments may come before, between or after its flags, up
+// to MaxArgs of them; the server's own line still takes none.
+func TestParseCommand_TakesArgumentsAmongTheFlags(t *testing.T) {
+	cmd := Command{Name: "flightdeck restore", Flags: func(*flag.FlagSet) {}, Usage: func(io.Writer) {}, MaxArgs: 1}
+	for _, args := range [][]string{
+		{"backup.db", "--data-dir", "/srv/fd"},
+		{"--data-dir", "/srv/fd", "backup.db"},
+	} {
+		o, err := ParseCommand(args, envOf(nil), io.Discard, cmd)
+		if err != nil || len(o.Args) != 1 || o.Args[0] != "backup.db" || o.DataDir != "/srv/fd" {
+			t.Errorf("%q: %+v, %v", args, o, err)
+		}
+	}
+	if _, err := ParseCommand([]string{"a.db", "--data-dir", "/srv/fd", "b.db"}, envOf(nil), io.Discard, cmd); err == nil ||
+		!strings.Contains(err.Error(), `unexpected argument "b.db"`) {
+		t.Errorf("a second argument: %v", err)
+	}
+	if _, err := Parse([]string{"backup.db"}, envOf(nil), io.Discard); err == nil {
+		t.Error("the server's line took an argument")
+	}
+}
+
 func TestParse_UsageNamesTheServiceCommand(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := Parse([]string{"--help"}, envOf(nil), &out); err != ErrHelp {

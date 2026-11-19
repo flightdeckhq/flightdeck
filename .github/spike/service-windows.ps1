@@ -22,6 +22,7 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $Bin = Join-Path $Root 'bin'
 $Out = Join-Path $Root 'out'
 $Results = [System.Collections.Generic.List[object]]::new()
@@ -398,6 +399,8 @@ function Invoke-Admin {
         $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
         foreach ($c in @(@{ Tag = 'run-console'; Exe = $sleeper; Port = 4232 }, @{ Tag = 'run-gui'; Exe = $sleeperw; Port = 4233 })) {
             $cmd = "`"$($c.Exe)`" -port $($c.Port) -tag $($c.Tag) -out `"$(Join-Path $Out "report-$($c.Tag).jsonl")`""
+            # A profile may have no Run key yet (the 2025 image's has none).
+            if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null; Note "created $run" }
             Set-ItemProperty -Path $run -Name 'FlightdeckSpike' -Value $cmd
             $value = (Get-ItemProperty -Path $run).FlightdeckSpike
             # Explorer runs each value's command line in the user's session at
@@ -501,9 +504,11 @@ function Invoke-User {
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()
         $me = $id.Name
         $env:USERDOMAIN, $env:USERNAME = $me.Split('\', 2)
+        # The profile directory comes from the token; the known folders of a
+        # new profile expand %LOCALAPPDATA% from the inherited environment.
         $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
-        $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
-        $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
+        $env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local'
+        $env:APPDATA = Join-Path $env:USERPROFILE 'AppData\Roaming'
         $env:TEMP = $env:TMP = Join-Path $env:LOCALAPPDATA 'Temp'
         New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
         Section "as $me"

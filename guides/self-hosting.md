@@ -118,10 +118,10 @@ Copy-Item "$env:LOCALAPPDATA\flightdeck\flightdeck.db" D:\backup\flightdeck.db
 
 To restore:
 
-1. Stop Flightdeck, and check that it stopped: `flightdeck health`, given the flags Flightdeck ran with (`--port`), prints `unhealthy` and exits 1.
-2. Move `flightdeck.db` out of the data dir, together with `flightdeck.db-wal` and `flightdeck.db-shm` if they are there, keeping their names. The three are the database as it was; a log left beside the restored file would be applied to it, and the restored database would not open.
+1. Stop Flightdeck, and check that the process has exited: `pgrep -x flightdeck` (Linux, macOS) or `Get-Process flightdeck` (Windows) finds nothing. A terminal that ran it shows its prompt again once it has, and Homebrew's service is no longer `started` in `brew services list`.
+2. In the data dir, rename `flightdeck.db` to `flightdeck.db.before-restore`, and `flightdeck.db-wal` and `flightdeck.db-shm`, if they are there, to `flightdeck.db.before-restore-wal` and `flightdeck.db.before-restore-shm`. SQLite pairs a log with its database by name: the renamed set still opens as the database was, while a log left as `flightdeck.db-wal` would be applied to the restored file, which would then not open. A `flightdeck.db.before-restore` from an earlier restore goes somewhere else first.
 3. Copy the backup into the data dir as `flightdeck.db`.
-4. Start Flightdeck. Once it shows what you expect, the files you moved out can go.
+4. Start Flightdeck. Once it shows what you expect, the `before-restore` files can go.
 
 The start migrates a backup from an older release forward. An older release does not start on a database a newer one has migrated, so a backup taken before an upgrade is also the way back to the release before it.
 
@@ -135,12 +135,12 @@ docker inspect -f '{{.State.Running}}' <container>
 The second command prints `false` once it has stopped. `docker cp <container>:/data/flightdeck.db .` then copies the database out, and `docker start <container>` starts it again. The image has no shell, so a restore runs in a container of its own. With the backup in the current directory as `flightdeck.db`, this moves the current database aside as `flightdeck.db.before-restore` and copies the backup in:
 
 ```bash
-docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -c 'cd /data && for s in "" -wal -shm; do [ ! -e flightdeck.db$s ] || mv flightdeck.db$s flightdeck.db.before-restore$s; done && cp /backup/flightdeck.db . && chown 65532:65532 flightdeck.db'
+docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -ec 'cd /data; if [ -e flightdeck.db.before-restore ]; then echo "flightdeck.db.before-restore is there from an earlier restore: copy it out and remove it first" >&2; exit 1; fi; for s in "" -wal -shm; do [ ! -e flightdeck.db$s ] || mv flightdeck.db$s flightdeck.db.before-restore$s; done; cp /backup/flightdeck.db .; chown 65532:65532 flightdeck.db'
 ```
 
-Then `docker start <container>`. The database must belong to the image's user, 65532: a file copied in with `docker cp` keeps another owner, and the start then fails with `permission denied`.
+Then `docker start <container>`. The database must belong to the image's user, 65532: a file copied in with `docker cp` keeps another owner, and the start then fails with `permission denied`. The command changes nothing when a `flightdeck.db.before-restore` from an earlier restore is there: copy that out (`docker cp <container>:/data/flightdeck.db.before-restore .`), remove it (`docker run --rm -v <volume>:/data alpine:3 sh -c 'rm /data/flightdeck.db.before-restore*'`), and run it again.
 
-**On Kubernetes** the image has no `tar`, which `kubectl cp` needs, so the database cannot be copied out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` on the claim (`data-<release>-flightdeck-0`, owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
+**On Kubernetes** the image has no `tar`, which `kubectl cp` needs, so the database cannot be copied out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the file is owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
 
 ### Postgres
 
@@ -150,14 +150,14 @@ Back up with `pg_dump`, of the server's major version or newer, while Flightdeck
 pg_dump --no-owner -d '<database url>' > flightdeck.sql
 ```
 
-To restore, load the dump into a new, empty database beside the current one, in one transaction, so that a load that fails leaves nothing half-loaded. `<restore url>` is `<database url>` with its database name changed to `flightdeck_restore`:
+To restore, load the dump into a new, empty database beside the current one, in one transaction, so that a load that fails leaves nothing half-loaded. `<restore url>` is `<database url>` with its database name changed to `flightdeck_restore`; `CREATE DATABASE` needs the `CREATEDB` privilege, which a managed Postgres's role often lacks (create the database in the provider's console then):
 
 ```bash
 psql -d '<database url>' -c 'CREATE DATABASE flightdeck_restore'
 psql -v ON_ERROR_STOP=1 -1 -d '<restore url>' < flightdeck.sql
 ```
 
-Then stop Flightdeck and start it with `--database-url '<restore url>'`. It migrates a dump from an older release forward, and the old database stays as it was until you drop it.
+Only when the load exits 0 (psql exits non-zero on the first error and loads nothing), stop Flightdeck and start it with `--database-url '<restore url>'`. It migrates a dump from an older release forward, and the old database stays as it was until you drop it.
 
 Under Compose with `docker-compose.postgres.yml`, Postgres is not published on the host and the URL in the file names the `postgres` service and the database `flightdeck`, so the commands run in that container and the restore swaps the database names. Back up while Flightdeck runs:
 
@@ -165,14 +165,19 @@ Under Compose with `docker-compose.postgres.yml`, Postgres is not published on t
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres pg_dump --no-owner -U flightdeck flightdeck > flightdeck.sql
 ```
 
-Restore:
+To restore, load the dump into a new database:
 
 ```bash
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -U flightdeck -d postgres -c 'CREATE DATABASE flightdeck_restore'
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -v ON_ERROR_STOP=1 -1 -U flightdeck -d flightdeck_restore < flightdeck.sql
+```
+
+Only when the load exits 0 (after a failed one, `flightdeck_restore` is there but empty: drop it and run both commands again), stop Flightdeck and swap the two names in one transaction, which renames both or neither, then start it:
+
+```bash
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml stop flightdeck
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -U flightdeck -d postgres -c 'ALTER DATABASE flightdeck RENAME TO flightdeck_before_restore' -c 'ALTER DATABASE flightdeck_restore RENAME TO flightdeck'
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -v ON_ERROR_STOP=1 -1 -U flightdeck -d postgres -c 'ALTER DATABASE flightdeck RENAME TO flightdeck_before_restore' -c 'ALTER DATABASE flightdeck_restore RENAME TO flightdeck'
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml start flightdeck
 ```
 
-The rename refuses while Flightdeck is still connected to the database, and `flightdeck_before_restore` keeps the database as it was until you drop it.
+The swap refuses while Flightdeck is still connected to the database, and `flightdeck_before_restore` keeps the database as it was until you drop it.

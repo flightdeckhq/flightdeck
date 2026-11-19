@@ -1365,3 +1365,19 @@ the OS and need no privileges.
 and another user's home, so another data dir); a service-manager
 library or Windows-style service wrapper (a dependency for two text
 files); leaving it to `brew services` and Docker (no flags, no Linux).
+
+## D294 -- Backup and restore are commands of the binary, and a start that migrates SQLite keeps a copy first
+
+**Date:** 2026-11-19
+**Decision:** `flightdeck backup` writes a verified `VACUUM INTO` copy,
+never over an existing file. `flightdeck restore` holds the server's
+locks, stages and checks the copy beside the database, moves the old
+database aside with its `-wal` and `-shm` (never deleted), and swaps by
+rename under a marker the next start finishes or undoes. Before a start
+migrates SQLite it keeps `backups/before-*` (the last two), skipped with
+a warning when free disk is below twice the database's size.
+**Why:** the documented procedure needed `sqlite3`, which Windows lacks,
+and its traps (a stale `-wal`, an overwritten copy) lost data.
+**Rejected alternative:** docs only; restore by byte copy (drops a
+backup's `-wal`); refusing to start without room for the copy (drops
+events); Postgres wrappers (`pg_dump` already does it).

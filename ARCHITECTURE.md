@@ -221,7 +221,8 @@ flightdeck/
 │                               # natsembed (in-process nats-server), router (dashboard, /api, /ingest, runtime-config),
 │                               # connect (`flightdeck connect`: the coding-agent connectors, Claude Code first;
 │                               # connect/fakeclaude, the Go stand-in `claude` its tests drive on Windows),
-│                               # service (`flightdeck service`: the per-user systemd unit or launchd agent)
+│                               # service (`flightdeck service`: the per-user systemd unit or launchd agent),
+│                               # backup (`flightdeck backup` / `restore`, the copy before a migration)
 ├── webui/                      # go:embed of the dashboard bundle; dist/ is filled by `make build-webui` (gitignored)
 ├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
@@ -6670,6 +6671,38 @@ migration found for version 0`. An interrupted `CREATE INDEX CONCURRENTLY`
 leaves an invalid index of that name, which is undone with `DROP INDEX
 CONCURRENTLY`.
 
+**A newer schema.** The migrations go forward only, and a binary
+started on a database a newer release migrated has no file for that
+version. `storage.Migrate` reads the version first and, when it is above
+the newest migration embedded for the backend, refuses with a
+`storage.NewerSchemaError` instead of golang-migrate's `no migration
+found for version N`: the version the database has, the newest this
+binary knows, and the two ways out, installing that release (or a
+newer one) or restoring a copy of the database from before the upgrade.
+On SQLite the binary adds the copies of `backups/before-*` (below) to
+the message. `storage.LatestVersion(backend)` is that newest version.
+
+**A copy before each migration.** Before the `flightdeck` binary applies
+a pending migration to a SQLite database (its version above 0 and below
+the newest embedded), it copies the database to
+`<data dir>/backups/before-<binary version>-<UTC timestamp>.db` (mode
+0600) with `VACUUM INTO`, as `flightdeck backup` does, checks that the
+copy opens at the version it had, and keeps the two latest such copies,
+removing older ones (never a file `flightdeck backup` wrote). The copy is
+the way back after an upgrade: `flightdeck restore` of it under the
+release before. A fresh database (version 0) has nothing to keep. When
+the file system of `backups/` has less free space than twice the
+database (with its write-ahead log), the copy is skipped with a
+warning, in the log and in the start-up block, naming the space and
+`flightdeck backup`, and the start migrates: refusing to start would
+drop the events of every agent until someone made room. A copy that
+fails otherwise is the same warning. The start-up block of a start that
+migrated says which copy was kept. The copy reads the whole database, so
+it adds roughly the time `flightdeck backup` takes to a start that
+migrates, and only to that start; a start with nothing to migrate does
+not copy. Postgres is not copied: its operators back it up with
+`pg_dump`.
+
 ### Bus
 
 `storage.Bus` carries the notifications the services exchange: a
@@ -12664,7 +12697,11 @@ loopback, the address it listens on, which `flightdeck connect` reads
 (see Connecting coding agents > Finding the running server); and, in
 SQLite mode, `flightdeck.db.migrate.lock`, which
 an instance holds while it applies the migrations (see Storage >
-Migrations). With `--database-url postgres://…`
+Migrations), `backups/` (mode 0700) with the copies `flightdeck backup`
+writes by default and the two latest taken before a migration, and,
+after a restore, the database it replaced as
+`flightdeck.db.replaced-<timestamp>` (Backing up and restoring, below).
+With `--database-url postgres://…`
 the data dir holds no session data, so a new data dir on an existing
 Postgres database is a working install. The data dir must be on a
 local disk. SQLite's write-ahead log relies on shared memory and file
@@ -12793,13 +12830,13 @@ outlast its caller's deadline in any of the three services, and
 Postgres only considers the JIT for the query API's analytics queries.
 The migrations run without the lock timeout.
 
-**Backing up SQLite.** While the binary runs, copy the database with
-SQLite itself: `sqlite3 <data dir>/flightdeck.db "VACUUM INTO
-'/backup/flightdeck.db'"` (or the shell's `.backup` command) writes a
-consistent snapshot without stopping the binary. A plain file copy is
-only safe when the binary is stopped (a clean stop folds the
-write-ahead log into `flightdeck.db` and removes it); a copy taken
-while it runs must include `flightdeck.db-wal` and may still be torn.
+**Backing up SQLite.** `flightdeck backup` copies the SQLite database
+while the binary runs or not, and `flightdeck restore` puts a copy back
+(Backing up and restoring, below); before a start migrates a SQLite
+database it keeps a copy of it (Storage > Migrations). A plain file copy
+of `flightdeck.db` is a backup only when the binary is stopped (a clean
+stop folds the write-ahead log into `flightdeck.db` and removes it); a
+copy taken while it runs misses what is still in `flightdeck.db-wal`.
 
 **Embedded NATS.** The binary starts a `nats-server` in process with
 JetStream on, `StoreDir=<data>/nats` and `DontListen`, so no port is
@@ -12980,8 +13017,10 @@ sensor and the Claude Code plugin, both of which also accept the
 dashboard URL), the token (or where it
 was printed), the data dir, the database (the SQLite file's path, or
 the Postgres URL with the password masked, each followed by the
-engine's name), the host names answered (see Host check) and the bus
-(embedded, with its store dir, or the external URL). Everything else is
+engine's name), the host names answered (see Host check), the bus
+(embedded, with its store dir, or the external URL) and, on a start that
+migrated a SQLite database, the copy taken before the migration or why
+none was (Storage > Migrations). Everything else is
 `slog` on stderr. The two URLs are
 `https://<domain>` with `--domain`; `http://localhost:<port>` for a
 loopback listen; the listen address as given when it names one
@@ -13066,9 +13105,12 @@ dev stack, below).
 **Start order and shutdown.** The binary binds its port(s) first (so a
 busy or privileged port fails before anything is touched), prepares
 the data dir, takes its lock and reads the secrets, takes the SQLite
-file's lock (creating the file, mode 0600, when it is new), starts
-the embedded NATS server, opens the database (waiting for one that is
-not up yet), applies the embedded migrations, creates the storage
+file's lock, finishes or undoes a restore that was interrupted (Backing
+up and restoring, below), creates the file (mode 0600) when it is new,
+starts the embedded NATS server, opens the database (waiting for one
+that is not up yet), on SQLite copies the database into `backups/` when
+a migration is pending (Storage > Migrations), applies the embedded
+migrations, creates the storage
 bus, checks or mints the dashboard token, on loopback writes
 `instance.json` (a start in any mode first removes one a killed
 instance left), prints the start-up block, starts the check of the
@@ -13628,6 +13670,92 @@ service restart`, `status`, a second `install` on another port that
 moves the service there, and `remove`, after which the file is gone,
 nothing answers and the data dir still holds its database.
 
+#### Backing up and restoring
+
+`flightdeck backup` and `flightdeck restore` copy the SQLite database
+out and back with the binary's own SQLite, so no `sqlite3` program is
+needed (Windows ships none, many Linux systems neither). Both take the
+server's flags and read two of them as the server does, the data dir
+and the database (`--data-dir`, `--database-url`,
+`--database-url-file` and their variables): the database is the file the
+server would open, its symbolic links resolved. On Postgres both refuse
+(exit 4) and print the `pg_dump` or `psql` command to use instead; the
+image has the binary, so `docker exec <container> flightdeck backup`
+backs up a running container and `docker run --rm -v <volume>:/data
+-v <dir>:/backup:ro flightdeckhq/flightdeck restore /backup/<file>`
+restores into a stopped one's volume, as the image's user.
+
+| Command | What it does |
+|---|---|
+| `flightdeck backup [<file>]` | Writes a copy of the database to `<file>`, or to `<data dir>/backups/flightdeck-<UTC timestamp>.db` (the directory created 0700). It takes none of the server's locks and runs while the server writes: the copy is SQLite's `VACUUM INTO` through a read-only connection, one read transaction, so it is the database as of one moment, what the write-ahead log holds included, and compacted. The copy is written into an empty file it creates with mode 0600 beside the target, checked (`PRAGMA integrity_check`, the schema version, the count of sessions and events), flushed to disk and only then given the target's name, by a hard link that fails when the name exists, so an existing file is never overwritten (a file system with no hard links gets the name by a rename after a check under the same name). A default name already taken in the same second gets `-2`, `-3`; a name given is refused. A failure removes what was written. |
+| `flightdeck restore <file>` | Replaces the database with the copy in `<file>`, keeping the one it replaces. |
+
+`restore` takes the data dir's lock and the SQLite file's lock, the two
+the server holds, so it refuses (exit 3) while a `flightdeck` runs on
+either, naming the PID and, when the installed service is that process,
+the `flightdeck service` commands that stop it and start it again. It
+refuses before it changes anything (exit 1) when `<file>` is the
+database itself, by name or as the same file through a link, or one of
+its `-wal` and `-shm` files; when it is not a SQLite database, is
+damaged (a truncated file is) or has no Flightdeck schema; when its
+schema is newer than the binary's migrations, which says which release
+to install; or when its schema is marked dirty. A schema older than the
+binary's is restored as it is and migrated forward by the next start,
+which keeps a copy before it does. Then, in the database's own
+directory:
+
+1. It copies `<file>` into a new file, `flightdeck.db.restoring-<timestamp>`
+   (mode 0600), with `VACUUM INTO` through a read-only connection, so a
+   backup with a write-ahead log beside it is copied whole and the
+   backup is never written to, and checks the copy as `backup` does. A
+   failure here (a full disk, a damaged backup) removes the copy and
+   nothing else has changed.
+2. It writes `flightdeck.db.restore`, a small file that names the copy
+   and the name the current database will take, and flushes it.
+3. It renames the current `flightdeck.db-wal`, `flightdeck.db-shm` and
+   `flightdeck.db` (those that are there) to
+   `flightdeck.db.replaced-<UTC timestamp>` with the same suffixes,
+   names that are free (a second restore within the same second takes
+   `-2`), so the replaced database keeps its own write-ahead log and
+   still opens as it was, and that log can never be applied to the
+   restored file. Nothing is deleted, and no existing file is renamed
+   over.
+4. It renames the copy to `flightdeck.db`, checks that it opens, and
+   removes `flightdeck.db.restore`.
+
+A failure in steps 3 and 4 renames back what was moved, removes the
+copy and says that the database is as it was. A process that stops
+between steps 2 and 4 (a crash, a power loss) leaves
+`flightdeck.db.restore` behind, and the next `restore` or server start
+on the data dir, holding the locks, reads it before anything else: with
+the copy still there it puts the replaced database back under its names
+and removes the copy (the restore is undone), and with the copy already
+renamed into place it removes the file (the restore is done); a start
+logs which. So at every moment a start finds either the database as it
+was before the restore or the restored one, and never an empty one.
+`restore` prints the database it restored (schema version, sessions,
+events), the path of the one it replaced, and that the replaced files
+are removed by hand once the restored database is what was expected.
+The data dir's other files stay: the bus store, `secrets.json` (a
+dashboard token the restored database does not know is minted again at
+start, as after any database change) and the lock files. Exit status: 0
+restored or backed up, 1 a step failed and nothing changed (the message
+says otherwise when something did), 2 a usage error, 3 a `flightdeck`
+holds the database, 4 the database is Postgres.
+
+The commands' tests run them on SQLite files in temporary data dirs:
+a backup taken while another connection writes is a consistent copy
+with every committed row; a backup and a restore through a data dir
+that is a symbolic link; refusals that leave every file as it was (the
+database itself, a non-SQLite file, a truncated one, a newer schema, a
+held lock); a replaced database's leftover `-wal` kept with it and not
+applied to the restored file; two restores within one second; and the
+process stopped at each step of a restore (sabotage hooks between the
+steps), after which a start finds the database before the restore or
+the restored one. CI runs `flightdeck backup` under load in the SQLite
+concurrency smoke (`scripts/flightdeck_stress.py`), and on Windows a
+backup, a restore and a restore refused while the binary runs.
+
 ### Environment variables
 
 **`flightdeck` binary:** flags win over environment variables, which win
@@ -13666,7 +13794,9 @@ loopback and keeps its data in the SQLite file in its data dir.
 `flightdeck service install` (see Deployment > Running in the
 background) takes the flags of the table but `--database-url`,
 `--domain` and `--nats-url`, and their variables, and writes them into
-the service it installs.
+the service it installs. `flightdeck backup` and `flightdeck restore`
+take the same flags and read the data dir and the database settings
+(Deployment > Backing up and restoring).
 `flightdeck health` (see Health checks) takes the same flags and
 variables, under the same rules, and uses the listen address and the
 domain to find the running instance.

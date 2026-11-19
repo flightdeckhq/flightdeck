@@ -6,6 +6,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- `flightdeck backup` copies the SQLite database while Flightdeck runs,
+  with nothing else installed (no `sqlite3`, on Windows too), to
+  `~/.flightdeck/backups/` or the file you name, checks the copy and
+  never writes over an existing file. `flightdeck restore <file>` puts a
+  backup back: it refuses while Flightdeck runs, checks the backup
+  first, keeps the database it replaces as
+  `flightdeck.db.replaced-<time>` with its write-ahead log, and puts it
+  back if anything fails, so a restore never leaves you without a
+  database. Both work in the Docker image (`docker exec … flightdeck
+  backup`); on Postgres they print the `pg_dump` or `psql` command.
+- A start that upgrades a SQLite database's schema first copies it to
+  `backups/before-<version>-<time>.db` and keeps the last two such
+  copies, the way back to the release before; with too little free disk
+  for the copy it says so and starts all the same.
 - `flightdeck service install` keeps Flightdeck running on Linux and
   macOS: it starts it now and at every login, and again within seconds
   if it dies, so a reboot or a closed terminal no longer loses Claude
@@ -153,6 +167,10 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- A release started on a database that a newer release has migrated
+  now says so, with the two schema versions and what to do (install
+  the newer release, or restore the copy taken before the upgrade),
+  instead of golang-migrate's `no migration found for version N`.
 - **The Prompts tab's two views are named for what they show:
   Rendered and JSON.** Each box's toggle read "Pretty | Raw", and the
   tab called Raw was the one that showed indented, highlighted JSON. The

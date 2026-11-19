@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,8 +251,10 @@ func restoreMain(ctx context.Context, args []string, rt IO) int {
 	if err != nil {
 		return fail(rt, command, ExitUsage, "%v", err)
 	}
-	if info, err := os.Stat(source); err != nil {
-		return fail(rt, command, ExitFailed, "the backup %v. Nothing changed", err)
+	if info, err := os.Stat(source); errors.Is(err, fs.ErrNotExist) {
+		return fail(rt, command, ExitFailed, "the backup %s is not there. Nothing changed", source)
+	} else if err != nil {
+		return fail(rt, command, ExitFailed, "the backup %s cannot be read: %s. Nothing changed", source, clause(err))
 	} else if !info.Mode().IsRegular() {
 		return fail(rt, command, ExitFailed, "the backup %s is not a file. Nothing changed", source)
 	}
@@ -340,7 +343,13 @@ func refusal(source string, err error) string {
 	case errors.Is(err, storage.ErrNoSchema):
 		return source + " is a SQLite database but not a Flightdeck one: it has no Flightdeck schema. Nothing changed"
 	}
-	return fmt.Sprintf("%s cannot be read: %v. Nothing changed", source, err)
+	return fmt.Sprintf("%s cannot be read: %s. Nothing changed", source, clause(err))
+}
+
+// clause is err's message as a clause of a sentence: without the
+// period Windows ends its system messages with.
+func clause(err error) string {
+	return strings.TrimRight(err.Error(), ". ")
 }
 
 // inUse turns a lock another process holds into the message: its PID,

@@ -198,7 +198,7 @@ func TestRestoreCommand_RefusesWhatIsNotABackupAndChangesNothing(t *testing.T) {
 		"another schema":      {other, "not a Flightdeck one"},
 		"newer":               {newer, "a newer release wrote it"},
 		"dirty":               {dirty, "had not finished"},
-		"missing":             {filepath.Join(dir, "missing.db"), "no such file"},
+		"missing":             {filepath.Join(dir, "missing.db"), "is not there"},
 	} {
 		before := databaseFiles(t, data)
 		var c cmdRun

@@ -13532,9 +13532,9 @@ or `$` in its name is written as it is.
 | Command | What it does |
 |---|---|
 | `flightdeck service install [flags]` | Checks, writes the file, loads it and (re)starts the service, then waits up to 90 s for it to answer, and prints the dashboard's address. Run again, it rewrites the file with the flags given now and restarts the service: the way new settings or a new binary take effect. |
-| `flightdeck service status` | The file, the manager's state (running with its PID, starting, stopped or failed, and whether it starts at login), the command it runs, whether that instance answers its health routes as `flightdeck health` asks them, the dashboard's address and where the log is. |
+| `flightdeck service status` | The file, the manager's state (running with its PID, starting, stopped or failed, and whether it starts at login), the command it runs, whether the service's own process answers its health routes as `flightdeck health` asks them (an answer on its port while the service does not run, or from another PID, is said to be something else's), the dashboard's address and where the log is. A file that is gone while the manager still runs or enables the service is reported as that, not as "not installed". |
 | `flightdeck service restart` | The manager's restart (`systemctl --user restart`, `launchctl kickstart -k`), then the same wait as `install`. |
-| `flightdeck service remove` | Stops the service, unloads it and removes the file (`systemctl --user disable --now`, `launchctl bootout`), and nothing else: the data dir, its database and the log file in it stay as they are. |
+| `flightdeck service remove` | Stops the service, unloads it and removes the file (`systemctl --user disable --now`, `launchctl bootout`), and nothing else: the data dir, its database and the log file in it stay as they are. A unit whose file was deleted by hand cannot be disabled: it is stopped, and the link that enabled it (`default.target.wants/flightdeck.service`, when it points at the unit's path) is removed. `remove` then checks with the manager that nothing runs and nothing is left, and says what is when something is. |
 
 `--dry-run`, on `install` and `remove`, prints the file, its path and the
 manager's commands, makes the same checks, and changes nothing. The exit
@@ -13552,20 +13552,31 @@ exit 2; on a system with no user service manager to ask (Linux with no
 `systemd=true` in `/etc/wsl.conf`, which the message names, or with no
 user manager answering; macOS with no login session for the user, as
 over SSH alone), exit 4; when the binary runs from a temporary or a cache
-directory (`go run`, `uvx`, `pipx run`) that may be gone at the next
-login, exit 4; when a file not written by `flightdeck service install`
-is at the service's path (the file's first line says who wrote it, and
-a file without that line is never changed or removed), exit 1; when
+directory that may be gone at the next login (the temporary directory; a
+`go-build` directory of `go run`; uv's cache, an `archive-v<n>` or
+`environments-v<n>` bucket or anywhere under `UV_CACHE_DIR`,
+`$XDG_CACHE_HOME/uv`, `~/.cache/uv` or `~/Library/Caches/uv`, as `uvx`
+runs it; the cache of `pipx run`, under `PIPX_HOME` or its default
+homes), exit 4; when a file not written by `flightdeck service install`
+is at the service's path (the unit's first line and the plist's first
+comment say who wrote it, and a file that does not open with that line
+is never changed or removed), exit 1; when
 another `flightdeck`, not this service, holds the data dir's lock (its
 PID is named), exit 1; and when another process listens on the port,
 unless it is this service on the same address, exit 1. Once the manager has started the service,
 `install` waits for it: it is up when its health routes answer and the
 PID in the data dir's lock file is the one the manager started, so a
 `flightdeck` that took the port in between does not pass for it. A
-service that does not come up within 90 s is rolled back: the last
-lines of its log are printed, and the file it replaced is written back
-and started again, or, on a first install, the service is removed;
-exit 1. A loopback service is then asked where the coding agents on this
+service that does not come up within 90 s, and one whose wait is
+interrupted (Ctrl+C, SIGTERM), is rolled back: the last lines of its
+log are printed, and the file it replaced is written back and started
+again, or, on a first install, the service is removed, the link that
+enables it included; exit 1. The rollback's manager commands run on a
+context of their own, bounded by two manager commands' time (180 s), so
+an interrupt that ends the wait does not also cancel them, and the
+closing line says what the manager reports afterwards: the earlier
+service back and running, nothing installed, or what is left and the
+command that clears it. A loopback service is then asked where the coding agents on this
 machine report, as a loopback start does (Agents that report elsewhere,
 above), and each line is printed, with the `flightdeck connect` command
 that points the agent at the service.
@@ -13603,8 +13614,12 @@ stand-ins for `systemctl` and `launchctl` that keep the state the
 manager would, with the files written under a temporary home: the unit
 and the plist against golden files (a data dir with spaces, quotes, `%`
 and `$`), every flag written and read back, a second install, the
-refusals, the Homebrew cases, the rollback, and `remove` leaving the
-data dir as it was. CI runs `scripts/service-gate.sh` against the real
+refusals, the Homebrew cases, the rollback, an interrupt during the wait
+(the stand-ins, like `exec.CommandContext`, run nothing on a cancelled
+context), and `remove` leaving the data dir as it was. The temporary
+home they work in has its links resolved, as install resolves the
+binary's path (macOS keeps temporary files under `/var`, a link to
+`/private/var`). CI runs `scripts/service-gate.sh` against the real
 managers, on Linux in the binary's job and on macOS in a job of its own,
 and the install gate runs it on the released binaries: install on a
 port of its own and a fresh data dir, health, a `kill -9` of the

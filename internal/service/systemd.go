@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -258,11 +259,52 @@ func (s *systemd) unload(ctx context.Context) error {
 	return err
 }
 
-// forget reloads the units once the file is gone, so the manager no
-// longer lists it, and clears a failed state it may have kept.
+// forget runs once the file is gone: it removes the link that enabled
+// the unit when `disable` could not (a unit whose file was deleted by
+// hand cannot be disabled), reloads the units so the manager no longer
+// lists it, and clears a failed state it may have kept.
 func (s *systemd) forget(ctx context.Context) {
+	if _, err := os.Stat(s.path()); errors.Is(err, os.ErrNotExist) && s.ownLink(s.wantsLink()) {
+		_ = os.Remove(s.wantsLink())
+	}
 	_ = s.do(ctx, "daemon-reload")
 	_ = s.do(ctx, "reset-failed", systemdUnit)
+}
+
+// wantsLink is where `systemctl --user enable` puts the link that starts
+// the unit at login.
+func (s *systemd) wantsLink() string {
+	return filepath.Join(filepath.Dir(s.path()), "default.target.wants", systemdUnit)
+}
+
+// ownLink reports whether path is a symbolic link to this unit's file,
+// the only kind forget removes.
+func (s *systemd) ownLink(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return filepath.Clean(target) == s.path()
+}
+
+// leftover is the link that enables the unit, while it is there.
+func (s *systemd) leftover() string {
+	if _, err := os.Lstat(s.wantsLink()); err == nil {
+		return s.wantsLink()
+	}
+	return ""
+}
+
+// ours: the unit's first line is the marker's comment.
+func (s *systemd) ours(content []byte) bool {
+	return bytes.HasPrefix(content, []byte("# "+marker))
 }
 
 func (s *systemd) commands(load bool) []string {

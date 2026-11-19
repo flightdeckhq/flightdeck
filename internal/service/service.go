@@ -98,9 +98,9 @@ const maxOutputBytes = 1 << 20
 // close its output.
 const processWaitDelay = 5 * time.Second
 
-// marker is in the first lines of every file install writes. A file at
-// the service's path without it was written by someone else and is never
-// changed or removed.
+// marker opens every file install writes: the unit's first line, the
+// plist's first comment. A file at the service's path that does not open
+// with it was written by someone else and is never changed or removed.
 const marker = "Written by flightdeck service install"
 
 // Runner runs a command of the service manager (systemctl, launchctl,
@@ -402,6 +402,13 @@ type manager interface {
 	available(ctx context.Context) error
 	// render returns the file that runs c.
 	render(c Config) []byte
+	// ours reports whether content is a file render wrote: its opening
+	// line (the unit's first line, the plist's first comment) says so.
+	ours(content []byte) bool
+	// leftover names what the manager kept of the service once its file
+	// is removed and forget has run (systemd's link that enables it),
+	// "" when nothing is left.
+	leftover() string
 	// argv reads the command line back from a file render wrote.
 	argv(content []byte) ([]string, error)
 	// state reads the service's state.
@@ -515,8 +522,6 @@ func writeFile(path string, data []byte) error {
 	}
 	return nil
 }
-
-func ours(content []byte) bool { return bytes.Contains(content, []byte(marker)) }
 
 // lockPath is the data dir's lock file.
 func lockPath(c Config) string { return filepath.Join(c.DataDir, datadir.LockFile) }

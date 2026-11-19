@@ -209,10 +209,59 @@ func configFor(rt IO, opts cli.Options) (c Config, brew bool, status int, ok boo
 // formula's versions: <prefix>/Cellar/flightdeck/<version>/bin/flightdeck.
 const homebrewCellar = "/Cellar/flightdeck/"
 
-// ephemeralMarkers are parts of a path that put a binary in a cache that
-// can be cleaned at any time: uvx's environments, those of pipx run, and
-// go run's builds.
-var ephemeralMarkers = []string{"/uv/archive-v", "/pipx/.cache/", "/go-build"}
+// ephemeralCache names the cache exe runs from when it is one that can
+// be cleaned at any time, "" otherwise: uv's (uvx and uv run unpack
+// wheels into <cache>/archive-v<n> and build environments in
+// <cache>/environments-v<n>, wherever UV_CACHE_DIR puts the cache), that
+// of pipx run (<PIPX_HOME>/.cache), and go run's builds (a go-build
+// directory, under GOTMPDIR when it is set).
+func ephemeralCache(rt IO, exe string) string {
+	for _, part := range strings.Split(filepath.ToSlash(exe), "/") {
+		switch {
+		case uvBucket(part):
+			return "uv's cache (uvx)"
+		case strings.HasPrefix(part, "go-build"):
+			return "a go run build"
+		}
+	}
+	uvCaches := []string{filepath.Join(rt.Home, ".cache", "uv"), filepath.Join(rt.Home, "Library", "Caches", "uv")}
+	for _, v := range []string{"UV_CACHE_DIR", "XDG_CACHE_HOME"} {
+		if dir := rt.Getenv(v); dir != "" {
+			if v == "XDG_CACHE_HOME" {
+				dir = filepath.Join(dir, "uv")
+			}
+			uvCaches = append(uvCaches, dir)
+		}
+	}
+	for _, dir := range uvCaches {
+		if within(exe, resolved(dir)) {
+			return "uv's cache (uvx)"
+		}
+	}
+	pipxCaches := []string{filepath.Join(rt.Home, ".local", "pipx", ".cache"), filepath.Join(rt.Home, ".local", "share", "pipx", ".cache"),
+		filepath.Join(rt.Home, ".local", "state", "pipx", ".cache"), filepath.Join(rt.Home, "Library", "Application Support", "pipx", ".cache")}
+	if home := rt.Getenv("PIPX_HOME"); home != "" {
+		pipxCaches = append(pipxCaches, filepath.Join(home, ".cache"))
+	}
+	for _, dir := range pipxCaches {
+		if within(exe, resolved(dir)) {
+			return "the cache of pipx run"
+		}
+	}
+	return ""
+}
+
+// uvBucket reports whether a path component is one of uv's cache buckets
+// that hold what uvx runs: archive-v<n> (unpacked wheels) and
+// environments-v<n> (the environments built from them).
+func uvBucket(part string) bool {
+	for _, bucket := range []string{"archive-v", "environments-v"} {
+		if v, ok := strings.CutPrefix(part, bucket); ok && v != "" && strings.Trim(v, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
+}
 
 // binaryPath is the absolute path the service runs: the running binary,
 // symbolic links resolved, or on a Homebrew install the path Homebrew
@@ -237,12 +286,10 @@ func binaryPath(rt IO) (path string, brew bool, refusal string, err error) {
 		}
 		return exe, true, "", nil
 	}
-	for _, m := range ephemeralMarkers {
-		if strings.Contains(exe, m) {
-			return "", false, fmt.Sprintf("this flightdeck runs from a cache (%s) that may be cleaned before the next login; "+
-				"install it first (the install command, brew or pip install flightdeck-cli), then run flightdeck service install "+
-				"with that flightdeck. Nothing was written", exe), nil
-		}
+	if cache := ephemeralCache(rt, exe); cache != "" {
+		return "", false, fmt.Sprintf("this flightdeck runs from %s (%s), which may be cleaned before the next login; "+
+			"install it first (the install command, brew or pip install flightdeck-cli), then run flightdeck service install "+
+			"with that flightdeck. Nothing was written", cache, exe), nil
 	}
 	if tmp := resolved(rt.TempDir); tmp != "" && within(exe, tmp) {
 		return "", false, fmt.Sprintf("this flightdeck runs from the temporary directory %s, which may be emptied before the next login; "+
@@ -274,7 +321,7 @@ func installWith(ctx context.Context, rt IO, m manager, c Config, dryRun bool) i
 	if err != nil {
 		return fail(rt, "install", ExitFailed, "%v", err)
 	}
-	if existed && !ours(previous) {
+	if existed && !m.ours(previous) {
 		return fail(rt, "install", ExitFailed, "%s exists and was not written by flightdeck service install, so it is left as it is: "+
 			"remove or rename it, then run this again. Nothing was written", m.path())
 	}
@@ -326,9 +373,18 @@ func installWith(ctx context.Context, rt IO, m manager, c Config, dryRun bool) i
 		pid, err = waitReady(ctx, rt, m, c)
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck service install: the service did not come up: %v\n", err)
-		showLog(ctx, rt, m, c, since)
-		rollback(ctx, rt, m, previous, existed)
+		// An interrupt (Ctrl+C, SIGTERM) cancels ctx, and the manager's
+		// commands of the rollback must still run: they get a context of
+		// their own, bounded.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if ctx.Err() != nil {
+			_, _ = fmt.Fprintln(rt.Stderr, "flightdeck service install: interrupted before the service answered; putting back what was there")
+		} else {
+			_, _ = fmt.Fprintf(rt.Stderr, "flightdeck service install: the service did not come up: %v\n", err)
+		}
+		showLog(cleanup, rt, m, c, since)
+		rollback(cleanup, rt, m, previous, existed)
 		return ExitFailed
 	}
 	verb := "is installed"
@@ -368,25 +424,55 @@ func describe(rt IO, m manager, c Config, content []byte, existed bool) {
 	_, _ = fmt.Fprintf(w, "and wait for %s to answer. Nothing was changed.\n", DashboardURL(c.Listen))
 }
 
-// rollback puts back what install replaced: the earlier file, loaded
-// and started again, or no service at all.
+// cleanupTimeout bounds a rollback, which runs on a context of its own
+// so that an interrupted install still puts things back: an unload that
+// waits for the binary's stop and a load after it, two manager commands'
+// worth.
+const cleanupTimeout = 2 * managerTimeout
+
+// rollback puts back what install replaced, the earlier file loaded and
+// started again or no service at all, and says what is there afterwards
+// as the manager reports it, with the one command that clears what is
+// left when it could not.
 func rollback(ctx context.Context, rt IO, m manager, previous []byte, existed bool) {
 	if existed {
-		if err := writeFile(m.path(), previous); err == nil {
-			if err := m.load(ctx); err == nil {
-				_, _ = fmt.Fprintf(rt.Stderr, "The service is back as it was before this install (%s).\n", m.path())
-				return
-			}
+		err := writeFile(m.path(), previous)
+		if err == nil {
+			err = m.load(ctx)
 		}
-		_, _ = fmt.Fprintf(rt.Stderr, "The earlier service could not be started again; flightdeck service status shows it.\n")
+		if err != nil {
+			_, _ = fmt.Fprintf(rt.Stderr, "The earlier service could not be put back (%v); %s may hold either version. "+
+				"Run flightdeck service install with the flags you want, or flightdeck service remove.\n", err, m.path())
+			return
+		}
+		if st, err := m.state(ctx); err == nil && st.running {
+			_, _ = fmt.Fprintf(rt.Stderr, "The service is back as it was before this install (%s, pid %d).\n", m.path(), st.pid)
+			return
+		}
+		_, _ = fmt.Fprintf(rt.Stderr, "The earlier service is written back and started (%s); flightdeck service status shows whether it runs.\n", m.path())
 		return
 	}
-	_ = m.unload(ctx)
+	var problems []string
+	if err := m.unload(ctx); err != nil {
+		problems = append(problems, err.Error())
+	}
 	if err := os.Remove(m.path()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintf(rt.Stderr, "%s could not be removed (%v); flightdeck service remove removes it.\n", m.path(), err)
-		return
+		problems = append(problems, err.Error())
 	}
 	m.forget(ctx)
+	if st, err := m.state(ctx); err != nil {
+		problems = append(problems, err.Error())
+	} else if st.loaded || st.running {
+		problems = append(problems, fmt.Sprintf("the %s still knows the service (%s)", m.kind(), describeState(st)))
+	}
+	if left := m.leftover(); left != "" {
+		problems = append(problems, left+" is still there")
+	}
+	if len(problems) > 0 {
+		_, _ = fmt.Fprintf(rt.Stderr, "The service could not be removed again: %s. flightdeck service remove removes what is left.\n",
+			strings.Join(problems, "; "))
+		return
+	}
 	_, _ = fmt.Fprintln(rt.Stderr, "Nothing is installed: the service was removed again. Fix what the log says, then run flightdeck service install again.")
 }
 
@@ -461,7 +547,7 @@ func installed(rt IO, m manager, command string) (content []byte, status int, ok
 	case !exists:
 		return nil, fail(rt, command, ExitNotInstalled, "the Flightdeck service is not installed (%s is not there): "+
 			"flightdeck service install installs it", m.path()), false
-	case !ours(content):
+	case !m.ours(content):
 		return nil, fail(rt, command, ExitFailed, "%s was not written by flightdeck service install; it is not this command's to change", m.path()), false
 	}
 	return content, 0, true
@@ -483,13 +569,20 @@ func status(ctx context.Context, rt IO, args []string) int {
 	}
 	w := rt.Stdout
 	if !exists {
+		// The file can be gone while the manager still runs what it read
+		// from it (deleted by hand): that is not "not installed".
+		if st, err := m.state(ctx); err == nil && (st.running || st.enabled) {
+			_, _ = fmt.Fprintf(w, "The Flightdeck service's file %s is gone, but the %s still has it (%s): flightdeck service remove stops and removes it.\n",
+				m.path(), m.kind(), describeState(st))
+			return ExitFailed
+		}
 		_, _ = fmt.Fprintf(w, "The Flightdeck service is not installed: flightdeck service install installs it.\n")
 		if m.homebrewLoaded(ctx) {
 			_, _ = fmt.Fprintf(w, "Homebrew's flightdeck service is loaded: brew services list shows it.\n")
 		}
 		return ExitNotInstalled
 	}
-	if !ours(content) {
+	if !m.ours(content) {
 		return fail(rt, "status", ExitFailed, "%s was not written by flightdeck service install", m.path())
 	}
 	_, _ = fmt.Fprintf(w, "Flightdeck service: the %s %s\n", m.kind(), homeRelative(rt, m.path()))
@@ -512,15 +605,23 @@ func status(ctx context.Context, rt IO, args []string) int {
 		line("command", "unreadable (%v); flightdeck service install rewrites it", perr)
 		return ExitFailed
 	}
+	// The health line is about this service's process: an answer on its
+	// port from anything else is said to be that.
 	healthy := false
-	switch answered, aerr := rt.Answers(ctx, c.Listen); {
+	_, port, _ := net.SplitHostPort(c.Listen)
+	answered, aerr := rt.Answers(ctx, c.Listen)
+	switch {
+	case (err != nil || !st.running) && aerr == nil:
+		line("health", "the service is not running; something else answers on port %s (%s)", port, answered)
+	case err != nil || !st.running:
+		line("health", "the service is not running, and nothing answers on port %s", port)
 	case aerr != nil:
 		line("health", "unhealthy: %v", aerr)
-	case err == nil && st.running && datadir.LockPID(lockPath(c)) != st.pid:
-		line("health", "%s answers, but not from the service's process: another flightdeck holds its data dir", answered)
+	case datadir.LockPID(lockPath(c)) != st.pid:
+		line("health", "%s answers, but not from the service's process (pid %d): another flightdeck holds its data dir", answered, st.pid)
 	default:
 		line("health", "healthy: %s answers /api/health and /ingest/health", answered)
-		healthy = err == nil && st.running
+		healthy = true
 	}
 	line("dashboard", "%s", DashboardURL(c.Listen))
 	line("data dir", "%s", c.DataDir)
@@ -580,8 +681,15 @@ func restart(ctx context.Context, rt IO, args []string) int {
 	}
 	pid, err := waitReady(ctx, rt, m, c)
 	if err != nil {
-		_, _ = fmt.Fprintf(rt.Stderr, "flightdeck service restart: the service did not come up: %v\n", err)
-		showLog(ctx, rt, m, c, since)
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if ctx.Err() != nil {
+			_, _ = fmt.Fprintln(rt.Stderr, "flightdeck service restart: interrupted before the service answered; the manager keeps "+
+				"starting it, and flightdeck service status shows whether it runs")
+		} else {
+			_, _ = fmt.Fprintf(rt.Stderr, "flightdeck service restart: the service did not come up: %v\n", err)
+		}
+		showLog(cleanup, rt, m, c, since)
 		return ExitFailed
 	}
 	_, _ = fmt.Fprintf(rt.Stdout, "The Flightdeck service restarted and runs: %s (pid %d).\n", DashboardURL(c.Listen), pid)
@@ -605,14 +713,14 @@ func remove(ctx context.Context, rt IO, args []string) int {
 	if err != nil {
 		return fail(rt, "remove", ExitFailed, "%v", err)
 	}
-	if exists && !ours(content) {
+	if exists && !m.ours(content) {
 		return fail(rt, "remove", ExitFailed, "%s was not written by flightdeck service install, so it is left as it is. Nothing changed", m.path())
 	}
 	st, err := m.state(ctx)
 	if err != nil {
 		return fail(rt, "remove", ExitFailed, "%v", err)
 	}
-	if !exists && !st.loaded {
+	if !exists && !st.loaded && !st.running && m.leftover() == "" {
 		_, _ = fmt.Fprintln(rt.Stdout, "The Flightdeck service is not installed; nothing changed.")
 		return ExitOK
 	}
@@ -630,13 +738,21 @@ func remove(ctx context.Context, rt IO, args []string) int {
 		_, _ = fmt.Fprintln(rt.Stdout, "The data dir is left as it is. Nothing was changed.")
 		return ExitOK
 	}
-	if err := m.unload(ctx); err != nil {
-		return fail(rt, "remove", ExitFailed, "%v", err)
+	if exists || st.loaded || st.running {
+		if err := m.unload(ctx); err != nil {
+			return fail(rt, "remove", ExitFailed, "%v", err)
+		}
 	}
 	if err := os.Remove(m.path()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fail(rt, "remove", ExitFailed, "the service is stopped, but %s could not be removed: %v", m.path(), err)
 	}
 	m.forget(ctx)
+	if after, err := m.state(ctx); err == nil && after.running {
+		return fail(rt, "remove", ExitFailed, "the %s still runs the service (pid %d) after it was unloaded", m.kind(), after.pid)
+	}
+	if left := m.leftover(); left != "" {
+		return fail(rt, "remove", ExitFailed, "the service is stopped and its file removed, but %s could not be removed", left)
+	}
 	_, _ = fmt.Fprintf(rt.Stdout, "The Flightdeck service is stopped and removed (%s).\n", homeRelative(rt, m.path()))
 	if dataDir != "" {
 		_, _ = fmt.Fprintf(rt.Stdout, "Its data dir, %s, is as it was: flightdeck uses it again when started on it.\n", dataDir)
@@ -657,7 +773,7 @@ func Running(ctx context.Context, rt IO) (c Config, pid int, ok bool) {
 		return Config{}, 0, false
 	}
 	content, exists, err := readFile(m.path())
-	if err != nil || !exists || !ours(content) {
+	if err != nil || !exists || !m.ours(content) {
 		return Config{}, 0, false
 	}
 	argv, err := m.argv(content)

@@ -351,8 +351,12 @@ func TestInstall_PutsTheEarlierServiceBackWhenTheNewOneFails(t *testing.T) {
 	if got, _ := os.ReadFile(m.path()); string(got) != string(before) {
 		t.Errorf("the earlier unit was not restored:\n%s\n---\n%s", got, before)
 	}
-	if !strings.Contains(te.stderr.String(), "back as it was") && !strings.Contains(te.stderr.String(), "could not be started again") {
-		t.Errorf("the rollback is not reported:\n%s", te.output())
+	// Starts still fail during the rollback, so the earlier service is
+	// written back and started but does not run, and the output says that
+	// rather than that it is back.
+	if !strings.Contains(te.stderr.String(), "The earlier service is written back and started") ||
+		strings.Contains(te.stderr.String(), "back as it was") {
+		t.Errorf("the rollback is not reported as it went:\n%s", te.output())
 	}
 }
 
@@ -525,6 +529,18 @@ func TestInstall_RefusesABinaryInATemporaryOrCacheDirectory(t *testing.T) {
 	for name, dir := range map[string]func(*testEnv) string{
 		"the temporary directory": func(te *testEnv) string { return filepath.Join(te.rt.TempDir, "go-run-123") },
 		"uvx's cache":             func(te *testEnv) string { return filepath.Join(te.rt.Home, ".cache", "uv", "archive-v0", "abc", "bin") },
+		"uv's environments": func(te *testEnv) string {
+			return filepath.Join(te.rt.Home, "elsewhere", "environments-v2", "fd-123", "lib", "python3.12", "site-packages", "flightdeck_cli", "bin")
+		},
+		"a UV_CACHE_DIR of its own": func(te *testEnv) string {
+			te.env["UV_CACHE_DIR"] = filepath.Join(te.rt.Home, "uvc")
+			return filepath.Join(te.rt.Home, "uvc", "sdists-v9", "x")
+		},
+		"a PIPX_HOME of its own": func(te *testEnv) string {
+			te.env["PIPX_HOME"] = filepath.Join(te.rt.Home, "px")
+			return filepath.Join(te.rt.Home, "px", ".cache", "abc", "bin")
+		},
+		"a go run build": func(te *testEnv) string { return filepath.Join(te.rt.Home, "gotmp", "go-build123", "b001", "exe") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			te := newTestEnv(t, "linux")
@@ -617,6 +633,122 @@ func TestRemove_StopsAServiceWhoseFileWasDeleted(t *testing.T) {
 	}
 	if te.sys.running() != nil || !te.sys.called("systemctl --user stop flightdeck.service") {
 		t.Errorf("the service still runs after remove: %q", te.sys.calls)
+	}
+	if _, err := os.Lstat(te.sys.wantsLink()); !os.IsNotExist(err) {
+		t.Errorf("remove left the link that enables the unit (%v)", err)
+	}
+}
+
+// Before remove, status says what is there: the manager still runs a
+// service whose file is gone.
+func TestStatus_AServiceWhoseFileIsGoneIsNotNotInstalled(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	if code := te.main("install", "--port", freePort(t), "--data-dir", te.dataDir("d")); code != ExitOK {
+		t.Fatalf("install exited %d:\n%s", code, te.output())
+	}
+	if err := os.Remove(systemdOf(te).path()); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.main("status"); code != ExitFailed || !strings.Contains(te.stdout.String(), "is gone, but the systemd user unit still has it") ||
+		!strings.Contains(te.stdout.String(), "flightdeck service remove") {
+		t.Errorf("status exited %d:\n%s", code, te.output())
+	}
+}
+
+// An interrupt (Ctrl+C, SIGTERM) while install waits still rolls back:
+// the manager's commands run on a context of their own, and nothing of
+// a first install is left, the link that enables it and the process
+// included.
+func TestInstall_AnInterruptDuringTheWaitRemovesAFirstInstall(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			te := newTestEnv(t, goos)
+			ctx := te.interruptDuringTheWait()
+			if code := te.mainCtx(ctx, "install", "--port", freePort(t), "--data-dir", te.dataDir("d")); code != ExitFailed {
+				t.Fatalf("an interrupted install exited %d:\n%s", code, te.output())
+			}
+			for _, want := range []string{"interrupted before the service answered", "Nothing is installed"} {
+				if !strings.Contains(te.stderr.String(), want) {
+					t.Errorf("the output lacks %q:\n%s", want, te.output())
+				}
+			}
+			m, _ := managerFor(te.rt)
+			if _, err := os.Stat(m.path()); !os.IsNotExist(err) {
+				t.Errorf("the service file is still there (%v)", err)
+			}
+			if te.sys.running() != nil || te.sys.enabled || te.sys.loaded != nil || te.sys.plist != nil {
+				t.Errorf("the manager still has the service: running %v, enabled %v; calls %q", te.sys.running(), te.sys.enabled, te.sys.calls)
+			}
+			if _, err := os.Lstat(te.sys.wantsLink()); !os.IsNotExist(err) {
+				t.Errorf("the link that enables the unit is still there (%v)", err)
+			}
+		})
+	}
+}
+
+// On a re-install the same interrupt puts the earlier service back,
+// loaded and running where it ran.
+func TestInstall_AnInterruptDuringTheWaitPutsTheEarlierServiceBack(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			te := newTestEnv(t, goos)
+			data := te.dataDir("d")
+			port := freePort(t)
+			if code := te.main("install", "--port", port, "--data-dir", data); code != ExitOK {
+				t.Fatalf("first install exited %d:\n%s", code, te.output())
+			}
+			m, _ := managerFor(te.rt)
+			before, _ := os.ReadFile(m.path())
+			ctx := te.interruptDuringTheWait()
+			if code := te.mainCtx(ctx, "install", "--port", freePort(t), "--data-dir", data); code != ExitFailed {
+				t.Fatalf("an interrupted re-install exited %d:\n%s", code, te.output())
+			}
+			if got, _ := os.ReadFile(m.path()); string(got) != string(before) {
+				t.Errorf("the earlier file is not back:\n%s", got)
+			}
+			if proc := te.sys.running(); proc == nil || proc.listen != "127.0.0.1:"+port {
+				t.Errorf("the earlier service does not run on its port again: %+v", proc)
+			}
+			if !strings.Contains(te.stderr.String(), "The service is back as it was before this install") {
+				t.Errorf("the output does not say the earlier service is back:\n%s", te.output())
+			}
+		})
+	}
+}
+
+// status is about this service: an answer on its port from something
+// else, while the service does not run, is said to be that.
+func TestStatus_AnAnswerFromSomethingElseIsNotTheService(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	port := freePort(t)
+	if code := te.main("install", "--port", port, "--data-dir", te.dataDir("d")); code != ExitOK {
+		t.Fatalf("install exited %d:\n%s", code, te.output())
+	}
+	te.sys.mu.Lock()
+	te.sys.proc = nil
+	te.sys.mu.Unlock()
+	te.rt.Answers = func(context.Context, string) (string, error) { return "http://127.0.0.1:" + port, nil }
+	if code := te.main("status"); code != ExitFailed {
+		t.Errorf("status of a stopped service exited %d:\n%s", code, te.output())
+	}
+	if !strings.Contains(te.stdout.String(), "the service is not running; something else answers on port "+port) ||
+		strings.Contains(te.stdout.String(), "healthy:") {
+		t.Errorf("status takes another server for the service:\n%s", te.output())
+	}
+}
+
+// The first line says who wrote a file: one that only mentions the
+// marker further down is someone else's.
+func TestOurs_TheOpeningLineDecides(t *testing.T) {
+	sd, ld := &systemd{}, &launchd{}
+	if !sd.ours(sd.render(awkward)) || !ld.ours(ld.render(awkward)) {
+		t.Fatal("a rendered file is not recognised as this command's")
+	}
+	if sd.ours([]byte("[Service]\n# " + marker + "\nExecStart=/bin/true\n")) {
+		t.Error("a unit with the marker below its first line is taken for this command's")
+	}
+	if ld.ours([]byte("<?xml version=\"1.0\"?>\n<plist><!-- " + marker + " --></plist>\n")) {
+		t.Error("a plist whose first comment is not the marker's is taken for this command's")
 	}
 }
 

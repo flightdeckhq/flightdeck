@@ -113,9 +113,15 @@ func (f *fakeSystem) running() *fakeProc {
 	return f.proc
 }
 
-func (f *fakeSystem) run(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+func (f *fakeSystem) run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// exec.CommandContext starts nothing on a context already done: a
+	// command after an interrupt fails, as the real one would.
+	if err := ctx.Err(); err != nil {
+		f.log("(not run, "+err.Error()+") "+name, args)
+		return nil, nil, err
+	}
 	f.log(name, args)
 	if f.missing[name] {
 		return nil, nil, &exec.Error{Name: name, Err: exec.ErrNotFound}
@@ -196,6 +202,16 @@ func (f *fakeSystem) systemctl(args []string) ([]byte, []byte, error) {
 		if f.loaded == nil {
 			return nil, []byte("Failed to enable unit: Unit file flightdeck.service does not exist."), errExit
 		}
+		// As systemctl does: a link to the unit file in the target's
+		// wants directory.
+		link := f.wantsLink()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			return nil, []byte(err.Error()), errExit
+		}
+		_ = os.Remove(link)
+		if err := os.Symlink(unitFile, link); err != nil {
+			return nil, []byte(err.Error()), errExit
+		}
 		f.enabled = true
 		return nil, nil, nil
 	case len(args) == 2 && args[0] == "reset-failed":
@@ -207,9 +223,12 @@ func (f *fakeSystem) systemctl(args []string) ([]byte, []byte, error) {
 		}
 		return nil, nil, f.start((&systemd{}).argv(f.loaded))
 	case len(args) == 3 && args[0] == "disable" && args[1] == "--now" && args[2] == systemdUnit:
+		// Disabling reads the unit file for its [Install] section, so a
+		// unit whose file is gone cannot be disabled: nothing changes.
 		if _, err := os.Stat(unitFile); err != nil {
 			return nil, []byte("Failed to disable unit: Unit file flightdeck.service does not exist."), errExit
 		}
+		_ = os.Remove(f.wantsLink())
 		f.proc, f.enabled = nil, false
 		return nil, nil, nil
 	case len(args) == 2 && args[0] == "stop" && args[1] == systemdUnit:
@@ -217,6 +236,10 @@ func (f *fakeSystem) systemctl(args []string) ([]byte, []byte, error) {
 		return nil, nil, nil
 	}
 	return nil, []byte("unexpected systemctl --user " + strings.Join(args, " ")), errExit
+}
+
+func (f *fakeSystem) wantsLink() string {
+	return filepath.Join(f.unitDir(), "default.target.wants", systemdUnit)
 }
 
 func (f *fakeSystem) unitDir() string {
@@ -358,7 +381,12 @@ type testEnv struct {
 // binary in ~/bin, nothing installed and the stand-in manager.
 func newTestEnv(t *testing.T, goos string) *testEnv {
 	t.Helper()
-	home := t.TempDir()
+	// With its links resolved, as install resolves the binary's path: on
+	// macOS the temporary directory is under /var, a link to /private/var.
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	te := &testEnv{sys: newFakeSystem(t, home), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, env: map[string]string{}}
 	te.binary = filepath.Join(home, "bin", "flightdeck")
 	if err := os.MkdirAll(filepath.Dir(te.binary), 0o755); err != nil {
@@ -388,9 +416,27 @@ func newTestEnv(t *testing.T, goos string) *testEnv {
 
 // main runs `flightdeck service <args>` and returns its exit status.
 func (te *testEnv) main(args ...string) int {
+	return te.mainCtx(context.Background(), args...)
+}
+
+// mainCtx is main in ctx, which the test may cancel as Ctrl+C does.
+func (te *testEnv) mainCtx(ctx context.Context, args ...string) int {
 	te.stdout.Reset()
 	te.stderr.Reset()
-	return Main(context.Background(), args, te.rt)
+	return Main(ctx, args, te.rt)
+}
+
+// interruptDuringTheWait makes the first health check of the wait cancel
+// ctx, as a Ctrl+C or a SIGTERM to the command does while it waits, and
+// fail, so the wait ends on the cancel.
+func (te *testEnv) interruptDuringTheWait() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	te.rt.Answers = func(context.Context, string) (string, error) {
+		cancel()
+		return "", errors.New("not yet")
+	}
+	te.sys.t.Cleanup(cancel)
+	return ctx
 }
 
 func (te *testEnv) output() string { return te.stdout.String() + te.stderr.String() }

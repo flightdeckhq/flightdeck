@@ -189,12 +189,16 @@ func (l *launchd) state(ctx context.Context) (state, error) {
 	pid, _ := strconv.Atoi(props["pid"])
 	running := props["state"] == "running" && pid > 0
 	exit := props["last exit code"]
+	// Failed is an exit with a status of its own: a process ended by a
+	// signal (kickstart -k, a kill launchd is about to answer with a new
+	// start) is not a binary that refused to run.
+	code, numeric := strconv.Atoi(exit)
 	return state{
 		loaded:  true,
 		running: running,
 		pid:     pid,
 		enabled: l.enabled(ctx),
-		failed:  !running && exit != "" && exit != "0" && !strings.Contains(exit, "never exited"),
+		failed:  !running && numeric == nil && code != 0 && props["last terminating signal"] == "",
 		detail:  strings.TrimSpace(props["state"] + ", last exit code " + exit),
 	}, nil
 }
@@ -293,6 +297,24 @@ func (l *launchd) unload(ctx context.Context) error {
 }
 
 func (l *launchd) forget(context.Context) {}
+
+// leftover: launchd keeps nothing of a booted-out agent but the enable
+// state of its label, which loads nothing without a plist.
+func (l *launchd) leftover() string { return "" }
+
+// ours: the plist's first comment, after the XML declaration and the
+// doctype, is the marker's.
+func (l *launchd) ours(content []byte) bool {
+	rest := content
+	for _, prefix := range []string{"<?xml", "<!DOCTYPE"} {
+		if bytes.HasPrefix(rest, []byte(prefix)) {
+			if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+				rest = rest[i+1:]
+			}
+		}
+	}
+	return bytes.HasPrefix(rest, []byte("<!-- "+marker))
+}
 
 func (l *launchd) commands(load bool) []string {
 	if load {

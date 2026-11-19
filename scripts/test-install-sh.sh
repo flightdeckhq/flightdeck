@@ -72,7 +72,7 @@ if [ "\${1:-}" = service ] && [ -n "\${FAKE_FLIGHTDECK_SERVICE_DIR:-}" ] && [ "\
     status)
       if [ ! -f "\$sd/unit" ]; then echo "The Flightdeck service is not installed: flightdeck service install installs it."; exit 3; fi
       echo "Flightdeck service: the systemd user unit ~/.config/systemd/user/flightdeck.service"
-      echo "  state      running (pid 4242), starts at login"
+      echo "  state      \${FAKE_FLIGHTDECK_SERVICE_STATE:-running, pid 4242; starts at login}"
       echo "  command    \$(cat "\$sd/unit")"
       exit 0 ;;
     install)
@@ -105,6 +105,13 @@ if [ "\${1:-}" = connect ]; then
   fi
   if [ -n "\${FAKE_FLIGHTDECK_CONNECT_SAYS:-}" ]; then echo "\$FAKE_FLIGHTDECK_CONNECT_SAYS"; else echo "fake flightdeck: connect \$*"; fi
   exit "\${FAKE_FLIGHTDECK_CONNECT_EXIT:-0}"
+fi
+# A Ctrl+C the first time this release's --version runs (once the
+# installer has put it in place): SIGINT to the process group, as a
+# terminal sends it.
+if [ "\${FAKE_FLIGHTDECK_INT_ON_VERSION_OF:-}" = "$tag" ] && [ ! -e "\${FAKE_FLIGHTDECK_INT_ONCE:-/nonexistent}" ]; then
+  : >"\$FAKE_FLIGHTDECK_INT_ONCE"
+  kill -INT 0
 fi
 echo "flightdeck $tag ($target)"
 FAKE
@@ -248,7 +255,7 @@ expect_fail "a missing bundle aborts the install" "404" \
 # tools the installer runs, so a cosign the machine has (in /usr/bin on
 # some runners) cannot be found.
 mkdir -p "$WORK/nocosign"
-for tool in sh uname curl wget sha256sum shasum openssl cut grep sed tar gzip mktemp rm mkdir install cp chmod sysctl; do
+for tool in sh uname curl wget sha256sum shasum openssl cut grep sed tar gzip mktemp rm mkdir install cp chmod mv sysctl; do
   if tool_path="$(command -v "$tool")"; then ln -s "$tool_path" "$WORK/nocosign/$tool"; fi
 done
 test ! -e "$WORK/nocosign/cosign"
@@ -554,16 +561,27 @@ echo "-- starting Flightdeck in the background (flightdeck service)"
 # of the binary installed at that moment, so a log shows whether the stop
 # ran before the binary was replaced. launchctl print says the agent is
 # gone, as it is once bootout has stopped it.
+# FAKE_MANAGER_INT_ON_STOP sends a Ctrl+C (SIGINT to the process group)
+# while the installer waits on the stop: in systemctl stop, or while
+# launchctl print still says the agent is there.
 mkdir -p "$WORK/fakemgr"
 for manager in systemctl launchctl; do
   cat >"$WORK/fakemgr/$manager" <<FAKE
 #!/bin/sh
-if [ "$manager" = launchctl ] && [ "\$1" = print ]; then exit 113; fi
+if [ "$manager" = launchctl ] && [ "\$1" = print ]; then
+  if [ -n "\${FAKE_MANAGER_INT_ON_STOP:-}" ]; then kill -INT 0; exit 0; fi
+  exit 113
+fi
 printf '%s %s [installed: %s]\n' "$manager" "\$*" "\$("\$FAKE_INSTALLED_BIN" --version 2>/dev/null)" >>"\$FAKE_FLIGHTDECK_SERVICE_DIR/calls.log"
+if [ "$manager" = systemctl ] && [ "\$2" = stop ] && [ -n "\${FAKE_MANAGER_INT_ON_STOP:-}" ]; then kill -INT 0; fi
 exit "\${FAKE_MANAGER_EXIT:-0}"
 FAKE
   chmod 0755 "$WORK/fakemgr/$manager"
 done
+# An install(1) that fails as on a full disk.
+mkdir -p "$WORK/fullinstall"
+printf '#!/bin/sh\necho "install: error writing to the file: No space left on device" >&2\nexit 1\n' >"$WORK/fullinstall/install"
+chmod 0755 "$WORK/fullinstall/install"
 # root, and macOS on Apple silicon.
 mkdir -p "$WORK/fakeroot" "$WORK/fakedarwin"
 # shellcheck disable=SC2016  # the $1 and $@ are the stand-ins' own
@@ -756,5 +774,94 @@ service_run svc-none VERSION="$TAG2"
 must_not "$(calls svc-none)" 'systemctl' "no service: nothing stopped"
 must "$WORK/svc-none.out" "$SERVICE_HINT" "no service: the command is printed again"
 pass "a re-run without the service behaves as a first install"
+
+# A re-run leaves the service as it found it: one the user had stopped
+# stays stopped, on the new binary; one the manager keeps starting again
+# after a failure counts as running.
+for state in 'not running (inactive, dead); starts at login' 'not loaded by the service manager; starts at login'; do
+  name="svc-stopped-$(printf '%s' "${state%%;*}" | tr -c '[:alnum:]' '-')"
+  service_run "$name" FLIGHTDECK_SERVICE=yes
+  service_run "$name" VERSION="$TAG2" FAKE_FLIGHTDECK_SERVICE_STATE="$state"
+  must_not "$(calls "$name")" 'systemctl' "a stopped service ($state): not stopped or started"
+  must_not "$(calls "$name")" "service restart by" "a stopped service ($state): not restarted"
+  must_not "$(calls "$name")" "service install by $TAG2" "a stopped service ($state): not installed again"
+  must "$WORK/$name.out" 'The Flightdeck service was stopped and stays stopped; it runs the new binary once started: flightdeck service restart starts it now.' "a stopped service: the line that says so"
+  must_not "$WORK/$name.out" '[Y/n]' "a stopped service: nothing asked"
+  "$WORK/inst-$name/flightdeck" --version | grep -q "^flightdeck $TAG2"
+done
+pass "a re-run with the service stopped replaces the binary and leaves the service stopped, saying how to start it"
+
+service_run svc-failing FLIGHTDECK_SERVICE=yes
+service_run svc-failing VERSION="$TAG2" FAKE_FLIGHTDECK_SERVICE_STATE='failed: it exited and is started again (activating, auto-restart); starts at login'
+before "$(calls svc-failing)" 'systemctl --user stop flightdeck.service' "service restart by $TAG2"
+pass "a service the manager keeps starting again after failures counts as running: stopped, replaced, restarted"
+
+# FLIGHTDECK_SERVICE takes FLIGHTDECK_CONNECT's spellings: spaces and
+# commas around the word are ignored, the word is lower-case.
+service_run svc-spaced FLIGHTDECK_SERVICE=' yes, '
+must "$(calls svc-spaced)" "service install by $TAG" "' yes, ' is yes"
+service_run svc-upper FLIGHTDECK_SERVICE=YES
+must "$WORK/svc-upper.out" 'FLIGHTDECK_SERVICE is neither yes nor no (YES)' "YES is reported, as FLIGHTDECK_CONNECT=ALL would not be all"
+must_not "$(calls svc-upper)" "service install by" "YES installs nothing"
+pass "FLIGHTDECK_SERVICE reads as FLIGHTDECK_CONNECT does: ' yes, ' is yes, YES is reported and read as no"
+
+# Exits after the stop: the service is started again on the binary in
+# place, and no staged file is left. service_run_exits <name> <status>
+# <env...> is service_run for a run that must exit with <status>.
+service_run_exits() {
+  local name="$1" want="$2"; shift 2
+  mkdir -p "$WORK/svc-$name"
+  local got=0
+  curl -fsSL "http://127.0.0.1:$PORT/install.sh" |
+    no_tty env INSTALL_DIR="$WORK/inst-$name" FAKE_FLIGHTDECK_SERVICE_DIR="$WORK/svc-$name" \
+      FAKE_INSTALLED_BIN="$WORK/inst-$name/flightdeck" PATH="$WORK/fakemgr:$PATH" "$@" sh >"$WORK/$name.out" 2>&1 || got=$?
+  if [ "$got" -ne "$want" ]; then cat "$WORK/$name.out"; echo "FAIL: $name exited $got, want $want"; exit 1; fi
+}
+no_staged_file() {
+  local left
+  for left in "$1"/.flightdeck.installing.*; do
+    if [ -e "$left" ]; then echo "FAIL: a staged binary is left in $1: $left"; exit 1; fi
+  done
+}
+AGAIN='The install stopped before it finished; starting the Flightdeck service again with'
+
+service_run svc-full FLIGHTDECK_SERVICE=yes
+service_run_exits svc-full 1 VERSION="$TAG2" PATH="$WORK/fullinstall:$WORK/fakemgr:$PATH"
+must "$WORK/svc-full.out" 'No space left on device' "a full disk: install(1)'s own line"
+must "$WORK/svc-full.out" 'was not replaced' "a full disk: the installer says the binary was not replaced"
+must "$WORK/svc-full.out" "$AGAIN $WORK/inst-svc-full/flightdeck (flightdeck $TAG (linux_amd64))" "a full disk: the service starts again on the old binary"
+must "$WORK/svc-full.out" 'The Flightdeck service runs again.' "a full disk: it says the service runs"
+before "$(calls svc-full)" 'systemctl --user stop flightdeck.service' "service restart by $TAG (stdin 0 bytes)"
+"$WORK/inst-svc-full/flightdeck" --version | grep -q "^flightdeck $TAG "
+no_staged_file "$WORK/inst-svc-full"
+pass "the write of the new binary failing after the stop: the old binary stays, the service runs again on it"
+
+service_run svc-int-stop FLIGHTDECK_SERVICE=yes
+service_run_exits svc-int-stop 130 VERSION="$TAG2" FAKE_MANAGER_INT_ON_STOP=1
+must "$WORK/svc-int-stop.out" "$AGAIN $WORK/inst-svc-int-stop/flightdeck (flightdeck $TAG (linux_amd64))" "Ctrl+C during the stop: the service starts again on the old binary"
+must "$WORK/svc-int-stop.out" 'The Flightdeck service runs again.' "Ctrl+C during the stop: it says the service runs"
+before "$(calls svc-int-stop)" 'systemctl --user stop flightdeck.service' "service restart by $TAG (stdin 0 bytes)"
+"$WORK/inst-svc-int-stop/flightdeck" --version | grep -q "^flightdeck $TAG "
+pass "Ctrl+C while systemctl stop waits: the service runs again on the old binary, exit 130"
+
+service_run svc-int-wait FLIGHTDECK_SERVICE=yes PATH="$WORK/fakedarwin:$WORK/fakemgr:$PATH"
+service_run_exits svc-int-wait 130 VERSION="$TAG2" FAKE_MANAGER_INT_ON_STOP=1 PATH="$WORK/fakedarwin:$WORK/fakemgr:$PATH"
+must "$WORK/svc-int-wait.out" "$AGAIN $WORK/inst-svc-int-wait/flightdeck (flightdeck $TAG (darwin_arm64))" "Ctrl+C in the wait for launchd: the service starts again on the old binary"
+before "$(calls svc-int-wait)" 'launchctl bootout' "service restart by $TAG (stdin 0 bytes)"
+pass "Ctrl+C while the installer waits for launchd to let the agent go: the service runs again on the old binary"
+
+service_run svc-int-after FLIGHTDECK_SERVICE=yes
+service_run_exits svc-int-after 130 VERSION="$TAG2" FAKE_FLIGHTDECK_INT_ON_VERSION_OF="$TAG2" FAKE_FLIGHTDECK_INT_ONCE="$WORK/svc-int-after.once"
+test -e "$WORK/svc-int-after.once"
+must "$WORK/svc-int-after.out" "$AGAIN $WORK/inst-svc-int-after/flightdeck (flightdeck $TAG2 (linux_amd64))" "Ctrl+C after the replacement: the service starts again on the new binary"
+must "$WORK/svc-int-after.out" 'The Flightdeck service runs again.' "Ctrl+C after the replacement: it says the service runs"
+before "$(calls svc-int-after)" 'systemctl --user stop flightdeck.service' "service restart by $TAG2 (stdin 0 bytes)"
+no_staged_file "$WORK/inst-svc-int-after"
+pass "Ctrl+C between the replacement and the restart: the service runs again on the new binary, exit 130"
+
+service_run svc-int-down FLIGHTDECK_SERVICE=yes
+service_run_exits svc-int-down 130 VERSION="$TAG2" FAKE_MANAGER_INT_ON_STOP=1 FAKE_FLIGHTDECK_SERVICE_RESTART_EXIT=1
+must "$WORK/svc-int-down.out" 'The Flightdeck service is stopped (see above): flightdeck service status says why.' "a start again that fails says the service is stopped"
+pass "when starting the service again fails too, the installer says it is stopped and names flightdeck service status"
 
 echo "INSTALL.SH TESTS OK"

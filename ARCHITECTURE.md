@@ -13797,7 +13797,9 @@ foreground group, the 60-second bound, no answer a no), and with no
 terminal the closing lines print the command instead, `To start
 Flightdeck now and at every login: flightdeck service install`.
 `FLIGHTDECK_SERVICE` decides without asking: `yes` installs it, `no`
-prints the command; another value is reported and read as `no`. A yes
+prints the command, with the spellings `FLIGHTDECK_CONNECT` takes (one
+function reads both: lower-case words, spaces and commas around them
+ignored); another value is reported and read as `no`. A yes
 runs `<binary> service install` with the installer's environment, so
 `FLIGHTDECK_PORT`, `FLIGHTDECK_DATA_DIR` and the other server variables
 set for the install reach the service, and its stdin from `/dev/null`.
@@ -13820,21 +13822,41 @@ Windows has no such service.
 binary, `install.sh` asks the binary already in place for
 `service status`. When the service is installed and its command (the
 `command` line, compared with the installed path's symbolic links
-resolved and quoted as `status` quotes it) runs that binary, the
-installer stops the service with its manager's own stop (`systemctl
---user stop flightdeck.service`, `launchctl bootout
-gui/<uid>/com.flightdeck-hq.flightdeck`), since the binary has no stop
-command, replaces the binary, and starts the service again with the new
-binary's `service restart`, which waits for it to answer, so the
-process that runs afterwards is the new binary; a new binary older than
-the command is started with the manager's own start (`systemctl --user
-start`, `launchctl bootstrap` of the plist). A restart that fails says
-so and names `flightdeck service status`, and the installer exits 0.
-The service's flags are not touched: the file stays as it was written.
-A service that runs another binary (another install directory) is left
-running and named in the closing lines, with the `flightdeck service
-install` that points it at this one. A re-run where no service is
-installed behaves as a first install, the offer included.
+resolved and quoted as `status` quotes it) runs that binary, the re-run
+leaves the service in the state it found it in, on the new binary:
+
+- Running (its `state` is anything but `not running` and `not loaded`,
+  so a service the manager keeps starting again after a failure counts
+  as running): the installer stops it with its manager's own stop
+  (`systemctl --user stop flightdeck.service`, `launchctl bootout
+  gui/<uid>/com.flightdeck-hq.flightdeck` and a wait until launchd
+  forgets it), since the binary has no stop command, replaces the
+  binary, and starts the service again with the new binary's `service
+  restart`, which waits for it to answer, so the process that runs
+  afterwards is the new binary; a new binary older than the command is
+  started with the manager's own start (`systemctl --user start`,
+  `launchctl bootstrap` of the plist). A restart that fails says so and
+  names `flightdeck service status`, and the installer exits 0.
+- Stopped (the user stopped it): the binary is replaced and the service
+  left stopped, with one line saying so and that `flightdeck service
+  restart` starts it.
+
+The new binary is written beside the old one (`.flightdeck.installing.<pid>`
+in the install directory) and renamed over it, one step, so the
+binary's name never holds a half-written file, even when the run is
+interrupted, and a service started from it starts a whole binary. From
+the moment the installer stops the service until it starts it again,
+any exit (a failed write, a full disk, Ctrl+C or SIGTERM, including
+during the stop's wait) goes through the script's one exit path, which
+starts the service again on the binary in place, the old one when the
+replacement did not happen and the new one when it did, and says
+whether it runs or is stopped and that `flightdeck service status` says
+why; the staged file is removed. The service's flags are not touched:
+the file stays as it was written. A service that runs another binary
+(another install directory) is left running and named in the closing
+lines, with the `flightdeck service install` that points it at this
+one. A re-run where no service is installed behaves as a first install,
+the offer included.
 
 The unit tests (`internal/service`) run the commands against in-process
 stand-ins for `systemctl` and `launchctl` that keep the state the
@@ -14219,7 +14241,12 @@ that is neither, root, an older binary, a system that cannot run the
 service, a dry run that fails, an install that fails, and the re-runs
 with the service installed (on Linux and on macOS: the stop runs while
 the old binary is in place, and the restart is the new binary's), with
-a service of another binary, and with none. The PowerShell
+the service stopped (left stopped), failing (restarted), with a service
+of another binary, and with none, and the exits after the stop: the
+write of the new binary failing (a full disk), SIGINT during the stop's
+wait and SIGINT between the replacement and the restart, after each of
+which the service is started again on the binary in place and no
+staged file is left. The PowerShell
 installer appends its directory to the user PATH by writing the Path
 value of `HKCU\Environment` back with the registry type it had and its
 `%VARIABLES%` unexpanded, then broadcasts `WM_SETTINGCHANGE` (a failed

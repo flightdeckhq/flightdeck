@@ -141,6 +141,7 @@ and will be filed separately if framework reports surface it.
 
 from __future__ import annotations
 
+import dis
 import functools
 import inspect
 import logging
@@ -158,7 +159,7 @@ from flightdeck_sensor.providers.litellm import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
-    from types import FrameType
+    from types import CodeType, FrameType
 
     from flightdeck_sensor.core.session import Session
 
@@ -411,11 +412,28 @@ def _module_of(frame: FrameType | None) -> str | None:
 
 
 def _async_gen_unstarted(gen: Any) -> bool:
-    state = getattr(inspect, "getasyncgenstate", None)
-    if state is not None:
-        return bool(state(gen) == inspect.AGEN_CREATED)
+    """Whether async generator ``gen`` has not started. Python 3.12+ says
+    so (``inspect.getasyncgenstate``). Python 3.11 has no such state: an
+    unstarted generator there is one not running whose frame still stands
+    at its ``RETURN_GENERATOR`` instruction, where a generator's frame
+    waits until it is first resumed (the instructions before it set up the
+    generator's cells, so it is not always the first)."""
+    if sys.version_info >= (3, 12):
+        return bool(inspect.getasyncgenstate(gen) == inspect.AGEN_CREATED)
     frame = gen.ag_frame
-    return frame is not None and not gen.ag_running and frame.f_lasti <= 0
+    if frame is None or gen.ag_running:
+        return False
+    return bool(frame.f_lasti <= _generator_start(gen.ag_code))
+
+
+def _generator_start(code: CodeType) -> int:
+    """The offset of a generator code's ``RETURN_GENERATOR`` instruction
+    (Python 3.11), or -1 when it has none, which reads as started (the
+    stream is then reported as a request made at the call)."""
+    for instruction in dis.get_instructions(code):
+        if instruction.opname == "RETURN_GENERATOR":
+            return instruction.offset
+    return -1
 
 
 def _sends_on_first_read(stream: Any) -> bool:

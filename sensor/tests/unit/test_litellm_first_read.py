@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import sys
 import types
 from typing import TYPE_CHECKING, Any
 
@@ -330,3 +331,105 @@ def test_the_kept_usage_reader_never_raises() -> None:
 
     wrapper = _wrapper([_Raising()])
     assert LitellmProvider().kept_usage(wrapper) is None
+
+
+# ----- whether an async generator has started -------------------------------
+#
+# A text_completion stream over litellm's async legacy completions generator
+# sends its request when the generator starts. Python 3.12+ tells an
+# unstarted generator by its state; Python 3.11 by its frame (the SDK floors
+# lane and the 3.11 jobs run that branch).
+
+
+async def _plain_agen() -> Any:
+    yield 1
+    await asyncio.sleep(0)
+    yield 2
+
+
+async def _agen_with_a_cell() -> Any:
+    value = 1
+
+    def read() -> int:
+        return value
+
+    yield read()
+    yield 2
+
+
+def _agen_closure() -> Any:
+    value = 1
+
+    async def closure() -> Any:
+        yield value
+        yield 2
+
+    return closure()
+
+
+class _Handler:
+    async def streaming(self, prompt: str) -> Any:
+        tag = prompt
+
+        def label() -> str:
+            return tag
+
+        yield label()
+        yield 2
+
+
+_AGENS = {
+    "plain": _plain_agen,
+    "with a cell": _agen_with_a_cell,
+    "a closure": _agen_closure,
+    "a method with a cell": lambda: _Handler().streaming("hi"),
+}
+
+
+@pytest.mark.parametrize("kind", list(_AGENS))
+def test_an_async_generator_is_unstarted_only_before_its_first_step(kind: str) -> None:
+    """Unstarted when made; started once it yielded, while it runs, and
+    once exhausted or closed; a generator closed unstarted is no longer
+    unstarted either."""
+    from flightdeck_sensor.interceptor.litellm import _async_gen_unstarted
+
+    seen: dict[str, bool] = {}
+
+    async def _go() -> None:
+        gen = _AGENS[kind]()
+        seen["made"] = _async_gen_unstarted(gen)
+        await gen.__anext__()
+        seen["suspended"] = _async_gen_unstarted(gen)
+        async for _ in gen:
+            pass
+        seen["exhausted"] = _async_gen_unstarted(gen)
+        closed = _AGENS[kind]()
+        await closed.aclose()
+        seen["closed unstarted"] = _async_gen_unstarted(closed)
+
+        async def _inspecting() -> Any:
+            seen["running"] = _async_gen_unstarted(holder[0])
+            yield 0
+
+        holder = [_inspecting()]
+        await holder[0].__anext__()
+        await holder[0].aclose()
+
+    asyncio.run(_go())
+    assert seen == {
+        "made": True,
+        "suspended": False,
+        "exhausted": False,
+        "closed unstarted": False,
+        "running": False,
+    }
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 12), reason="the frame branch is Python 3.11's")
+def test_on_python_311_a_generator_without_a_start_instruction_reads_as_started() -> None:
+    """A code object with no ``RETURN_GENERATOR`` (not a generator's) gives
+    -1, so such a source is reported as a request made at the call."""
+    from flightdeck_sensor.interceptor.litellm import _generator_start
+
+    assert _generator_start(_blocking.__code__) == -1
+    assert _generator_start(_agen_with_a_cell.__code__) > 0

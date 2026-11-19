@@ -145,9 +145,10 @@ All notable changes to Flightdeck are documented here.
 - **An embeddings call too big for one event keeps its input.** With
   capture on, an embeddings event over the 768 KiB event size limit was
   sent without any content: its vectors are numbers, which the size
-  rule's string cut cannot shorten. From about 24 texts at 1536
-  dimensions (12 at google-genai's default of 3072), on OpenAI, litellm
-  and google-genai alike, the call's input was lost and the event read
+  rule's string cut cannot shorten. From about 25 texts at OpenAI's
+  default of 1536 dimensions (about 19 at google-genai's default of
+  3072), on OpenAI, litellm and google-genai alike, the call's input
+  was lost and the event read
   as one with capture off. The sensor now gives up the vectors first:
   `embedding_output` holds the size rule's marker in their place
   (`… [flightdeck: kept 0 of N bytes to fit the event size limit]`, N

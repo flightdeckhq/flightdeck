@@ -1,9 +1,11 @@
 """An embeddings call whose vectors take its event over the size limit
 keeps its input whole: the vectors give way to the size rule's marker.
 
-From about 24 texts at 1536 dimensions (12 at google-genai's default of
-3072) the vectors alone pass the 768 KiB limit, and no string cut shortens
-them. Driven with the real ``openai`` client, litellm over it and
+From about 25 texts at OpenAI's default of 1536 dimensions (about 19 at
+google-genai's default of 3072, whose values are shorter) the vectors
+alone pass the 768 KiB limit, and no string cut shortens them. The
+vectors here are float32 values written in full, so 12 at 3072 already
+pass it. Driven with the real ``openai`` client, litellm over it and
 google-genai's ``genai.Client`` at the HTTP boundary; each event is
 serialised as the transport sends it (``serialize_event``).
 """

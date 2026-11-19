@@ -275,8 +275,9 @@ def test_an_embeddings_call_lands(gemini: respx.MockRouter, flavor: str) -> None
     assert content["input"][0] == {"parts": [{"text": "a"}], "role": "user"}
 
 
-# google-genai's default dimension for gemini-embedding-001: from 12
-# texts the vectors alone are over the 768 KiB event body limit.
+# google-genai's default dimension for gemini-embedding-001. Twelve
+# vectors of the long floats below are over the 768 KiB event body limit
+# on their own (the API's own values are shorter: about 19 vectors).
 DEFAULT_DIMENSION = 3072
 VECTORS_MARKER = re.compile(r"… \[flightdeck: kept 0 of (\d+) bytes to fit the event size limit\]")
 

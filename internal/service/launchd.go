@@ -167,11 +167,12 @@ func (l *launchd) argv(content []byte) ([]string, error) {
 // deeper ones belong to its sub-sections.
 func (l *launchd) state(ctx context.Context) (state, error) {
 	out, _, err := l.run(ctx, "print", l.target())
+	if exited(err) {
+		// launchctl print exits non-zero (113) for a service the domain
+		// does not have.
+		return state{detail: "not loaded", enabled: l.enabled(ctx)}, nil
+	}
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return state{detail: "not loaded", enabled: l.enabled(ctx)}, nil
-		}
 		return state{}, commandError("launchctl", []string{"print", l.target()}, nil, err)
 	}
 	props := map[string]string{}

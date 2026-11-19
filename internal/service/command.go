@@ -420,7 +420,8 @@ func loopback(listen string) bool {
 // it. A service the manager reports exited fails at once.
 func waitReady(ctx context.Context, rt IO, m manager, c Config) (int, error) {
 	deadline := time.Now().Add(rt.ReadyTimeout)
-	last := errors.New("the manager has not started it")
+	// Why the latest look found it not up: every pass sets it.
+	var last error
 	for {
 		st, err := m.state(ctx)
 		switch {

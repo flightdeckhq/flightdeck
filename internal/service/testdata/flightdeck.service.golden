@@ -1,0 +1,18 @@
+# Written by flightdeck service install: flightdeck service install rewrites it, and
+# flightdeck service remove removes it. ARCHITECTURE.md, Deployment > Running in
+# the background, at https://github.com/flightdeckhq/flightdeck says what each line does.
+[Unit]
+Description=Flightdeck
+Documentation=https://github.com/flightdeckhq/flightdeck
+# Started again for as long as it takes: a crash, a database that is down.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart="/opt/flight deck/bin/flightdeck" "--port" "4100" "--data-dir" "/home/ada/Flight \"Deck\" 'n' 100%% $$HOME $${USER} %%h \\back <&> é" "--database-url-file" "/home/ada/.secrets/fd url" "--allowed-hosts" "fd.internal,.example.com" "--metrics"
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+
+[Install]
+WantedBy=default.target

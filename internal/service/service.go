@@ -105,8 +105,21 @@ const marker = "Written by flightdeck service install"
 
 // Runner runs a command of the service manager (systemctl, launchctl,
 // loginctl, journalctl) and returns what it wrote. A command that is not
-// on this machine is an error that wraps exec.ErrNotFound.
+// on this machine is an error that wraps exec.ErrNotFound, one that did
+// not finish in time wraps errTimeout, and any other error is the
+// command's own non-zero exit.
 type Runner func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
+
+// errTimeout marks a manager command that did not finish within
+// managerTimeout.
+var errTimeout = errors.New("did not finish in time")
+
+// exited reports whether err is a command that ran and exited non-zero,
+// as opposed to one that could not be run or did not finish.
+func exited(err error) bool {
+	return err != nil && !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, errTimeout) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
 
 // IO is what one run of the command reads and writes, and every part of
 // the system it reaches, so a test replaces each.
@@ -214,7 +227,7 @@ func execRunner(extraEnv []string) Runner {
 		cmd.WaitDelay = processWaitDelay
 		err := cmd.Run()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s did not finish within %s", name, managerTimeout)
+			return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("%s %w: %s", name, errTimeout, managerTimeout)
 		}
 		return stdout.Bytes(), stderr.Bytes(), err
 	}

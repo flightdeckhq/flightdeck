@@ -398,7 +398,7 @@ function FeedRow({
         style={{
           width: colWidths.type,
           background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-          color: badge.cssVar,
+          color: badge.textVar,
           border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
           borderRadius: 3,
           // The pill is a fixed-height box in a resizable column; a

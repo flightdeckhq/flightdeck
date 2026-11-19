@@ -52,7 +52,14 @@ export function getDirectiveBadge(
 /* ---- Event type badge config ---- */
 
 export interface BadgeConfig {
+  /** The type's hue: the badge's tint and border, and the dot, node or
+   *  chart mark that stands for the type. */
   cssVar: string;
+  /** The badge label's colour: the shade of the hue that reads at 4.6:1
+   *  or better over the badge's tint on every row the badge sits in
+   *  (themes.css, "Badge text"). Never the hue itself, which reads under
+   *  WCAG AA as text on its own tint. */
+  textVar: string;
   label: string;
   /**
    * MCP badge variants. ``filled`` defaults to ``true`` (solid
@@ -66,22 +73,24 @@ export interface BadgeConfig {
 }
 
 export const eventBadgeConfig: Record<string, BadgeConfig> = {
-  post_call: { cssVar: "var(--event-llm)", label: "LLM CALL" },
-  pre_call: { cssVar: "var(--event-llm)", label: "PRE CALL" },
-  tool_call: { cssVar: "var(--event-tool)", label: "TOOL" },
-  policy_warn: { cssVar: "var(--event-warn)", label: "WARN" },
-  policy_block: { cssVar: "var(--event-block)", label: "BLOCK" },
-  policy_degrade: { cssVar: "var(--event-degrade)", label: "DEGRADE" },
-  directive: { cssVar: "var(--event-directive)", label: "DIRECTIVE" },
-  directive_result: { cssVar: "var(--event-result)", label: "RESULT" },
-  session_start: { cssVar: "var(--event-lifecycle)", label: "START" },
-  session_end: { cssVar: "var(--event-lifecycle)", label: "END" },
+  post_call: { cssVar: "var(--event-llm)", textVar: "var(--event-llm-badge-text)", label: "LLM CALL" },
+  pre_call: { cssVar: "var(--event-llm)", textVar: "var(--event-llm-badge-text)", label: "PRE CALL" },
+  tool_call: { cssVar: "var(--event-tool)", textVar: "var(--event-tool-badge-text)", label: "TOOL" },
+  // The warn, block and result hues are the warning, danger and success
+  // hues in both themes, so their labels take those families' shades.
+  policy_warn: { cssVar: "var(--event-warn)", textVar: "var(--warning-badge-text)", label: "WARN" },
+  policy_block: { cssVar: "var(--event-block)", textVar: "var(--danger-badge-text)", label: "BLOCK" },
+  policy_degrade: { cssVar: "var(--event-degrade)", textVar: "var(--event-degrade-badge-text)", label: "DEGRADE" },
+  directive: { cssVar: "var(--event-directive)", textVar: "var(--event-directive-badge-text)", label: "DIRECTIVE" },
+  directive_result: { cssVar: "var(--event-result)", textVar: "var(--success-badge-text)", label: "RESULT" },
+  session_start: { cssVar: "var(--event-lifecycle)", textVar: "var(--event-lifecycle-badge-text)", label: "START" },
+  session_end: { cssVar: "var(--event-lifecycle)", textVar: "var(--event-lifecycle-badge-text)", label: "END" },
   // EMBED uses the cyan RAG family;
   // ERROR uses the danger red so it reads as alarming without being
   // confused with a policy BLOCK (which is also red but stylistically
   // distinct via its badge family).
-  embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
-  llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
+  embeddings: { cssVar: "var(--event-embeddings)", textVar: "var(--event-embeddings-badge-text)", label: "EMBED" },
+  llm_error: { cssVar: "var(--event-error)", textVar: "var(--danger-badge-text)", label: "ERROR" },
   // MCP observability. Verb-based labels distinguish
   // "agent invoked" vs "agent discovered" at a glance — the
   // singular/plural-only pairs we considered (MCP TOOL / MCP TOOLS)
@@ -107,28 +116,34 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   //   prompt family     purple  MessageSquare / List
   mcp_tool_call: {
     cssVar: "var(--event-mcp-tool)",
+    textVar: "var(--event-mcp-tool-badge-text)",
     label: "MCP TOOL CALL",
   },
   mcp_tool_list: {
     cssVar: "var(--event-mcp-tool)",
+    textVar: "var(--event-mcp-tool-badge-text)",
     label: "MCP TOOLS DISCOVERED",
     filled: false,
   },
   mcp_resource_read: {
     cssVar: "var(--event-mcp-resource)",
+    textVar: "var(--event-mcp-resource-badge-text)",
     label: "MCP RESOURCE READ",
   },
   mcp_resource_list: {
     cssVar: "var(--event-mcp-resource)",
+    textVar: "var(--event-mcp-resource-badge-text)",
     label: "MCP RESOURCES DISCOVERED",
     filled: false,
   },
   mcp_prompt_get: {
     cssVar: "var(--event-mcp-prompt)",
+    textVar: "var(--event-mcp-prompt-badge-text)",
     label: "MCP PROMPT FETCHED",
   },
   mcp_prompt_list: {
     cssVar: "var(--event-mcp-prompt)",
+    textVar: "var(--event-mcp-prompt-badge-text)",
     label: "MCP PROMPTS DISCOVERED",
     filled: false,
   },
@@ -142,18 +157,22 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // already declared in themes.css.
   policy_mcp_warn: {
     cssVar: "var(--event-warn)",
+    textVar: "var(--warning-badge-text)",
     label: "MCP POLICY WARN",
   },
   policy_mcp_block: {
     cssVar: "var(--event-block)",
+    textVar: "var(--danger-badge-text)",
     label: "MCP POLICY BLOCK",
   },
   mcp_server_name_changed: {
     cssVar: "var(--event-result)",
+    textVar: "var(--success-badge-text)",
     label: "MCP NAME CHANGED",
   },
   mcp_policy_user_remembered: {
     cssVar: "var(--event-result)",
+    textVar: "var(--success-badge-text)",
     label: "MCP SERVER APPROVED",
   },
   // MCP server attached events ride the same FYI
@@ -164,17 +183,23 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // to the grey defaultBadge.
   mcp_server_attached: {
     cssVar: "var(--event-result)",
+    textVar: "var(--success-badge-text)",
     label: "MCP SERVER ATTACHED",
   },
   // A change in the session (compaction, model switch) rides the run
   // lifecycle chroma; the feed line names the signal.
   session_signal: {
     cssVar: "var(--event-lifecycle)",
+    textVar: "var(--event-lifecycle-badge-text)",
     label: "SIGNAL",
   },
 };
 
-export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
+export const defaultBadge: BadgeConfig = {
+  cssVar: "var(--event-lifecycle)",
+  textVar: "var(--event-lifecycle-badge-text)",
+  label: "EVENT",
+};
 
 /**
  * Badge for a session_start event whose timestamp lines up with an
@@ -188,10 +213,12 @@ export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", lab
  * (no such token), so color-mix silently resolved to transparent and
  * the pill lost its background. --warning is #eab308 in neon dark
  * and #ca8a04 in clean light; both themes give enough contrast for a
- * 15% background tint against the drawer surface.
+ * 15% background tint against the drawer surface. The label takes the
+ * warning family's badge text shade.
  */
 export const attachBadge: BadgeConfig = {
   cssVar: "var(--warning)",
+  textVar: "var(--warning-badge-text)",
   label: "ATTACH",
 };
 

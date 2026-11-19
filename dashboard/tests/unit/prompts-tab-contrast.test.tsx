@@ -530,18 +530,7 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
     event({ id: "ev-l4", event_type: "mcp_prompt_get", has_content: true, model: null, tool_name: "greet" }),
     event({ id: "ev-l5", event_type: "embeddings", has_content: true, model: "text-embedding-3-small" }),
   ];
-  /** A list row's event-type badge: its type's hue as text on the hue's
-   *  tint, the look every event-type badge in the app shares. */
-  const BADGE_TEXT = new Set([
-    "var(--event-llm)",
-    "var(--event-tool)",
-    "var(--event-mcp-tool)",
-    "var(--event-mcp-prompt)",
-    "var(--event-embeddings)",
-  ]);
-  const isBadge = (p: TextPaint) => BADGE_TEXT.has(p.color);
-
-  it("the run drawer's list of the run's calls: timestamps and names, focused or not, and an empty run", () => {
+  it("the run drawer's list of the run's calls: badges, timestamps and names, focused or not, and an empty run", () => {
     // A focused row scrolls itself into view; jsdom has no layout to scroll.
     Element.prototype.scrollIntoView ??= vi.fn();
     const failures: Failure[] = [];
@@ -550,12 +539,12 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
       const { container } = render(
         <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={focused} onSelectEvent={() => {}} />,
       );
-      // The embeddings call's row is checked as the others are: its time
-      // and its model.
+      // The embeddings call's row is checked as the others are: its badge,
+      // its time and its model.
       const embedRow = container.querySelector('[data-testid="prompts-row-ev-l5"]');
       expect(embedRow).not.toBeNull();
-      failures.push(...failuresIn(`list, focused ${focused}, the embeddings row`, embedRow!, /text-embedding-3-small/, isBadge));
-      failures.push(...failuresIn(`list, focused ${focused}`, container, /get_weather/, isBadge));
+      failures.push(...failuresIn(`list, focused ${focused}, the embeddings row`, embedRow!, /text-embedding-3-small/));
+      failures.push(...failuresIn(`list, focused ${focused}`, container, /get_weather/));
       cleanup();
     }
     const emptyRun = render(
@@ -566,24 +555,25 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
     expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
   });
 
-  // A known gap: the list rows' event-type badges draw their type's hue as
-  // text on the hue's own tint, as every event-type badge in the app does,
-  // and that is under the floor (the LLM CALL badge in both themes, the
-  // TOOL and MCP badges in the light one). Whether and how they change is
-  // the maintainer's call. This case holds the gap as it is: it fails if a
-  // badge stops rendering, and it fails once every badge reads at the
-  // floor, when it becomes a check that they all pass.
-  it("the list rows' event-type badges render, and some read under the floor (a known gap)", () => {
-    const { container } = render(
-      <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={null} onSelectEvent={() => {}} />,
-    );
+  // The list rows' event-type badges draw their label in the type's badge
+  // text shade over the hue's tint, at rest and in the focused row (each
+  // row focused in turn). jsdom applies no :hover, so a hovered row is
+  // checked by badge-label-contrast.test.tsx, every badge on
+  // --surface-hover.
+  it("the list rows' event-type badges render, and each reads at the floor, focused or not", () => {
+    Element.prototype.scrollIntoView ??= vi.fn();
     const labels = ["LLM CALL", "TOOL", "MCP TOOL CALL", "MCP PROMPT FETCHED", "EMBED"];
-    const badges = textPaints(container).filter((p) => labels.includes(p.text));
-    expect(badges.map((b) => b.text)).toEqual(labels);
-    expect(
-      failuresOf("list badges", badges),
-      "every event-type badge in the list reads at the floor now: make this case check that they all pass",
-    ).not.toEqual([]);
+    const failures: Failure[] = [];
+    for (const focused of [null, ...listEvents.map((e) => e.id)]) {
+      const { container } = render(
+        <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={focused} onSelectEvent={() => {}} />,
+      );
+      const badges = textPaints(container).filter((p) => labels.includes(p.text));
+      expect(badges.map((b) => b.text)).toEqual(labels);
+      failures.push(...failuresOf(`list badges, focused ${focused}`, badges));
+      cleanup();
+    }
+    expect(failures, JSON.stringify(failures, null, 1)).toEqual([]);
   });
 });
 
@@ -631,9 +621,28 @@ describe("the text-safe tokens on the surfaces they are used on", () => {
   it("both themes define the same text-safe tokens", () => {
     const names = (theme: Theme) => [...TOKENS[theme].keys()].filter((k) => k !== "--text" && k.endsWith("-text")).sort();
     expect(names("dark")).toEqual(names("light"));
-    expect(names("dark")).toEqual(
-      ["--accent-text", "--danger-text", "--event-llm-text", "--event-tool-text", "--muted-text", "--success-text", "--warning-text"],
-    );
+    expect(names("dark")).toEqual([
+      "--accent-badge-text",
+      "--accent-text",
+      "--danger-badge-text",
+      "--danger-text",
+      "--event-degrade-badge-text",
+      "--event-directive-badge-text",
+      "--event-embeddings-badge-text",
+      "--event-lifecycle-badge-text",
+      "--event-llm-badge-text",
+      "--event-llm-text",
+      "--event-mcp-prompt-badge-text",
+      "--event-mcp-resource-badge-text",
+      "--event-mcp-tool-badge-text",
+      "--event-tool-badge-text",
+      "--event-tool-text",
+      "--muted-text",
+      "--success-badge-text",
+      "--success-text",
+      "--warning-badge-text",
+      "--warning-text",
+    ]);
   });
 });
 

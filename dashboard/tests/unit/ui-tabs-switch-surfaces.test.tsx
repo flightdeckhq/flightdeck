@@ -8,8 +8,8 @@ import { contrastRatio, readThemeTokens, resolveColor, TEXT_SAFE_FLOOR, THEMES, 
 
 /**
  * The shared tabs and switch draw on defined theme tokens in both themes:
- * the active tab is raised on its tab list, and each focus ring's offset
- * gap is the colour of the surface the control sits on (an undefined
+ * the active tab has its own background on its tab list, and each focus
+ * ring's offset gap is the colour of the surface the control sits on (an undefined
  * offset colour invalidates the whole ring, which then does not draw).
  */
 
@@ -41,7 +41,7 @@ describe("the shared tabs on defined tokens, in both themes", () => {
     return { list: screen.getByTestId("list"), active };
   }
 
-  it("the active tab is raised on its tab list, and its text reads at the floor on it", () => {
+  it("the active tab has its own background on its tab list, and its text reads at the floor on it", () => {
     const { list, active } = renderTabs();
     for (const theme of THEMES) {
       const t = TOKENS[theme];

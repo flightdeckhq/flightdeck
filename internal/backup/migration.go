@@ -29,6 +29,10 @@ const spaceFactor = 2
 // person or `flightdeck backup` names: before-<release>-<stamp>[-n].db.
 var beforeName = regexp.MustCompile(`^before-[A-Za-z0-9._+-]+-([0-9]{8}T[0-9]{6}Z)(-[0-9]+)?\.db$`)
 
+// freeSpace reads the free space of a directory's file system; the tests
+// replace it to stand for a disk that is nearly full.
+var freeSpace = freeBytes
+
 // releaseChars keeps a release version usable in a file name.
 var releaseChars = regexp.MustCompile(`[^A-Za-z0-9._+-]`)
 
@@ -54,7 +58,7 @@ func BeforeMigration(ctx context.Context, db, dir, release string, now time.Time
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Before{Skipped: fmt.Sprintf("no copy was taken before migrating: create %s: %v", dir, err)}
 	}
-	if free, ok := freeBytes(dir); ok && free < spaceFactor*uint64(size) {
+	if free, ok := freeSpace(dir); ok && free < spaceFactor*uint64(size) {
 		return Before{Skipped: fmt.Sprintf("no copy was taken before migrating: %s has %s free, and a copy needs %s "+
 			"(twice the database); make room, or take one with flightdeck backup <file on another disk>",
 			dir, human(free), human(spaceFactor*uint64(size)))}

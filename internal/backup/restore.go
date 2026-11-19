@@ -273,8 +273,12 @@ func readMarker(db string) (marker, bool, error) {
 // message says which, "" when there was nothing to do.
 func RecoverInterrupted(db string) (string, error) {
 	m, ok, err := readMarker(db)
-	if err != nil || !ok {
+	if err != nil {
 		return "", err
+	}
+	removeOrphanCopies(db, m.Staged)
+	if !ok {
+		return "", nil
 	}
 	dir := filepath.Dir(db)
 	staged := filepath.Join(dir, m.Staged)
@@ -303,4 +307,22 @@ func RecoverInterrupted(db string) (string, error) {
 	_ = syncDir(dir)
 	return fmt.Sprintf("a restore of %s was interrupted before it finished; it is undone, and the database is the one "+
 		"from before it", db), nil
+}
+
+// removeOrphanCopies removes the backup copies of restores that stopped
+// before they wrote their marker (<db>.restoring-* other than keep): no
+// marker names them, nothing was moved for them, and the caller's locks
+// say no restore is running.
+func removeOrphanCopies(db, keep string) {
+	dir := filepath.Dir(db)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	prefix := filepath.Base(db) + restoringInfix
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) && e.Name() != keep && e.Type().IsRegular() {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }

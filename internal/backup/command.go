@@ -227,9 +227,19 @@ func restoreMain(ctx context.Context, args []string, rt IO) int {
 		_, _ = io.WriteString(rt.Stderr, restoreUsage)
 		return fail(rt, command, ExitUsage, "name the backup to restore: flightdeck restore <file>")
 	}
+	// A restore into a data dir that is not there yet makes it, as the
+	// server does at its first start, so its database's path resolves.
+	var layout datadir.Layout
+	if backend, _ := storage.BackendOf(opts.DatabaseURL); opts.DatabaseURL == "" || backend == storage.SQLite {
+		l, err := datadir.Ensure(opts.DataDir)
+		if err != nil {
+			return fail(rt, command, ExitFailed, "%v. Nothing changed", err)
+		}
+		layout = l
+	}
 	db, err := databaseOf(opts)
 	if err != nil {
-		return fail(rt, command, ExitUsage, "%v", err)
+		return fail(rt, command, ExitFailed, "%v. Nothing changed", err)
 	}
 	if db.postgres != "" {
 		return fail(rt, command, ExitPostgres, "the database is Postgres (%s), which psql restores from a pg_dump file into a "+
@@ -246,10 +256,6 @@ func restoreMain(ctx context.Context, args []string, rt IO) int {
 		return fail(rt, command, ExitFailed, "the backup %s is not a file. Nothing changed", source)
 	}
 
-	layout, err := datadir.Ensure(db.dataDir)
-	if err != nil {
-		return fail(rt, command, ExitFailed, "%v. Nothing changed", err)
-	}
 	for _, lock := range []string{layout.Lock, db.path + datadir.DatabaseLockSuffix} {
 		l, err := datadir.Acquire(lock)
 		if err != nil {

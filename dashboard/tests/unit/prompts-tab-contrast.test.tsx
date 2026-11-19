@@ -528,20 +528,33 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
     event({ id: "ev-l2", event_type: "tool_call", has_content: true, model: null, tool_name: "get_weather" }),
     event({ id: "ev-l3", event_type: "mcp_tool_call", has_content: true, model: null, tool_name: "read_file" }),
     event({ id: "ev-l4", event_type: "mcp_prompt_get", has_content: true, model: null, tool_name: "greet" }),
+    event({ id: "ev-l5", event_type: "embeddings", has_content: true, model: "text-embedding-3-small" }),
   ];
   /** A list row's event-type badge: its type's hue as text on the hue's
    *  tint, the look every event-type badge in the app shares. */
-  const BADGE_TEXT = new Set(["var(--event-llm)", "var(--event-tool)", "var(--event-mcp-tool)", "var(--event-mcp-prompt)"]);
+  const BADGE_TEXT = new Set([
+    "var(--event-llm)",
+    "var(--event-tool)",
+    "var(--event-mcp-tool)",
+    "var(--event-mcp-prompt)",
+    "var(--event-embeddings)",
+  ]);
   const isBadge = (p: TextPaint) => BADGE_TEXT.has(p.color);
 
   it("the run drawer's list of the run's calls: timestamps and names, focused or not, and an empty run", () => {
     // A focused row scrolls itself into view; jsdom has no layout to scroll.
     Element.prototype.scrollIntoView ??= vi.fn();
     const failures: Failure[] = [];
-    for (const focused of [null, "ev-l2"]) {
+    // Each row focused in turn, the embeddings call's among them, and none.
+    for (const focused of [null, "ev-l2", "ev-l5"]) {
       const { container } = render(
         <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={focused} onSelectEvent={() => {}} />,
       );
+      // The embeddings call's row is checked as the others are: its time
+      // and its model.
+      const embedRow = container.querySelector('[data-testid="prompts-row-ev-l5"]');
+      expect(embedRow).not.toBeNull();
+      failures.push(...failuresIn(`list, focused ${focused}, the embeddings row`, embedRow!, /text-embedding-3-small/, isBadge));
       failures.push(...failuresIn(`list, focused ${focused}`, container, /get_weather/, isBadge));
       cleanup();
     }
@@ -564,7 +577,7 @@ describe("the rest of the Prompts tab reads at 4.6:1 or better in both themes", 
     const { container } = render(
       <PromptsTab session={session()} events={listEvents} selectedEventId={null} focusedEventId={null} onSelectEvent={() => {}} />,
     );
-    const labels = ["LLM CALL", "TOOL", "MCP TOOL CALL", "MCP PROMPT FETCHED"];
+    const labels = ["LLM CALL", "TOOL", "MCP TOOL CALL", "MCP PROMPT FETCHED", "EMBED"];
     const badges = textPaints(container).filter((p) => labels.includes(p.text));
     expect(badges.map((b) => b.text)).toEqual(labels);
     expect(

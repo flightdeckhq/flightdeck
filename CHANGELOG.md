@@ -72,11 +72,14 @@ All notable changes to Flightdeck are documented here.
   litellm call, under Contents for a Gemini `embed_content` call, drawn
   as the expanded event row draws it (text, token ids with their count,
   a list of inputs behind its count, any other value as its JSON), with
-  the stored input byte for byte in the JSON view. Its Response section
-  shows the call's vector count and dimension rather than an empty
-  response. The run drawer's "View Prompts →" on an embeddings row now
-  opens this view, also in a run with no other stored content (it showed
-  "No content was recorded for this run.").
+  the stored input byte for byte in the JSON view. Its Output section
+  shows the call's vector count and dimension (the event's metadata;
+  no response body is stored for an embeddings call) rather than an
+  empty response. The run drawer's Prompts list now lists embeddings
+  calls beside the run's other calls, each with its `EMBED` badge, time
+  and model and opening this view, so a run whose only content is
+  embeddings lists its calls, and its "View Prompts →" and "← Back to
+  event list" no longer land on "No content was recorded for this run."
 - In the per-agent swimlane modal, the run lanes and the Live feed are
   linked: hovering a lane lights its run's rows in the feed, hovering a
   feed row lights its run's lane and the event's circle, and clicking a

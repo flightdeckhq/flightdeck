@@ -1398,3 +1398,19 @@ and its traps (a stale `-wal`, an overwritten copy) lost data.
 **Rejected alternative:** docs only; restore by byte copy (drops a
 backup's `-wal`); refusing to start without room for the copy (drops
 events); Postgres wrappers (`pg_dump` already does it).
+
+## D295 -- A signal the handler defers is delivered to the main thread until it takes effect
+
+**Date:** 2026-11-19
+**Decision:** extends D239: once `session_end` is out, the drain thread
+`pthread_kill`s the deferred signal to the main thread, then again every
+100 ms while the handler that deferred it is still installed, up to the
+shutdown's limit and slack (11 s from the signal).
+**Why:** one delivery that lands as the main thread enters a blocking call
+interrupts nothing; Python acts on it when the call returns (30 s in CI).
+The next one interrupts the call, and PEP 475 runs the handler there.
+**Rejected alternative:** the drain thread restoring the default action
+and signalling the process (`signal.signal` works only on the main
+thread; ctypes into `sigaction` bypasses Python's handler record);
+`os.kill(getpid())` or `raise_signal` from the drain thread (the kernel
+may pick another thread, `raise_signal` always does).

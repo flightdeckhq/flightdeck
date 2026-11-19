@@ -3228,10 +3228,23 @@ and waits on none:
    interrupted: a Python handler is called anyway (the `end` that
    `atexit` runs then waits for the drain thread), while for the default
    action the handler returns and the drain thread delivers the signal to
-   the main thread again once `session_end` is out. That delivery is
-   cooperative: Python runs a handler only between the main thread's
-   bytecodes, so a main thread inside a long call into native code holds
-   the exit until the call returns.
+   the main thread again once `session_end` is out. Python acts on a
+   signal between the main thread's bytecodes, or inside a call it
+   retries after a signal (a sleep, a socket read, a lock wait) when the
+   signal interrupts that call. A delivery that lands just as the main
+   thread enters such a call interrupts nothing, and Python acts on it
+   only when the call returns. So the drain thread goes on delivering the
+   signal every 100 ms (`_REDELIVER_INTERVAL_SECS`), and the next
+   delivery interrupts the call. The handler acts on the first delivery
+   that reaches it: it restores the default action and raises the signal,
+   which ends the process. The deliveries stop once another handler is
+   installed for the signal (the default action the handler restored, or
+   one the application installed since), so they reach only the handler
+   that asked for them, and in any case once the shutdown's 10.5-second
+   limit and its half-second slack have passed since the signal (half a
+   second after a shutdown that finished past its limit). A main thread
+   inside a long computation in native code, which no signal interrupts,
+   still holds the exit until that call returns.
 3. A second signal while that shutdown runs, or after it, is passed on at
    once, so it forces the exit. A signal that interrupts `end` itself is
    passed on at once too; one that arrives while `end` runs on another
@@ -3253,8 +3266,9 @@ between SIGTERM and SIGKILL. A request timeout bounds each socket
 operation (the connect, each read), not name resolution, so a slow DNS
 lookup for the control plane can take longer. A POST that fails during
 the shutdown is counted rather than logged, and the counts, like the
-session's own log line, are logged once the shutdown is over: logging
-takes locks the interrupted code may hold.
+session's own log line, are logged once the shutdown is over (after the
+first delivery of a deferred signal, before the next): logging takes
+locks the interrupted code may hold.
 
 Within it, each wait of the drain thread's for a lock the interrupted code
 may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`), and none

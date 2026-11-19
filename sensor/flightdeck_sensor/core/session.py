@@ -2355,7 +2355,11 @@ class Session:
         which would end the process at once, and session_end is not out
         yet (an event's POST was under way, or the control plane is slow),
         the handler returns instead, and the drain thread delivers the
-        signal again once session_end is out, within SHUTDOWN_LIMIT_SECS.
+        signal again once session_end is out, within SHUTDOWN_LIMIT_SECS,
+        and goes on delivering it while the handler installed now stays
+        installed: one that lands just as the main thread enters a
+        blocking call is acted on only when the call returns, and the
+        next one interrupts the call.
 
         A second signal, while that shutdown runs or after it, is passed
         on at once, so it forces the exit. A signal that interrupts end()
@@ -2384,5 +2388,5 @@ class Session:
         if shutdown.wait(_SIGNAL_SHUTDOWN_WAIT_SECS) or prev != signal.SIG_DFL:
             _pass_signal_on(signum, frame, prev)
             return
-        if shutdown.redeliver_when_finished(signum):
+        if shutdown.redeliver_when_finished(signum, signal.getsignal(signum)):
             _pass_signal_on(signum, frame, prev)

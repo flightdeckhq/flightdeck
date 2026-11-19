@@ -194,6 +194,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **A SIGTERM the sensor holds back for `session_end` no longer waits
+  for the program's blocking call.** When `session_end` took more than
+  2 seconds (a slow control plane, or a signal that landed while the
+  sensor's event queue was busy), the sensor's handler let the program
+  run on and delivered the signal again once `session_end` was out. If
+  that one delivery arrived just as the main thread went into a sleep, a
+  socket read or a lock wait, Python acted on it only when that call
+  returned, so the process lived on for as long as the call lasted (30
+  seconds for a `time.sleep(30)`), where without the sensor it would
+  have ended at once. The sensor now delivers the signal again every
+  100 ms until it takes effect, up to the shutdown's 10.5-second limit,
+  so the process ends by that signal within the limit. The same holds
+  for SIGINT when the program set it to the default action; a handler of
+  the program's own is still called once.
 - **The run drawer's Prompts list keeps your place.** "← Back to event
   list" after opening a call returned the list to its top; it now
   returns to that call's row, where it was on screen (new calls that

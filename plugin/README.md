@@ -402,4 +402,10 @@ or `/plugin marketplace update flightdeck-plugins` inside a session. A new copy 
 
 ## Uninstall
 
-Remove the plugin with whatever Claude Code loader you used to install it (`claude --plugin-dir` is session-scoped and drops at exit; marketplace installs use `claude plugin remove`). Event history stays on the Flightdeck side until you delete it from the dashboard or let retention expire.
+```bash
+flightdeck connect claude-code --remove
+```
+
+That uninstalls the plugin with its saved server and token; on a terminal it asks first, and a script adds `--yes`. The `flightdeck-plugins` marketplace stays: `claude plugin marketplace remove flightdeck-plugins` removes it too. Without the `flightdeck` binary, `claude plugin uninstall flightdeck@flightdeck-plugins` removes the plugin; `claude --plugin-dir` loads it for one session only and leaves nothing to remove. Remove the plugin before you uninstall Flightdeck itself: a plugin left installed warns at the start of every Claude Code session that it cannot reach the server.
+
+Removing the plugin deletes nothing on the server. The sessions and events it reported stay in Flightdeck's database until you delete that database: the data dir, or the Postgres database.

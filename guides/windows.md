@@ -40,7 +40,7 @@ If PowerShell says `flightdeck` is not recognised, open a new PowerShell window,
 
 Everything Flightdeck keeps is in `%LOCALAPPDATA%\flightdeck`: the SQLite database `flightdeck.db`, the message-bus store `nats\` and `secrets.json`. The directory must be on a local disk: a network drive or a UNC path does not provide the file locks SQLite and Flightdeck rely on. One `flightdeck` runs per data directory; a second one on the same directory exits at once and names the process that holds it.
 
-[guides/self-hosting.md](self-hosting.md#backing-up) has how to back up the database while Flightdeck runs.
+[guides/self-hosting.md](self-hosting.md#backing-up-and-restoring) has backing up and restoring it. Windows does not ship `sqlite3`, so on Windows a backup is a copy of `flightdeck.db` taken while Flightdeck is stopped.
 
 ## Docker Desktop
 
@@ -54,21 +54,29 @@ The data is then in the `flightdeck` volume, and the container creates an access
 
 ## Upgrade
 
-Stop Flightdeck (Ctrl+C), then run the install command again. It replaces `flightdeck.exe` and adds nothing more to the `PATH`. While `flightdeck.exe` is running, Windows does not let it be replaced, and the installer stops with "The process cannot access the file … because it is being used by another process." The next start brings the database up to date; the data is kept.
+Stop Flightdeck (Ctrl+C), then run the install command again. It replaces `flightdeck.exe` and adds nothing more to the `PATH`. While `flightdeck.exe` is running, Windows does not let it be replaced, and the installer stops with "The process cannot access the file … because it is being used by another process." The next start brings the database up to date; the data is kept. An older release does not start on a database a newer one has brought up to date, so a [backup](self-hosting.md#backing-up-and-restoring) taken before the upgrade is the way back.
 
 ## Uninstall
 
-Stop Flightdeck, then:
+1. Disconnect Claude Code, while `flightdeck.exe` is still installed:
 
-```powershell
-Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\flightdeck"
-```
+   ```powershell
+   flightdeck connect claude-code --remove
+   ```
 
-and remove that directory from your user `PATH`: search the Start menu for **Edit environment variables for your account**, select **Path**, choose **Edit**, and delete the entry that ends in `\Programs\flightdeck`. To delete the data as well (every session, event and token):
+   It shows what it removes (the plugin, with its saved server and token) and asks first; when Claude Code is not installed or not connected, it says so and changes nothing. A plugin left installed warns at the start of every Claude Code session that it cannot reach Flightdeck.
+2. Stop Flightdeck (Ctrl+C), then delete the binary:
 
-```powershell
-Remove-Item -Recurse "$env:LOCALAPPDATA\flightdeck"
-```
+   ```powershell
+   Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\flightdeck"
+   ```
+
+3. Remove that directory from your user `PATH`: search the Start menu for **Edit environment variables for your account**, select **Path**, choose **Edit**, and delete the entry that ends in `\Programs\flightdeck`.
+4. Only if you want to delete the data as well (every session, event and token):
+
+   ```powershell
+   Remove-Item -Recurse "$env:LOCALAPPDATA\flightdeck"
+   ```
 
 ## Connect agents from Windows
 

@@ -4,11 +4,11 @@
 # (ingestion, workers, query API, embedded NATS and the dashboard in one
 # process) on a distroless base, as a non-root user.
 #
-#   docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
+#   docker run --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 #
 # That is the whole install: nothing else to start or configure. The
 # start-up block it prints carries the dashboard URL and the token; with
-# `-d --name flightdeck` it is in `docker logs flightdeck`.
+# `-d` it is in `docker logs flightdeck`.
 #
 # Data. Everything the container writes lives under /data: the database
 # (a SQLite file, /data/flightdeck.db), the message-bus store and

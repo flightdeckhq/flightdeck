@@ -63,13 +63,24 @@ Or run it from PyPI without installing:
 uvx flightdeck-cli
 ```
 
-**Docker**: the image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`.
+**Docker**: the image creates an access token on its first start and prints it; agents need it as `FLIGHTDECK_TOKEN`. After a stop, `docker start -a flightdeck` runs the same container again.
 
 ```bash
-docker run -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
+docker run --name flightdeck -p 127.0.0.1:4000:4000 -v flightdeck:/data flightdeckhq/flightdeck
 ```
 
 **Release page**: the archives for every platform are on the [release page](https://github.com/flightdeckhq/flightdeck/releases). The installers above download from that release and verify the archive's checksum (and the release's signature when `cosign` is installed).
+
+### Upgrade and uninstall
+
+| Installed with | Upgrade | Uninstall |
+|---|---|---|
+| The install command | Stop Flightdeck, run the install command again, start it | Delete the `flightdeck` file the installer put in `/usr/local/bin` or `~/.local/bin`, and the `PATH` line you added for it, if any; on Windows, [these steps](guides/windows.md#uninstall) |
+| Homebrew | `brew upgrade flightdeckhq/tap/flightdeck`, then restart Flightdeck (`brew services restart flightdeck` for the service) | `brew services stop flightdeck` if it runs as a service, then `brew uninstall flightdeckhq/tap/flightdeck` |
+| PyPI | Stop Flightdeck, `pip install --upgrade flightdeck-cli`, start it; with uvx, `uvx flightdeck-cli@latest` | `pip uninstall flightdeck-cli`; uvx installs nothing, and `uv cache clean flightdeck-cli`, then `uv cache prune`, remove its cached copy |
+| Docker | `docker pull flightdeckhq/flightdeck`, `docker stop flightdeck`, `docker rm flightdeck`, then the same `docker run` again | `docker stop flightdeck`, `docker rm flightdeck`, then `docker rmi flightdeckhq/flightdeck` |
+
+The first start of a new release migrates the database when the release changes its schema, and an older release does not start on it after that: [back up](guides/self-hosting.md#backing-up-and-restoring) before you upgrade to keep a way back. To uninstall, first run `flightdeck connect claude-code --remove` (without the binary, `claude plugin uninstall flightdeck@flightdeck-plugins`): a plugin left installed warns at the start of every Claude Code session that it cannot reach Flightdeck. Then remove the binary as above. The data dir stays (`~/.flightdeck`, `%LOCALAPPDATA%\flightdeck`, or the `flightdeck` volume): Flightdeck does not delete sessions or events, so delete the directory (`docker volume rm flightdeck`) only to remove all of them.
 
 ## Connect your agents
 
@@ -192,9 +203,9 @@ helm install flightdeck flightdeck/helm/ --namespace flightdeck --create-namespa
 
 Compose runs that image as one container on SQLite, and with [`docker-compose.postgres.yml`](docker/docker-compose.postgres.yml) layered on it, beside a Postgres. The Helm chart runs it as a StatefulSet: by default one pod on SQLite with the embedded bus, with nothing to set. More than one pod needs a Postgres (`postgres.enabled=true` with `postgres.password`, or `postgres.externalUrl`) and a NATS they share (the chart's, with `nats.auth.token`, or `nats.externalUrl`). The notes `helm install` prints say how to open the dashboard and read the token; `flightdeck.dashboardTokenSecret` names a Secret holding a token you supply, and a host name beyond the chart's Service and Ingress names goes in `flightdeck.extraAllowedHosts`. Both read their files from a clone of this repository. [guides/self-hosting.md](guides/self-hosting.md#kubernetes-helm) has their settings, the chart's values and the upgrade notes.
 
-**Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [guides/self-hosting.md](guides/self-hosting.md#backing-up) has the command that backs up a running instance.
+**Data and backups.** Everything is in the data dir (`--data-dir`, default `~/.flightdeck`): the SQLite database, the message-bus store and the secrets file. [guides/self-hosting.md](guides/self-hosting.md#backing-up-and-restoring) has how to back up a running instance and restore it, on SQLite and on Postgres.
 
-**Upgrading.** Install the new release and start it; the binary migrates its database at start. On Windows, stop it first: [guides/windows.md](guides/windows.md) covers upgrading, the firewall and removing it. [ARCHITECTURE.md](ARCHITECTURE.md) ("Deployment") lists every flag and environment variable.
+**Upgrading.** [Upgrade and uninstall](#upgrade-and-uninstall) has the commands for each install channel; the binary migrates its database at start. [guides/self-hosting.md](guides/self-hosting.md) has the Compose and Helm upgrades, and [guides/windows.md](guides/windows.md) upgrading on Windows, the firewall and removing it. [ARCHITECTURE.md](ARCHITECTURE.md) ("Deployment") lists every flag and environment variable.
 
 ## What Flightdeck is not
 

@@ -10286,13 +10286,43 @@ is used on (`--surface`, `--bg-elevated`, `--bg`, a list row's
 own hue), or an alias of the
 hue where the hue already does, so both themes define the same set. The
 hue tokens (`--text-muted`, `--accent`, `--event-llm`, ...) stay as they
-are for badges' tints and borders, charts, swimlanes and icons. The
-Prompts tab of both drawers (with its no-content, capture-off and
+are for badges' tints and borders, charts, swimlanes and icons.
+
+An event-type badge (`getBadge` in `lib/events.ts`: the type's hue as a
+15% tint and a 30% border) draws its label in the type's badge text
+token, its `textVar`, and an MCP policy decision pill (`Allow`, `Deny ·
+warn`, `Deny · block`, `Deny · interactive`: its hue as a 12% tint and
+a border) in its family's: `--event-llm-badge-text`,
+`--event-tool-badge-text`, `--event-embeddings-badge-text`,
+`--event-mcp-tool-badge-text`, `--event-mcp-resource-badge-text`,
+`--event-mcp-prompt-badge-text`, `--event-degrade-badge-text`,
+`--event-directive-badge-text`, `--event-lifecycle-badge-text`, and
+`--warning-badge-text`, `--danger-badge-text`, `--success-badge-text`
+and `--accent-badge-text`, which the warn, block, error and result
+badges, the attach badge and the four pills share (those hues are the
+warning, danger and success hues in both themes). Each is the nearest
+shade of its hue that reads at 4.6:1 over the label's tint on every row
+the badge sits in: `--surface`, `--bg-elevated`, `--bg`, a hovered row
+(`--surface-hover`), a focused row (`--accent-glow` over the surface),
+the Neighbors list's anchor (8% `--accent` over `--bg`), the Live feed's
+linked row (12%) and the Events page's active facet (15% `--primary`
+over `--bg`), or an alias of the family's `-text` token or of the hue
+where that already does. These are their own tokens because the shared
+`-text` tokens are set for other text and do not reach the floor on a
+tint in an accent-washed row; darkening them would move that text. Every
+site that draws a badge takes the label from `textVar`: `EventTypePill`
+(the Events page, the run drawer's Timeline, the agent drawer), the Live
+feed, the event drawer's header, the run drawer's attach badge, event
+detail header and Prompts list, the Neighbors list and the Fleet
+sidebar's policy events. A unit test
+(`dashboard/tests/unit/badge-label-contrast.test.tsx`) checks every
+event type's label on every one of those rows in both themes.
+
+The Prompts tab of both drawers (with its no-content, capture-off and
 `session_signal` states and the run drawer's list of the run's calls)
 and the embeddings viewer draw all their text in these tokens, with
-`--text` and `--text-secondary`, except the run drawer list's
-event-type badges, which keep the look every event-type badge shares,
-the type's hue as text on its tint; role badges keep their hue's tint and
+`--text` and `--text-secondary`, the list's event-type badges in their
+badge text tokens; role badges keep their hue's tint and
 border with the text in its `-text` token, and their JSON views
 (`SyntaxJson` given `TEXT_SAFE_SYNTAX_COLORS`) colour keys, strings and
 numbers with them and `true` / `false` / `null` in `--text`, apart from

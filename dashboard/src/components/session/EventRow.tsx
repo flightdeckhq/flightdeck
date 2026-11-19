@@ -105,7 +105,7 @@ export function EventRow({
                   className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
                   style={{
                     background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
-                    color: badge.cssVar,
+                    color: badge.textVar,
                     border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
                     borderRadius: 3,
                   }}

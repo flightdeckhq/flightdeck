@@ -6,7 +6,9 @@ import { resolve } from "node:path";
  * each colour resolved through its var() chain, a translucent
  * background composited over the one behind it. Used by the Prompts
  * tab's contrast test, which renders the tab and checks the colour pair
- * of every text node in both themes.
+ * of every text node in both themes, and by the badge and decision pill
+ * label tests, which check each label over its tint on every row
+ * surface it sits on.
  */
 
 export type Theme = "dark" | "light";
@@ -61,7 +63,8 @@ export function resolveColor(tokens: Map<string, string>, value: string, depth =
   const asHex = hex(v);
   if (asHex) return asHex;
   if (v === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
-  const ref = /^var\((--[a-z0-9-]+)\)$/.exec(v);
+  // A var() with a fallback reads the token, which themes.css defines.
+  const ref = /^var\((--[a-z0-9-]+)(?:\s*,\s*#[0-9a-f]{3,6})?\)$/i.exec(v);
   if (ref) {
     const next = tokens.get(ref[1]!);
     if (next === undefined) throw new Error(`no token ${ref[1]}`);
@@ -150,6 +153,47 @@ export function textPaints(root: Element): TextPaint[] {
     out.push({ text: own.slice(0, 60), color: color ?? "var(--text)", backgrounds });
   }
   return out;
+}
+
+/** A row an event-type badge or an MCP policy decision pill sits in:
+ *  its background layers, bottom first. */
+export interface BadgeRowSurface {
+  name: string;
+  layers: readonly string[];
+}
+
+const GLOW = "var(--accent-glow)";
+
+/** Every row background a badge or a decision pill sits on: the four
+ *  surfaces (--surface-hover is a hovered list row; --bg-elevated is a
+ *  hovered policy-table row), a focused row's --accent-glow over the
+ *  surfaces a focused row is drawn on, the Neighbors list's anchor (8%
+ *  --accent over --bg), the Live feed's linked row (12% --accent over
+ *  --bg) and the Events page's active facet (15% --primary over the
+ *  page's --bg). themes.css's badge text tokens are chosen to read at
+ *  TEXT_SAFE_FLOOR on each, under the label's tint. */
+export const BADGE_ROW_SURFACES: readonly BadgeRowSurface[] = [
+  { name: "--surface", layers: ["var(--surface)"] },
+  { name: "--bg-elevated", layers: ["var(--bg-elevated)"] },
+  { name: "--bg", layers: ["var(--bg)"] },
+  { name: "a hovered row (--surface-hover)", layers: ["var(--surface-hover)"] },
+  { name: "a focused row on --surface", layers: ["var(--surface)", GLOW] },
+  { name: "a focused row on --bg-elevated", layers: ["var(--bg-elevated)", GLOW] },
+  { name: "a focused row on --bg", layers: ["var(--bg)", GLOW] },
+  { name: "the Neighbors anchor", layers: ["var(--bg)", "color-mix(in srgb, var(--accent) 8%, transparent)"] },
+  { name: "a linked Live feed row", layers: ["var(--bg)", "color-mix(in srgb, var(--accent) 12%, transparent)"] },
+  { name: "an active Events facet", layers: ["var(--bg)", "color-mix(in srgb, var(--primary) 15%, transparent)"] },
+];
+
+/** A label's contrast over its tint (``tint``, a color-mix of the hue)
+ *  in ``row``: the lower of the exact composite and the 8-bit colour a
+ *  browser draws. */
+export function labelRatio(tokens: Map<string, string>, text: string, tint: string, row: BadgeRowSurface): number {
+  let bg = resolveColor(tokens, row.layers[0]!);
+  for (const layer of [...row.layers.slice(1), tint]) bg = over(resolveColor(tokens, layer), bg);
+  const eightBit = { r: Math.round(bg.r), g: Math.round(bg.g), b: Math.round(bg.b), a: 1 };
+  const fg = resolveColor(tokens, text);
+  return Math.min(contrastRatio(fg, bg), contrastRatio(fg, eightBit));
 }
 
 /** A paint's contrast in ``theme``, its backgrounds composited over

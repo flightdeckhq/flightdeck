@@ -1,6 +1,6 @@
 # Self-hosting: Compose, Helm and backups
 
-The [README](../README.md#self-hosting) has the one-line form of every way to run Flightdeck for a team: the binary with `--public`, `--domain` or `--database-url`, the Docker image, Compose and Helm. This page is the detail for Compose and Helm (what each starts, where the token is, the event stream's retention, the chart's values, the upgrade notes) and for backups. [ARCHITECTURE.md](../ARCHITECTURE.md) ("Deployment") lists every flag and variable of the binary.
+The [README](../README.md#self-hosting) has the one-line form of every way to run Flightdeck for a team: the binary with `--public`, `--domain` or `--database-url`, the Docker image, Compose and Helm. This page is the detail for Compose and Helm (what each starts, where the token is, the event stream's retention, the chart's values, the upgrade notes) and for backing up and restoring. [ARCHITECTURE.md](../ARCHITECTURE.md) ("Deployment") lists every flag and variable of the binary.
 
 Flightdeck is self-hosted. Two deployment targets are supported, both running the one `flightdeckhq/flightdeck` image: Docker Compose (single host) and a Helm chart for Kubernetes.
 
@@ -17,7 +17,7 @@ cd flightdeck
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-That is one container: the database is a SQLite file on the `flightdeck_data` volume, and the dashboard is at `http://localhost:4000`. The first start mints the access token, since the seed `tok_dev` token is refused off loopback; `/runtime-config.json` on that address returns it, and the start-up block in the container's log carries it on that start. The port is published on `127.0.0.1` because whoever can reach it can read that token: `FLIGHTDECK_PUBLISH_HOST` publishes it wider, behind a firewall or a proxy that authenticates. The header of [`docker/docker-compose.yml`](../docker/docker-compose.yml) lists every variable, including `FLIGHTDECK_DOMAIN` for TLS from the binary (a Let's Encrypt certificate, 80 redirecting to 443); [`docker/docker-compose.postgres.yml`](../docker/docker-compose.postgres.yml), layered on it, runs a Postgres instead of SQLite and requires `POSTGRES_PASSWORD`. Both set `restart: unless-stopped` and keep their data on named volumes.
+That is one container: the database is a SQLite file on the `flightdeck_data` volume, and the dashboard is at `http://localhost:4000`. The first start mints the access token, since the seed `tok_dev` token is refused off loopback; `/runtime-config.json` on that address returns it, and the start-up block in the container's log carries it on that start. The port is published on `127.0.0.1` because whoever can reach it can read that token: `FLIGHTDECK_PUBLISH_HOST` publishes it wider, behind a firewall or a proxy that authenticates. The header of [`docker/docker-compose.yml`](../docker/docker-compose.yml) lists every variable, including `FLIGHTDECK_DOMAIN` for TLS from the binary (a Let's Encrypt certificate, 80 redirecting to 443); [`docker/docker-compose.postgres.yml`](../docker/docker-compose.postgres.yml), layered on it, runs a Postgres instead of SQLite and requires `POSTGRES_PASSWORD`. Both set `restart: unless-stopped` and keep their data on named volumes. The file names the image of its own release, so to upgrade, `git pull` in the clone and run the same `docker compose ... up -d`, which replaces the container and keeps the volumes.
 
 The `FLIGHTDECK` NATS stream that carries events from ingestion to the workers keeps them for 72 hours, up to 5 GiB, then removes the oldest (`FLIGHTDECK_NATS_STREAM_MAX_AGE_HOURS`, `FLIGHTDECK_NATS_STREAM_MAX_SIZE_MIB` in `docker/.env`). The limits remove events whether or not the workers have processed them, so if the workers are down for longer than 72 hours, or fall more than 5 GiB behind, the oldest unprocessed events are lost; the workers log how many at their next start. To roll back to a release before the stream was bounded, first run `nats stream edit FLIGHTDECK --max-age=0 --max-bytes=-1 --discard=old --replicas=1 --force` (with `-s <your NATS URL>`), which restores unbounded retention; the earlier ingestion and workers do not start on the bounded stream.
 
@@ -96,14 +96,88 @@ The chart is at `version` 0.11.0 with `appVersion` 0.11.0; the default `image.ta
 | `ingress.enabled` | `false` | Render an Ingress routing every path to the pods, which serve the dashboard, `/api` and `/ingest` themselves. |
 | `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza. |
 
-## Backing up
+## Backing up and restoring
 
-Everything Flightdeck keeps is in its data dir (`--data-dir`, default `~/.flightdeck`; `/data` in the image): the SQLite database `flightdeck.db`, the message-bus store and `secrets.json`. With `--database-url postgres://…` the sessions and events are in that Postgres, backed up with its own tools, and the data dir holds only the bus store and the secrets.
+Everything Flightdeck keeps is in its data dir (`--data-dir`, default `~/.flightdeck`, `%LOCALAPPDATA%\flightdeck` on Windows; `/data` in the image): the SQLite database `flightdeck.db`, the message-bus store and `secrets.json`. The database is the part to back up: it holds the sessions, the events and the settings, access tokens included, and the bus store and `secrets.json` are made again when they are missing. With `--database-url postgres://…` the sessions and events are in that Postgres (below), and the data dir holds only the bus store and the secrets.
 
-While the binary runs, copy the SQLite database with SQLite itself:
+Keep backups on another disk or another machine: a copy on the same disk is lost with that disk. A backup holds everything the database does, captured prompts included, so keep it where only you can read it.
+
+### SQLite
+
+While the binary runs, copy the database with SQLite itself:
 
 ```bash
 sqlite3 ~/.flightdeck/flightdeck.db "VACUUM INTO '/backup/flightdeck.db'"
 ```
 
-That (or the shell's `.backup` command) writes a consistent snapshot without stopping the binary. A plain file copy is only safe when the binary is stopped (a clean stop folds the write-ahead log into `flightdeck.db` and removes it); a copy taken while it runs must include `flightdeck.db-wal` and may still be torn.
+That (or the shell's `.backup` command) writes a consistent snapshot without stopping the binary; `VACUUM INTO` refuses to write over a file that already exists, and `.backup` replaces it. Without `sqlite3` (Windows does not ship it, and many Linux systems lack it), stop Flightdeck (Ctrl+C, and wait for it to exit) and copy the file: a clean stop folds the write-ahead log into `flightdeck.db` and removes it, so that one file is the whole database. A copy of `flightdeck.db` taken while the binary runs is not a backup: its latest writes are in `flightdeck.db-wal` beside it. In PowerShell:
+
+```powershell
+Copy-Item "$env:LOCALAPPDATA\flightdeck\flightdeck.db" D:\backup\flightdeck.db
+```
+
+To restore:
+
+1. Stop Flightdeck, and check that the process has exited: `pgrep -x flightdeck` (Linux, macOS) or `Get-Process flightdeck` (Windows) finds nothing. A terminal that ran it shows its prompt again once it has, and Homebrew's service is no longer `started` in `brew services list`.
+2. In the data dir, rename `flightdeck.db` to `flightdeck.db.before-restore`, and `flightdeck.db-wal` and `flightdeck.db-shm`, if they are there, to `flightdeck.db.before-restore-wal` and `flightdeck.db.before-restore-shm`. SQLite pairs a log with its database by name: the renamed set still opens as the database was, while a log left as `flightdeck.db-wal` would be applied to the restored file, which would then not open. A `flightdeck.db.before-restore` from an earlier restore goes somewhere else first.
+3. Copy the backup into the data dir as `flightdeck.db`.
+4. Start Flightdeck. Once it shows what you expect, the `before-restore` files can go.
+
+The start migrates a backup from an older release forward. An older release does not start on a database a newer one has migrated, so a backup taken before an upgrade is also the way back to the release before it.
+
+**In the image** the data dir is `/data`, on the container's volume. The commands below write `<container>` and `<volume>` for their names: `flightdeck` and `flightdeck` with the README's `docker run`, `flightdeck-flightdeck-1` and `flightdeck_data` under Compose, and otherwise what `docker ps -a` and `docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' <container>` print. A backup and a restore both need the container stopped:
+
+```bash
+docker stop <container>
+docker inspect -f '{{.State.Running}}' <container>
+```
+
+The second command prints `false` once it has stopped. `docker cp <container>:/data/flightdeck.db .` then copies the database out, and `docker start <container>` starts it again. The image has no shell, so a restore runs in a container of its own. With the backup in the current directory as `flightdeck.db`, this moves the current database aside as `flightdeck.db.before-restore` and copies the backup in:
+
+```bash
+docker run --rm -v <volume>:/data -v "$PWD":/backup:ro alpine:3 sh -ec 'cd /data; if [ -e flightdeck.db.before-restore ]; then echo "flightdeck.db.before-restore is there from an earlier restore: copy it out and remove it first" >&2; exit 1; fi; for s in "" -wal -shm; do [ ! -e flightdeck.db$s ] || mv flightdeck.db$s flightdeck.db.before-restore$s; done; cp /backup/flightdeck.db .; chown 65532:65532 flightdeck.db'
+```
+
+Then `docker start <container>`. The database must belong to the image's user, 65532: a file copied in with `docker cp` keeps another owner, and the start then fails with `permission denied`. The command changes nothing when a `flightdeck.db.before-restore` from an earlier restore is there: copy that out (`docker cp <container>:/data/flightdeck.db.before-restore .`), remove it (`docker run --rm -v <volume>:/data alpine:3 sh -c 'rm /data/flightdeck.db.before-restore*'`), and run it again.
+
+**On Kubernetes** the image has no `tar`, which `kubectl cp` needs, so the database cannot be copied out of a flightdeck pod: scale the StatefulSet to 0 and copy `flightdeck/flightdeck.db` on the claim (`kubectl get pvc` lists it: `data-<release>-flightdeck-0` for a release whose name contains `flightdeck`; the file is owned by uid 65532) through a one-off pod that mounts it, as for `secrets.json` above, take a snapshot of the claim where its storage class supports one, or run the chart on Postgres and use `pg_dump`.
+
+### Postgres
+
+Back up with `pg_dump`, of the server's major version or newer, while Flightdeck runs:
+
+```bash
+pg_dump --no-owner -d '<database url>' > flightdeck.sql
+```
+
+To restore, load the dump into a new, empty database beside the current one, in one transaction, so that a load that fails leaves nothing half-loaded. `<restore url>` is `<database url>` with its database name changed to `flightdeck_restore`; `CREATE DATABASE` needs the `CREATEDB` privilege, which a managed Postgres's role often lacks (create the database in the provider's console then):
+
+```bash
+psql -d '<database url>' -c 'CREATE DATABASE flightdeck_restore'
+psql -v ON_ERROR_STOP=1 -1 -d '<restore url>' < flightdeck.sql
+```
+
+Only when the load exits 0 (psql exits non-zero on the first error and loads nothing), stop Flightdeck and start it with `--database-url '<restore url>'`. It migrates a dump from an older release forward, and the old database stays as it was until you drop it.
+
+Under Compose with `docker-compose.postgres.yml`, Postgres is not published on the host and the URL in the file names the `postgres` service and the database `flightdeck`, so the commands run in that container and the restore swaps the database names. Back up while Flightdeck runs:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres pg_dump --no-owner -U flightdeck flightdeck > flightdeck.sql
+```
+
+To restore, load the dump into a new database:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -U flightdeck -d postgres -c 'CREATE DATABASE flightdeck_restore'
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -v ON_ERROR_STOP=1 -1 -U flightdeck -d flightdeck_restore < flightdeck.sql
+```
+
+Only when the load exits 0 (after a failed one, `flightdeck_restore` is there but empty: drop it and run both commands again), stop Flightdeck and swap the two names in one transaction, which renames both or neither, then start it:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml stop flightdeck
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml exec -T postgres psql -v ON_ERROR_STOP=1 -1 -U flightdeck -d postgres -c 'ALTER DATABASE flightdeck RENAME TO flightdeck_before_restore' -c 'ALTER DATABASE flightdeck_restore RENAME TO flightdeck'
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.postgres.yml start flightdeck
+```
+
+The swap refuses while Flightdeck is still connected to the database, and `flightdeck_before_restore` keeps the database as it was until you drop it.

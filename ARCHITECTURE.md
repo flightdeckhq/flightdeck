@@ -1178,9 +1178,7 @@ different levels:
   bind the resource's `create` / `parse` when they are built, so a view
   first touched after `patch` is intercepted too, while a view first
   touched before `patch` keeps the unpatched method and is not metered
-  (a strict `xfail` test pins it; the other unmetered case is a call
-  made under litellm's outer-call mark, described with the litellm
-  patch below). The patch imports the SDK's private module
+  (a strict `xfail` test pins it). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
   it, and CI's `SDK floors` lane runs the unit suite against 0.86.0. An
   installed SDK below the
@@ -1487,10 +1485,30 @@ global `litellm.model_fallbacks` reaches the same loop, but in litellm
 call with it set never returns, with or without the sensor.) The interceptors
 coordinate through an outer-call mark in `interceptor/base.py`: each
 litellm wrapper runs the underlying litellm call inside
-`outer_intercept()`. An SDK interceptor that finds
-`outer_intercept_active()` true hands the call through untouched (no
-`pre_call`, policy check, stream guard or `post_call`). A litellm wrapper
-does so only when the mark is active and its caller is one of litellm's
+`outer_intercept()`, with a mark of its own. The mark says which SDK
+calls made under it are the litellm call's own (`OuterCall.owns`), and an
+SDK interceptor hands such a call through untouched (no `pre_call`,
+policy check, stream guard or `post_call`; `base.outer_call_owns`). A
+litellm call's mark owns exactly one kind of SDK call: the provider
+request litellm itself sends through the OpenAI SDK on the call's behalf
+-- the chat completion, legacy completion and embedding requests of
+litellm's OpenAI and Azure routes (which the OpenAI-compatible providers
+litellm serves with the SDK go through), streamed or not, sync or async
+-- told by the function that makes it: walking out from the SDK call
+past the OpenAI SDK's and the sensor's frames, then past any frames a
+proxy around the client adds to forward an attribute lookup or a call
+(`__getattr__`, `__getattribute__`, `__get__`, `__call__` outside those
+two packages), the next frame is one of `LITELLM_SDK_REQUESTS` in
+`interceptor/_litellm_requests.py` (measured on litellm 1.83 and 1.104);
+an SDK or sensor frame met after a forwarding frame means the call is not
+litellm's. So a callback's own frame stops the walk, through a proxy of
+its own or not, and so does a credential provider the SDK calls while it
+prepares litellm's request (an `api_key` or `azure_ad_token_provider`
+object whose `__call__` makes an SDK call): its call is policed and
+reported. litellm sends nothing through the Anthropic or
+google-genai SDKs, so a call of theirs is never a litellm call's own. A
+litellm wrapper hands a call through only when the mark is active and
+its caller is one of litellm's
 re-issue modules -- the two bridges and the fallback loop
 (`_REISSUE_MODULES` in `interceptor/litellm.py`, matched on the calling
 frame's module name, which is read only while the mark is active; for an
@@ -1535,22 +1553,43 @@ code), whose attempts litellm runs in a worker thread it starts without
 copying the context, so the mark does not reach them and every attempt is reported as a call of its own beside the outer call (for a failed primary and one fallback: three `pre_call`s, two `post_call`s and one `llm_error`)
 (pinned by a strict `xfail` test); and every re-issued call when an instrumentation library
 replaces a litellm entry point after `flightdeck_sensor.patch()`, which
-puts its own frame where the re-issue check looks. The mark is a per-call flag held in a context variable:
-another thread, or a task created before the call, never sees it, so an SDK
-call they make at the same time is still reported; a task created inside
-the call inherits a copy of the context and reads the mark active while the
-call is in flight and inactive once it has ended, because the flag is
-cleared when the call ends; litellm's executor hop for sync-only providers
-copies the context, so the mark follows it. The mark covers the whole
-litellm call, which is a stated limitation: an SDK call made from inside
-it while it is in flight -- by a litellm callback, guardrail or custom
-provider, or by a task created inside the call -- is neither policed nor
-metered. The OpenAI interceptor checks the mark where
-`client.chat.completions` is resolved (which covers `create` and
-`with_raw_response.create`, streaming or not) and at `embeddings.create`,
-and the Anthropic patch in its patched resource methods (`create`,
-`stream`, `parse`, on every client class and both views) and, for a
-`wrap()`-built client, in the same three proxy methods.
+puts its own frame where the re-issue check looks. Three more come from
+how litellm's own SDK request is told apart, each reported as an SDK
+call beside the litellm call it serves: a litellm custom provider
+(`CustomLLM`) whose handler sends its request through an SDK the sensor
+patches (that request is the custom provider's code, not litellm's); a
+client wrapper that puts a function of its own between litellm and the
+SDK, a tracing wrapper's `create` say (that function could send requests
+of its own, so it stays policed); and a litellm release that sends its
+request from a function the list does not name (the litellm tests catch
+it for the releases they run). None is a call nobody reports. The mark
+is a per-call flag held in a context variable: another thread, or a task
+created before the call, never sees it; a task
+created inside the call inherits a copy of the context and reads the mark
+active while the call is in flight and inactive once it has ended,
+because the flag is cleared when the call ends; litellm's executor hop
+for sync-only providers copies the context, so the mark follows it, and
+its request is still told apart by the function that sends it. Every SDK
+call made while a litellm call is in flight that is not litellm's own
+request -- by a litellm callback, guardrail or custom provider, by a task
+or thread created inside the call, or by any other code -- is an ordinary
+call: its policy check runs when it is made (a BLOCK refuses it before
+anything is sent), it is reported once, and its content is captured as
+the session's capture setting says. The OpenAI interceptor asks the mark
+where `client.chat.completions` is resolved (which covers `create` and
+`with_raw_response.create`, streaming or not), at `embeddings.create` and
+for the chat of a `.stream()` helper's client, the Anthropic patch in its
+patched resource methods (`create`, `stream`, `parse`, on every client
+class and both views) and, for a `wrap()`-built client, in the same
+three proxy methods, and the google-genai patch in its request methods.
+The Anthropic patch also marks its own nested call: for a `wrap()`-built
+client whose messages resource overrides a method and calls `super()`,
+it runs the override under a mark that owns the Anthropic SDK's calls
+only, so the patched base method the override re-enters hands that
+request through and it is reported once. A call the override makes
+through another SDK (OpenAI, google-genai) is an ordinary call, policed
+and reported; another Anthropic call it makes besides `super()` is
+handed through too and goes unreported.
 
 `litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
 meter litellm's `CustomStreamWrapper` with the shared stream guard
@@ -1618,8 +1657,9 @@ be had that way, in three tiers by the route litellm takes:
   on the request litellm's provider request code sends (the chat and
   legacy completion requests of litellm's OpenAI and Azure routes; any
   other SDK call made under the mark, from a litellm callback, guardrail
-  or health check, is left as it is) when the body the SDK sends does not
-  ask for usage. That body is litellm's arguments with `extra_body`
+  or health check, is an ordinary call, metered as one and asked for
+  nothing here) when the body the SDK sends does not ask for usage.
+  That body is litellm's arguments with `extra_body`
   merged over them key by key, as the SDK merges it, so a
   `stream_options` in `extra_body` replaces the argument whole; the ask
   is set where it lands, keeping the other keys of that `stream_options`.

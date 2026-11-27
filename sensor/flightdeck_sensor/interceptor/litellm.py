@@ -30,12 +30,14 @@ one specific call without mutating the litellm module globals. Both
 paths share the helpers in this module, so they cannot drift.
 
 **Every litellm call is reported once.** Every underlying litellm call
-this module makes runs under ``base.outer_intercept()`` (see
-:func:`_as_outer_call`). The SDK interceptors hand a call made under
-the mark through untouched (litellm's OpenAI chat route constructs
-``openai.OpenAI`` and calls ``chat.completions.create`` on it), and so
-do this module's own wrappers when litellm re-issues the caller's own
-call through them (:data:`_REISSUE_MODULES`): ``responses`` on a
+this module makes runs under ``base.outer_intercept()`` with the call's
+own mark (see :func:`_as_outer_call`). The OpenAI interceptor hands the
+provider request litellm itself sends through the SDK under that mark
+through untouched (litellm's OpenAI chat route constructs
+``openai.OpenAI`` and calls ``chat.completions.create`` on it; see
+:mod:`flightdeck_sensor.interceptor._litellm_requests`), and so do this
+module's own wrappers when litellm re-issues the caller's own call
+through them (:data:`_REISSUE_MODULES`): ``responses`` on a
 provider without a native Responses API (Anthropic) bridges through
 ``litellm.completion`` / ``acompletion``, ``completion`` on a
 Responses-only model through ``litellm.responses``, and a call with
@@ -82,6 +84,17 @@ risk hiding a billed call:
   ``litellm.completion`` (or another entry point) after
   ``flightdeck_sensor.patch()`` puts its own frame there, so every
   re-issued call through it is reported twice.
+* A litellm custom provider (``CustomLLM``) whose handler sends its
+  request through an SDK the sensor patches: that request is the
+  handler's, not litellm's own (:mod:`._litellm_requests`), so it is
+  reported as an SDK call beside the litellm call it serves.
+* A client wrapper that puts a function of its own between litellm and
+  the SDK (a tracing wrapper's ``create``): that function could send
+  requests of its own, so the request litellm sends through it is
+  reported as an SDK call beside the litellm call. A proxy that only
+  forwards attribute lookups and calls is seen through.
+* A litellm release that sends its request through the OpenAI SDK from a
+  function :data:`._litellm_requests.LITELLM_SDK_REQUESTS` does not name.
 
 **Streaming.** ``stream=True`` meters litellm's own stream
 (``CustomStreamWrapper``, ``TextCompletionStreamWrapper``, a Responses
@@ -131,11 +144,14 @@ is used as a plain iterator; the ``post_call`` is emitted when the stream
 is read to its end, or when the guard is collected after a loop left
 early.
 
-**Scope of the mark.** It covers the whole litellm call, so an SDK
-call made from inside it -- by a litellm callback, guardrail or custom
-provider, or by a task created inside the call, which inherits the
-mark -- is neither policed nor metered. A litellm call made from inside
-it is (only the bridge's re-issue of the same call passes through).
+**Scope of the mark.** It owns only the provider request litellm itself
+sends through the OpenAI SDK on the call's behalf
+(:func:`_litellm_mark`). An SDK call made while the call is in flight
+by anything else -- a litellm callback, guardrail or custom provider, a
+task created inside the call, which inherits the mark -- is an ordinary
+call: policed when made, reported and captured as the session's capture
+setting says. So is a litellm call made from inside it (only litellm's
+own re-issue of the same call passes through).
 
 **Coverage caveat.** The patch covers direct callers of the patched
 entry points -- the vast majority of litellm integrations. Frameworks
@@ -158,7 +174,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType
-from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor import _litellm_requests, base
 from flightdeck_sensor.providers.litellm import (
     LitellmProvider,
     LitellmResponsesProvider,
@@ -227,18 +243,27 @@ def _current_session() -> Session | None:
 # handling, same event shape.
 
 
+def _litellm_mark() -> base.OuterCall:
+    """A litellm call's mark. It owns only the provider request litellm
+    itself sends through the OpenAI SDK on the call's behalf
+    (:func:`_litellm_requests.litellm_owns`): the SDK interceptors hand
+    that one to the SDK untouched, as this call reports it, and police and
+    report every other SDK call made while this one is in flight."""
+    return base.OuterCall(owns=_litellm_requests.litellm_owns)
+
+
 def _as_outer_call(
     fn: Callable[..., Any], mark: base.OuterCall | None = None
 ) -> Callable[..., Any]:
-    """``fn`` run under :func:`base.outer_intercept` (with ``mark``, the
-    litellm call's own, when given), so an interceptor litellm reaches
-    while serving the call (its OpenAI route calls
-    ``openai.OpenAI().chat.completions.create``; its Responses bridge calls
-    ``litellm.completion``) passes the call through instead of reporting it
-    a second time."""
+    """``fn`` run under :func:`base.outer_intercept` with the litellm
+    call's mark (``mark`` when given, else a new one), so the provider
+    request litellm sends through the OpenAI SDK while serving the call
+    passes through the OpenAI interceptor, and litellm's re-issue of the
+    call (its Responses bridge calls ``litellm.completion``) through this
+    module's wrappers, instead of being reported a second time."""
 
     def _call(**kwargs: Any) -> Any:
-        with base.outer_intercept(mark):
+        with base.outer_intercept(_litellm_mark() if mark is None else mark):
             return fn(**kwargs)
 
     return _call
@@ -254,7 +279,7 @@ def _as_outer_async_call(
     context."""
 
     async def _call(**kwargs: Any) -> Any:
-        with base.outer_intercept(mark):
+        with base.outer_intercept(_litellm_mark() if mark is None else mark):
             return await fn(**kwargs)
 
     return _call
@@ -574,7 +599,7 @@ def _stream_call(
     """The litellm call's own mark, which the provider reads the usage
     from that the OpenAI interceptor hands over, and the kwargs the call
     is made with."""
-    mark = base.OuterCall()
+    mark = _litellm_mark()
     provider.outer_call = mark
     return mark, (_asked_in_the_body(kwargs, mark) if ask else kwargs)
 
@@ -677,7 +702,7 @@ class _SessionAtFirstRead:
         if session is None:
             return None
         provider = self._provider_cls(capture_prompts=session.config.capture_prompts)
-        mark = base.OuterCall()
+        mark = _litellm_mark()
         provider.outer_call = mark
         return session, provider, mark
 

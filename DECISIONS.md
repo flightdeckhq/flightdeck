@@ -1415,6 +1415,23 @@ thread; ctypes into `sigaction` bypasses Python's handler record);
 `os.kill(getpid())` or `raise_signal` from the drain thread (the kernel
 may pick another thread, `raise_signal` always does).
 
+## D297 -- Under a litellm call, only litellm's own SDK request passes through; every other SDK call is policed and reported
+
+**Date:** 2026-11-27
+**Decision:** supersedes D191's mark covering the whole call. A mark says
+what it owns (`OuterCall.owns`); a litellm call's owns only the OpenAI SDK
+request litellm's own route code sends, told by the calling function, a
+proxy's forwarding frames stepped over; the Anthropic override mark owns
+Anthropic calls only. Any other SDK call is ordinary; a `CustomLLM` or a
+wrapper function of its own between litellm and the SDK reports twice.
+**Why:** such calls were reported by nobody and refused by no BLOCK, so a
+litellm callback could spend past a block.
+**Rejected alternative:** matching the client object litellm uses (callers
+pass or cache clients litellm also uses); patching litellm's request
+functions to set a flag (more private surface patched, the same names);
+counting a custom provider's request as litellm's (its code is the user's,
+and missing it hides a billed call; it is reported twice instead).
+
 ## D298 -- A litellm stream is handed back as an instance of litellm's own class, sharing the stream's attributes
 
 **Date:** 2026-11-27

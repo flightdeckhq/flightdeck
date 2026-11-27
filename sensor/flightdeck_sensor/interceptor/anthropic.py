@@ -49,7 +49,11 @@ calls the resource's original methods, so a wrapped client is metered
 exactly once. When the resource class overrides a patched method and
 calls ``super()``, the proxy resolves the override and runs it under
 the outer-call mark, so the patched base method it re-enters passes
-through instead of reporting the request a second time. An override
+through instead of reporting the request a second time. That mark owns
+the Anthropic SDK's calls only: an OpenAI or google-genai call the
+override makes is policed and reported as a call of its own, while
+another Anthropic call it makes besides ``super()`` passes through
+unreported. An override
 that defers its ``super()`` call into an object it returns (a context
 manager's ``__enter__``) runs outside the mark and is still reported
 twice.
@@ -442,9 +446,12 @@ class SensorMessages(base.SessionProxy):
         body read already and is metered like a plain call.
         """
         real_fn = self._method("create")
-        # An outer interceptor (litellm) making this call already meters
-        # it: hand the call to the SDK untouched (see base.outer_intercept).
-        if base.outer_intercept_active():
+        # A call the sensor already meters as its outer call's own (an SDK
+        # subclass's override run under the mark, re-entering the patched
+        # base method): hand it to the SDK untouched (see
+        # base.outer_call_owns). A call made under a litellm call's mark is
+        # never litellm's own: litellm sends nothing through this SDK.
+        if base.outer_call_owns("anthropic"):
             return real_fn(**kwargs)
         return self._call(
             lambda call_kwargs, target: self._create(real_fn, call_kwargs, target),
@@ -494,11 +501,11 @@ class SensorMessages(base.SessionProxy):
         reports to the session :meth:`_entry_target` finds then.
         """
         real_fn = self._method("stream")
-        # As for create(): an outer interceptor's call goes to the SDK
-        # untouched. With no session now, the request still goes out only
+        # As for create(): an outer call's own goes to the SDK untouched.
+        # With no session now, the request still goes out only
         # on entry: a following proxy (wrap()'s) may find a session then,
         # so it hands back the sensor's manager all the same.
-        if base.outer_intercept_active():
+        if base.outer_call_owns("anthropic"):
             return real_fn(**kwargs)
         at_call = self._target()
         if at_call is None and not self._sends_later_to_follow():
@@ -518,9 +525,9 @@ class SensorMessages(base.SessionProxy):
         this proxy at that moment finds them: the class patch's (see
         :func:`_class_patch_entry_target`), or this proxy's own target
         for one ``wrap()`` built (see :meth:`base.SessionProxy._target`);
-        ``None`` (the SDK's own entry) under an outer interceptor."""
+        ``None`` (the SDK's own entry) for an outer call's own."""
         if self._originals is None:
-            return None if base.outer_intercept_active() else self._target()
+            return None if base.outer_call_owns("anthropic") else self._target()
         return _class_patch_entry_target(self._real, (self._session, self._provider))
 
     @base.SDKMethod
@@ -530,9 +537,8 @@ class SensorMessages(base.SessionProxy):
         and tool calls come out as for ``create()``. Through the
         streaming view it is deferred like ``create()``."""
         real_fn = self._method("parse")
-        # As for create(): an outer interceptor's call goes to the SDK
-        # untouched.
-        if base.outer_intercept_active():
+        # As for create(): an outer call's own goes to the SDK untouched.
+        if base.outer_call_owns("anthropic"):
             return real_fn(**kwargs)
         return self._call(
             lambda call_kwargs, target: self._parse(real_fn, call_kwargs, target),
@@ -768,10 +774,11 @@ def _class_patch_entry_target(
     """The session and provider an entry of a manager the class patch's
     ``stream()`` returned reports to: the session active at the entry,
     as for a call made then, with ``None`` (the SDK's own entry) when
-    there is none, an outer interceptor meters the call or the class has
-    been unpatched. ``bound`` is the session the call was made in, whose
-    provider is reused when it is still the active one."""
-    if base.outer_intercept_active():
+    there is none, the entry is an outer call's own (see
+    ``base.outer_call_owns``) or the class has been unpatched. ``bound``
+    is the session the call was made in, whose provider is reused when it
+    is still the active one."""
+    if base.outer_call_owns("anthropic"):
         return None
     session = _current_session()
     if session is None or not _patched(type(resource)):
@@ -796,23 +803,34 @@ def _installed(cls: type, name: str, wrapper: Any) -> bool:
     return any(klass.__dict__.get(name) is wrapper for klass in cls.__mro__)
 
 
+def _owns_anthropic(sdk: str) -> bool:
+    """The ``owns`` of the mark an override runs under: the Anthropic SDK's
+    calls only."""
+    return sdk == "anthropic"
+
+
 def _under_outer_mark(fn: Any) -> Any:
     """``fn`` run under the outer-call mark (see ``base.outer_intercept``),
     including the await of a coroutine it returns, so a patched resource
-    method it reaches hands the call to the SDK untouched. An override
-    that returns something else (a context manager or generator) and
-    calls ``super()`` only later, when that object is used, runs outside
-    the mark, and that request is reported twice."""
+    method it reaches hands the call to the SDK untouched. The mark owns
+    the Anthropic SDK's calls only: a call the override makes through
+    another SDK (OpenAI, google-genai) is an ordinary call, policed and
+    reported; another Anthropic call it makes besides its ``super()``
+    call is handed through as well. An override that returns something
+    else (a context manager or generator) and calls ``super()`` only
+    later, when that object is used, runs outside the mark, and that
+    request is reported twice."""
 
     @functools.wraps(fn)
     def run(*args: Any, **kwargs: Any) -> Any:
-        with base.outer_intercept():
+        mark = base.OuterCall(owns=_owns_anthropic)
+        with base.outer_intercept(mark):
             result = fn(*args, **kwargs)
         if inspect.iscoroutine(result):
             pending = result
 
             async def _awaited() -> Any:
-                with base.outer_intercept():
+                with base.outer_intercept(mark):
                     return await pending
 
             return _awaited()
@@ -832,7 +850,8 @@ def _intercepting_method(
 ) -> Any:
     """The replacement for a resource method: with an active session the
     call goes through a :class:`SensorMessages` built over the resource,
-    unless an outer interceptor is already metering it, and that proxy
+    unless it is an outer call's own, already metered (see
+    ``base.outer_call_owns``), and that proxy
     calls the class's original (handed over in ``originals``, so a
     subclass override that reaches here through ``super()`` is not
     re-entered); with no session, or once the class has been unpatched,
@@ -865,7 +884,7 @@ def _intercepting_method(
             # As for the sync method below, read when the request goes out.
             if (
                 session is None
-                or base.outer_intercept_active()
+                or base.outer_call_owns("anthropic")
                 or not _installed(type(resource), name, installed)
             ):
                 return await original(resource, **kwargs)
@@ -886,10 +905,10 @@ def _intercepting_method(
 
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
-        # An outer interceptor (litellm) already metering this call (see
-        # base.outer_intercept), or the class was unpatched: the original
+        # An outer call's own, which the sensor already meters (see
+        # base.outer_call_owns), or the class was unpatched: the original
         # runs untouched.
-        if base.outer_intercept_active() or not _installed(type(self), name, method):
+        if base.outer_call_owns("anthropic") or not _installed(type(self), name, method):
             return original(self, **kwargs)
         session = _current_session()
         if session is None:

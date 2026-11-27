@@ -1,0 +1,120 @@
+"""The provider requests litellm itself sends through the OpenAI SDK.
+
+While a litellm call is in flight it runs under the litellm call's mark
+(``base.OuterCall``), and the litellm wrapper reports it. The one SDK call
+that is that litellm call's own is the provider request litellm's own
+provider code sends through the OpenAI SDK on its behalf; the SDK
+interceptors hand that request to the SDK untouched (and the OpenAI
+interceptor's litellm request hook asks it for usage), and only that one.
+Every other SDK call made while the litellm call is in flight -- by a
+litellm callback, guardrail or custom provider, by a task the call
+created, or by any other code -- is an ordinary call: policed when made,
+reported, and captured as the session's capture setting says.
+
+litellm's own request is told apart by the function that makes it.
+Walking out from the SDK call, the OpenAI SDK's and the sensor's frames
+are passed, then any frames a proxy around the client adds to forward an
+attribute lookup or a call (a ``__getattr__``, ``__getattribute__``,
+``__get__`` or ``__call__`` outside those two packages), and the next
+frame must be one of :data:`LITELLM_SDK_REQUESTS`; an SDK or sensor frame
+met after a forwarding frame means the call is not litellm's. So a
+callback's own function stops the walk, and so does a credential
+provider the SDK calls while it prepares litellm's request (an
+``api_key`` or ``azure_ad_token_provider`` object whose ``__call__``
+makes an SDK call), whose call reaches litellm's frame only through the
+SDK's own.
+
+Reported twice rather than hidden: a request litellm sends through a
+client wrapper that puts a function of its own between litellm and the
+SDK (a tracing wrapper's ``create``, say), since that function could
+send requests of its own; and a request a litellm release sends from a
+function the list does not name. Both show as the litellm wrapper's
+report and the SDK interceptor's, which the litellm tests catch for the
+releases they run, never as a call nobody reports.
+
+Standard library only: the OpenAI interceptor imports this module, and it
+must not import litellm.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import FrameType
+
+# The litellm functions that send a provider request through the OpenAI
+# SDK, as (module, function): the chat completion, legacy completion and
+# embedding requests of litellm's OpenAI and Azure routes, streamed or
+# not, sync or async (measured on litellm 1.83.0 and 1.104.2; 1.104 sends
+# an OpenAI embedding with its own HTTP handler, so its OpenAI embedding
+# functions are 1.83's). The OpenAI-compatible providers litellm serves
+# with the SDK send through the OpenAI route's functions.
+LITELLM_SDK_REQUESTS = frozenset(
+    {
+        ("litellm.llms.openai.openai", "make_sync_openai_chat_completion_request"),
+        ("litellm.llms.openai.openai", "make_openai_chat_completion_request"),
+        ("litellm.llms.openai.openai", "make_sync_openai_embedding_request"),
+        ("litellm.llms.openai.openai", "make_openai_embedding_request"),
+        ("litellm.llms.openai.completion.handler", "completion"),
+        ("litellm.llms.openai.completion.handler", "acompletion"),
+        ("litellm.llms.openai.completion.handler", "streaming"),
+        ("litellm.llms.openai.completion.handler", "async_streaming"),
+        ("litellm.llms.azure.azure", "make_sync_azure_openai_chat_completion_request"),
+        ("litellm.llms.azure.azure", "make_azure_openai_chat_completion_request"),
+        ("litellm.llms.azure.azure", "embedding"),
+        ("litellm.llms.azure.azure", "aembedding"),
+        ("litellm.llms.azure.completion.handler", "completion"),
+        ("litellm.llms.azure.completion.handler", "acompletion"),
+        ("litellm.llms.azure.completion.handler", "streaming"),
+        ("litellm.llms.azure.completion.handler", "async_streaming"),
+    }
+)
+
+# The packages whose frames lie between the code making an SDK call and
+# the point where a sensor interceptor asks who made it.
+_BETWEEN = ("openai", "flightdeck_sensor")
+# The frames a proxy around the client adds between litellm and the SDK
+# without code of its own in the path: an attribute lookup it forwards
+# (``client.chat.completions`` resolved by a ``__getattr__``), and a call
+# it forwards (``create`` handed back wrapped, the embeddings check
+# running when it is called).
+_FORWARDING = frozenset({"__getattr__", "__getattribute__", "__get__", "__call__"})
+
+
+def requested_by_litellm(frame: FrameType | None) -> bool:
+    """Whether the SDK call in progress, seen from ``frame`` (a frame of the
+    OpenAI SDK or of the sensor, or the frame that made the call), is a
+    provider request litellm itself sends. From ``frame`` outward: the
+    OpenAI SDK's and the sensor's frames, then a proxy's forwarding frames
+    (:data:`_FORWARDING`, outside those packages), then one of
+    :data:`LITELLM_SDK_REQUESTS`. A frame's package is read before its
+    name, so the SDK's own frames of those names are the SDK's; an SDK or
+    sensor frame after a forwarding frame ends the walk as not litellm's
+    (the forwarding frame was code the SDK called, not a proxy litellm
+    called through)."""
+    forwarded = False
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if not isinstance(name, str):
+            return False
+        if name.split(".", 1)[0] in _BETWEEN:
+            if forwarded:
+                return False
+            frame = frame.f_back
+            continue
+        if frame.f_code.co_name in _FORWARDING:
+            forwarded = True
+            frame = frame.f_back
+            continue
+        return (name, frame.f_code.co_name) in LITELLM_SDK_REQUESTS
+    return False
+
+
+def litellm_owns(sdk: str) -> bool:
+    """The litellm call's mark's ``owns``: an SDK call made under it is the
+    litellm call's own only when it is an OpenAI SDK request litellm itself
+    sends. litellm sends nothing through the Anthropic or google-genai SDKs,
+    so a call of theirs under the mark is never litellm's."""
+    return sdk == "openai" and requested_by_litellm(sys._getframe(1))

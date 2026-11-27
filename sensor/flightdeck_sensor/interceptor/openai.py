@@ -116,7 +116,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.core.types import EventType
-from flightdeck_sensor.interceptor import base, raw_views
+from flightdeck_sensor.interceptor import _litellm_requests, base, raw_views
 from flightdeck_sensor.interceptor.platform import PLATFORM_OPENAI, endpoint_of
 from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
@@ -561,7 +561,7 @@ class _HelperClient:
     @property
     def chat(self) -> Any:
         proxy = self._request._proxy
-        if base.outer_intercept_active() or not isinstance(proxy, SensorCompletions):
+        if base.outer_call_owns("openai") or not isinstance(proxy, SensorCompletions):
             return self._real.chat
         completions = self._real.chat.completions
         if not isinstance(completions, SensorCompletions):
@@ -964,12 +964,13 @@ class SensorChat(base.SessionProxy):
     @property
     def completions(self) -> Any:
         """Return a :class:`SensorCompletions` proxy -- or the SDK's own
-        ``completions`` resource while an outer interceptor (litellm) is
-        making the call, since that interceptor already meters it (see
-        ``base.outer_intercept``). Typed ``Any`` for every caller: the
-        two results share no named type, and callers use either as the
-        SDK's ``completions`` resource."""
-        if base.outer_intercept_active():
+        ``completions`` resource for the request an outer interceptor
+        (litellm) is making itself, since that interceptor already meters
+        it (see ``base.outer_call_owns``; resolved by the code that makes
+        the request). Typed ``Any`` for every caller: the two results
+        share no named type, and callers use either as the SDK's
+        ``completions`` resource."""
+        if base.outer_call_owns("openai"):
             return self._real.completions
         return SensorCompletions(
             self._real.completions,
@@ -1129,9 +1130,10 @@ class SensorEmbeddings(base.SessionProxy):
         input tokens only, ``output_tokens=0`` as returned by
         :meth:`OpenAIProvider.extract_usage`.
         """
-        # An outer interceptor (litellm) making this call already meters
-        # it: hand the call to the SDK untouched (see base.outer_intercept).
-        if base.outer_intercept_active():
+        # The request an outer interceptor (litellm) makes itself is
+        # already metered by it: hand it to the SDK untouched (see
+        # base.outer_call_owns).
+        if base.outer_call_owns("openai"):
             return self._real.create(**kwargs)
         return self._call(self._create, kwargs, self._real.create)
 
@@ -1352,9 +1354,10 @@ def _hide_asked_usage(chunk: Any) -> bool:
 # The counts, whoever asked, are handed to the litellm call on its mark
 # (``base.OuterCall.usage``), which its guard reports as the call's only
 # counts; nothing here emits an event. Only the request litellm's
-# provider request code makes (:data:`_LITELLM_REQUEST_FUNCTIONS`) is
-# touched: any other SDK call made under the mark (a litellm callback,
-# guardrail or health check) passes through as it always has.
+# provider request code makes (``_litellm_requests.LITELLM_SDK_REQUESTS``)
+# is touched: any other SDK call made under the mark (a litellm callback,
+# guardrail or health check) is an ordinary call, which the proxies
+# police and report and the hook leaves as it is.
 
 # The SDK's completion resources whose ``create`` the hook wraps:
 # (module, class) for chat completions and legacy completions.
@@ -1370,24 +1373,6 @@ _LITELLM_HOOK_SENTINEL = "_flightdeck_litellm_hook_create"
 _LITELLM_HOOK_MARK = "_flightdeck_litellm_hook"
 # The resource method the hook wraps.
 _CREATE = "create"
-# The litellm functions that send a provider request through the SDK's
-# completion resources, as (module, function): the chat and legacy
-# completion requests of its OpenAI and Azure routes (measured on litellm
-# 1.83.0 and 1.104.2). A request from anywhere else is left alone, so a
-# litellm release that moves the request reads as no ask (the estimate),
-# never as a changed request of some other caller.
-_LITELLM_REQUEST_FUNCTIONS = frozenset(
-    {
-        ("litellm.llms.openai.openai", "make_sync_openai_chat_completion_request"),
-        ("litellm.llms.openai.openai", "make_openai_chat_completion_request"),
-        ("litellm.llms.openai.completion.handler", "streaming"),
-        ("litellm.llms.openai.completion.handler", "async_streaming"),
-        ("litellm.llms.azure.azure", "make_sync_azure_openai_chat_completion_request"),
-        ("litellm.llms.azure.azure", "make_azure_openai_chat_completion_request"),
-        ("litellm.llms.azure.completion.handler", "streaming"),
-        ("litellm.llms.azure.completion.handler", "async_streaming"),
-    }
-)
 
 
 def _undo_possible() -> bool:
@@ -1404,18 +1389,11 @@ def _undo_possible() -> bool:
 
 def _requested_by_litellm() -> bool:
     """Whether the SDK call in progress is a provider request litellm
-    sends: the first frame above the hook outside the SDK and the sensor
-    is one of :data:`_LITELLM_REQUEST_FUNCTIONS`."""
-    frame: types.FrameType | None = sys._getframe(2)
-    while frame is not None:
-        name = frame.f_globals.get("__name__", "")
-        if not isinstance(name, str):
-            return False
-        if name == "openai" or name.startswith(("openai.", "flightdeck_sensor.")):
-            frame = frame.f_back
-            continue
-        return (name, frame.f_code.co_name) in _LITELLM_REQUEST_FUNCTIONS
-    return False
+    sends (see :func:`_litellm_requests.requested_by_litellm`). A request
+    from anywhere else is left alone, so a litellm release that moves the
+    request reads as no ask (the estimate), never as a changed request of
+    some other caller."""
+    return _litellm_requests.requested_by_litellm(sys._getframe(1))
 
 
 def _sent_stream_options(kwargs: dict[str, Any]) -> Any:

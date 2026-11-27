@@ -4,7 +4,8 @@ both the litellm patch and the OpenAI SDK patch active -- litellm serves
 this route through the OpenAI SDK, so a double count would show here. A
 litellm ``Router``'s streamed call that its fallback answers lands each
 of its two requests: the refused attempt's ``llm_error`` and the answer's
-``post_call``.
+``post_call``. An OpenAI SDK call a litellm callback makes while the
+litellm call is in flight lands as a call of its own beside it.
 
 Provider HTTP is mocked at the network boundary with respx serving the
 server-sent events api.openai.com sends; litellm, the OpenAI SDK, the
@@ -25,11 +26,12 @@ import httpx
 import litellm
 import pytest
 import respx
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 
 import flightdeck_sensor
 
-from .conftest import INGESTION_URL, TOKEN, delete_flavor_data
+from .conftest import INGESTION_URL, TOKEN, delete_flavor_data, wait_until
 from .test_sensor_e2e import _force_reset_sensor
 from .test_sensor_streaming import (
     _openai_chat_sse,
@@ -174,3 +176,71 @@ def test_a_router_stream_its_fallback_answers_lands_the_refused_attempt_and_the_
         types = [e["event_type"] for e in _query_events_for_flavor(flavor)]
         assert types.count("pre_call") == 2
         assert types.count("llm_error") == 1
+
+
+def test_an_sdk_call_a_litellm_callback_makes_lands_as_a_call_of_its_own(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """litellm runs ``log_pre_api_call`` inside the call, before its
+    request; the OpenAI SDK call the callback makes is not litellm's own
+    request, so it lands as its own ``post_call``, and litellm's request,
+    which goes through the OpenAI SDK too, lands once."""
+    import openai
+
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        route = rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch(quiet=True)
+        asked: list[Any] = []
+
+        class _AsksItsOwnQuestion(CustomLogger):  # type: ignore[misc]
+            def log_pre_api_call(self, model: Any, messages: Any, kwargs: Any) -> None:
+                client = openai.OpenAI(api_key="test-key")
+                asked.append(
+                    list(
+                        client.chat.completions.create(
+                            model="gpt-4.1-nano",
+                            messages=[{"role": "user", "content": "the callback's question"}],
+                            stream=True,
+                        )
+                    )
+                )
+
+        lists = {
+            name: list(value)
+            for name, value in vars(litellm).items()
+            if name.endswith(("callback", "callbacks")) and isinstance(value, list)
+        }
+        litellm.callbacks = [_AsksItsOwnQuestion()]
+        try:
+            list(
+                litellm.completion(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": "Hello"}],
+                    stream=True,
+                    api_key="test-key",
+                )
+            )
+        finally:
+            for name, value in lists.items():
+                getattr(litellm, name)[:] = value
+        assert len(asked) == 1
+        assert route.call_count == 2
+
+        flightdeck_sensor.teardown()
+        rows = []
+
+        def _landed() -> bool:
+            rows[:] = _query_events_for_flavor(flavor)
+            types = [e["event_type"] for e in rows]
+            return "session_end" in types and types.count("post_call") >= 2
+
+        wait_until(_landed, timeout=15, msg=f"no session_end and two post_calls for {flavor}")
+        post_calls = [e for e in rows if e["event_type"] == "post_call"]
+        assert sorted(e["model_requested"] for e in post_calls) == ["gpt-4.1-nano", "gpt-4o"]
+        assert [e["event_type"] for e in rows].count("pre_call") == 2
+        assert all((e["tokens_input"], e["tokens_output"]) == (9, 4) for e in post_calls)

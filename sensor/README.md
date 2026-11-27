@@ -107,7 +107,7 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 - On mcp 2.x, `mcp.Client` answers `list_tools`, `list_resources`, `list_resource_templates`, `list_prompts` and `read_resource` from its response cache when it can; a cached answer makes no MCP request, so no `mcp_*` event is emitted for it (pass `cache=None` to the `Client` to observe every request). Tool calls are not cached and are always observed and policed.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
-- While a litellm call is in flight, an SDK call made from inside it (by a litellm callback, guardrail or custom provider, or by a task created inside the call and run before it ends) is neither policed nor metered: the litellm wrapper has already metered the call it serves, and the mark that tells the SDK interceptors so covers the whole call. A litellm call made from inside it is reported as a call of its own, except litellm's own re-issues of the same call (its responses/completion bridge and its `fallbacks` loop, which report once, with the model that answered). A chat call through litellm's MCP gateway is reported twice, and a sync call with `fallbacks` made while an event loop is running in its thread (a notebook) has each attempt reported as a call of its own beside it (a failed primary and one fallback: three `pre_call`s, two `post_call`s, one `llm_error`). Under a DEGRADE policy a litellm call's `fallbacks` are dropped, so it runs only the degrade target.
+- While a litellm call is in flight, the one SDK call the sensor hands through untouched is litellm's own provider request (the litellm wrapper reports that call). An SDK call made from inside it by anything else (a litellm callback, guardrail or custom provider, or a task or thread created inside the call) is an ordinary call: policed when made, reported, and captured as the session's capture setting says. litellm's own request is told by the function that sends it, through a proxy around the client that only forwards attribute lookups and calls too; reported twice, as the litellm call and as the SDK call, are a custom provider that sends its request through a patched SDK and a client wrapper that puts a function of its own (a tracing `create`) between litellm and the SDK. A litellm call made from inside it is reported as a call of its own, except litellm's own re-issues of the same call (its responses/completion bridge and its `fallbacks` loop, which report once, with the model that answered). A chat call through litellm's MCP gateway is reported twice, and a sync call with `fallbacks` made while an event loop is running in its thread (a notebook) has each attempt reported as a call of its own beside it (a failed primary and one fallback: three `pre_call`s, two `post_call`s, one `llm_error`). Under a DEGRADE policy a litellm call's `fallbacks` are dropped, so it runs only the degrade target.
 
 ## Local development venv
 
@@ -375,11 +375,19 @@ covers `text_completion` and `responses` on each route kind).
   considered when the litellm interceptor was scoped and deferred —
   if framework reports surface calls that slip past the current
   coverage, file a new issue.
-- **SDK calls made from inside a litellm call.** The litellm wrapper
-  marks the call it serves so the SDK interceptors pass it through; the
-  mark covers the whole call, so an SDK call made while it is in flight
-  by a litellm callback, guardrail or custom provider, or by a task
-  created inside the call, is neither policed nor metered. A litellm
+- **litellm's own provider request is told by the function that sends
+  it.** The litellm wrapper marks the call it serves, and the SDK
+  interceptors hand through untouched only the provider request litellm's
+  own OpenAI and Azure route code sends through the OpenAI SDK for it;
+  every other SDK call made while it is in flight (a litellm callback,
+  guardrail or custom provider, a task created inside the call) is
+  policed and reported as a call of its own. A proxy around the client
+  that only forwards attribute lookups and calls (`__getattr__`,
+  `__call__`) is seen through. Reported twice rather than hidden: a
+  custom provider (`CustomLLM`) that sends its request through a patched
+  SDK, a client wrapper that puts a function of its own between litellm
+  and the SDK (a tracing wrapper's `create`), and a request a litellm
+  release sends from a function the sensor does not know. A litellm
   call made from inside it is a call of its own and is reported; only
   litellm's own re-issues of the same call pass through: its
   responses/completion bridge and its `fallbacks` loop (a call a fallback

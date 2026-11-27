@@ -419,6 +419,15 @@ jobs:
         working-directory: api
         run: golangci-lint run ./... --timeout=5m
 
+      # The scale check (build tag scale, make test-scale) is run by hand,
+      # not here; vetting it with its tag keeps it and the storage
+      # module's scale-only hooks compiling as the stores change.
+      - name: Vet the scale check (storage, api, build tag scale)
+        run: |
+          for m in storage api; do
+            (cd "$m" && go vet -tags scale ./...)
+          done
+
       - name: Install govulncheck
         # A module version is immutable once the Go checksum database
         # has recorded it, so a version pin is as fixed as a commit SHA.

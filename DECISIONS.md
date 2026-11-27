@@ -1414,19 +1414,3 @@ and signalling the process (`signal.signal` works only on the main
 thread; ctypes into `sigaction` bypasses Python's handler record);
 `os.kill(getpid())` or `raise_signal` from the drain thread (the kernel
 may pick another thread, `raise_signal` always does).
-
-## D296 -- Flightdeck's Postgres connections run with JIT compilation off
-
-**Date:** 2026-11-27
-**Decision:** the storage module's Postgres connections send `jit=off`
-as a runtime parameter, unless the database URL sets `jit` itself (a
-`jit` parameter, `-c jit=` in `options` or `PGOPTIONS`), which wins.
-**Why:** the dashboard's queries are short, but generic plans and JSON
-scans estimate costs far past `jit_above_cost`: at 1,000,000 events
-compiling was 1.5 s of a 2.65 s run-listing page and 1.0 s of a 1.05 s
-cost chart. With it off every Postgres request but the 90-day cost
-estimate meets its budget, and the server's own setting is untouched.
-**Rejected alternative:** the server default (those requests stay over
-budget); raising `jit_above_cost` (retuning a threshold against wrong
-estimates); asking operators for `ALTER DATABASE … SET jit = off` (a
-step every install would need, for a property of Flightdeck's queries).

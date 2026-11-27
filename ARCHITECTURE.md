@@ -6495,21 +6495,6 @@ capped at max(4, NumCPU) connections, open and idle, idle ones closed
 after 30 minutes; the SQLite writer is one connection and each read
 pool eight.
 
-Flightdeck's own Postgres connections run with JIT compilation off:
-the pool sends `jit=off` as a runtime parameter of every connection it
-opens. Its queries are short, and Postgres decides to compile from the
-planner's cost estimate, which for the dashboard's queries (the generic
-plan of a prepared statement, a function scan over JSON) is far above
-the work they do, so compiling cost more than it saved: most of the
-time of the slowest Postgres requests at 1,000,000 events went to it
-(see Analytics endpoint, Measured speed). The setting is the
-connection's: the server, its other databases and other applications
-keep their own. A `jit` setting the database URL makes wins, a `jit=`
-parameter or `-c jit=…` in its `options` (or in `PGOPTIONS`), and the
-pool then sends nothing; a default set on the server, the database or
-the role does not, since a connection's own parameter is applied after
-them.
-
 **The common subset** both engines accept, written as is: `$1, $2, …`
 placeholders (SQLite binds `$NNN` by ordinal), `CAST(x AS TEXT)` (the
 portable spelling of Postgres' `x::text`), `ON CONFLICT (…) DO UPDATE SET
@@ -7901,18 +7886,17 @@ At that size:
 
 | Requests | SQLite | Postgres |
 |---|---|---|
-| `tokens`, `sessions`, the latency metrics, `policy_events`, by event dimensions, 7 to 90 days | up to 0.9 s | up to 1.2 s |
-| `tokens` by `framework`, `host`, `agent_type`, `agent_role` or `parent_session_id` (a join to `sessions`), 90 days | 1.1-1.8 s | 0.5-0.8 s |
-| the sub-agent metrics, any window | 0.5-0.8 s | under 0.3 s |
-| `estimated_cost`, 7 / 30 / 90 days | 0.3 / 1.2 / 3.1-3.4 s | 0.3 / 1.0-1.1 / 2.4-2.5 s |
+| `tokens`, `sessions`, the latency metrics, `policy_events`, by event dimensions, 7 to 90 days | up to 0.9 s | up to 1.3 s |
+| `tokens` by `framework`, `host`, `agent_type`, `agent_role` or `parent_session_id` (a join to `sessions`), 90 days | 1.1-1.8 s | 0.5-0.9 s |
+| the sub-agent metrics, any window | 0.5-0.8 s | 0.6-0.9 s |
+| `estimated_cost`, 7 / 30 / 90 days | 0.3 / 1.2 / 3.1-3.4 s | 0.3 / 1.0 / 2.3 s |
 
 At 100,000 events every analytics request takes under 0.35 s on both.
 `estimated_cost` grows with the number of metered calls in the window
-because each call looks up its price row (`queries.priceJoin`). The
-Postgres figures are with JIT compilation off, as Flightdeck's
-connections run (Storage, The boundary); with the server's default
-(`jit = on`) the sub-agent metrics take 0.6-0.9 s, most of it compiling,
-the run listing's deep page 2.6 s and the Fleet 1.9 s.
+because each call looks up its price row (`queries.priceJoin`). On
+Postgres the planner's cost estimate of the sub-agent queries is past
+`jit_above_cost`, and JIT compilation is most of their time: with
+`jit = off` on the connection they take 0.2-0.3 s.
 
 ### Per-agent activity summary
 
@@ -8441,8 +8425,8 @@ events. A dimension that lives on the run (the agent, the framework,
 the runtime-context keys) counts the filtered events per run first
 and joins each run's `sessions` row once, so a context key is read
 once per run, not once per event. Over 30 days of 1,000,000 events
-the facets take 3.1 s on SQLite and 1.1 s on Postgres, over 7 days
-0.7 s and 0.8 s (the scale check, see Analytics endpoint).
+the facets take 3.1 s on SQLite and 1.3 s on Postgres, over 7 days
+0.7 s and 1.1 s (the scale check, see Analytics endpoint).
 
 ### Server timeouts
 

@@ -968,3 +968,75 @@ def test_a_callbacks_sdk_call_during_a_no_session_streams_first_read_is_reported
     ]
     outer = events_of(session, "post_call")[-1]
     assert (outer["tokens_input"], outer["tokens_output"]) == GEMINI_USAGE
+
+
+# ----- a litellm Router's stream --------------------------------------------
+#
+# A Router stream is litellm's own stream class, handed back by the sensor
+# as an instance of a subclass under litellm's own module. Its reads, and
+# a Router's fetch of a stream that sends at its first read, run under
+# the attempt's litellm mark; the walk that tells litellm's own request
+# apart reads the calling functions, not the stream's class.
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("group", ["chat", "gemini"], ids=["openai-sdk-route", "gemini-route"])
+def test_a_router_streams_own_request_is_reported_once_and_a_callbacks_call_beside_it(
+    sensor: Callable[..., Session], group: str, is_async: bool
+) -> None:
+    """litellm's own request for a Router attempt (through the OpenAI SDK on
+    the chat route) is reported once, as the attempt; a callback's SDK
+    call made once that request is sent (on the Gemini route, inside the
+    Router's fetch or the stream's first read) is reported beside it."""
+    from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+
+    from ._router_fakes import TEXT, FakeProvider
+    from ._router_fakes import USAGE as ROUTER_USAGE
+
+    session = sensor()
+    inner_provider = _Provider(_openai_reply)
+    hook = _SDKCallWhenTheRequestIsSent(_inner_openai(inner_provider))
+    with FakeProvider() as fake, _callback(hook):
+        router = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "chat",
+                    "litellm_params": {
+                        "model": "openai/fd-chat",
+                        "api_base": f"{fake.base}/v1",
+                        "api_key": "k",
+                    },
+                },
+                {
+                    "model_name": "gemini",
+                    "litellm_params": {
+                        "model": "gemini/gemini-2.0-flash",
+                        "api_base": fake.base,
+                        "api_key": "k",
+                    },
+                },
+            ],
+            num_retries=0,
+        )
+        litellm.in_memory_llm_clients_cache.flush_cache()
+        if is_async:
+
+            async def _read() -> tuple[Any, list[Any]]:
+                made = await router.acompletion(model=group, messages=MESSAGES, stream=True)
+                return made, [chunk async for chunk in made]
+
+            stream, chunks = asyncio.run(_read())
+        else:
+            stream = router.completion(model=group, messages=MESSAGES, stream=True)
+            chunks = list(stream)
+        sent = fake.paths()
+    assert isinstance(stream, CustomStreamWrapper)
+    assert "".join(c.choices[0].delta.content or "" for c in chunks) == "".join(TEXT)
+    assert len(sent) == 1
+    assert hook.marked == [True]
+    assert len(inner_provider.bodies) == 1
+    _reported_once(session, INNER_MODEL)
+    attempts = [e for e in events_of(session, "post_call") if e.get("model") != INNER_MODEL]
+    assert len(attempts) == 1
+    assert (attempts[0]["tokens_input"], attempts[0]["tokens_output"]) == ROUTER_USAGE
+    assert len(events_of(session, "pre_call")) == 2

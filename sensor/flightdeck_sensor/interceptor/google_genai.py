@@ -239,11 +239,12 @@ def _sync_method(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        # No session, an outer interceptor already metering this call (see
-        # base.outer_intercept), or the class unpatched: the SDK's own.
+        # No session, an outer call's own the sensor already meters (see
+        # base.outer_call_owns; a litellm call's mark owns no call of this
+        # SDK), or the class unpatched: the SDK's own.
         if (
             session is None
-            or base.outer_intercept_active()
+            or base.outer_call_owns("google")
             or not _installed(type(self), name, method)
         ):
             return original(self, **kwargs)
@@ -268,7 +269,7 @@ def _async_method(name: str, original: Callable[..., Any]) -> Callable[..., Any]
         session = _current_session()
         if (
             session is None
-            or base.outer_intercept_active()
+            or base.outer_call_owns("google")
             or not _installed(type(self), name, method)
         ):
             return await original(self, **kwargs)

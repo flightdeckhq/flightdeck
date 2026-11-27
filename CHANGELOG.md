@@ -194,6 +194,20 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **An SDK call a litellm callback makes while a litellm call is in
+  flight is policed and reported.** The sensor handed every OpenAI,
+  Anthropic or google-genai SDK call made during a litellm call to the
+  SDK untouched, so a call made by a litellm callback or guardrail (a
+  `CustomLogger.log_pre_api_call` that asks a model something), by a task
+  or thread started inside the call, or by a custom provider was
+  reported by nobody, and a BLOCK policy did not stop it. Now only the
+  provider request litellm itself sends through the OpenAI SDK for the
+  litellm call passes through (the litellm call reports it, once); every
+  other SDK call is checked against the policy when it is made, so a
+  BLOCK refuses it before anything is sent, and lands as a call of its
+  own, its content stored only when capture is on. A litellm custom
+  provider that sends its request through a patched SDK is now reported
+  twice, as the litellm call and as the SDK call.
 - **A SIGTERM the sensor holds back for `session_end` no longer waits
   for the program's blocking call.** When `session_end` took more than
   2 seconds (a slow control plane, or a signal that landed while the

@@ -1414,3 +1414,19 @@ and signalling the process (`signal.signal` works only on the main
 thread; ctypes into `sigaction` bypasses Python's handler record);
 `os.kill(getpid())` or `raise_signal` from the drain thread (the kernel
 may pick another thread, `raise_signal` always does).
+
+## D297 -- Under a litellm call, only litellm's own SDK request passes through; every other SDK call is policed and reported
+
+**Date:** 2026-11-27
+**Decision:** supersedes D191's mark covering the whole call. A mark says
+what it owns (`OuterCall.owns`); a litellm call's owns only the OpenAI SDK
+request litellm's own route code sends for it, told by the calling
+function (`_litellm_requests.py`). A callback's, guardrail's, task's or
+custom provider's SDK call is an ordinary call.
+**Why:** such calls were reported by nobody and refused by no BLOCK, so a
+litellm callback could spend past a block.
+**Rejected alternative:** matching the client object litellm uses (callers
+pass or cache clients litellm also uses); patching litellm's request
+functions to set a flag (more private surface patched, the same names);
+counting a custom provider's request as litellm's (its code is the user's,
+and missing it hides a billed call; it is reported twice instead).

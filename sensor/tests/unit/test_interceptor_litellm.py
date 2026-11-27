@@ -650,12 +650,13 @@ def test_responses_on_a_native_route_is_reported_once(session: Session) -> None:
 # ----- the mark's scope, policy and errors on the SDK route ----------------
 
 
-def test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_nothing(
+def test_sdk_call_from_a_litellm_pre_call_hook_is_a_call_of_its_own(
     session: Session,
 ) -> None:
-    """Pins the stated limitation: a litellm callback runs inside the
-    marked call, so an SDK call it makes is neither policed nor metered;
-    only the litellm call itself is reported."""
+    """A litellm callback runs inside the marked call, but an SDK call it
+    makes is not litellm's own request: it is policed and reported as a
+    call of its own, and litellm's own request is still reported once
+    (more cases in tests/unit/test_litellm_nested_sdk_calls.py)."""
     from litellm.integrations.custom_logger import CustomLogger
 
     hook_transport = _Transport()
@@ -668,17 +669,24 @@ def test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_not
             hook_client.chat.completions.create(model="gpt-4o-mini", messages=MSG)
 
     transport = _Transport()
-    previous = litellm.callbacks
+    # litellm copies litellm.callbacks into its other callback lists at each
+    # call: every one is put back afterwards, or the hook runs in later tests.
+    lists = {
+        name: list(value)
+        for name, value in vars(litellm).items()
+        if name.endswith(("callback", "callbacks")) and isinstance(value, list)
+    }
     litellm.callbacks = [_Hook()]
     try:
         litellm.completion(model="gpt-4o-mini", messages=MSG, client=_sdk_client(transport))
     finally:
-        litellm.callbacks = previous
+        for name, value in lists.items():
+            getattr(litellm, name)[:] = value
     assert hook_marks == [True]
     assert len(hook_transport.requests) == 1  # the hook's SDK request went out
     assert len(transport.requests) == 1
-    assert len(_events_of(session, "pre_call")) == 1
-    assert len(_post_calls(session)) == 1  # the hook's call added nothing
+    assert len(_events_of(session, "pre_call")) == 2
+    assert len(_post_calls(session)) == 2  # the hook's call and the litellm call
 
 
 def test_litellm_stream_sends_the_request_at_the_call_before_iteration(

@@ -94,10 +94,22 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # that one call is reported twice: by the litellm wrapper, and again by
 # the SDK interceptor the wrapper ends up calling. So the outer
 # interceptor runs the underlying call inside ``outer_intercept()``, and
-# an SDK interceptor that finds ``outer_intercept_active()`` true hands
-# the call to the SDK untouched -- no pre_call, no policy check, no
-# stream guard, no post_call -- because the outer interceptor already
-# does all of that for the same call.
+# an SDK interceptor that finds the SDK call it is handed is the marked
+# call's own (``outer_call_owns``) hands it to the SDK untouched -- no
+# pre_call, no policy check, no stream guard, no post_call -- because
+# the outer interceptor already does all of that for the same call.
+#
+# Which SDK calls are the marked call's own is the mark's to say
+# (``OuterCall.owns``). A mark an SDK interceptor sets around its own
+# nested call (the Anthropic patch, around an SDK subclass's override
+# that re-enters the patched base method) owns every SDK call made under
+# it. litellm's mark owns only the provider request litellm itself sends
+# through the OpenAI SDK on the marked call's behalf
+# (``_litellm_requests.py``, matched on the calling function): every
+# other SDK call made while the litellm call is in flight -- by a litellm
+# callback, guardrail or custom provider, by a task created inside the
+# call, by any other code -- is an ordinary call, policed when made and
+# reported.
 #
 # The mark lives in a ContextVar and is a small per-call flag object:
 # another thread, or a task created before the call, never sees it, so
@@ -108,16 +120,9 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # when the call ends rather than only reset in the creating context.
 # (litellm's executor hop for sync-only providers copies the context,
 # so the mark follows that too.) Reading the mark costs one ContextVar
-# lookup and one attribute read per intercepted call.
-#
-# Scope, stated as a limitation: the mark covers the whole outer call,
-# so an SDK call made from inside it while it is in flight -- by a
-# litellm callback, guardrail or custom provider, or by a task created
-# inside the call -- is neither policed nor metered. Narrowing the mark
-# to the one SDK call the outer interceptor serves (a per-call client
-# identity) was judged not worth the complexity for now. Pinned by
-# test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_nothing
-# in tests/unit/test_interceptor_litellm.py.
+# lookup and one attribute read per intercepted call; an SDK call made
+# under a litellm mark adds a walk up its stack to the first frame
+# outside the SDK and the sensor.
 #
 # litellm's own patched entry points read the mark too, more narrowly:
 # a litellm call made while another is in flight passes through only
@@ -136,11 +141,13 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 #   outside the block, which is fine because the SDK request itself is
 #   sent inside the call.
 # * Inner side: at the point where the SDK wrapper would otherwise enter
-#   the sensor, ``if outer_intercept_active(): return <the raw path>``.
+#   the sensor, ``if outer_call_owns(<sdk>): return <the raw path>``.
 #   openai.py does this where ``client.chat.completions`` is resolved
-#   (SensorChat.completions) and in SensorEmbeddings.create; anthropic.py
-#   in the patched resource methods (_intercepting_method) and, for a
-#   wrap()-built client, in SensorMessages.create / stream / parse.
+#   (SensorChat.completions), in SensorEmbeddings.create and for the
+#   chat of a ``.stream()`` helper's client; anthropic.py in the patched
+#   resource methods (_intercepting_method) and, for a wrap()-built
+#   client, in SensorMessages.create / stream / parse; google_genai.py in
+#   its patched request methods.
 
 
 class OuterCall:
@@ -159,12 +166,24 @@ class OuterCall:
     call's request: ``usage`` is then the call's only source of counts.
     ``usage_unasked`` is set when the outer interceptor knows the
     provider is not asked for usage and sends none, so any usage the
-    outer SDK shows is its own count, never the provider's."""
+    outer SDK shows is its own count, never the provider's.
+    ``owns`` says which SDK calls made under the mark are the outer call's
+    own, which the SDK interceptors hand to the SDK untouched: asked with
+    the SDK's name (``openai``, ``anthropic``, ``google``) from inside
+    the SDK interceptor; ``None`` owns every one."""
 
-    __slots__ = ("active", "returned_usage", "sent_through_sdk", "usage", "usage_unasked")
+    __slots__ = (
+        "active",
+        "owns",
+        "returned_usage",
+        "sent_through_sdk",
+        "usage",
+        "usage_unasked",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, owns: Callable[[str], bool] | None = None) -> None:
         self.active = False
+        self.owns = owns
         self.usage: TokenUsage | None = None
         self.returned_usage: dict[str, Any] | None = None
         self.sent_through_sdk = False
@@ -197,10 +216,24 @@ def outer_intercept(mark: OuterCall | None = None) -> Iterator[OuterCall]:
 
 
 def outer_intercept_active() -> bool:
-    """Whether an outer interceptor is making the current call (see
-    :func:`outer_intercept`); an SDK interceptor that sees ``True`` hands
-    the call to the SDK untouched."""
+    """Whether an outer interceptor's call is in flight here (see
+    :func:`outer_intercept`). An SDK interceptor asks
+    :func:`outer_call_owns` instead, whether the SDK call it is handed is
+    that outer call's own."""
     return current_outer_call() is not None
+
+
+def outer_call_owns(sdk: str) -> bool:
+    """Whether the SDK call an SDK interceptor (of ``sdk``: ``openai``,
+    ``anthropic``, ``google``) is handed now is the own request of the
+    outer call in flight here, which that interceptor hands to the SDK
+    untouched, as the outer call reports it. ``False`` with no outer call
+    in flight, and for any SDK call the outer call's mark does not own
+    (see :class:`OuterCall`): that call is an ordinary one."""
+    mark = current_outer_call()
+    if mark is None:
+        return False
+    return mark.owns is None or bool(mark.owns(sdk))
 
 
 def current_outer_call() -> OuterCall | None:

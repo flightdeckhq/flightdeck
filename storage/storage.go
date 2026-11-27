@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	// Postgres through pgx's database/sql adapter: the "pgx" driver name.
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -292,7 +294,7 @@ func openPostgres(rawURL string) (*DB, error) {
 		// left out.
 		return nil, ErrInvalidURL
 	}
-	pool, err := sql.Open("pgx", rawURL)
+	pool, err := sql.Open("pgx", withJITOff(rawURL))
 	if err != nil {
 		return nil, fmt.Errorf("storage: open postgres: %w", err)
 	}
@@ -301,6 +303,37 @@ func openPostgres(rawURL string) (*DB, error) {
 	pool.SetMaxIdleConns(conns)
 	pool.SetConnMaxIdleTime(postgresConnMaxIdleTime)
 	return &DB{DB: pool, reader: pool, Dialect: postgresDialect{}, Backend: Postgres, url: rawURL}, nil
+}
+
+// postgresJITOption finds a jit setting among a connection's command-line
+// options: "-c jit=on", "-cjit=on" or "--jit=on".
+var postgresJITOption = regexp.MustCompile(`(?:^|\s)(?:-c\s*|--)jit\s*=`)
+
+// withJITOff returns the URL the Postgres pool connects with: rawURL with
+// the runtime parameter jit=off, so every connection runs with JIT
+// compilation off. The dashboard's queries are short, and the planner's
+// cost estimates of their generic plans and JSON scans are far above
+// the work done: compiling took 1.5 s of a 2.65 s run-listing page and
+// 1.0 s of a 1.05 s cost chart at 1,000,000 events (the scale check).
+// The parameter is the connection's, so the server and its other
+// clients keep their setting. A jit setting the operator made wins: a
+// jit parameter in the URL, or one in the connection's options (the
+// URL's options parameter or PGOPTIONS), as pgx reads them; rawURL is
+// then returned unchanged.
+func withJITOff(rawURL string) string {
+	if cfg, err := pgconn.ParseConfig(rawURL); err == nil {
+		if _, set := cfg.RuntimeParams["jit"]; set {
+			return rawURL
+		}
+		if postgresJITOption.MatchString(cfg.RuntimeParams["options"]) {
+			return rawURL
+		}
+	}
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
+	}
+	return rawURL + sep + "jit=off"
 }
 
 func openSQLite(rawURL string) (*DB, error) {

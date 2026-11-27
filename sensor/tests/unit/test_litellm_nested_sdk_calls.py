@@ -23,8 +23,10 @@ import asyncio
 import contextlib
 import contextvars
 import importlib.util
+import inspect
 import json
 import threading
+import types
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -349,16 +351,11 @@ def _google_genai_installed() -> bool:
 
 
 # The SDK-majors lane installs no google-genai.
-SDKS = [
-    "openai",
-    "anthropic",
-    pytest.param(
-        "google",
-        marks=pytest.mark.skipif(
-            not _google_genai_installed(), reason="google-genai not installed"
-        ),
-    ),
-]
+_GOOGLE = pytest.param(
+    "google",
+    marks=pytest.mark.skipif(not _google_genai_installed(), reason="google-genai not installed"),
+)
+SDKS = ["openai", "anthropic", _GOOGLE]
 
 
 class _SDKCallInTheCall(CustomLogger):  # type: ignore[misc]
@@ -545,26 +542,76 @@ OWN_REQUESTS = {
 }
 
 
+def _forwards(value: Any) -> bool:
+    """Whether :class:`_ForwardingProxy` hands ``value`` back wrapped: an
+    SDK resource or a sensor proxy of one, or a method of either."""
+    module = type(value).__module__ or ""
+    return (
+        module.startswith(("openai.resources", "flightdeck_sensor"))
+        or inspect.ismethod(value)
+        or inspect.isfunction(value)
+    )
+
+
+class _ForwardingProxy:
+    """A proxy around an SDK client, as instrumentation and test doubles
+    build them: it resolves every attribute in its own ``__getattr__``
+    (``client.chat.completions`` included), hands back resources and
+    methods wrapped in itself, forwards calls in its own ``__call__``, and
+    passes for the client's class. No code of its own lies between the
+    caller and the SDK."""
+
+    def __init__(self, target: Any) -> None:
+        object.__setattr__(self, "_target", target)
+
+    @property  # type: ignore[misc]
+    def __class__(self) -> type:  # noqa: D105
+        return type(object.__getattribute__(self, "_target"))
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(object.__getattribute__(self, "_target"), name)
+        return _ForwardingProxy(value) if _forwards(value) else value
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return object.__getattribute__(self, "_target")(*args, **kwargs)
+
+
+# How the client litellm is handed is built: as the SDK makes it, or
+# behind a forwarding proxy.
+CLIENT_WRAPPERS: dict[str, Callable[[Any], Any]] = {
+    "plain client": lambda client: client,
+    "forwarding proxy": _ForwardingProxy,
+}
+
+
 def _own_rows() -> list[Any]:
     rows = []
-    for name, (entry, *_rest) in OWN_REQUESTS.items():
-        for is_async in (False, True):
-            streams = (False,) if entry == "embedding" else (False, True)
-            for stream in streams:
-                made = "async" if is_async else "sync"
-                shape = "stream" if stream else "whole"
-                rows.append(pytest.param(name, is_async, stream, id=f"{name}-{made}-{shape}"))
+    for wrapper in CLIENT_WRAPPERS:
+        for name, (entry, *_rest) in OWN_REQUESTS.items():
+            for is_async in (False, True):
+                streams = (False,) if entry == "embedding" else (False, True)
+                for stream in streams:
+                    made = "async" if is_async else "sync"
+                    shape = "stream" if stream else "whole"
+                    rows.append(
+                        pytest.param(
+                            wrapper, name, is_async, stream, id=f"{wrapper}-{name}-{made}-{shape}"
+                        )
+                    )
     return rows
 
 
-@pytest.mark.parametrize(("name", "is_async", "stream"), _own_rows())
+@pytest.mark.parametrize(("wrapper", "name", "is_async", "stream"), _own_rows())
 def test_litellms_own_request_through_the_sdk_is_reported_once(
-    sensor: Callable[..., Session], name: str, is_async: bool, stream: bool
+    sensor: Callable[..., Session], wrapper: str, name: str, is_async: bool, stream: bool
 ) -> None:
+    """Also behind a proxy that forwards attribute lookups and calls: the
+    walk to litellm's request function steps over its forwarding frames."""
     session = sensor()
     entry, model, build, extra = OWN_REQUESTS[name]
     provider = _Provider(_openai_reply)
-    kwargs: dict[str, Any] = {"model": model, "client": build(provider, is_async=is_async), **extra}
+    client = CLIENT_WRAPPERS[wrapper](build(provider, is_async=is_async))
+    kwargs: dict[str, Any] = {"model": model, "client": client, **extra}
     if entry == "embedding":
         kwargs["input"] = ["hi"]
     elif entry == "text_completion":
@@ -659,3 +706,265 @@ def test_a_custom_providers_sdk_request_is_reported_beside_the_litellm_call(
     assert len(provider.bodies) == 1
     assert len(events_of(session, "pre_call")) == 2
     assert [e["model"] for e in events_of(session, "post_call")] == [INNER_MODEL, INNER_MODEL]
+
+
+class _TracingWrapper:
+    """A client wrapper that puts a function of its own between its caller
+    and the SDK: its ``chat.completions.create`` records the call, then
+    sends it. That function could send requests of its own, so a request
+    it sends is never taken for litellm's own."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.traced: list[str] = []
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create, with_raw_response=self)
+        )
+
+    def _create(self, **kwargs: Any) -> Any:
+        self.traced.append(kwargs["model"])
+        return self._client.chat.completions.create(**kwargs)
+
+    def create(self, **kwargs: Any) -> Any:
+        """``with_raw_response.create``, as litellm calls it."""
+        self.traced.append(kwargs["model"])
+        return self._client.chat.completions.with_raw_response.create(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    @property  # type: ignore[misc]
+    def __class__(self) -> type:  # noqa: D105
+        return type(self._client)
+
+
+def test_a_request_through_a_wrapper_function_of_its_own_is_reported_twice(
+    sensor: Callable[..., Session],
+) -> None:
+    """Pins a known double count: litellm's request reaches the SDK through
+    a function of the client wrapper's own (a tracing ``create``), so the
+    one request is reported as the litellm call and as the SDK call rather
+    than risk hiding requests that function makes itself."""
+    session = sensor()
+    provider = _Provider(_openai_reply)
+    wrapper = _TracingWrapper(_openai_client(provider))
+    litellm.completion(model=OUTER_MODEL, messages=MESSAGES, client=wrapper)
+    assert wrapper.traced == [OUTER_MODEL]
+    assert len(provider.bodies) == 1
+    assert len(events_of(session, "pre_call")) == 2
+    assert len(events_of(session, "post_call")) == 2
+
+
+def _inner_through_a_proxy(provider: _Provider, prompt: str = INNER_PROMPT) -> Callable[[], Any]:
+    """The callback's OpenAI SDK call through a forwarding proxy of its
+    own client: the proxy's frames are stepped over, and the callback's
+    own frame decides."""
+    client = _ForwardingProxy(_openai_client(provider))
+
+    def _call() -> Any:
+        return client.chat.completions.create(
+            model=INNER_MODEL, messages=[{"role": "user", "content": prompt}]
+        )
+
+    return _call
+
+
+@pytest.mark.parametrize("prompt", [INNER_PROMPT, LONG_PROMPT], ids=["allowed", "blocked"])
+def test_a_callbacks_sdk_call_through_its_own_proxy_is_policed_and_reported(
+    sensor: Callable[..., Session], prompt: str
+) -> None:
+    session = sensor()
+    session.policy = PolicyCache(token_limit=200, block_at_pct=100)
+    inner_provider = _Provider(_openai_reply)
+    outer_provider = _Provider(_openai_reply)
+    hook = _SDKCallInTheCall(_inner_through_a_proxy(inner_provider, prompt), "in the call")
+    with _callback(hook):
+        litellm.completion(
+            model=OUTER_MODEL, messages=MESSAGES, client=_openai_client(outer_provider)
+        )
+    assert len(outer_provider.bodies) == 1
+    _reported_once(session, OUTER_MODEL)
+    if prompt is LONG_PROMPT:
+        assert len(hook.raised) == 1
+        assert isinstance(hook.raised[0], BudgetExceededError)
+        assert inner_provider.bodies == []
+        assert len(events_of(session, "policy_block")) == 1
+    else:
+        assert hook.raised == []
+        assert len(inner_provider.bodies) == 1
+        _reported_once(session, INNER_MODEL)
+
+
+# ----- an SDK call an Anthropic resource override makes ---------------------
+#
+# A wrap()-built Anthropic client whose messages resource overrides
+# ``create`` and calls ``super()`` runs the override under a mark of the
+# Anthropic patch's own, so the patched base method it re-enters hands
+# the request through. That mark owns the Anthropic SDK's calls only: a
+# call the override makes through another SDK is an ordinary one.
+
+CLAUDE_MODEL = "claude-haiku-4-5"
+OTHER_SDKS = ["openai", _GOOGLE]
+
+
+def _claude_client(provider: _Provider, *, is_async: bool) -> Any:
+    transport = httpx.MockTransport(provider)
+    if is_async:
+        return anthropic.AsyncAnthropic(
+            api_key="k", http_client=httpx.AsyncClient(transport=transport)
+        )
+    return anthropic.Anthropic(api_key="k", http_client=httpx.Client(transport=transport))
+
+
+def _overriding_messages(
+    inner: Callable[[], Any], raised: list[BaseException], is_async: bool
+) -> Any:
+    from anthropic.resources.messages.messages import AsyncMessages, Messages
+
+    def _ask() -> None:
+        try:
+            inner()
+        except BudgetExceededError as exc:
+            raised.append(exc)
+
+    if is_async:
+
+        class _AsyncOverriding(AsyncMessages):
+            async def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                _ask()
+                return await super().create(**kwargs)
+
+        return _AsyncOverriding
+
+    class _Overriding(Messages):
+        def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            _ask()
+            return super().create(**kwargs)
+
+    return _Overriding
+
+
+def _through_the_override(
+    session: Session, inner: Callable[[], Any], *, is_async: bool
+) -> tuple[_Provider, list[BaseException]]:
+    from flightdeck_sensor.interceptor.anthropic import SensorAnthropic
+
+    claude = _Provider(_anthropic_reply)
+    client = _claude_client(claude, is_async=is_async)
+    raised: list[BaseException] = []
+    client.messages = _overriding_messages(inner, raised, is_async)(client)
+    wrapped = SensorAnthropic(client, session)
+    result = wrapped.messages.create(model=CLAUDE_MODEL, max_tokens=8, messages=MESSAGES)
+    if inspect.isawaitable(result):
+
+        async def _await() -> Any:
+            return await result
+
+        asyncio.run(_await())
+    return claude, raised
+
+
+@pytest.mark.parametrize("capture", [False, True], ids=["capture-off", "capture-on"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("sdk", OTHER_SDKS)
+def test_another_sdks_call_an_anthropic_override_makes_is_reported_once(
+    sensor: Callable[..., Session], sdk: str, is_async: bool, capture: bool
+) -> None:
+    session = sensor(capture_prompts=capture)
+    build, reply, inner_model = INNER[sdk]
+    inner_provider = _Provider(reply)
+    claude, raised = _through_the_override(session, build(inner_provider), is_async=is_async)
+    assert raised == []
+    assert len(claude.bodies) == 1
+    assert len(inner_provider.bodies) == 1
+    _reported_once(session, CLAUDE_MODEL)
+    inner = _reported_once(session, inner_model)
+    assert (inner["tokens_input"], inner["tokens_output"]) == USAGE
+    if capture:
+        assert inner["has_content"] is True
+        assert INNER_PROMPT in json.dumps(inner["content"])
+    else:
+        assert inner["has_content"] is False
+        assert inner.get("content") is None
+        assert INNER_PROMPT not in json.dumps(events_of(session, "post_call"))
+
+
+@pytest.mark.parametrize("sdk", OTHER_SDKS)
+def test_block_stops_another_sdks_call_an_anthropic_override_makes(
+    sensor: Callable[..., Session], sdk: str
+) -> None:
+    session = sensor()
+    session.policy = PolicyCache(token_limit=200, block_at_pct=100)
+    build, reply, _inner_model = INNER[sdk]
+    inner_provider = _Provider(reply)
+    claude, raised = _through_the_override(
+        session, build(inner_provider, LONG_PROMPT), is_async=False
+    )
+    assert len(raised) == 1
+    assert inner_provider.bodies == []  # nothing left
+    assert len(events_of(session, "policy_block")) == 1
+    assert len(claude.bodies) == 1
+    _reported_once(session, CLAUDE_MODEL)
+
+
+class _SDKCallWhenTheRequestIsSent(CustomLogger):  # type: ignore[misc]
+    """A callback litellm runs once a request has been sent
+    (``log_post_api_call``), which makes an SDK call of its own. For a
+    stream that sends its request at its first read (Gemini's routes),
+    that is inside the first read, which runs under the litellm call's
+    mark."""
+
+    def __init__(self, inner: Callable[[], Any]) -> None:
+        super().__init__()
+        self._inner = inner
+        self.marked: list[bool] = []
+
+    def log_post_api_call(
+        self, kwargs: Any, response_obj: Any, start_time: Any, end_time: Any
+    ) -> None:
+        self.marked.append(base.outer_intercept_active())
+        self._inner()
+
+
+def test_a_callbacks_sdk_call_during_a_no_session_streams_first_read_is_reported(
+    sensor: Callable[..., Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Gemini stream made while no session was active finds its session
+    at its first read and reads under a litellm mark of its own; a
+    callback's SDK call made during that read is the callback's,
+    reported."""
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    from ._stream_parity_fakes import GEMINI_USAGE, GeminiServer
+
+    session = sensor()
+    monkeypatch.setattr(flightdeck_sensor, "_session", None)
+    gemini = GeminiServer()
+    handler = HTTPHandler()
+    handler.client = httpx.Client(transport=httpx.MockTransport(gemini))
+    inner_provider = _Provider(_openai_reply)
+    hook = _SDKCallWhenTheRequestIsSent(_inner_openai(inner_provider))
+    with _callback(hook):
+        stream = litellm.completion(
+            model="gemini/gemini-2.0-flash",
+            messages=MESSAGES,
+            stream=True,
+            client=handler,
+            api_key="k",
+        )
+        assert gemini.bodies == []  # sent at the first read
+        monkeypatch.setattr(flightdeck_sensor, "_session", session)
+        list(stream)
+    assert hook.marked == [True]
+    assert len(gemini.bodies) == 1
+    assert len(inner_provider.bodies) == 1
+    # The stream's pre_call names the model asked for, its post_call the
+    # model that answered; the callback's call sits between them.
+    assert _calls(session) == [
+        ("pre_call", "gemini/gemini-2.0-flash"),
+        ("pre_call", INNER_MODEL),
+        ("post_call", INNER_MODEL),
+        ("post_call", "gemini-2.0-flash"),
+    ]
+    outer = events_of(session, "post_call")[-1]
+    assert (outer["tokens_input"], outer["tokens_output"]) == GEMINI_USAGE

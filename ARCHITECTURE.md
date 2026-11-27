@@ -1495,9 +1495,13 @@ request litellm itself sends through the OpenAI SDK on the call's behalf
 litellm's OpenAI and Azure routes (which the OpenAI-compatible providers
 litellm serves with the SDK go through), streamed or not, sync or async
 -- told by the function that makes it: the first frame above the SDK
-call outside the OpenAI SDK and the sensor is one of
+call outside the OpenAI SDK and the sensor, stepping over the frames a
+proxy around the client adds to forward an attribute lookup or a call
+(`__getattr__`, `__getattribute__`, `__get__`, `__call__`), is one of
 `LITELLM_SDK_REQUESTS` in `interceptor/_litellm_requests.py` (measured on
-litellm 1.83 and 1.104). litellm sends nothing through the Anthropic or
+litellm 1.83 and 1.104). A callback's own frame stops the walk, so its
+SDK call is never taken for litellm's, through a proxy of its own or
+not. litellm sends nothing through the Anthropic or
 google-genai SDKs, so a call of theirs is never a litellm call's own. A
 litellm wrapper hands a call through only when the mark is active and
 its caller is one of litellm's
@@ -1545,12 +1549,18 @@ code), whose attempts litellm runs in a worker thread it starts without
 copying the context, so the mark does not reach them and every attempt is reported as a call of its own beside the outer call (for a failed primary and one fallback: three `pre_call`s, two `post_call`s and one `llm_error`)
 (pinned by a strict `xfail` test); and every re-issued call when an instrumentation library
 replaces a litellm entry point after `flightdeck_sensor.patch()`, which
-puts its own frame where the re-issue check looks. A fourth is a litellm
-custom provider (`CustomLLM`) whose handler sends its request through an
-SDK the sensor patches: that request is the custom provider's code, not
-litellm's, so it is reported as an SDK call beside the litellm call it
-serves. The mark is a per-call flag held in a context variable:
-another thread, or a task created before the call, never sees it; a task
+puts its own frame where the re-issue check looks. Three more come from
+how litellm's own SDK request is told apart, each reported as an SDK
+call beside the litellm call it serves: a litellm custom provider
+(`CustomLLM`) whose handler sends its request through an SDK the sensor
+patches (that request is the custom provider's code, not litellm's); a
+client wrapper that puts a function of its own between litellm and the
+SDK, a tracing wrapper's `create` say (that function could send requests
+of its own, so it stays policed); and a litellm release that sends its
+request from a function the list does not name (the litellm tests catch
+it for the releases they run). None is a call nobody reports. The mark
+is a per-call flag held in a context variable: another thread, or a task
+created before the call, never sees it; a task
 created inside the call inherits a copy of the context and reads the mark
 active while the call is in flight and inactive once it has ended,
 because the flag is cleared when the call ends; litellm's executor hop
@@ -1568,12 +1578,14 @@ for the chat of a `.stream()` helper's client, the Anthropic patch in its
 patched resource methods (`create`, `stream`, `parse`, on every client
 class and both views) and, for a `wrap()`-built client, in the same
 three proxy methods, and the google-genai patch in its request methods.
-The Anthropic patch also marks its own nested call, an SDK subclass's
-override run under a mark that owns every call, so the patched base
-method it re-enters hands that call through. A litellm release that moves
-its request into a function the list does not name shows as a double
-count of that request, which the litellm tests catch, never as a call
-nobody reports.
+The Anthropic patch also marks its own nested call: for a `wrap()`-built
+client whose messages resource overrides a method and calls `super()`,
+it runs the override under a mark that owns the Anthropic SDK's calls
+only, so the patched base method the override re-enters hands that
+request through and it is reported once. A call the override makes
+through another SDK (OpenAI, google-genai) is an ordinary call, policed
+and reported; another Anthropic call it makes besides `super()` is
+handed through too and goes unreported.
 
 `litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
 return the shared stream guard (`GuardedStream` / `GuardedAsyncStream`)

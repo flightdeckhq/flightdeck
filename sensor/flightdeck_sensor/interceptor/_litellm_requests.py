@@ -12,11 +12,20 @@ created, or by any other code -- is an ordinary call: policed when made,
 reported, and captured as the session's capture setting says.
 
 litellm's own request is told apart by the function that makes it: the
-first frame above the SDK call that is neither the OpenAI SDK's nor the
-sensor's is one of :data:`LITELLM_SDK_REQUESTS`. A litellm release that
-moves a request into another function shows as a double count of it
-(the litellm wrapper's report and the SDK interceptor's), which the
-litellm tests catch, never as a call nobody reports.
+first frame above the SDK call that is neither the OpenAI SDK's, nor the
+sensor's, nor an attribute lookup or a call forwarded by a proxy around
+the client (a ``__getattr__``, ``__getattribute__``, ``__get__`` or
+``__call__``) is one of :data:`LITELLM_SDK_REQUESTS`. A callback's own
+function stops the walk, so its SDK call is never taken for litellm's,
+whether or not it reaches the SDK through a proxy.
+
+Reported twice rather than hidden: a request litellm sends through a
+client wrapper that puts a function of its own between litellm and the
+SDK (a tracing wrapper's ``create``, say), since that function could
+send requests of its own; and a request a litellm release sends from a
+function the list does not name. Both show as the litellm wrapper's
+report and the SDK interceptor's, which the litellm tests catch for the
+releases they run, never as a call nobody reports.
 
 Standard library only: the OpenAI interceptor imports this module, and it
 must not import litellm.
@@ -61,19 +70,26 @@ LITELLM_SDK_REQUESTS = frozenset(
 # The packages whose frames lie between the code making an SDK call and
 # the point where a sensor interceptor asks who made it.
 _BETWEEN = ("openai", "flightdeck_sensor")
+# The frames a proxy around the client adds between litellm and the SDK
+# without code of its own in the path: an attribute lookup it forwards
+# (``client.chat.completions`` resolved by a ``__getattr__``), and a call
+# it forwards (``create`` handed back wrapped, the embeddings check
+# running when it is called).
+_FORWARDING = frozenset({"__getattr__", "__getattribute__", "__get__", "__call__"})
 
 
 def requested_by_litellm(frame: FrameType | None) -> bool:
     """Whether the SDK call in progress, seen from ``frame`` (a frame of the
     OpenAI SDK or of the sensor, or the frame that made the call), is a
     provider request litellm itself sends: the first frame from ``frame``
-    outward that belongs to neither the OpenAI SDK nor the sensor is one
-    of :data:`LITELLM_SDK_REQUESTS`."""
+    outward that belongs to neither the OpenAI SDK nor the sensor and is
+    no forwarding frame of a proxy (:data:`_FORWARDING`) is one of
+    :data:`LITELLM_SDK_REQUESTS`."""
     while frame is not None:
         name = frame.f_globals.get("__name__", "")
         if not isinstance(name, str):
             return False
-        if name.split(".", 1)[0] in _BETWEEN:
+        if name.split(".", 1)[0] in _BETWEEN or frame.f_code.co_name in _FORWARDING:
             frame = frame.f_back
             continue
         return (name, frame.f_code.co_name) in LITELLM_SDK_REQUESTS

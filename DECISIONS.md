@@ -1420,9 +1420,10 @@ may pick another thread, `raise_signal` always does).
 **Date:** 2026-11-27
 **Decision:** supersedes D191's mark covering the whole call. A mark says
 what it owns (`OuterCall.owns`); a litellm call's owns only the OpenAI SDK
-request litellm's own route code sends for it, told by the calling
-function (`_litellm_requests.py`). A callback's, guardrail's, task's or
-custom provider's SDK call is an ordinary call.
+request litellm's own route code sends, told by the calling function, a
+proxy's forwarding frames stepped over; the Anthropic override mark owns
+Anthropic calls only. Any other SDK call is ordinary; a `CustomLLM` or a
+wrapper function of its own between litellm and the SDK reports twice.
 **Why:** such calls were reported by nobody and refused by no BLOCK, so a
 litellm callback could spend past a block.
 **Rejected alternative:** matching the client object litellm uses (callers

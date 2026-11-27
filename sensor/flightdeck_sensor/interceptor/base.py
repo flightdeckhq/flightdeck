@@ -100,16 +100,19 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # the outer interceptor already does all of that for the same call.
 #
 # Which SDK calls are the marked call's own is the mark's to say
-# (``OuterCall.owns``). A mark an SDK interceptor sets around its own
-# nested call (the Anthropic patch, around an SDK subclass's override
-# that re-enters the patched base method) owns every SDK call made under
-# it. litellm's mark owns only the provider request litellm itself sends
-# through the OpenAI SDK on the marked call's behalf
-# (``_litellm_requests.py``, matched on the calling function): every
-# other SDK call made while the litellm call is in flight -- by a litellm
-# callback, guardrail or custom provider, by a task created inside the
-# call, by any other code -- is an ordinary call, policed when made and
-# reported.
+# (``OuterCall.owns``). The Anthropic patch's mark around an SDK
+# subclass's override that re-enters the patched base method owns the
+# Anthropic SDK's calls only, so an OpenAI or google-genai call the
+# override makes is policed and reported, while another Anthropic call it
+# makes besides its ``super()`` call is handed through too. A mark with
+# no ``owns`` (``outer_intercept()`` with none given) owns every call; no
+# interceptor sets one. litellm's mark owns only the provider request
+# litellm itself sends through the OpenAI SDK on the marked call's behalf
+# (``_litellm_requests.py``, matched on the calling function, a proxy's
+# forwarding frames stepped over): every other SDK call made while the
+# litellm call is in flight -- by a litellm callback, guardrail or custom
+# provider, by a task created inside the call, by any other code -- is an
+# ordinary call, policed when made and reported.
 #
 # The mark lives in a ContextVar and is a small per-call flag object:
 # another thread, or a task created before the call, never sees it, so

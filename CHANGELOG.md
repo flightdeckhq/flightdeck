@@ -205,9 +205,15 @@ All notable changes to Flightdeck are documented here.
   litellm call passes through (the litellm call reports it, once); every
   other SDK call is checked against the policy when it is made, so a
   BLOCK refuses it before anything is sent, and lands as a call of its
-  own, its content stored only when capture is on. A litellm custom
-  provider that sends its request through a patched SDK is now reported
-  twice, as the litellm call and as the SDK call.
+  own, its content stored only when capture is on. litellm's own
+  request is recognised through a client proxy that only forwards
+  attribute lookups and calls too. Reported twice now, as the litellm
+  call and as the SDK call: a litellm custom provider that sends its
+  request through a patched SDK, and a client wrapper with a function of
+  its own (a tracing `create`) between litellm and the SDK. The same
+  applies to an Anthropic resource override on a `wrap()`-built client
+  (a subclass whose `create` calls `super()`): an OpenAI or google-genai
+  call it makes is now policed and reported.
 - **A SIGTERM the sensor holds back for `session_end` no longer waits
   for the program's blocking call.** When `session_end` took more than
   2 seconds (a slow control plane, or a signal that landed while the

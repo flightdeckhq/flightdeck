@@ -88,6 +88,13 @@ risk hiding a billed call:
   request through an SDK the sensor patches: that request is the
   handler's, not litellm's own (:mod:`._litellm_requests`), so it is
   reported as an SDK call beside the litellm call it serves.
+* A client wrapper that puts a function of its own between litellm and
+  the SDK (a tracing wrapper's ``create``): that function could send
+  requests of its own, so the request litellm sends through it is
+  reported as an SDK call beside the litellm call. A proxy that only
+  forwards attribute lookups and calls is seen through.
+* A litellm release that sends its request through the OpenAI SDK from a
+  function :data:`._litellm_requests.LITELLM_SDK_REQUESTS` does not name.
 
 **Streaming.** ``stream=True`` returns the sensor's stream guard
 (:class:`base.GuardedStream` from the sync entry points,

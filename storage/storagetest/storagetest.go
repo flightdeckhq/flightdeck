@@ -21,8 +21,11 @@ package storagetest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/flightdeckhq/flightdeck/storage"
@@ -102,6 +105,50 @@ func PostgresURL(t testing.TB) string {
 		t.Skipf("%s not set; skipping the Postgres half", PostgresURLEnv)
 	}
 	return url
+}
+
+// isolatedSchemas numbers the schemas OpenIsolated creates in this
+// process.
+var isolatedSchemas atomic.Int64
+
+// OpenIsolated returns an open, migrated database that no other test
+// shares, on either backend: a fresh SQLite file, or on Postgres a fresh
+// schema of the TEST_POSTGRES_URL database (named by the connection's
+// search_path, dropped when the test ends). A test that writes rows it
+// cannot tell apart from another test's, such as SeedScale's whole
+// history, uses it.
+func OpenIsolated(t testing.TB, b storage.Backend) *storage.DB {
+	t.Helper()
+	if b != storage.Postgres {
+		return Open(t, b)
+	}
+	base := PostgresURL(t)
+	schema := fmt.Sprintf("isolated_%d_%d", os.Getpid(), isolatedSchemas.Add(1))
+	ctx := context.Background()
+	admin, err := storage.Open(ctx, base)
+	if err != nil {
+		t.Fatalf("open %s: %v", redact(base), err)
+	}
+	defer func() { _ = admin.Close() }()
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		drop, err := storage.Open(context.Background(), base)
+		if err != nil {
+			t.Errorf("drop schema %s: %v", schema, err)
+			return
+		}
+		defer func() { _ = drop.Close() }()
+		if _, err := drop.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`); err != nil {
+			t.Errorf("drop schema %s: %v", schema, err)
+		}
+	})
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	return openMigrated(t, base+sep+"search_path="+schema)
 }
 
 func openMigrated(t testing.TB, url string) *storage.DB {

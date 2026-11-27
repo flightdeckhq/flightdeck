@@ -292,7 +292,6 @@ func SeedScale(ctx context.Context, db *storage.DB, spec ScaleSpec) (*ScaleStats
 		spec.Span = scaleSpan
 	}
 	g := &scaleGen{
-		ctx:     ctx,
 		db:      db,
 		spec:    spec,
 		end:     spec.End.UTC().Truncate(time.Millisecond),
@@ -304,10 +303,10 @@ func SeedScale(ctx context.Context, db *storage.DB, spec ScaleSpec) (*ScaleStats
 	}
 	g.start = g.end.Add(-spec.Span)
 	g.paragraphs = scaleParagraphs(g.r)
-	if err := g.prepare(); err != nil {
+	if err := g.prepare(ctx); err != nil {
 		return nil, err
 	}
-	if err := g.run(); err != nil {
+	if err := g.run(ctx); err != nil {
 		return nil, err
 	}
 	return g.stats, nil
@@ -334,7 +333,6 @@ type scaleSession struct {
 }
 
 type scaleGen struct {
-	ctx        context.Context
 	db         *storage.DB
 	spec       ScaleSpec
 	r          *rand.Rand
@@ -357,12 +355,12 @@ type scaleGen struct {
 // prepare reads the development token (every run is attributed to it,
 // as a loopback binary's are) and writes the token policies the policy
 // events refer to.
-func (g *scaleGen) prepare() error {
-	if err := g.db.QueryRowContext(g.ctx,
+func (g *scaleGen) prepare(ctx context.Context) error {
+	if err := g.db.QueryRowContext(ctx,
 		`SELECT CAST(id AS TEXT) FROM access_tokens WHERE prefix = 'tok_dev_'`).Scan(&g.tokenID); err != nil {
 		return fmt.Errorf("storagetest: development token: %w", err)
 	}
-	_, err := g.db.ExecContext(g.ctx, `
+	_, err := g.db.ExecContext(ctx, `
 		INSERT INTO token_policies (scope, scope_value, token_limit, warn_at_pct, degrade_at_pct, degrade_to, block_at_pct)
 		VALUES ('org', '', 5000000, 80, NULL, NULL, NULL),
 		       ('flavor', 'support-triage', 400000, 80, 90, 'gpt-5-nano', 100),
@@ -375,7 +373,7 @@ func (g *scaleGen) prepare() error {
 
 // run writes the random history, then the landmark runs, then the
 // agents' rollups.
-func (g *scaleGen) run() error {
+func (g *scaleGen) run(ctx context.Context) error {
 	// A family's share is of the events, so a tree is picked with its
 	// share over the events one of its trees writes on average.
 	weights := make([]float64, len(scaleFamilies))
@@ -390,16 +388,16 @@ func (g *scaleGen) run() error {
 		calls := fam.minCalls + int(float64(fam.maxCalls-fam.minCalls)*math.Pow(g.r.Float64(), 2.2))
 		g.tree(fam, host, t, calls, "")
 		if len(g.events) >= scaleFlushEvents {
-			if err := g.flush(); err != nil {
+			if err := g.flush(ctx); err != nil {
 				return err
 			}
 		}
 	}
-	if err := g.flush(); err != nil {
+	if err := g.flush(ctx); err != nil {
 		return err
 	}
 	g.stats.Digest = g.digest.Sum64()
-	return g.rollups()
+	return g.rollups(ctx)
 }
 
 // treeEvents is about how many events one of the family's trees
@@ -415,8 +413,8 @@ func (f *scaleFamily) treeEvents() float64 {
 	return calls*perCall + 2 + children
 }
 
-func (g *scaleGen) daemonEvents() int { return clampInt(g.spec.Events/100, 200, 2400) }
-func (g *scaleGen) largestCalls() int { return clampInt(g.spec.Events/400, 120, 2500) }
+func (g *scaleGen) daemonEvents() int { return clampInt(g.spec.Events/100, 20, 2400) }
+func (g *scaleGen) largestCalls() int { return clampInt(g.spec.Events/400, 20, 2500) }
 
 // sampleStart picks a run's start: density growing linearly from 0.3 to
 // 1 over the span (inverse CDF), Claude Code runs on weekdays.
@@ -1158,8 +1156,8 @@ func (g *scaleGen) landmarks() {
 
 // flush writes everything buffered in one transaction: agents, runs,
 // events, content, attachments, directives, in foreign-key order.
-func (g *scaleGen) flush() error {
-	tx, err := g.db.BeginTx(g.ctx, nil)
+func (g *scaleGen) flush(ctx context.Context) error {
+	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storagetest: seed begin: %w", err)
 	}
@@ -1220,7 +1218,7 @@ func (g *scaleGen) flush() error {
 		{"directives", "id, session_id, flavor, action, reason, issued_at, delivered_at, acknowledged_at", g.directives, scaleSessionBatch},
 	}
 	for _, st := range steps {
-		if err := insertRows(g.ctx, tx, st.table, st.cols, st.rows, st.batch); err != nil {
+		if err := insertRows(ctx, tx, st.table, st.cols, st.rows, st.batch); err != nil {
 			return err
 		}
 	}
@@ -1267,15 +1265,15 @@ func insertRows(ctx context.Context, tx *sql.Tx, table, cols string, rows [][]an
 
 // rollups sets each agent's totals and first and last seen from its
 // runs, as the workers maintain them.
-func (g *scaleGen) rollups() error {
-	tx, err := g.db.BeginTx(g.ctx, nil)
+func (g *scaleGen) rollups(ctx context.Context) error {
+	tx, err := g.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storagetest: seed rollups: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	most := 0
 	for _, a := range g.agents {
-		if _, err := tx.ExecContext(g.ctx, `UPDATE agents SET total_sessions = $1, total_tokens = $2,
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET total_sessions = $1, total_tokens = $2,
 			first_seen_at = $3, last_seen_at = $4 WHERE agent_id = $5`,
 			a.sessions, a.tokens, a.first, a.last, a.id); err != nil {
 			return fmt.Errorf("storagetest: seed rollup %s: %w", a.id, err)
@@ -1284,7 +1282,10 @@ func (g *scaleGen) rollups() error {
 			most, g.stats.Agent = a.sessions, a.id
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("storagetest: seed rollups commit: %w", err)
+	}
+	return nil
 }
 
 // uuid is a random version-4 UUID from the seeded generator.

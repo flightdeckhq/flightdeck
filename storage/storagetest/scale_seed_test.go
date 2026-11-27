@@ -13,12 +13,28 @@ import (
 // asserts on depends on the clock.
 var seedEnd = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 
-const seedEvents = 6000
+// seedEvents keeps a seed to a few seconds under the race detector
+// while the landmark runs give every tree shape and state a test looks
+// for; the breadth of models and flavors is the scale check's.
+const seedEvents = 800
+
+// maxTreeEvents bounds how far a seed passes its target: one more tree.
+const maxTreeEvents = 800
+
+// determinismEvents is the size of the seeds compared row for row:
+// determinism needs no breadth, and each seed costs time under the race
+// detector.
+const determinismEvents = 300
 
 func seedSmall(t *testing.T, db *storage.DB) *storagetest.ScaleStats {
 	t.Helper()
+	return seedEventsN(t, db, seedEvents)
+}
+
+func seedEventsN(t *testing.T, db *storage.DB, events int) *storagetest.ScaleStats {
+	t.Helper()
 	stats, err := storagetest.SeedScale(context.Background(), db, storagetest.ScaleSpec{
-		Events: seedEvents, Seed: 7, End: seedEnd,
+		Events: events, Seed: 7, End: seedEnd,
 	})
 	if err != nil {
 		t.Fatalf("SeedScale: %v", err)
@@ -55,8 +71,11 @@ func TestSeedScaleRows(t *testing.T) {
 					t.Errorf("%s: %d rows, stats say %d", c.table, got, c.want)
 				}
 			}
-			if st.Events < seedEvents || st.Events > seedEvents*12/10 {
-				t.Errorf("events = %d, want %d to %d", st.Events, seedEvents, seedEvents*12/10)
+			// Whole trees are written: the count passes the target by at
+			// most one tree, a few hundred events for a long Claude Code
+			// run with its sub-agents.
+			if st.Events < seedEvents || st.Events > seedEvents+maxTreeEvents {
+				t.Errorf("events = %d, want %d to %d", st.Events, seedEvents, seedEvents+maxTreeEvents)
 			}
 			if got := count(t, db, "SELECT COUNT(*) FROM events WHERE has_content"); got != st.Content {
 				t.Errorf("events with content = %d, content rows = %d", got, st.Content)
@@ -92,8 +111,11 @@ func TestSeedScaleRows(t *testing.T) {
 			if got := count(t, db, "SELECT COUNT(DISTINCT flavor) FROM sessions WHERE agent_id IS NOT NULL"); got < 15 {
 				t.Errorf("%d flavors, want most of the 20", got)
 			}
-			if got := count(t, db, "SELECT COUNT(DISTINCT client_type) FROM sessions"); got != 4 {
-				t.Errorf("%d client types, want 4", got)
+			// The Claude Code and sensor runs at least; the Agent SDK and
+			// OpenTelemetry flavors are 6% of the events and need a larger
+			// seed to appear.
+			if got := count(t, db, "SELECT COUNT(DISTINCT client_type) FROM sessions"); got < 2 {
+				t.Errorf("%d client types, want the plugin's and the sensor's", got)
 			}
 			for _, et := range []string{"session_start", "session_end", "post_call", "tool_call", "mcp_tool_call",
 				"llm_error", "embeddings", "policy_warn", "policy_mcp_warn"} {
@@ -174,12 +196,12 @@ func TestSeedScaleRows(t *testing.T) {
 // twice, ids included, on every covered backend.
 func TestSeedScaleDeterministic(t *testing.T) {
 	ref := storagetest.OpenIsolated(t, storage.SQLite)
-	want := seedSmall(t, ref)
+	want := seedEventsN(t, ref, determinismEvents)
 	wantPrint := fingerprint(t, ref)
 	for _, b := range storagetest.Backends(t) {
 		t.Run(string(b), func(t *testing.T) {
 			db := storagetest.OpenIsolated(t, b)
-			got := seedSmall(t, db)
+			got := seedEventsN(t, db, determinismEvents)
 			if got.Digest != want.Digest || got.Events != want.Events || got.Sessions != want.Sessions ||
 				got.LargestSession != want.LargestSession || got.ContentEvent != want.ContentEvent {
 				t.Errorf("second seed differs: digest %x/%x events %d/%d sessions %d/%d",
@@ -191,11 +213,16 @@ func TestSeedScaleDeterministic(t *testing.T) {
 		})
 	}
 	other, err := storagetest.SeedScale(context.Background(), storagetest.OpenIsolated(t, storage.SQLite),
-		storagetest.ScaleSpec{Events: seedEvents, Seed: 8, End: seedEnd})
+		storagetest.ScaleSpec{Events: 1, Seed: 8, End: seedEnd})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other.Digest == want.Digest {
+	same, err := storagetest.SeedScale(context.Background(), storagetest.OpenIsolated(t, storage.SQLite),
+		storagetest.ScaleSpec{Events: 1, Seed: 7, End: seedEnd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Digest == same.Digest {
 		t.Error("another seed wrote the same rows")
 	}
 }

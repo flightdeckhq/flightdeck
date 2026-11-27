@@ -22,7 +22,7 @@ func seededStore(t *testing.T, b storage.Backend) (*Store, *storagetest.ScaleSta
 	t.Helper()
 	db := storagetest.OpenIsolated(t, b)
 	stats, err := storagetest.SeedScale(context.Background(), db, storagetest.ScaleSpec{
-		Events: 4000, Seed: 11, End: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC),
+		Events: 800, Seed: 11, End: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatal(err)

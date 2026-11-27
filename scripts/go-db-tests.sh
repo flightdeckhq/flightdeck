@@ -81,6 +81,7 @@ DB_PACKAGES=(
   ingestion/internal/otlpstage
   ingestion/internal/session
   storage
+  storage/storagetest
   workers/app
   workers/internal/processor
   workers/internal/writer
@@ -101,6 +102,7 @@ DUAL_PACKAGES=(
   ingestion/internal/otlpstage
   ingestion/internal/session
   storage
+  storage/storagetest
   workers/app
   workers/internal/processor
   workers/internal/writer

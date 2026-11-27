@@ -773,54 +773,46 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 		ids[i] = uuidArg(id)
 	}
 
+	// The inner query ranks each agent's runs and keeps the columns
+	// the ranking needs; the outer query computes the per-run columns
+	// (capture_enabled, the parent's agent_id, close_reasons) for the
+	// perAgent runs it keeps only, not for every run of the agents. A
+	// busy agent has thousands of runs, and computing those columns
+	// before the rank filter cost a probe of events per run (and on
+	// Postgres a hashed scan of every event with content).
+	//
 	// LEFT JOIN sessions back on parent_session_id to project the
 	// parent's agent_id directly. The join is on the UUID PK so it's
-	// cheap; per agent the inner SELECT yields perAgent rows max,
-	// so the total join fan-out is bounded by perAgent × len(agentIDs).
-	// parent_s.agent_id is NULL when the session has no parent OR
-	// when the parent session was deleted (FK ON DELETE SET NULL).
+	// cheap, and it runs for the kept rows only. parent_s.agent_id is
+	// NULL when the session has no parent OR when the parent session
+	// was deleted (FK ON DELETE SET NULL).
 	query := `
 		SELECT
-			t.session_id, t.flavor, t.agent_type, t.agent_id,
+			CAST(t.session_id AS TEXT), t.flavor, t.agent_type, CAST(t.agent_id AS TEXT),
 			t.agent_name, t.client_type, t.host, t.model, t.framework,
 			t.state,
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
-			t.token_limit, t.capture_enabled,
-			t.parent_session_id, t.parent_agent_id, t.agent_role,
-			` + s.closeReasonsSQL("t.session_key") + ` AS close_reasons
+			t.token_limit,
+			` + captureEnabledSQL("t.session_id") + ` AS capture_enabled,
+			CAST(t.parent_session_id AS TEXT), CAST(parent_s.agent_id AS TEXT), t.agent_role,
+			` + s.closeReasonsSQL("t.session_id") + ` AS close_reasons
 		FROM (
 			SELECT
-				s.session_id AS session_key,
-				CAST(s.session_id AS TEXT) AS session_id,
-				s.flavor,
-				s.agent_type,
-				CAST(s.agent_id AS TEXT) AS agent_id,
-				s.agent_name,
-				s.client_type,
-				s.host,
-				s.model,
-				s.framework,
-				s.state,
-				s.started_at,
-				s.ended_at,
-				s.last_seen_at,
-				s.tokens_used,
-				s.token_limit,
-				` + captureEnabledSQL("s.session_id") + ` AS capture_enabled,
-				CAST(s.parent_session_id AS TEXT) AS parent_session_id,
-				CAST(parent_s.agent_id AS TEXT) AS parent_agent_id,
-				s.agent_role,
+				s.session_id, s.flavor, s.agent_type, s.agent_id,
+				s.agent_name, s.client_type, s.host, s.model, s.framework,
+				s.state, s.started_at, s.ended_at, s.last_seen_at, s.tokens_used,
+				s.token_limit, s.parent_session_id, s.agent_role,
 				ROW_NUMBER() OVER (
 					PARTITION BY s.agent_id
 					ORDER BY s.started_at DESC, s.session_id ASC
 				) AS rn
 			FROM sessions s
-			LEFT JOIN sessions parent_s
-				ON parent_s.session_id = s.parent_session_id
 			WHERE ` + s.d.InUUIDArray("s.agent_id", "$1") + `
 		) t
+		LEFT JOIN sessions parent_s
+			ON parent_s.session_id = t.parent_session_id
 		WHERE t.rn <= $2
-		ORDER BY t.agent_id, t.started_at DESC, t.session_id ASC
+		ORDER BY CAST(t.agent_id AS TEXT), t.started_at DESC, CAST(t.session_id AS TEXT) ASC
 	`
 	rows, err := s.reader().QueryContext(ctx, query, s.d.ArrayArg(ids), perAgent)
 	if err != nil {

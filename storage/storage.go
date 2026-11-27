@@ -16,11 +16,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	// Postgres through pgx's database/sql adapter: the "pgx" driver name.
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -166,6 +168,9 @@ type DB struct {
 	// checkpointer resets the write-ahead log of a SQLite database
 	// (sqlite_checkpoint.go); nil on Postgres and on a shared handle.
 	checkpointer *walCheckpointer
+	// optimizer refreshes the planner statistics of a SQLite database
+	// (sqlite_optimize.go); nil on Postgres and on a shared handle.
+	optimizer *sqliteOptimizer
 	// shared marks a SQLite handle made by Share: the writer belongs to
 	// the handle it was made from, which closes it.
 	shared bool
@@ -193,6 +198,15 @@ func Open(ctx context.Context, rawURL string) (*DB, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("storage: ping %s: %w", backend, err)
+	}
+	if backend == SQLite {
+		// Planner statistics, before the first read connection opens
+		// and reads them (sqlite_optimize.go). Without them the
+		// database works on the planner's guesses, so a failure is a
+		// warning.
+		if err := optimizeSQLite(ctx, db.DB); err != nil {
+			slog.Warn("sqlite planner statistics not refreshed", "err", err)
+		}
 	}
 	if db.reader != db.DB {
 		if err := db.reader.PingContext(ctx); err != nil {
@@ -280,7 +294,7 @@ func openPostgres(rawURL string) (*DB, error) {
 		// left out.
 		return nil, ErrInvalidURL
 	}
-	pool, err := sql.Open("pgx", rawURL)
+	pool, err := sql.Open("pgx", withJITOff(rawURL))
 	if err != nil {
 		return nil, fmt.Errorf("storage: open postgres: %w", err)
 	}
@@ -289,6 +303,37 @@ func openPostgres(rawURL string) (*DB, error) {
 	pool.SetMaxIdleConns(conns)
 	pool.SetConnMaxIdleTime(postgresConnMaxIdleTime)
 	return &DB{DB: pool, reader: pool, Dialect: postgresDialect{}, Backend: Postgres, url: rawURL}, nil
+}
+
+// postgresJITOption finds a jit setting among a connection's command-line
+// options: "-c jit=on", "-cjit=on" or "--jit=on".
+var postgresJITOption = regexp.MustCompile(`(?:^|\s)(?:-c\s*|--)jit\s*=`)
+
+// withJITOff returns the URL the Postgres pool connects with: rawURL with
+// the runtime parameter jit=off, so every connection runs with JIT
+// compilation off. The dashboard's queries are short, and the planner's
+// cost estimates of their generic plans and JSON scans are far above
+// the work done: compiling took 1.5 s of a 2.65 s run-listing page and
+// 1.0 s of a 1.05 s cost chart at 1,000,000 events (the scale check).
+// The parameter is the connection's, so the server and its other
+// clients keep their setting. A jit setting the operator made wins: a
+// jit parameter in the URL, or one in the connection's options (the
+// URL's options parameter or PGOPTIONS), as pgx reads them; rawURL is
+// then returned unchanged.
+func withJITOff(rawURL string) string {
+	if cfg, err := pgconn.ParseConfig(rawURL); err == nil {
+		if _, set := cfg.RuntimeParams["jit"]; set {
+			return rawURL
+		}
+		if postgresJITOption.MatchString(cfg.RuntimeParams["options"]) {
+			return rawURL
+		}
+	}
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
+	}
+	return rawURL + sep + "jit=off"
 }
 
 func openSQLite(rawURL string) (*DB, error) {
@@ -315,6 +360,7 @@ func openSQLite(rawURL string) (*DB, error) {
 	}
 	db.reader = reader
 	db.checkpointer = startWALCheckpointer(writer, path)
+	db.optimizer = startSQLiteOptimizer(writer, sqliteOptimizeInterval)
 	return db, nil
 }
 
@@ -326,7 +372,9 @@ func openSQLiteReaders(path string) (*sql.DB, error) {
 	}
 	reader.SetMaxOpenConns(sqliteReaderConns)
 	reader.SetMaxIdleConns(sqliteReaderConns)
-	reader.SetConnMaxLifetime(0)
+	// Replaced now and then so a connection uses the planner
+	// statistics the writer refreshes (sqlite_optimize.go).
+	reader.SetConnMaxLifetime(sqliteReaderMaxLifetime)
 	reader.SetConnMaxIdleTime(0)
 	return reader, nil
 }
@@ -397,6 +445,8 @@ func sqliteDSN(path string, writer bool) string {
 	}
 	if writer {
 		q.Set("_txlock", "immediate")
+		// ANALYZE runs on the writer only, sampled (sqlite_optimize.go).
+		q["_pragma"] = append(q["_pragma"], fmt.Sprintf("analysis_limit(%d)", sqliteAnalysisLimit))
 	} else {
 		q["_pragma"] = append(q["_pragma"], "query_only(1)")
 	}
@@ -454,6 +504,9 @@ func (db *DB) Close() error {
 	if db.shared {
 		// The writer is not this handle's to close; its read pool is.
 		return db.reader.Close()
+	}
+	if db.optimizer != nil {
+		db.optimizer.Stop()
 	}
 	if db.checkpointer != nil {
 		db.checkpointer.Stop()

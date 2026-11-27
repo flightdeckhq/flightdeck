@@ -86,6 +86,7 @@ func (c *sqliteConn) ExecContext(ctx context.Context, query string, args []drive
 }
 
 func (c *sqliteConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	traceQuery(query, args)
 	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 }
 

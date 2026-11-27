@@ -348,6 +348,43 @@ cd ingestion && TEST_POSTGRES_URL='postgres://flightdeck:flightdeck_dev@127.0.0.
   go test -count=1 ./internal/otlpstage/
 ```
 
+### The scale check
+
+`make test-scale` times every request the dashboard's pages send, through the
+query API's real handlers, on a seeded history of 100,000 and of 1,000,000
+events, on SQLite and, with `SCALE_POSTGRES_URL`, on Postgres. Each request is
+timed once cold and three times warm and has a budget: 500 ms at 100,000 events
+and 1.5 s at 1,000,000, warm (the constants in `api/internal/store/scale_test.go`
+say why). It is not part of `make test` or CI (build tag `scale`): the first run
+writes the fixtures, about 30 minutes and 3 GB of disk for SQLite plus the
+Postgres databases.
+
+```bash
+SCALE_DIR=$HOME/.cache/fd-scale make test-scale
+SCALE_DIR=$HOME/.cache/fd-scale \
+  SCALE_POSTGRES_URL='postgres://<user>:<password>@127.0.0.1:<port>/postgres?sslmode=disable' make test-scale
+```
+
+- The fixtures come from `storagetest.SeedScale`
+  (`storage/storagetest/scale_seed.go`): a year of Claude Code and Python-sensor
+  runs with sub-agents, content and policy, MCP and error events, the same rows
+  for the same seed. A fixture's "now" is the time it was written, so its last
+  week empties as it ages: `SCALE_RESEED=1` writes them again.
+- Every run times a fresh copy of each fixture, migrated with the checkout's
+  migrations (the time is logged, so an index that is slow to build on upgrade
+  shows), and writes `results-<SCALE_LABEL>-<backend>-<size>.json` to
+  `SCALE_DIR`. `SCALE_SIZES=100k` runs one size.
+- On Postgres use a server of your own, never one with real data: the role
+  creates and drops `fd_scale_<size>` (the fixture) and `fd_work_<size>` (the
+  copy a run times).
+- A request over its budget fails the test; on SQLite the test then prints the
+  time and `EXPLAIN QUERY PLAN` of each of its statements. For Postgres, start
+  the server with `-c shared_preload_libraries=auto_explain
+  -c auto_explain.log_min_duration=250ms -c auto_explain.log_analyze=on
+  -c auto_explain.log_buffers=on` and read `EXPLAIN (ANALYZE, BUFFERS)` of every
+  slow statement in its log.
+- Run nothing heavy beside it; the timings are what it measures.
+
 ## Test Coverage
 
 Coverage is enforced in CI per component. API and ingestion thresholds measure handler

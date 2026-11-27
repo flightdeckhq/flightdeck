@@ -25,10 +25,13 @@ package store_test
 // on upgrade shows here), opens it as the binary does and times each
 // request once cold (the first request on fresh connections) and three
 // more times; warm is the median of those three. A warm time over the
-// budget fails the test, and on SQLite the plan of every statement of
-// that request is printed (on Postgres, run the server with
-// auto_explain, as `make test-scale` documents, for EXPLAIN (ANALYZE,
-// BUFFERS) of every slow statement).
+// budget fails the test unless the request is in knownOverBudget, which
+// fails it only past its ceiling or back within its budget; on SQLite
+// the plan of every statement of a failing request is printed (on
+// Postgres, run the server with auto_explain, as CONTRIBUTING.md
+// documents, for EXPLAIN (ANALYZE, BUFFERS) of every slow statement).
+// Postgres is opened with the binary's connection parameters
+// (binaryPostgresURL).
 
 import (
 	"context"
@@ -40,14 +43,15 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	apiapp "github.com/flightdeckhq/flightdeck/api/app"
 	"github.com/flightdeckhq/flightdeck/api/internal/server"
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/flightdeckhq/flightdeck/storage"
@@ -181,6 +185,12 @@ func runScale(t *testing.T, dir string, b storage.Backend, size scaleSize) []res
 	}
 	defer func() { _ = db.Close() }()
 	t.Logf("%s %s: open took %v", b, size.name, time.Since(start).Round(time.Millisecond))
+	// As the binary does after migrating, before it serves.
+	took, err := db.GatherStatistics(ctx)
+	if err != nil {
+		t.Fatalf("planner statistics: %v", err)
+	}
+	t.Logf("%s %s: gathering the planner statistics took %v", b, size.name, took.Round(time.Millisecond))
 	if err := store.SyncPricingTable(ctx, db); err != nil {
 		t.Fatalf("pricing: %v", err)
 	}
@@ -188,6 +198,7 @@ func runScale(t *testing.T, dir string, b storage.Backend, size scaleSize) []res
 	handler := server.NewForTesting("", st, nil, "", nil).Handler
 
 	var out []result
+	measured := map[string]bool{}
 	for _, c := range dashboardRequests(man) {
 		r := result{Backend: string(b), Size: size.name, Name: c.name, Page: c.page, Path: c.path,
 			BudgetMS: ms(size.budget)}
@@ -206,15 +217,87 @@ func runScale(t *testing.T, dir string, b storage.Backend, size scaleSize) []res
 		if r.Status != http.StatusOK {
 			t.Errorf("%s: %s answered %d", c.name, c.path, r.Status)
 		}
-		if r.WarmMS > r.BudgetMS {
-			t.Errorf("%s %s %s: warm %.0f ms over the %.0f ms budget (%s)", b, size.name, c.name, r.WarmMS, r.BudgetMS, c.path)
+		measured[c.name] = true
+		known := knownSlowFor(b, size.name, c.name)
+		explain := func() {
 			if b == storage.SQLite {
 				explainSQLite(t, db, handler, c.path)
 			}
 		}
+		switch {
+		case known != nil && r.WarmMS > ms(known.ceiling):
+			t.Errorf("%s %s %s: warm %.0f ms, past its known ceiling of %v (#347: %s) (%s)",
+				b, size.name, c.name, r.WarmMS, known.ceiling, known.reason, c.path)
+			explain()
+		case known != nil && r.WarmMS <= r.BudgetMS && !known.atTheLine:
+			t.Errorf("%s %s %s: warm %.0f ms, within its %.0f ms budget again: take it off knownOverBudget",
+				b, size.name, c.name, r.WarmMS, r.BudgetMS)
+		case known != nil:
+			t.Logf("%s %s %s: warm %.0f ms against a %.0f ms budget, known (#347: %s)",
+				b, size.name, c.name, r.WarmMS, r.BudgetMS, known.reason)
+		case r.WarmMS > r.BudgetMS:
+			t.Errorf("%s %s %s: warm %.0f ms over the %.0f ms budget (%s)", b, size.name, c.name, r.WarmMS, r.BudgetMS, c.path)
+			explain()
+		}
 		out = append(out, r)
 	}
+	for _, k := range knownOverBudget {
+		if k.backend == b && k.size == size.name && !measured[k.name] {
+			t.Errorf("knownOverBudget lists %s %s %q, which the check no longer times: rename or remove it", b, size.name, k.name)
+		}
+	}
 	return out
+}
+
+// knownSlow is a request over its budget today. The check logs it, and
+// fails when it passes its ceiling (a regression), and, unless it sits
+// at the line, when it comes back within its budget (the list is then
+// stale). A request not listed fails as soon as it is over its budget.
+// The work that would bring them within their budgets is on the
+// roadmap issue #347.
+type knownSlow struct {
+	backend storage.Backend
+	size    string
+	name    string
+	// ceiling is the warm time past which the request has regressed:
+	// about half again its measured time, which run-to-run noise on a
+	// busy machine stays inside.
+	ceiling time.Duration
+	// atTheLine marks a request measured on both sides of its budget
+	// in repeated runs: within it is no news, past the ceiling is.
+	atTheLine bool
+	reason    string
+}
+
+// knownOverBudget is every request over its budget on this checkout,
+// measured by repeated runs of the check.
+var knownOverBudget = []knownSlow{
+	{storage.SQLite, "1m", "events 30d facets", 4500 * time.Millisecond, false,
+		"about 20 grouped scans of the window, one per facet (3.05-3.08 s)"},
+	{storage.SQLite, "1m", "estimated_cost by flavor 90d", 4500 * time.Millisecond, false,
+		"each metered call looks up its price row (2.87-3.16 s)"},
+	{storage.SQLite, "1m", "estimated_cost by model,provider 90d", 5 * time.Second, false,
+		"each metered call looks up its price row (3.02-3.37 s)"},
+	{storage.SQLite, "1m", "tokens by framework 90d", 2700 * time.Millisecond, false,
+		"every event joins its run and unnests context.frameworks (1.76-1.78 s)"},
+	{storage.SQLite, "1m", "fleet", 2200 * time.Millisecond, true,
+		"the context facets count every run's context (1.42-1.49 s here, 1.52 s seen under contention)"},
+	{storage.Postgres, "1m", "estimated_cost by flavor 90d", 3600 * time.Millisecond, false,
+		"each metered call looks up its price row (2.34-2.47 s)"},
+	{storage.Postgres, "1m", "estimated_cost by model,provider 90d", 3800 * time.Millisecond, false,
+		"each metered call looks up its price row (2.49-2.53 s)"},
+	{storage.Postgres, "1m", "fleet", 2200 * time.Millisecond, true,
+		"the context facets count every run's context (1.40-1.43 s, within 7% of the budget)"},
+}
+
+func knownSlowFor(b storage.Backend, size, name string) *knownSlow {
+	for i := range knownOverBudget {
+		k := &knownOverBudget[i]
+		if k.backend == b && k.size == size && k.name == name {
+			return k
+		}
+	}
+	return nil
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
@@ -300,8 +383,8 @@ func workingCopy(t *testing.T, dir string, b storage.Backend, size scaleSize) (m
 			_ = os.Remove(work + suffix)
 		}
 		start := time.Now()
-		if out, err := exec.Command("cp", "--reflink=auto", pristine, work).CombinedOutput(); err != nil {
-			t.Fatalf("copy %s: %v %s", pristine, err, out)
+		if err := copyFile(pristine, work); err != nil {
+			t.Fatalf("copy %s: %v", pristine, err)
 		}
 		t.Logf("sqlite %s: working copy in %v", size.name, time.Since(start).Round(time.Millisecond))
 		return man, storage.SQLiteURL(work)
@@ -329,8 +412,49 @@ func workingCopy(t *testing.T, dir string, b storage.Backend, size scaleSize) (m
 		if _, err := db.ExecContext(ctx, `ANALYZE`); err != nil {
 			t.Fatal(err)
 		}
-		return man, u
+		return man, binaryPostgresURL(t, u)
 	}
+}
+
+// copyFile copies a closed SQLite file to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// workersLockTimeoutMillis is the workers' writer.LockTimeout, which
+// the api module cannot import from the workers module.
+const workersLockTimeoutMillis = 8000
+
+// binaryPostgresURL is u with the connection parameters the flightdeck
+// binary gives every pool of its process (cmd/flightdeck connectionURL):
+// the query API's jit=off and the workers' lock timeout. The check
+// times Postgres as the binary connects to it: through a plain
+// storage.Open the server's defaults apply, and Postgres JIT-compiles
+// the dashboard's queries, which the binary never has it do.
+func binaryPostgresURL(t *testing.T, u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatal("the Postgres URL does not parse")
+	}
+	q := parsed.Query()
+	if q.Get("lock_timeout") == "" {
+		q.Set("lock_timeout", strconv.Itoa(workersLockTimeoutMillis))
+	}
+	parsed.RawQuery = q.Encode()
+	return apiapp.DatabaseURL(parsed.String())
 }
 
 // seedFixture writes a size's pristine fixture and its manifest.

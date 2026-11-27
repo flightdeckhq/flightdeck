@@ -1494,14 +1494,18 @@ request litellm itself sends through the OpenAI SDK on the call's behalf
 -- the chat completion, legacy completion and embedding requests of
 litellm's OpenAI and Azure routes (which the OpenAI-compatible providers
 litellm serves with the SDK go through), streamed or not, sync or async
--- told by the function that makes it: the first frame above the SDK
-call outside the OpenAI SDK and the sensor, stepping over the frames a
+-- told by the function that makes it: walking out from the SDK call
+past the OpenAI SDK's and the sensor's frames, then past any frames a
 proxy around the client adds to forward an attribute lookup or a call
-(`__getattr__`, `__getattribute__`, `__get__`, `__call__`), is one of
-`LITELLM_SDK_REQUESTS` in `interceptor/_litellm_requests.py` (measured on
-litellm 1.83 and 1.104). A callback's own frame stops the walk, so its
-SDK call is never taken for litellm's, through a proxy of its own or
-not. litellm sends nothing through the Anthropic or
+(`__getattr__`, `__getattribute__`, `__get__`, `__call__` outside those
+two packages), the next frame is one of `LITELLM_SDK_REQUESTS` in
+`interceptor/_litellm_requests.py` (measured on litellm 1.83 and 1.104);
+an SDK or sensor frame met after a forwarding frame means the call is not
+litellm's. So a callback's own frame stops the walk, through a proxy of
+its own or not, and so does a credential provider the SDK calls while it
+prepares litellm's request (an `api_key` or `azure_ad_token_provider`
+object whose `__call__` makes an SDK call): its call is policed and
+reported. litellm sends nothing through the Anthropic or
 google-genai SDKs, so a call of theirs is never a litellm call's own. A
 litellm wrapper hands a call through only when the mark is active and
 its caller is one of litellm's

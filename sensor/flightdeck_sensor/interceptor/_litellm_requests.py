@@ -11,13 +11,18 @@ litellm callback, guardrail or custom provider, by a task the call
 created, or by any other code -- is an ordinary call: policed when made,
 reported, and captured as the session's capture setting says.
 
-litellm's own request is told apart by the function that makes it: the
-first frame above the SDK call that is neither the OpenAI SDK's, nor the
-sensor's, nor an attribute lookup or a call forwarded by a proxy around
-the client (a ``__getattr__``, ``__getattribute__``, ``__get__`` or
-``__call__``) is one of :data:`LITELLM_SDK_REQUESTS`. A callback's own
-function stops the walk, so its SDK call is never taken for litellm's,
-whether or not it reaches the SDK through a proxy.
+litellm's own request is told apart by the function that makes it.
+Walking out from the SDK call, the OpenAI SDK's and the sensor's frames
+are passed, then any frames a proxy around the client adds to forward an
+attribute lookup or a call (a ``__getattr__``, ``__getattribute__``,
+``__get__`` or ``__call__`` outside those two packages), and the next
+frame must be one of :data:`LITELLM_SDK_REQUESTS`; an SDK or sensor frame
+met after a forwarding frame means the call is not litellm's. So a
+callback's own function stops the walk, and so does a credential
+provider the SDK calls while it prepares litellm's request (an
+``api_key`` or ``azure_ad_token_provider`` object whose ``__call__``
+makes an SDK call), whose call reaches litellm's frame only through the
+SDK's own.
 
 Reported twice rather than hidden: a request litellm sends through a
 client wrapper that puts a function of its own between litellm and the
@@ -81,15 +86,26 @@ _FORWARDING = frozenset({"__getattr__", "__getattribute__", "__get__", "__call__
 def requested_by_litellm(frame: FrameType | None) -> bool:
     """Whether the SDK call in progress, seen from ``frame`` (a frame of the
     OpenAI SDK or of the sensor, or the frame that made the call), is a
-    provider request litellm itself sends: the first frame from ``frame``
-    outward that belongs to neither the OpenAI SDK nor the sensor and is
-    no forwarding frame of a proxy (:data:`_FORWARDING`) is one of
-    :data:`LITELLM_SDK_REQUESTS`."""
+    provider request litellm itself sends. From ``frame`` outward: the
+    OpenAI SDK's and the sensor's frames, then a proxy's forwarding frames
+    (:data:`_FORWARDING`, outside those packages), then one of
+    :data:`LITELLM_SDK_REQUESTS`. A frame's package is read before its
+    name, so the SDK's own frames of those names are the SDK's; an SDK or
+    sensor frame after a forwarding frame ends the walk as not litellm's
+    (the forwarding frame was code the SDK called, not a proxy litellm
+    called through)."""
+    forwarded = False
     while frame is not None:
         name = frame.f_globals.get("__name__", "")
         if not isinstance(name, str):
             return False
-        if name.split(".", 1)[0] in _BETWEEN or frame.f_code.co_name in _FORWARDING:
+        if name.split(".", 1)[0] in _BETWEEN:
+            if forwarded:
+                return False
+            frame = frame.f_back
+            continue
+        if frame.f_code.co_name in _FORWARDING:
+            forwarded = True
             frame = frame.f_back
             continue
         return (name, frame.f_code.co_name) in LITELLM_SDK_REQUESTS

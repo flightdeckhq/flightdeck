@@ -1040,3 +1040,109 @@ def test_a_router_streams_own_request_is_reported_once_and_a_callbacks_call_besi
     assert len(attempts) == 1
     assert (attempts[0]["tokens_input"], attempts[0]["tokens_output"]) == ROUTER_USAGE
     assert len(events_of(session, "pre_call")) == 2
+
+
+# ----- an SDK call a credential provider makes inside litellm's request ----
+#
+# The OpenAI SDK calls an ``api_key`` provider (``OpenAI(api_key=...)``
+# given a callable) and Azure's ``azure_ad_token_provider`` while it
+# prepares litellm's own request, inside litellm's request function. A
+# provider object whose ``__call__`` makes an SDK call of its own makes
+# an ordinary call: the walk passes its ``__call__``, then meets the
+# SDK's frames again before litellm's, so the call is not litellm's.
+
+
+class _AsksBeforeTheCredential:
+    """A credential provider the SDK calls, whose ``__call__`` asks a
+    question of its own through the SDK, in its own frame, before it
+    answers with the credential. A refusal of its question is kept, not
+    raised, so litellm's request goes on."""
+
+    def __init__(self, client: Any, prompt: str, credential: str) -> None:
+        self._client = client
+        self._prompt = prompt
+        self._credential = credential
+        self.marked: list[bool] = []
+        self.raised: list[BaseException] = []
+
+    def __call__(self) -> str:
+        self.marked.append(base.outer_intercept_active())
+        try:
+            self._client.chat.completions.create(
+                model=INNER_MODEL, messages=[{"role": "user", "content": self._prompt}]
+            )
+        except BudgetExceededError as exc:
+            self.raised.append(exc)
+        return self._credential
+
+
+class _AsyncAsksBeforeTheCredential(_AsksBeforeTheCredential):
+    """The async clients' provider: an awaitable credential, asking with
+    an async client."""
+
+    async def __call__(self) -> str:  # type: ignore[override]
+        self.marked.append(base.outer_intercept_active())
+        try:
+            await self._client.chat.completions.create(
+                model=INNER_MODEL, messages=[{"role": "user", "content": self._prompt}]
+            )
+        except BudgetExceededError as exc:
+            self.raised.append(exc)
+        return self._credential
+
+
+def _client_with(
+    credential: str, provider: _AsksBeforeTheCredential, outer: _Provider, *, is_async: bool
+) -> Any:
+    transport = httpx.MockTransport(outer)
+    http: Any = (httpx.AsyncClient if is_async else httpx.Client)(transport=transport)
+    if credential == "api_key":
+        cls: Any = openai.AsyncOpenAI if is_async else openai.OpenAI
+        return cls(api_key=provider, http_client=http)
+    cls = openai.AsyncAzureOpenAI if is_async else openai.AzureOpenAI
+    return cls(
+        azure_ad_token_provider=provider,
+        api_version="2024-10-21",
+        azure_endpoint=AZURE_ENDPOINT,
+        http_client=http,
+    )
+
+
+@pytest.mark.parametrize("prompt", [INNER_PROMPT, LONG_PROMPT], ids=["allowed", "blocked"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("credential", ["api_key", "azure_ad_token_provider"])
+def test_an_sdk_call_a_credential_provider_makes_is_policed_and_reported(
+    sensor: Callable[..., Session], credential: str, is_async: bool, prompt: str
+) -> None:
+    session = sensor()
+    session.policy = PolicyCache(token_limit=200, block_at_pct=100)
+    inner_provider = _Provider(_openai_reply)
+    outer_provider = _Provider(_openai_reply)
+    provider_cls = _AsyncAsksBeforeTheCredential if is_async else _AsksBeforeTheCredential
+    asks = provider_cls(_openai_client(inner_provider, is_async=is_async), prompt, "k")
+    client = _client_with(credential, asks, outer_provider, is_async=is_async)
+    model, extra = (OUTER_MODEL, {}) if credential == "api_key" else ("azure/fd-chat", AZURE)
+    kwargs: dict[str, Any] = {"model": model, "messages": MESSAGES, "client": client, **extra}
+    if is_async:
+
+        async def _call() -> Any:
+            return await litellm.acompletion(**kwargs)
+
+        asyncio.run(_call())
+    else:
+        litellm.completion(**kwargs)
+    # Asked inside litellm's request, under the litellm call's mark.
+    assert True in asks.marked
+    assert len(outer_provider.bodies) == 1
+    attempts = [e for e in events_of(session, "post_call") if e.get("model") != INNER_MODEL]
+    assert len(attempts) == 1  # litellm's own request, once
+    if prompt is LONG_PROMPT:
+        assert len(asks.raised) == len(asks.marked)
+        assert all(isinstance(exc, BudgetExceededError) for exc in asks.raised)
+        assert inner_provider.bodies == []  # nothing left
+        assert len(events_of(session, "policy_block")) == len(asks.marked)
+    else:
+        assert asks.raised == []
+        assert len(inner_provider.bodies) == len(asks.marked)
+        inner = [e for e in events_of(session, "post_call") if e.get("model") == INNER_MODEL]
+        assert len(inner) == len(asks.marked)

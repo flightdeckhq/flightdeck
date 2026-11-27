@@ -72,7 +72,7 @@ func TestPrintBanner_ShowsAnAddressAPersonCanUse(t *testing.T) {
 		if dev {
 			token = bootstrap.Result{Token: bootstrap.DevToken, Dev: true}
 		}
-		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true, nil)
+		printBanner(f, opts, dev, token, router.NewHostPolicy(dev, opts.Domain, allowed), layout, db, true, nil, 0)
 		out, err := os.ReadFile(f.Name())
 		if err != nil {
 			t.Fatal(err)
@@ -627,6 +627,37 @@ func TestHostlessWithSuppliedToken(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "ftd_x") {
 			t.Errorf("%s: the error repeats the token: %q", c.name, err)
+		}
+	}
+}
+
+// The start-up block explains a start that spent seconds gathering the
+// planner's statistics, and says nothing when they took a moment.
+func TestPrintBanner_NamesASlowStatisticsGathering(t *testing.T) {
+	layout := datadir.Layout{Root: "/data", NATS: "/data/nats", Secrets: "/data/secrets.json"}
+	db := database{backend: storage.SQLite, display: "/data/flightdeck.db"}
+	for _, c := range []struct {
+		took time.Duration
+		want bool
+	}{{0, false}, {statisticsNoticeAfter - time.Millisecond, false}, {13700 * time.Millisecond, true}} {
+		f, err := os.CreateTemp(t.TempDir(), "banner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts := cli.Options{Listen: "127.0.0.1:4000"}
+		printBanner(f, opts, true, bootstrap.Result{Token: bootstrap.DevToken, Dev: true},
+			router.NewHostPolicy(true, "", nil), layout, db, true, nil, c.took)
+		_ = f.Close()
+		out, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := "  Statistics  gathered for the query planner in 13.7s"
+		if got := strings.Contains(string(out), "  Statistics  "); got != c.want {
+			t.Errorf("took %v: the block names the gathering = %v, want %v:\n%s", c.took, got, c.want, out)
+		}
+		if c.want && !strings.Contains(string(out), line) {
+			t.Errorf("took %v: want %q in:\n%s", c.took, line, out)
 		}
 	}
 }

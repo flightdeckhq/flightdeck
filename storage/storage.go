@@ -197,15 +197,6 @@ func Open(ctx context.Context, rawURL string) (*DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("storage: ping %s: %w", backend, err)
 	}
-	if backend == SQLite {
-		// Planner statistics, before the first read connection opens
-		// and reads them (sqlite_optimize.go). Without them the
-		// database works on the planner's guesses, so a failure is a
-		// warning.
-		if err := optimizeSQLite(ctx, db.DB); err != nil {
-			slog.Warn("sqlite planner statistics not refreshed", "err", err)
-		}
-	}
 	if db.reader != db.DB {
 		if err := db.reader.PingContext(ctx); err != nil {
 			_ = db.Close()
@@ -327,7 +318,7 @@ func openSQLite(rawURL string) (*DB, error) {
 	}
 	db.reader = reader
 	db.checkpointer = startWALCheckpointer(writer, path)
-	db.optimizer = startSQLiteOptimizer(writer, sqliteOptimizeInterval)
+	db.optimizer = startSQLiteOptimizer(writer)
 	return db, nil
 }
 

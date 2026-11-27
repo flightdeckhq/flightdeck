@@ -597,6 +597,15 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		return migrateFailed(err, database, layout)
 	}
 	slog.Info("database schema is current", "backend", database.backend)
+	// The planner's statistics after the migrations, so an index one
+	// created is analyzed, and before the handle is shared, so every
+	// service's read connections plan with them. Nothing writes yet, so
+	// it takes as long as the file needs: a moment when the statistics
+	// are current, seconds on a large database read from disk.
+	statistics, err := db.GatherStatistics(ctx)
+	if err != nil {
+		slog.Warn("database statistics not gathered; queries plan without them until the hourly refresh", "err", err)
+	}
 	// Each service gets a handle of its own on that database, so the
 	// dashboard's listing queries cannot take the connections the
 	// workers need for every event: on SQLite the handles share the
@@ -679,7 +688,7 @@ func serveAll(opts cli.Options, stdout *os.File) error {
 		// by, written before the start-up block says it serves.
 		defer recordInstance(layout.Root, lns.plain.Addr().String(), os.Getpid())()
 	}
-	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil, before)
+	printBanner(stdout, opts, dev, token, hosts, layout, database, embedded != nil, before, statistics)
 	if dev {
 		// Where the coding agents on this machine report, beside serving
 		// and never in its way; the first signal cancels it, and the stop
@@ -921,7 +930,7 @@ func setServiceEnv(opts cli.Options, databaseURL string, dev bool, secrets *data
 }
 
 func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result, hosts router.HostPolicy, layout datadir.Layout, db database,
-	embedded bool, before *migrationCopy) {
+	embedded bool, before *migrationCopy, statistics time.Duration) {
 	base, anyInterface := publicURL(opts)
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\nFlightdeck %s\n\n", version)
@@ -965,8 +974,20 @@ func printBanner(w *os.File, opts cli.Options, dev bool, token bootstrap.Result,
 	default:
 		p("  Backup      %s   (schema version %d, kept before this start migrated it to %d)\n", before.Copy.Path, before.from, before.to)
 	}
+	if statistics >= statisticsNoticeAfter {
+		p("  Statistics  gathered for the query planner in %s   (once: after an upgrade, or when a table has grown tenfold)\n",
+			statistics.Round(100*time.Millisecond))
+	}
 	p("\nPress Ctrl+C to stop.\n\n")
 }
+
+// statisticsNoticeAfter is how long gathering the database's planner
+// statistics may take at start before the start-up block says so. When
+// they are current it takes about a millisecond; two seconds is past
+// any warm gathering of a million events (0.15 s), so the line explains
+// a start that read a large database from disk (14 s for a cold file of
+// 1,000,000 events) and is absent otherwise.
+const statisticsNoticeAfter = 2 * time.Second
 
 // publicHint is the line under the development token in the start-up
 // block: how to let other machines in, and what that exposes.

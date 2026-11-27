@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,6 +107,9 @@ func TestBinary_KeepsACopyOfTheDatabaseBeforeMigratingIt(t *testing.T) {
 	if err := storage.MigrateTo(ctx, storage.SQLiteURL(filepath.Join(dataDir, datadir.DatabaseFile)), latest-1); err != nil {
 		t.Fatal(err)
 	}
+	// Runs with events, for the start to gather the planner's
+	// statistics of.
+	fillRuns(t, filepath.Join(dataDir, datadir.DatabaseFile))
 	port := freePort(t)
 	c := start(t, "127.0.0.1:"+port, port, dataDir)
 	want := fmt.Sprintf("(schema version %d, kept before this start migrated it to %d)", latest-1, latest)
@@ -124,6 +128,15 @@ func TestBinary_KeepsACopyOfTheDatabaseBeforeMigratingIt(t *testing.T) {
 	}
 	if v, _, err := storage.SchemaVersion(ctx, storage.SQLiteURL(filepath.Join(dataDir, datadir.DatabaseFile))); err != nil || v != latest {
 		t.Errorf("the database is at version %d (%v) after the start, want %d", v, err, latest)
+	}
+	// The statistics are gathered after the copy and the migrations:
+	// the copy is the file the release before left, and the migrated
+	// database has them.
+	if n := statisticsRows(t, copies[0]); n != 0 {
+		t.Errorf("the copy before migrating holds %d rows of planner statistics; it was taken after they were gathered", n)
+	}
+	if n := statisticsRows(t, filepath.Join(dataDir, datadir.DatabaseFile)); n == 0 {
+		t.Error("the migrated database holds no planner statistics after the start")
 	}
 
 	again := start(t, "127.0.0.1:"+port, port, dataDir)
@@ -193,4 +206,55 @@ func TestBinary_DoesNotStartAnEmptyDatabaseInPlaceOfAReplacedOne(t *testing.T) {
 	if _, err := os.Stat(db); err == nil {
 		t.Error("the refused start created an empty database")
 	}
+}
+
+// fillRuns writes runs with events into the SQLite database at path.
+func fillRuns(t *testing.T, path string) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := storage.Open(ctx, storage.SQLiteURL(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, q := range []string{
+		`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 49)
+			INSERT INTO sessions (session_id, flavor, agent_type, state)
+			SELECT printf('%08x-0000-4000-8000-%012x', i, i), 'f', 'coding', 'closed' FROM n`,
+		`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 999)
+			INSERT INTO events (id, session_id, flavor, event_type, occurred_at)
+			SELECT printf('%08x-0000-4000-8000-%012x', 100000 + i, 100000 + i),
+			       printf('%08x-0000-4000-8000-%012x', i / 20, i / 20), 'f', 'post_call',
+			       strftime('%Y-%m-%dT%H:%M:%fZ', '2026-11-01', '+' || i || ' seconds')
+			FROM n`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// statisticsRows counts the planner statistics the SQLite database at
+// path holds, 0 when it has none. The file is opened read-only and
+// immutable: a copy kept before a migration must stay as it was
+// recorded.
+func statisticsRows(t *testing.T, path string) int {
+	t.Helper()
+	db, err := sql.Open("flightdeck-sqlite", "file:"+path+"?mode=ro&immutable=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var tables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_stat1'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables == 0 {
+		return 0
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_stat1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

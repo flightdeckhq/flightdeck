@@ -60,6 +60,7 @@ import openai  # noqa: E402
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler  # noqa: E402
 
 import flightdeck_sensor  # noqa: E402
+from flightdeck_sensor.interceptor import base  # noqa: E402
 from flightdeck_sensor.interceptor.litellm import (  # noqa: E402
     patch_litellm_functions,
     unpatch_litellm_functions,
@@ -266,8 +267,11 @@ class Observed:
     # "coroutine 'make_call' was never awaited", on the rows where it
     # makes one): what the caller sees.
     warnings: list[str] = field(default_factory=list)
-    # The litellm classes of the stream the call returned.
+    # The litellm classes of the stream the call returned, its type's
+    # module and the type part of its repr.
     classes: list[type] = field(default_factory=list)
+    module: str | None = None
+    repr_type: str | None = None
 
 
 def _client(route: Route, server: Any, is_async: bool) -> Any:
@@ -295,7 +299,13 @@ def _client(route: Route, server: Any, is_async: bool) -> Any:
 
 
 def _litellm_classes(stream: Any) -> list[type]:
-    return [c for c in type(stream).__mro__ if c.__module__.split(".")[0] == "litellm"]
+    """litellm's classes in the stream's type's MRO; the sensor's class,
+    which carries litellm's name and module, is left out."""
+    return [
+        c
+        for c in type(stream).__mro__
+        if c.__module__.split(".")[0] == "litellm" and not issubclass(c, base.HandedToCaller)
+    ]
 
 
 def _read(entry: str, made: str, how: str, kwargs: dict[str, Any], observed: Observed) -> list[Any]:
@@ -304,6 +314,8 @@ def _read(entry: str, made: str, how: str, kwargs: dict[str, Any], observed: Obs
 
     def _note(stream: Any) -> Any:
         observed.classes = _litellm_classes(stream)
+        observed.module = type(stream).__module__
+        observed.repr_type = repr(stream).split(" object at ", 1)[0]
         return stream
 
     if made == "sync":
@@ -485,8 +497,11 @@ def test_a_litellm_stream_shows_the_caller_what_it_shows_without_the_sensor(
     _dumps(unsensored, volatile)
     _dumps(sensored, volatile)
 
-    # The stream the call returned is of litellm's classes.
+    # The stream the call returned is of litellm's classes, and its type
+    # and repr name litellm's module.
     assert sensored.classes == unsensored.classes
+    assert sensored.module == unsensored.module
+    assert sensored.repr_type == unsensored.repr_type
     # The caller's loop: the same chunks, or the same exception, and the
     # same warnings once what the call left is collected.
     assert sensored.warnings == unsensored.warnings

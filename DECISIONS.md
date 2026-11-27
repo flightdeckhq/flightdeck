@@ -1419,7 +1419,7 @@ may pick another thread, `raise_signal` always does).
 
 **Date:** 2026-11-27
 **Decision:** not a view with the stream's name and protocol but a
-subclass of litellm's class, same name, whose instance shares the
+subclass of litellm's class, same name and module, whose instance shares the
 stream's `__dict__`; iteration and `fetch_sync_stream` / `fetch_stream`
 go through the guard, which sits in a slot.
 **Why:** a litellm Router checks for `CustomStreamWrapper`, reads

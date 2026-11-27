@@ -3045,7 +3045,8 @@ class StreamReader(Protocol):
 
 class _StreamTwin(HandedToCaller):
     """Base of the classes :func:`sdk_stream_twin` builds. An instance is
-    of the SDK stream's own class (a subclass of it, under its name) and
+    of the SDK stream's own class (a subclass of it, under its name and
+    module) and
     shares the SDK stream's attribute dictionary, so every attribute,
     private ones included, read or written through it is the SDK
     stream's; only its iteration, and the methods that may send the
@@ -3135,10 +3136,12 @@ def _twin_type(sdk_type: type, sending: tuple[str, ...]) -> type | None:
         and sync == hasattr(sdk_type, "__iter__")
         and async_ == hasattr(sdk_type, "__aiter__")
     ):
+        # The SDK class's name, qualified name and module, so the twin's
+        # repr and type() read as the SDK stream's do.
         namespace: dict[str, Any] = {
             "__slots__": ("_fd_reader",),
             "__qualname__": sdk_type.__qualname__,
-            "__module__": __name__,
+            "__module__": sdk_type.__module__,
         }
         if sync:
             namespace["__iter__"] = _twin_iter

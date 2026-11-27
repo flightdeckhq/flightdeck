@@ -152,6 +152,8 @@ def test_the_twin_is_an_instance_of_the_sdk_class_sharing_its_attributes(
     assert isinstance(twin, SDKStream)
     assert type(twin) is not SDKStream
     assert (type(twin).__name__, type(twin).__qualname__) == ("SDKStream", "SDKStream")
+    assert type(twin).__module__ == SDKStream.__module__
+    assert repr(twin).split(" object at ", 1)[0] == repr(stream).split(" object at ", 1)[0]
     assert base.guard_of(twin) is guard
     # One attribute dictionary, holding nothing of the sensor's.
     assert vars(twin) is vars(stream)

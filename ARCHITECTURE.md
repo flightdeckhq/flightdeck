@@ -1556,8 +1556,9 @@ and the Anthropic patch in its patched resource methods (`create`,
 meter litellm's `CustomStreamWrapper` with the shared stream guard
 (`GuardedStream` / `GuardedAsyncStream`), and the caller gets litellm's
 stream as an instance of litellm's own class: a subclass the sensor
-builds of the class litellm returned, under its name, whose instance
-shares the stream's attribute dictionary (`base.sdk_stream_twin`). So
+builds of the class litellm returned, under its name and module (so its
+`repr` and `type()` read as litellm's), whose instance shares the
+stream's attribute dictionary (`base.sdk_stream_twin`). So
 `isinstance`, every attribute, private ones included (`_hidden_params`,
 `completion_stream`, `chunks`), and every method are litellm's; only its
 iteration and the two methods that send a lazily-sent stream's request

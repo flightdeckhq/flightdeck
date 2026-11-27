@@ -222,6 +222,8 @@ def _rows() -> list[Any]:
 class Observed:
     classes: list[str] = field(default_factory=list)
     module_classes: list[type] = field(default_factory=list)
+    module: str | None = None
+    repr_type: str | None = None
     returned: Any = None
     error: type[BaseException] | None = None
     chunks: list[Any] = field(default_factory=list)
@@ -233,7 +235,17 @@ class Observed:
 
 
 def _litellm_classes(value: Any) -> list[type]:
-    return [c for c in type(value).__mro__ if c.__module__.split(".")[0] == "litellm"]
+    """litellm's classes in the value's type's MRO; the sensor's class,
+    which carries litellm's name and module, is left out."""
+    return [
+        c
+        for c in type(value).__mro__
+        if c.__module__.split(".")[0] == "litellm" and not issubclass(c, base.HandedToCaller)
+    ]
+
+
+def _is_stream(value: Any) -> bool:
+    return hasattr(type(value), "__next__") or hasattr(type(value), "__anext__")
 
 
 def _make(router: Any, call: Call, made: str) -> Any:
@@ -255,6 +267,8 @@ def _read(router: Any, call: Call, made: str, how: str | None, observed: Observe
             c for c in _litellm_classes(value) if "<locals>" not in c.__qualname__
         ]
         observed.classes = [c.__qualname__ for c in _litellm_classes(value)]
+        observed.module = type(value).__module__
+        observed.repr_type = repr(value).split(" object at ", 1)[0] if _is_stream(value) else None
         observed.returned = value
         return value
 
@@ -363,6 +377,8 @@ def test_a_router_call_is_what_it_is_without_the_sensor_and_each_request_is_repo
         assert [c.__qualname__ for c in sensored.module_classes] == [
             c.__qualname__ for c in unsensored.module_classes
         ]
+        assert sensored.module == unsensored.module
+        assert sensored.repr_type == unsensored.repr_type
 
     # The caller's loop: the same chunks, or the same exception.
     volatile = _volatile(unsensored, control)
@@ -443,6 +459,8 @@ def test_the_stream_an_attempt_returns_is_litellms_own(
     )
     assert isinstance(stream, CustomStreamWrapper)
     assert type(stream).__name__ == "CustomStreamWrapper"
+    assert type(stream).__module__ == CustomStreamWrapper.__module__
+    assert repr(stream).startswith(f"<{CustomStreamWrapper.__module__}.CustomStreamWrapper object")
     guard = base.guard_of(stream)
     assert isinstance(guard, base.GuardedStream)
     assert vars(stream) is vars(guard._stream)

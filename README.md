@@ -17,8 +17,6 @@
 
 ## Install
 
-Installing Flightdeck is one command.
-
 **Linux and macOS**
 
 ```bash

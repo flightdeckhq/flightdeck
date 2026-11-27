@@ -487,10 +487,16 @@ func (s *Store) GetEventFacets(ctx context.Context, params EventsParams) (*Event
 		if !ok {
 			return nil, fmt.Errorf("facet expression not allowlisted: %q", name)
 		}
+		// The window's events are counted per run first, and each run
+		// is joined to its sessions row once: every expression here
+		// reads the run only, so a value's count is the sum of its
+		// runs' counts. Joining every event instead extracts the same
+		// context key once per event (300-600 ms per facet over 30 days
+		// of 1,000,000 events on SQLite, measured).
 		q := fmt.Sprintf(`
-			SELECT v, COUNT(*) AS c FROM (
-				SELECT %s AS v
-				FROM %s f
+			SELECT v, CAST(SUM(n) AS BIGINT) AS c FROM (
+				SELECT %s AS v, f.n AS n
+				FROM (SELECT session_id, COUNT(*) AS n FROM %s ev GROUP BY session_id) f
 				JOIN sessions s ON s.session_id = f.session_id
 			) d
 			WHERE v IS NOT NULL AND v <> ''

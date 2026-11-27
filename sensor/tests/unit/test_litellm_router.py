@@ -286,6 +286,11 @@ def _observe(provider: FakeProvider, name: str, read: str) -> Observed:
     call = CALLS[name]
     made, how = READS.get(read) or WHOLE[read]
     provider.clear()
+    # litellm keeps the SDK clients a Router builds in a process-wide
+    # cache; a client an earlier run built and used before the sensor
+    # patched the SDK keeps the resources it bound then. Each run builds
+    # its own.
+    litellm.in_memory_llm_clients_cache.flush_cache()
     observed = Observed()
     with collected() as left:
         try:

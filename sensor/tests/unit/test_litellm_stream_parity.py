@@ -12,6 +12,8 @@ sensor, and compares, chunk by chunk, everything the caller can read:
   order;
 - the exception, when the unsensored read raises: the sensored read
   raises the same type;
+- the stream the call returned: its litellm classes, so ``isinstance``
+  and what code that inspects it (a litellm Router) reads are litellm's;
 - the warnings collecting what the call left raises, collected inside the
   row (litellm's "coroutine 'make_call' was never awaited" where it makes
   a request coroutine it never awaits, as for an async-made Gemini stream
@@ -264,6 +266,8 @@ class Observed:
     # "coroutine 'make_call' was never awaited", on the rows where it
     # makes one): what the caller sees.
     warnings: list[str] = field(default_factory=list)
+    # The litellm classes of the stream the call returned.
+    classes: list[type] = field(default_factory=list)
 
 
 def _client(route: Route, server: Any, is_async: bool) -> Any:
@@ -290,9 +294,20 @@ def _client(route: Route, server: Any, is_async: bool) -> Any:
     return handler
 
 
-def _read(entry: str, made: str, how: str, kwargs: dict[str, Any]) -> list[Any]:
+def _litellm_classes(stream: Any) -> list[type]:
+    return [c for c in type(stream).__mro__ if c.__module__.split(".")[0] == "litellm"]
+
+
+def _read(entry: str, made: str, how: str, kwargs: dict[str, Any], observed: Observed) -> list[Any]:
+    """The chunks the caller reads, the litellm classes of the stream the
+    call returned noted on ``observed`` before it is read."""
+
+    def _note(stream: Any) -> Any:
+        observed.classes = _litellm_classes(stream)
+        return stream
+
     if made == "sync":
-        stream = getattr(litellm, entry)(**kwargs)
+        stream = _note(getattr(litellm, entry)(**kwargs))
         if how == "for":
             return list(stream)
 
@@ -302,7 +317,7 @@ def _read(entry: str, made: str, how: str, kwargs: dict[str, Any]) -> list[Any]:
         return asyncio.run(_drain())
 
     async def _make() -> Any:
-        return await getattr(litellm, f"a{entry}")(**kwargs)
+        return _note(await getattr(litellm, f"a{entry}")(**kwargs))
 
     if how == "for":
         return list(asyncio.run(_make()))
@@ -341,7 +356,7 @@ def _observe(
     observed = Observed()
     with collected() as left:
         try:
-            observed.chunks = _read(route.entry, made, how, kwargs)
+            observed.chunks = _read(route.entry, made, how, kwargs, observed)
         except Exception as exc:
             observed.error = type(exc)
     observed.warnings = sorted(left)
@@ -470,6 +485,8 @@ def test_a_litellm_stream_shows_the_caller_what_it_shows_without_the_sensor(
     _dumps(unsensored, volatile)
     _dumps(sensored, volatile)
 
+    # The stream the call returned is of litellm's classes.
+    assert sensored.classes == unsensored.classes
     # The caller's loop: the same chunks, or the same exception, and the
     # same warnings once what the call left is collected.
     assert sensored.warnings == unsensored.warnings

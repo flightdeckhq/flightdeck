@@ -1414,3 +1414,19 @@ and signalling the process (`signal.signal` works only on the main
 thread; ctypes into `sigaction` bypasses Python's handler record);
 `os.kill(getpid())` or `raise_signal` from the drain thread (the kernel
 may pick another thread, `raise_signal` always does).
+
+## D298 -- A litellm stream is handed back as an instance of litellm's own class, sharing the stream's attributes
+
+**Date:** 2026-11-27
+**Decision:** not a view with the stream's name and protocol but a
+subclass of litellm's class, same name, whose instance shares the
+stream's `__dict__`; iteration and `fetch_sync_stream` / `fetch_stream`
+go through the guard, which sits in a slot.
+**Why:** a litellm Router checks for `CustomStreamWrapper`, reads
+`_hidden_params` and sends a lazy request itself: with the view
+`Router.completion(stream=True)` raised `TypeError` on 1.104 and no
+mid-stream fallback ran.
+**Rejected alternative:** a proxy faking `__class__` (writes land on it,
+litellm's methods run unguarded); assigning `__class__` on litellm's
+object (the guard in its `__dict__` is a cycle, delaying a left-early
+stream's report to the cyclic collector); patching `Router`.

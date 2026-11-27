@@ -30,7 +30,7 @@ import sys
 import time
 import types
 import weakref
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 
 from flightdeck_sensor.core.errors import (
     REQUEST_ID_MAX_LEN,
@@ -1979,6 +1979,31 @@ class _GuardCore(HandedToCaller):
             self._opened_t = self._t0
         return self._read_within() if self._read_within is not None else contextlib.nullcontext()
 
+    def run_sending(self, send: Callable[[], Any]) -> Any:
+        """Run ``send``, a method of the SDK stream that sends its request
+        when it has not left yet (litellm's ``fetch_sync_stream``, which a
+        litellm Router calls before reading): run as a read is (see
+        :meth:`_before_read`), so a request that leaves now is reported now
+        and sent in the call's context, and a failure is the call's
+        ``llm_error``, as a failed read's is."""
+        try:
+            with self._before_read():
+                return send()
+        except Exception as exc:
+            if not _second_read(exc):
+                self._emit_stream_error(exc)
+            raise
+
+    async def arun_sending(self, send: Callable[[], Any]) -> Any:
+        """Async form of :meth:`run_sending` (litellm's ``fetch_stream``)."""
+        try:
+            with self._before_read():
+                return await send()
+        except Exception as exc:
+            if not _second_read(exc):
+                self._emit_stream_error(exc)
+            raise
+
     def _hook_failed(self, hook: str) -> None:
         """A provider stream hook raised. The guard carries on without it
         (metering falls back to what the other hooks and the estimate
@@ -2911,7 +2936,7 @@ class _StreamView(HandedToCaller):
     ``CustomStreamWrapper`` iterates both ways and is no context manager).
     Every public attribute is the guard's, and so the SDK stream's."""
 
-    def __init__(self, guard: GuardedStream | GuardedAsyncStream) -> None:
+    def __init__(self, guard: StreamReader) -> None:
         self._guard = guard
 
     def _stands_for(self) -> Any:
@@ -2964,16 +2989,20 @@ class _BothWaysView(_IterableView, _AsyncIterableView):
 
 
 def guard_of(stream: Any) -> Any:
-    """The stream guard behind ``stream`` (a :func:`protocol_view` of it,
-    or the guard itself), else ``stream``."""
-    return stream._guard if isinstance(stream, _StreamView) else stream
+    """The stream guard behind ``stream`` (a :func:`protocol_view` or a
+    :func:`sdk_stream_twin` of it, or the guard itself), else ``stream``."""
+    if isinstance(stream, _StreamView):
+        return stream._guard
+    if isinstance(stream, _StreamTwin):
+        return stream._fd_reader
+    return stream
 
 
 _ITERATION = ("__iter__", "__next__", "__aiter__", "__anext__")
 _CONTEXT_AND_AWAIT = ("__enter__", "__exit__", "__aenter__", "__aexit__", "__await__")
 
 
-def protocol_view(guard: GuardedStream | GuardedAsyncStream) -> Any:
+def protocol_view(guard: StreamReader) -> Any:
     """``guard``, opened, as the caller gets it: the guard itself when its
     protocol is the SDK stream's, else a view with exactly the SDK
     stream's iteration (sync, async or both) and no context manager,
@@ -2990,6 +3019,174 @@ def protocol_view(guard: GuardedStream | GuardedAsyncStream) -> Any:
         return guard
     view: type = _BothWaysView if sync and async_ else _IterableView if sync else _AsyncIterableView
     return named_like(view, sdk_type)(guard)
+
+
+# ------------------------------------------------------------------
+# A stream handed back as an instance of the SDK stream's own class
+# ------------------------------------------------------------------
+
+
+class StreamReader(Protocol):
+    """What :func:`sdk_stream_twin` reads an SDK stream through: a stream
+    guard, or litellm's reader of a stream that finds its session at its
+    first read. ``_stream`` is the SDK stream it reads."""
+
+    @property
+    def _stream(self) -> Any: ...
+
+    def next_chunk(self) -> Any: ...
+
+    async def anext_chunk(self) -> Any: ...
+
+    def run_sending(self, send: Callable[[], Any]) -> Any: ...
+
+    async def arun_sending(self, send: Callable[[], Any]) -> Any: ...
+
+
+class _StreamTwin(HandedToCaller):
+    """Base of the classes :func:`sdk_stream_twin` builds. An instance is
+    of the SDK stream's own class (a subclass of it, under its name) and
+    shares the SDK stream's attribute dictionary, so every attribute,
+    private ones included, read or written through it is the SDK
+    stream's; only its iteration, and the methods that may send the
+    stream's request, go through the reader, which reads the SDK stream
+    itself. The reader sits in a slot of the built class, so the shared
+    dictionary holds nothing of the sensor's. A shallow copy is a twin of
+    the reader's copy (see :class:`_GuardCopy`); a deep copy or a pickle
+    is the SDK stream's (see :class:`HandedToCaller`)."""
+
+    __slots__ = ()
+    _fd_reader: StreamReader
+
+    def _stands_for(self) -> Any:
+        return self._fd_reader._stream
+
+    def __copy__(self) -> Any:
+        reader = copy.copy(self._fd_reader)
+        return _make_twin(type(self), reader, reader._stream)
+
+
+def _twin_iter(self: Any) -> Any:
+    return self
+
+
+def _twin_next(self: Any) -> Any:
+    return self._fd_reader.next_chunk()
+
+
+def _twin_aiter(self: Any) -> Any:
+    return self
+
+
+async def _twin_anext(self: Any) -> Any:
+    return await self._fd_reader.anext_chunk()
+
+
+def _twin_finalizer(self: Any) -> None:
+    """Nothing: the SDK stream's own finalizer runs once, when the SDK
+    stream is collected after the twin and its reader."""
+
+
+def _twin_sender(sdk_method: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(sdk_method)
+    def _send(self: Any, *args: Any, **kwargs: Any) -> Any:
+        reader = self._fd_reader
+        return reader.run_sending(functools.partial(sdk_method, reader._stream, *args, **kwargs))
+
+    return _send
+
+
+def _twin_async_sender(sdk_method: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(sdk_method)
+    async def _send(self: Any, *args: Any, **kwargs: Any) -> Any:
+        reader = self._fd_reader
+        return await reader.arun_sending(
+            functools.partial(sdk_method, reader._stream, *args, **kwargs)
+        )
+
+    return _send
+
+
+# The instance size of a class whose instances keep all their state in
+# their __dict__ (no __slots__, no state of a built-in base).
+_PLAIN_INSTANCE_SIZE = type("_Plain", (), {}).__basicsize__
+
+# The classes sdk_stream_twin built, one per (SDK class, sending methods).
+_TWIN_TYPES: dict[tuple[type, tuple[str, ...]], type | None] = {}
+
+
+def _twin_type(sdk_type: type, sending: tuple[str, ...]) -> type | None:
+    """The twin class of ``sdk_type``, or ``None`` when its instances
+    cannot be twinned: state kept outside the instance dictionary (slots,
+    a built-in base), or an iteration protocol that is not an iterator's
+    (``__iter__`` without ``__next__``, ``__aiter__`` without
+    ``__anext__``). Built once per pair; two threads building it at once
+    keep the first."""
+    key = (sdk_type, sending)
+    if key in _TWIN_TYPES:
+        return _TWIN_TYPES[key]
+    twin_type: type | None = None
+    sync = hasattr(sdk_type, "__next__")
+    async_ = hasattr(sdk_type, "__anext__")
+    if (
+        sdk_type.__basicsize__ == _PLAIN_INSTANCE_SIZE
+        and sdk_type.__dictoffset__ != 0
+        and (sync or async_)
+        and sync == hasattr(sdk_type, "__iter__")
+        and async_ == hasattr(sdk_type, "__aiter__")
+    ):
+        namespace: dict[str, Any] = {
+            "__slots__": ("_fd_reader",),
+            "__qualname__": sdk_type.__qualname__,
+            "__module__": __name__,
+        }
+        if sync:
+            namespace["__iter__"] = _twin_iter
+            namespace["__next__"] = _twin_next
+        if async_:
+            namespace["__aiter__"] = _twin_aiter
+            namespace["__anext__"] = _twin_anext
+        for name in sending:
+            method = getattr(sdk_type, name, None)
+            if callable(method):
+                build = _twin_async_sender if inspect.iscoroutinefunction(method) else _twin_sender
+                namespace[name] = build(method)
+        if hasattr(sdk_type, "__del__"):
+            namespace["__del__"] = _twin_finalizer
+        try:
+            twin_type = type(sdk_type.__name__, (_StreamTwin, sdk_type), namespace)
+        except TypeError:
+            twin_type = None
+    return _TWIN_TYPES.setdefault(key, twin_type)
+
+
+def _make_twin(twin_type: type, reader: StreamReader, sdk_stream: Any) -> Any:
+    twin: Any = object.__new__(twin_type)
+    object.__setattr__(twin, "_fd_reader", reader)
+    object.__setattr__(twin, "__dict__", vars(sdk_stream))
+    return twin
+
+
+def sdk_stream_twin(reader: StreamReader, *, sending: tuple[str, ...] = ()) -> Any | None:
+    """The SDK stream ``reader`` reads, as the caller gets it: an instance
+    of the SDK stream's own class (so ``isinstance`` and every attribute,
+    private ones included, are the SDK stream's) whose iteration goes
+    through ``reader``, as do the methods ``sending`` names (methods of
+    the SDK stream that send its request if it has not left yet). Code
+    that inspects the stream it was handed (a litellm Router checks for
+    ``CustomStreamWrapper``, reads its ``_hidden_params`` and sends a
+    lazily-sent request itself) sees the SDK stream. ``None`` when the
+    SDK stream's class cannot be twinned (see :func:`_twin_type`); the
+    caller then hands out a :func:`protocol_view`."""
+    stream = reader._stream
+    twin_type = _twin_type(type(stream), sending)
+    if twin_type is None:
+        return None
+    try:
+        return _make_twin(twin_type, reader, stream)
+    except Exception:
+        _log.debug("could not hand over %s as itself", type(stream).__name__, exc_info=True)
+        return None
 
 
 def _build_streaming_summary(

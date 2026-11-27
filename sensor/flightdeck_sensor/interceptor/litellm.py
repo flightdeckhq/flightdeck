@@ -83,15 +83,21 @@ risk hiding a billed call:
   ``flightdeck_sensor.patch()`` puts its own frame there, so every
   re-issued call through it is reported twice.
 
-**Streaming.** ``stream=True`` returns the sensor's stream guard
+**Streaming.** ``stream=True`` meters litellm's own stream
+(``CustomStreamWrapper``, ``TextCompletionStreamWrapper``, a Responses
+streaming iterator) with the sensor's stream guard
 (:class:`base.GuardedStream` from the sync entry points,
-:class:`base.GuardedAsyncStream` from the async ones) around litellm's
-own stream (``CustomStreamWrapper``, ``TextCompletionStreamWrapper``, a
-Responses streaming iterator), seen through that stream's protocol
-(:func:`base.protocol_view`): ``CustomStreamWrapper`` iterates both ways
-(``for chunk in ...`` and ``async for chunk in ...``, whichever call
-made it) and is no context manager, and so is what the caller gets;
-either way of reading it is metered once. Its attributes are proxied.
+:class:`base.GuardedAsyncStream` from the async ones), and the caller
+gets that stream as an instance of litellm's own class sharing its
+attributes, read through the guard (:func:`_handed_over`):
+``CustomStreamWrapper`` iterates both ways (``for chunk in ...`` and
+``async for chunk in ...``, whichever call made it) and is no context
+manager, and so is what the caller gets; either way of reading it is
+metered once. A litellm ``Router``, which checks for
+``CustomStreamWrapper``, wraps it for its mid-stream fallbacks and sends a
+lazily-sent stream's request with ``fetch_sync_stream`` /
+``fetch_stream``, does so as without the sensor; each deployment attempt
+is a call of its own.
 
 The caller reads exactly the chunks litellm shows without the sensor:
 the sensor never changes the ``stream_options`` litellm decides on and
@@ -117,8 +123,9 @@ A stream whose request leaves at its first read (Gemini's routes, and
 it there, but its ``pre_call`` and ``post_call`` are reported when the
 request leaves, and one never read reports nothing; one made with no
 session active finds its session at that first read
-(:class:`_SessionAtFirstRead`). A stream's reads run under the call's
-mark, so the request a first read sends is the call's. litellm's stream
+(:class:`_SessionAtFirstRead`). A stream's reads, and its
+``fetch_sync_stream`` / ``fetch_stream``, run under the call's mark, so
+the request a first read or a fetch sends is the call's. litellm's stream
 wrappers are not context managers and have no ``close()``, so the guard
 is used as a plain iterator; the ``post_call`` is emitted when the stream
 is read to its end, or when the guard is collected after a loop left
@@ -141,6 +148,7 @@ and will be filed separately if framework reports surface it.
 
 from __future__ import annotations
 
+import copy
 import dis
 import functools
 import inspect
@@ -473,6 +481,27 @@ def _source_unsent(source: Any) -> bool:
     return False
 
 
+# The methods of litellm's CustomStreamWrapper that send the request of a
+# stream that has not sent it yet (one that sends at its first read): a
+# litellm Router calls them on the stream it gets, before reading it, so
+# that a provider error surfaces inside its retry and fallback handling.
+_SENDING_METHODS = ("fetch_sync_stream", "fetch_stream")
+
+
+def _handed_over(reader: base.StreamReader) -> Any:
+    """litellm's stream as the caller gets it: an instance of litellm's own
+    stream class sharing the stream's attributes, whose reads and request
+    go through ``reader`` (:func:`base.sdk_stream_twin`). A caller that
+    inspects what litellm returned sees litellm's stream: a litellm Router
+    checks for ``CustomStreamWrapper`` before it wraps the stream for its
+    mid-stream fallbacks and reads its ``_hidden_params``, and calls
+    ``fetch_sync_stream`` / ``fetch_stream`` on a stream that sends at its
+    first read. A stream class that cannot be twinned is handed over seen
+    through its protocol (:func:`base.protocol_view`)."""
+    twin = base.sdk_stream_twin(reader, sending=_SENDING_METHODS)
+    return base.protocol_view(reader) if twin is None else twin
+
+
 def _intercept_completion(
     orig: Any,
     kwargs: dict[str, Any],
@@ -491,8 +520,9 @@ async def _intercept_acompletion(
     provider: LitellmProvider,
 ) -> Any:
     """``litellm.acompletion`` through the sensor; ``stream=True``
-    resolves to the async stream guard, matching ``await
-    litellm.acompletion(..., stream=True)`` on the unpatched module."""
+    resolves to litellm's stream read through the async stream guard,
+    matching ``await litellm.acompletion(..., stream=True)`` on the
+    unpatched module."""
     return await _intercept_async(orig, kwargs, session, provider, ask=True)
 
 
@@ -566,10 +596,9 @@ def _intercept_sync(
         # call, as without the sensor; a stream that sends at its first
         # read reports the call then (sent_on_first_read). Its reads run
         # under the call's mark, so the request a first read sends is the
-        # call's. The caller gets the guard with the protocol of litellm's
-        # stream (CustomStreamWrapper iterates both ways and is no context
-        # manager), or litellm's whole response when it answered with one
-        # (see base._GuardCore.whole_response).
+        # call's. The caller gets litellm's stream read through the guard
+        # (see _handed_over), or litellm's whole response when it answered
+        # with one (see base._GuardCore.whole_response).
         guard = base.call_stream(
             _as_outer_call(orig, mark),
             call_kwargs,
@@ -579,7 +608,7 @@ def _intercept_sync(
             sent_on_first_read=_sends_on_first_read,
         ).open()
         whole = guard.whole_response()
-        return base.protocol_view(guard) if whole is None else whole
+        return _handed_over(guard) if whole is None else whole
     return base.call(_as_outer_call(orig), kwargs, session, provider)
 
 
@@ -604,18 +633,19 @@ async def _intercept_async(
         )
         await guard.open()
         whole = guard.whole_response()
-        return base.protocol_view(guard) if whole is None else whole
+        return _handed_over(guard) if whole is None else whole
     return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
 
 
 class _SessionAtFirstRead:
-    """A litellm stream made while no session was active whose request
-    leaves at its first read (see :func:`_sends_on_first_read`): that read
-    is the call, so it finds its session then. A session reports it (one
-    ``pre_call`` and its ``post_call``) and a blocking one refuses it with
-    nothing sent; with none it is litellm's own. It iterates both ways, as
-    litellm's stream wrappers do, and is no context manager; every other
-    attribute is the stream's."""
+    """The reader of a litellm stream made while no session was active
+    whose request leaves at its first read (see :func:`_sends_on_first_read`):
+    that read, or a call that sends the request before any read (a
+    Router's ``fetch_sync_stream`` / ``fetch_stream``), is the call, so it
+    finds its session then. A session reports it (one ``pre_call`` and its
+    ``post_call``) and a blocking one refuses it with nothing sent; with
+    none it is litellm's own. The caller gets litellm's stream read
+    through it (see :func:`_handed_over`)."""
 
     def __init__(
         self,
@@ -624,73 +654,86 @@ class _SessionAtFirstRead:
         provider_cls: type[LitellmProvider],
         made_async: bool,
     ) -> None:
-        self._fd_stream = stream
-        self._fd_kwargs = kwargs
-        self._fd_provider_cls = provider_cls
-        self._fd_made_async = made_async
-        self._fd_reader: Any = None
+        self._stream = stream
+        self._kwargs = kwargs
+        self._provider_cls = provider_cls
+        self._made_async = made_async
+        # Found at the first read: the guard of the session found then, or
+        # None with no session (the stream is then litellm's own).
+        self._found = False
+        self._guard: base.GuardedStream | base.GuardedAsyncStream | None = None
 
-    def _fd_guard_args(self) -> tuple[Session, LitellmProvider, base.OuterCall] | None:
+    def __copy__(self) -> Any:
+        """A reader of the stream's copy, which finds its session at its own
+        first read; once the stream was read, the guard's copy."""
+        if self._guard is not None:
+            return copy.copy(self._guard)
+        return type(self)(
+            copy.copy(self._stream), self._kwargs, self._provider_cls, self._made_async
+        )
+
+    def _guard_args(self) -> tuple[Session, LitellmProvider, base.OuterCall] | None:
         session = _current_session()
         if session is None:
             return None
-        provider = self._fd_provider_cls(capture_prompts=session.config.capture_prompts)
+        provider = self._provider_cls(capture_prompts=session.config.capture_prompts)
         mark = base.OuterCall()
         provider.outer_call = mark
         return session, provider, mark
 
-    def _fd_sync_reader(self) -> Any:
-        if self._fd_reader is None:
-            args = self._fd_guard_args()
-            if args is None:
-                self._fd_reader = self._fd_stream
-            else:
+    def _sync_guard(self) -> base.GuardedStream | base.GuardedAsyncStream | None:
+        if not self._found:
+            args = self._guard_args()
+            if args is not None:
                 session, provider, mark = args
-                guard = base.call_stream(
-                    base._returning(self._fd_stream),
-                    self._fd_kwargs,
+                self._guard = base.call_stream(
+                    base._returning(self._stream),
+                    self._kwargs,
                     session,
                     provider,
                     read_within=functools.partial(base.outer_intercept, mark),
                 ).open()
-                self._fd_reader = base.protocol_view(guard)
-        return self._fd_reader
+            self._found = True
+        return self._guard
 
-    async def _fd_async_reader(self) -> Any:
-        if self._fd_reader is None:
-            args = self._fd_guard_args()
-            if args is None:
-                self._fd_reader = self._fd_stream
-            elif not self._fd_made_async:
-                return self._fd_sync_reader()
-            else:
+    async def _async_guard(self) -> base.GuardedStream | base.GuardedAsyncStream | None:
+        if not self._found:
+            if not self._made_async:
+                return self._sync_guard()
+            args = self._guard_args()
+            if args is not None:
                 session, provider, mark = args
                 guard = base.call_stream_async(
-                    base._returning(self._fd_stream),
-                    self._fd_kwargs,
+                    base._returning(self._stream),
+                    self._kwargs,
                     session,
                     provider,
                     read_within=functools.partial(base.outer_intercept, mark),
                 )
                 await guard.open()
-                self._fd_reader = base.protocol_view(guard)
-        return self._fd_reader
+                self._guard = guard
+            self._found = True
+        return self._guard
 
-    def __iter__(self) -> Any:
-        return self
+    def next_chunk(self) -> Any:
+        guard = self._sync_guard()
+        return next(self._stream) if guard is None else guard.next_chunk()
 
-    def __next__(self) -> Any:
-        return next(self._fd_sync_reader())
+    async def anext_chunk(self) -> Any:
+        guard = await self._async_guard()
+        if guard is None:
+            return await self._stream.__anext__()
+        return await guard.anext_chunk()
 
-    def __aiter__(self) -> Any:
-        return self
+    def run_sending(self, send: Callable[[], Any]) -> Any:
+        guard = self._sync_guard()
+        return send() if guard is None else guard.run_sending(send)
 
-    async def __anext__(self) -> Any:
-        reader = await self._fd_async_reader()
-        return await reader.__anext__()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._fd_stream, name)
+    async def arun_sending(self, send: Callable[[], Any]) -> Any:
+        guard = await self._async_guard()
+        if guard is None:
+            return await send()
+        return await guard.arun_sending(send)
 
 
 def _found_at_first_read(
@@ -704,7 +747,7 @@ def _found_at_first_read(
 ) -> Any:
     """What a call made while no session was active returns: litellm's
     own result, or, for a stream whose request leaves at its first read,
-    that stream seen through :class:`_SessionAtFirstRead`."""
+    that stream read through :class:`_SessionAtFirstRead`."""
     if not kwargs.get("stream") and "stream" not in names[: len(args)]:
         return result
     try:
@@ -714,8 +757,7 @@ def _found_at_first_read(
     named = _named_arguments(names, args, kwargs) if lazy else None
     if named is None or not named.get("stream"):
         return result
-    view_type = base.named_like(_SessionAtFirstRead, type(result))
-    return view_type(result, named, provider_cls, made_async)
+    return _handed_over(_SessionAtFirstRead(result, named, provider_cls, made_async))
 
 
 def _intercept_embedding(
@@ -807,14 +849,14 @@ class SensorLitellm:
 
     def completion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.completion(**kwargs)``; ``stream=True``
-        returns a :class:`base.GuardedStream` over litellm's stream, seen
-        through its protocol (:func:`base.protocol_view`)."""
+        returns litellm's stream read through a :class:`base.GuardedStream`
+        (see :func:`_handed_over`)."""
         return _intercept_completion(_OrigCompletion, kwargs, self._session, self._provider)
 
     async def acompletion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.acompletion(**kwargs)``; ``stream=True``
-        resolves to a :class:`base.GuardedAsyncStream` over litellm's
-        stream, seen through its protocol (:func:`base.protocol_view`)."""
+        resolves to litellm's stream read through a
+        :class:`base.GuardedAsyncStream` (see :func:`_handed_over`)."""
         return await _intercept_acompletion(
             _OrigAcompletion,
             kwargs,

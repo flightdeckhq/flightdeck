@@ -4,6 +4,20 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Security
+
+- **gorilla/websocket is on the upstream commit that fixes GO-2026-6278**
+  (GHSA-w67g-5rqw-f597): v1.5.3 draws a WebSocket client's frame mask
+  keys from `math/rand`, which is predictable. Flightdeck uses the
+  library only as the server of the dashboard's live feed
+  (`/api/v1/stream`), and a server sends its frames unmasked and never
+  makes a mask key, so no Flightdeck code path was exposed; no tagged
+  release carries the fix, so the services build with
+  `v1.5.4-0.20240701034025-d67f41855da4`, which keeps the vulnerability
+  scan green. At that version a request to the live feed that asks for
+  an upgrade (`Connection: Upgrade`) without the `Upgrade: websocket`
+  header is answered 426 Upgrade Required, not 400.
+
 ### Added
 
 - `flightdeck backup` copies the SQLite database while Flightdeck runs,

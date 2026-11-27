@@ -7,7 +7,7 @@ require (
 	github.com/flightdeckhq/flightdeck/ingestion v0.0.0
 	github.com/flightdeckhq/flightdeck/storage v0.0.0
 	github.com/flightdeckhq/flightdeck/workers v0.0.0
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.55.0
 	golang.org/x/crypto v0.58.0

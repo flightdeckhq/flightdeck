@@ -1532,8 +1532,8 @@ point: `completion` honours both, and `text_completion` and a
 without a native Responses API) hand the caller's arguments on to it.
 So no attempt runs a model the policy did not choose and a failure of
 the degraded attempt is the call's `llm_error`; a Router runs each deployment attempt through
-the patched entry points as a call of its own, so each attempt is
-degraded. Any
+the patched entry points as a call of its own (see the Router paragraph
+below), so each attempt is degraded. Any
 other litellm call made while one is in flight -- from a callback,
 guardrail or custom provider, or one litellm makes itself (an agentic or
 MCP follow-up, a semantic-cache embedding, an LLM judge) -- is a call of
@@ -1588,14 +1588,52 @@ and reported; another Anthropic call it makes besides `super()` is
 handed through too and goes unreported.
 
 `litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
-return the shared stream guard (`GuardedStream` / `GuardedAsyncStream`)
-around litellm's `CustomStreamWrapper`, seen through that wrapper's
-protocol (`base.protocol_view`): it iterates both ways, `for` and `async
-for`, whichever call made it, and is no context manager, so the stream
-the caller gets does the same, and reading it either way is metered
-once and fails as litellm's does. `text_completion(stream=True)` returns
-the guard around litellm's `TextCompletionStreamWrapper`, whose chunks
-are `TextCompletionResponse`s.
+meter litellm's `CustomStreamWrapper` with the shared stream guard
+(`GuardedStream` / `GuardedAsyncStream`), and the caller gets litellm's
+stream as an instance of litellm's own class: a subclass the sensor
+builds of the class litellm returned, under its name and module (so its
+`repr` and `type()` read as litellm's), whose instance shares the
+stream's attribute dictionary (`base.sdk_stream_twin`). So
+`isinstance`, every attribute, private ones included (`_hidden_params`,
+`completion_stream`, `chunks`), and every method are litellm's; only its
+iteration and the two methods that send a lazily-sent stream's request
+(`fetch_sync_stream` and `fetch_stream`) go through the guard, which
+reads litellm's stream itself. It iterates both ways, `for` and `async
+for`, whichever call made it, as `CustomStreamWrapper` does, and reading
+it either way is metered once and fails as litellm's does. The guard
+sits in a slot of the subclass, outside the shared dictionary, so the
+stream holds no reference back to it: a stream the caller drops is
+freed at once, without waiting for the cyclic collector, and its call
+settled as a loop left early is (below). `text_completion(stream=True)` hands over
+litellm's `TextCompletionStreamWrapper`, whose chunks are
+`TextCompletionResponse`s, the same way. A stream class that keeps state
+outside its instance dictionary (slots, a built-in base) would be handed
+over as a view with its name and iteration protocol instead
+(`base.protocol_view`); none of litellm's does.
+
+A litellm `Router` is a caller of the patched entry points: each
+deployment attempt it makes through `completion`, `acompletion`,
+`text_completion`, `atext_completion`, `responses`, `aresponses`,
+`embedding` or `aembedding`, its retries and fallbacks included, is a
+call of its own, policed and reported. The Router inspects the stream an
+attempt returns: it wraps a `CustomStreamWrapper` (on litellm 1.104 an
+`aresponses` stream too) in a stream wrapper of its own, which runs its
+fallbacks when the stream fails before its first chunk, copies the
+stream's `_hidden_params` for its response headers, and on litellm 1.104
+calls `fetch_sync_stream` / `fetch_stream` on a stream that sends its
+request at its first read (Gemini's routes) before handing it back. The
+stream is litellm's own class, so the Router does all of this as without
+the sensor, and its caller gets the Router's wrapper, chunks and
+exceptions unchanged. The request a Router's fetch sends is reported
+then, under the call's mark, and a failure there is that attempt's
+`llm_error`. A stream that fails before its first chunk is its attempt's
+`llm_error`, and the fallback the Router runs is a call of its own: a
+primary whose stream fails and a fallback that answers land as two
+`pre_call`s, one `llm_error` and one `post_call`, one per request the
+provider received. (litellm's sync `Router.completion` answers a stream
+that fails before its first chunk by calling the failed model group
+again until Python's recursion limit, on 1.83 and 1.104, with or without
+the sensor; each of those requests is reported.)
 
 The caller's loop sees exactly the chunks litellm shows without the
 sensor, in the same order and built with the same fields, and a read that
@@ -1706,12 +1744,13 @@ the call's `llm_error`, as any failed read does. One
 made while no session is active finds its session at that first read,
 which is the call: a blocking session refuses it with nothing sent, a
 session reports it, and with none it is litellm's own. The request
-leaves only through litellm's iteration, which goes through the guard
-(or, for a stream made with no session, the sensor's view of it), so
-neither path sends it unpoliced. Every read of a litellm stream runs
-under the litellm call's mark, so the request a first read sends through
-the OpenAI SDK is the call's, and its usage is asked for and handed over
-as at the call.
+leaves only through litellm's iteration or its `fetch_sync_stream` /
+`fetch_stream`, which go through the guard (or, for a stream made with
+no session, through the reader that finds its session then), so neither
+path sends it unpoliced; a Router's fetch is that stream's first read.
+Every read of a litellm stream runs under the litellm call's mark, so
+the request a first read sends through the OpenAI SDK is the call's, and
+its usage is asked for and handed over as at the call.
 `responses(stream=True)` returns the guard around litellm's
 Responses streaming iterator; the terminal event (`response.completed` /
 `.incomplete` / `.failed`) carries the whole response and its usage, so
@@ -1723,12 +1762,12 @@ terminal event stores that in-progress response (`object: "response"`,
 `status: "in_progress"`, no output) as its content only; its usage,
 model and stop reason still come from the events, and it emits no tool
 call. Each of these classes has a protocol of its own, and the stream
-the caller gets has the protocol, name and public methods of the class
-litellm returned: `CustomStreamWrapper` and `TextCompletionStreamWrapper`
+the caller gets is an instance of the class litellm returned, with its
+protocol: `CustomStreamWrapper` and `TextCompletionStreamWrapper`
 iterate both ways, `SyncResponsesAPIStreamingIterator` only with `for`
 and `ResponsesAPIStreamingIterator` only with `async for`. None is a
 context manager or has `close()`, so the guard is used as a plain
-iterator; a loop left early is reported once the guard is collected, or
+iterator; a loop left early is reported once the stream is collected, or
 when its session ends. litellm's `text_completion` stream sends its
 request at its first read, while the sensor polices it and emits its
 `pre_call` at the call, so a `text_completion` stream never read reports

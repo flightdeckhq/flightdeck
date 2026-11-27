@@ -4,6 +4,20 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Security
+
+- **gorilla/websocket is on the upstream commit that fixes GO-2026-6278**
+  (GHSA-w67g-5rqw-f597): v1.5.3 draws a WebSocket client's frame mask
+  keys from `math/rand`, which is predictable. Flightdeck uses the
+  library only as the server of the dashboard's live feed
+  (`/api/v1/stream`), and a server sends its frames unmasked and never
+  makes a mask key, so no Flightdeck code path was exposed; no tagged
+  release carries the fix, so the services build with
+  `v1.5.4-0.20240701034025-d67f41855da4`, which keeps the vulnerability
+  scan green. At that version a request to the live feed that asks for
+  an upgrade (`Connection: Upgrade`) without the `Upgrade: websocket`
+  header is answered 426 Upgrade Required, not 400.
+
 ### Added
 
 - `flightdeck backup` copies the SQLite database while Flightdeck runs,
@@ -214,6 +228,24 @@ All notable changes to Flightdeck are documented here.
   applies to an Anthropic resource override on a `wrap()`-built client
   (a subclass whose `create` calls `super()`): an OpenAI or google-genai
   call it makes is now policed and reported.
+- **A litellm `Router` streams through the sensor as it does without
+  it.** With the sensor on, `Router.completion(stream=True)` raised
+  `TypeError: 'HiddenParamsAsyncIteratorWrapper' object is not iterable`
+  on litellm 1.104, `Router.acompletion(stream=True)` returned the
+  Router's header wrapper instead of its stream wrapper, a Gemini stream
+  a sync Router call made could not be read with `async for`, and on
+  litellm 1.83 and 1.104 a stream that failed before its first chunk
+  raised `MidStreamFallbackError` to the caller instead of running the
+  Router's fallbacks. The Router checks that a
+  stream is litellm's `CustomStreamWrapper`, and the sensor handed it a
+  stand-in. A litellm stream is now an instance of litellm's own class
+  with litellm's attributes, read through the sensor, so a Router wraps
+  it, falls back and sends a lazily-sent request as without the sensor,
+  for `completion`, `acompletion`, `text_completion`,
+  `atext_completion`, `responses`, `aresponses` and the embeddings
+  calls alike. Each request a Router attempt sends is reported once: a
+  call its fallback answers lands as the refused attempt's `llm_error`
+  and the answer's `post_call`.
 - **A SIGTERM the sensor holds back for `session_end` no longer waits
   for the program's blocking call.** When `session_end` took more than
   2 seconds (a slow control plane, or a signal that landed while the

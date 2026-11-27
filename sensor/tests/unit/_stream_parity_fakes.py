@@ -276,14 +276,16 @@ def collected() -> Iterator[set[str]]:
     read with ``for``, with or without the sensor; collected, it warns
     "coroutine 'make_call' was never awaited". A failed read hands its
     exception, and through it the stream, to a logging thread litellm
-    starts, and litellm 1.83 keeps the last call's pre-call record (its
-    logging object, and through it that exception) in
-    ``litellm.error_logs`` until the next call replaces it. So the threads
-    the block started (bar pool workers) are waited for, that record is
-    dropped, and everything is collected here, inside the test that made
-    it: nothing of it lands in a later test (a module that turns warnings
-    into errors would fail on it). The warning records are dropped once
-    read: a "never awaited" record holds its coroutine."""
+    starts, and litellm 1.83 keeps the last call's pre-call and post-call
+    records (its logging object, and through it that exception, and the
+    locals of its last ``post_call``, through which a stream wrapper a
+    Router made) in ``litellm.error_logs`` until the next call replaces
+    them. So the threads the block started (bar pool workers) are waited
+    for, those records are dropped, and everything is collected here,
+    inside the test that made it: nothing of it lands in a later test (a
+    module that turns warnings into errors would fail on it). The warning
+    records are dropped once read: a "never awaited" record holds its
+    coroutine."""
     before = set(threading.enumerate())
     found: set[str] = set()
     try:
@@ -295,6 +297,7 @@ def collected() -> Iterator[set[str]]:
         error_logs = getattr(sys.modules.get("litellm"), "error_logs", None)
         if isinstance(error_logs, dict):
             error_logs.pop("PRE_CALL", None)
+            error_logs.pop("POST_CALL", None)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             gc.collect()

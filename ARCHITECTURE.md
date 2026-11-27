@@ -6634,24 +6634,44 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   (`session_id = ? AND event_type = 'session_end'`) through the event
   type index, every `session_end` of the fleet once per run a page
   lists, instead of the run's own events through the session index.
-  So `Open` runs `PRAGMA optimize=0x10002` on the writer before the
-  first read connection opens, and the writer runs it again every
-  hour. The pragma analyzes only the tables never analyzed and those
-  whose size has changed tenfold since (the mask makes it consider
-  every table, since the dashboard's queries run on the read pools,
-  not on the writer). The writer's connection sets
-  `analysis_limit=1000`, so `ANALYZE` reads a sample of each index
-  and the time it holds the writer does not grow with the table: on a
-  database of 1,000,000 events with no statistics the pragma takes
-  about 150 ms (1.4 s unsampled), and a run with nothing to do about
-  0.1 ms; writes queue behind it meanwhile. The sample caps the rows
-  per value of an unselective index near the limit but keeps the
-  indexes' order by selectivity, which is what decides the plans. A
-  connection reads the statistics when it
-  opens and does not see an `ANALYZE` another connection ran, so a
-  read connection is replaced after an hour. A failed run is a
-  warning, and the database works on the planner's guesses until the
-  next one succeeds.
+  The statistics come from `PRAGMA optimize=0x10002` on the writer,
+  which analyzes only the tables never analyzed and those whose size
+  has changed tenfold since (the mask makes it consider every table,
+  since the dashboard's queries run on the read pools, not on the
+  writer). The writer's connection sets `analysis_limit=1000`, so
+  `ANALYZE` samples each index, but it still reads every page of a
+  table and its indexes to count their rows: its time grows with the
+  table and with how little of it the page cache holds. On a database
+  of 1,000,000 events with no statistics it takes about 0.15 s when
+  the file is in the page cache and 13.7 s when it is read from disk;
+  with nothing to do, about 0.1 ms. So it runs in two ways:
+  - **At start**, `DB.GatherStatistics`, which the `flightdeck`
+    binary calls after its migrations (so an index a migration made is
+    analyzed, and the copy kept before migrating is the file the release
+    before left) and before it shares the handle with the services (so
+    their read connections plan with the statistics; any read
+    connection already open is closed when idle and reopens with them).
+    Nothing writes yet, so it takes as long as the file needs, up to
+    30 seconds, inside the 60 s a container gets to answer its health
+    check; past that it is interrupted and left to the refreshes below.
+    When it takes two seconds or more the start-up block says so in a
+    `Statistics` line with the time.
+  - **While serving**, the writer refreshes them every hour, and an
+    attempt never holds the writer longer than 750 ms: the statement
+    is interrupted there, since every write waits behind it and the
+    OTLP staging write's statement timeout is 2 s. An interrupted
+    attempt has read pages into the page cache, so the next one, two
+    seconds later, gets further; after 30 interrupted attempts in a row
+    the writer waits the hour again, and a table too large to analyze
+    within the bound is analyzed at the next start. On a cold file
+    of 1,000,000 events with no statistics, refreshed while writes ran
+    at about 150 requests a second, eleven attempts were interrupted at
+    751-753 ms and the twelfth completed in 615 ms; no request waited
+    longer than 1 s and none failed.
+  A connection reads the statistics when it opens and does not see an
+  `ANALYZE` another connection ran, so a read connection is replaced
+  after an hour. A failed run is a warning, and the database works on
+  the planner's guesses until the next one succeeds.
 - **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
   `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
@@ -7886,17 +7906,18 @@ At that size:
 
 | Requests | SQLite | Postgres |
 |---|---|---|
-| `tokens`, `sessions`, the latency metrics, `policy_events`, by event dimensions, 7 to 90 days | up to 0.9 s | up to 1.3 s |
-| `tokens` by `framework`, `host`, `agent_type`, `agent_role` or `parent_session_id` (a join to `sessions`), 90 days | 1.1-1.8 s | 0.5-0.9 s |
-| the sub-agent metrics, any window | 0.5-0.8 s | 0.6-0.9 s |
-| `estimated_cost`, 7 / 30 / 90 days | 0.3 / 1.2 / 3.1-3.4 s | 0.3 / 1.0 / 2.3 s |
+| `tokens`, `sessions`, the latency metrics, `policy_events`, by event dimensions, 7 to 90 days | up to 0.9 s | up to 1.2 s |
+| `tokens` by `framework`, `host`, `agent_type`, `agent_role` or `parent_session_id` (a join to `sessions`), 90 days | 1.1-1.8 s | 0.5-0.8 s |
+| the sub-agent metrics, any window | 0.5-0.8 s | under 0.3 s |
+| `estimated_cost`, 7 / 30 / 90 days | 0.3 / 1.2 / 2.9-3.4 s | 0.3 / 1.0 / 2.4-2.5 s |
 
 At 100,000 events every analytics request takes under 0.35 s on both.
 `estimated_cost` grows with the number of metered calls in the window
-because each call looks up its price row (`queries.priceJoin`). On
-Postgres the planner's cost estimate of the sub-agent queries is past
-`jit_above_cost`, and JIT compilation is most of their time: with
-`jit = off` on the connection they take 0.2-0.3 s.
+because each call looks up its price row (`queries.priceJoin`). The
+Postgres figures are as the `flightdeck` binary connects: every pool
+of its process carries the query API's `jit=off` and the workers' lock
+timeout (`cmd/flightdeck` `connectionURL`), and the scale check opens
+its database the same way.
 
 ### Per-agent activity summary
 
@@ -8425,8 +8446,8 @@ events. A dimension that lives on the run (the agent, the framework,
 the runtime-context keys) counts the filtered events per run first
 and joins each run's `sessions` row once, so a context key is read
 once per run, not once per event. Over 30 days of 1,000,000 events
-the facets take 3.1 s on SQLite and 1.3 s on Postgres, over 7 days
-0.7 s and 1.1 s (the scale check, see Analytics endpoint).
+the facets take 3.1 s on SQLite and 1.1 s on Postgres, over 7 days
+0.7 s and 0.8 s (the scale check, see Analytics endpoint).
 
 ### Server timeouts
 

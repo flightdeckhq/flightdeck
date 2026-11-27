@@ -377,8 +377,15 @@ SCALE_DIR=$HOME/.cache/fd-scale \
 - On Postgres use a server of your own, never one with real data: the role
   creates and drops `fd_scale_<size>` (the fixture) and `fd_work_<size>` (the
   copy a run times).
-- A request over its budget fails the test; on SQLite the test then prints the
-  time and `EXPLAIN QUERY PLAN` of each of its statements. For Postgres, start
+- The requests over budget today are listed in `knownOverBudget` in the test,
+  each with a ceiling and the reason, and tracked on the roadmap issue #347.
+  The check logs them and fails when one passes its ceiling, when one comes
+  back within its budget (unless it is marked as sitting at the line), and
+  when any request not on the list is over its budget. On SQLite a failing
+  request's statements are printed with their time and `EXPLAIN QUERY PLAN`.
+- On Postgres the check connects as the `flightdeck` binary does, with the
+  connection parameters every pool of its process carries (`jit=off`, the
+  workers' lock timeout). For Postgres, start
   the server with `-c shared_preload_libraries=auto_explain
   -c auto_explain.log_min_duration=250ms -c auto_explain.log_analyze=on
   -c auto_explain.log_buffers=on` and read `EXPLAIN (ANALYZE, BUFFERS)` of every

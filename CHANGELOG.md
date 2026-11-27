@@ -179,6 +179,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- The dashboard stays fast on a large SQLite database. SQLite now keeps
+  statistics for its query planner (`PRAGMA optimize` when the database
+  opens and every hour, sampled so it never holds writes for long), and
+  without them a page read the wrong index: on a year of 1,000,000
+  events the Fleet took 30 s (the API's timeout) and now takes 1.4 s,
+  the run listing (`/v1/sessions`) 3.6 s and now a few milliseconds,
+  and a deep page of it went from the 30 s timeout to 73 ms. The Events
+  page's sidebar counts over 7 days went from 3.3 s to 0.7 s on SQLite
+  and from 1.3 s to 1.1 s on Postgres, and the Fleet's recent runs no
+  longer compute their columns for every run of an agent. The first
+  start of this release on an existing database spends about 0.15 s
+  (at 1,000,000 events) writing the statistics.
 - A release started on a database that a newer release has migrated
   now says so, with the two schema versions and what to do (install
   the newer release, or restore the copy taken before the upgrade),

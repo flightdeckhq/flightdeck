@@ -6589,7 +6589,8 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   `IMMEDIATE`, taking the write lock at `BEGIN` so a read-then-write
   transaction cannot fail with `SQLITE_BUSY` halfway. `DB.Reader()` is a
   pool of eight `query_only` connections for statements that only read
-  (a write through it fails); in WAL mode they neither block the writer
+  (a write through it fails), each replaced after an hour (see the
+  planner's statistics below); in WAL mode they neither block the writer
   nor wait for it. A read that must see a transaction's own uncommitted
   rows runs on the transaction. Because the writer is one connection, a
   statement issued on the writer while the same goroutine holds an open
@@ -6626,6 +6627,31 @@ own (`json_group_array`, `json_each`, `json_set`, string functions).
   30 seconds, and a warning names the log's size after ten attempts
   in a row. Closing the database stops the loop, and the last
   connection to close folds the log into the file and removes it.
+- **The planner's statistics are kept by the writer.** SQLite chooses
+  among a table's indexes by the statistics `ANALYZE` stores in
+  `sqlite_stat1`; with none it rates every index that matches an
+  equality alike. On `events` that guess reads a run's close reasons
+  (`session_id = ? AND event_type = 'session_end'`) through the event
+  type index, every `session_end` of the fleet once per run a page
+  lists, instead of the run's own events through the session index.
+  So `Open` runs `PRAGMA optimize=0x10002` on the writer before the
+  first read connection opens, and the writer runs it again every
+  hour. The pragma analyzes only the tables never analyzed and those
+  whose size has changed tenfold since (the mask makes it consider
+  every table, since the dashboard's queries run on the read pools,
+  not on the writer). The writer's connection sets
+  `analysis_limit=1000`, so `ANALYZE` reads a sample of each index
+  and the time it holds the writer does not grow with the table: on a
+  database of 1,000,000 events with no statistics the pragma takes
+  about 150 ms (1.4 s unsampled), and a run with nothing to do about
+  0.1 ms; writes queue behind it meanwhile. The sample caps the rows
+  per value of an unselective index near the limit but keeps the
+  indexes' order by selectivity, which is what decides the plans. A
+  connection reads the statistics when it
+  opens and does not see an `ANALYZE` another connection ran, so a
+  read connection is replaced after an hour. A failed run is a
+  warning, and the database works on the planner's guesses until the
+  next one succeeds.
 - **Timestamps** are `TEXT` in columns declared `TIMESTAMP`, always
   `YYYY-MM-DDTHH:MM:SS.sssZ` (RFC 3339, UTC, exactly three fractional
   digits, `storage.TimeLayout`): the text sorts chronologically byte for
@@ -7846,7 +7872,31 @@ the same scope. The recursion is bounded by the actual tree depth
 the size of the parent's descendant set. The traversal is accurate
 but unindexed at the deep-recursion frontier, so analytics over
 large historical windows on parents with many descendants pay a
-seq-scan-like cost on the recursive step.
+seq-scan-like cost on the recursive step. The anchor of the walk is
+every run, whatever the window, so the sub-agent metrics cost about
+the same over 7 days as over 90.
+
+**Measured speed.** The scale check (`make test-scale`, CONTRIBUTING.md)
+times every request the dashboard sends, warm, through the handlers,
+on a seeded year of a fleet: 1,000,000 events in 60,000 runs (Claude
+Code with sub-agents beside Python-sensor agents, capture on for about
+40% of the runs, 320,000 content rows; 2.4 GB as a SQLite file), on a
+32-thread WSL2 machine with Postgres 16 in a container capped at 3 GB.
+At that size:
+
+| Requests | SQLite | Postgres |
+|---|---|---|
+| `tokens`, `sessions`, the latency metrics, `policy_events`, by event dimensions, 7 to 90 days | up to 0.9 s | up to 1.3 s |
+| `tokens` by `framework`, `host`, `agent_type`, `agent_role` or `parent_session_id` (a join to `sessions`), 90 days | 1.1-1.8 s | 0.5-0.9 s |
+| the sub-agent metrics, any window | 0.5-0.8 s | 0.6-0.9 s |
+| `estimated_cost`, 7 / 30 / 90 days | 0.3 / 1.2 / 3.1-3.4 s | 0.3 / 1.0 / 2.3 s |
+
+At 100,000 events every analytics request takes under 0.35 s on both.
+`estimated_cost` grows with the number of metered calls in the window
+because each call looks up its price row (`queries.priceJoin`). On
+Postgres the planner's cost estimate of the sub-agent queries is past
+`jit_above_cost`, and JIT compilation is most of their time: with
+`jit = off` on the connection they take 0.2-0.3 s.
 
 ### Per-agent activity summary
 
@@ -8370,6 +8420,14 @@ session-level `agent_name` and `framework` resolved through a
 facet-count path, `q` narrows the `facets=true` chip counts as well
 as the row list.
 
+`facets=true` runs one grouped count per dimension over the filtered
+events. A dimension that lives on the run (the agent, the framework,
+the runtime-context keys) counts the filtered events per run first
+and joins each run's `sessions` row once, so a context key is read
+once per run, not once per event. Over 30 days of 1,000,000 events
+the facets take 3.1 s on SQLite and 1.3 s on Postgres, over 7 days
+0.7 s and 1.1 s (the scale check, see Analytics endpoint).
+
 ### Server timeouts
 
 `withRESTTimeout` middleware wraps every REST handler in
@@ -8430,8 +8488,10 @@ the run's `session_end` events (always an array): a run the
 orphan-timeout reaper closed has been silent for at least the orphan
 timeout (24 h by default), so it is older than the Fleet's 24 h
 sessions page and this rollup is where the swimlane learns it was
-reaped. The array is computed in the outer query, for the kept rows
-only. The other heavy correlated-subquery columns of
+reaped. The array, `capture_enabled` and the parent's agent id are
+computed in the outer query, for the kept rows only: the inner query
+ranks every run of the page's agents and carries only the columns
+the rank and the row need. The other heavy correlated-subquery columns of
 `SessionListItem` (error_types, policy_event_types, mcp_server_names,
 ...) are intentionally absent so the per-agent rollup stays cheap on
 fleet pages with 50+ agents.
